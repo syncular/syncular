@@ -327,9 +327,10 @@ class SyncularClient private constructor(
 
     /** Drive sync to quiescence (needs native-transport). */
     @JvmOverloads
-    fun syncUntilIdle(maxRounds: Int? = null): JsonValue {
+    fun syncUntilIdle(maxRounds: Int? = null, timeoutMs: Long? = null): JsonValue {
         val p = LinkedHashMap<String, JsonValue>()
         maxRounds?.let { p["maxRounds"] = JsonValue.of(it) }
+        timeoutMs?.let { p["timeoutMs"] = JsonValue.of(it.toDouble()) }
         return command("syncUntilIdle", JsonValue.Obj(p))
     }
 

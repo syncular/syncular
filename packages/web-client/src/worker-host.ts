@@ -27,7 +27,7 @@ import type { PromiseMethods } from './client';
  * With `multiTab: false`, the loser is an `isLeader === false` handle whose
  * calls reject with `client.not_leader` (the single-tab contract).
  */
-import type { WakeReason } from '@syncular/core';
+import { serializeBlobRef, type WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
@@ -807,6 +807,11 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
     return this.#call('uploadBlob', [bytes, options]);
+  }
+
+  /** Serialize a BlobRef to the canonical string a `blob_ref` column holds. */
+  blobRefString(ref: BlobRef): string {
+    return serializeBlobRef(ref);
   }
 
   fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {

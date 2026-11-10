@@ -113,6 +113,21 @@ void main() {
     );
   });
 
+  test('syncUntilIdle forwards timeoutMs to the core', () {
+    final client = makeClient();
+    addTearDown(client.close);
+    expect(
+      () => client.syncUntilIdle(timeoutMs: 0),
+      throwsA(
+        isA<SyncularError>().having(
+          (e) => e.code,
+          'code',
+          'sync.invalid_request',
+        ),
+      ),
+    );
+  });
+
   test('local authority commands without a configured authority', () {
     final client = makeClient();
     addTearDown(client.close);

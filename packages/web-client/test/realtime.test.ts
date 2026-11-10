@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   ClientSyncError,
   SyncClient,
+  webSocketRealtimeConnector,
   type RealtimeHandlers,
   type RealtimeSocket,
 } from '@syncular/client';
@@ -22,6 +23,45 @@ import {
 } from './helpers';
 
 describe('handshake (§8.1)', () => {
+  test('the direct client substitutes the {clientId} placeholder in the realtime URL', async () => {
+    const urls: string[] = [];
+    class OpeningWebSocket {
+      binaryType = 'blob';
+      onopen: (() => void) | null = null;
+      constructor(url: string) {
+        urls.push(url);
+        queueMicrotask(() => this.onopen?.());
+      }
+      send(): void {}
+      close(): void {}
+    }
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: OpeningWebSocket,
+    });
+    const server = makeServer();
+    try {
+      const local = await makeClient(server, {
+        clientId: 'client id/1',
+        realtime: webSocketRealtimeConnector(
+          'wss://example.test/realtime?clientId={clientId}',
+        ),
+      });
+      await local.client.connectRealtime();
+      expect(urls).toEqual([
+        'wss://example.test/realtime?clientId=client%20id%2F1',
+      ]);
+      await local.client.close();
+      local.db.close();
+    } finally {
+      if (original === undefined)
+        Reflect.deleteProperty(globalThis, 'WebSocket');
+      else Object.defineProperty(globalThis, 'WebSocket', original);
+      server.storage.db.close();
+    }
+  });
+
   test('late callbacks from a disconnected socket cannot touch a replacement or closed database', async () => {
     const callbacks: RealtimeHandlers[] = [];
     const server = makeServer();

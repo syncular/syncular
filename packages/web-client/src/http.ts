@@ -500,15 +500,23 @@ export function httpBlobTransport(
   };
 }
 
-/** WebSocket realtime connector (§8.1): text = control, binary = deltas. */
+/**
+ * WebSocket realtime connector (§8.1): text = control, binary = deltas. The
+ * client's id replaces a `{clientId}` placeholder in the URL.
+ */
 export function webSocketRealtimeConnector(
   realtimeUrl: string,
 ): RealtimeConnector {
-  return (handlers) =>
+  return (handlers, clientId) =>
     new Promise((resolve, reject) => {
       const socket = socketOperation(
         'realtime socket failed to connect',
-        () => new WebSocket(realtimeUrl),
+        () =>
+          new WebSocket(
+            clientId === undefined
+              ? realtimeUrl
+              : realtimeUrl.replace('{clientId}', encodeURIComponent(clientId)),
+          ),
       );
       let opened = false;
       socket.binaryType = 'arraybuffer';

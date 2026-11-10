@@ -1054,9 +1054,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
     return this.command('sync', {});
   }
 
-  async syncUntilIdle(maxRounds?: number): Promise<unknown> {
+  async syncUntilIdle(
+    maxRounds?: number,
+    timeoutMs?: number,
+  ): Promise<unknown> {
     return this.command('syncUntilIdle', {
       ...(maxRounds !== undefined ? { maxRounds } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
   }
 

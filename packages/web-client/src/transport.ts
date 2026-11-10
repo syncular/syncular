@@ -89,4 +89,6 @@ export interface RealtimeSocket {
 
 export type RealtimeConnector = (
   handlers: RealtimeHandlers,
+  /** The client's id; the client passes it on every connect. */
+  clientId?: string,
 ) => Promise<RealtimeSocket> | RealtimeSocket;

@@ -865,6 +865,17 @@ describe('createTauriSyncClient', () => {
     });
   });
 
+  test('syncUntilIdle forwards maxRounds and timeoutMs unchanged', async () => {
+    const { client, calls } = await build();
+    await client.syncUntilIdle(3, 5000);
+    await client.syncUntilIdle();
+    const params = calls
+      .map((c) => c.args.command as { method: string; params: unknown })
+      .filter((command) => command?.method === 'syncUntilIdle')
+      .map((command) => command.params);
+    expect(params).toEqual([{ maxRounds: 3, timeoutMs: 5000 }, {}]);
+  });
+
   test('mutate returns the clientCommitId', async () => {
     const { client } = await build();
     const id = await client.mutate([

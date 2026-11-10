@@ -145,7 +145,7 @@ public protocol SyncularClientDelegate: AnyObject {
 
 /// The idiomatic wrapper. Construct with a schema (and optionally an explicit
 /// clientId), then use the typed conveniences or the raw `command`.
-public final class SyncularClient {
+public class SyncularClient {
     private var handle: OpaquePointer?
     /// Serializes ALL command dispatch (the core is thread-affine).
     private let commandQueue = DispatchQueue(label: "syncular.command")
@@ -428,9 +428,10 @@ public final class SyncularClient {
 
     /// Drive sync to quiescence (needs `native-transport`).
     @discardableResult
-    public func syncUntilIdle(maxRounds: Int? = nil) throws -> JSONValue {
+    public func syncUntilIdle(maxRounds: Int? = nil, timeoutMs: Int? = nil) throws -> JSONValue {
         var p: [String: JSONValue] = [:]
         if let maxRounds { p["maxRounds"] = .number(Double(maxRounds)) }
+        if let timeoutMs { p["timeoutMs"] = .number(Double(timeoutMs)) }
         return try command(method: "syncUntilIdle", params: .object(p))
     }
 
@@ -446,8 +447,8 @@ public final class SyncularClient {
     /// `query` for a flat column-shaped read.
     public func readRows(table: String) throws -> [JSONValue] {
         let result = try command(method: "readRows", params: .object(["table": .string(table)]))
-        guard case let .object(fields) = result, case let .array(rows)? = fields["rows"] else {
-            return []
+        guard case let .array(rows)? = result["rows"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "rows missing")
         }
         return rows
     }
@@ -457,10 +458,15 @@ public final class SyncularClient {
     /// work" signal (the status snapshot also includes server-push scheduling intent).
     public func pendingCommitIds() throws -> [String] {
         let result = try command(method: "pendingCommitIds", params: .object([:]))
-        guard case let .object(fields) = result, case let .array(ids)? = fields["ids"] else {
-            return []
+        guard case let .array(ids)? = result["ids"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "ids missing")
         }
-        return ids.compactMap { $0.stringValue }
+        return try ids.map {
+            guard let id = $0.stringValue else {
+                throw SyncularError(code: "client.invalid_host_response", message: "commit id is not a string")
+            }
+            return id
+        }
     }
 
     /// Run arbitrary read-only SQL over the local visible tables (the live-query
@@ -470,8 +476,8 @@ public final class SyncularClient {
             method: "query",
             params: .object(["sql": .string(sql), "params": .array(params)])
         )
-        guard case let .object(fields) = result, case let .array(rows)? = fields["rows"] else {
-            return []
+        guard case let .array(rows)? = result["rows"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "rows missing")
         }
         return rows
     }
@@ -533,15 +539,19 @@ public final class SyncularClient {
     /// Current conflicts (§6).
     public func conflicts() throws -> [JSONValue] {
         let result = try command(method: "conflicts", params: .object([:]))
-        if case let .object(fields) = result, case let .array(list)? = fields["conflicts"] { return list }
-        return []
+        guard case let .array(list)? = result["conflicts"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "conflicts missing")
+        }
+        return list
     }
 
     /// Presence peers for a scope key (§8.6).
     public func presence(scopeKey: String) throws -> [JSONValue] {
         let result = try command(method: "presence", params: .object(["scopeKey": .string(scopeKey)]))
-        if case let .object(fields) = result, case let .array(peers)? = fields["peers"] { return peers }
-        return []
+        guard case let .array(peers)? = result["peers"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "peers missing")
+        }
+        return peers
     }
 
     /// Publish (or clear, with `nil`) a presence doc for a scope key.

@@ -261,6 +261,50 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     #expect(signal.listener == nil)
 }
 
+/// Answers the named methods with a fixed host reply; every other command (the
+/// `create` in `init` included) reaches the core.
+private final class StubbedReplyClient: SyncularClient {
+    var replies: [String: JSONValue] = [:]
+
+    override func command(method: String, params: JSONValue) throws -> JSONValue {
+        if let reply = replies[method] { return reply }
+        return try super.command(method: method, params: params)
+    }
+}
+
+@Test func syncUntilIdleForwardsTimeoutMsToTheCore() throws {
+    let client = try makeClient()
+    defer { client.close() }
+    var caught: SyncularError?
+    do { try client.syncUntilIdle(timeoutMs: 0) } catch let error as SyncularError { caught = error } catch {}
+    #expect(caught?.code == "sync.invalid_request")
+    #expect(caught?.message.contains("timeoutMs") == true)
+}
+
+@Test func typedReadsThrowInvalidHostResponseWhenTheFieldIsMissing() throws {
+    let client = try StubbedReplyClient(clientId: "swift-stub", schema: todoSchema())
+    defer { client.close() }
+    for method in ["readRows", "query", "pendingCommitIds", "conflicts", "presence"] {
+        client.replies[method] = .object([:])
+    }
+    let reads: [() throws -> Any] = [
+        { try client.readRows(table: "todo") },
+        { try client.query("SELECT 1") },
+        { try client.pendingCommitIds() },
+        { try client.conflicts() },
+        { try client.presence(scopeKey: "k") },
+    ]
+    for read in reads {
+        var caught: SyncularError?
+        do { _ = try read() } catch let error as SyncularError { caught = error } catch {}
+        #expect(caught?.code == "client.invalid_host_response")
+    }
+    client.replies["pendingCommitIds"] = .object(["ids": .array([.string("a"), .number(1)])])
+    var caught: SyncularError?
+    do { _ = try client.pendingCommitIds() } catch let error as SyncularError { caught = error } catch {}
+    #expect(caught?.code == "client.invalid_host_response")
+}
+
 @Test func errorReplySurfacesAsSyncularError() throws {
     let client = try makeClient()
     defer { client.close() }

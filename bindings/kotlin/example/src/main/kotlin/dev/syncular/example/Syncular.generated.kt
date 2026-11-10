@@ -9,27 +9,57 @@ import dev.syncular.JsonValue
 /** The generated syncular schema (SPEC §2.4, §3.1). */
 object SyncularSchema {
     /** ServerSchema-compatible schema — pass to `SyncularClient.create(schema = …)`. */
-    val schema: JsonValue =
-        JsonValue.obj(
-          "version" to JsonValue.of(1),
-          "tables" to JsonValue.arr(listOf(
-            JsonValue.obj(
-              "name" to JsonValue.of("todos"),
-              "primaryKey" to JsonValue.of("id"),
-              "columns" to JsonValue.arr(listOf(
-                JsonValue.obj("name" to JsonValue.of("id"), "type" to JsonValue.of("string"), "nullable" to JsonValue.of(false)),
-                JsonValue.obj("name" to JsonValue.of("list_id"), "type" to JsonValue.of("string"), "nullable" to JsonValue.of(false)),
-                JsonValue.obj("name" to JsonValue.of("title"), "type" to JsonValue.of("string"), "nullable" to JsonValue.of(false)),
-                JsonValue.obj("name" to JsonValue.of("done"), "type" to JsonValue.of("boolean"), "nullable" to JsonValue.of(false)),
-                JsonValue.obj("name" to JsonValue.of("position"), "type" to JsonValue.of("integer"), "nullable" to JsonValue.of(false)),
-                JsonValue.obj("name" to JsonValue.of("updated_at_ms"), "type" to JsonValue.of("integer"), "nullable" to JsonValue.of(false)),
-              )),
-              "scopes" to JsonValue.arr(listOf(
-                JsonValue.obj("pattern" to JsonValue.of("list:{list_id}"), "column" to JsonValue.of("list_id")),
-              )),
-            ),
-          )),
-        )
+    val schema: JsonValue = JsonValue.parse(
+        """
+        {
+          "version": 1,
+          "tables": [
+            {
+              "name": "todos",
+              "primaryKey": "id",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "list_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "title",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "done",
+                  "type": "boolean",
+                  "nullable": false
+                },
+                {
+                  "name": "position",
+                  "type": "integer",
+                  "nullable": false
+                },
+                {
+                  "name": "updated_at_ms",
+                  "type": "integer",
+                  "nullable": false
+                }
+              ],
+              "scopes": [
+                {
+                  "pattern": "list:{list_id}",
+                  "column": "list_id"
+                }
+              ]
+            }
+          ]
+        }
+        """.trimIndent(),
+    )
 
     /** Typed requested-scope builders per subscription. */
     object Subscriptions {

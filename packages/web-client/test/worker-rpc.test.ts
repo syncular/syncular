@@ -179,6 +179,19 @@ async function makeHandle(
   return { handle, events };
 }
 
+test('the worker handle serializes a BlobRef locally in canonical key order', async () => {
+  const { handle } = await makeHandle({ clientId: 'blob-ref-string' });
+  const ref = {
+    blobId: `sha256:${'ab'.repeat(32)}`,
+    byteLength: 3,
+    mediaType: 'text/plain',
+    name: 'a.txt',
+  };
+  expect(handle.blobRefString(ref)).toBe(
+    `{"blobId":"sha256:${'ab'.repeat(32)}","byteLength":3,"mediaType":"text/plain","name":"a.txt"}`,
+  );
+});
+
 test('worker RPC retains structured segment transport evidence', async () => {
   const details = {
     path: '/segments/test',

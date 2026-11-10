@@ -111,6 +111,17 @@ class SyncularClientTest {
     }
 
     @Test
+    fun syncUntilIdleForwardsTimeoutMsToTheCore() {
+        val client = makeClient()
+        try {
+            val error = assertFailsWith<SyncularException> { client.syncUntilIdle(timeoutMs = 0) }
+            assertEquals("sync.invalid_request", error.code)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun policyBoundsStayExactIntegersOnTheWire() {
         // 2^53 and 10^18 are configurable bounds; the serializer must not turn
         // them into an exponent form the core reads as a float and refuses.

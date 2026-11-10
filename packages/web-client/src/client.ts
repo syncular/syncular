@@ -5005,29 +5005,34 @@ export class SyncClient {
     }
     let openedSocket: RealtimeSocket | undefined;
     try {
-      const socket = await connector({
-        onText: (text) => {
-          if (generation !== this.#realtimeGeneration || !this.#started) return;
-          this.#heard(this.#handleRealtimeText(text));
+      const socket = await connector(
+        {
+          onText: (text) => {
+            if (generation !== this.#realtimeGeneration || !this.#started)
+              return;
+            this.#heard(this.#handleRealtimeText(text));
+          },
+          onBinary: (bytes) => {
+            if (generation !== this.#realtimeGeneration || !this.#started)
+              return;
+            this.#heard();
+            this.#routeRealtimeBinary(bytes);
+          },
+          onClose: () => {
+            if (openedSocket === undefined || this.#socket !== openedSocket)
+              return;
+            this.#socket = undefined;
+            this.#disarm();
+            this.#presence.clear(); // §8.6.1: presence is per-connection
+            // §8.8: an undesired close is a visible lost state, not a silent
+            // downgrade to HTTP rounds.
+            this.#setRealtimeState('lost', REALTIME_LOST_CODE);
+            this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
+            this.#emitDiagnostics();
+          },
         },
-        onBinary: (bytes) => {
-          if (generation !== this.#realtimeGeneration || !this.#started) return;
-          this.#heard();
-          this.#routeRealtimeBinary(bytes);
-        },
-        onClose: () => {
-          if (openedSocket === undefined || this.#socket !== openedSocket)
-            return;
-          this.#socket = undefined;
-          this.#disarm();
-          this.#presence.clear(); // §8.6.1: presence is per-connection
-          // §8.8: an undesired close is a visible lost state, not a silent
-          // downgrade to HTTP rounds.
-          this.#setRealtimeState('lost', REALTIME_LOST_CODE);
-          this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
-          this.#emitDiagnostics();
-        },
-      });
+        this.#clientId,
+      );
       openedSocket = socket;
       if (!this.#transportEnabled) {
         socket.close();

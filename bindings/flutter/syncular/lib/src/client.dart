@@ -379,9 +379,10 @@ class SyncularClient {
   Map<String, Object?> sync() => command('sync', const {});
 
   /// Drive sync to quiescence (needs `native-transport`).
-  Map<String, Object?> syncUntilIdle({int? maxRounds}) {
+  Map<String, Object?> syncUntilIdle({int? maxRounds, int? timeoutMs}) {
     final p = <String, Object?>{};
     if (maxRounds != null) p['maxRounds'] = maxRounds;
+    if (timeoutMs != null) p['timeoutMs'] = timeoutMs;
     return command('syncUntilIdle', p);
   }
 

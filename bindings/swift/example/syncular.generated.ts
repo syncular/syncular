@@ -18,22 +18,41 @@ export interface SyncTable<Row, Insert, Update, Id> {
 
 /** ServerSchema-compatible schema object (SPEC §2.4, §3.1). */
 export const schema = {
-  version: 1,
-  tables: [
+  "version": 1,
+  "tables": [
     {
-      name: 'notes',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'list_id', type: 'string', nullable: false },
-        { name: 'body', type: 'string', nullable: false },
-        { name: 'updated_at_ms', type: 'integer', nullable: false },
+      "name": "notes",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "list_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "updated_at_ms",
+          "type": "integer",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'list:{list_id}', column: 'list_id' },
-      ],
-    },
-  ],
+      "scopes": [
+        {
+          "pattern": "list:{list_id}",
+          "column": "list_id"
+        }
+      ]
+    }
+  ]
 } as const;
 
 /** One notes row (§2.4 column order). */

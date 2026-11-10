@@ -448,12 +448,12 @@ export function startSyncWorkerCore(
         ? { segments: bindings.segments }
         : {}),
       ...(blobs !== undefined ? { blobs } : {}),
-      realtime: (handlers) => {
+      realtime: (handlers, clientId) => {
         // §12.2: a local authority has no realtime channel.
         if (realtimeConnector === undefined || local?.active()) {
           throw invalidRequest('no realtime connector configured');
         }
-        return realtimeConnector(handlers);
+        return realtimeConnector(handlers, clientId);
       },
       ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
       ...(config.limits !== undefined ? { limits: config.limits } : {}),
@@ -511,12 +511,7 @@ export function startSyncWorkerCore(
       overrides.createRealtime !== undefined
         ? overrides.createRealtime(config, started.clientId, http.headers)
         : config.endpoints.realtimeUrl !== undefined
-          ? webSocketRealtimeConnector(
-              config.endpoints.realtimeUrl.replace(
-                '{clientId}',
-                encodeURIComponent(started.clientId),
-              ),
-            )
+          ? webSocketRealtimeConnector(config.endpoints.realtimeUrl)
           : undefined;
     client = started;
     // `start()` may discover persisted subscriptions/outbox work. Its callback
