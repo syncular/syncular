@@ -14,6 +14,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -4173,7 +4174,7 @@ mod observation_tests {
     }
 
     #[test]
-    fn batched_push_acknowledgements_rebuild_overlay_once_per_response() {
+    fn batched_push_acknowledgements_reconcile_rows_without_a_table_rebuild() {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         const COMMIT_COUNT: usize = 32;
@@ -4222,8 +4223,8 @@ mod observation_tests {
         assert!(client.pending_commit_ids().is_empty());
         assert_eq!(
             client.overlay_rebuild_count.get(),
-            1,
-            "one response must reconcile its acknowledged commits with one overlay rebuild"
+            0,
+            "acknowledged commits reconcile their rows without a table rebuild"
         );
         assert_eq!(
             client.outcome_prune_count.get(),
@@ -5881,6 +5882,7 @@ mod observation_tests {
 
         client.overlay_rebuild_count.set(0);
         client.outcome_prune_count.set(0);
+        client.drain_change_batches();
         let outcome = client.process_response(&mut transport, response, &request_meta);
         let SyncOutcome::Ok(report) = outcome else {
             panic!("mixed push-result response failed");
@@ -5898,8 +5900,10 @@ mod observation_tests {
                 .map(|id| Map::from_iter([("id".to_owned(), Value::from(id))]))
                 .to_vec()
         );
-        // The successful ACK run and final rejection have distinct durable boundaries.
-        assert_eq!(client.overlay_rebuild_count.get(), 2);
+        // The successful ACK run and final rejection have distinct durable
+        // boundaries, and each reconciles only its drained rows.
+        assert_eq!(client.drain_change_batches().len(), 2);
+        assert_eq!(client.overlay_rebuild_count.get(), 0);
         assert_eq!(client.outcome_prune_count.get(), 1);
     }
 
@@ -10808,6 +10812,398 @@ mod observation_tests {
         assert_eq!(exchange.realtime_state(), RealtimeState::Lost);
         assert_eq!(split.realtime_state(), RealtimeState::Lost);
     }
+
+    /// Answers every commit the next request pushes with `status(index)`.
+    fn answer_pushes(
+        client: &mut SyncClient,
+        first_seq: i64,
+        status: impl Fn(usize) -> PushStatus,
+    ) -> SyncOutcome {
+        let (_, meta) = client.build_request(false).unwrap();
+        let mut frames = vec![Frame::RespHeader {
+            required_schema_version: None,
+            latest_schema_version: None,
+            log_epoch: "epoch-1".into(),
+            reset_required: false,
+        }];
+        frames.extend(meta.pushed_ids.iter().enumerate().map(|(index, id)| {
+            let status = status(index);
+            Frame::PushResult {
+                client_commit_id: id.clone(),
+                status,
+                commit_seq: (status != PushStatus::Rejected).then_some(first_seq + index as i64),
+                results: vec![if status == PushStatus::Rejected {
+                    OpResult::Error {
+                        op_index: 0,
+                        code: "sync.forbidden".into(),
+                        message: "rejected".into(),
+                        retryable: false,
+                    }
+                } else {
+                    OpResult::Applied { op_index: 0 }
+                }],
+            }
+        }));
+        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        client.process_response(
+            &mut transport,
+            Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames,
+            },
+            &meta,
+        )
+    }
+
+    #[test]
+    fn acknowledged_edit_reconciles_only_its_rows_of_a_large_table() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false},{"name":"title","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}],
+            "ftsIndexes":[{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]}]});
+        let mut client =
+            SyncClient::new("large-ack".into(), &schema, ClientLimits::default()).unwrap();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO _syncular_base_tasks SELECT printf('t%05d',x),'p1','title '||x,1 FROM n").unwrap();
+        client.rebuild_overlay().unwrap();
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("t00042")),
+                    ("project_id".into(), json!("p1")),
+                    ("title".into(), json!("edited")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        client.conn.execute_batch("CREATE TABLE visible_writes(kind TEXT);
+            CREATE TRIGGER count_delete AFTER DELETE ON tasks BEGIN INSERT INTO visible_writes VALUES('delete'); END;
+            CREATE TRIGGER count_insert AFTER INSERT ON tasks BEGIN INSERT INTO visible_writes VALUES('insert'); END;").unwrap();
+        client.overlay_rebuild_count.set(0);
+        assert!(matches!(
+            answer_pushes(&mut client, 1, |_| PushStatus::Applied),
+            SyncOutcome::Ok(_)
+        ));
+        assert_eq!(client.overlay_rebuild_count.get(), 0);
+        assert_eq!(
+            client
+                .query(
+                    "SELECT kind, count(*) AS n FROM visible_writes GROUP BY kind ORDER BY kind",
+                    &[]
+                )
+                .unwrap(),
+            [
+                Map::from_iter([("kind".into(), json!("delete")), ("n".into(), json!(1))]),
+                Map::from_iter([("kind".into(), json!("insert")), ("n".into(), json!(1))])
+            ]
+        );
+        let reads = [
+            "SELECT * FROM tasks ORDER BY id",
+            "SELECT _syncular_source_id, title FROM tasks_fts WHERE tasks_fts MATCH 'edited OR title' ORDER BY _syncular_source_id",
+        ];
+        let keyed = reads.map(|sql| client.query(sql, &[]).unwrap());
+        assert_eq!(keyed[1].len(), 10000);
+        client.overlay_dirty.set(true);
+        client.rebuild_overlay_if_dirty().unwrap();
+        assert_eq!(reads.map(|sql| client.query(sql, &[]).unwrap()), keyed);
+    }
+
+    #[test]
+    fn bootstrap_stays_incremental_beside_protected_intent_on_another_table() {
+        let mut client = SyncClient::new("protected-elsewhere".into(), &json!({"version":1,"tables":(["tasks","docs"].map(|name| json!({
+            "name":name,"primaryKey":"id","columns":[{"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]})))}), ClientLimits::default()).unwrap();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        client.set_retain_failed_commits(true).unwrap();
+        let doc = |id: &str| Mutation::Upsert {
+            table: "docs".into(),
+            values: Map::from_iter([("id".into(), json!(id)), ("project_id".into(), json!("p1"))]),
+            base_version: None,
+        };
+        client.mutate(vec![doc("acked")]).unwrap();
+        assert!(matches!(
+            answer_pushes(&mut client, 1, |_| PushStatus::Applied),
+            SyncOutcome::Ok(_)
+        ));
+        client
+            .register_subscription(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["p1".into()])],
+                None,
+            )
+            .unwrap();
+        client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+        let columns = client.schema.table("tasks").unwrap().wire_columns.clone();
+        let segment = |from: usize, blocks: usize| RowsSegment {
+            table: "tasks".into(),
+            schema_version: 1,
+            columns: columns.clone(),
+            blocks: (0..blocks)
+                .map(|block| {
+                    (0..1024)
+                        .map(|row| ssp2::segment::SegmentRow {
+                            server_version: 1,
+                            values: vec![
+                                Some(ColumnValue::String(format!(
+                                    "task-{:06}",
+                                    from + block * 1024 + row
+                                ))),
+                                Some(ColumnValue::String("p1".into())),
+                            ],
+                        })
+                        .collect()
+                })
+                .collect(),
+        };
+        let first = segment(0, 49);
+        client.overlay_rebuild_count.set(0);
+        assert!(matches!(client.apply_segment(0, &first, true), Ok(50176)));
+        assert_eq!(
+            client.overlay_rebuild_count.get(),
+            0,
+            "an acknowledged docs row must not rebuild tasks per block"
+        );
+        client.mutate(vec![doc("rejected")]).unwrap();
+        assert!(matches!(
+            answer_pushes(&mut client, 2, |_| PushStatus::Rejected),
+            SyncOutcome::Ok(_)
+        ));
+        assert_eq!(client.failed_commits.len(), 1);
+        let second = segment(50176, 8);
+        client.overlay_rebuild_count.set(0);
+        assert!(matches!(client.apply_segment(0, &second, false), Ok(8192)));
+        assert_eq!(
+            client.overlay_rebuild_count.get(),
+            0,
+            "a retained docs failure must not rebuild tasks per block"
+        );
+        for (sql, expected) in [
+            ("SELECT count(*) AS n FROM tasks", 58368),
+            ("SELECT count(*) AS n FROM docs", 2),
+            ("SELECT count(*) AS n FROM _syncular_acked_rows", 1),
+        ] {
+            assert_eq!(client.query(sql, &[]).unwrap()[0]["n"], expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn keyed_push_result_reconciliation_matches_a_full_rebuild() {
+        let table = |name: &str, extra: Value| {
+            let mut table = json!({"name":name,"primaryKey":"id","columns":[
+                {"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false},{"name":"title","type":"string","nullable":false}],
+                "scopes":[{"pattern":"project:{project_id}"}]});
+            table
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            table
+        };
+        let schema = json!({"version":1,"tables":[
+            table("tasks", json!({"indexes":[{"name":"unique_title","columns":["title"],"unique":true}],
+                "ftsIndexes":[{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]})),
+            table("notes", json!({}))]});
+        let [mut keyed, mut reference] = ["keyed", "reference"].map(|_| {
+            let mut client =
+                SyncClient::new("push-keyed".into(), &schema, ClientLimits::default()).unwrap();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+            client.set_retain_failed_commits(true).unwrap();
+            client
+        });
+        let tables = vec!["tasks".to_owned(), "notes".to_owned()];
+        let values = |id: &str, title: String| {
+            Map::from_iter([
+                ("id".into(), json!(id)),
+                ("project_id".into(), json!("p1")),
+                ("title".into(), json!(title)),
+            ])
+        };
+        for round in 0..16usize {
+            let seq = round as i64 * 10 + 1;
+            // A server row takes a title that a pending edit may hold, so
+            // replay defers that edit until the server answers its push.
+            let id = format!("task-{}", round % 6);
+            let mut title = format!("title-{}", round % 4);
+            if keyed
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM _syncular_base_tasks WHERE title=?1 AND id<>?2)",
+                    [&title, &id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+            {
+                title = format!("server-{round}");
+            }
+            for client in [&mut keyed, &mut reference] {
+                let change = ssp2::model::Change {
+                    table_index: 0,
+                    row_id: id.clone(),
+                    op: if round % 5 == 4 {
+                        Op::Delete
+                    } else {
+                        Op::Upsert
+                    },
+                    row_version: Some(seq),
+                    scopes: vec![("project_id".into(), "p1".into())],
+                    row: Some(
+                        encode_row_json(
+                            client.schema.table("tasks").unwrap(),
+                            &id,
+                            &values(&id, title.clone()),
+                            &client.encryption,
+                        )
+                        .unwrap(),
+                    ),
+                };
+                client
+                    .apply_commit_frame(&tables, &[change], Some(seq))
+                    .unwrap();
+            }
+            for commit in 0..3 {
+                let n = round * 3 + commit;
+                let mut mutations = vec![Mutation::Upsert {
+                    table: "notes".into(),
+                    values: values(&format!("note-{}", n % 3), format!("note-{n}")),
+                    base_version: None,
+                }];
+                if n % 4 != 3 {
+                    let id = format!("task-{}", n % 6);
+                    mutations.push(Mutation::Upsert {
+                        table: "tasks".into(),
+                        values: values(&id, format!("title-{}", n % 5)),
+                        base_version: None,
+                    });
+                }
+                assert_eq!(
+                    keyed.mutate(mutations.clone()).is_ok(),
+                    reference.mutate(mutations).is_ok()
+                );
+            }
+            reference.overlay_dirty.set(true);
+            keyed.overlay_rebuild_count.set(0);
+            for client in [&mut keyed, &mut reference] {
+                let status = |index: usize| {
+                    if (round + index) % 3 == 1 {
+                        PushStatus::Rejected
+                    } else {
+                        PushStatus::Applied
+                    }
+                };
+                assert!(matches!(
+                    answer_pushes(client, seq + 1, status),
+                    SyncOutcome::Ok(_)
+                ));
+            }
+            assert_eq!(keyed.overlay_rebuild_count.get(), 0, "round {round}");
+            for sql in [
+                "SELECT * FROM tasks ORDER BY id",
+                "SELECT * FROM notes ORDER BY id",
+                "SELECT _syncular_source_id, title FROM tasks_fts ORDER BY _syncular_source_id",
+            ] {
+                assert_eq!(
+                    keyed.query(sql, &[]).unwrap(),
+                    reference.query(sql, &[]).unwrap(),
+                    "round {round}: {sql}"
+                );
+            }
+            assert_eq!(
+                keyed.local_revision().unwrap(),
+                reference.local_revision().unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(keyed.drain_change_batches()).unwrap(),
+                serde_json::to_value(reference.drain_change_batches()).unwrap()
+            );
+        }
+        assert!(!keyed.failed_commits.is_empty());
+    }
+
+    #[test]
+    fn failed_operations_restore_every_mirror_through_one_rollback() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        client.set_retain_failed_commits(true).unwrap();
+        let ids = (0..3)
+            .map(|index| {
+                client
+                    .mutate(vec![Mutation::Upsert {
+                        table: "tasks".into(),
+                        values: Map::from_iter([
+                            ("id".into(), json!(format!("t{index}"))),
+                            ("project_id".into(), json!("p1")),
+                        ]),
+                        base_version: None,
+                    }])
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let rows = client
+            .query("SELECT * FROM tasks ORDER BY id", &[])
+            .unwrap();
+        client.conn.execute_batch("CREATE TRIGGER fail_revision BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END").unwrap();
+        let before = format!("{:?}", client.capture());
+
+        // Former hand-rolled site: the push-result transaction drains one
+        // acknowledged and one retained rejected commit before it fails.
+        let mut report = SyncReport::default();
+        assert!(client
+            .handle_push_results(
+                &[
+                    Frame::PushResult {
+                        client_commit_id: ids[0].clone(),
+                        status: PushStatus::Applied,
+                        commit_seq: Some(1),
+                        results: vec![OpResult::Applied { op_index: 0 }],
+                    },
+                    Frame::PushResult {
+                        client_commit_id: ids[1].clone(),
+                        status: PushStatus::Rejected,
+                        commit_seq: None,
+                        results: vec![OpResult::Error {
+                            op_index: 0,
+                            code: "sync.forbidden".into(),
+                            message: "rejected".into(),
+                            retryable: false,
+                        }],
+                    },
+                ],
+                &ids.iter().map(String::as_str).collect(),
+                &HashMap::new(),
+                &mut report,
+                None,
+            )
+            .is_err());
+        assert!(report.applied.is_empty() && report.rejected.is_empty());
+        assert_eq!(format!("{:?}", client.capture()), before);
+        assert_eq!(
+            client
+                .query("SELECT * FROM tasks ORDER BY id", &[])
+                .unwrap(),
+            rows
+        );
+
+        // Former hand-rolled site: the local purge drops every pending commit
+        // and base row of the scope before it fails.
+        assert!(client
+            .purge_local_data(&LocalDataPurgeInput {
+                purge_id: "purge-1".into(),
+                targets: vec![LocalDataPurgeTarget {
+                    table: "tasks".into(),
+                    selectors: BTreeMap::from([("project_id".into(), vec!["p1".into()])]),
+                }],
+            })
+            .is_err());
+        assert_eq!(format!("{:?}", client.capture()), before);
+        assert_eq!(
+            client
+                .query("SELECT * FROM tasks ORDER BY id", &[])
+                .unwrap(),
+            rows
+        );
+    }
 }
 
 impl SubState {
@@ -11529,6 +11925,52 @@ impl OverlayDirty {
     }
 }
 
+/// A copy-on-write in-memory mirror: a [`Rollback`] shares it, and the first
+/// write after a capture copies it once.
+#[derive(Debug, Clone, Default)]
+struct Shared<T>(Arc<T>);
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
+/// The in-memory mirrors of durable state, captured before a local
+/// transaction and restored when it rolls back. Queues only grow inside a
+/// transaction, so their lengths suffice.
+#[derive(Debug, Clone)]
+struct Rollback {
+    subs: Shared<Vec<Subscription>>,
+    outbox: Shared<Vec<Arc<OutboxCommit>>>,
+    failed_commits: Shared<Vec<FailedCommit>>,
+    conflicts: Shared<Vec<ConflictRecord>>,
+    rejections: Shared<Vec<RejectionRecord>>,
+    schema_floor: Option<SchemaFloor>,
+    lease_state: Option<LeaseState>,
+    stopped: bool,
+    upgrading: bool,
+    sync_needed: bool,
+    active_round: Option<uuid::Uuid>,
+    overlay_dirty: Option<BTreeSet<String>>,
+    change_queue: usize,
+    sync_intent_queue: usize,
+    last_change: Option<DiagnosticLastChange>,
+}
+
 pub struct SyncClient {
     #[cfg(feature = "bench-internals")]
     benchmark_phases: Recorder,
@@ -11536,12 +11978,12 @@ pub struct SyncClient {
     schema: ClientSchema,
     client_id: String,
     limits: ClientLimits,
-    subs: Vec<Subscription>,
-    outbox: Vec<OutboxCommit>,
-    failed_commits: Vec<FailedCommit>,
+    subs: Shared<Vec<Subscription>>,
+    outbox: Shared<Vec<Arc<OutboxCommit>>>,
+    failed_commits: Shared<Vec<FailedCommit>>,
     retain_failed_commits: bool,
-    conflicts: Vec<ConflictRecord>,
-    rejections: Vec<RejectionRecord>,
+    conflicts: Shared<Vec<ConflictRecord>>,
+    rejections: Shared<Vec<RejectionRecord>>,
     schema_floor: Option<SchemaFloor>,
     /// §7.3.5: the opaque auth-lease state (from LEASE frames + lease errors).
     lease_state: Option<LeaseState>,
@@ -11628,20 +12070,7 @@ pub struct SyncClient {
 /// state captured at its `BEGIN` is restored when its `COMMIT` fails.
 struct CoalescedApply {
     rows: usize,
-    subs: Vec<Subscription>,
-    outbox: Vec<OutboxCommit>,
-    failed_commits: Vec<FailedCommit>,
-    conflicts: Vec<ConflictRecord>,
-    rejections: Vec<RejectionRecord>,
-    schema_floor: Option<SchemaFloor>,
-    lease_state: Option<LeaseState>,
-    stopped: bool,
-    upgrading: bool,
-    sync_needed: bool,
-    overlay_dirty: Option<BTreeSet<String>>,
-    change_queue: usize,
-    sync_intent_queue: usize,
-    last_change: Option<DiagnosticLastChange>,
+    rollback: Rollback,
 }
 
 const COALESCED_APPLY_ROWS: usize = 1024;
@@ -12815,12 +13244,12 @@ impl SyncClient {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             limits,
-            subs: Vec::new(),
-            outbox: Vec::new(),
-            failed_commits: Vec::new(),
+            subs: Shared::default(),
+            outbox: Shared::default(),
+            failed_commits: Shared::default(),
             retain_failed_commits: false,
-            conflicts: Vec::new(),
-            rejections: Vec::new(),
+            conflicts: Shared::default(),
+            rejections: Shared::default(),
             schema_floor: None,
             lease_state: None,
             stopped: false,
@@ -12895,7 +13324,7 @@ impl SyncClient {
                 None => client.set_meta(CLIENT_ID_KEY, &client.client_id)?,
             }
             client.restore_persisted_state()?;
-            client.failed_commits = client.load_failed_commits()?;
+            client.failed_commits = client.load_failed_commits()?.into();
             match marker {
                 None => {
                     client.create_synced_tables()?;
@@ -13227,7 +13656,7 @@ impl SyncClient {
     }
 
     /// §7.1: the durable outbox in FIFO order, in schema-agnostic local form.
-    fn load_outbox(&self) -> Result<Vec<OutboxCommit>, String> {
+    fn load_outbox(&self) -> Result<Vec<Arc<OutboxCommit>>, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT commit_id, ops_json FROM _syncular_outbox ORDER BY seq ASC")
@@ -13265,10 +13694,10 @@ impl SyncClient {
                     insert: entry.get("insert") == Some(&Value::Bool(true)),
                 });
             }
-            commits.push(OutboxCommit {
+            commits.push(Arc::new(OutboxCommit {
                 client_commit_id,
                 ops,
-            });
+            }));
         }
         Ok(commits)
     }
@@ -13331,10 +13760,10 @@ impl SyncClient {
                         .unwrap_or(false),
                 });
             }
-            subscriptions
+            subscriptions.into()
         };
 
-        self.outbox = self.load_outbox()?;
+        self.outbox = self.load_outbox()?.into();
 
         self.prune_commit_outcomes()?;
         let active = self.commit_outcomes(CommitOutcomeQuery {
@@ -13348,7 +13777,8 @@ impl SyncClient {
                 CommitOperationOutcome::Conflict { conflict } => Some(conflict.clone()),
                 _ => None,
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .into();
         self.rejections = active
             .iter()
             .flat_map(|outcome| outcome.results.iter())
@@ -13356,7 +13786,8 @@ impl SyncClient {
                 CommitOperationOutcome::Error { rejection } => Some(rejection.clone()),
                 _ => None,
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .into();
 
         self.lease_state = self
             .get_meta(LEASE_STATE_KEY)?
@@ -13670,7 +14101,7 @@ impl SyncClient {
             ));
         }
         let mut subscriptions = BTreeMap::<String, DiagnosticSubscription>::new();
-        for sub in &self.subs {
+        for sub in self.subs.iter() {
             let reset = sub.cursor < 0 && sub.reason_code.as_deref() == Some("sync.cursor_expired");
             let complete =
                 sub.state == SubState::Active && sub.cursor >= 0 && sub.bootstrap_state.is_none();
@@ -14041,6 +14472,13 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         self.coalesced = Some(CoalescedApply {
             rows: 0,
+            rollback: self.capture(),
+        });
+        Ok(())
+    }
+
+    fn capture(&self) -> Rollback {
+        Rollback {
             subs: self.subs.clone(),
             outbox: self.outbox.clone(),
             failed_commits: self.failed_commits.clone(),
@@ -14051,12 +14489,30 @@ impl SyncClient {
             stopped: self.stopped,
             upgrading: self.upgrading,
             sync_needed: self.sync_needed,
+            active_round: self.active_round,
             overlay_dirty: self.overlay_dirty.snapshot(),
             change_queue: self.change_queue.len(),
             sync_intent_queue: self.sync_intent_queue.len(),
             last_change: self.last_change.clone(),
-        });
-        Ok(())
+        }
+    }
+
+    fn restore(&mut self, rollback: Rollback) {
+        self.subs = rollback.subs;
+        self.outbox = rollback.outbox;
+        self.failed_commits = rollback.failed_commits;
+        self.conflicts = rollback.conflicts;
+        self.rejections = rollback.rejections;
+        self.schema_floor = rollback.schema_floor;
+        self.lease_state = rollback.lease_state;
+        self.stopped = rollback.stopped;
+        self.upgrading = rollback.upgrading;
+        self.sync_needed = rollback.sync_needed;
+        self.active_round = rollback.active_round;
+        self.overlay_dirty.restore(rollback.overlay_dirty);
+        self.change_queue.truncate(rollback.change_queue);
+        self.sync_intent_queue.truncate(rollback.sync_intent_queue);
+        self.last_change = rollback.last_change;
     }
 
     /// Account the rows of the next frame or block. A unit that would take the
@@ -14098,20 +14554,7 @@ impl SyncClient {
                 let _ = Self::sqlite_failure(&self.storage_failure, rollback);
             }
         }
-        self.subs = open.subs;
-        self.outbox = open.outbox;
-        self.failed_commits = open.failed_commits;
-        self.conflicts = open.conflicts;
-        self.rejections = open.rejections;
-        self.schema_floor = open.schema_floor;
-        self.lease_state = open.lease_state;
-        self.stopped = open.stopped;
-        self.upgrading = open.upgrading;
-        self.sync_needed = open.sync_needed;
-        self.overlay_dirty.restore(open.overlay_dirty);
-        self.change_queue.truncate(open.change_queue);
-        self.sync_intent_queue.truncate(open.sync_intent_queue);
-        self.last_change = open.last_change;
+        self.restore(open.rollback);
         self.coalesced_failure = Some(error.clone());
         Err(error)
     }
@@ -14392,18 +14835,7 @@ impl SyncClient {
         // overlay dirtiness) and appends change/intent batches. A COMMIT that
         // fails after the reset succeeded rolls the database back, so every
         // one of those fields is captured here and restored with it.
-        let prior_subs = self.subs.clone();
-        let prior_outbox = self.outbox.clone();
-        let prior_rejections = self.rejections.clone();
-        let prior_upgrading = self.upgrading;
-        let prior_stopped = self.stopped;
-        let prior_schema_floor = self.schema_floor.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
-        let prior_sync_needed = self.sync_needed;
-        let prior_active_round = self.active_round;
-        let prior_changes = self.change_queue.len();
-        let prior_intents = self.sync_intent_queue.len();
-        let prior_last_change = self.last_change.clone();
+        let rollback = self.capture();
         let guarded = (|| -> Result<(), String> {
             // §7.4.2: the marker is re-read under the write lock the caller
             // holds, so a replica another process upgraded meanwhile refuses
@@ -14423,7 +14855,7 @@ impl SyncClient {
             // durable outbox the same-version path is about to replay. Only the
             // outbox is reloaded: the recovery below reads it, and the caller's
             // rollback snapshot already covers this field.
-            self.outbox = self.load_outbox()?;
+            self.outbox = self.load_outbox()?.into();
             // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
             // this guarded boundary once the schema and marker agree. A bump went
             // through `run_schema_reset`, which performs the same recovery after
@@ -14458,18 +14890,7 @@ impl SyncClient {
                 let _ = Self::sqlite_failure(&self.storage_failure, rollback);
             }
             self.schema = prior_schema;
-            self.subs = prior_subs;
-            self.outbox = prior_outbox;
-            self.rejections = prior_rejections;
-            self.upgrading = prior_upgrading;
-            self.stopped = prior_stopped;
-            self.schema_floor = prior_schema_floor;
-            self.overlay_dirty.restore(prior_overlay_dirty);
-            self.sync_needed = prior_sync_needed;
-            self.active_round = prior_active_round;
-            self.change_queue.truncate(prior_changes);
-            self.sync_intent_queue.truncate(prior_intents);
-            self.last_change = prior_last_change;
+            self.restore(rollback);
             // Prepared insert statements were derived from the reverted schema.
             self.insert_sql.borrow_mut().clear();
             return Err(error);
@@ -14550,30 +14971,14 @@ impl SyncClient {
     /// that cannot re-encode (§7.4.4), and replays the survivors on top.
     fn run_schema_reset(&mut self) -> Result<(), String> {
         self.begin_observation("syncular_schema_reset")?;
-        let prior_subs = self.subs.clone();
-        let prior_outbox = self.outbox.clone();
-        let prior_rejections = self.rejections.clone();
-        let prior_upgrading = self.upgrading;
-        let prior_stopped = self.stopped;
-        let prior_schema_floor = self.schema_floor.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
-        let prior_sync_needed = self.sync_needed;
-        let prior_active_round = self.active_round;
+        let rollback = self.capture();
         let mut batch = ChangeAccumulator::default();
         let result = self
             .run_schema_reset_observed(&mut batch, true)
             .and_then(|()| self.finish_observation("syncular_schema_reset", batch));
         if let Err(error) = result {
             self.rollback_observation("syncular_schema_reset");
-            self.subs = prior_subs;
-            self.outbox = prior_outbox;
-            self.rejections = prior_rejections;
-            self.upgrading = prior_upgrading;
-            self.stopped = prior_stopped;
-            self.schema_floor = prior_schema_floor;
-            self.overlay_dirty.restore(prior_overlay_dirty);
-            self.sync_needed = prior_sync_needed;
-            self.active_round = prior_active_round;
+            self.restore(rollback);
             return Err(error);
         }
         Ok(())
@@ -14582,7 +14987,7 @@ impl SyncClient {
     fn run_log_epoch_reset(&mut self, log_epoch: &str) -> Result<Vec<String>, String> {
         if self.get_meta(LOG_EPOCH_KEY)?.is_none() {
             self.begin_observation("syncular_epoch_acquisition")?;
-            let previous_sync_needed = self.sync_needed;
+            let rollback = self.capture();
             if let Err(error) = self.conn.execute(
                 "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
                 rusqlite::params![LOG_EPOCH_KEY, log_epoch],
@@ -14597,7 +15002,7 @@ impl SyncClient {
             };
             if let Err(error) = self.finish_observation("syncular_epoch_acquisition", batch) {
                 self.rollback_observation("syncular_epoch_acquisition");
-                self.sync_needed = previous_sync_needed;
+                self.restore(rollback);
                 return Err(error);
             }
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
@@ -14605,15 +15010,7 @@ impl SyncClient {
         }
         let resets = self.subs.iter().map(|sub| sub.id.clone()).collect();
         self.begin_observation("syncular_log_epoch_reset")?;
-        let prior_subs = self.subs.clone();
-        let prior_outbox = self.outbox.clone();
-        let prior_rejections = self.rejections.clone();
-        let prior_upgrading = self.upgrading;
-        let prior_stopped = self.stopped;
-        let prior_schema_floor = self.schema_floor.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
-        let prior_sync_needed = self.sync_needed;
-        let prior_active_round = self.active_round;
+        let rollback = self.capture();
         let mut batch = ChangeAccumulator::default();
         let result = self
             .run_schema_reset_observed(&mut batch, false)
@@ -14630,15 +15027,7 @@ impl SyncClient {
             });
         if let Err(error) = result {
             self.rollback_observation("syncular_log_epoch_reset");
-            self.subs = prior_subs;
-            self.outbox = prior_outbox;
-            self.rejections = prior_rejections;
-            self.upgrading = prior_upgrading;
-            self.stopped = prior_stopped;
-            self.schema_floor = prior_schema_floor;
-            self.overlay_dirty.restore(prior_overlay_dirty);
-            self.sync_needed = prior_sync_needed;
-            self.active_round = prior_active_round;
+            self.restore(rollback);
             return Err(error);
         }
         self.sync_intent_queue.push_back(SyncIntent::Interactive);
@@ -14789,7 +15178,7 @@ impl SyncClient {
         // Recreate the synced tables from the NEW schema.
         self.create_synced_tables()?;
         // Reset every subscription's sync-state, keeping the registration.
-        for sub in &mut self.subs {
+        for sub in self.subs.iter_mut() {
             sub.cursor = -1;
             sub.bootstrap_state = None;
             sub.effective = None;
@@ -14798,7 +15187,7 @@ impl SyncClient {
             sub.synced_once = false;
         }
         let subs = self.subs.clone();
-        for sub in &subs {
+        for sub in subs.iter() {
             self.persist_sub(sub)?;
         }
         // The stop state is over: this client now ships a servable schema.
@@ -14849,9 +15238,7 @@ impl SyncClient {
         // fault leaves the replica and the client unchanged and publishes no
         // change; a successful drop publishes exactly one batch carrying the
         // rejections, outcomes, status, and the tables whose projection changed.
-        let prior_outbox = self.outbox.clone();
-        let prior_rejections = self.rejections.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let rollback = self.capture();
         let owns_transaction = self.conn.is_autocommit();
         self.begin_observation("syncular_outbox_drop")?;
         let mut batch = ChangeAccumulator::default();
@@ -14924,9 +15311,7 @@ impl SyncClient {
             } else {
                 self.rollback_observation("syncular_outbox_drop");
             }
-            self.outbox = prior_outbox;
-            self.rejections = prior_rejections;
-            self.overlay_dirty.restore(prior_overlay_dirty);
+            self.restore(rollback);
             return Err(error);
         }
         Ok(true)
@@ -15225,16 +15610,6 @@ impl SyncClient {
     }
 
     fn delete_outbox_persisted(&self, client_commit_id: &str) -> Result<(), String> {
-        if let Some(commit) = self
-            .outbox
-            .iter()
-            .find(|commit| commit.client_commit_id == client_commit_id)
-        {
-            for operation in &commit.ops {
-                self.overlay_dirty.table(&operation.table);
-            }
-        }
-
         self.conn
             .execute(
                 "DELETE FROM _syncular_blob_commit_refs WHERE commit_id = ?1",
@@ -15666,7 +16041,7 @@ impl SyncClient {
         Ok(CurrentBasePreparation {
             client_commit_id: client_commit_id.to_owned(),
             sequence,
-            subscriptions: self.subs.clone(),
+            subscriptions: self.subs.to_vec(),
             transport_epoch: self.transport_epoch,
             subscription_epoch: self.subscription_epoch,
             security_epoch: self.security_epoch,
@@ -16030,7 +16405,7 @@ impl SyncClient {
     /// `set_window` (§4.8) registers through the same path without it and
     /// batches its own intent.
     pub fn subscribe_many(&mut self, requests: Vec<SubscriptionRequest>) -> Result<(), String> {
-        let prior_subs = self.subs.clone();
+        let rollback = self.capture();
         self.begin_observation("syncular_subscribe")?;
         let mut registered_any = false;
         let registered = (|| {
@@ -16048,7 +16423,7 @@ impl SyncClient {
         })();
         if let Err(error) = registered {
             self.rollback_observation("syncular_subscribe");
-            self.subs = prior_subs;
+            self.restore(rollback);
             return Err(error);
         }
         if registered_any {
@@ -16106,7 +16481,7 @@ impl SyncClient {
         let mut batch = ChangeAccumulator::default();
         let mut changed = false;
 
-        let prior_subs = self.subs.clone();
+        let rollback = self.capture();
         let widened = (|| {
             // Widen: units wanted but not live → fresh subscription + registry row.
             for unit in units {
@@ -16130,7 +16505,7 @@ impl SyncClient {
         })();
         if let Err(error) = widened {
             self.rollback_observation("syncular_window");
-            self.subs = prior_subs;
+            self.restore(rollback);
             return Err(error);
         }
         for (unit, sub_id) in live {
@@ -16138,7 +16513,7 @@ impl SyncClient {
                 continue;
             }
             self.rebuild_overlay_if_dirty()?;
-            let prior_subs = self.subs.clone();
+            let rollback = self.capture();
             self.begin_observation("syncular_window")?;
             let effective = self
                 .subs
@@ -16149,20 +16524,20 @@ impl SyncClient {
             let mut batch = ChangeAccumulator::default();
             self.record_scope_map(&mut batch, &base.table, &effective);
             batch.window(&base_key, &base.table, &unit);
-            let result = self.evict_unit(&base_key, base, &unit, &sub_id);
-            let remaining = match result {
+            let remaining =
+                self.evict_unit(&base_key, base, &unit, &sub_id)
+                    .and_then(|remaining| {
+                        self.finish_observation("syncular_window", batch)
+                            .map(|()| remaining)
+                    });
+            let remaining = match remaining {
                 Ok(remaining) => remaining,
                 Err(error) => {
                     self.rollback_observation("syncular_window");
-                    self.subs = prior_subs;
+                    self.restore(rollback);
                     return Err(error);
                 }
             };
-            if let Err(error) = self.finish_observation("syncular_window", batch) {
-                self.rollback_observation("syncular_window");
-                self.subs = prior_subs;
-                return Err(error);
-            }
             if remaining {
                 self.drain_pending_evictions()?;
             }
@@ -16467,6 +16842,7 @@ impl SyncClient {
         for commit in self
             .outbox
             .iter()
+            .map(|commit| &**commit)
             .chain(self.failed_commits.iter().map(|(commit, _)| commit))
         {
             for op in &commit.ops {
@@ -16529,13 +16905,13 @@ impl SyncClient {
     /// Select failed-intent retention; reload durable retained aggregates.
     pub fn set_retain_failed_commits(&mut self, enabled: bool) -> Result<(), String> {
         self.retain_failed_commits = enabled;
-        for (commit, _) in &self.failed_commits {
+        for (commit, _) in self.failed_commits.iter() {
             for operation in &commit.ops {
                 self.overlay_dirty.table(&operation.table);
             }
         }
-        self.failed_commits = self.load_failed_commits()?;
-        for (commit, _) in &self.failed_commits {
+        self.failed_commits = self.load_failed_commits()?.into();
+        for (commit, _) in self.failed_commits.iter() {
             for operation in &commit.ops {
                 self.overlay_dirty.table(&operation.table);
             }
@@ -16630,7 +17006,7 @@ impl SyncClient {
         matches: impl Fn(&str, &Map<String, Value>) -> bool,
     ) -> Result<Vec<OutboxCommit>, String> {
         let mut doomed = self.drop_acknowledged_rows(&matches)?;
-        for (commit, initial) in &self.failed_commits {
+        for (commit, initial) in self.failed_commits.iter() {
             for operation in &commit.ops {
                 let key =
                     serde_json::to_string(&(operation.table.clone(), operation.row_id.clone()))
@@ -16813,32 +17189,26 @@ impl SyncClient {
             self.rollback_observation("syncular_mutation");
             return Err(error);
         }
-        let was_dirty = self.overlay_dirty.snapshot();
         // A clean overlay contains the FIFO fold of every previous commit, so
         // the new commit applies over it. §7.1: an operation that does not
         // apply (a secondary unique collision) fails the whole commit; the
         // savepoint rollback removes the outbox entry and every visible write.
-        if let Err(error) = self.rebuild_overlay_if_dirty() {
-            self.rollback_observation("syncular_mutation");
-            self.overlay_dirty.restore(was_dirty.clone());
-            return Err(error);
-        }
-        if let Some(error) = commit
-            .ops
-            .iter()
-            .find_map(|op| self.apply_outbox_op(op).err())
-        {
-            self.rollback_observation("syncular_mutation");
-            self.overlay_dirty.restore(was_dirty.clone());
-            return Err(error);
-        }
+        // The append undoes itself: a rollback capture would copy the outbox.
+        let was_dirty = self.overlay_dirty.snapshot();
         let id = commit.client_commit_id.clone();
-        self.outbox.push(commit);
-        batch.status = true;
-        if let Err(error) = self.finish_observation("syncular_mutation", batch) {
+        let appended = self.rebuild_overlay_if_dirty().and_then(|()| {
+            commit
+                .ops
+                .iter()
+                .try_for_each(|op| self.apply_outbox_op(op))?;
+            self.outbox.push(Arc::new(commit));
+            batch.status = true;
+            self.finish_observation("syncular_mutation", batch)
+                .inspect_err(|_| drop(self.outbox.pop()))
+        });
+        if let Err(error) = appended {
             self.rollback_observation("syncular_mutation");
-            self.outbox.pop();
-            self.overlay_dirty.restore(was_dirty.clone());
+            self.overlay_dirty.restore(was_dirty);
             return Err(error);
         }
         Ok(id)
@@ -17077,7 +17447,7 @@ impl SyncClient {
         batch: Option<&mut ChangeAccumulator>,
     ) -> Result<bool, String> {
         let mut failures = Vec::new();
-        for commit in &self.outbox {
+        for commit in self.outbox.iter() {
             for op in &commit.ops {
                 let Some(table) = self.schema.table(&op.table).filter(|_| op.upsert) else {
                     continue;
@@ -17122,16 +17492,7 @@ impl SyncClient {
         // leaves the replica and the client unchanged, a successful recovery
         // publishes one batch with the rejection, outcome, and table domains, and
         // an ordinary open with nothing to recover publishes nothing.
-        let prior_outbox = self.outbox.clone();
-        let prior_rejections = self.rejections.clone();
-        // §5.11 retention and a self-published observation mutate two more
-        // in-memory fields before this transaction ends, so the rollback below
-        // restores them with the rest.
-        let prior_failed_commits = self.failed_commits.clone();
-        let prior_changes = self.change_queue.len();
-        let prior_intents = self.sync_intent_queue.len();
-        let prior_last_change = self.last_change.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let rollback = self.capture();
         let owns_observation = batch.is_none();
         let owns_transaction = self.conn.is_autocommit();
         let mut domains = ChangeAccumulator::default();
@@ -17215,13 +17576,7 @@ impl SyncClient {
                     self.rollback_observation("syncular_value_recovery");
                 }
             }
-            self.outbox = prior_outbox;
-            self.rejections = prior_rejections;
-            self.failed_commits = prior_failed_commits;
-            self.change_queue.truncate(prior_changes);
-            self.sync_intent_queue.truncate(prior_intents);
-            self.last_change = prior_last_change;
-            self.overlay_dirty.restore(prior_overlay_dirty);
+            self.restore(rollback);
             return Err(error);
         }
         Ok(true)
@@ -17239,7 +17594,7 @@ impl SyncClient {
     /// conformance B.21(h) to pin cross-core byte identity.
     pub fn pending_payloads(&self) -> Result<Vec<Vec<u8>>, String> {
         let mut payloads = Vec::new();
-        for commit in &self.outbox {
+        for commit in self.outbox.iter() {
             for op in &commit.ops {
                 let Some(table) = self.schema.table(&op.table).filter(|_| op.upsert) else {
                     continue;
@@ -17331,10 +17686,8 @@ impl SyncClient {
             ));
         }
 
+        let rollback = self.capture();
         self.begin_observation("syncular_outcome_resolution")?;
-        let previous_failed = self.failed_commits.clone();
-        let previous_conflicts = self.conflicts.clone();
-        let previous_rejections = self.rejections.clone();
         let result = (|| {
             self.conn
                 .execute(
@@ -17359,7 +17712,7 @@ impl SyncClient {
                     rusqlite::params![input.client_commit_id],
                 )
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            for (commit, _) in &self.failed_commits {
+            for (commit, _) in self.failed_commits.iter() {
                 if commit.client_commit_id == input.client_commit_id {
                     for operation in &commit.ops {
                         self.overlay_dirty.table(&operation.table);
@@ -17375,9 +17728,7 @@ impl SyncClient {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.rollback_observation("syncular_outcome_resolution");
-                self.failed_commits = previous_failed;
-                self.conflicts = previous_conflicts;
-                self.rejections = previous_rejections;
+                self.restore(rollback);
                 return Err(error);
             }
         };
@@ -17401,9 +17752,7 @@ impl SyncClient {
             .and_then(|()| self.finish_observation("syncular_outcome_resolution", batch))
         {
             self.rollback_observation("syncular_outcome_resolution");
-            self.failed_commits = previous_failed;
-            self.conflicts = previous_conflicts;
-            self.rejections = previous_rejections;
+            self.restore(rollback);
             return Err(error);
         }
         Ok(resolved)
@@ -17434,7 +17783,8 @@ impl SyncClient {
             return Ok(());
         }
         self.begin_observation("syncular_lease")?;
-        let prior = std::mem::replace(&mut self.lease_state, next);
+        let rollback = self.capture();
+        self.lease_state = next;
         let persisted = match &self.lease_state {
             Some(lease) => serde_json::to_string(lease)
                 .map_err(|error| error.to_string())
@@ -17449,7 +17799,7 @@ impl SyncClient {
             persisted.and_then(|()| self.finish_observation("syncular_lease", batch))
         {
             self.rollback_observation("syncular_lease");
-            self.lease_state = prior;
+            self.restore(rollback);
             return Err(error);
         }
         Ok(())
@@ -17460,8 +17810,9 @@ impl SyncClient {
             return Ok(());
         }
         self.begin_observation("syncular_schema_floor")?;
-        let prior = std::mem::replace(&mut self.schema_floor, next);
-        let prior_stopped = std::mem::replace(&mut self.stopped, self.schema_floor.is_some());
+        let rollback = self.capture();
+        self.stopped = next.is_some();
+        self.schema_floor = next;
         let persisted = match &self.schema_floor {
             Some(floor) => serde_json::to_string(floor)
                 .map_err(|error| error.to_string())
@@ -17476,8 +17827,7 @@ impl SyncClient {
             persisted.and_then(|()| self.finish_observation("syncular_schema_floor", batch))
         {
             self.rollback_observation("syncular_schema_floor");
-            self.schema_floor = prior;
-            self.stopped = prior_stopped;
+            self.restore(rollback);
             return Err(error);
         }
         Ok(())
@@ -18112,7 +18462,7 @@ impl SyncClient {
         };
         let mut fresh = Vec::new();
         let mut sub_frames = Vec::new();
-        for sub in &self.subs {
+        for sub in self.subs.iter() {
             if sub.state != SubState::Active {
                 continue;
             }
@@ -19304,15 +19654,12 @@ impl SyncClient {
         last_final_push_result_id: Option<&str>,
     ) -> Result<(), String> {
         self.begin_observation("syncular_push_results")?;
-        let previous_failed = self.failed_commits.clone();
-        let previous_sync_needed = self.sync_needed;
+        let rollback = self.capture();
         let conflict_count = self.conflicts.len();
-        let rejection_count = self.rejections.len();
         let applied_count = report.applied.len();
         let rejected_count = report.rejected.len();
         let retryable_count = report.retryable.len();
-        let was_dirty = self.overlay_dirty.snapshot();
-        let mut removed = Vec::new();
+        let mut drained = Vec::new();
         let mut batch = ChangeAccumulator::default();
         let persisted = (|| {
             for frame in frames {
@@ -19429,9 +19776,6 @@ impl SyncClient {
                             )
                             .and_then(|()| self.delete_outbox_persisted(client_commit_id));
                         persisted?;
-                        for operation in &operations {
-                            self.overlay_dirty.table(&operation.table);
-                        }
                         self.sync_needed = true;
                         batch.status = true;
                         batch.outcomes = true;
@@ -19585,12 +19929,9 @@ impl SyncClient {
                         batch.outcomes = true;
                         self.conflicts.extend(conflicts);
                         self.rejections.extend(rejections);
-                        for operation in &operations {
-                            self.overlay_dirty.table(&operation.table);
-                        }
                     }
                 }
-                removed.push((index, self.outbox.remove(index)));
+                drained.push(self.outbox.remove(index));
                 if batch.status {
                     for operation in &operations {
                         if !self.record_row_scopes(
@@ -19613,25 +19954,19 @@ impl SyncClient {
             if batch.outcomes && frames.iter().any(|frame| matches!(frame, Frame::PushResult { client_commit_id, .. } if Some(client_commit_id.as_str()) == last_final_push_result_id)) {
                 self.prune_commit_outcomes()?;
             }
+            self.reconcile_rows(&drained)?;
             self.rebuild_overlay_if_dirty()?;
             self.finish_observation("syncular_push_results", batch)
         })();
         if let Err(error) = persisted {
             self.rollback_observation("syncular_push_results");
-            self.failed_commits = previous_failed;
-            self.sync_needed = previous_sync_needed;
-            for (index, commit) in removed.into_iter().rev() {
-                self.outbox.insert(index, commit);
-            }
-            self.conflicts.truncate(conflict_count);
-            self.rejections.truncate(rejection_count);
-            self.overlay_dirty.restore(was_dirty.clone());
+            self.restore(rollback);
             report.applied.truncate(applied_count);
             report.rejected.truncate(rejected_count);
             report.retryable.truncate(retryable_count);
             return Err(error);
         }
-        if !previous_sync_needed && self.sync_needed {
+        if !rollback.sync_needed && self.sync_needed {
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
         }
         report.conflicts += (self.conflicts.len() - conflict_count) as u32;
@@ -19681,12 +20016,7 @@ impl SyncClient {
             SubStatus::Revoked => {
                 self.begin_observation("syncular_revocation")
                     .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let previous = self.subs[sub_index].clone();
-                let was_dirty = self.overlay_dirty.snapshot();
-                let previous_outbox = self.outbox.clone();
-                let previous_failed = self.failed_commits.clone();
-                let previous_rejections = self.rejections.clone();
-                let previous_conflicts = self.conflicts.clone();
+                let rollback = self.capture();
                 let revoked_count = report.revoked.len();
                 let failed_count = report.failed.len();
                 let result = (|| {
@@ -19780,12 +20110,7 @@ impl SyncClient {
                 })();
                 if result.is_err() {
                     self.rollback_observation("syncular_revocation");
-                    self.subs[sub_index] = previous;
-                    self.overlay_dirty.restore(was_dirty.clone());
-                    self.outbox = previous_outbox;
-                    self.failed_commits = previous_failed;
-                    self.rejections = previous_rejections;
-                    self.conflicts = previous_conflicts;
+                    self.restore(rollback);
                     report.revoked.truncate(revoked_count);
                     report.failed.truncate(failed_count);
                 }
@@ -19794,8 +20119,7 @@ impl SyncClient {
             SubStatus::Reset => {
                 self.begin_observation("syncular_reset")
                     .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let previous = self.subs[sub_index].clone();
-                let was_dirty = self.overlay_dirty.snapshot();
+                let rollback = self.capture();
                 let reset_count = report.resets.len();
                 let result = (|| {
                     let mut batch = ChangeAccumulator::default();
@@ -19824,8 +20148,7 @@ impl SyncClient {
                 })();
                 if result.is_err() {
                     self.rollback_observation("syncular_reset");
-                    self.subs[sub_index] = previous;
-                    self.overlay_dirty.restore(was_dirty.clone());
+                    self.restore(rollback);
                     report.resets.truncate(reset_count);
                 }
                 result
@@ -20246,7 +20569,7 @@ impl SyncClient {
     ) -> Result<(), (String, String)> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::CommitApply);
-        let was_dirty = self.overlay_dirty.snapshot();
+        let rollback = self.capture();
         self.coalesce_unit(changes.len())
             .and_then(|()| self.begin_observation("syncular_commit"))
             .map_err(|message| ("storage.failed".into(), message))?;
@@ -20291,7 +20614,7 @@ impl SyncClient {
         })();
         if applied.is_err() {
             self.rollback_observation("syncular_commit");
-            self.overlay_dirty.restore(was_dirty.clone());
+            self.restore(rollback);
         }
         applied
     }
@@ -20303,20 +20626,27 @@ impl SyncClient {
     ) -> Result<(), (String, String)> {
         // A clean overlay can reconcile changed primary keys independently
         // when their tables have no secondary unique constraints. Such a
-        // constraint can change whether another row's pending write succeeds,
-        // so those frames still require the complete FIFO replay below.
-        let mirror_visible = !self.overlay_dirty.get()
-            && self.failed_commits.is_empty()
-            && ((self.outbox.is_empty()
-                && !self
-                    .has_acknowledged_rows()
-                    .map_err(|message| ("storage.failed".to_owned(), message))?)
-                || changes.iter().all(|change| {
-                    tables
-                        .get(change.table_index as usize)
-                        .and_then(|name| self.schema.table(name))
-                        .is_some_and(|table| !table.indexes.iter().any(|index| index.unique))
-                }));
+        // constraint can change whether another row's write succeeds, so a
+        // table with one and any local intent takes the table rebuild.
+        let changed_tables: BTreeSet<&str> = changes
+            .iter()
+            .filter_map(|change| tables.get(change.table_index as usize))
+            .map(String::as_str)
+            .collect();
+        let mut mirror_visible = !self.overlay_dirty.get();
+        for name in &changed_tables {
+            if mirror_visible
+                && self
+                    .schema
+                    .table(name)
+                    .is_some_and(|table| table.indexes.iter().any(|index| index.unique))
+            {
+                let (pending, protected) = self
+                    .table_intent(name)
+                    .map_err(|message| ("storage.failed".to_owned(), message))?;
+                mirror_visible = !pending && !protected;
+            }
+        }
         for change in changes {
             let table_name = tables.get(change.table_index as usize).ok_or_else(|| {
                 (
@@ -20383,31 +20713,17 @@ impl SyncClient {
             }
         }
         if mirror_visible {
-            {
-                let changed_rows: HashSet<(&str, &str)> = changes
-                    .iter()
-                    .map(|change| {
-                        (
-                            tables[change.table_index as usize].as_str(),
-                            change.row_id.as_str(),
-                        )
-                    })
-                    .collect();
-                let acknowledged = self
-                    .acknowledged_operations(Some(&changed_rows), None)
-                    .map_err(|error| ("storage.failed".to_owned(), error))?;
-                self.apply_outbox_ops(&acknowledged)
-                    .map_err(|message| ("storage.failed".into(), message))?;
-                self.apply_outbox_ops(
-                    self.outbox
-                        .iter()
-                        .flat_map(|commit| &commit.ops)
-                        .filter(|op| {
-                            changed_rows.contains(&(op.table.as_str(), op.row_id.as_str()))
-                        }),
-                )
-                .map_err(|message| ("storage.failed".into(), message))?;
-            }
+            let changed_rows: HashSet<(&str, &str)> = changes
+                .iter()
+                .map(|change| {
+                    (
+                        tables[change.table_index as usize].as_str(),
+                        change.row_id.as_str(),
+                    )
+                })
+                .collect();
+            self.replay_overlay(&changed_tables, Some(&changed_rows))
+                .map_err(|message| ("storage.failed".to_owned(), message))?;
             self.overlay_dirty.set(false);
         }
         Ok(())
@@ -20467,18 +20783,13 @@ impl SyncClient {
             if !clear && block.is_empty() {
                 continue;
             }
-            let was_dirty = self.overlay_dirty.snapshot();
-            let reconcile_pending = table.indexes.iter().any(|index| index.unique)
-                && self
-                    .outbox
-                    .iter()
-                    .flat_map(|commit| &commit.ops)
-                    .any(|op| op.table == table.name);
-            let mirror_visible = !reconcile_pending
-                && (self.failed_commits.is_empty()
-                    && !self.has_acknowledged_rows().map_err(|message| {
-                        SectionError::Abort("storage.failed".into(), message)
-                    })?);
+            let rollback = self.capture();
+            let (pending, protected) = self
+                .table_intent(&table.name)
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let reconcile_pending =
+                !protected && pending && table.indexes.iter().any(|index| index.unique);
+            let mirror_visible = !protected && !reconcile_pending;
             self.coalesce_unit(block.len())
                 .and_then(|()| self.begin_observation("syncular_segment_block"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -20534,33 +20845,14 @@ impl SyncClient {
                         self.progress.update(|p| p.rows_processed = processed);
                     }
                 }
-                if reconcile_pending {
-                    self.reconcile_imported_rows(&table, &mut changed_keys)
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                }
-                if self.failed_commits.is_empty()
-                    && !self
-                        .has_acknowledged_rows()
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?
-                {
-                    self.apply_outbox_ops(
-                        self.outbox
-                            .iter()
-                            .flat_map(|commit| &commit.ops)
-                            .filter(|op| op.table == table.name),
-                    )
+                self.reconcile_import(&table, &mut changed_keys, protected, reconcile_pending)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                    self.overlay_dirty.set(false);
-                } else {
-                    self.rebuild_overlay_if_dirty()
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                }
                 self.finish_observation("syncular_segment_block", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
             })();
             if let Err(error) = outcome {
                 self.rollback_observation("syncular_segment_block");
-                self.overlay_dirty.restore(was_dirty.clone());
+                self.restore(rollback);
                 return Err(error);
             }
             applied += block.len() as u32;
@@ -20795,18 +21087,13 @@ impl SyncClient {
         let mut applied = 0u32;
         loop {
             let clear = applied == 0 && first_fresh_page;
-            let was_dirty = self.overlay_dirty.snapshot();
-            let reconcile_pending = table.indexes.iter().any(|index| index.unique)
-                && self
-                    .outbox
-                    .iter()
-                    .flat_map(|commit| &commit.ops)
-                    .any(|op| op.table == table.name);
-            let mirror_visible = !reconcile_pending
-                && (self.failed_commits.is_empty()
-                    && !self.has_acknowledged_rows().map_err(|message| {
-                        SectionError::Abort("storage.failed".into(), message)
-                    })?);
+            let rollback = self.capture();
+            let (pending, protected) = self
+                .table_intent(&table.name)
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let reconcile_pending =
+                !protected && pending && table.indexes.iter().any(|index| index.unique);
+            let mirror_visible = !protected && !reconcile_pending;
             // A chunk holds up to 1,024 rows (§5.3).
             self.coalesce_unit(1024)
                 .and_then(|()| self.begin_observation("syncular_image_chunk"))
@@ -20892,27 +21179,8 @@ impl SyncClient {
                     batch.table(&table.name);
                     self.overlay_dirty.table(&table.name);
                 }
-                if reconcile_pending {
-                    self.reconcile_imported_rows(table, &mut changed_keys)
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                }
-                if self.failed_commits.is_empty()
-                    && !self
-                        .has_acknowledged_rows()
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?
-                {
-                    self.apply_outbox_ops(
-                        self.outbox
-                            .iter()
-                            .flat_map(|commit| &commit.ops)
-                            .filter(|op| op.table == table.name),
-                    )
+                self.reconcile_import(table, &mut changed_keys, protected, reconcile_pending)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                    self.overlay_dirty.set(false);
-                } else {
-                    self.rebuild_overlay_if_dirty()
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                }
                 self.finish_observation("syncular_image_chunk", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 Ok(processed)
@@ -20921,7 +21189,7 @@ impl SyncClient {
                 Ok(processed) => processed,
                 Err(error) => {
                     self.rollback_observation("syncular_image_chunk");
-                    self.overlay_dirty.restore(was_dirty.clone());
+                    self.restore(rollback);
                     return Err(error);
                 }
             };
@@ -20941,13 +21209,101 @@ impl SyncClient {
         Ok(applied)
     }
 
-    /// Restore only imported and pending row identities before FIFO replay. All pending
-    /// identities participate: a server row can free a unique value for a different edit.
-    /// The caller owns the chunk transaction and publishes its revision after replay.
-    fn reconcile_imported_rows(
+    /// §7.1 keyed reconciliation of the rows `drained` commits touch: restore
+    /// them from the base and replay their remaining intent. A table with a
+    /// secondary unique index restores and replays every row with intent,
+    /// since one row's value can admit or defer another row's write.
+    fn reconcile_rows(&self, drained: &[Arc<OutboxCommit>]) -> Result<(), String> {
+        let names: BTreeSet<&str> = drained
+            .iter()
+            .flat_map(|commit| &commit.ops)
+            .map(|op| op.table.as_str())
+            .collect();
+        for name in names {
+            let Some(table) = self.schema.table(name) else {
+                continue;
+            };
+            let ops = drained.iter().flat_map(|commit| &commit.ops);
+            let tables = BTreeSet::from([name]);
+            let rows: HashSet<_> = ops
+                .clone()
+                .map(|op| (op.table.as_str(), op.row_id.as_str()))
+                .collect();
+            let unique = table.indexes.iter().any(|index| index.unique);
+            let acknowledged = if unique {
+                self.acknowledged_operations(None, Some(&tables))?
+            } else {
+                Vec::new()
+            };
+            let peers = acknowledged
+                .iter()
+                .chain(
+                    self.failed_commits
+                        .iter()
+                        .flat_map(|(commit, _)| &commit.ops),
+                )
+                .chain(self.outbox.iter().flat_map(|commit| &commit.ops))
+                .filter(|_| unique);
+            self.restore_base_rows(table, &mut Vec::new(), peers.chain(ops.clone()))?;
+            self.replay_overlay(&tables, (!unique).then_some(&rows))?;
+        }
+        Ok(())
+    }
+
+    /// Whether `table` has pending outbox intent, and whether it has protected
+    /// (acknowledged or retained failed) intent.
+    fn table_intent(&self, table: &str) -> Result<(bool, bool), String> {
+        let touches = |op: &OutboxOp| op.table == table;
+        Ok((
+            self.outbox
+                .iter()
+                .flat_map(|commit| &commit.ops)
+                .any(touches),
+            self.failed_commits
+                .iter()
+                .flat_map(|(commit, _)| &commit.ops)
+                .any(touches)
+                || self
+                    .conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM _syncular_acked_rows WHERE tbl=?1)",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?,
+        ))
+    }
+
+    /// §7.1 reconciliation after an import block or chunk. Keyed replay covers
+    /// only pending intent, so a table with protected intent rebuilds; a
+    /// `restore` restores the imported `keys` and every pending row first.
+    fn reconcile_import(
+        &mut self,
+        table: &TableSchema,
+        keys: &mut Vec<SqlValue>,
+        protected: bool,
+        restore: bool,
+    ) -> Result<(), String> {
+        if protected {
+            return self.rebuild_overlay_if_dirty();
+        }
+        let pending = self.outbox.iter().flat_map(|commit| &commit.ops);
+        if restore {
+            self.restore_base_rows(table, keys, pending.clone())?;
+        }
+        self.apply_outbox_ops(pending.filter(|op| op.table == table.name))?;
+        self.overlay_dirty.set(false);
+        Ok(())
+    }
+
+    /// Restore the visible rows of `keys` and of the rows `ops` touch in
+    /// `table` from the base before the caller replays their intent. The
+    /// caller owns the transaction and publishes its revision after replay.
+    fn restore_base_rows<'a>(
         &self,
         table: &TableSchema,
         keys: &mut Vec<SqlValue>,
+        ops: impl IntoIterator<Item = &'a OutboxOp>,
     ) -> Result<(), String> {
         let visible = visible_table(&table.name);
         let base = base_table(&table.name);
@@ -20957,12 +21313,7 @@ impl SyncClient {
             "SELECT {pk} FROM {base} WHERE {predicate} UNION SELECT {pk} FROM {visible} WHERE {predicate}"
         )).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut deleted = HashSet::new();
-        for op in self
-            .outbox
-            .iter()
-            .flat_map(|commit| &commit.ops)
-            .filter(|op| op.table == table.name)
-        {
+        for op in ops.into_iter().filter(|op| op.table == table.name) {
             if op.upsert {
                 if let Some(values) = &op.values {
                     let key = json_to_column_value(
@@ -21219,11 +21570,7 @@ impl SyncClient {
         // any mirror row is touched and unconditionally.
         let _ = self.drop_previous_version();
 
-        let prior_outbox = self.outbox.clone();
-        let prior_failed = self.failed_commits.clone();
-        let prior_rejections = self.rejections.clone();
-        let prior_conflicts = self.conflicts.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let rollback = self.capture();
         self.begin_observation("syncular_local_purge")?;
         let applied = (|| -> Result<(ChangeAccumulator, LocalDataPurgeResult), String> {
             let row_ids = self.local_purge_base_row_ids(&targets)?;
@@ -21276,6 +21623,7 @@ impl SyncClient {
             for commit in &doomed {
                 for operation in &commit.ops {
                     batch.table(&operation.table);
+                    self.overlay_dirty.table(&operation.table);
                 }
                 let results = commit
                     .ops
@@ -21340,28 +21688,19 @@ impl SyncClient {
                     dropped_commits: doomed.len(),
                 },
             ))
-        })();
-        let (batch, result) = match applied {
-            Ok(value) => value,
+        })()
+        .and_then(|(batch, result)| {
+            self.finish_observation("syncular_local_purge", batch)
+                .map(|()| result)
+        });
+        let result = match applied {
+            Ok(result) => result,
             Err(error) => {
                 self.rollback_observation("syncular_local_purge");
-                self.outbox = prior_outbox;
-                self.failed_commits = prior_failed;
-                self.rejections = prior_rejections;
-                self.conflicts = prior_conflicts;
-                self.overlay_dirty.restore(prior_overlay_dirty.clone());
+                self.restore(rollback);
                 return Err(error);
             }
         };
-        if let Err(error) = self.finish_observation("syncular_local_purge", batch) {
-            self.rollback_observation("syncular_local_purge");
-            self.outbox = prior_outbox;
-            self.failed_commits = prior_failed;
-            self.rejections = prior_rejections;
-            self.conflicts = prior_conflicts;
-            self.overlay_dirty.restore(prior_overlay_dirty.clone());
-            return Err(error);
-        }
         self.cancel_sync_round();
         Ok(result)
     }
@@ -21405,16 +21744,8 @@ impl SyncClient {
 
         let retained_commits = self.outbox.len();
         let reset_subscriptions = self.subs.len();
-        let prior_subs = self.subs.clone();
-        let prior_upgrading = self.upgrading;
-        let prior_stopped = self.stopped;
-        let prior_schema_floor = self.schema_floor.clone();
-        let prior_overlay_dirty = self.overlay_dirty.snapshot();
-        let prior_sync_needed = self.sync_needed;
-        let prior_sync_intents = self.sync_intent_queue.clone();
         let receipt = encode_local_rebootstrap_receipt(retained_commits, reset_subscriptions)?;
-
-        let prior_active_round = self.active_round;
+        let rollback = self.capture();
         self.begin_observation("syncular_local_rebootstrap")?;
         let mut batch = ChangeAccumulator::default();
         let applied = (|| -> Result<(), String> {
@@ -21429,29 +21760,11 @@ impl SyncClient {
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
             batch.status = true;
             Ok(())
-        })();
+        })()
+        .and_then(|()| self.finish_observation("syncular_local_rebootstrap", batch));
         if let Err(error) = applied {
             self.rollback_observation("syncular_local_rebootstrap");
-            self.active_round = prior_active_round;
-            self.subs = prior_subs;
-            self.upgrading = prior_upgrading;
-            self.stopped = prior_stopped;
-            self.schema_floor = prior_schema_floor;
-            self.overlay_dirty.restore(prior_overlay_dirty.clone());
-            self.sync_needed = prior_sync_needed;
-            self.sync_intent_queue = prior_sync_intents;
-            return Err(error);
-        }
-        if let Err(error) = self.finish_observation("syncular_local_rebootstrap", batch) {
-            self.rollback_observation("syncular_local_rebootstrap");
-            self.active_round = prior_active_round;
-            self.subs = prior_subs;
-            self.upgrading = prior_upgrading;
-            self.stopped = prior_stopped;
-            self.schema_floor = prior_schema_floor;
-            self.overlay_dirty.restore(prior_overlay_dirty.clone());
-            self.sync_needed = prior_sync_needed;
-            self.sync_intent_queue = prior_sync_intents;
+            self.restore(rollback);
             return Err(error);
         }
 
@@ -21509,7 +21822,7 @@ impl SyncClient {
                 None => return Ok(false), // not provable without a mapping
             }
         }
-        let doomed: Vec<OutboxCommit> = self
+        let doomed: Vec<_> = self
             .outbox
             .iter()
             .filter(|commit| {
@@ -21540,6 +21853,7 @@ impl SyncClient {
                 .iter()
                 .enumerate()
                 .map(|(op_index, operation)| {
+                    self.overlay_dirty.table(&operation.table);
                     let rejection = RejectionRecord {
                         client_commit_id: commit.client_commit_id.clone(),
                         op_index: op_index as i32,
@@ -22175,55 +22489,7 @@ impl SyncClient {
                     ))
                     .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
-            let acknowledged = self.acknowledged_operations(None, Some(&names))?;
-            self.apply_outbox_ops(
-                acknowledged
-                    .iter()
-                    .filter(|op| names.contains(op.table.as_str())),
-            )?;
-            for (commit, initial) in &self.failed_commits {
-                for operation in &commit.ops {
-                    if !names.contains(operation.table.as_str()) || !operation.upsert {
-                        continue;
-                    }
-                    if let Some(table) = self.schema.table(&operation.table) {
-                        if self.visible_row(table, &operation.row_id)?.is_none()
-                            && operation.presented_values(table).is_some_and(|values| {
-                                table
-                                    .columns
-                                    .iter()
-                                    .all(|column| values.contains_key(&column.name))
-                            })
-                        {
-                            let key = serde_json::to_string(&(
-                                operation.table.clone(),
-                                operation.row_id.clone(),
-                            ))
-                            .expect("row key serialization");
-                            if let Some(Value::Object(values)) = initial.get(&key) {
-                                self.apply_outbox_ops(&[OutboxOp {
-                                    values: Some(values.clone()),
-                                    ..operation.clone()
-                                }])?;
-                            }
-                        }
-                    }
-                }
-                self.apply_outbox_ops(
-                    commit
-                        .ops
-                        .iter()
-                        .filter(|op| names.contains(op.table.as_str())),
-                )?;
-            }
-            for commit in &self.outbox {
-                self.apply_outbox_ops(
-                    commit
-                        .ops
-                        .iter()
-                        .filter(|op| names.contains(op.table.as_str())),
-                )?;
-            }
+            self.replay_overlay(&names, None)?;
             for table in &tables {
                 for index in &table.fts_indexes {
                     self.rebuild_fts_projection(table, index)?;
@@ -22243,6 +22509,53 @@ impl SyncClient {
             self.overlay_dirty.set(false);
         }
         rebuilt
+    }
+
+    /// §7.1 replay of acknowledged, retained failed and pending intent, in
+    /// that order, for the operations of `tables` on `rows` (every row for
+    /// `None`) over their current visible state.
+    fn replay_overlay(
+        &self,
+        tables: &BTreeSet<&str>,
+        rows: Option<&HashSet<(&str, &str)>>,
+    ) -> Result<(), String> {
+        let replays = |op: &&OutboxOp| {
+            tables.contains(op.table.as_str())
+                && rows.is_none_or(|rows| rows.contains(&(op.table.as_str(), op.row_id.as_str())))
+        };
+        self.apply_outbox_ops(&self.acknowledged_operations(rows, Some(tables))?)?;
+        for (commit, initial) in self.failed_commits.iter() {
+            for operation in commit.ops.iter().filter(replays) {
+                let Some(table) = self.schema.table(&operation.table) else {
+                    continue;
+                };
+                if operation.upsert
+                    && self.visible_row(table, &operation.row_id)?.is_none()
+                    && operation.presented_values(table).is_some_and(|values| {
+                        table
+                            .columns
+                            .iter()
+                            .all(|column| values.contains_key(&column.name))
+                    })
+                {
+                    let key = serde_json::to_string(&(&operation.table, &operation.row_id))
+                        .expect("row key serialization");
+                    if let Some(Value::Object(values)) = initial.get(&key) {
+                        self.apply_outbox_ops(&[OutboxOp {
+                            values: Some(values.clone()),
+                            ..operation.clone()
+                        }])?;
+                    }
+                }
+            }
+            self.apply_outbox_ops(commit.ops.iter().filter(replays))?;
+        }
+        self.apply_outbox_ops(
+            self.outbox
+                .iter()
+                .flat_map(|commit| &commit.ops)
+                .filter(replays),
+        )
     }
 
     /// §7.1 replay: every operation is applied over the current visible
@@ -24540,7 +24853,7 @@ mod insert_intent_tests {
                     "UPDATE _syncular_outbox SET ops_json = json_remove(ops_json, '$[0].insert')",
                 )
                 .unwrap();
-            client.outbox[0].ops[0].insert = false;
+            Arc::make_mut(&mut client.outbox[0]).ops[0].insert = false;
         }
         client.recreate_with_schema(next).unwrap();
         client
@@ -24607,7 +24920,7 @@ mod insert_intent_tests {
                 vec![None]
             ]
         );
-        let flags = |commits: &[OutboxCommit]| {
+        let flags = |commits: &[Arc<OutboxCommit>]| {
             commits
                 .iter()
                 .map(|commit| commit.ops.iter().map(|op| op.insert).collect::<Vec<_>>())
@@ -25254,10 +25567,10 @@ mod robustness_tests {
         client
             .subscribe("sub".into(), "tasks".into(), scopes(), None)
             .unwrap();
-        client.outbox.push(OutboxCommit {
+        client.outbox.push(Arc::new(OutboxCommit {
             client_commit_id: "pending".into(),
             ops: vec![operation("tasks")],
-        });
+        }));
         let table = client.schema.table("tasks").unwrap();
         let change = |id: &str| {
             let values =
