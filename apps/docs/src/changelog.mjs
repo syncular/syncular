@@ -17,6 +17,45 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'Computed query columns take their type from CAST or count()',
+    body: 'A result column that is an expression is typed by a whole-expression `CAST(... AS <type>)` to `INTEGER`, `REAL`, `TEXT`, `BLOB`, or `BOOLEAN`, or is a whole-expression `count(...)`, which is an integer. Any other expression fails generation with `typegen.computed_column_type`. Before, typegen guessed: `length(x)` came out as a string and `count(*)` as a float, and on a wrong guess the TypeScript row passed the value through, Rust returned a decode error, Dart threw, and Kotlin and Swift returned nil. Wrap each computed column in a `CAST` before upgrading; `count(*)` columns change from a float to an integer type in Rust, Kotlin, Swift, and Dart.',
+    links: [
+      {
+        href: '/tooling-queries/',
+        label: 'Named queries',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Tauri: sync events and commands belong to the webview that created the client',
+    body: "The bridge passes a Tauri IPC `Channel` in the `create` params and the plugin sends `change`, `presence`, and lifecycle events to that webview only. Before, every webview of the app received them. A command from a webview that did not create the client is refused with `sync.client_owned_by_another_webview`; before, it ran against the other webview's client. `TauriApi.listen` is replaced by `channel`, which affects code that injects its own Tauri API double.",
+    links: [
+      {
+        href: '/platform-tauri-specifics/',
+        label: 'Tauri specifics',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'A refused presence publish reaches the app; a disabled query reports disabled',
+    body: "Presence listeners receive the server's refusal of a publish: `onPresence(scopeKey, error)` gets `presence.too_large` or `presence.forbidden` in the TypeScript client, the worker host, and the native bridge, and the native `presence` event carries the same code in `error`. `useRawSql` and `useQuery` with `enabled: false` report phase `disabled`; before, they reported `ready` with no rows, the same as a query that ran and found nothing.",
+    links: [
+      {
+        href: '/concepts-realtime/#presence',
+        label: 'Presence',
+      },
+      {
+        href: '/platform-react-reads-writes/',
+        label: 'React reads and writes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title:
       'Presence survives Durable Object hibernation; the presence cap is per connection',
     body: "On Cloudflare Workers the host keeps each socket's presence documents in that socket's attachment and restores them after a hibernation. Peers receive `leave` when a socket closes after a wake, and a newly registered socket receives the snapshot of the peers already present. `maxPresenceBytes` now caps the presence one connection holds across all its scope keys (scope key plus document, UTF-8 bytes, default 8,192; previously 16 KiB per document). The Workers host refuses a `maxPresenceBytes` above 9,785 with `realtime.presence_exceeds_attachment`, because the attachment holds 16,384 bytes.",

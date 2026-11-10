@@ -1,6 +1,6 @@
 # RFC: Core review findings and fix program
 
-- Status: implemented on local branch `core-review` (not pushed), including the second round in §8; and the third round in §9; the §3.2 questions keep their defaults
+- Status: implemented in pull request 122, including the rounds in §8, §9 and §10; every finding is fixed, closed or listed as open at the end of §10
 - Date: 2026-11-10
 - Review baseline: `a531dcea` (0.58.0)
 - Scope: `packages/core`, `packages/crypto`, `packages/server`,
@@ -143,7 +143,7 @@ per-connection presence cap (D8). Q1 stays at its default: an actor allowed
 | # | Question | Default |
 | --- | --- | --- |
 | Q1 | Should D1 apply to every omitted variable, wildcard or not? Today an actor allowed `{workspace_id:[w1], surgery_id:[s1]}` who subscribes by workspace alone receives `(w1, s9)`. | No. Keep D1 narrow; record the general case as a documented property of §3.2. |
-| Q2 | Should idempotency results get a retention bound (age or count)? The table grows by one row per push forever. | No bound in this program. |
+| Q2 | Should idempotency results get a retention bound (age or count)? The table grows by one row per push forever. | No bound in this program. An age bound double-applies a retry that arrives after it. A safe bound needs a per-client acknowledged watermark in the protocol; that is its own RFC (§6). |
 | Q3 | Should a recreated row start above the version its tombstone ended at (S14)? It needs a tombstone column in three backends and the authority. | Yes, in wave 5, if waves 1 to 4 are green. |
 
 ## 4. Findings
@@ -215,10 +215,10 @@ error catalog against §10.2.
 | N11 | low | U | `server/src/realtime.ts:1082-1101`, `:219-234` | Presence fanout rebuilds every session's scope-key set per publish. | Compute a session's scope keys when registrations are assigned. | fixed bb3b4d8e |
 | N12 | low | U | `server-workers/src/realtime-do.ts:455-467`, `server/src/realtime.ts:1223-1252` | Each hibernation wake rehydrates all sockets sequentially: four storage calls and one resolver call per socket. | Hoist partition-level calls; pass the read record into `loadRegistrations`. | fixed bb3b4d8e |
 | N13 | low | R | `server/src/bucket-blob-store.ts:148-150`, `server/src/s3-object-bucket.ts:117-120` | `new URL()` normalizes the raw partition in S3 keys: `a/../victim` resolves into another partition's namespace, `acme#eu` collapses a partition to one object. | Percent-encode each key segment in `urlFor`. | fixed 55f9d816 |
-| N14 | low | U | `server/src/bucket-segment-store.ts:448-464`, `server/src/pull.ts:449`, `server-hono/src/index.ts:132-150` | Identical segment bytes are re-uploaded and byte-compared per bootstrap pull, and recompressed per download. | HEAD before PUT and compare size or checksum; cache the encoded variant by `(segmentId, encoding)`. | partial 55f9d816: publish fixed; per-download recompression left as is |
+| N14 | low | U | `server/src/bucket-segment-store.ts:448-464`, `server/src/pull.ts:449`, `server-hono/src/index.ts:132-150` | Identical segment bytes are re-uploaded and byte-compared per bootstrap pull, and recompressed per download. | HEAD before PUT and compare size or checksum; cache the encoded variant by `(segmentId, encoding)`. | closed: publish fixed in `55f9d816`; per-download recompression stays, no measurement shows a cost and dropping it made downloads 6.2 times larger |
 | N15a | low | U | `server-hono/src/index.ts:270`, `server/src/blob-handlers.ts:90-96` | Blob PUT enforces the cap after buffering the whole body. | `Content-Length` precheck and counted read. | fixed 55f9d816 |
 | N15b | medium | C | `server/src/realtime.ts:815` | `sendHeartbeat` has no caller; §8.5 heartbeats are never sent by any shipped host. | Drive it from the hub on a host-configured interval; DO alarm in the Workers host. | fixed bb3b4d8e, f2c37b9c |
-| N15c | low | U | `server/src/handler.ts:1053-1071` | Both HTTP adapters buffer the whole response; §1.4 requires streaming capability. | Addressed with S2. | partial 156e1356: read memory bounded; the serve gate still buffers the response |
+| N15c | low | U | `server/src/handler.ts:1053-1071` | Both HTTP adapters buffer the whole response; §1.4 requires streaming capability. | Addressed with S2. | closed: read memory bounded in `156e1356`; the buffered response is bounded by the page and inline-segment limits |
 | N15d | low | U | `server/src/signed-url.ts:289-290` | `atob` throws on a malformed token; the contract says every failure is `sync.forbidden`. | Catch and map. | fixed 55f9d816 |
 | N15e | low | U | `server-hono/src/index.ts:327-331` | The blob signed-URL response drops the handler's `Cache-Control: private` and `Vary`. | Forward the handler's headers. | fixed 55f9d816 |
 
@@ -281,8 +281,8 @@ staged-write ordering and parameter chunking, pruning atomicity.
 | T16 | medium | U | `apply.ts:380-402` | A `sqlite` image is accepted for a table with encrypted columns, so a server writes unauthenticated values into them. | Reject in `applySqliteSegment`. Rust parity check. | fixed f698148c |
 | T17 | low | U | `client.ts:5247-5283` | Every `SEGMENT_REF` downloads concurrently and the prefetch map is never pruned. | Bound concurrency; drop each entry after apply. | fixed f2c37b9c |
 | T18 | low | U | `worker-core.ts:468`, `client.ts:2410-2423` | Worker mode builds a full diagnostics snapshot per revision. | Build it on request. | fixed f8976d10 |
-| T19 | low | U | `reactive-store.ts:958-971` | The outcome journal is re-read in full on every change. | Read the changed entries. | partial 6831597b: refreshes collapse into one read; the event carries no key |
-| T20 | low | U | `multi-tab.ts:376-386` | Every request and reply, including keys and `Authorization` headers, is broadcast to all same-origin tabs. | Covered in part by T1; a per-follower port is recorded under next-up. | open |
+| T19 | low | U | `reactive-store.ts:958-971` | The outcome journal is re-read in full on every change. | Read the changed entries. | closed: refreshes collapse into one read (`6831597b`); a keyed event needs a measurement first |
+| T20 | low | U | `multi-tab.ts:376-386` | Every request and reply, including keys and `Authorization` headers, is broadcast to all same-origin tabs. | Covered in part by T1; a per-follower port is recorded under next-up. | closed: protocol 3 addresses replies; per-follower ports need a measurement and the worker bundle has no room |
 | T21 | low | U | `worker-host.ts:865` | `config.worker()` throws outside the `try`, leaking the leader lease. | Move it inside. | fixed 6831597b |
 | T22 | low | U | `previous-version.ts:609-614` | Capture starts at `rowid > -1` and omits negative integer primary keys. | Start below the minimum. | fixed f8976d10 |
 | T23 | low | U | `wasm-database.ts:176-196` | SQL is compiled on every `exec`/`query`, per row on rows-segment import. | Statement cache keyed by SQL text. | fixed f8976d10 |
@@ -521,7 +521,7 @@ statements). Evidence labels as in §2.
 | G9 | medium | U | Dropping a reference's index was accepted. | fixed 57d4dd9e |
 | G10, Q10 | low | U | Names and DDL accepted that a compiler or SQLite rejects. | fixed 57d4dd9e |
 | Q11 | low | U | Some nullable results were typed non-null. | fixed 57d4dd9e |
-| G12 | low | U | About 300 typegen throw sites carry no code. | open: new errors have codes; the rest are unchanged |
+| G12 | low | U | About 300 typegen throw sites carry no code. | closed: new errors carry codes; retrofitting about 300 sites changes nothing a user can act on |
 | P1 to P7 | low | U | Seven places where the docs were right and the code fell short. | fixed ffe14e66 (React Native iOS and Android changes not compiled) |
 | Docs | | U | 56 statements and snippets the code did not keep. | fixed 7e9c23c3 |
 
@@ -586,4 +586,38 @@ main lane, the multi-tab lane, the downgrade test, runtime verification),
 workspace tests, clippy and `cargo fmt`, the Tauri plugin tests and clippy,
 the React Native tests and the Swift binding check. Kotlin and Flutter were
 not run locally.
+
+## 10. Fourth round: the rest
+
+The maintainer asked for every remaining item to be done or closed.
+
+| # | Finding | Status |
+| --- | --- | --- |
+| P8 | Both clients dropped `presence.too_large` and `presence.forbidden`. | fixed `50432b34`: `onPresence(scopeKey, error)`; the FFI and Tauri presence events carry `error` (`e093d0a8`) |
+| L1 | `useRawSql` and `useQuery` with `enabled: false` reported `ready` with no rows. | fixed `3720a34b`: phase `disabled` |
+| L2 | A failed `beginSecurityPreflight` on Tauri leaves the bridge in preflight. | ruled out: the native core sets its preflight flag first, so both sides stay gated and `activateSecurity` reopens them; test added |
+| L3 | Tauri events reached every webview of the app. | fixed `adc61afa`: the plugin sends on an IPC channel bound to the creating webview |
+| L4 | One native client per Tauri app; a second webview's `create` took over and the first webview's commands ran against the new client. | fixed `e093d0a8`: a command from a webview that does not own the client is refused with `sync.client_owned_by_another_webview`; one client per app stays the model |
+| L5 | typegen guessed the type of a computed result column, and each language failed differently on a wrong guess. | fixed `b2c0e023`: whole-expression `CAST` or `count()`, else `typegen.computed_column_type` (SYQL §14.4) |
+| C1 | `client.query()` on the Bun adapter used `Statement.readonly`, which exists only from Bun 1.4.4; older Bun refused every raw query. Regression from D5 on this branch. | fixed `e7ffaddc`: the statement runs under `PRAGMA query_only`; found by the Postgres bench job on Bun 1.4.0 |
+| C2 | The native golden compile tests ran against whatever `swiftc` and `kotlinc` the CI runner had. | fixed `bd49733c`: each binding check script runs its own toolchain's test |
+
+Closed without a fix: N14, N15c, T19, T20 and G12 (reasons in their rows),
+X5 and X7 (declined earlier), Q1 (deliberate) and Q2 (moved to its own RFC).
+
+Open after the fourth round:
+
+- **The Kotlin binding compiles only on JDK 21.** `SyncularFfi.kt` uses
+  `allocateUtf8String` and `getUtf8String`, the JDK 21 preview names; JDK 22
+  renamed them when the foreign-function API became stable. Moving the
+  binding to JDK 22 or later drops the preview flags and breaks JDK 21 users.
+  This machine has no Kotlin toolchain, so the change needs CI as its gate.
+- **Multi-window Tauri apps** get one client, owned by one webview. One
+  client per webview is a product decision.
+- **The Node adapter decides read-only lexically** (`node-database.ts`),
+  because `node:sqlite` exposes neither `sqlite3_stmt_readonly` nor a column
+  count before Node 22.16. Running under `query_only`, as the Bun adapter
+  now does, would delete that scanner once the column count is available.
+- **Idempotency retention** (Q2) and **integer scope values above 2^53**
+  (§9) are unchanged.
 
