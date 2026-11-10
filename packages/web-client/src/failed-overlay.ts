@@ -171,17 +171,13 @@ export function uniqueConflicts(
 /** Exact row keys are JSON [table,id]; table scopes include unique-key peers. */
 export type OverlayScope = readonly string[];
 
-export function overlayScopePredicate(table: string, id: string): string {
-  return `?1 IS NULL OR json_array(${table},${id}) IN(SELECT value FROM json_each(?1)) OR json_array(${table}) IN(SELECT value FROM json_each(?1))`;
-}
-
 function retainedRows(
   db: ClientDatabase,
   scope?: OverlayScope,
   acknowledged?: boolean,
 ) {
   return db.query(
-    `SELECT * FROM ${RETAINED_ROWS} WHERE (${overlayScopePredicate('tbl', 'id')})${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
+    `SELECT * FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1)) OR json_array(tbl) IN(SELECT value FROM json_each(?1)))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
     [scope ? JSON.stringify(scope) : null],
   );
 }

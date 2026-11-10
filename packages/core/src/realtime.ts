@@ -87,15 +87,6 @@ export interface RealtimeAck {
   cursor: number;
 }
 
-/** Client → server presence publish/leave (§8.6.2). `doc: null` = leave. */
-export interface RealtimePresencePublish {
-  event: 'presence';
-  data: {
-    scopeKey: string;
-    doc: Record<string, unknown> | null;
-  };
-}
-
 export type ParsedRealtimeEvent =
   | { known: true; event: RealtimeServerEvent }
   | { known: false; eventName: string };
@@ -310,34 +301,4 @@ function requirePresenceDocObject(value: unknown): void {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     malformed('presence.data.doc must be a JSON object');
   }
-}
-
-/**
- * Parse a client → server presence publish/leave (§8.6.2). Used by the
- * server to validate inbound `presence` control messages. A malformed
- * message (missing/empty `scopeKey`, or a `doc` that is neither an object
- * nor `null`) throws a `DecodeError` — a known event with wrong-shape data
- * is never a tolerated variant (§8.1).
- */
-export function parseRealtimePresencePublish(
-  text: string,
-): RealtimePresencePublish {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    malformed('not valid JSON');
-  }
-  const root = requireObject(value, 'control message');
-  if (root.event !== 'presence') {
-    malformed('not a presence control message');
-  }
-  const data = requireObject(root.data, 'presence.data');
-  const scopeKey = validatePresenceScopeKey(data.scopeKey);
-  const doc = data.doc;
-  if (doc !== null) requirePresenceDocObject(doc);
-  return {
-    event: 'presence',
-    data: { scopeKey, doc: doc as Record<string, unknown> | null },
-  };
 }

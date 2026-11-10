@@ -139,7 +139,7 @@ Columns: id, severity, evidence, where, defect, fix, status. Status values:
 | C2 | high | R | `core/src/blob-ref.ts:44-110`, `ssp2/src/blob_ref.rs:26-85` | Rust iterates a sorted map, so its key-order check never fires and reordered keys pass; TS rejects them. TS accepts `byteLength` as `1e2`, `3.0`, `-0`; Rust rejects them. Both accept duplicate keys and whitespace. | D2. Validate by comparing the raw text with the canonical serialization in both cores; delete the per-field order logic. | fixed 466a9813 |
 | C3 | high | R | `server/src/storage-errors.ts:142-145`, `server/src/relational-rows.ts:526-534` | A pushed string with U+0000, or `json` with `\u0000` or a lone surrogate escape, applies on SQLite and throws SQLSTATE 22021/22P05/22P02 on Postgres. The round answers retryable `sync.internal_error`, so the outbox retries forever. | D2. Reject at admission. | fixed 466a9813 for values; rowId and scope values open |
 | C4 | medium | R | `server/src/push.ts` (no finite check), `core/src/row-codec.ts:115-122` | `NaN` in a non-nullable `float` applies on Postgres and is rejected with `sync.constraint_violation` on SQLite. Client SQLite stores `NaN` as NULL. | D2. | fixed 466a9813 |
-| C5 | low | C | 17 sites: `core/src/message.ts`, `server/src/handler.ts`, `server/src/realtime.ts`, `ssp2/src/decode.rs`, `ssp2/src/encode.rs` | Branches on `wireVersion >= 2` are dead: the minimum is 3. | Delete; `logEpoch` and `resetRequired` become required fields. | fixed 466a9813 in core and ssp2; server sites open |
+| C5 | low | C | 17 sites: `core/src/message.ts`, `server/src/handler.ts`, `server/src/realtime.ts`, `ssp2/src/decode.rs`, `ssp2/src/encode.rs` | Branches on `wireVersion >= 2` are dead: the minimum is 3. | Delete; `logEpoch` and `resetRequired` become required fields. | fixed 466a9813, 156e1356 |
 
 Checked and sound: bounds checks on every read, canonical map order by UTF-16
 code unit in both cores, presence invariants, AES-GCM nonce generation, the
@@ -150,21 +150,21 @@ a ciphertext across rows that share a key.
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| S1 | high | R | `scopes.ts:28-50`, `handler.ts:334-347` | `computeEffective` intersects only requested keys. With allowed `{clinic_id:['clinic-a'], appointment_id:['*']}`, a subscription by `appointment_id` alone reads other clinics' rows. `concepts-scopes.md:141` promises the fence. | D1. Spec §3.2 first; docs page; conformance scenario. | open |
-| S2 | high | C | `handler.ts:317-349`, `handler.ts:968-986`, `pull.ts:529-613` | Subscriptions per request are uncapped, every first page (up to 50,001 rows) is read concurrently, and the response is buffered whole. A 12 KB request holds gigabytes. `Math.min(...cursors)` throws at large counts. | D3. Read first pages per section as emitted. | open |
-| S3 | high | R | `pull.ts:91-116`, `pull.ts:554-604`, `pull.ts:720-724` | A client resume token's `asOfCommitSeq` has no upper bound or integer check and becomes the sqlite-image reuse key and `nextCursor`. A reader stores a stale image under a future sequence; later clients skip commits. | Require a safe integer `<= maxSeq`; never take the image reuse key from a token. | open |
-| S4 | high | R | `pull.ts:581-613` | The `lane` promise has no handler when `firstPage` rejects. One failed storage read raises an unhandled rejection, which terminates Node by default. | Derive the lane inside the per-plan async mapper. | open |
-| S5 | medium | R | `pull.ts:532-548`, `pull.ts:714-715` | An unparseable `bootstrapState` with an in-range cursor is served as an incremental pull; the client is marked synced with partial rows. §4.7 requires a restart. | Decide `bootstrapping` on `sub.bootstrapState !== undefined`. | open |
+| S1 | high | R | `scopes.ts:28-50`, `handler.ts:334-347` | `computeEffective` intersects only requested keys. With allowed `{clinic_id:['clinic-a'], appointment_id:['*']}`, a subscription by `appointment_id` alone reads other clinics' rows. `concepts-scopes.md:141` promises the fence. | D1. Spec §3.2 first; docs page; conformance scenario. | fixed 156e1356 |
+| S2 | high | C | `handler.ts:317-349`, `handler.ts:968-986`, `pull.ts:529-613` | Subscriptions per request are uncapped, every first page (up to 50,001 rows) is read concurrently, and the response is buffered whole. A 12 KB request holds gigabytes. `Math.min(...cursors)` throws at large counts. | D3. Read first pages per section as emitted. | fixed 156e1356 |
+| S3 | high | R | `pull.ts:91-116`, `pull.ts:554-604`, `pull.ts:720-724` | A client resume token's `asOfCommitSeq` has no upper bound or integer check and becomes the sqlite-image reuse key and `nextCursor`. A reader stores a stale image under a future sequence; later clients skip commits. | Require a safe integer `<= maxSeq`; never take the image reuse key from a token. | fixed 156e1356 |
+| S4 | high | R | `pull.ts:581-613` | The `lane` promise has no handler when `firstPage` rejects. One failed storage read raises an unhandled rejection, which terminates Node by default. | Derive the lane inside the per-plan async mapper. | fixed 156e1356 |
+| S5 | medium | R | `pull.ts:532-548`, `pull.ts:714-715` | An unparseable `bootstrapState` with an in-range cursor is served as an incremental pull; the client is marked synced with partial rows. §4.7 requires a restart. | Decide `bootstrapping` on `sub.bootstrapState !== undefined`. | fixed 156e1356 |
 | S6 | medium | U | `push.ts:1337-1360`, `push.ts:1446-1453` | A child insert is authorized on the child's scopes only; the parent check is existence anywhere in the partition. An actor inserts a child under another scope's parent and blocks its deletion; `missing_parent` is an existence oracle. | Treat a parent the actor cannot authorize as `missing_parent`. §6.11 first; authority parity. | open |
 | S7 | medium | U | `push.ts:1412-1426` | Reference enforcement loads every child with payloads before applying `RESTRICT` or the cascade cap, inside the partition lock. | `RESTRICT` reads one row; cascades stop at the cap plus one. | open |
-| S8 | medium | U | `operations-realtime.ts:86-142` | A watch session accepts unlimited watches; each commit reruns all of them concurrently. | D3 cap, answered with `watch_error`; serialize a session's refreshes. | open |
+| S8 | medium | U | `operations-realtime.ts:86-142` | A watch session accepts unlimited watches; each commit reruns all of them concurrently. | D3 cap, answered with `watch_error`; serialize a session's refreshes. | fixed 156e1356 |
 | S9 | medium | U | `push.ts:1012-1020` | Blob existence checks run one store round trip per reference, sequentially, inside the locked transaction. | One deduplicated, concurrent existence set per commit. | open |
 | S10 | medium | U | `push.ts:342`, `push.ts:718-745`, `push.ts:1944-1947` | A conflict record's `serverVersion` and `serverRow` are read from candidate state that includes the same commit's earlier, rolled-back operations. | Re-read the row after the savepoint rollback. | open |
 | S11 | low | U | `schema.ts:404-456` | `compileSchema` accepts a reference whose child table has `materialize: false`; every parent delete then fails with a non-catalog error. | One more throw in the reference loop. | open |
 | S12 | low | U | `push.ts:1316-1346` | `missing_parent` is judged on the merged row; §6.11 limits it to a present, non-null reference column. | Carry presence in the staged write and skip absent columns. | open |
 | S13 | low | U | `push.ts:864-875` | The tombstone probe runs before payload authorization, so `sync.row_deleted` versus `sync.forbidden` discloses deletion. | Move the probe below `authorizeWrite`. | open |
 | S14 | low | U | `push.ts:946-951`, `push.ts:691-697` | A recreated row restarts at version 1, so a `baseVersion` from the previous incarnation is accepted. | Q3. | open |
-| S15 | low | U | `handler.ts:705-734`, `handler.ts:968-985` | The client record is written before the serve-gate verification that can still refuse the round. §4.5 forbids a failed round changing the cursor. | Move `putClientRecord` and `notifySubscriptions` after the gate. | open |
+| S15 | low | U | `handler.ts:705-734`, `handler.ts:968-985` | The client record is written before the serve-gate verification that can still refuse the round. §4.5 forbids a failed round changing the cursor. | Move `putClientRecord` and `notifySubscriptions` after the gate. | fixed 156e1356 |
 
 Unconfirmed leads: remote query params are cast, never type-checked
 (`operations.ts:372`); `limitsOf` spreads unvalidated limits, so `NaN`
@@ -182,12 +182,12 @@ error catalog against §10.2.
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| N1 | high | C | `server/src/content-encoding.ts:172-197` | `decodeRequestBody` inflates a gzip body fully with no output bound. A 130 KB body of zeros exhausts the process or the Durable Object. | D3. One counting read loop for identity and gzip. | open |
+| N1 | high | C | `server/src/content-encoding.ts:172-197` | `decodeRequestBody` inflates a gzip body fully with no output bound. A 130 KB body of zeros exhausts the process or the Durable Object. | D3. One counting read loop for identity and gzip. | fixed 156e1356 |
 | N2 | high | C | `server/src/bucket-blob-store.ts:325-333`, `server/src/blob-store.ts:232-237` | A presign-uploaded object has no metadata, so `sweepOrphans` reads `createdAtMs: 0` and deletes it regardless of grace. The referenced set is snapshotted once before the paged loop. | Re-check the reference index per candidate before delete; take age from the backend's last-modified time; skip when neither exists. | open |
 | N3 | medium | C | `server/src/s3-blob-store.ts:110-132`, `server/src/sigv4.ts:245`, `server/src/blob-handlers.ts:343-354` | The presigned PUT signs only `host`. `maxBlobBytes` is bypassed, and an actor who knows a file's hash uploads garbage under that id; other clients then skip their upload. | Sign `content-length` and `x-amz-checksum-sha256`; §5.9.3 first; both clients send the headers. | open |
 | N4 | medium | C | `server-workers/src/realtime-do.ts:455-467`, `:367-370` | `#rehydrated` is set before the awaited per-socket loop, and pull-only rounds call it outside the FIFO. A concurrent push fans out to an empty session set. | One rehydration promise awaited from every entry point. | open |
 | N5 | medium | U | `server/src/realtime.ts:129-134`, `server-workers/src/realtime-do.ts:643-719` | Presence lives in hub memory; hibernation discards it while sockets stay open, and no `leave` is sent on a later close. | Persist each socket's published docs in the socket attachment and reload on rehydration. | open |
-| N6 | medium | U | `server/src/realtime.ts:556-560`, `core/src/stream.ts:85-96` | Socket round assembly doubles its buffer without bound. Presence text frames are parsed twice before the 16 KiB cap, which counts UTF-16 units. | D3 limit in the scanner path; one parse; count bytes. | open |
+| N6 | medium | U | `server/src/realtime.ts:556-560`, `core/src/stream.ts:85-96` | Socket round assembly doubles its buffer without bound. Presence text frames are parsed twice before the 16 KiB cap, which counts UTF-16 units. | D3 limit in the scanner path; one parse; count bytes. | fixed 156e1356 |
 | N7 | medium | U | `server/src/realtime.ts:806-813`, `:977-997`, `server-workers/src/realtime-do.ts:766-776` | No bound on sent-but-unacked deltas or send buffering. | Track unacked deltas per session; past a limit switch to the existing `catchup-required` wake (§8.2). | open |
 | N8 | medium | U | `server/src/blob-handlers.ts:183-193`, `server/src/bucket-blob-store.ts:279-281`, `server-hono/src/index.ts:132-150` | Inline blob delivery reads bytes before authorization, buffers them whole and recompresses them. `server-workers.md:66` says the route re-authorizes before it reads. | `has`, authorize, then read; stream through the segment store's `open` shape; serve identity. | open |
 | N9 | medium | U | `server/src/realtime.ts:131-134`, `:445-451`, `:1088-1100` | Presence is keyed by session; §8.6.1 keys it by `(actorId, clientId)`. A stale socket's close fans `leave` for a client that reconnected. | On publish, drop docs held by other sessions of the same identity on that key. | open |
@@ -198,7 +198,7 @@ error catalog against §10.2.
 | N14 | low | U | `server/src/bucket-segment-store.ts:448-464`, `server/src/pull.ts:449`, `server-hono/src/index.ts:132-150` | Identical segment bytes are re-uploaded and byte-compared per bootstrap pull, and recompressed per download. | HEAD before PUT and compare size or checksum; cache the encoded variant by `(segmentId, encoding)`. | open |
 | N15a | low | U | `server-hono/src/index.ts:270`, `server/src/blob-handlers.ts:90-96` | Blob PUT enforces the cap after buffering the whole body. | `Content-Length` precheck and counted read. | open |
 | N15b | medium | C | `server/src/realtime.ts:815` | `sendHeartbeat` has no caller; §8.5 heartbeats are never sent by any shipped host. | Drive it from the hub on a host-configured interval; DO alarm in the Workers host. | open |
-| N15c | low | U | `server/src/handler.ts:1053-1071` | Both HTTP adapters buffer the whole response; §1.4 requires streaming capability. | Addressed with S2. | open |
+| N15c | low | U | `server/src/handler.ts:1053-1071` | Both HTTP adapters buffer the whole response; §1.4 requires streaming capability. | Addressed with S2. | partial 156e1356: read memory bounded; the serve gate still buffers the response |
 | N15d | low | U | `server/src/signed-url.ts:289-290` | `atob` throws on a malformed token; the contract says every failure is `sync.forbidden`. | Catch and map. | open |
 | N15e | low | U | `server-hono/src/index.ts:327-331` | The blob signed-URL response drops the handler's `Cache-Control: private` and `Vary`. | Forward the handler's headers. | open |
 
@@ -334,9 +334,9 @@ deadline, FFI string ownership, `ffi.h` signatures.
 
 | Id | Change | Removes | Status |
 | --- | --- | --- | --- |
-| X1 | Delete the dead wire-version branches (C5). | 17 branches, two optional fields | partial 466a9813: server sites open |
+| X1 | Delete the dead wire-version branches (C5). | 17 branches, two optional fields | fixed 466a9813, 156e1356 |
 | X2 | One SQL module for the SQLite and D1 backends behind a `run(sql, params)` seam; one shared admin read surface for all three. | Most of `d1-storage.ts` (2,964 lines) or `sqlite-storage.ts` (2,418 lines); the class of one-backend-only fixes | open |
-| X3 | One bootstrap decision in `pull.ts` (`prepareSections` and `preparedSection` decide separately today). | The seam behind S3, S4, S5 | open |
+| X3 | One bootstrap decision in `pull.ts` (`prepareSections` and `preparedSection` decide separately today). | The seam behind S3, S4, S5 | fixed 156e1356 |
 | X4 | One row-ownership predicate for eviction, purge, first-page clear and invalidation, in both cores. | The seam behind T4, T9, R2 | open |
 | X5 | One optimistic base store in the TS client, updated by every server write. | Three stores with different rules; the outbox scans of T14 | declined: touches retained rows, authority and unique-conflict evidence for a 40-line fix |
 | X6 | Ask SQLite whether a statement is read-only (D5). | Two lexical scanners | open |
@@ -405,10 +405,9 @@ beside each fix; docs and changelog with user-visible changes; no push.
 
 - 2026-11-10: wave 1 landed `6831597b` (multi-tab), `466a9813` (codec),
   `03702c25` (client rollback base, pulled forward from wave 3).
-- 2026-11-10: the wave 1 server task (S1 S2 S3 S4 S5 S8 S15 N1 N6 N15c X3)
-  stopped mid-work when the model accounts hit their limit. Its changes sit
-  uncommitted in `packages/server*`; server tests pass, one new test file
-  does not typecheck, and the D1 text in SPEC §3.2 is not written yet.
+- 2026-11-10: the wave 1 server task stopped once on an account limit,
+  resumed, and landed as `156e1356`. New code `sync.limit_exceeded`; defaults
+  16 MiB request, 500 subscriptions, 1,000 scope values, 100 watches.
 
 Follow-ups found while fixing:
 
@@ -426,5 +425,16 @@ Follow-ups found while fixing:
   `web-client/src/remote.ts:313`, `client.ts:5184`, `server/src/seed.ts:222`.
 - **Conformance shim staleness.** The harness reuses the shim binary on disk
   without rebuilding it, so local Rust lanes can test old code.
+- **Subscription cap and windows.** A client sends its complete
+  subscription list on every pull (§4.7), so an app holding more than
+  `maxSubscriptionsPerRequest` subscriptions fails every pull. Check consumer
+  apps before release.
+- **N15c remainder.** Bound the buffered response: a per-response inline-byte
+  budget that switches to `SEGMENT_REF`, or let the server end a bootstrap
+  section early with a resume token (§4.2, §4.7).
+- **Authority limits.** The Rust authority has no allowed map and none of the
+  four limits; the wildcard-fence scenario skips it.
+- **Remote docs.** `docs/REMOTE.md` and `guide-remote-operations.md` do not
+  mention the watch cap or serialized refreshes.
 - **Worker bundle ceiling.** `authority-bundle.test.ts` caps the worker at
   186,000 bytes and the margin is a few dozen bytes.
