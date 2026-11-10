@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'The Kotlin binding needs JDK 22 or newer',
+    body: 'The Kotlin binding uses the stable `java.lang.foreign` API. It targets JDK 22, and CI builds and tests it on JDK 25. Remove `--enable-preview` from the JVM arguments and `-Xjvm-enable-preview` from the Kotlin compiler arguments. JDK 21 is no longer supported: its preview API names were renamed in JDK 22.',
+    links: [
+      {
+        href: '/platform-kotlin-install/',
+        label: 'Kotlin install',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'The Node client adapter needs Node 22.16 or newer',
+    body: "On Node, `client.query()` runs the statement under `PRAGMA query_only`, so SQLite refuses a write when the statement runs, and the adapter reads result columns through `StatementSync.columns()`, which Node added in 22.16. On an older Node the adapter fails at construction with `client.storage_unavailable`. The server's `node:sqlite` storage still runs on Node 22.13.",
+    links: [
+      {
+        href: '/guide-server-clients/',
+        label: 'Server-side clients',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'Computed query columns take their type from CAST or count()',
     body: 'A result column that is an expression is typed by a whole-expression `CAST(... AS <type>)` to `INTEGER`, `REAL`, `TEXT`, `BLOB`, or `BOOLEAN`, or is a whole-expression `count(...)`, which is an integer. Any other expression fails generation with `typegen.computed_column_type`. Before, typegen guessed: `length(x)` came out as a string and `count(*)` as a float, and on a wrong guess the TypeScript row passed the value through, Rust returned a decode error, Dart threw, and Kotlin and Swift returned nil. Wrap each computed column in a `CAST` before upgrading; `count(*)` columns change from a float to an integer type in Rust, Kotlin, Swift, and Dart.',
     links: [

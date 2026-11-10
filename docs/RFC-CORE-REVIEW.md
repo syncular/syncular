@@ -1,6 +1,6 @@
 # RFC: Core review findings and fix program
 
-- Status: implemented in pull request 122, including the rounds in §8, §9 and §10; every finding is fixed, closed or listed as open at the end of §10
+- Status: shipped in 0.59.0 (pull request 122), including the rounds in §8, §9 and §10; the follow-up items at the end of §10 are on branch `open-items`
 - Date: 2026-11-10
 - Review baseline: `a531dcea` (0.58.0)
 - Scope: `packages/core`, `packages/crypto`, `packages/server`,
@@ -605,19 +605,17 @@ The maintainer asked for every remaining item to be done or closed.
 Closed without a fix: N14, N15c, T19, T20 and G12 (reasons in their rows),
 X5 and X7 (declined earlier), Q1 (deliberate) and Q2 (moved to its own RFC).
 
-Open after the fourth round:
+After the fourth round (0.59.0 shipped everything above):
 
-- **The Kotlin binding compiles only on JDK 21.** `SyncularFfi.kt` uses
-  `allocateUtf8String` and `getUtf8String`, the JDK 21 preview names; JDK 22
-  renamed them when the foreign-function API became stable. Moving the
-  binding to JDK 22 or later drops the preview flags and breaks JDK 21 users.
-  This machine has no Kotlin toolchain, so the change needs CI as its gate.
+- **The Kotlin binding compiled only on JDK 21.** Fixed `08906f0f`: stable
+  foreign-function API, minimum JDK 22, CI on JDK 25.
+- **The Node adapter decided read-only lexically.** Fixed `3b17afc0`: the
+  statement runs under `query_only`; the scanner is deleted; the adapter
+  needs Node 22.16.
+- **The Flutter CI job did not parse the Dart goldens.** Fixed `08906f0f`:
+  the job runs `bindings/flutter/check.sh`.
+- **Idempotency retention** (Q2): design in `docs/RFC-IDEMPOTENCY-RETENTION.md`,
+  waiting on the maintainer's decision.
 - **Multi-window Tauri apps** get one client, owned by one webview. One
   client per webview is a product decision.
-- **The Node adapter decides read-only lexically** (`node-database.ts`),
-  because `node:sqlite` exposes neither `sqlite3_stmt_readonly` nor a column
-  count before Node 22.16. Running under `query_only`, as the Bun adapter
-  now does, would delete that scanner once the column count is available.
-- **Idempotency retention** (Q2) and **integer scope values above 2^53**
-  (§9) are unchanged.
-
+- **Integer scope values above 2^53** (§9) are unchanged.
