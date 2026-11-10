@@ -84,6 +84,10 @@ public struct SyncularConfig: Sendable {
     /// `attachLocalAuthority()` completes, then against `baseUrl`. Nil leaves the
     /// client server-attached from the start.
     public var localAuthorityPath: String?
+    /// Interval the server sends realtime heartbeats at, in milliseconds
+    /// (default 30000). The transport treats twice this interval of silence as
+    /// a lost socket.
+    public var realtimeHeartbeatMs: UInt64?
 
     public init(
         baseUrl: String? = nil,
@@ -95,7 +99,8 @@ public struct SyncularConfig: Sendable {
         maxRequestBytes: UInt64? = nil,
         maxResponseBytes: UInt64? = nil,
         redirects: String? = nil,
-        localAuthorityPath: String? = nil
+        localAuthorityPath: String? = nil,
+        realtimeHeartbeatMs: UInt64? = nil
     ) {
         self.baseUrl = baseUrl
         self.wsUrl = wsUrl
@@ -107,6 +112,7 @@ public struct SyncularConfig: Sendable {
         self.maxResponseBytes = maxResponseBytes
         self.redirects = redirects
         self.localAuthorityPath = localAuthorityPath
+        self.realtimeHeartbeatMs = realtimeHeartbeatMs
     }
 
     /// The `syncular_client_new` config JSON. `dbPath` rides on `create`, not
@@ -126,6 +132,7 @@ public struct SyncularConfig: Sendable {
         if let maxResponseBytes { object["maxResponseBytes"] = .unsigned(maxResponseBytes) }
         if let redirects { object["redirects"] = .string(redirects) }
         if let localAuthorityPath { object["localAuthorityPath"] = .string(localAuthorityPath) }
+        if let realtimeHeartbeatMs { object["realtimeHeartbeatMs"] = .unsigned(realtimeHeartbeatMs) }
         return .object(object)
     }
 }
@@ -640,18 +647,29 @@ public final class SyncularClient {
             guard let eventPtr else { continue }
             let eventString = String(cString: eventPtr)
             syncular_free_string(eventPtr)
+            // `close()` joins this loop before it closes the client, so the
+            // drain cannot fail with `client.closed` here.
+            try? handleEvent(eventString)
+        }
+    }
 
-            guard let value = try? JSONValue(decoding: eventString),
-                  case let .object(fields) = value,
-                  let type = fields["type"]?.stringValue else {
-                continue
-            }
-            let event = SyncularEvent(type: type, payload: fields)
-            deliveryQueue.async { [weak self] in
-                guard let self else { return }
-                self.onEvent?(event)
-                self.delegate?.syncularClient(self, didReceive: event)
-            }
+    /// Answer a `realtime-wake` with `drainRealtime` through `command`; deliver
+    /// any other event on `deliveryQueue`.
+    func handleEvent(_ eventString: String) throws {
+        guard let value = try? JSONValue(decoding: eventString),
+              case let .object(fields) = value,
+              let type = fields["type"]?.stringValue else {
+            return
+        }
+        if type == "realtime-wake" {
+            try command(method: "drainRealtime", params: .object([:]))
+            return
+        }
+        let event = SyncularEvent(type: type, payload: fields)
+        deliveryQueue.async { [weak self] in
+            guard let self else { return }
+            self.onEvent?(event)
+            self.delegate?.syncularClient(self, didReceive: event)
         }
     }
 }

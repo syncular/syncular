@@ -168,6 +168,8 @@ export interface NativeSyncClientConfig {
   readonly maxResponseBytes?: number;
   /** Redirect handling: `"deny"` (the default) or `"follow"`. */
   readonly redirects?: 'deny' | 'follow';
+  /** Interval the server sends realtime heartbeats at, in milliseconds (default 30000). The transport treats twice this interval of silence as a lost socket. */
+  readonly realtimeHeartbeatMs?: number;
   /** Consume explicit core sync intents on the JS event loop. Default true. */
   readonly autoSync?: boolean;
   /**
@@ -480,6 +482,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'localRevision',
         'statusSnapshot',
         'localAuthorityState',
+        'drainRealtime',
         'shutdown',
       ].includes(method)
     ) {
@@ -568,6 +571,11 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         }
         break;
       }
+      case 'realtime-wake':
+        // The core buffered inbound realtime traffic; this command applies it
+        // and queues the resulting change/presence/sync-intent events.
+        if (!this.#closed) void this.#command('drainRealtime', {});
+        break;
       case 'diagnostics': {
         const snapshot = decodeDiagnosticsSnapshot(
           event.snapshot,
@@ -1463,6 +1471,9 @@ export async function createNativeSyncClient(
   }
   if (config.redirects !== undefined) {
     transportConfig.redirects = config.redirects;
+  }
+  if (config.realtimeHeartbeatMs !== undefined) {
+    transportConfig.realtimeHeartbeatMs = config.realtimeHeartbeatMs;
   }
 
   const createParams: Record<string, unknown> = { schema: config.schema };

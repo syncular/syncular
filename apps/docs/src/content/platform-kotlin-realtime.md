@@ -31,6 +31,8 @@ client.listener = SyncularEventListener { event ->
 
 `syncUntilIdle()` blocks its caller until the rounds finish, so call it off the listener and off the main thread. A command issued from inside the listener waits on the same lock as every other caller.
 
+When the socket reader buffers a delta or a socket loss, the core queues one `realtime-wake` event. The poll thread answers it with `drainRealtime` through `command`, so an idle app applies realtime traffic without a command from you. The listener never sees the wake.
+
 ## Realtime
 
 With a `baseUrl` the core can hold a WebSocket to `{baseUrl}/realtime` (or `wsUrl`). `connectRealtime()` opens it and `disconnectRealtime()` closes it. While the socket is up, the core sends sync rounds over it, and presence changes arrive as `presence` events; read the peers with `presence(scopeKey)` and publish yours with `setPresence(scopeKey, doc)`. [Realtime & the WS loop](/concepts-realtime/) explains the protocol.

@@ -32,6 +32,8 @@ client.onEvent = { event in
 
 `syncUntilIdle()` blocks its caller until the rounds finish, so call it from a background task. To deliver events on another queue, pass `deliveryQueue:` to the initializer.
 
+When the socket reader buffers a delta or a socket loss, the core queues one `realtime-wake` event. The poll loop answers it with `drainRealtime` through `command`, so an idle app applies realtime traffic without a command from you. `onEvent` never sees the wake.
+
 ## Realtime
 
 With a `baseUrl` the core can hold a WebSocket to `{baseUrl}/realtime` (or `wsUrl`). `connectRealtime()` opens it and `disconnectRealtime()` closes it. While the socket is up, the core sends sync rounds over it, and presence changes arrive as `presence` events; read the peers with `presence(scopeKey:)` and publish yours with `setPresence(scopeKey:doc:)`. [Realtime & the WS loop](/concepts-realtime/) explains the protocol.

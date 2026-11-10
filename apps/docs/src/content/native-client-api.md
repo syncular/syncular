@@ -64,6 +64,8 @@ The core has no callbacks. It queues five event types, and the wrapper's poll lo
 | `diagnostics` | A privacy-safe snapshot, emitted only when its state changes | Feed a support screen. |
 | `progress` | Phase, bytes, and rows of the running round | Draw a progress bar. The queue keeps only the newest one. |
 
+The core also queues one `realtime-wake` event when the socket reader buffers a delta, a presence fanout, or a socket loss. The wrapper answers it with the `drainRealtime` command through its own command path and does not deliver it to your code; the resulting `change`, `presence`, and `sync-intent` events arrive as usual. An idle app therefore applies realtime traffic without issuing a command.
+
 :::figure{title="Where an event runs" note="Per SDK"}
 <div class="d-row">
 <div class="node"><span class="t">Core queue</span>change, sync-intent,<br>presence, diagnostics, progress</div>

@@ -56,6 +56,7 @@ void main() {
         maxRequestBytes: 1024,
         maxResponseBytes: 2048,
         redirects: 'deny',
+        realtimeHeartbeatMs: 5000,
       ),
     );
     addTearDown(client.close);
@@ -71,6 +72,31 @@ void main() {
         config: const SyncularConfig(requestTimeoutMs: 0),
       ),
       throwsA(isA<SyncularError>()),
+    );
+  });
+
+  test('a realtime-wake event is answered with drainRealtime, not delivered',
+      () async {
+    // The lean core has no socket, so the wake goes straight to the poll
+    // loop's dispatch. On a closed client a command throws `client.closed`,
+    // which shows the wake issued one while another event type issues none.
+    final client = SyncularClient.create(
+      clientId: 'dart-wake',
+      schema: todoSchema(),
+      pollInterval: const Duration(days: 1),
+    );
+    final delivered = <String>[];
+    client.events.listen((event) => delivered.add(event.type));
+    client.handleEvent('{"type":"realtime-wake"}');
+    client.handleEvent('{"type":"presence","scopeKey":"room:1"}');
+    await pumpEventQueue();
+    expect(delivered, equals(['presence']));
+    client.close();
+    expect(
+      () => client.handleEvent('{"type":"realtime-wake"}'),
+      throwsA(
+        isA<SyncularError>().having((e) => e.code, 'code', 'client.closed'),
+      ),
     );
   });
 

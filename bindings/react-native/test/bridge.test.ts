@@ -360,6 +360,7 @@ describe('createNativeSyncClient', () => {
       maxRequestBytes: 1024,
       maxResponseBytes: 2048,
       redirects: 'follow',
+      realtimeHeartbeatMs: 5000,
       nativeModule,
       eventEmitter,
     });
@@ -374,7 +375,33 @@ describe('createNativeSyncClient', () => {
       maxRequestBytes: 1024,
       maxResponseBytes: 2048,
       redirects: 'follow',
+      realtimeHeartbeatMs: 5000,
     });
+  });
+
+  test('answers a realtime-wake event with drainRealtime, in preflight too', async () => {
+    const { nativeModule, eventEmitter, calls, emit } =
+      makeNative(defaultResponder);
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      nativeModule,
+      eventEmitter,
+    });
+    const drains = () =>
+      calls.filter(
+        (call) =>
+          call.fn === 'command' &&
+          (call.arg as { method?: string }).method === 'drainRealtime',
+      );
+    expect(drains()).toHaveLength(0);
+    emit({ type: 'realtime-wake' });
+    await settle();
+    expect(drains()).toHaveLength(1);
+    await client.close();
+    emit({ type: 'realtime-wake' });
+    await settle();
+    expect(drains()).toHaveLength(1);
   });
 
   test('preflight blocks protected work and installs the portable keyring on activation', async () => {

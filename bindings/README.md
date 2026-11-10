@@ -44,6 +44,13 @@ times and the marshaling zero more times. So each wrapper ships:
   member (a `SyncClientLike` drift breaks the suite). The Tauri JS bridge carries
   the same proof.
 
+**Event pumps answer `realtime-wake`.** Each wrapper's pump issues `drainRealtime`
+through the wrapper's serialized command path when `syncular_client_poll_event`
+returns `{"type":"realtime-wake"}`, and does not deliver the wake to app code. The
+lean test core has no socket, so each suite feeds the pump's per-event dispatch
+a wake and asserts that a command ran (the React Native suite asserts it on the
+NativeModule double).
+
 **Anything that grows logic graduates to a pairing lane.** If a binding ever
 adds behavior beyond marshaling (e.g. native CRDT editing, a windowing registry
 that lives in the wrapper), that logic earns its own conformance scenarios — a

@@ -30,7 +30,10 @@ The client core has no callbacks. The native shims pump
 the `syncular::event` topic. The FFI forwards exact revisioned `change` batches
 and explicit `sync-intent` effects from the Rust core, and does not diff
 counters. The JS bridge feeds changes into the same reactive store as web and
-Tauri, while `presence` stays ephemeral.
+Tauri, while `presence` stays ephemeral. When the socket reader buffers a delta
+or a socket loss, the core queues one `realtime-wake` event; the bridge answers
+it with `drainRealtime` through the same command path, so an idle app applies
+realtime traffic without a command from you.
 
 :::::steps
 ::::step{title="Drive pause and resume from AppState" time="2 min"}

@@ -115,10 +115,12 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
             roundDeadlineMs: 2000,
             maxRequestBytes: 1024,
             maxResponseBytes: 2048,
-            redirects: "deny"
+            redirects: "deny",
+            realtimeHeartbeatMs: 5000
         )
     )
     client.close()
+    #expect(try SyncularConfig(realtimeHeartbeatMs: 5000).newConfigJSON().encodedString().contains("\"realtimeHeartbeatMs\":5000"))
     #expect(throws: SyncularError.self) {
         _ = try SyncularClient(
             clientId: "swift-policy-bad",
@@ -308,6 +310,26 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
         catch let error as SyncularError { caught = error; throw error }
     }
     #expect(caught?.code == "client.closed")
+}
+
+@Test func aRealtimeWakeEventIsAnsweredWithDrainRealtimeAndNotDelivered() throws {
+    // The lean core has no socket, so the wake goes straight to the poll loop's
+    // dispatch. On a closed client a command throws `client.closed`, which
+    // shows the wake issued one while another event type issues none.
+    let queue = DispatchQueue(label: "syncular.test.delivery")
+    let client = try SyncularClient(clientId: "swift-wake", schema: todoSchema(), deliveryQueue: queue)
+    var delivered: [String] = []
+    client.onEvent = { delivered.append($0.type) }
+    try client.handleEvent(#"{"type":"realtime-wake"}"#)
+    try client.handleEvent(#"{"type":"presence","scopeKey":"room:1"}"#)
+    client.close()
+    queue.sync {}
+    // The running poll loop may also deliver the core's own events.
+    #expect(delivered.contains("presence"))
+    #expect(!delivered.contains("realtime-wake"))
+    #expect(throws: SyncularError.self) {
+        try client.handleEvent(#"{"type":"realtime-wake"}"#)
+    }
 }
 
 @Test func pauseResumeStopsAndRestartsPollLoop() throws {

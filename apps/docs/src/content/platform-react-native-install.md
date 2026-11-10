@@ -103,6 +103,7 @@ a persistent database path.
 | `roundDeadlineMs` | One monotonic deadline for the total time of a sync round; it also fails a slow transfer that is still progressing. |
 | `maxRequestBytes`, `maxResponseBytes` | Largest request body sent and largest decoded response accepted. |
 | `redirects` | `"deny"` (default) or `"follow"`. |
+| `realtimeHeartbeatMs` | Heartbeat interval of the realtime server in milliseconds (default 30000). Twice that interval of silence closes the socket as lost. |
 | `autoSync` | Consume explicit core sync intents on the JS event loop. Default `true`. |
 | `nativeModule`, `eventEmitter` | Injection points for tests. In an app both auto-resolve. |
 
