@@ -134,6 +134,23 @@ describe('useRawSql', () => {
     view.unmount();
   });
 
+  test('a disabled query reports disabled, never an honest empty ready', async () => {
+    const client = new FakeClient();
+    const view = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useRawSql('SELECT * FROM tasks', [], { tables: ['tasks'], enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: false } },
+    );
+    await flushEffects();
+    expect(view.result.current.phase).toBe('disabled');
+    expect(view.result.current.isLoading).toBe(false);
+    expect(view.result.current.rows).toEqual([]);
+
+    view.rerender({ enabled: true });
+    await waitFor(() => expect(view.result.current.phase).toBe('ready'));
+    view.unmount();
+  });
+
   test('cached rows render while registration waits and retain its error', async () => {
     const client = new FakeClient();
     const base = { table: 'tasks', variable: 'project_id' };

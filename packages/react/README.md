@@ -70,6 +70,8 @@ availability, refresh }`. `availability` is the typed `ready`, `migrating`, or
   `phase` unchanged;
 - `error`: the latest read failed. A refresh error keeps the rows and revision
   from the last successful read while setting `isRefreshing` to `false`.
+- `disabled`: the hook was given `enabled: false` and reads nothing; `rows`
+  is empty and `isLoading` is `false`.
 
 ## Provider and async initialization
 

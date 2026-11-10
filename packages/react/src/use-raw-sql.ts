@@ -2,6 +2,7 @@ import {
   canonicalValue,
   ClientSyncError,
   type LiveQueryPhase,
+  type LiveQueryResult,
   type QueryDependency,
   type SqlRow,
   type SqlValue,
@@ -34,7 +35,8 @@ export interface UseRawSqlOptions<Row = SqlRow> {
 
 export interface UseRawSqlResult<Row> {
   readonly rows: readonly Row[];
-  readonly phase: LiveQueryPhase;
+  /** `disabled` while `enabled` is `false`: the hook reads nothing. */
+  readonly phase: LiveQueryPhase | 'disabled';
   readonly revision: bigint | undefined;
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
@@ -45,7 +47,7 @@ export interface UseRawSqlResult<Row> {
 
 const DISABLED = {
   rows: [],
-  phase: 'ready',
+  phase: 'disabled',
   revision: undefined,
   error: undefined,
   isRefreshing: false,
@@ -106,7 +108,7 @@ export function useRawSql<Row = SqlRow>(
     [store, identity, options?.mapRow, options?.rowKey],
   );
   // oxlint-enable react-hooks/exhaustive-deps
-  const snapshot = useSyncExternalStore(
+  const snapshot = useSyncExternalStore<LiveQueryResult<Row> | typeof DISABLED>(
     enabled ? entry.subscribe : noSubscribe,
     enabled ? entry.getSnapshot : () => DISABLED,
     enabled ? entry.getSnapshot : () => DISABLED,

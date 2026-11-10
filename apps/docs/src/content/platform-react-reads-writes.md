@@ -120,7 +120,8 @@ It returns the same phase and revision result. The options are `dependencies`,
 `coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. Set `id` to a
 stable value without protected data for support diagnostics; the default id is
 `raw` and never contains SQL. The table-list shorthand `tables` with `scopeKeys`
-still works. Pass `dependencies` or `tables` naming every table the statement
+still works. While `enabled` is `false`, the hook reads nothing and reports
+phase `disabled` with no rows. Pass `dependencies` or `tables` naming every table the statement
 reads: the query re-runs only when one of them changes. Without either, the
 hook throws a `ClientSyncError` with code
 `client.raw_sql_dependencies_required` when it mounts.
