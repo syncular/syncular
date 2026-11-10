@@ -95,7 +95,9 @@ holds only wildcards is unchanged. The rule applies wherever
 
 Clients refuse the same values at authoring. The full-row decoders used for
 `COMMIT` frames and segments stay as permissive as they are today so rows
-already stored keep decoding.
+already stored keep decoding. `blob_ref` is the exception: §5.9.1 already
+defines the value as canonical, so both cores check canonical equality on
+every path.
 
 **D3. One limits object (§1.7).** `ServerLimits` gains
 `maxRequestBytes` (decoded bytes, HTTP and socket), `maxSubscriptionsPerRequest`,
@@ -133,11 +135,11 @@ Columns: id, severity, evidence, where, defect, fix, status. Status values:
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| C1 | high | R | `core/src/row-codec.ts:150-164`, `core/src/message.ts:289-296`, `ssp2/src/primitives.rs:131-139` | TS `JSON.parse` accepts 128+ nested containers, `1e999` and `"\ud800"`; `serde_json` rejects all three. A value the TS server accepts fails to decode on a Rust client. | D2. One documented validity rule, enforced in both cores at authoring and push admission; golden vectors at each boundary. | open |
-| C2 | high | R | `core/src/blob-ref.ts:44-110`, `ssp2/src/blob_ref.rs:26-85` | Rust iterates a sorted map, so its key-order check never fires and reordered keys pass; TS rejects them. TS accepts `byteLength` as `1e2`, `3.0`, `-0`; Rust rejects them. Both accept duplicate keys and whitespace. | D2. Validate by comparing the raw text with the canonical serialization in both cores; delete the per-field order logic. | open |
-| C3 | high | R | `server/src/storage-errors.ts:142-145`, `server/src/relational-rows.ts:526-534` | A pushed string with U+0000, or `json` with `\u0000` or a lone surrogate escape, applies on SQLite and throws SQLSTATE 22021/22P05/22P02 on Postgres. The round answers retryable `sync.internal_error`, so the outbox retries forever. | D2. Reject at admission. | open |
-| C4 | medium | R | `server/src/push.ts` (no finite check), `core/src/row-codec.ts:115-122` | `NaN` in a non-nullable `float` applies on Postgres and is rejected with `sync.constraint_violation` on SQLite. Client SQLite stores `NaN` as NULL. | D2. | open |
-| C5 | low | C | 17 sites: `core/src/message.ts`, `server/src/handler.ts`, `server/src/realtime.ts`, `ssp2/src/decode.rs`, `ssp2/src/encode.rs` | Branches on `wireVersion >= 2` are dead: the minimum is 3. | Delete; `logEpoch` and `resetRequired` become required fields. | open |
+| C1 | high | R | `core/src/row-codec.ts:150-164`, `core/src/message.ts:289-296`, `ssp2/src/primitives.rs:131-139` | TS `JSON.parse` accepts 128+ nested containers, `1e999` and `"\ud800"`; `serde_json` rejects all three. A value the TS server accepts fails to decode on a Rust client. | D2. One documented validity rule, enforced in both cores at authoring and push admission; golden vectors at each boundary. | partial 466a9813: values shadowed by a duplicate key still differ, see §7 |
+| C2 | high | R | `core/src/blob-ref.ts:44-110`, `ssp2/src/blob_ref.rs:26-85` | Rust iterates a sorted map, so its key-order check never fires and reordered keys pass; TS rejects them. TS accepts `byteLength` as `1e2`, `3.0`, `-0`; Rust rejects them. Both accept duplicate keys and whitespace. | D2. Validate by comparing the raw text with the canonical serialization in both cores; delete the per-field order logic. | fixed 466a9813 |
+| C3 | high | R | `server/src/storage-errors.ts:142-145`, `server/src/relational-rows.ts:526-534` | A pushed string with U+0000, or `json` with `\u0000` or a lone surrogate escape, applies on SQLite and throws SQLSTATE 22021/22P05/22P02 on Postgres. The round answers retryable `sync.internal_error`, so the outbox retries forever. | D2. Reject at admission. | fixed 466a9813 for values; rowId and scope values open |
+| C4 | medium | R | `server/src/push.ts` (no finite check), `core/src/row-codec.ts:115-122` | `NaN` in a non-nullable `float` applies on Postgres and is rejected with `sync.constraint_violation` on SQLite. Client SQLite stores `NaN` as NULL. | D2. | fixed 466a9813 |
+| C5 | low | C | 17 sites: `core/src/message.ts`, `server/src/handler.ts`, `server/src/realtime.ts`, `ssp2/src/decode.rs`, `ssp2/src/encode.rs` | Branches on `wireVersion >= 2` are dead: the minimum is 3. | Delete; `logEpoch` and `resetRequired` become required fields. | fixed 466a9813 in core and ssp2; server sites open |
 
 Checked and sound: bounds checks on every read, canonical map order by UTF-16
 code unit in both cores, presence invariants, AES-GCM nonce generation, the
@@ -241,9 +243,9 @@ staged-write ordering and parameter chunking, pruning atomicity.
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| T1 | critical | C | `multi-tab.ts:191-203`, `:471`, `:641`, `:743-763` | `res` carries no recipient and `reqId` counts from 1 per follower. One follower's reply settles another's call with the same id. | `to` on `res`, dropped when it does not match; bump the multi-tab protocol version. | open |
+| T1 | critical | C | `multi-tab.ts:191-203`, `:471`, `:641`, `:743-763` | `res` carries no recipient and `reqId` counts from 1 per follower. One follower's reply settles another's call with the same id. | `to` on `res`, dropped when it does not match; bump the multi-tab protocol version. | fixed 6831597b |
 | T2 | high | R | `client.ts:5439-5442`, `:5256-5261`, `:5306-5311`, `:6128-6145` | A realtime delta applies to a subscription at cursor -1 and its `SUB_END` marks it bootstrapped with a fraction of its rows. | Add `sub.cursor < 0` to one shared skip predicate; treat the skip as a drop. Rust parity; conformance scenario. | open |
-| T3 | high | R | `client.ts:6400-6449`, `:6357-6379`, `apply.ts:157-160` | Rollback of a rejected commit restores the before-image captured at `mutate` time, though a server write to that row landed since. §7.2 requires the last server-delivered base. | Re-capture pending images for affected rows inside `#replayOutbox`. | open |
+| T3 | high | R | `client.ts:6400-6449`, `:6357-6379`, `apply.ts:157-160` | Rollback of a rejected commit restores the before-image captured at `mutate` time, though a server write to that row landed since. §7.2 requires the last server-delivered base. | Re-capture pending images for affected rows inside `#replayOutbox`. | fixed 03702c25 |
 | T4 | high | R | `apply.ts:278-290`, `:302-343`, `client.ts:3331`, `:6233` | Eviction and revocation purge delete rows another live subscription still covers; the survivor keeps claiming completeness. | Exclude rows matched by any other active subscription's effective scopes on that table. Both cores; conformance scenario. | open |
 | T5 | high | R | `client.ts:4529-4530`, `:2288-2299`, `realtime-supervisor.ts:328-347` | A round failing with `network`/`connect` schedules nothing and latches the supervisor offline. The pending edit is not pushed until the next local write. | The supervisor uses the host connectivity signal only; resume calls `syncUntilIdle`. | open |
 | T6 | high | R | `client.ts:4380-4388`, `:2685-2710` | One staged blob the server refuses fails every round before push and pull; no API removes it. | A non-retryable refusal is that blob's outcome: clear the upload, reject its commits through the existing drop path. §5.9.7; Rust parity. | open |
@@ -251,17 +253,17 @@ staged-write ordering and parameter chunking, pruning atomicity.
 | T8 | medium | R | `http.ts:120-139`, `client.ts:4660-4679`, `sync-scheduler.ts:88-114`, `worker-core.ts:233-251` | No fetch carries an abort signal; the idle deadline aborts only a socket round; both host loops treat retryable `sync.idle_timeout` as terminal. | One `AbortSignal` from the drive deadline into transport calls; host loops queue a background intent on a retryable rejection. | open |
 | T9 | medium | U | `invalidation.ts:162-168`, `client.ts:6233-6234` | A bulk scoped delete records only the scope keys of the subscription's own variables; a live query keyed by another variable keeps publishing the deleted row. | Fall back to table-level invalidation when the map does not name every variable. Rust parity. | open |
 | T10 | medium | R | `client.ts:3175-3183`, `:5155-5157`, `:6132-6145`, `state.ts:84-85` | `unsubscribe()` during a round is undone by that round's `SUB_END` (`INSERT OR REPLACE`). | `UPDATE ... WHERE id=?`; skip the section when the row is gone. | open |
-| T11 | medium | U | `reactive-store.ts:610-632`, `:545-550`, `:1224-1235` | Recovery re-reads only `blocked` entries; a read rejected by a leader handover is already `error` and stays there. | Request a read for every active entry on each transition to `leader` or `follower`. | open |
-| T12 | medium | U | `multi-tab.ts:1443-1460` | A promoted follower whose core fails to start swallows the error and never contests the lock again. | Publish the error through `onStateChange`; re-issue `lock.acquire`, bounded. | open |
-| T13 | medium | U | `multi-tab.ts:340-351`, `:708-712`, `:890-910` | A newer tab sends one `hello`, deposing one older leader; a second older tab promotes and never hears it. | One `hello` per newly seen older leader. | open |
-| T14 | medium | R | `apply.ts:157-160`, `client.ts:5895-5911`, `outbox.ts:93-96` | Every applied change scans and JSON-parses the whole outbox: 500 commits take 52 ms with an empty outbox and 3.6 s with 4,000 pending. | Store `tbl` and `row_id` on `_syncular_outbox_before_images` with an index. | open |
+| T11 | medium | U | `reactive-store.ts:610-632`, `:545-550`, `:1224-1235` | Recovery re-reads only `blocked` entries; a read rejected by a leader handover is already `error` and stays there. | Request a read for every active entry on each transition to `leader` or `follower`. | fixed 6831597b |
+| T12 | medium | U | `multi-tab.ts:1443-1460` | A promoted follower whose core fails to start swallows the error and never contests the lock again. | Publish the error through `onStateChange`; re-issue `lock.acquire`, bounded. | fixed 6831597b |
+| T13 | medium | U | `multi-tab.ts:340-351`, `:708-712`, `:890-910` | A newer tab sends one `hello`, deposing one older leader; a second older tab promotes and never hears it. | One `hello` per newly seen older leader. | fixed 6831597b |
+| T14 | medium | R | `apply.ts:157-160`, `client.ts:5895-5911`, `outbox.ts:93-96` | Every applied change scans and JSON-parses the whole outbox: 500 commits take 52 ms with an empty outbox and 3.6 s with 4,000 pending. | Store `tbl` and `row_id` on `_syncular_outbox_before_images` with an index. | fixed 03702c25 |
 | T15 | medium | R | `query-guard.ts:28-34`, `:153-160` | `PRAGMA` assignments pass the read-only guard; the `WITH` scanner disagrees with SQLite's tokenizer. | D5. | open |
 | T16 | medium | U | `apply.ts:380-402` | A `sqlite` image is accepted for a table with encrypted columns, so a server writes unauthenticated values into them. | Reject in `applySqliteSegment`. Rust parity check. | open |
 | T17 | low | U | `client.ts:5247-5283` | Every `SEGMENT_REF` downloads concurrently and the prefetch map is never pruned. | Bound concurrency; drop each entry after apply. | open |
 | T18 | low | U | `worker-core.ts:468`, `client.ts:2410-2423` | Worker mode builds a full diagnostics snapshot per revision. | Build it on request. | open |
-| T19 | low | U | `reactive-store.ts:958-971` | The outcome journal is re-read in full on every change. | Read the changed entries. | open |
+| T19 | low | U | `reactive-store.ts:958-971` | The outcome journal is re-read in full on every change. | Read the changed entries. | partial 6831597b: refreshes collapse into one read; the event carries no key |
 | T20 | low | U | `multi-tab.ts:376-386` | Every request and reply, including keys and `Authorization` headers, is broadcast to all same-origin tabs. | Covered in part by T1; a per-follower port is recorded under next-up. | open |
-| T21 | low | U | `worker-host.ts:865` | `config.worker()` throws outside the `try`, leaking the leader lease. | Move it inside. | open |
+| T21 | low | U | `worker-host.ts:865` | `config.worker()` throws outside the `try`, leaking the leader lease. | Move it inside. | fixed 6831597b |
 | T22 | low | U | `previous-version.ts:609-614` | Capture starts at `rowid > -1` and omits negative integer primary keys. | Start below the minimum. | open |
 | T23 | low | U | `wasm-database.ts:176-196` | SQL is compiled on every `exec`/`query`, per row on rows-segment import. | Statement cache keyed by SQL text. | open |
 
@@ -332,11 +334,11 @@ deadline, FFI string ownership, `ffi.h` signatures.
 
 | Id | Change | Removes | Status |
 | --- | --- | --- | --- |
-| X1 | Delete the dead wire-version branches (C5). | 17 branches, two optional fields | open |
+| X1 | Delete the dead wire-version branches (C5). | 17 branches, two optional fields | partial 466a9813: server sites open |
 | X2 | One SQL module for the SQLite and D1 backends behind a `run(sql, params)` seam; one shared admin read surface for all three. | Most of `d1-storage.ts` (2,964 lines) or `sqlite-storage.ts` (2,418 lines); the class of one-backend-only fixes | open |
 | X3 | One bootstrap decision in `pull.ts` (`prepareSections` and `preparedSection` decide separately today). | The seam behind S3, S4, S5 | open |
 | X4 | One row-ownership predicate for eviction, purge, first-page clear and invalidation, in both cores. | The seam behind T4, T9, R2 | open |
-| X5 | One optimistic base store in the TS client, updated by every server write. | Three stores with different rules; the outbox scans of T14 | open |
+| X5 | One optimistic base store in the TS client, updated by every server write. | Three stores with different rules; the outbox scans of T14 | declined: touches retained rows, authority and unique-conflict evidence for a 40-line fix |
 | X6 | Ask SQLite whether a statement is read-only (D5). | Two lexical scanners | open |
 | X7 | A typed error enum at the Rust storage and codec boundary. | `starts_with` branching; R9, R10, F14 as a class | open |
 | X8 | One rollback snapshot type in the Rust client. | About ten hand-rolled snapshot sites | open |
@@ -398,3 +400,31 @@ beside each fix; docs and changelog with user-visible changes; no push.
 7. **Unconfirmed leads** listed under each area: confirm or dismiss each.
 8. **Per-follower message ports** in multi-tab (T20), which stops broadcasting
    keys and headers to every same-origin tab.
+
+## 7. Program log
+
+- 2026-11-10: wave 1 landed `6831597b` (multi-tab), `466a9813` (codec),
+  `03702c25` (client rollback base, pulled forward from wave 3).
+- 2026-11-10: the wave 1 server task (S1 S2 S3 S4 S5 S8 S15 N1 N6 N15c X3)
+  stopped mid-work when the model accounts hit their limit. Its changes sit
+  uncommitted in `packages/server*`; server tests pass, one new test file
+  does not typecheck, and the D1 text in SPEC §3.2 is not written yet.
+
+Follow-ups found while fixing:
+
+- **C1 remainder.** `{"a":1e999,"a":1}` and `{"a":"\ud800","a":1}` pass the
+  TS validator (`JSON.parse` drops the shadowed value) and fail in Rust
+  (`serde_json` parses it first). A shadowed value nested 65 to 127 deep
+  passes both; 128 and deeper fails only in Rust. Fix: define the rule on the
+  raw text and check depth, number tokens and string escapes lexically in
+  both cores.
+- **Authoring.** Neither client refuses D2 values at `mutate` yet; the server
+  rejects the commit instead. Call the validator in both authoring paths.
+- **Other parse sites.** Realtime control messages and decrypted `json`
+  plaintext (`core/src/crypto.ts:153`) still use the plain parser.
+- **Dead checks.** `=== undefined` on `logEpoch`/`resetRequired` in
+  `web-client/src/remote.ts:313`, `client.ts:5184`, `server/src/seed.ts:222`.
+- **Conformance shim staleness.** The harness reuses the shim binary on disk
+  without rebuilding it, so local Rust lanes can test old code.
+- **Worker bundle ceiling.** `authority-bundle.test.ts` caps the worker at
+  186,000 bytes and the margin is a few dozen bytes.
