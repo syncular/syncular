@@ -64,6 +64,7 @@ import {
   deleteLocalRow,
   deleteScopedRows,
   localScopePredicate,
+  ownsLocalRow,
   evictScopedRows,
   yieldToHost,
   upsertLocalRow,
@@ -3328,7 +3329,13 @@ export class SyncClient {
     let remaining = false;
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        const result = evictScopedRows(this.#db, table, effective, pinned);
+        const result = evictScopedRows(
+          this.#db,
+          table,
+          effective,
+          this.#scopeOwners(base.table, subId),
+          pinned,
+        );
         remaining = result.remaining;
         deleteWindowUnit(this.#db, baseKey, unit);
         deleteSubscription(this.#db, subId);
@@ -3379,6 +3386,7 @@ export class SyncClient {
             this.#db,
             table,
             entry.effective,
+            this.#scopeOwners(entry.table, entry.subId),
             pinned,
           );
           remaining = result.remaining;
@@ -3388,6 +3396,23 @@ export class SyncClient {
         if (remaining) await yieldToHost();
       } while (remaining);
     }
+  }
+
+  /**
+   * §3.3/§4.8/§5.6 row ownership: the effective scopes of every other
+   * active subscription on `table` that holds rows (`cursor >= 0`). A
+   * scoped delete keeps every row one of them still covers.
+   */
+  #scopeOwners(table: string, exceptId: string): ScopeMap[] {
+    return loadSubscriptions(this.#db).flatMap((sub) =>
+      sub.id !== exceptId &&
+      sub.table === table &&
+      sub.status === 'active' &&
+      sub.cursor >= 0 &&
+      sub.effectiveScopes !== undefined
+        ? [sub.effectiveScopes]
+        : [],
+    );
   }
 
   /**
@@ -5232,6 +5257,16 @@ export class SyncClient {
     let section: OpenSection | undefined;
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
+    let deltaDropped = false;
+    // §8.2: a delta section applies only to a locally active subscription
+    // that holds a cursor and no resume token. A subscription at cursor -1
+    // (never synced, reset, or rebootstrapped) bootstraps on its own pull.
+    const skipsSection = (sub: SubscriptionRecord | undefined) =>
+      sub === undefined ||
+      (mode === 'delta' &&
+        (sub.status !== 'active' ||
+          sub.cursor < 0 ||
+          sub.bootstrapState !== undefined));
     const incompleteSubscriptions = new Set(
       mode === 'pull' ? subsById.keys() : [],
     );
@@ -5253,12 +5288,7 @@ export class SyncClient {
       for (const frame of message.frames) {
         if (frame.type === 'SUB_START') {
           const sub = subsById.get(frame.id);
-          openSub =
-            sub === undefined ||
-            (mode === 'delta' &&
-              (sub.status !== 'active' || sub.bootstrapState !== undefined))
-              ? undefined
-              : sub;
+          openSub = skipsSection(sub) ? undefined : sub;
         } else if (frame.type === 'SUB_END') {
           openSub = undefined;
         } else if (frame.type === 'ERROR') {
@@ -5303,12 +5333,7 @@ export class SyncClient {
       for (const frame of message.frames) {
         if (frame.type === 'SUB_START') {
           const sub = subsById.get(frame.id);
-          openSub =
-            sub === undefined ||
-            (mode === 'delta' &&
-              (sub.status !== 'active' || sub.bootstrapState !== undefined))
-              ? undefined
-              : sub;
+          openSub = skipsSection(sub) ? undefined : sub;
         } else if (frame.type === 'SUB_END') {
           openSub = undefined;
         } else if (frame.type === 'ERROR') {
@@ -5436,10 +5461,12 @@ export class SyncClient {
               sub.cursor < 0 &&
               sub.bootstrapState === undefined &&
               frame.bootstrap;
+            // §4.4: a section whose registration was removed mid-round
+            // (unsubscribe, eviction) is skipped; it never re-creates it.
             const skip =
-              sub === undefined ||
-              (mode === 'delta' &&
-                (sub.status !== 'active' || sub.bootstrapState !== undefined));
+              skipsSection(sub) ||
+              getSubscription(this.#db, frame.id) === undefined;
+            if (skip && mode === 'delta') deltaDropped = true;
             section = { start: frame, sub, fresh, skip, cleared: false };
             break;
           }
@@ -5522,7 +5549,7 @@ export class SyncClient {
               await this.#applySegmentOrFail(
                 section,
                 summary,
-                (table, clearFirst, effective) =>
+                (table, clearFirst, effective, owners) =>
                   applySqliteSegment(
                     this.#db,
                     this.#schema,
@@ -5538,6 +5565,7 @@ export class SyncClient {
                       table,
                       clearFirst,
                       effective,
+                      owners,
                       frame.rowCount > 0,
                       resetEpoch,
                     ),
@@ -5564,7 +5592,7 @@ export class SyncClient {
               await this.#applySegmentOrFail(
                 section,
                 summary,
-                (table, clearFirst, effective) =>
+                (table, clearFirst, effective, owners) =>
                   applyRowsSegment(
                     this.#db,
                     this.#schema,
@@ -5574,6 +5602,7 @@ export class SyncClient {
                       table,
                       clearFirst,
                       effective,
+                      owners,
                       segment.blocks.some((block) => block.length > 0),
                       resetEpoch,
                     ),
@@ -5665,6 +5694,11 @@ export class SyncClient {
 
     if (mode === 'delta') {
       if (deltaCursor >= 0) this.#sendAck(deltaCursor);
+      // §8.2: a skipped delta section is a drop; a pull repairs it.
+      if (deltaDropped) {
+        this.#setSyncNeeded(true);
+        this.#emitSyncNeeded('catchup-required');
+      }
     } else {
       this.#ackAfterPull();
     }
@@ -5957,8 +5991,12 @@ export class SyncClient {
   }
 
   /** Whether a fresh-bootstrap clear would remove at least one local row. */
-  #scopedRowsExist(table: CompiledClientTable, effective: ScopeMap): boolean {
-    const scope = localScopePredicate(table, effective);
+  #scopedRowsExist(
+    table: CompiledClientTable,
+    effective: ScopeMap,
+    owners: readonly ScopeMap[],
+  ): boolean {
+    const scope = localScopePredicate(table, effective, owners);
     return (
       scope !== undefined &&
       this.#db.query(
@@ -5973,19 +6011,21 @@ export class SyncClient {
     table: CompiledClientTable,
     clearFirst: boolean,
     effective: ScopeMap,
+    owners: readonly ScopeMap[],
     hasRows: boolean,
     resetEpoch: number,
   ): Parameters<typeof applyRowsSegment>[4] {
     return {
       clearFirst,
       effective,
+      owners,
       isCurrent: () => this.#localResetEpoch === resetEpoch,
       onProgress: (rowsProcessed) => this.#progress.update({ rowsProcessed }),
       transaction: (fn) =>
         this.#applyBatch((batch) => {
           if (
             hasRows ||
-            (clearFirst && this.#scopedRowsExist(table, effective))
+            (clearFirst && this.#scopedRowsExist(table, effective, owners))
           )
             batch.table(table.name);
           const result = fn();
@@ -6007,6 +6047,7 @@ export class SyncClient {
       table: CompiledClientTable,
       clearFirst: boolean,
       effective: ScopeMap,
+      owners: readonly ScopeMap[],
     ) => number | Promise<number>,
     clearFirst: boolean,
   ): Promise<void> {
@@ -6018,6 +6059,7 @@ export class SyncClient {
         table,
         clearFirst,
         section.start.effectiveScopes,
+        this.#scopeOwners(sub.table, sub.id),
       );
       section.cleared = true;
     } catch (error) {
@@ -6025,6 +6067,8 @@ export class SyncClient {
         error instanceof ClientSyncError &&
         error.code === 'sync.scope_revoked'
       ) {
+        section.skip = true;
+        if (getSubscription(this.#db, sub.id) === undefined) return;
         const registered = getWindowUnitBySubId(this.#db, sub.id);
         this.#applyBatch((batch) => {
           saveSubscription(
@@ -6045,7 +6089,6 @@ export class SyncClient {
           }
         });
         summary.failed.push(sub.id);
-        section.skip = true;
         return;
       }
       throw error;
@@ -6120,6 +6163,10 @@ export class SyncClient {
     bootstrapState: string | undefined,
     summary: MutableSummary,
   ): boolean {
+    // §4.4: SUB_END rewrites a live registration only. An unsubscribe or
+    // eviction during this round's awaits removed it; persisting now would
+    // re-create it. Everything below is synchronous with this check.
+    if (getSubscription(this.#db, sub.id) === undefined) return false;
     if (start.status === 'active') {
       // §1.4 rule 4: durable cursor/resume state persists only at SUB_END;
       // §3.3: the effective-scope echo is persisted for the purge contract.
@@ -6213,6 +6260,7 @@ export class SyncClient {
     // (never the requested map), drop doomed outbox commits, stop pulling.
     const table = this.#table(sub.table);
     const lastEffective = sub.effectiveScopes;
+    const owners = this.#scopeOwners(sub.table, sub.id);
     const registered = getWindowUnitBySubId(this.#db, sub.id);
     let failed = false;
     this.#applyBatch((batch) => {
@@ -6227,10 +6275,10 @@ export class SyncClient {
               batch,
               (name, values) =>
                 name === table.name &&
-                matchesLocalScopes(table, lastEffective, values),
+                ownsLocalRow(table, lastEffective, owners, values),
             ),
           ];
-          deleteScopedRows(this.#db, table, lastEffective);
+          deleteScopedRows(this.#db, table, lastEffective, owners);
           batch.scopeMap(table, lastEffective);
           const pendingById = new Map(
             listOutbox(this.#db).map((commit) => [

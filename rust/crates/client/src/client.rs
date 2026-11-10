@@ -8046,7 +8046,7 @@ mod observation_tests {
         let table = client.schema.table("tasks").unwrap().clone();
         let scopes = vec![("project_id".into(), vec!["p1".into()])];
         assert!(client
-            .apply_sqlite_image(&image, &table, true, &scopes, 2050, 7, "digest")
+            .apply_sqlite_image(&image, &table, true, &scopes, &[], 2050, 7, "digest")
             .is_err());
         assert!(client.conn.is_autocommit());
         assert_eq!(
@@ -8060,7 +8060,7 @@ mod observation_tests {
             .execute("UPDATE tasks SET project_id='p1' WHERE id='01500'", [])
             .unwrap();
         assert!(matches!(
-            client.apply_sqlite_image(&image, &table, true, &scopes, 2050, 7, "digest"),
+            client.apply_sqlite_image(&image, &table, true, &scopes, &[], 2050, 7, "digest"),
             Ok(2050)
         ));
         assert_eq!(
@@ -8207,6 +8207,7 @@ mod observation_tests {
                 &table,
                 true,
                 &[("project_id".into(), vec!["p1".into()])],
+                &[],
                 1025,
                 7,
                 "digest"
@@ -8324,7 +8325,16 @@ mod observation_tests {
                         .execute("INSERT INTO tasks VALUES (?1,'p1',?2,2)", [id, title])
                         .unwrap();
                     assert!(matches!(
-                        actual.apply_sqlite_image(&image, &table, false, &scopes, 1, 7, "digest"),
+                        actual.apply_sqlite_image(
+                            &image,
+                            &table,
+                            false,
+                            &scopes,
+                            &[],
+                            1,
+                            7,
+                            "digest"
+                        ),
                         Ok(1)
                     ));
                 } else {
@@ -8457,6 +8467,7 @@ mod observation_tests {
                                     &table,
                                     false,
                                     &[],
+                                    &[],
                                     1,
                                     7,
                                     "digest"
@@ -8544,7 +8555,7 @@ mod observation_tests {
             .unwrap();
         let effective = [("project_id".into(), vec!["p1".into()])];
         assert!(client
-            .apply_sqlite_image(&image, &table, true, &effective, 1, 7, "digest")
+            .apply_sqlite_image(&image, &table, true, &effective, &[], 1, 7, "digest")
             .is_err());
         let failure = client.storage_failure.borrow().clone().unwrap();
         assert_eq!(failure.code, Some("client.storage_full"));
@@ -8556,7 +8567,7 @@ mod observation_tests {
             .execute_batch("PRAGMA max_page_count = 1073741823")
             .unwrap();
         assert!(matches!(
-            client.apply_sqlite_image(&image, &table, true, &effective, 1, 7, "digest"),
+            client.apply_sqlite_image(&image, &table, true, &effective, &[], 1, 7, "digest"),
             Ok(1)
         ));
         assert!(client.conn.is_autocommit());
@@ -9879,6 +9890,7 @@ mod observation_tests {
                 &table,
                 true,
                 &[("project_id".into(), vec!["p1".into()])],
+                &[],
                 10240,
                 7,
                 "digest"
@@ -9916,7 +9928,7 @@ mod observation_tests {
                 let (mut client, image, table) = unique_import_fixture(rows);
                 let start = std::time::Instant::now();
                 assert!(
-                    matches!(client.apply_sqlite_image(&image,&table,true,&[("project_id".into(),vec!["p1".into()])],rows as i64,7,"digest"),Ok(n) if n as usize == rows)
+                    matches!(client.apply_sqlite_image(&image,&table,true,&[("project_id".into(),vec!["p1".into()])], &[],rows as i64,7,"digest"),Ok(n) if n as usize == rows)
                 );
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 assert_eq!(
@@ -10751,6 +10763,18 @@ struct Subscription {
     synced_once: bool,
 }
 
+impl Subscription {
+    /// §8.2: a delta section applies only to a locally active subscription
+    /// that holds a cursor and no resume token. A subscription at cursor -1
+    /// (never synced, reset, or rebootstrapped) bootstraps on its own pull.
+    fn takes_delta(&self) -> bool {
+        self.state == SubState::Active
+            && self.cursor >= 0
+            && self.bootstrap_state.is_none()
+            && self.synced_once
+    }
+}
+
 /// Internal state for hosts that perform network I/O outside the client owner.
 #[doc(hidden)]
 pub struct CurrentBasePreparation {
@@ -10760,6 +10784,359 @@ pub struct CurrentBasePreparation {
     transport_epoch: u64,
     subscription_epoch: u64,
     security_epoch: u64,
+}
+
+#[cfg(test)]
+mod row_ownership_tests {
+    //! §3.3/§4.8/§5.6 row ownership, §8.2 delta skips and typed scope binds.
+    use super::*;
+    use crate::values::encode_row_json;
+    use serde_json::json;
+
+    fn client() -> SyncClient {
+        let schema = json!({"version":1,"tables":[
+            {"name":"docs","primaryKey":"id","columns":[
+                {"name":"id","type":"string","nullable":false},
+                {"name":"org_id","type":"string","nullable":false},
+                {"name":"project_id","type":"string","nullable":false}],
+             "scopes":[{"pattern":"org:{org_id}"},{"pattern":"project:{project_id}"}]},
+            {"name":"counts","primaryKey":"id","columns":[
+                {"name":"id","type":"integer","nullable":false},
+                {"name":"project_id","type":"integer","nullable":false}],
+             "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let client =
+            SyncClient::new("ownership".into(), &schema, ClientLimits::default()).expect("client");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client
+    }
+
+    fn scopes(variable: &str, values: &[&str]) -> Vec<(String, Vec<String>)> {
+        vec![(
+            variable.to_owned(),
+            values.iter().map(|value| (*value).to_owned()).collect(),
+        )]
+    }
+
+    /// An active registration that completed a bootstrap at cursor 1.
+    fn synced(client: &mut SyncClient, id: &str, table: &str, scopes: Vec<(String, Vec<String>)>) {
+        client
+            .subscribe(id.into(), table.into(), scopes.clone(), None)
+            .expect("subscribe");
+        let sub = client
+            .subs
+            .iter_mut()
+            .find(|sub| sub.id == id)
+            .expect("sub");
+        sub.cursor = 1;
+        sub.synced_once = true;
+        sub.effective = Some(scopes);
+        let sub = sub.clone();
+        client.persist_sub(&sub).expect("persist");
+    }
+
+    fn insert(client: &SyncClient, table: &str, rows: &str) {
+        client
+            .conn
+            .execute_batch(&format!(
+                "INSERT INTO _syncular_base_{table} VALUES {rows}; INSERT INTO {table} VALUES {rows};"
+            ))
+            .expect("rows");
+    }
+
+    fn ids(client: &SyncClient, table: &str) -> Vec<String> {
+        let mut statement = client
+            .conn
+            .prepare(&format!("SELECT CAST(id AS TEXT) FROM {table} ORDER BY id"))
+            .expect("select");
+        let ids = statement
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .collect::<Result<_, _>>()
+            .expect("ids");
+        ids
+    }
+
+    fn response(frames: Vec<Frame>) -> Vec<u8> {
+        let mut all = vec![Frame::RespHeader {
+            required_schema_version: None,
+            latest_schema_version: None,
+            log_epoch: "epoch-1".into(),
+            reset_required: false,
+        }];
+        all.extend(frames);
+        encode_message(&Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: all,
+        })
+    }
+
+    /// Answers every round with one fixed response.
+    struct Reply(Vec<u8>);
+
+    impl Transport for Reply {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Ok(self.0.clone())
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    fn revoke(id: &str) -> Vec<Frame> {
+        vec![
+            Frame::SubStart {
+                id: id.into(),
+                status: SubStatus::Revoked,
+                reason_code: "sync.scope_revoked".into(),
+                effective_scopes: Vec::new(),
+                bootstrap: false,
+            },
+            Frame::SubEnd {
+                next_cursor: 1,
+                bootstrap_state: None,
+            },
+        ]
+    }
+
+    fn docs_window() -> WindowBase {
+        WindowBase {
+            table: "docs".into(),
+            variable: "project_id".into(),
+            fixed_scopes: Vec::new(),
+            params: None,
+        }
+    }
+
+    #[test]
+    fn window_eviction_keeps_rows_another_active_subscription_covers() {
+        let mut client = client();
+        synced(&mut client, "org", "docs", scopes("org_id", &["o1"]));
+        client
+            .set_window(&docs_window(), &["p1".into(), "p3".into()])
+            .expect("widen");
+        insert(
+            &client,
+            "docs",
+            "('shared','o1','p1',1), ('window-only','o2','p3',1)",
+        );
+        client.drain_change_batches();
+
+        client.set_window(&docs_window(), &[]).expect("shrink");
+
+        assert_eq!(ids(&client, "docs"), vec!["shared"]);
+        // The eviction map names only `project_id`; a query keyed by `org:`
+        // must re-run, so the change is table-wide.
+        let tables = client
+            .drain_change_batches()
+            .into_iter()
+            .flat_map(|batch| batch.tables)
+            .filter(|change| change.table == "docs")
+            .map(|change| change.scope_keys)
+            .collect::<Vec<_>>();
+        assert!(
+            !tables.is_empty() && tables.iter().all(Option::is_none),
+            "{tables:?}"
+        );
+    }
+
+    #[test]
+    fn a_revocation_purge_keeps_rows_another_active_subscription_covers() {
+        let mut client = client();
+        synced(&mut client, "org", "docs", scopes("org_id", &["o1"]));
+        synced(
+            &mut client,
+            "project",
+            "docs",
+            scopes("project_id", &["p1"]),
+        );
+        insert(
+            &client,
+            "docs",
+            "('shared','o1','p1',1), ('lone','o2','p1',1)",
+        );
+
+        let outcome = client.sync(&mut Reply(response(revoke("project"))));
+
+        assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+        assert_eq!(
+            client.subscription_state("project").expect("state").status,
+            "revoked"
+        );
+        assert_eq!(ids(&client, "docs"), vec!["shared"]);
+    }
+
+    #[test]
+    fn a_fresh_first_page_clear_keeps_rows_a_complete_subscription_owns() {
+        let mut client = client();
+        synced(&mut client, "org", "docs", scopes("org_id", &["o1"]));
+        client
+            .subscribe(
+                "project".into(),
+                "docs".into(),
+                scopes("project_id", &["p1"]),
+                None,
+            )
+            .expect("subscribe");
+        insert(
+            &client,
+            "docs",
+            "('held','o1','p1',1), ('stale','o2','p1',1)",
+        );
+        let empty = ssp2::segment::encode_rows_segment(&RowsSegment {
+            table: "docs".into(),
+            schema_version: 1,
+            columns: client.schema.table("docs").unwrap().wire_columns.clone(),
+            blocks: Vec::new(),
+        });
+
+        let outcome = client.sync(&mut Reply(response(vec![
+            Frame::SubStart {
+                id: "project".into(),
+                status: SubStatus::Active,
+                reason_code: String::new(),
+                effective_scopes: scopes("project_id", &["p1"]),
+                bootstrap: true,
+            },
+            Frame::SegmentInline { payload: empty },
+            Frame::SubEnd {
+                next_cursor: 1,
+                bootstrap_state: None,
+            },
+        ])));
+
+        assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+        assert_eq!(
+            client.subscription_state("project").expect("state").cursor,
+            1
+        );
+        assert_eq!(ids(&client, "docs"), vec!["held"]);
+    }
+
+    #[test]
+    fn integer_scope_columns_and_keys_bind_by_their_declared_type() {
+        let mut client = client();
+        synced(&mut client, "seven", "counts", scopes("project_id", &["7"]));
+        insert(&client, "counts", "(1,7,1), (2,7,1), (3,8,1), (4,8,1)");
+        assert!(client.scoped_rows_exist("counts", &scopes("project_id", &["7"]), &[]));
+        assert!(!client.scoped_rows_exist("counts", &scopes("project_id", &["07"]), &[]));
+
+        let outcome = client.sync(&mut Reply(response(revoke("seven"))));
+
+        assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+        assert_eq!(ids(&client, "counts"), vec!["3", "4"]);
+        let pinned = std::collections::HashSet::from(["3".to_owned()]);
+        let (remaining, deferred) = client
+            .evict_scope_rows("counts", &scopes("project_id", &["8"]), &[], &pinned)
+            .expect("evict");
+        assert!(!remaining && deferred);
+        assert_eq!(ids(&client, "counts"), vec!["3"]);
+    }
+
+    #[test]
+    fn a_delta_for_a_reset_subscription_is_skipped_and_raises_sync_needed() {
+        let mut client = client();
+        synced(&mut client, "live", "docs", scopes("org_id", &["o1"]));
+        synced(&mut client, "reset", "docs", scopes("org_id", &["o2"]));
+        // §4.6 reset: cursor -1, no resume token, rows kept.
+        let reset = client
+            .subs
+            .iter_mut()
+            .find(|sub| sub.id == "reset")
+            .unwrap();
+        reset.cursor = -1;
+        let reset = reset.clone();
+        client.persist_sub(&reset).unwrap();
+        client.sync_needed = false;
+        let section = |client: &SyncClient, id: &str, org: &str| {
+            let values = Map::from_iter([
+                ("id".into(), Value::from(format!("d-{id}"))),
+                ("org_id".into(), Value::from(org)),
+                ("project_id".into(), Value::from("p1")),
+            ]);
+            vec![
+                Frame::SubStart {
+                    id: id.into(),
+                    status: SubStatus::Active,
+                    reason_code: String::new(),
+                    effective_scopes: scopes("org_id", &[org]),
+                    bootstrap: false,
+                },
+                Frame::Commit {
+                    commit_seq: 2,
+                    actor_id: "writer".into(),
+                    created_at_ms: 1,
+                    tables: vec!["docs".into()],
+                    changes: vec![ssp2::model::Change {
+                        table_index: 0,
+                        row_id: format!("d-{id}"),
+                        op: Op::Upsert,
+                        row_version: Some(2),
+                        scopes: vec![("org_id".into(), org.into())],
+                        row: Some(
+                            encode_row_json(
+                                client.schema.table("docs").unwrap(),
+                                &format!("d-{id}"),
+                                &values,
+                                &client.encryption,
+                            )
+                            .unwrap(),
+                        ),
+                    }],
+                },
+                Frame::SubEnd {
+                    next_cursor: 2,
+                    bootstrap_state: None,
+                },
+            ]
+        };
+        let mut frames = section(&client, "live", "o1");
+        frames.extend(section(&client, "reset", "o2"));
+
+        let controls = client.on_realtime_binary_queued(&response(frames));
+
+        assert_eq!(controls, vec!["{\"type\":\"ack\",\"cursor\":2}".to_owned()]);
+        assert_eq!(ids(&client, "docs"), vec!["d-live"]);
+        assert_eq!(
+            client.subscription_state("reset").expect("state").cursor,
+            -1
+        );
+        assert!(client.sync_needed, "the skipped section asks for a pull");
+    }
+
+    #[test]
+    fn evicting_a_window_unit_cancels_the_prepared_round() {
+        let mut client = client();
+        client
+            .set_window(&docs_window(), &["p1".into()])
+            .expect("widen");
+        client.active_round = Some(uuid::Uuid::nil());
+
+        client.set_window(&docs_window(), &[]).expect("shrink");
+
+        assert_eq!(client.active_round, None);
+    }
 }
 
 #[cfg(test)]
@@ -11234,6 +11611,79 @@ fn row_id_predicate(table: &TableSchema) -> String {
         // Narrowing those matches by numeric equality would change behavior.
         _ => text_match,
     }
+}
+
+/// §3.3/§4.8/§5.6 row ownership: rows whose local scope columns match
+/// `effective` and that no entry of `owners` matches. `owners` holds the
+/// effective scopes of every other active subscription on the table that
+/// holds rows; a scoped delete never removes a row one of them still covers.
+/// Scope values bind by the column's declared type, as `row_id_predicate`
+/// does. `Ok(None)` matches nothing (an empty map or value list); `Err(())`
+/// is a missing local scope-column mapping (the fail-closed case).
+fn local_scope_predicate(
+    table: &TableSchema,
+    effective: &[(String, Vec<String>)],
+    owners: &[Vec<(String, Vec<String>)>],
+) -> Result<Option<(String, Vec<SqlValue>)>, ()> {
+    if effective.is_empty() || effective.iter().any(|(_, values)| values.is_empty()) {
+        return Ok(None);
+    }
+    let mut clauses = Vec::new();
+    let mut params = Vec::new();
+    for (variable, values) in effective {
+        let name = table.scope_column(variable).ok_or(())?;
+        let column = table
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .ok_or(())?;
+        let key = quote_ident(name);
+        let holes = vec!["?"; values.len()].join(", ");
+        let text_match = format!("CAST({key} AS TEXT) IN ({holes})");
+        clauses.push(match column.ty {
+            ColumnType::String | ColumnType::Json => format!("{key} IN ({holes})"),
+            ColumnType::Integer | ColumnType::Boolean => {
+                params.extend(values.iter().cloned().map(SqlValue::Text));
+                let seek = vec!["+CAST(? AS INTEGER)"; values.len()].join(", ");
+                format!("{key} IN ({seek}) AND {text_match}")
+            }
+            _ => text_match,
+        });
+        params.extend(values.iter().cloned().map(SqlValue::Text));
+    }
+    for owner in owners {
+        if let Some((sql, owner_params)) = local_scope_predicate(table, owner, &[])? {
+            clauses.push(format!("NOT ({sql})"));
+            params.extend(owner_params);
+        }
+    }
+    Ok(Some((clauses.join(" AND "), params)))
+}
+
+/// [`local_scope_predicate`] over decoded row values (retained rows).
+fn owns_local_row(
+    table: &TableSchema,
+    effective: &[(String, Vec<String>)],
+    owners: &[Vec<(String, Vec<String>)>],
+    values: &Map<String, Value>,
+) -> bool {
+    let matches = |scopes: &[(String, Vec<String>)]| {
+        !scopes.is_empty()
+            && scopes.iter().all(|(variable, allowed)| {
+                table
+                    .scope_column(variable)
+                    .and_then(|column| values.get(column))
+                    .filter(|value| !value.is_null())
+                    .is_some_and(|value| {
+                        allowed.contains(
+                            &value
+                                .as_str()
+                                .map_or_else(|| value.to_string(), str::to_owned),
+                        )
+                    })
+            })
+    };
+    matches(effective) && !owners.iter().any(|owner| matches(owner))
 }
 
 fn is_local_operation_code_like(value: &str) -> bool {
@@ -13708,6 +14158,16 @@ impl SyncClient {
         let Some(table) = self.schema.table(table_name) else {
             return;
         };
+        // A bulk scoped delete whose map leaves a declared variable unnamed
+        // cannot list the deleted rows' keys for it: the change is table-wide.
+        if table.scope_variables.iter().any(|scope| {
+            !scopes
+                .iter()
+                .any(|(variable, _)| *variable == scope.variable)
+        }) {
+            batch.table(table_name);
+            return;
+        }
         for (variable, values) in scopes {
             let Some(scope) = table
                 .scope_variables
@@ -13805,36 +14265,21 @@ impl SyncClient {
         }
     }
 
-    fn scoped_rows_exist(&self, table_name: &str, effective: &[(String, Vec<String>)]) -> bool {
-        if effective.is_empty() {
-            return false;
-        }
+    fn scoped_rows_exist(
+        &self,
+        table_name: &str,
+        effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
+    ) -> bool {
         let Some(table) = self.schema.table(table_name) else {
             return false;
         };
-        let mut clauses = Vec::new();
-        let mut params = Vec::new();
-        for (variable, values) in effective {
-            let Some(column) = table.scope_column(variable) else {
-                return false;
-            };
-            if values.is_empty() {
-                return false;
-            }
-            let placeholders = values
-                .iter()
-                .map(|value| {
-                    params.push(SqlValue::Text(value.clone()));
-                    "?"
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            clauses.push(format!("{} IN ({placeholders})", quote_ident(column)));
-        }
+        let Ok(Some((predicate, params))) = local_scope_predicate(table, effective, owners) else {
+            return false;
+        };
         let sql = format!(
-            "SELECT 1 FROM {} WHERE {} LIMIT 1",
-            base_table(table_name),
-            clauses.join(" AND ")
+            "SELECT 1 FROM {} WHERE {predicate} LIMIT 1",
+            base_table(table_name)
         );
         self.conn
             .query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
@@ -15728,7 +16173,9 @@ impl SyncClient {
             .and_then(|s| s.effective.clone())
             .unwrap_or_else(|| unit_scopes(base, unit));
         let pinned = self.pinned_row_ids(&base.table);
-        let (remaining, deferred) = self.evict_scope_rows(&base.table, &effective, &pinned)?;
+        let owners = self.scope_owners(&base.table, sub_id);
+        let (remaining, deferred) =
+            self.evict_scope_rows(&base.table, &effective, &owners, &pinned)?;
         self.delete_window_unit(base_key, unit)?;
         self.conn
             .execute(
@@ -15737,6 +16184,9 @@ impl SyncClient {
             )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         self.subs.retain(|sub| sub.id != sub_id);
+        // A prepared round still carries this unit; its SUB_END must not
+        // complete a re-added unit that lost these rows (as `unsubscribe`).
+        self.cancel_sync_round();
         self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
         if deferred {
             self.save_pending_evict(sub_id, &base.table, &effective)?;
@@ -15746,51 +16196,33 @@ impl SyncClient {
         Ok(remaining)
     }
 
-    /// §4.8 E1: delete base rows matching effective scopes EXCEPT pinned
-    /// primary keys. Returns (more unpinned work, any scoped rows remain).
-    /// A missing scope-column mapping fails without deleting rows.
+    /// §4.8 E1: delete base rows owned by the effective scopes
+    /// ([`local_scope_predicate`]) EXCEPT pinned primary keys. Returns (more
+    /// unpinned work, any scoped rows remain). A missing scope-column mapping
+    /// fails without deleting rows.
     fn evict_scope_rows(
         &self,
         table_name: &str,
         effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
         pinned: &std::collections::HashSet<String>,
     ) -> Result<(bool, bool), String> {
-        if effective.is_empty() {
-            return Ok((false, false));
-        }
         let table = self.schema.table(table_name).ok_or("sync.unknown_table")?;
-        let mut clauses = Vec::new();
-        let mut params: Vec<SqlValue> = Vec::new();
-        for (variable, values) in effective {
-            let column = table.scope_column(variable).ok_or("sync.scope_revoked")?;
-            if values.is_empty() {
-                return Ok((false, false));
-            }
-            let holes = values
-                .iter()
-                .map(|v| {
-                    params.push(SqlValue::Text(v.clone()));
-                    "?"
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            clauses.push(format!("{} IN ({holes})", quote_ident(column)));
-        }
-        let scope = clauses.join(" AND ");
+        let Some((scope, mut params)) = local_scope_predicate(table, effective, owners)
+            .map_err(|()| "sync.scope_revoked".to_owned())?
+        else {
+            return Ok((false, false));
+        };
         let scope_params = params.len();
         let pk = quote_ident(&table.primary_key);
-        if !pinned.is_empty() {
-            let holes = pinned
-                .iter()
-                .map(|id| {
-                    params.push(SqlValue::Text(id.clone()));
-                    "?"
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            clauses.push(format!("{pk} NOT IN ({holes})"));
-        }
-        let predicate = clauses.join(" AND ");
+        // Pinned ids are rowId text; the text form matches every key type.
+        let predicate = if pinned.is_empty() {
+            scope.clone()
+        } else {
+            params.extend(pinned.iter().cloned().map(SqlValue::Text));
+            let holes = vec!["?"; pinned.len()].join(", ");
+            format!("{scope} AND CAST({pk} AS TEXT) NOT IN ({holes})")
+        };
         let base = base_table(table_name);
         let visible = visible_table(table_name);
         let mut ids: Vec<SqlValue> = Vec::new();
@@ -15868,7 +16300,8 @@ impl SyncClient {
                 std::thread::yield_now();
                 self.begin_observation("syncular_evict")?;
                 let pinned = self.pinned_row_ids(&table_name);
-                let result = self.evict_scope_rows(&table_name, &effective, &pinned);
+                let owners = self.scope_owners(&table_name, &sub_id);
+                let result = self.evict_scope_rows(&table_name, &effective, &owners, &pinned);
                 let (remaining, deferred) = match result {
                     Ok(result) => result,
                     Err(error) => {
@@ -15894,6 +16327,22 @@ impl SyncClient {
             }
         }
         Ok(())
+    }
+
+    /// §3.3/§4.8/§5.6 row ownership: the effective scopes of every other
+    /// active subscription on `table` that holds rows (`cursor >= 0`). A
+    /// scoped delete keeps every row one of them still covers.
+    fn scope_owners(&self, table: &str, except_id: &str) -> Vec<Vec<(String, Vec<String>)>> {
+        self.subs
+            .iter()
+            .filter(|sub| {
+                sub.id != except_id
+                    && sub.table == table
+                    && sub.state == SubState::Active
+                    && sub.cursor >= 0
+            })
+            .filter_map(|sub| sub.effective.clone())
+            .collect()
     }
 
     /// §4.8 E1: primary keys of `table` referenced by a pending outbox
@@ -19054,6 +19503,7 @@ impl SyncClient {
                         let sub = &self.subs[sub_index];
                         (sub.table.clone(), sub.effective.clone().unwrap_or_default())
                     };
+                    let owners = self.scope_owners(&table, id);
                     let scoped_table = self.schema.table(&table).cloned().ok_or_else(|| {
                         SectionError::Abort(
                             "sync.unknown_table".to_owned(),
@@ -19063,16 +19513,7 @@ impl SyncClient {
                     let dropped = self
                         .drop_failed_commits(|name, values| {
                             name == table
-                                && !effective.is_empty()
-                                && effective.iter().all(|(variable, allowed)| {
-                                    scoped_table
-                                        .scope_column(variable)
-                                        .and_then(|column| values.get(column))
-                                        .and_then(Value::as_str)
-                                        .is_some_and(|value| {
-                                            allowed.iter().any(|allowed| allowed == value)
-                                        })
-                                })
+                                && owns_local_row(&scoped_table, &effective, &owners, values)
                         })
                         .map_err(|message| {
                             SectionError::Abort("storage.failed".to_owned(), message)
@@ -19085,7 +19526,7 @@ impl SyncClient {
                             batch.table(&operation.table);
                         }
                     }
-                    let purged = self.purge_scope_rows(&table, &effective);
+                    let purged = self.purge_scope_rows(&table, &effective, &owners);
                     match purged {
                         Ok(()) => {
                             self.record_scope_map(&mut batch, &table, &effective);
@@ -19769,9 +20210,13 @@ impl SyncClient {
         segment: &RowsSegment,
         first_fresh_page: bool,
     ) -> Result<u32, SectionError> {
-        let (sub_table, effective) = {
+        let (sub_table, effective, owners) = {
             let sub = &self.subs[sub_index];
-            (sub.table.clone(), sub.effective.clone().unwrap_or_default())
+            (
+                sub.table.clone(),
+                sub.effective.clone().unwrap_or_default(),
+                self.scope_owners(&sub.table, &sub.id),
+            )
         };
         let table = self.schema.table(&sub_table).cloned().ok_or_else(|| {
             SectionError::Abort(
@@ -19826,11 +20271,13 @@ impl SyncClient {
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
-                if !block.is_empty() || (clear && self.scoped_rows_exist(&table.name, &effective)) {
+                if !block.is_empty()
+                    || (clear && self.scoped_rows_exist(&table.name, &effective, &owners))
+                {
                     batch.table(&table.name);
                 }
                 if clear {
-                    self.purge_scope_rows(&table.name, &effective)
+                    self.purge_scope_rows(&table.name, &effective, &owners)
                         .map_err(|()| SectionError::FailClosed)?;
                 }
                 for (row_index, row) in block.iter().enumerate() {
@@ -19928,9 +20375,13 @@ impl SyncClient {
                 format!("sqlite segment rejected: {detail} (§5.3)"),
             )
         };
-        let (sub_table, effective) = {
+        let (sub_table, effective, owners) = {
             let sub = &self.subs[sub_index];
-            (sub.table.clone(), sub.effective.clone().unwrap_or_default())
+            (
+                sub.table.clone(),
+                sub.effective.clone().unwrap_or_default(),
+                self.scope_owners(&sub.table, &sub.id),
+            )
         };
         let table = self.schema.table(&sub_table).cloned().ok_or_else(|| {
             SectionError::Abort(
@@ -19956,6 +20407,7 @@ impl SyncClient {
             &table,
             first_fresh_page,
             &effective,
+            &owners,
             row_count,
             as_of_commit_seq,
             scope_digest,
@@ -19972,6 +20424,7 @@ impl SyncClient {
         table: &crate::schema::TableSchema,
         first_fresh_page: bool,
         effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
         row_count: i64,
         as_of_commit_seq: i64,
         scope_digest: &str,
@@ -20123,10 +20576,10 @@ impl SyncClient {
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
                 if clear {
-                    if self.scoped_rows_exist(&table.name, effective) {
+                    if self.scoped_rows_exist(&table.name, effective, owners) {
                         batch.table(&table.name);
                     }
-                    self.purge_scope_rows(&table.name, effective)
+                    self.purge_scope_rows(&table.name, effective, owners)
                         .map_err(|()| SectionError::FailClosed)?;
                 }
                 let mut processed = 0u32;
@@ -20759,53 +21212,28 @@ impl SyncClient {
 
     // -- scope purge + doomed outbox (§3.3) ----------------------------------------
 
-    /// Delete base rows matching the effective scopes; `Err(())` = no local
-    /// scope-column mapping for a key (the fail-closed case).
+    /// Delete base and visible rows owned by the effective scopes
+    /// ([`local_scope_predicate`]); `Err(())` = no local scope-column mapping
+    /// for a key (the fail-closed case).
     fn purge_scope_rows(
         &mut self,
         table_name: &str,
         effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
     ) -> Result<(), ()> {
-        if effective.is_empty() {
+        let table = self.schema.table(table_name).ok_or(())?;
+        let Some((predicate, params)) = local_scope_predicate(table, effective, owners)? else {
             return Ok(());
-        }
-        let table = self.schema.table(table_name).ok_or(())?.clone();
-        let mut clauses = Vec::new();
-        let mut params: Vec<SqlValue> = Vec::new();
-        for (variable, values) in effective {
-            let column = table.scope_column(variable).ok_or(())?;
-            let placeholders: Vec<String> = values
-                .iter()
-                .map(|v| {
-                    params.push(SqlValue::Text(v.clone()));
-                    "?".to_owned()
-                })
-                .collect();
-            clauses.push(format!(
-                "{} IN ({})",
-                quote_ident(column),
-                placeholders.join(", ")
-            ));
-        }
-        let sql = format!(
-            "DELETE FROM {} WHERE {}",
-            base_table(table_name),
-            clauses.join(" AND ")
-        );
+        };
         self.overlay_dirty.table(table_name);
-        self.conn
-            .execute(&sql, rusqlite::params_from_iter(&params))
-            .map_err(|_| ())?;
-        self.conn
-            .execute(
-                &format!(
-                    "DELETE FROM {} WHERE {}",
-                    visible_table(table_name),
-                    clauses.join(" AND ")
-                ),
-                rusqlite::params_from_iter(&params),
-            )
-            .map_err(|_| ())?;
+        for source in [base_table(table_name), visible_table(table_name)] {
+            self.conn
+                .execute(
+                    &format!("DELETE FROM {source} WHERE {predicate}"),
+                    rusqlite::params_from_iter(&params),
+                )
+                .map_err(|_| ())?;
+        }
         Ok(())
     }
 
@@ -22009,10 +22437,7 @@ impl SyncClient {
                 let Some(sub) = self.subs.iter().find(|sub| sub.id == id) else {
                     return false;
                 };
-                sub.state == SubState::Active
-                    && sub.bootstrap_state.is_none()
-                    && sub.synced_once
-                    && next_cursor.is_some_and(|cursor| cursor > sub.cursor)
+                sub.takes_delta() && next_cursor.is_some_and(|cursor| cursor > sub.cursor)
             });
         let mut frames = message.frames.into_iter();
         let mut applied_cursor: Option<i64> = None;
@@ -22047,13 +22472,8 @@ impl SyncClient {
                 continue;
             };
             let sub = &self.subs[sub_index];
-            // §8.2: only locally active, not mid-bootstrap subscriptions
-            // apply; skipped sections are repaired by the next pull.
-            if status != SubStatus::Active
-                || sub.state != SubState::Active
-                || sub.bootstrap_state.is_some()
-                || !sub.synced_once
-            {
+            // §8.2: skipped sections are repaired by the next pull.
+            if status != SubStatus::Active || !sub.takes_delta() {
                 dropped = true;
                 continue;
             }
@@ -22118,8 +22538,9 @@ impl SyncClient {
             // §8.2 ack point: the highest applied SUB_END.nextCursor.
             let ack = format!("{{\"type\":\"ack\",\"cursor\":{cursor}}}");
             let _ = transport.realtime_send(&ack);
-        } else if !any_covered || dropped {
-            // §8.2: a delta not applied at all is treated as a wake-up.
+        }
+        if dropped || (applied_cursor.is_none() && !any_covered) {
+            // §8.2: a skipped section or an unapplied delta is a wake-up.
             self.set_sync_needed(true, true);
         }
     }

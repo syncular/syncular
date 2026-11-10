@@ -158,8 +158,15 @@ export class ChangeAccumulator {
     this.#outcomes = true;
   }
 
-  /** Add precise keys for a requested/effective scope map. */
+  /**
+   * Add precise keys for a bulk scoped delete. A map that leaves a declared
+   * scope variable unnamed cannot list the deleted rows' keys for that
+   * variable, so the change is table-wide.
+   */
   scopeMap(table: CompiledClientTable, scopes: ScopeMap): void {
+    for (const variable of table.scopePrefixByVariable.keys()) {
+      if (!Object.hasOwn(scopes, variable)) return this.table(table.name);
+    }
     for (const [variable, values] of Object.entries(scopes)) {
       const prefix = table.scopePrefixByVariable.get(variable);
       if (prefix === undefined) continue;

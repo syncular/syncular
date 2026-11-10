@@ -280,6 +280,54 @@ describe('deltas (§8.2)', () => {
     );
     expect(tableRows(b.db, 'tasks')[0]?.id).toBe('mine');
   });
+  test('a delta for a subscription at cursor -1 is skipped and raises sync-needed', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    const b = await makeClient(server, { clientId: 'client-b' });
+    for (const c of [a, b]) {
+      c.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+    }
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    await b.client.syncUntilIdle();
+    await b.client.connectRealtime();
+    b.client.rebootstrapLocalData({ rebootstrapId: 'delta-gap-1' });
+    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    b.wakes.length = 0;
+
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t2', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    await waitFor(
+      () =>
+        b.wakes.includes('catchup-required') ||
+        (b.client.subscription('s1')?.cursor ?? -1) >= 0,
+      (notify) => {
+        const offChange = b.client.onChange(notify);
+        const offNeeded = b.client.onSyncNeeded(notify);
+        return () => {
+          offChange();
+          offNeeded();
+        };
+      },
+      'delta handled',
+    );
+    // The delta carried t2 only; applying it would have completed the
+    // bootstrap without t1.
+    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    expect(tableRows(b.db, 'tasks')).toEqual([]);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(true);
+
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks').map((row) => row.id)).toEqual(['t1', 't2']);
+  });
 });
 
 describe('wake-ups and catch-up (§8.3, §8.4)', () => {

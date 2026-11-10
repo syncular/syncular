@@ -6,7 +6,11 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { SyncClient, type ClientSchema } from '@syncular/client';
+import {
+  type ClientChangeBatch,
+  SyncClient,
+  type ClientSchema,
+} from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import {
   handleSyncRequest,
@@ -436,3 +440,113 @@ for (const backend of ['sqlite', 'pglite'] as const) {
     }
   });
 }
+
+describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => {
+  const doc = (id: string, org: string, project: string) => ({
+    table: 'docs',
+    op: 'upsert' as const,
+    values: { id, org_id: org, project_id: project, body: id },
+  });
+
+  test('window eviction keeps rows another active subscription covers', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('shared', 'p1') },
+      { table: 'tasks', op: 'upsert', values: taskValues('window-only', 'p3') },
+    ]);
+    await a.client.syncUntilIdle();
+    a.client.subscribe({
+      id: 'all',
+      table: 'tasks',
+      scopes: { project_id: ['p1', 'p2'] },
+    });
+    const base = { table: 'tasks', variable: 'project_id' };
+    await a.client.setWindow(base, ['p1', 'p3']);
+    await a.client.syncUntilIdle();
+    expect(tableRows(a.db, 'tasks').map((row) => row.id)).toEqual([
+      'shared',
+      'window-only',
+    ]);
+
+    await a.client.setWindow(base, []);
+    // `all` still covers p1 and keeps claiming completeness for it.
+    expect(tableRows(a.db, 'tasks').map((row) => row.id)).toEqual(['shared']);
+    expect(a.client.subscription('all')?.cursor).toBeGreaterThanOrEqual(0);
+  });
+
+  test('a revocation purge keeps rows another active subscription covers', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.mutate([doc('d1', 'o1', 'p1'), doc('d2', 'o2', 'p1')]);
+    await a.client.syncUntilIdle();
+    a.client.subscribe({
+      id: 'org',
+      table: 'docs',
+      scopes: { org_id: ['o1'] },
+    });
+    a.client.subscribe({
+      id: 'project',
+      table: 'docs',
+      scopes: { projectId: ['p1'] },
+    });
+    await a.client.syncUntilIdle();
+    expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['d1', 'd2']);
+
+    server.allowed['actor-1'] = {
+      project_id: ['*'],
+      projectId: ['p9'],
+      org_id: ['o1'],
+    };
+    const summary = await a.client.sync();
+    expect(summary.revoked).toEqual(['project']);
+    expect(a.client.subscription('org')?.status).toBe('active');
+    // d1 stays under `org`; d2 had no other owner.
+    expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['d1']);
+  });
+
+  test('a fresh first-page clear keeps rows a complete subscription owns', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.subscribe({
+      id: 'org',
+      table: 'docs',
+      scopes: { org_id: ['o1'] },
+    });
+    await a.client.syncUntilIdle();
+    // A row `org` holds that the p1 bootstrap does not deliver.
+    a.db.exec(
+      `INSERT INTO "docs" (id, org_id, project_id, body, _sync_version)
+       VALUES ('held', 'o1', 'p1', 'held', 1), ('stale', 'o2', 'p1', 'stale', 1)`,
+    );
+    a.client.subscribe({
+      id: 'project',
+      table: 'docs',
+      scopes: { projectId: ['p1'] },
+    });
+    await a.client.syncUntilIdle();
+    expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['held']);
+  });
+
+  test('a bulk delete whose map omits a scope variable invalidates the whole table', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.mutate([doc('d1', 'o1', 'p1')]);
+    await a.client.syncUntilIdle();
+    const base = { table: 'docs', variable: 'projectId' };
+    await a.client.setWindow(base, ['p1']);
+    await a.client.syncUntilIdle();
+    const changes: ClientChangeBatch[] = [];
+    const off = a.client.onChange((batch) => changes.push(batch));
+    await a.client.setWindow(base, []);
+    off();
+    expect(tableRows(a.db, 'docs')).toEqual([]);
+    // A live query keyed by `org:o1` must re-run: the eviction map names
+    // only `projectId`, so the change carries no scope keys.
+    expect(
+      changes
+        .flatMap((batch) => batch.tables)
+        .filter((t) => t.table === 'docs'),
+    ).toEqual([{ table: 'docs' }]);
+  });
+});

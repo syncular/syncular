@@ -213,15 +213,19 @@ export function validateSegmentColumns(
 }
 
 /**
- * Scope-matched local delete (§3.3 purge / §5.6 first-page rule): delete
- * rows whose generated local scope columns match `effective` — every key's
- * column value must be in the key's value list. Fails closed
- * (`sync.scope_revoked`) when the table has no local mapping for a key:
- * precision or nothing, never clear-the-table.
+ * Scope-matched local delete (§3.3 purge / §4.8 eviction / §5.6 first-page
+ * rule): delete rows whose generated local scope columns match `effective`
+ * (every key's column value must be in the key's value list) and that no
+ * entry of `owners` matches. `owners` holds the effective scopes of every
+ * other active subscription on the table that holds rows; a row one of them
+ * still covers is never removed. Fails closed (`sync.scope_revoked`) when
+ * the table has no local mapping for a key: precision or nothing, never
+ * clear-the-table.
  */
 export function localScopePredicate(
   table: CompiledClientTable,
   effective: ScopeMap,
+  owners: readonly ScopeMap[],
 ): { sql: string; params: string[] } | undefined {
   const entries = Object.entries(effective);
   if (!entries.length || entries.some(([, values]) => !values.length)) return;
@@ -238,7 +242,26 @@ export function localScopePredicate(
       return `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`;
     })
     .join(' AND ');
-  return { sql, params };
+  const kept = owners.flatMap((owner) => {
+    const scope = localScopePredicate(table, owner, []);
+    if (scope === undefined) return [];
+    params.push(...scope.params);
+    return [` AND NOT (${scope.sql})`];
+  });
+  return { sql: sql + kept.join(''), params };
+}
+
+/** {@link localScopePredicate} over decoded row values (retained rows). */
+export function ownsLocalRow(
+  table: CompiledClientTable,
+  effective: ScopeMap,
+  owners: readonly ScopeMap[],
+  values: Readonly<Record<string, JsonRowValue>>,
+): boolean {
+  return (
+    matchesLocalScopes(table, effective, values) &&
+    !owners.some((owner) => matchesLocalScopes(table, owner, values))
+  );
 }
 
 function scopedRows(
@@ -258,8 +281,13 @@ function bootstrapScope(
   db: ClientDatabase,
   table: CompiledClientTable,
   effective: ScopeMap,
+  owners: readonly ScopeMap[],
 ): string[] {
-  const rows = scopedRows(db, table, localScopePredicate(table, effective));
+  const rows = scopedRows(
+    db,
+    table,
+    localScopePredicate(table, effective, owners),
+  );
   rows.push(
     ...db
       .query(`SELECT id,base,intent FROM ${RETAINED_ROWS} WHERE tbl=?`, [
@@ -269,7 +297,7 @@ function bootstrapScope(
         [row.base, row.intent].some(
           (json) =>
             json !== null &&
-            matchesLocalScopes(table, effective, JSON.parse(json as string)),
+            ownsLocalRow(table, effective, owners, JSON.parse(json as string)),
         ),
       ),
   );
@@ -280,8 +308,9 @@ export function deleteScopedRows(
   db: ClientDatabase,
   table: CompiledClientTable,
   effective: ScopeMap,
+  owners: readonly ScopeMap[],
 ): void {
-  const scope = localScopePredicate(table, effective);
+  const scope = localScopePredicate(table, effective, owners);
   if (!scope) return;
   const { sql, params } = scope;
   for (const row of scopedRows(db, table, scope)) {
@@ -292,8 +321,8 @@ export function deleteScopedRows(
 
 /**
  * §4.8 window eviction: delete rows matching a departing unit's effective
- * scopes (same local-scope-column rule and fail-closed clause as
- * {@link deleteScopedRows}) EXCEPT rows whose primary key is in
+ * scopes (same local-scope-column rule, owner exclusion and fail-closed
+ * clause as {@link deleteScopedRows}) EXCEPT rows whose primary key is in
  * `pinnedRowIds` (E1 — pinned by a still-pending outbox commit). Returns
  * whether unpinned work remains and whether any scoped rows remain. Each
  * call removes at most 1,024 rows; the caller commits before yielding. Also removes the
@@ -304,9 +333,10 @@ export function evictScopedRows(
   db: ClientDatabase,
   table: CompiledClientTable,
   effective: ScopeMap,
+  owners: readonly ScopeMap[],
   pinnedRowIds: ReadonlySet<string>,
 ): { remaining: boolean; deferred: boolean } {
-  const scope = localScopePredicate(table, effective);
+  const scope = localScopePredicate(table, effective, owners);
   if (!scope) return { remaining: false, deferred: false };
   const { sql, params } = scope;
   const pk = quoteIdent(table.primaryKey);
@@ -326,9 +356,10 @@ export function evictScopedRows(
       [row.intent, row.base].some(
         (json) =>
           json !== null &&
-          matchesLocalScopes(
+          ownsLocalRow(
             table,
             effective,
+            owners,
             JSON.parse(json as string) as Record<string, JsonRowValue>,
           ),
       )
@@ -387,6 +418,8 @@ export async function applySqliteSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
+    /** Effective scopes of the other row-holding subscriptions (§5.6). */
+    readonly owners: readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
     readonly isCurrent?: () => boolean;
@@ -503,7 +536,7 @@ export async function applySqliteSegment(
           : [
               ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
               ...(after === undefined && options.clearFirst
-                ? bootstrapScope(db, table, options.effective)
+                ? bootstrapScope(db, table, options.effective, options.owners)
                 : []),
               ...rows.map((row) =>
                 JSON.stringify([table.name, String(row[table.primaryKey])]),
@@ -511,7 +544,7 @@ export async function applySqliteSegment(
             ];
         const protectedRows = restoreFailedBases(db, schema, scope);
         if (after === undefined && options.clearFirst)
-          deleteScopedRows(db, table, options.effective);
+          deleteScopedRows(db, table, options.effective, options.owners);
         db.exec(
           `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${predicates.join(' AND ') || 'true'} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates}`,
           params,
@@ -561,6 +594,8 @@ export async function applyRowsSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
+    /** Effective scopes of the other row-holding subscriptions (§5.6). */
+    readonly owners: readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
     readonly isCurrent?: () => boolean;
@@ -595,7 +630,9 @@ export async function applyRowsSegment(
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
       const scope: OverlayScope = [
         ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
-        ...(clearThisBlock ? bootstrapScope(db, table, options.effective) : []),
+        ...(clearThisBlock
+          ? bootstrapScope(db, table, options.effective, options.owners)
+          : []),
         ...rows.map((row) =>
           JSON.stringify([
             table.name,
@@ -605,7 +642,7 @@ export async function applyRowsSegment(
       ];
       const protectedRows = restoreFailedBases(db, schema, scope);
       if (clearThisBlock) {
-        deleteScopedRows(db, table, options.effective);
+        deleteScopedRows(db, table, options.effective, options.owners);
       }
       for (const row of rows) {
         upsertLocalRow(db, table, row.values, row.serverVersion, protectedRows);

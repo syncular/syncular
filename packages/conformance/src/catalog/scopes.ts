@@ -44,6 +44,23 @@ const ALTERNATIVE_WRITE_SCHEMA: DriverSchema = {
   ],
 };
 
+/** A table whose scope column is an INTEGER (§2.4); scope values are text. */
+const INTEGER_SCOPE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'buckets',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'bucket', type: 'integer', nullable: false },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'bucket:{bucket}' }],
+    },
+  ],
+};
+
 export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/partial-window-coverage-and-intersection',
@@ -661,6 +678,110 @@ export const scopeScenarios: readonly Scenario[] = [
         (await a.api.readRows('tasks')).map((row) => row.rowId),
         ['t3', 't4'],
         'p2 stays live after the p1 revocation',
+      );
+    },
+  },
+
+  {
+    name: 'scopes/revocation-keeps-rows-another-subscription-covers',
+    specRefs: ['§3.3', '§4.8'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      await seedRows(ctx, 'docs', [
+        doc('shared', 'o1', 'p1'),
+        doc('lone', 'o2', 'p1'),
+      ]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1', 'o2'], projectId: ['p1'] },
+      });
+      await a.api.subscribe({
+        id: 'org',
+        table: 'docs',
+        scopes: { org_id: ['o1'] },
+      });
+      await a.api.subscribe({
+        id: 'project',
+        table: 'docs',
+        scopes: { projectId: ['p1'] },
+      });
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId).sort(),
+        ['lone', 'shared'],
+        'both subscriptions synced',
+      );
+
+      await ctx.server.setAllowedScopes('actor-a', {
+        org_id: ['o1', 'o2'],
+        projectId: ['p9'],
+      });
+      const report = await syncOk(a);
+      checkEqual(report.revoked, ['project'], 'only the project grant ended');
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['shared'],
+        'the purge keeps the row the org subscription still covers',
+      );
+      await seedRows(ctx, 'docs', [doc('shared', 'o1', 'p1', 'edited')]);
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs'))[0]?.values.body,
+        'edited',
+        'the surviving subscription keeps syncing the shared row',
+      );
+    },
+  },
+
+  {
+    name: 'scopes/revocation-purges-an-integer-scope-column',
+    specRefs: ['§3.3', '§2.4'],
+    requires: ['scope-authorization'],
+    server: { schema: INTEGER_SCOPE_SCHEMA },
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('bucket-seed', { bucket: ['*'] });
+      const seeded = await ctx.rawSync(
+        'bucket-seed',
+        [
+          rawPushCommit(
+            'seed-buckets',
+            [
+              { id: 'b7', bucket: 7, body: 'seven' },
+              { id: 'b8', bucket: 8, body: 'eight' },
+            ].map((row) => rawUpsert(ctx.serverSchema, 'buckets', row)),
+          ),
+        ],
+        { clientId: 'bucket-seed' },
+      );
+      check(seeded.ok, 'the rows are seeded');
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: INTEGER_SCOPE_SCHEMA,
+        allowed: { bucket: ['7', '8'] },
+      });
+      for (const bucket of ['7', '8']) {
+        await a.api.subscribe({
+          id: `bucket-${bucket}`,
+          table: 'buckets',
+          scopes: { bucket: [bucket] },
+        });
+      }
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('buckets')).map((row) => row.rowId),
+        ['b7', 'b8'],
+        'both buckets synced',
+      );
+
+      await ctx.server.setAllowedScopes('actor-a', { bucket: ['8'] });
+      const report = await syncOk(a);
+      checkEqual(report.revoked, ['bucket-7'], 'bucket 7 was revoked');
+      checkEqual(
+        (await a.api.readRows('buckets')).map((row) => row.rowId),
+        ['b8'],
+        'the purge matches the integer scope column by value',
       );
     },
   },

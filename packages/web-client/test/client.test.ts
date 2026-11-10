@@ -1574,6 +1574,25 @@ describe('schema floor (§1.6)', () => {
 });
 
 describe('sync loop discipline', () => {
+  test('unsubscribe during an in-flight round is not undone by its SUB_END', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    const gate = responseGate();
+    a.faults.holdResponseOnce = gate.fault;
+    const round = a.client.sync();
+    await gate.held;
+    a.client.unsubscribe('s1');
+    gate.release();
+    await round;
+    expect(a.client.subscription('s1')).toBeUndefined();
+    expect(a.db.query('SELECT id FROM _syncular_subscriptions')).toEqual([]);
+  });
+
   test('concurrent sync() calls are rejected — one loop owns the database', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });

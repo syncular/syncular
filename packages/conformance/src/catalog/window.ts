@@ -12,7 +12,7 @@
 import { check, checkEqual } from '../checks';
 import { task, FIXTURE_SCHEMA } from '../fixture';
 import type { ClientHandle, Scenario } from '../scenario';
-import { seedTasks, syncIdle, syncOk } from './util';
+import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 
 const BASE = { table: 'tasks', variable: 'project_id' } as const;
 
@@ -282,6 +282,44 @@ export const windowScenarios: readonly Scenario[] = [
       await seedTasks(ctx, [task('t3', 'p2', 'new')]);
       await syncIdle(a);
       checkEqual(await readIds(a), ['t2', 't3'], 'p2 stays live after shrink');
+    },
+  },
+
+  {
+    name: 'window/shrink-keeps-rows-another-subscription-covers',
+    specRefs: ['§4.8', '§3.3'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1', 'p2', 'p3'] },
+      });
+      await seedTasks(ctx, [task('t1', 'p1'), task('t3', 'p3')]);
+      await a.api.subscribe({
+        id: 'all',
+        table: 'tasks',
+        scopes: { project_id: ['p1', 'p2'] },
+      });
+      await a.api.setWindow?.(BASE, ['p1', 'p3']);
+      await syncIdle(a);
+      checkEqual(await readIds(a), ['t1', 't3'], 'both sources synced');
+
+      await a.api.setWindow?.(BASE, []);
+      checkEqual(
+        await readIds(a),
+        ['t1'],
+        'eviction keeps the p1 row the `all` subscription still covers',
+      );
+      check(
+        ((await a.api.subscriptionState('all'))?.cursor ?? -1) >= 0,
+        '`all` keeps its cursor and its completeness claim',
+      );
+      await seedTasks(ctx, [task('t1', 'p1', 'edited')]);
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1', 'p2'],
+      });
     },
   },
 
