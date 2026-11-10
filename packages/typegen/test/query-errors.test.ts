@@ -16,6 +16,8 @@ import {
   queryNameFromPath,
   scanTableRefs,
   synthesizeDdl,
+  toPositionalSql,
+  TypegenError,
 } from '../src';
 
 const IR: IrDocument = {
@@ -627,5 +629,183 @@ describe('select aliases in ORDER BY (.sql queries)', () => {
         'SELECT id, length(title) AS title_len FROM todos ORDER BY missing_len',
       ),
     ).toThrow('no such column: missing_len');
+  });
+});
+
+describe('emitted SQL is the SQL SQLite checked', () => {
+  test('whitespace inside a string literal survives emission', () => {
+    const query = analyze(
+      'q.sql',
+      "SELECT id, replace(title, '  ', ' ') AS spaced FROM todos",
+    );
+    expect(query.positionalSql).toBe(
+      "SELECT id, replace(title, '  ', ' ') AS spaced FROM todos",
+    );
+  });
+
+  test('a quote inside a quoted identifier never starts a string literal', () => {
+    expect(
+      toPositionalSql(
+        `SELECT id, title AS "it's" FROM tasks -- it's\nWHERE done = 0`,
+      ),
+    ).toBe(`SELECT id, title AS "it's" FROM tasks WHERE done = 0`);
+    const query = analyze(
+      'q.sql',
+      `SELECT id FROM todos AS "it's" -- it's\nWHERE done = 0`,
+    );
+    expect(query.positionalSql).toBe(
+      `SELECT id FROM todos AS "it's" WHERE done = 0`,
+    );
+  });
+
+  test('the emitted statement takes one value per param', () => {
+    const query = analyze(
+      'q.sql',
+      `SELECT id FROM todos AS "it's" WHERE list_id = :listId AND title = ':x'`,
+    );
+    expect(query.params.map((param) => param.name)).toEqual(['listId']);
+    expect(query.positionalSql).toBe(
+      `SELECT id FROM todos AS "it's" WHERE list_id = ? AND title = ':x'`,
+    );
+    expect(db.analyze(query.positionalSql).paramsCount).toBe(1);
+  });
+
+  test('generation prepares the exact emitted positional statement', () => {
+    const prepared: string[] = [];
+    const spy: QueryDb = {
+      analyze(sql) {
+        prepared.push(sql);
+        return db.analyze(sql);
+      },
+    };
+    const query = analyzeQuery(
+      'q.sql',
+      'SELECT id, title AS todo_title FROM todos WHERE list_id = :listId',
+      IR,
+      spy,
+    );
+    expect(prepared).toContain(query.positionalSql);
+  });
+});
+
+describe('scope proofs are whole WHERE conjuncts', () => {
+  const tableWide = (sql: string) => {
+    const query = analyze('q.sql', sql);
+    return {
+      dependencies: query.reactive.dependencies.filter(
+        (dependency) => dependency.scopes.length > 0,
+      ),
+      coverage: query.reactive.coverage,
+    };
+  };
+
+  test('a wrapped, compared, or mixed comparison proves no scope', () => {
+    for (const where of [
+      'NOT (list_id = :listId)',
+      '(list_id = :listId) = 0',
+      "list_id IN (:listId, 'fixed')",
+      'list_id = :listId COLLATE nocase',
+      'list_id = :listId IS FALSE',
+      'iif(list_id = :listId, 0, 1)',
+      'CASE WHEN list_id = :listId THEN 1 ELSE 0 END',
+    ]) {
+      expect(tableWide(`SELECT id FROM todos WHERE ${where}`)).toEqual({
+        dependencies: [],
+        coverage: [],
+      });
+    }
+  });
+
+  test('a subquery on another table proves nothing for either table', () => {
+    expect(
+      tableWide(
+        'SELECT id FROM todos WHERE EXISTS (SELECT 1 FROM projects WHERE list_id = :listId)',
+      ),
+    ).toEqual({ dependencies: [], coverage: [] });
+  });
+
+  test('a plain conjunct still proves scope dependencies and coverage', () => {
+    for (const where of [
+      'list_id = :listId',
+      ':listId = list_id',
+      'todos.list_id IN (:listId)',
+      "(done = 0 AND list_id = :listId) AND title BETWEEN 'a' AND 'z'",
+    ]) {
+      const query = analyze('q.sql', `SELECT id FROM todos WHERE ${where}`);
+      expect(query.reactive.dependencies[0]?.scopes[0]?.params).toEqual([
+        'listId',
+      ]);
+      expect(query.reactive.coverage).toEqual([
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['listId'],
+          fixedScopes: [],
+        },
+      ]);
+    }
+  });
+});
+
+describe('result nullability', () => {
+  test('a bare column beside an aggregate without GROUP BY is nullable', () => {
+    const query = analyze('q.sql', 'SELECT count(*) AS n, title FROM todos');
+    expect(query.columns.map((column) => column.nullable)).toEqual([
+      true,
+      true,
+    ]);
+    const grouped = analyze(
+      'q.sql',
+      'SELECT count(*) AS n, title FROM todos GROUP BY title',
+    );
+    expect(grouped.columns[1]?.nullable).toBe(false);
+    const windowed = analyze(
+      'q.sql',
+      'SELECT count(*) OVER () AS n, title FROM todos',
+    );
+    expect(windowed.columns[1]?.nullable).toBe(false);
+  });
+
+  test('a compound branch that yields NULL makes the column nullable', () => {
+    const query = analyze(
+      'q.sql',
+      'SELECT title FROM todos UNION ALL SELECT NULL',
+    );
+    expect(query.columns[0]?.nullable).toBe(true);
+    const required = analyze(
+      'q.sql',
+      'SELECT title FROM todos UNION ALL SELECT tag FROM projects',
+    );
+    expect(required.columns[0]?.nullable).toBe(false);
+  });
+});
+
+describe('generated identifiers', () => {
+  const refused = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      expect(error).toBeInstanceOf(TypegenError);
+      return error as TypegenError;
+    }
+    throw new Error('expected a TypegenError');
+  };
+
+  test('a query name or alias no target can emit is refused', () => {
+    for (const [sql, targets, name] of [
+      ['-- name: delete\nSELECT id FROM todos', ['ts'], 'delete'],
+      ['SELECT id AS "default" FROM todos', ['swift'], 'default'],
+      ['SELECT id AS "doc id" FROM todos', ['ts'], 'doc id'],
+    ] as const) {
+      // camelCase naming already refuses a mapped keyword alias.
+      refused(() =>
+        analyzeQuery('q.sql', sql, IR, db, { naming: 'camel', targets }),
+      );
+      const error = refused(() =>
+        analyzeQuery('q.sql', sql, IR, db, { naming: 'preserve', targets }),
+      );
+      expect(error.code).toBe('typegen.invalid_query_identifier');
+      expect(error.details).toMatchObject({ name, target: targets[0] });
+    }
   });
 });

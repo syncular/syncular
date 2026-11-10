@@ -1,6 +1,7 @@
 /** Schema-aware revision-1 SYQL validation (§§5, 8–13). */
 import type { IrColumnType, IrDocument } from './ir';
 import {
+  AGGREGATE_FUNCTIONS,
   type AnalyzedQuery,
   analyzeStatement,
   inferParamTypeEvidence,
@@ -12,8 +13,11 @@ import {
   type CteScope,
   PLAIN_REF_RE,
   type SelectItem,
+  type ScopeColumn,
   type SqlRelations,
   scanRelations,
+  scopeProofs,
+  sqlIdentifier,
   splitSelectList,
   scanTableRefs,
   stripCommentsAndStrings,
@@ -112,7 +116,6 @@ interface SqliteDiagnostic {
   readonly message: string;
 }
 
-const IDENT_SOURCE = '[A-Za-z_][A-Za-z0-9_]*';
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SQLITE_SUBJECT_RE = '[A-Za-z_][A-Za-z0-9_$]*';
 const NONDETERMINISTIC_FUNCTIONS = new Set([
@@ -186,24 +189,6 @@ function suggestion(authored: string, candidates: readonly string[]): string {
   return nearest === undefined ? '' : `; did you mean \`${nearest}\`?`;
 }
 
-function identifierText(token: SyqlToken | undefined): string | undefined {
-  if (token?.kind === 'identifier') return token.text;
-  if (token?.kind !== 'quoted-identifier') return undefined;
-  if (token.text.startsWith('[') && token.text.endsWith(']')) {
-    return token.text.slice(1, -1).replaceAll(']]', ']');
-  }
-  const quote = token.text[0];
-  return token.text.slice(1, -1).replaceAll(`${quote}${quote}`, quote ?? '');
-}
-const AGGREGATE_FUNCTIONS = new Set([
-  'avg',
-  'count',
-  'group_concat',
-  'max',
-  'min',
-  'sum',
-  'total',
-]);
 /**
  * The function surface of the standard SQLite 3.46.0 amalgamation.
  *
@@ -1158,7 +1143,7 @@ class Validator {
     const tokens = significant(logical.declaration.statement.tokens);
     const [qualifier, column] = subject.split('.', 2);
     const matches = (token: SyqlToken | undefined, expected: string): boolean =>
-      identifierText(token)?.toLowerCase() === expected.toLowerCase();
+      sqlIdentifier(token)?.toLowerCase() === expected.toLowerCase();
 
     if (focus === 'table') {
       for (let index = 0; index < tokens.length - 1; index += 1) {
@@ -1295,154 +1280,11 @@ class Validator {
       readonly ref: TableRef;
       readonly scopes: readonly InferredScope[];
     };
-    const cleaned = stripCommentsAndStrings(markerSql);
-    const structure = this.#inspect(
-      cleaned,
-      logical.declaration.statement.span.file,
-    );
-    const markerScopes = scanRelations(markerSql, this.#ir);
-    const escapeRegex = (value: string): string =>
-      value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const requiredAt = (index: number): boolean => {
-      const scope = markerScopes.scopeAt(index);
-      if (scope === 'nested') return false;
-      const cte = markerScopes.cteScopes.find(
-        (candidate) => `cte:${candidate.name}` === scope,
-      );
-      const scopeItems =
-        cte === undefined
-          ? structure.outer
-          : structure.tokens.filter(
-              (item) =>
-                item.depth === 1 &&
-                item.token.span.start.offset >= cte.start &&
-                item.token.span.end.offset <= cte.end,
-            );
-      let whereStart: number | undefined;
-      for (const item of scopeItems) {
-        if (item.token.span.start.offset >= index) break;
-        const lower = tokenLower(item.token);
-        if (lower === 'where') whereStart = item.token.span.end.offset;
-        else if (OUTER_CLAUSE_ENDERS.has(lower ?? '')) whereStart = undefined;
-      }
-      if (whereStart === undefined) return false;
-
-      const clauseEnd =
-        scopeItems.find(
-          (item) =>
-            item.token.span.start.offset > index &&
-            OUTER_CLAUSE_ENDERS.has(tokenLower(item.token) ?? ''),
-        )?.token.span.start.offset ??
-        cte?.end ??
-        cleaned.length;
-      const matchStack: number[] = [];
-      for (let cursor = whereStart; cursor < index; cursor += 1) {
-        if (cleaned[cursor] === '(') matchStack.push(cursor);
-        else if (cleaned[cursor] === ')') matchStack.pop();
-      }
-
-      // Parenthesized boolean expressions are valid, but predicates inside a
-      // CTE or subquery are not outer proof obligations for sync coverage.
-      if (
-        matchStack.some((open) =>
-          /\b(?:SELECT|WITH)\b/i.test(cleaned.slice(open + 1, index)),
-        )
-      ) {
-        return false;
-      }
-
-      // Negated equality does not constrain the result to that scope.
-      const prefix = cleaned.slice(whereStart, index);
-      const boundaries = [...prefix.matchAll(/\b(?:AND|OR)\b/gi)].map(
-        (match) => (match.index ?? -1) + match[0].length,
-      );
-      const lastBoundary = Math.max(prefix.lastIndexOf('('), ...boundaries);
-      if (/\bNOT\b/i.test(prefix.slice(lastBoundary + 1))) return false;
-      if (
-        matchStack.some((open) =>
-          /\bNOT\s*$/i.test(cleaned.slice(whereStart, open)),
-        )
-      ) {
-        return false;
-      }
-
-      const stack: number[] = [];
-      for (let cursor = whereStart; cursor < clauseEnd; cursor += 1) {
-        const char = cleaned[cursor];
-        if (char === '(') stack.push(cursor);
-        else if (char === ')') stack.pop();
-        if (
-          (cursor === 0 || !/[A-Za-z0-9_:]/.test(cleaned[cursor - 1] ?? '')) &&
-          /^OR\b/i.test(cleaned.slice(cursor)) &&
-          stack.length <= matchStack.length &&
-          stack.every((open, stackIndex) => matchStack[stackIndex] === open)
-        ) {
-          return false;
-        }
-      }
-      return true;
-    };
-    type JoinEqualityContext =
-      | { readonly kind: 'inner' }
-      | {
-          readonly kind: 'outer';
-          /** Lowercased alias introduced by the JOIN that owns this ON. */
-          readonly introducedAlias: string;
-          /** The operand side this outer join null-extends. An outer join's
-           * ON constrains matched rows of the null-extended side only;
-           * preserved-side rows appear even when the ON predicate fails. */
-          readonly nullExtended: 'introduced' | 'prior';
-        };
-    const joinEqualityContextAt = (
-      index: number,
-    ): JoinEqualityContext | undefined => {
-      const prefix = cleaned.slice(0, index);
-      const clauses = [
-        ...prefix.matchAll(
-          /\b(ON|JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/gi,
-        ),
-      ];
-      const last = clauses.at(-1);
-      if (last?.[1]?.toUpperCase() !== 'ON') return undefined;
-      const start = (last.index ?? 0) + last[0].length;
-      const next =
-        /\b(?:JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/i.exec(
-          cleaned.slice(index),
-        );
-      const end = next === null ? cleaned.length : index + next.index;
-      const clause = cleaned.slice(start, end);
-      if (/\b(?:OR|NOT|SELECT|WITH)\b/i.test(clause)) return undefined;
-      const join = clauses.at(-2);
-      if (join?.[1]?.toUpperCase() !== 'JOIN') return undefined;
-      const joinIndex = join.index ?? 0;
-      const outerKind = /\b(LEFT|RIGHT|FULL)(?:\s+OUTER)?\s*$/i
-        .exec(prefix.slice(0, joinIndex))?.[1]
-        ?.toUpperCase();
-      if (outerKind === undefined) return { kind: 'inner' };
-      // A FULL join preserves both operands, so its ON constrains neither.
-      if (outerKind === 'FULL') return undefined;
-      const introducedAlias = (
-        prefix
-          .slice(joinIndex + join[0].length, last.index)
-          .match(new RegExp(IDENT_SOURCE, 'g')) ?? []
-      )
-        .filter((word) => word.toUpperCase() !== 'AS')
-        .at(-1)
-        ?.toLowerCase();
-      if (introducedAlias === undefined) return undefined;
-      return {
-        kind: 'outer',
-        introducedAlias,
-        nullExtended: outerKind === 'LEFT' ? 'introduced' : 'prior',
-      };
-    };
-    const refByAlias = new Map(
-      refs.map(
-        (ref) => [`${refScope(ref)}\0${ref.alias.toLowerCase()}`, ref] as const,
-      ),
-    );
+    const proofs = scopeProofs(markerSql, this.#ir);
     const scopeNode = (scope: string, alias: string, column: string): string =>
       `${scope}\0${alias.toLowerCase()}\0${column.toLowerCase()}`;
+    const nodeOf = (column: ScopeColumn): string =>
+      scopeNode(column.scope, column.alias, column.column);
     const parents = new Map<string, string>();
     const find = (node: string): string => {
       const parent = parents.get(node);
@@ -1496,67 +1338,11 @@ class Validator {
       }
       return seen;
     };
-    const scopeColumn = (
-      scope: string,
-      alias: string,
-      column: string,
-    ): boolean => {
-      const ref = refByAlias.get(`${scope}\0${alias.toLowerCase()}`);
-      const table = this.#ir.tables.find((item) => item.name === ref?.table);
-      return (
-        table?.scopes.some(
-          (scope) => scope.column.toLowerCase() === column.toLowerCase(),
-        ) === true
-      );
-    };
-    // Scope inheritance across a join relies on a satisfied predicate proving
-    // both operands non-NULL. `IS` is null-safe (`NULL IS NULL` holds), so it
-    // would let a null-extended row on an outer join's preserved side carry a
-    // scope proof it never satisfies; only `=`/`==` qualify here.
-    const qualifiedEquality = new RegExp(
-      `(${IDENT_SOURCE})\\.(${IDENT_SOURCE})\\s*(?:=|==)\\s*(${IDENT_SOURCE})\\.(${IDENT_SOURCE})`,
-      'gi',
-    );
-    for (const match of cleaned.matchAll(qualifiedEquality)) {
-      const leftAlias = match[1] as string;
-      const leftColumn = match[2] as string;
-      const rightAlias = match[3] as string;
-      const rightColumn = match[4] as string;
-      const index = match.index ?? 0;
-      const scope = markerScopes.scopeAt(index);
-      if (
-        !scopeColumn(scope, leftAlias, leftColumn) ||
-        !scopeColumn(scope, rightAlias, rightColumn)
-      ) {
-        continue;
-      }
-      const leftNode = scopeNode(scope, leftAlias, leftColumn);
-      const rightNode = scopeNode(scope, rightAlias, rightColumn);
-      if (requiredAt(index)) {
-        union(leftNode, rightNode);
-        continue;
-      }
-      const context = joinEqualityContextAt(index);
-      if (context === undefined) continue;
-      if (context.kind === 'inner') {
-        // An inner join's ON filters every result row, so the equality
-        // constrains both operands symmetrically.
-        union(leftNode, rightNode);
-        continue;
-      }
-      const leftIntroduced =
-        leftAlias.toLowerCase() === context.introducedAlias;
-      const rightIntroduced =
-        rightAlias.toLowerCase() === context.introducedAlias;
-      // An equality with both operands on one side of the outer join proves
-      // nothing across it; preserved-side rows appear regardless of the ON.
-      if (leftIntroduced === rightIntroduced) continue;
-      const introducedNode = leftIntroduced ? leftNode : rightNode;
-      const priorNode = leftIntroduced ? rightNode : leftNode;
-      if (context.nullExtended === 'introduced') {
-        addInheritEdge(introducedNode, priorNode);
+    for (const equality of proofs.equalities) {
+      if (equality.symmetric) {
+        union(nodeOf(equality.target), nodeOf(equality.source));
       } else {
-        addInheritEdge(priorNode, introducedNode);
+        addInheritEdge(nodeOf(equality.target), nodeOf(equality.source));
       }
     }
     const required = new Set(
@@ -1575,60 +1361,16 @@ class Validator {
       if (table === undefined) continue;
       const inferred: InferredScope[] = [];
       for (const scope of table.scopes) {
-        const alias = escapeRegex(ref.alias);
-        const column = escapeRegex(scope.column);
-        const unqualifiedMatches = refs.filter((candidate) => {
-          if (refScope(candidate) !== refScope(ref)) return false;
-          const other = this.#ir.tables.find(
-            (item) => item.name === candidate.table,
+        const node = scopeNode(refScope(ref), ref.alias, scope.column);
+        const found = proofs.binds
+          .filter(
+            (proof) =>
+              nodeOf(proof) === node &&
+              proof.params.every((name) => required.has(name)),
+          )
+          .flatMap((proof) =>
+            proof.params.map((name) => ({ name, operator: proof.operator })),
           );
-          return other?.columns.some((item) => item.name === scope.column);
-        }).length;
-        const subject =
-          unqualifiedMatches === 1
-            ? `(?<![A-Za-z0-9_.:])(?:${alias}\\.)?${column}\\b`
-            : `(?<![A-Za-z0-9_.:])${alias}\\.${column}\\b`;
-        const found: Array<{ name: string; operator: 'equal' | 'in' }> = [];
-        const equality = new RegExp(
-          `${subject}\\s*(?:=|==|\\bIS\\b)\\s*:([A-Za-z_][A-Za-z0-9_]*)\\b|:([A-Za-z_][A-Za-z0-9_]*)\\b\\s*(?:=|==)\\s*${subject}`,
-          'gi',
-        );
-        const inScope = (index: number): boolean =>
-          markerScopes.scopeAt(index) === refScope(ref) && requiredAt(index);
-        for (const match of cleaned.matchAll(equality)) {
-          if (!inScope(match.index)) continue;
-          const name = match[1] ?? match[2];
-          if (name !== undefined && required.has(name)) {
-            found.push({ name, operator: 'equal' });
-          }
-        }
-        const inList = new RegExp(`${subject}\\s+IN\\s*\\(([^)]*)\\)`, 'gi');
-        for (const match of cleaned.matchAll(inList)) {
-          if (!inScope(match.index)) continue;
-          const body = match[1] ?? '';
-          const bodyStart = match.index + match[0].length - body.length - 1;
-          const bodyTokens = significant(
-            lexSyqlSqlSource(
-              logical.declaration.statement.span.file,
-              markerSql.slice(bodyStart, bodyStart + body.length),
-            ),
-          );
-          const validBindList = bodyTokens.every((token, index) =>
-            index % 2 === 0
-              ? token.kind === 'bind'
-              : token.kind === 'punctuation' && token.text === ',',
-          );
-          const params = bodyTokens
-            .filter((_, index) => index % 2 === 0)
-            .map((token) => token.text.slice(1));
-          if (
-            validBindList &&
-            params.length > 0 &&
-            params.every((name) => required.has(name))
-          ) {
-            for (const name of params) found.push({ name, operator: 'in' });
-          }
-        }
         const params = [...new Set(found.map((item) => item.name))];
         if (params.length > 0) {
           const evidence: InferredScope = {

@@ -18,70 +18,197 @@ export interface SyncTable<Row, Insert, Update, Id> {
 
 /** ServerSchema-compatible schema object (SPEC §2.4, §3.1). */
 export const schema = {
-  version: 5,
-  tables: [
+  "version": 5,
+  "tables": [
     {
-      name: 'tasks',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'project_id', type: 'string', nullable: false },
-        { name: 'title', type: 'string', nullable: false },
-        { name: 'done', type: 'boolean', nullable: false },
-        { name: 'reviewed', type: 'boolean', nullable: true },
-        { name: 'priority', type: 'integer', nullable: true },
-        { name: 'meta', type: 'json', nullable: true },
-        { name: 'estimate', type: 'float', nullable: true },
-        { name: 'estimated_at', type: 'integer', nullable: true },
+      "name": "tasks",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "reviewed",
+          "type": "boolean",
+          "nullable": true
+        },
+        {
+          "name": "priority",
+          "type": "integer",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "estimate",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "estimated_at",
+          "type": "integer",
+          "nullable": true
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'project:{project_id}', column: 'project_id' },
+      "scopes": [
+        {
+          "pattern": "project:{project_id}",
+          "column": "project_id"
+        }
       ],
-      indexes: [
-        { name: 'idx_tasks_project', columns: ['project_id'], unique: false },
-        { name: 'idx_tasks_project_title', columns: ['project_id', 'title'], unique: true },
-      ],
+      "indexes": [
+        {
+          "name": "idx_tasks_project",
+          "columns": [
+            "project_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_tasks_project_title",
+          "columns": [
+            "project_id",
+            "title"
+          ],
+          "unique": true
+        }
+      ]
     },
     {
-      name: 'docs',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'org_id', type: 'string', nullable: false },
-        { name: 'project_id', type: 'string', nullable: false },
-        { name: 'body', type: 'string', nullable: false },
-        { name: 'score', type: 'float', nullable: true },
-        { name: 'attachment', type: 'bytes', nullable: true },
-        { name: 'body_doc', type: 'crdt', nullable: true, crdtType: 'yjs-doc' },
-        { name: 'remote_blob', type: 'blob_ref', nullable: true },
+      "name": "docs",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "org_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "attachment",
+          "type": "bytes",
+          "nullable": true
+        },
+        {
+          "name": "body_doc",
+          "type": "crdt",
+          "nullable": true,
+          "crdtType": "yjs-doc"
+        },
+        {
+          "name": "remote_blob",
+          "type": "blob_ref",
+          "nullable": true
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'org:{org_id}', column: 'org_id' },
-        { pattern: 'project:{projectId}', column: 'project_id' },
-      ],
+      "scopes": [
+        {
+          "pattern": "org:{org_id}",
+          "column": "org_id"
+        },
+        {
+          "pattern": "project:{projectId}",
+          "column": "project_id"
+        }
+      ]
     },
     {
-      name: 'doc_revisions',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'org_id', type: 'string', nullable: false },
-        { name: 'project_id', type: 'string', nullable: false },
-        { name: 'doc_id', type: 'string', nullable: true },
-        { name: 'note', type: 'string', nullable: true },
+      "name": "doc_revisions",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "org_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "doc_id",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "nullable": true
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'org:{org_id}', column: 'org_id' },
-        { pattern: 'project:{projectId}', column: 'project_id' },
+      "scopes": [
+        {
+          "pattern": "org:{org_id}",
+          "column": "org_id"
+        },
+        {
+          "pattern": "project:{projectId}",
+          "column": "project_id"
+        }
       ],
-      references: [
-        { column: 'doc_id', parentTable: 'docs', onDelete: 'CASCADE' },
+      "references": [
+        {
+          "column": "doc_id",
+          "parentTable": "docs",
+          "onDelete": "CASCADE"
+        }
       ],
-      indexes: [
-        { name: 'idx_doc_revisions_doc_id_ref', columns: ['doc_id'], unique: false },
-      ],
-    },
-  ],
+      "indexes": [
+        {
+          "name": "idx_doc_revisions_doc_id_ref",
+          "columns": [
+            "doc_id"
+          ],
+          "unique": false
+        }
+      ]
+    }
+  ]
 } as const;
 
 /** One tasks row (§2.4 column order). */

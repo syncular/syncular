@@ -126,59 +126,6 @@ export function findProjection(sql: string): ProjectionSpan | null {
   return null;
 }
 
-/**
- * The main verb of a `WITH …` statement (uppercased): SQLite allows a
- * with-clause before SELECT and before INSERT/UPDATE/DELETE. CTE bodies live
- * inside parentheses and a bare keyword cannot be a CTE name, so the first
- * paren-depth-0 keyword after `WITH` is the main verb.
- */
-export function mainVerbAfterWith(sql: string): string | undefined {
-  const MAIN_VERBS = new Set([
-    'SELECT',
-    'VALUES',
-    'INSERT',
-    'UPDATE',
-    'DELETE',
-    'REPLACE',
-  ]);
-  let depth = 0;
-  let i = 0;
-  let sawWith = false;
-  while (i < sql.length) {
-    const ch = sql[i] as string;
-    const next = sql[i + 1];
-    if (ch === '-' && next === '-') {
-      const end = sql.indexOf('\n', i);
-      i = end === -1 ? sql.length : end + 1;
-    } else if (ch === '/' && next === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      i = end === -1 ? sql.length : end + 2;
-    } else if (ch === "'" || ch === '"' || ch === '`') {
-      let j = i + 1;
-      while (j < sql.length && sql[j] !== ch) j += 1;
-      i = j + 1;
-    } else if (ch === '(') {
-      depth += 1;
-      i += 1;
-    } else if (ch === ')') {
-      depth -= 1;
-      i += 1;
-    } else if (WORD_RE.test(ch)) {
-      let j = i + 1;
-      while (j < sql.length && /[A-Za-z0-9_]/.test(sql[j] as string)) j += 1;
-      const word = sql.slice(i, j).toUpperCase();
-      if (depth === 0) {
-        if (!sawWith && word === 'WITH') sawWith = true;
-        else if (sawWith && MAIN_VERBS.has(word)) return word;
-      }
-      i = j;
-    } else {
-      i += 1;
-    }
-  }
-  return undefined;
-}
-
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
 const EXPLICIT_ALIAS_RE = new RegExp(`^([\\s\\S]*?)\\s+AS\\s+(${IDENT})$`, 'i');
 const TRAILING_IDENT_RE = new RegExp(`^([\\s\\S]*?)\\s+(${IDENT})$`);

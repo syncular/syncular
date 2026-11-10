@@ -3,64 +3,204 @@
 // irHash: sha256:4e963934b289d179472061e0dc3105570e41cffb0c10bac7ced782228e4c6fbc
 // ignore_for_file: type=lint
 
+import 'dart:convert';
+
 /// ServerSchema-compatible schema (SPEC §2.4, §3.1) —
 /// pass to `SyncularClient.create(schema: …)`.
-const Map<String, Object?> syncularSchema = <String, Object?>{
-  'version': 5,
-  'tables': [
+final Map<String, Object?> syncularSchema = jsonDecode('''
+{
+  "version": 5,
+  "tables": [
     {
-      'name': 'tasks',
-      'primaryKey': 'id',
-      'columns': [
-        {'name': 'id', 'type': 'string', 'nullable': false},
-        {'name': 'project_id', 'type': 'string', 'nullable': false},
-        {'name': 'title', 'type': 'string', 'nullable': false},
-        {'name': 'done', 'type': 'boolean', 'nullable': false},
-        {'name': 'reviewed', 'type': 'boolean', 'nullable': true},
-        {'name': 'priority', 'type': 'integer', 'nullable': true},
-        {'name': 'meta', 'type': 'json', 'nullable': true},
-        {'name': 'estimate', 'type': 'float', 'nullable': true},
-        {'name': 'estimated_at', 'type': 'integer', 'nullable': true},
+      "name": "tasks",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "reviewed",
+          "type": "boolean",
+          "nullable": true
+        },
+        {
+          "name": "priority",
+          "type": "integer",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "estimate",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "estimated_at",
+          "type": "integer",
+          "nullable": true
+        }
       ],
-      'scopes': [
-        {'pattern': 'project:{project_id}', 'column': 'project_id'},
+      "scopes": [
+        {
+          "pattern": "project:{project_id}",
+          "column": "project_id"
+        }
       ],
+      "indexes": [
+        {
+          "name": "idx_tasks_project",
+          "columns": [
+            "project_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_tasks_project_title",
+          "columns": [
+            "project_id",
+            "title"
+          ],
+          "unique": true
+        }
+      ]
     },
     {
-      'name': 'docs',
-      'primaryKey': 'id',
-      'columns': [
-        {'name': 'id', 'type': 'string', 'nullable': false},
-        {'name': 'org_id', 'type': 'string', 'nullable': false},
-        {'name': 'project_id', 'type': 'string', 'nullable': false},
-        {'name': 'body', 'type': 'string', 'nullable': false},
-        {'name': 'score', 'type': 'float', 'nullable': true},
-        {'name': 'attachment', 'type': 'bytes', 'nullable': true},
-        {'name': 'body_doc', 'type': 'crdt', 'nullable': true, 'crdtType': 'yjs-doc'},
-        {'name': 'remote_blob', 'type': 'blob_ref', 'nullable': true},
+      "name": "docs",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "org_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "attachment",
+          "type": "bytes",
+          "nullable": true
+        },
+        {
+          "name": "body_doc",
+          "type": "crdt",
+          "nullable": true,
+          "crdtType": "yjs-doc"
+        },
+        {
+          "name": "remote_blob",
+          "type": "blob_ref",
+          "nullable": true
+        }
       ],
-      'scopes': [
-        {'pattern': 'org:{org_id}', 'column': 'org_id'},
-        {'pattern': 'project:{projectId}', 'column': 'project_id'},
-      ],
+      "scopes": [
+        {
+          "pattern": "org:{org_id}",
+          "column": "org_id"
+        },
+        {
+          "pattern": "project:{projectId}",
+          "column": "project_id"
+        }
+      ]
     },
     {
-      'name': 'doc_revisions',
-      'primaryKey': 'id',
-      'columns': [
-        {'name': 'id', 'type': 'string', 'nullable': false},
-        {'name': 'org_id', 'type': 'string', 'nullable': false},
-        {'name': 'project_id', 'type': 'string', 'nullable': false},
-        {'name': 'doc_id', 'type': 'string', 'nullable': true},
-        {'name': 'note', 'type': 'string', 'nullable': true},
+      "name": "doc_revisions",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "org_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "doc_id",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "nullable": true
+        }
       ],
-      'scopes': [
-        {'pattern': 'org:{org_id}', 'column': 'org_id'},
-        {'pattern': 'project:{projectId}', 'column': 'project_id'},
+      "scopes": [
+        {
+          "pattern": "org:{org_id}",
+          "column": "org_id"
+        },
+        {
+          "pattern": "project:{projectId}",
+          "column": "project_id"
+        }
       ],
-    },
-  ],
-};
+      "references": [
+        {
+          "column": "doc_id",
+          "parentTable": "docs",
+          "onDelete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_doc_revisions_doc_id_ref",
+          "columns": [
+            "doc_id"
+          ],
+          "unique": false
+        }
+      ]
+    }
+  ]
+}''') as Map<String, Object?>;
 
 /// Lift a SQLite boolean: a real bool, or 0/1 as a number.
 bool? _rowBool(Object? value) {

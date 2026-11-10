@@ -42,6 +42,15 @@ export interface IrColumn {
   readonly declaredType?: IrColumnType;
 }
 
+/** §5.11: the app-side type of a column. An encrypted column rides the wire
+ * as `bytes`; generated rows expose its declared type (the local mirror is
+ * plaintext). */
+export function appColumnType(column: IrColumn): IrColumnType {
+  return column.encrypted === true && column.declaredType !== undefined
+    ? column.declaredType
+    : column.type;
+}
+
 /** One §3.1 scope pattern, fully resolved (no re-parsing downstream). */
 export interface IrScope {
   readonly pattern: string;
@@ -157,6 +166,51 @@ function canonicalScopeValue(value: IrScopeValue): Record<string, unknown> {
     : { kind: 'parameter', name: value.name };
 }
 
+/** Column, reference, and index entries shared by the IR document and the
+ * schema object, in their fixed key order. Optional members (crdtType,
+ * encrypted/declaredType, references, indexes, ftsIndexes) are emitted only
+ * when present so documents without them stay byte-identical. */
+function serializeTableShape(
+  table: IrTable,
+  scopes: readonly Readonly<Record<string, string>>[],
+): Record<string, unknown> {
+  return {
+    name: table.name,
+    primaryKey: table.primaryKey,
+    columns: table.columns.map((column) => ({
+      name: column.name,
+      type: column.type,
+      nullable: column.nullable,
+      ...(column.crdtType !== undefined ? { crdtType: column.crdtType } : {}),
+      ...(column.encrypted === true
+        ? { encrypted: true, declaredType: column.declaredType }
+        : {}),
+    })),
+    scopes,
+    ...(table.references.length > 0
+      ? { references: table.references.map((reference) => ({ ...reference })) }
+      : {}),
+    ...(table.indexes.length > 0
+      ? {
+          indexes: table.indexes.map((index) => ({
+            name: index.name,
+            columns: index.columns,
+            unique: index.unique,
+          })),
+        }
+      : {}),
+    ...(table.ftsIndexes.length > 0
+      ? {
+          ftsIndexes: table.ftsIndexes.map((index) => ({
+            name: index.name,
+            columns: index.columns,
+            tokenize: index.tokenize,
+          })),
+        }
+      : {}),
+  };
+}
+
 /** Serialize with a fixed key order — byte-deterministic for equal IRs. */
 export function serializeIr(ir: IrDocument): string {
   const doc = {
@@ -167,56 +221,14 @@ export function serializeIr(ir: IrDocument): string {
       migrations: v.migrations,
     })),
     tables: ir.tables.map((table) => ({
-      name: table.name,
-      primaryKey: table.primaryKey,
-      columns: table.columns.map((column) => ({
-        name: column.name,
-        type: column.type,
-        nullable: column.nullable,
-        // §5.10.1: crdtType is IR metadata (never on the wire); emitted only
-        // for crdt columns so non-crdt column diffs stay byte-identical.
-        ...(column.crdtType !== undefined ? { crdtType: column.crdtType } : {}),
-        // §5.11: encrypted/declaredType are IR metadata (never on the wire);
-        // emitted only for encrypted columns so non-encrypted diffs stay
-        // byte-identical.
-        ...(column.encrypted === true
-          ? { encrypted: true, declaredType: column.declaredType }
-          : {}),
-      })),
-      scopes: table.scopes.map((scope) => ({
-        pattern: scope.pattern,
-        variable: scope.variable,
-        column: scope.column,
-      })),
-      // Declared references (§6.11) are additive under irVersion 1: emitted
-      // only when the table declares at least one, so reference-free tables
-      // stay byte-identical.
-      ...(table.references.length > 0
-        ? {
-            references: table.references.map((reference) => ({ ...reference })),
-          }
-        : {}),
-      // Indexes are additive under irVersion 1: emitted only when the table
-      // declares at least one, so index-free tables (every pre-index manifest)
-      // stay byte-identical and --check fresh. Declaration order preserved.
-      ...(table.indexes.length > 0
-        ? {
-            indexes: table.indexes.map((index) => ({
-              name: index.name,
-              columns: index.columns,
-              unique: index.unique,
-            })),
-          }
-        : {}),
-      ...(table.ftsIndexes.length > 0
-        ? {
-            ftsIndexes: table.ftsIndexes.map((index) => ({
-              name: index.name,
-              columns: index.columns,
-              tokenize: index.tokenize,
-            })),
-          }
-        : {}),
+      ...serializeTableShape(
+        table,
+        table.scopes.map((scope) => ({
+          pattern: scope.pattern,
+          variable: scope.variable,
+          column: scope.column,
+        })),
+      ),
       extensions: canonicalizeExtensions(table.extensions),
     })),
     subscriptions: ir.subscriptions.map((sub) => ({
@@ -230,6 +242,31 @@ export function serializeIr(ir: IrDocument): string {
     extensions: canonicalizeExtensions(ir.extensions),
   };
   return `${JSON.stringify(doc, null, 2)}\n`;
+}
+
+/**
+ * The ServerSchema-compatible schema object (§2.4, §3.1) as 2-space JSON.
+ * Every emitter embeds these exact bytes: TS as an object literal, Swift,
+ * Kotlin, and Dart as a string literal they parse, so every platform hands
+ * its client the same tables, scopes, references, and indexes.
+ */
+export function serializeSchema(ir: IrDocument): string {
+  return JSON.stringify(
+    {
+      version: ir.schemaVersion,
+      tables: ir.tables.map((table) =>
+        serializeTableShape(
+          table,
+          table.scopes.map((scope) => ({
+            pattern: scope.pattern,
+            column: scope.column,
+          })),
+        ),
+      ),
+    },
+    null,
+    2,
+  );
 }
 
 /** Hash of the exact IR file bytes; stamped into generated modules. */

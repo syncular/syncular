@@ -100,7 +100,7 @@ The lock has three subcommands:
 |---|---|
 | `baseline` | Create the first lock from current history. Refuses to overwrite an existing lock. |
 | `check` | Validate committed history without generating outputs, the faster history-only CI gate. Prints `migration history is locked and unchanged`. |
-| `upgrade-lock` | Compact a validated format 1 lock to format 2. Review and commit the result. |
+| `upgrade-lock` | Convert a validated format 1 or 2 lock to format 3, which records each locked migration's schema version. `generate` and `check` refuse the older formats. Review and commit the result. |
 
 The lock workflow and the rules for editing deployed history are on
 [Schema & typegen](/guide-schema/#lock-the-migration-history).

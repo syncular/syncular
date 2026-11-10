@@ -1,7 +1,7 @@
 /** Revision-1 SYQL logical-to-physical lowering (§§15–17). */
 import { TypegenError } from './errors';
 import type { IrDocument } from './ir';
-import { buildNamingMap } from './naming';
+import { buildNamingMap, validateQueryIdentifier } from './naming';
 import {
   type AnalyzedQuery,
   analyzeStatement,
@@ -363,6 +363,20 @@ function publicInputs(
       defaultSize: validated.limit.defaultSize,
       maxSize: validated.limit.maxSize,
     });
+  }
+  for (const input of result) {
+    for (const langName of [
+      input.langName,
+      ...(input.kind === 'group' ? input.members : []).map((m) => m.langName),
+      ...(input.kind === 'sort' ? input.profiles : []).map((p) => p.langName),
+    ]) {
+      validateQueryIdentifier(
+        langName,
+        naming.targets,
+        query.module.file,
+        `query ${declaration.name} input`,
+      );
+    }
   }
   return result;
 }

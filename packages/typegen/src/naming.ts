@@ -18,6 +18,7 @@
  * keyword, or a leading underscore on the Dart target (library-private).
  */
 import { TypegenError } from './errors';
+import type { IrTable } from './ir';
 
 /** Manifest `"naming"`: camelCase emission (default) or SQL-truth names. */
 export type NamingMode = 'camel' | 'preserve';
@@ -42,6 +43,36 @@ export function snakeToCamel(name: string): string {
     .slice(1)
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1));
   return lead + first + rest.join('') + trail;
+}
+
+/** Generated type name of a table or subscription: `_`/`-` separated parts,
+ * each with its first character upper-cased (`project_tasks` →
+ * `ProjectTasks`). */
+export function pascalCase(name: string): string {
+  return name
+    .split(/[_-]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+}
+
+/** `value` as a string literal of a schema emitter's language. Swift and
+ * Kotlin delimit with `"`, TS and Dart with `'`; Kotlin and Dart also escape
+ * the `$` that would start an interpolation. */
+export function stringLiteral(
+  value: string,
+  target: Exclude<NamingTarget, 'rust'>,
+): string {
+  const delimiter = target === 'swift' || target === 'kotlin' ? '"' : "'";
+  const interpolates = target === 'kotlin' || target === 'dart';
+  let body = '';
+  for (const char of value) {
+    body +=
+      char === '\\' || char === delimiter || (interpolates && char === '$')
+        ? `\\${char}`
+        : char;
+  }
+  return `${delimiter}${body}${delimiter}`;
 }
 
 /** The emitter targets whose keyword sets we police. `ts` is included for
@@ -418,4 +449,127 @@ export function buildNamingMap(
     sqlName,
     langName: bySqlName.get(sqlName) as string,
   }));
+}
+
+/**
+ * The schema identifier rules for every configured target in both naming
+ * modes. Table names, and column names within a table, stay distinct under
+ * SQLite's case-insensitive comparison; generated type names
+ * (`pascalCase(table)`) stay distinct; each target's emitted column names
+ * stay distinct and clear of its reserved words. Swift, Kotlin, and Dart
+ * always emit camelCase fields; TS and Rust follow the naming mode.
+ */
+export function validateSchemaIdentifiers(
+  tables: readonly IrTable[],
+  mode: NamingMode,
+  targets: readonly NamingTarget[],
+  context: string,
+): void {
+  const distinct = (
+    names: readonly string[],
+    key: (name: string) => string,
+    code: string,
+    message: string,
+    details: Readonly<Record<string, unknown>> = {},
+  ): void => {
+    const seen = new Map<string, string>();
+    for (const name of names) {
+      const other = seen.get(key(name));
+      if (other !== undefined) {
+        throw new TypegenError(context, message, code, {
+          ...details,
+          names: [other, name],
+        });
+      }
+      seen.set(key(name), name);
+    }
+  };
+  const caseless = (name: string): string => name.toLowerCase();
+  const tableNames = tables.map((table) => table.name);
+  distinct(
+    tableNames,
+    caseless,
+    'typegen.duplicate_identifier',
+    'two table names differ only in letter case; SQLite compares identifiers case-insensitively',
+  );
+  distinct(
+    tableNames,
+    pascalCase,
+    'typegen.identifier_collision',
+    'two tables map to one generated type name',
+  );
+  for (const table of tables) {
+    const columnNames = table.columns.map((column) => column.name);
+    distinct(
+      columnNames,
+      caseless,
+      'typegen.duplicate_identifier',
+      'two column names differ only in letter case; SQLite compares identifiers case-insensitively',
+      { table: table.name },
+    );
+    for (const target of targets) {
+      const emit = (name: string): string => {
+        const langName =
+          mode === 'camel' || (target !== 'ts' && target !== 'rust')
+            ? snakeToCamel(name)
+            : name;
+        return target === 'rust' ? rustSnakeCase(langName) : langName;
+      };
+      distinct(
+        columnNames,
+        emit,
+        'typegen.identifier_collision',
+        'two columns map to one generated field name',
+        { target, table: table.name },
+      );
+      for (const column of columnNames) {
+        const emitted = emit(column);
+        if (
+          TARGET_KEYWORDS[target].has(emitted) ||
+          (target === 'dart' && emitted.startsWith('_'))
+        ) {
+          throw new TypegenError(
+            context,
+            'a column maps to a generated field name that is a reserved word or library-private on an emitter target; rename the column',
+            'typegen.reserved_identifier',
+            { target, table: table.name, column, emitted },
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Refuse a query name, result column, or query input that some configured
+ * target cannot emit: TS uses the name as is, Rust its snake_case form, and
+ * Swift, Kotlin, and Dart its camelCase form. Each must be an identifier
+ * clear of the target's reserved words; Dart also refuses a leading `_`.
+ */
+export function validateQueryIdentifier(
+  name: string,
+  targets: readonly NamingTarget[],
+  context: string,
+  scope: string,
+): void {
+  for (const target of targets) {
+    const emitted =
+      target === 'rust'
+        ? rustSnakeCase(name)
+        : target === 'ts'
+          ? name
+          : snakeToCamel(name);
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(emitted) ||
+      TARGET_KEYWORDS[target].has(emitted) ||
+      (target === 'dart' && emitted.startsWith('_'))
+    ) {
+      throw new TypegenError(
+        context,
+        'a query name, result column, or query input is not a valid identifier on an emitter target; rename it or alias it in SQL (AS)',
+        'typegen.invalid_query_identifier',
+        { target, scope, name, emitted },
+      );
+    }
+  }
 }

@@ -14,11 +14,11 @@
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
-import type {
-  AnalyzedQuery,
-  QueryColumn,
-  QuerySyqlPlanBind,
-  QuerySyqlPublicInput,
+import {
+  type AnalyzedQuery,
+  type QueryColumn,
+  type QuerySyqlPlanBind,
+  syqlInput,
 } from './query';
 
 const SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -35,11 +35,6 @@ const SYQL_SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
   ...SWIFT_TYPE,
   integer: 'Int64',
 };
-
-/** Language-facing field name — the pinned §12 naming map. */
-function camelCase(name: string): string {
-  return snakeToCamel(name);
-}
 
 /** The query function/type name: already camelCase; PascalCase for the type. */
 function typeName(name: string): string {
@@ -102,22 +97,16 @@ function optionalParamValue(type: IrColumnType, name: string): string {
   }
 }
 
-function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
-  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
-  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
-  return input;
-}
-
 function syqlSwiftType(type: IrColumnType, nullable: boolean): string {
   return `${SYQL_SWIFT_TYPE[type]}${nullable ? '?' : ''}`;
 }
 
 function syqlControlActive(query: AnalyzedQuery, name: string): string {
   const input = syqlInput(query, name);
-  const access = camelCase(input.langName);
+  const access = snakeToCamel(input.langName);
   if (input.kind === 'value' && input.default === false) return access;
   if (input.kind === 'value' && input.nullable) {
-    return `{ if case .present = ${access} { return true }; return false }()`;
+    return `${access}.isPresent`;
   }
   if (input.kind === 'value' || input.kind === 'group') {
     return `${access} != nil`;
@@ -137,7 +126,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     return `.bool(${active})`;
   }
   const input = syqlInput(query, bind.input);
-  const access = camelCase(input.langName);
+  const access = snakeToCamel(input.langName);
   if (bind.kind === 'limit')
     return `.number(Double(effective${typeName(access)}))`;
   if (bind.kind === 'group-member') {
@@ -147,7 +136,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     );
     if (member === undefined)
       throw new Error(`unknown group member ${bind.member}`);
-    const memberName = camelCase(member.langName);
+    const memberName = snakeToCamel(member.langName);
     const present = member.nullable
       ? optionalParamValue(member.type, `value.${memberName}`)
       : paramValue(member.type, `value.${memberName}`);
@@ -173,18 +162,18 @@ function emitSyqlSwiftTypes(query: AnalyzedQuery): string[] {
       lines.push(`public struct ${name}: Sendable {`);
       for (const member of input.members) {
         lines.push(
-          `    public let ${camelCase(member.langName)}: ${syqlSwiftType(member.type, member.nullable)}`,
+          `    public let ${snakeToCamel(member.langName)}: ${syqlSwiftType(member.type, member.nullable)}`,
         );
       }
       const args = input.members
         .map(
           (member) =>
-            `${camelCase(member.langName)}: ${syqlSwiftType(member.type, member.nullable)}`,
+            `${snakeToCamel(member.langName)}: ${syqlSwiftType(member.type, member.nullable)}`,
         )
         .join(', ');
       lines.push(`    public init(${args}) {`);
       for (const member of input.members) {
-        const name = camelCase(member.langName);
+        const name = snakeToCamel(member.langName);
         lines.push(`        self.${name} = ${name}`);
       }
       lines.push('    }', '}', '');
@@ -192,7 +181,7 @@ function emitSyqlSwiftTypes(query: AnalyzedQuery): string[] {
       const name = `${typeName(query.name)}${typeName(input.langName)}`;
       lines.push(`public enum ${name}: Int, Sendable {`);
       input.profiles.forEach((profile, index) => {
-        lines.push(`    case ${camelCase(profile.langName)} = ${index}`);
+        lines.push(`    case ${snakeToCamel(profile.langName)} = ${index}`);
       });
       lines.push('}', '');
     }
@@ -213,7 +202,7 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
   );
   const args = ['client: SyncularClient'];
   for (const input of metadata.inputs) {
-    const name = camelCase(input.langName);
+    const name = snakeToCamel(input.langName);
     if (input.kind === 'value') {
       const type = syqlSwiftType(input.type, input.nullable);
       if (input.required) args.push(`${name}: ${type}`);
@@ -230,7 +219,7 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
         input.profiles.find((profile) => profile.name === input.defaultProfile)
           ?.langName ?? input.defaultProfile;
       args.push(
-        `${name}: ${typeName(query.name)}${typeName(input.langName)} = .${camelCase(defaultCase)}`,
+        `${name}: ${typeName(query.name)}${typeName(input.langName)} = .${snakeToCamel(defaultCase)}`,
       );
     } else {
       args.push(`${name}: Int? = nil`);
@@ -241,7 +230,7 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
   );
   const page = metadata.inputs.find((input) => input.kind === 'limit');
   if (page?.kind === 'limit') {
-    const name = camelCase(page.langName);
+    const name = snakeToCamel(page.langName);
     lines.push(
       `        let effective${typeName(name)} = ${name} ?? ${page.defaultSize}`,
       `        guard effective${typeName(name)} >= 1 && effective${typeName(name)} <= ${page.maxSize} else {`,
@@ -260,7 +249,7 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
   const sort = metadata.inputs.find((input) => input.kind === 'sort');
   const profileCount = sort?.kind === 'sort' ? sort.profiles.length : 1;
   const sortIndex =
-    sort?.kind === 'sort' ? `${camelCase(sort.langName)}.rawValue` : '0';
+    sort?.kind === 'sort' ? `${snakeToCamel(sort.langName)}.rawValue` : '0';
   const index =
     metadata.plan.backend === 'variants'
       ? `activationMask * ${profileCount} + ${sortIndex}`
@@ -298,13 +287,13 @@ function emitRowStruct(query: AnalyzedQuery): string[] {
   for (const column of query.columns) {
     const opt = column.nullable ? '?' : '';
     lines.push(
-      `    public let ${camelCase(column.langName)}: ${SWIFT_TYPE[column.type]}${opt}`,
+      `    public let ${snakeToCamel(column.langName)}: ${SWIFT_TYPE[column.type]}${opt}`,
     );
   }
   lines.push('');
   lines.push('    public init?(row: [String: JSONValue]) {');
   for (const column of query.columns) {
-    const name = camelCase(column.langName);
+    const name = snakeToCamel(column.langName);
     const accessor = rowAccessor(column);
     if (column.nullable) {
       lines.push(`        self.${name} = ${accessor}`);
@@ -332,7 +321,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(`    /// Run the ${query.name} named query (SELECT-only).`);
   const args: string[] = [];
   for (const p of query.params) {
-    const name = camelCase(p.langName);
+    const name = snakeToCamel(p.langName);
     args.push(`${name}: ${SWIFT_TYPE[p.type]}`);
   }
   const signature =
@@ -346,7 +335,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   if (query.params.length > 0) {
     const binds = query.params
       .map((p) => {
-        const name = camelCase(p.langName);
+        const name = snakeToCamel(p.langName);
         return paramValue(p.type, name);
       })
       .join(', ');
@@ -392,6 +381,11 @@ export function emitQueriesSwiftModule(
         'public enum SyncularQueryPresence<Value: Sendable>: Sendable {',
         '    case absent',
         '    case present(Value)',
+        '',
+        '    public var isPresent: Bool {',
+        '        if case .present = self { return true }',
+        '        return false',
+        '    }',
         '}',
         '',
         'public struct SyncularQueryInputError: Error, Sendable {',

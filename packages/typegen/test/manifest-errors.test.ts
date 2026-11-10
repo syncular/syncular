@@ -438,4 +438,35 @@ describe('declared references (§6.11)', () => {
       /MUST NOT cross an authorization boundary/,
     );
   });
+
+  test('a reference keeps a single-column index over its column', () => {
+    const withDrop = (replacement: string) =>
+      buildIr(parseManifest(REFERENCE_RAW), [
+        {
+          name: '0001_initial',
+          sql: `CREATE TABLE parents (project_id TEXT PRIMARY KEY);
+                CREATE TABLE children (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT REFERENCES parents(project_id));
+                DROP INDEX idx_children_parent_id_ref;
+                ${replacement}`,
+        },
+      ]);
+    expect(
+      withDrop('CREATE INDEX idx_children_parent ON children (parent_id)')
+        .tables[1]?.indexes,
+    ).toEqual([
+      { name: 'idx_children_parent', columns: ['parent_id'], unique: false },
+    ]);
+    let error: unknown;
+    try {
+      withDrop(
+        'CREATE INDEX idx_children_pair ON children (parent_id, project_id)',
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      code: 'typegen.reference_index_missing',
+      details: { table: 'children', column: 'parent_id' },
+    });
+  });
 });

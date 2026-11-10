@@ -18,6 +18,58 @@ export const changelog = [
   {
     date: '2026-11-10',
     title:
+      'Native schemas carry indexes and references; the migration lock records schema versions',
+    body: 'The Swift, Kotlin, and Dart schema constants parse the same schema JSON the TS module embeds, so native clients now create local indexes, enforce local `UNIQUE`, and pass declared references to the local authority. The Dart constant is now `final` (decoded with `dart:convert`) instead of `const`. Migration lock format 3 records the schema version of every locked migration: generation refuses a migration that joins a locked version (`typegen.schema_version_locked`) or a locked migration moved to another version (`typegen.migration_version_changed`). A format 1 or 2 lock fails with `typegen.migration_lock_outdated` until `syncular migrations upgrade-lock` converts it once. Generation also refuses an encrypted column in any index, a declared reference whose single-column index a migration dropped, table or column names that differ only in letter case, two names that map to one generated type or field name, and reserved words on every emitted target in both naming modes. `DEFAULT -1` is accepted, and `DEFAULT NOT NULL` is a parse error.',
+    links: [
+      {
+        href: '/guide-schema/#schema-bumps',
+        label: 'Schema bumps',
+      },
+      {
+        href: '/tooling-cli/',
+        label: 'CLI',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Typegen emits the SQL it checked, and scope proofs are whole WHERE conjuncts',
+    body: 'Typegen derives the emitted positional SQL from the SYQL lexer and prepares that exact statement at generation, so whitespace inside a string literal survives and a quote inside a quoted identifier no longer turns a following line comment into a dropped `WHERE` clause. `.sql` and `.syql` queries share one scope-proof rule: a scope column compared to a bind proves its scope only as a whole top-level `WHERE` conjunct. `not (project_id = :projectId)`, `(project_id = :projectId) = 0`, `collate`, `iif`, `case`, a literal in an `in` list, and a predicate in a subquery now yield a table-wide dependency and no coverage, and `sync query` rejects them. A plain column beside an aggregate without `GROUP BY`, and a compound-SELECT column that a branch can leave `NULL`, generate as nullable. A query name, result column, or input that a target cannot emit fails with `typegen.invalid_query_identifier`. The Swift runner for a nullable optional `when` control compiles again.',
+    links: [
+      {
+        href: '/tooling-queries/',
+        label: 'Named queries',
+      },
+      {
+        href: '/syql/#query-and-sync-query',
+        label: 'query and sync query',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Direct client realtime URL placeholder, handle blobRefString, native syncUntilIdle timeoutMs',
+    body: '`webSocketRealtimeConnector` replaces `{clientId}` in its URL with the percent-encoded client id on the direct client too; before, only the worker path substituted it and the direct client opened the literal URL. `RealtimeConnector` receives the client id as an optional second argument, and the worker path no longer substitutes separately. `SyncClientHandle` gains `blobRefString(ref)`, which serializes a `BlobRef` locally with no worker call. `syncUntilIdle` accepts `timeoutMs` on the Swift, Kotlin and Flutter clients and on the shared Tauri and React Native bridge (`syncUntilIdle(maxRounds, timeoutMs)`), passed through to the command. The Swift `readRows`, `query`, `pendingCommitIds`, `conflicts` and `presence` throw `client.invalid_host_response` when the host reply lacks the expected field; before, they returned an empty list. The React Native iOS and Android modules join the event pump before they free the native handle on `create`, so a re-create no longer frees a handle that the pump thread is polling.',
+    links: [
+      {
+        href: '/concepts-realtime/',
+        label: 'Realtime',
+      },
+      {
+        href: '/concepts-blobs/',
+        label: 'Blobs',
+      },
+      {
+        href: '/native-client-api/',
+        label: 'Native client API',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
       'Tauri and React Native share one native bridge; Tauri snapshotRead passes the plugin ACL',
     body: '`@syncular/tauri` and the React Native binding now run one command bridge, `@syncular/client/native-bridge`, so both hosts decode, gate and fail the same way. In a real Tauri app `snapshotRead` failed with "not allowed by ACL", because the plugin registered `syncular_snapshot_read` without a permission; the bridge now sends it as the `snapshotRead` method of `syncular_command`, and the plugin no longer registers the dedicated command. `conflicts()` decodes `serverRow` like `commitOutcome()`: binary and `crdt` cells arrive as `Uint8Array`, and `_sync_*` columns are dropped. A failed `create` releases the event listener and rejects with a typed error: a rejected host call carries `client.failed` with the host text in `details.cause`. The Tauri plugin answers `create` with its startup failure, for example `sync.invalid_request` for an invalid transport field, instead of emitting an event no listener receives. `SyncularConfig` gains `realtime_heartbeat_ms`, forwarded as `realtimeHeartbeatMs`. React Native now refuses a malformed `$bytes` envelope with `sync.invalid_request` instead of padding it, and a closed React Native client rejects queries and listener registration with `client.closed`, as Tauri did.',
     links: [

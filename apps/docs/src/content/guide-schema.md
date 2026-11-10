@@ -144,8 +144,9 @@ syncular migrations baseline --manifest-dir .
 syncular migrations check --manifest-dir .
 ```
 
-Compact format 2 stores migration names, normalized SQL checksums, and one
-privacy-safe canonical head-schema snapshot for diagnostics. It never stores
+Format 3 stores migration names, normalized SQL checksums, the schema version
+of each migration, and one privacy-safe canonical head-schema snapshot for
+diagnostics. It never stores
 SQL, rows, database paths, or secrets, and it grows with migration metadata
 plus the current schema.
 
@@ -210,6 +211,22 @@ Add a migration, extend `schemaVersions` in the manifest with the new version
 and the migration it runs through, and regenerate. A deployed migration is
 immutable: restore any accidentally edited one and add a new migration for the
 repair. Do not delete and re-baseline the lock.
+
+The new migration needs a new version. The lock records the version of every
+locked migration, and generation refuses a migration that joins a locked
+version (`typegen.schema_version_locked`) or a locked migration moved to another
+version (`typegen.migration_version_changed`). A client keeps its local tables
+while its version is unchanged, so a column folded into a deployed version would
+never reach its local schema.
+
+A lock written before Syncular recorded versions (format 1 or 2) stops
+generation with `typegen.migration_lock_outdated`. Convert it once, on a
+manifest whose `schemaVersions` still describe what is deployed, and commit the
+result:
+
+```sh title="terminal"
+syncular migrations upgrade-lock --manifest-dir .
+```
 
 Changes to existing tables follow three rules:
 

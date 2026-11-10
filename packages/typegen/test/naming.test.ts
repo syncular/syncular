@@ -9,15 +9,18 @@ import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
   analyzeQuery,
+  buildIr,
   buildNamingMap,
   buildRustNamingMap,
   type IrDocument,
+  parseManifest,
   type QueryDb,
   rustPascalCase,
   rustSnakeCase,
   serializeQueryIr,
   snakeToCamel,
   synthesizeDdl,
+  validateSchemaIdentifiers,
 } from '../src';
 
 describe('snakeToCamel — the pinned §12 algorithm', () => {
@@ -116,6 +119,106 @@ describe('buildNamingMap — §12 hard errors', () => {
       { sqlName: 'col2', langName: 'col2' },
       { sqlName: 'class', langName: 'class' },
     ]);
+  });
+});
+
+describe('validateSchemaIdentifiers — every target, every naming mode', () => {
+  const tablesOf = (sql: string, names: readonly string[]) =>
+    buildIr(
+      parseManifest({
+        manifestVersion: 1,
+        schemaVersions: [{ version: 1, through: '0001_initial' }],
+        tables: names.map((name) => ({ name, scopes: ['p:{id}'] })),
+      }),
+      [{ name: '0001_initial', sql }],
+    ).tables;
+  const failure = (run: () => void): unknown => {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  test('tables mapping to one generated type name collide', () => {
+    const tables = tablesOf(
+      'CREATE TABLE foo_bar (id TEXT PRIMARY KEY); CREATE TABLE foo__bar (id TEXT PRIMARY KEY)',
+      ['foo_bar', 'foo__bar'],
+    );
+    expect(
+      failure(() =>
+        validateSchemaIdentifiers(tables, 'preserve', ['ts'], 'syncular.json'),
+      ),
+    ).toMatchObject({
+      code: 'typegen.identifier_collision',
+      details: { names: ['foo_bar', 'foo__bar'] },
+    });
+  });
+
+  test('table and column names differing only in case are duplicates', () => {
+    const tables = tablesOf(
+      'CREATE TABLE Items2 (id TEXT PRIMARY KEY); CREATE TABLE ITEMS2 (id TEXT PRIMARY KEY)',
+      ['Items2', 'ITEMS2'],
+    );
+    expect(
+      failure(() =>
+        validateSchemaIdentifiers(tables, 'camel', ['ts'], 'syncular.json'),
+      ),
+    ).toMatchObject({
+      code: 'typegen.duplicate_identifier',
+      details: { names: ['Items2', 'ITEMS2'] },
+    });
+    const columns = tablesOf('CREATE TABLE t (id TEXT PRIMARY KEY, ID TEXT)', [
+      't',
+    ]);
+    expect(
+      failure(() =>
+        validateSchemaIdentifiers(columns, 'camel', ['ts'], 'syncular.json'),
+      ),
+    ).toMatchObject({
+      code: 'typegen.duplicate_identifier',
+      details: { table: 't', names: ['id', 'ID'] },
+    });
+  });
+
+  test('"preserve" still checks native targets, which always emit camelCase', () => {
+    const collision = tablesOf(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, user_id TEXT, userId TEXT)',
+      ['t'],
+    );
+    expect(() =>
+      validateSchemaIdentifiers(collision, 'preserve', ['ts'], 'syncular.json'),
+    ).not.toThrow();
+    expect(
+      failure(() =>
+        validateSchemaIdentifiers(
+          collision,
+          'preserve',
+          ['ts', 'swift'],
+          'syncular.json',
+        ),
+      ),
+    ).toMatchObject({
+      code: 'typegen.identifier_collision',
+      details: { target: 'swift', names: ['user_id', 'userId'] },
+    });
+    const keyword = tablesOf('CREATE TABLE t (id TEXT PRIMARY KEY, fun TEXT)', [
+      't',
+    ]);
+    expect(
+      failure(() =>
+        validateSchemaIdentifiers(
+          keyword,
+          'preserve',
+          ['ts', 'kotlin'],
+          'syncular.json',
+        ),
+      ),
+    ).toMatchObject({
+      code: 'typegen.reserved_identifier',
+      details: { target: 'kotlin', table: 't', column: 'fun', emitted: 'fun' },
+    });
   });
 });
 

@@ -2,8 +2,8 @@
  * Kotlin emitter: neutral IR → one standalone `.kt` file exporting
  *
  * - `object <ObjectName> { val schema: JsonValue }` — the ServerSchema
- *   object built from the IR (fed straight into `SyncularClient.create(
- *   schema = …)`),
+ *   object: the exact `serializeSchema` JSON the TS module embeds, parsed
+ *   from a raw string (fed straight into `SyncularClient.create(schema = …)`),
  * - one `data class` per table with typed properties (per the six §2.4 column
  *   types + blob_ref/crdt) and a `fromRow(row: JsonValue)` companion factory,
  * - a `Subscriptions` object of typed requested-scope builders.
@@ -12,8 +12,15 @@
  * `query`/`readRows` return (each row a `JsonValue.Obj`). The header carries
  * the IR hash so `--check` verifies freshness byte-exactly.
  */
-import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
-import { snakeToCamel } from './naming';
+import {
+  appColumnType,
+  type IrColumnType,
+  type IrDocument,
+  type IrSubscription,
+  type IrTable,
+  serializeSchema,
+} from './ir';
+import { pascalCase, snakeToCamel, stringLiteral } from './naming';
 
 /** §2.4 column type → honest Kotlin type. `json`/`blob_ref` are the raw
  * canonical JSON string; `bytes`/`crdt` are opaque `ByteArray`. */
@@ -28,94 +35,9 @@ const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'ByteArray',
 };
 
-function appColumnType(column: IrTable['columns'][number]): IrColumnType {
-  return column.encrypted === true && column.declaredType !== undefined
-    ? column.declaredType
-    : column.type;
-}
-
-/** §5.11: app-side Kotlin type — declaredType for an encrypted column. */
-function appKotlinType(column: IrTable['columns'][number]): string {
-  return KOTLIN_TYPE[appColumnType(column)];
-}
-
-function pascalCase(name: string): string {
-  return name
-    .split(/[_-]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('');
-}
-
-/** Language-facing field name — the pinned §12 naming map. */
-function camelCase(name: string): string {
-  return snakeToCamel(name);
-}
-
-function quote(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$')}"`;
-}
-
-function emitSchemaValue(ir: IrDocument, indent: string): string[] {
-  const lines: string[] = [];
-  const i = indent;
-  lines.push(`${i}JsonValue.obj(`);
-  lines.push(`${i}  "version" to JsonValue.of(${ir.schemaVersion}),`);
-  lines.push(`${i}  "tables" to JsonValue.arr(listOf(`);
-  for (const table of ir.tables) {
-    lines.push(`${i}    JsonValue.obj(`);
-    lines.push(`${i}      "name" to JsonValue.of(${quote(table.name)}),`);
-    lines.push(
-      `${i}      "primaryKey" to JsonValue.of(${quote(table.primaryKey)}),`,
-    );
-    lines.push(`${i}      "columns" to JsonValue.arr(listOf(`);
-    for (const column of table.columns) {
-      const parts = [
-        `"name" to JsonValue.of(${quote(column.name)})`,
-        `"type" to JsonValue.of(${quote(column.type)})`,
-        `"nullable" to JsonValue.of(${column.nullable})`,
-      ];
-      if (column.crdtType !== undefined) {
-        parts.push(`"crdtType" to JsonValue.of(${quote(column.crdtType)})`);
-      }
-      if (column.encrypted === true) {
-        parts.push('"encrypted" to JsonValue.of(true)');
-        parts.push(
-          `"declaredType" to JsonValue.of(${quote(column.declaredType ?? column.type)})`,
-        );
-      }
-      lines.push(`${i}        JsonValue.obj(${parts.join(', ')}),`);
-    }
-    lines.push(`${i}      )),`);
-    lines.push(`${i}      "scopes" to JsonValue.arr(listOf(`);
-    for (const scope of table.scopes) {
-      lines.push(
-        `${i}        JsonValue.obj("pattern" to JsonValue.of(${quote(scope.pattern)}), "column" to JsonValue.of(${quote(scope.column)})),`,
-      );
-    }
-    lines.push(`${i}      )),`);
-    if (table.ftsIndexes.length > 0) {
-      lines.push(`${i}      "ftsIndexes" to JsonValue.arr(listOf(`);
-      for (const index of table.ftsIndexes) {
-        const columns = index.columns
-          .map((column) => `JsonValue.of(${quote(column)})`)
-          .join(', ');
-        lines.push(
-          `${i}        JsonValue.obj("name" to JsonValue.of(${quote(index.name)}), "columns" to JsonValue.arr(listOf(${columns})), "tokenize" to JsonValue.of(${quote(index.tokenize)})),`,
-        );
-      }
-      lines.push(`${i}      )),`);
-    }
-    lines.push(`${i}    ),`);
-  }
-  lines.push(`${i}  )),`);
-  lines.push(`${i})`);
-  return lines;
-}
-
 /** The accessor lifting a §2.4 value out of a row `JsonValue`. */
 function rowAccessor(column: IrTable['columns'][number]): string {
-  const key = `row[${quote(column.name)}]`;
+  const key = `row[${stringLiteral(column.name, 'kotlin')}]`;
   switch (appColumnType(column)) {
     case 'string':
     case 'json':
@@ -139,9 +61,9 @@ function emitDataClass(table: IrTable): string[] {
   lines.push(`/** One ${table.name} row (§2.4 column order). */`);
   lines.push(`data class ${type}(`);
   for (const column of table.columns) {
-    const kotlin = appKotlinType(column);
+    const kotlin = KOTLIN_TYPE[appColumnType(column)];
     const opt = column.nullable ? '?' : '';
-    lines.push(`    val ${camelCase(column.name)}: ${kotlin}${opt},`);
+    lines.push(`    val ${snakeToCamel(column.name)}: ${kotlin}${opt},`);
   }
   lines.push(') {');
   lines.push('    companion object {');
@@ -150,7 +72,7 @@ function emitDataClass(table: IrTable): string[] {
   );
   lines.push(`        fun fromRow(row: JsonValue): ${type}? {`);
   for (const column of table.columns) {
-    const name = camelCase(column.name);
+    const name = snakeToCamel(column.name);
     const accessor = rowAccessor(column);
     if (column.nullable) {
       lines.push(`            val ${name} = ${accessor}`);
@@ -158,7 +80,7 @@ function emitDataClass(table: IrTable): string[] {
       lines.push(`            val ${name} = ${accessor} ?: return null`);
     }
   }
-  const args = table.columns.map((c) => camelCase(c.name)).join(', ');
+  const args = table.columns.map((c) => snakeToCamel(c.name)).join(', ');
   lines.push(`            return ${type}(${args})`);
   lines.push('        }');
   lines.push('    }');
@@ -177,23 +99,29 @@ function emitSubscription(sub: IrSubscription): string[] {
   }
   const lines: string[] = [];
   lines.push(
-    `        /** Requested-scope template for the ${quote(sub.name)} subscription. */`,
+    `        /** Requested-scope template for the ${stringLiteral(sub.name, 'kotlin')} subscription. */`,
   );
   lines.push(`        object ${pascalCase(sub.name)} {`);
-  lines.push(`            const val name = ${quote(sub.name)}`);
-  lines.push(`            const val table = ${quote(sub.table)}`);
-  const args = params.map((p) => `${camelCase(p)}: String`).join(', ');
+  lines.push(
+    `            const val name = ${stringLiteral(sub.name, 'kotlin')}`,
+  );
+  lines.push(
+    `            const val table = ${stringLiteral(sub.table, 'kotlin')}`,
+  );
+  const args = params.map((p) => `${snakeToCamel(p)}: String`).join(', ');
   lines.push(
     `            fun scopes(${args}): Map<String, List<String>> = mapOf(`,
   );
   for (const scope of sub.scopes) {
     const values = scope.values
       .map((value) =>
-        value.kind === 'literal' ? quote(value.value) : camelCase(value.name),
+        value.kind === 'literal'
+          ? stringLiteral(value.value, 'kotlin')
+          : snakeToCamel(value.name),
       )
       .join(', ');
     lines.push(
-      `                ${quote(scope.variable)} to listOf(${values}),`,
+      `                ${stringLiteral(scope.variable, 'kotlin')} to listOf(${values}),`,
     );
   }
   lines.push('            )');
@@ -226,8 +154,16 @@ export function emitKotlinModule(
   schemaLines.push(
     `    /** ServerSchema-compatible schema — pass to \`SyncularClient.create(schema = …)\`. */`,
   );
-  schemaLines.push('    val schema: JsonValue =');
-  for (const line of emitSchemaValue(ir, '        ')) schemaLines.push(line);
+  // A raw string has no escapes; only `$` needs its template form.
+  // trimIndent() strips the common indentation and the blank first and last
+  // lines, so the parsed string is the serializeSchema bytes.
+  schemaLines.push('    val schema: JsonValue = JsonValue.parse(');
+  schemaLines.push('        """');
+  for (const line of serializeSchema(ir).split('\n')) {
+    schemaLines.push(`        ${line.replaceAll('$', () => "${'$'}")}`);
+  }
+  schemaLines.push('        """.trimIndent(),');
+  schemaLines.push('    )');
   schemaLines.push('');
   schemaLines.push(
     '    /** Typed requested-scope builders per subscription. */',

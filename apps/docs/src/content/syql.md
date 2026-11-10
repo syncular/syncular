@@ -194,14 +194,19 @@ sync query listTodos(listId) {
 ```
 
 Coverage is accepted when each table instance has a declared scope proven
-from required, non-null equality/`IN` predicates. A
-required scope bind may propagate through a qualified, mandatory scope-column
-equality in `WHERE` or a simple `JOIN ... ON` clause. The body of a top-level
-CTE is a scope of its own: its `WHERE` proves the instances it reads, and the
-outer `WHERE` proves only the outer instances. Predicates under `OR`,
-negation, `when`, or other nested queries never prove coverage, and an `IN`
-proof may contain only required binds. Ambiguous joins, optional boolean branches, and
-nested SQL fail closed instead of claiming partial readiness.
+from required, non-null equality/`IN` predicates. A proof is a whole
+top-level `WHERE` conjunct: `list_id = :listId`, `:listId = list_id`,
+`list_id IS :listId`, or `list_id in (:a, :b)` with binds only, optionally
+inside parentheses. `not (list_id = :listId)`, `(list_id = :listId) = 0`,
+`list_id = :listId collate nocase`, a function or `case` around the
+comparison, and a literal in the `in` list prove nothing. A required scope bind
+may propagate through a qualified, mandatory scope-column equality in `WHERE`
+or a simple `JOIN ... ON` clause. The body of a top-level CTE is a scope of its
+own: its `WHERE` proves the instances it reads, and the outer `WHERE` proves
+only the outer instances. Predicates under `OR`, `when`, or other nested
+queries never prove coverage, and an `IN` proof may contain only required
+binds. Ambiguous joins, optional boolean branches, and nested SQL fail closed
+instead of claiming partial readiness.
 
 A self-join claims coverage when every instance of the table binds the same
 scopes with the same operator and parameters:

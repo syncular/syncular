@@ -378,13 +378,25 @@ Given schema scope `list:{list_id}`, this predicate is constructive:
 todos.list_id = :listId
 ```
 
-Required equality and `IN` predicates over declared scope columns may produce
-exact dependencies. The predicate must be an unconditional conjunct of the
-`WHERE` clause of the SELECT scope that reads the instance: the outer
-statement or the body of a top-level CTE (§8). Predicates under `when`, `OR`,
-an ambiguous table reference, or any other nested statement do not. A
-predicate proves only instances of its own scope, even when another scope
-reuses the alias. A table
+Required equality and `IN` predicates over declared scope columns produce
+exact dependencies. A predicate is a proof only when it is a whole top-level
+conjunct of the `WHERE` clause of the SELECT scope that reads the instance:
+the outer statement or the body of a top-level CTE (§8). Parentheses around a
+whole conjunct are transparent. With `column` a declared scope column,
+optionally qualified, the conjunct has one of these forms:
+
+- `column = :bind`, `column == :bind`, or `column IS :bind`;
+- `:bind = column` or `:bind == column`;
+- `column IN (:a, :b)`, whose list holds binds only.
+
+Nothing else proves a scope: a comparison under `NOT`, compared again
+(`(column = :bind) = 0`, `column = :bind IS FALSE`), wrapped in a function,
+`CASE`, or `IIF`, or followed by `COLLATE`; an `IN` list with a literal; a
+`WHERE` clause with a top-level `OR`; a compound SELECT scope; predicates under
+`when`, an ambiguous table reference, or any other nested statement. A table
+without a proof keeps a table-wide dependency. Named `.sql` queries use the
+same rule. A predicate proves only instances of its own scope, even when
+another scope reuses the alias. A table
 read through several instances (a self-join) produces one dependency when every
 instance carries an identical scope proof: the same scope variables, each with
 the same operator and the same set of parameters. If any instance of a read
@@ -417,11 +429,13 @@ descriptor contains one coverage entry per read table; a client may report the
 query complete only when all entries are complete.
 
 A scope proof may propagate between qualified scope columns joined by a
-required outer `WHERE` equality or by a simple mandatory `ON` equality. For
+required outer `WHERE` equality or by a simple mandatory `ON` equality. Either
+equality is a whole conjunct `a.x = b.y` (or `==`) of two qualified scope
+columns. For
 example, `details.list_id = todos.list_id` inherits the required bind proven for
 `todos.list_id`. An `ON` clause containing `OR`, `NOT`, a subquery, or a CTE is
-not a proof. Scope predicates under `OR`, negation, a conditional, or a nested
-query other than a top-level CTE body are not proofs. An `IN` proof may contain only required binds. Otherwise compilation
+not a proof. Only the §13 conjunct forms prove a scope. An `IN` proof may
+contain only required binds. Otherwise compilation
 fails; it never silently widens coverage or treats invalidation as readiness.
 Comma-separated table sources are outside the proof-compatible SQL subset and
 MUST fail generation with guidance to use an explicit `JOIN ... ON` relation.

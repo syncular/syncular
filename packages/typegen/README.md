@@ -30,8 +30,9 @@ are mutually exclusive.
 exists. `migrations check` is the fast, CI-friendly history check without
 query analysis or output generation. New migrations are appended to the lock
 by ordinary `generate`; locked migrations may never be edited, removed,
-renamed, or reordered. Existing format-1 locks remain valid and keep their
-format until `migrations upgrade-lock` explicitly validates and compacts them.
+renamed, or reordered. A lock in format 1 or 2 predates per-migration schema
+versions: `generate` and `migrations check` refuse it with
+`typegen.migration_lock_outdated` until `migrations upgrade-lock` converts it.
 
 `init` scaffolds a starter `syncular.json`, first migration, and migration
 lock into an existing project (the "add syncular to my app" path). It refuses
@@ -81,7 +82,7 @@ schema guide and suggests `syncular init`.
 | `manifestVersion` | yes | Must be `1`. Format growth happens by bumping this, not by tolerating unknown keys. |
 | `migrations` | no (default `./migrations`) | Directory of `NNNN_name/up.sql` migrations, relative to the manifest. |
 | `queries` | no (default `./queries`) | Directory of `.sql` / `.syql` named-query files (see §6). Only read when some output requests a queries file. |
-| `naming` | no (default `"camel"`) | `"camel"` maps snake_case SQL names to camelCase in generated row types/params (projections lower with `AS` aliases so runtime keys match); `"preserve"` keeps SQL-truth names. Collisions/keyword hazards are generate-time errors. |
+| `naming` | no (default `"camel"`) | `"camel"` maps snake_case SQL names to camelCase in generated row types/params (projections lower with `AS` aliases so runtime keys match); `"preserve"` keeps SQL-truth names. Swift, Kotlin, and Dart row fields are camelCase in both modes. In both modes, generation fails on two table or column names that differ only in letter case (`typegen.duplicate_identifier`), two tables or columns mapping to one generated name on an emitted target (`typegen.identifier_collision`), and a generated field that is a reserved word on an emitted target or starts with `_` on Dart (`typegen.reserved_identifier`). |
 | `queryBackend` | no (default `"auto"`) | Advanced revision-1 SYQL lowering override: `"neutralize"` emits guarded statements, `"variants"` enumerates activation states, and `"auto"` deterministically enumerates at ≤ 2 activation controls. This never changes source meaning or the public API. |
 | `output.ir` | no (default `./syncular.ir.json`) | IR output path, relative to the manifest. |
 | `output.module` | no (default `./syncular.generated.ts`) | Generated TS module path, relative to the manifest. |
@@ -110,14 +111,19 @@ migration list in order: version *n* covers every migration after the
 previous entry's `through` up to and including its own. **Gap rule**: the
 final entry's `through` must be the final migration — a migration not
 covered by any version is a hard error (so is a `through` naming a
-missing or out-of-order migration).
+missing or out-of-order migration). **Locked versions**: the migration lock
+records the version of every locked migration. A locked migration keeps its
+version (`typegen.migration_version_changed` otherwise), and a migration added
+after the lock belongs to a version above the highest locked one
+(`typegen.schema_version_locked` otherwise). A deployed version therefore never
+gains a column that its deployed clients would not reset for (§7.4).
 
 ### Immutable migration history
 
 `syncular.migrations.lock.json` is the version-controlled deployment baseline.
-Format 2 records every migration name and SHA-256 checksum (line endings
-normalized), plus one canonical head-schema column snapshot used only for
-diagnostics. It contains no SQL, filesystem path, row data, or runtime database
+Format 3 records every migration name, its SHA-256 checksum (line endings
+normalized), and the schema version it belongs to, plus one canonical
+head-schema column snapshot used only for diagnostics. It contains no SQL, filesystem path, row data, or runtime database
 state, and grows with migration metadata plus the current schema rather than
 repeating the full cumulative schema after every migration.
 
@@ -130,17 +136,20 @@ git add syncular.migrations.lock.json
 syncular migrations check --manifest-dir .
 ```
 
-Projects with a committed format-1 lock upgrade deliberately, after first
-checking that immutable history is unchanged:
+Projects with a committed format-1 or format-2 lock run one upgrade before
+generating. `upgrade-lock` validates the locked history, records each locked
+migration's schema version from the manifest's `schemaVersions`, and leaves
+migrations appended after the old lock for `generate` to lock. Run it on a
+manifest whose `schemaVersions` still describe the deployed versions:
 
 ```sh
-syncular migrations check --manifest-dir .
 syncular migrations upgrade-lock --manifest-dir .
 git add syncular.migrations.lock.json
+syncular migrations check --manifest-dir .
 ```
 
-The upgrade command refuses an already-current lock and ordinary `generate`
-never changes the lock format implicitly.
+The upgrade command refuses an already-current lock, and `generate` never
+changes the lock format.
 
 After that, a deployed migration is immutable. Restore an accidentally edited
 migration and express the repair in a new `NNNN_name/up.sql`; do not delete and
@@ -346,14 +355,20 @@ statement (`CREATE TRIGGER/VIEW`, DML, `ALTER … RENAME`, …); unknown
 or parameterized types (`VARCHAR(36)`); quoted identifiers
 (`"t"`, `` `t` ``, `[t]`); table constraints (`FOREIGN KEY`, `UNIQUE`,
 `CHECK`, `CONSTRAINT`); column constraints beyond the list above
-(`CHECK`, `COLLATE`, …); `DEFAULT (expression)`; composite
+(`CHECK`, `COLLATE`, …); `DEFAULT (expression)` and a `DEFAULT` followed by
+a word other than `NULL`, `TRUE`, `FALSE`, or `CURRENT_TIME/DATE/TIMESTAMP`
+(`DEFAULT NOT NULL` fails with `typegen.invalid_default`); composite
 or missing primary keys; `PRIMARY KEY` on `ADD COLUMN`; duplicate
 tables/columns; ASC/DESC, expression, or partial (`WHERE`) index columns; a
 duplicate or unknown-column index; unsupported virtual-table modules or FTS5
 options; an FTS projection without an owner or with invalid columns;
-trailing clauses (`STRICT`).
+trailing clauses (`STRICT`); a declared reference whose column no longer has
+a single-column index after replay, for example after `DROP INDEX` of its
+generated `idx_<table>_<column>_ref` (`typegen.reference_index_missing`; the
+server reaches children through that index, §6.11).
 
-**`DEFAULT` literals on `CREATE TABLE` are accepted and ignored**: typegen
+**`DEFAULT` literals on `CREATE TABLE` are accepted and ignored**, including
+signed numbers (`DEFAULT -1`): typegen
 extracts the schema *shape*; executing migrations (where defaults matter) is
 the host's job. Recording them is not needed by any emitter today. On
 `ALTER TABLE … ADD COLUMN`, a literal default does not make a non-null append
@@ -446,8 +461,10 @@ generated files depend only on the wrapper package's `JSONValue`/`JsonValue`.
 
 Each generated file exports, per language:
 
-- a **schema constant** built from the IR (byte-stable ordering) — pass it
-  straight to the wrapper's `create(schema:)`;
+- a **schema constant** parsed from a string literal that holds the exact
+  schema JSON the TS module's `schema` holds, with its references and indexes
+  (`test/golden-native.test.ts` asserts the bytes are identical in all four
+  languages); pass it straight to the wrapper's `create(schema:)`;
 - **one typed row type per table** with a `fromRow` factory that lifts a
   `query`/`readRows` row into the typed shape (returning null/nil when a
   non-nullable column is missing or mistyped);
@@ -456,10 +473,10 @@ Each generated file exports, per language:
 
 | | Swift | Kotlin | Dart |
 |---|---|---|---|
-| Schema | `enum <EnumName> { static let schema: JSONValue }` | `object <ObjectName> { val schema: JsonValue }` | `const Map<String, Object?> syncularSchema` |
+| Schema | `enum <EnumName> { static let schema: JSONValue }` | `object <ObjectName> { val schema: JsonValue }` | `final Map<String, Object?> syncularSchema` |
 | Row | `struct <Table>` + `init?(row: [String: JSONValue])` | `data class <Table>` + `fromRow(row: JsonValue)` | `class <Table>` + `static <Table>? fromRow(Map<String, Object?>)` |
 | Subscription | `enum subscriptions.<Name>` w/ `scopes(...)` | `object Subscriptions.<Name>` w/ `scopes(...)` | `class Syncular<Name>Subscription` w/ static `scopes(...)` |
-| Imports | `Foundation`, `Syncular` | `dev.syncular.JsonValue` | (none) |
+| Imports | `Foundation`, `Syncular` | `dev.syncular.JsonValue` | `dart:convert` |
 
 **Type mapping** (the six §2.4 types + blob_ref/crdt):
 

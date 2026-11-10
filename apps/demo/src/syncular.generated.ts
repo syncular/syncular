@@ -18,138 +18,403 @@ export interface SyncTable<Row, Insert, Update, Id> {
 
 /** ServerSchema-compatible schema object (SPEC §2.4, §3.1). */
 export const schema = {
-  version: 1,
-  tables: [
+  "version": 1,
+  "tables": [
     {
-      name: 'boards',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'board_id', type: 'string', nullable: false },
-        { name: 'name', type: 'string', nullable: false },
-        { name: 'color', type: 'string', nullable: false },
+      "name": "boards",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "color",
+          "type": "string",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'board:{board_id}', column: 'board_id' },
-      ],
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "column": "board_id"
+        }
+      ]
     },
     {
-      name: 'members',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'board_id', type: 'string', nullable: false },
-        { name: 'user_id', type: 'string', nullable: false },
-        { name: 'name', type: 'string', nullable: false },
-        { name: 'color', type: 'string', nullable: false },
-        { name: 'role', type: 'string', nullable: false },
+      "name": "members",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "color",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'board:{board_id}', column: 'board_id' },
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "column": "board_id"
+        }
       ],
-      references: [
-        { column: 'board_id', parentTable: 'boards', onDelete: 'RESTRICT' },
+      "references": [
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        }
       ],
-      indexes: [
-        { name: 'idx_members_board_id_ref', columns: ['board_id'], unique: false },
-      ],
+      "indexes": [
+        {
+          "name": "idx_members_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        }
+      ]
     },
     {
-      name: 'labels',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'board_id', type: 'string', nullable: false },
-        { name: 'name', type: 'string', nullable: false },
-        { name: 'color', type: 'string', nullable: false },
+      "name": "labels",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "color",
+          "type": "string",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'board:{board_id}', column: 'board_id' },
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "column": "board_id"
+        }
       ],
-      references: [
-        { column: 'board_id', parentTable: 'boards', onDelete: 'RESTRICT' },
+      "references": [
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        }
       ],
-      indexes: [
-        { name: 'idx_labels_board_id_ref', columns: ['board_id'], unique: false },
-      ],
+      "indexes": [
+        {
+          "name": "idx_labels_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        }
+      ]
     },
     {
-      name: 'cards',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'board_id', type: 'string', nullable: false },
-        { name: 'column_id', type: 'string', nullable: false },
-        { name: 'position', type: 'integer', nullable: false },
-        { name: 'title', type: 'string', nullable: false },
-        { name: 'assignee_id', type: 'string', nullable: true },
-        { name: 'estimate', type: 'integer', nullable: false },
-        { name: 'created_at_ms', type: 'integer', nullable: false },
-        { name: 'updated_at_ms', type: 'integer', nullable: false },
+      "name": "cards",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "column_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "position",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "assignee_id",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "estimate",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "created_at_ms",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "updated_at_ms",
+          "type": "integer",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'board:{board_id}', column: 'board_id' },
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "column": "board_id"
+        }
       ],
-      references: [
-        { column: 'board_id', parentTable: 'boards', onDelete: 'RESTRICT' },
-        { column: 'assignee_id', parentTable: 'members', onDelete: 'SET NULL' },
+      "references": [
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        },
+        {
+          "column": "assignee_id",
+          "parentTable": "members",
+          "onDelete": "SET NULL"
+        }
       ],
-      indexes: [
-        { name: 'idx_cards_board_id_ref', columns: ['board_id'], unique: false },
-        { name: 'idx_cards_assignee_id_ref', columns: ['assignee_id'], unique: false },
-        { name: 'cards_by_column', columns: ['board_id', 'column_id', 'position'], unique: false },
-      ],
+      "indexes": [
+        {
+          "name": "idx_cards_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_cards_assignee_id_ref",
+          "columns": [
+            "assignee_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "cards_by_column",
+          "columns": [
+            "board_id",
+            "column_id",
+            "position"
+          ],
+          "unique": false
+        }
+      ]
     },
     {
-      name: 'card_labels',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'card_id', type: 'string', nullable: false },
-        { name: 'label_id', type: 'string', nullable: false },
-        { name: 'board_id', type: 'string', nullable: false },
+      "name": "card_labels",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "card_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "label_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'board:{board_id}', column: 'board_id' },
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "column": "board_id"
+        }
       ],
-      references: [
-        { column: 'card_id', parentTable: 'cards', onDelete: 'CASCADE' },
-        { column: 'label_id', parentTable: 'labels', onDelete: 'CASCADE' },
-        { column: 'board_id', parentTable: 'boards', onDelete: 'RESTRICT' },
+      "references": [
+        {
+          "column": "card_id",
+          "parentTable": "cards",
+          "onDelete": "CASCADE"
+        },
+        {
+          "column": "label_id",
+          "parentTable": "labels",
+          "onDelete": "CASCADE"
+        },
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        }
       ],
-      indexes: [
-        { name: 'idx_card_labels_card_id_ref', columns: ['card_id'], unique: false },
-        { name: 'idx_card_labels_label_id_ref', columns: ['label_id'], unique: false },
-        { name: 'idx_card_labels_board_id_ref', columns: ['board_id'], unique: false },
-      ],
+      "indexes": [
+        {
+          "name": "idx_card_labels_card_id_ref",
+          "columns": [
+            "card_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_card_labels_label_id_ref",
+          "columns": [
+            "label_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_card_labels_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        }
+      ]
     },
     {
-      name: 'comments',
-      columns: [
-        { name: 'id', type: 'string', nullable: false },
-        { name: 'card_id', type: 'string', nullable: false },
-        { name: 'board_id', type: 'string', nullable: false },
-        { name: 'author_id', type: 'string', nullable: false },
-        { name: 'body', type: 'string', nullable: false },
-        { name: 'created_at_ms', type: 'integer', nullable: false },
+      "name": "comments",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "card_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "author_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "created_at_ms",
+          "type": "integer",
+          "nullable": false
+        }
       ],
-      primaryKey: 'id',
-      scopes: [
-        { pattern: 'board:{board_id}', column: 'board_id' },
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "column": "board_id"
+        }
       ],
-      references: [
-        { column: 'card_id', parentTable: 'cards', onDelete: 'CASCADE' },
-        { column: 'board_id', parentTable: 'boards', onDelete: 'RESTRICT' },
-        { column: 'author_id', parentTable: 'members', onDelete: 'RESTRICT' },
+      "references": [
+        {
+          "column": "card_id",
+          "parentTable": "cards",
+          "onDelete": "CASCADE"
+        },
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        },
+        {
+          "column": "author_id",
+          "parentTable": "members",
+          "onDelete": "RESTRICT"
+        }
       ],
-      indexes: [
-        { name: 'idx_comments_card_id_ref', columns: ['card_id'], unique: false },
-        { name: 'idx_comments_board_id_ref', columns: ['board_id'], unique: false },
-        { name: 'idx_comments_author_id_ref', columns: ['author_id'], unique: false },
-        { name: 'comments_by_card', columns: ['card_id', 'created_at_ms'], unique: false },
-      ],
-    },
-  ],
+      "indexes": [
+        {
+          "name": "idx_comments_card_id_ref",
+          "columns": [
+            "card_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_comments_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_comments_author_id_ref",
+          "columns": [
+            "author_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "comments_by_card",
+          "columns": [
+            "card_id",
+            "created_at_ms"
+          ],
+          "unique": false
+        }
+      ]
+    }
+  ]
 } as const;
 
 /** One boards row (§2.4 column order). */

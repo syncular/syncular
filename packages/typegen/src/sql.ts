@@ -242,7 +242,11 @@ function tokenizeStatements(sql: string, source: string): Token[][] {
         );
       }
       i = end;
-    } else if (DIGIT.test(ch)) {
+    } else if (
+      DIGIT.test(ch) ||
+      ((ch === '-' || ch === '+') && DIGIT.test(sql[i + 1] ?? ''))
+    ) {
+      // A leading sign belongs to the number: `DEFAULT -1` is a literal.
       let end = i + 1;
       while (end < sql.length && /[0-9.]/.test(sql[end] as string)) end += 1;
       current.push({ kind: 'number', text: sql.slice(i, end) });
@@ -333,8 +337,12 @@ class Cursor {
     }
   }
 
-  fail(message: string): never {
-    throw new TypegenError(this.source, message);
+  fail(
+    message: string,
+    code?: string,
+    details?: Readonly<Record<string, unknown>>,
+  ): never {
+    throw new TypegenError(this.source, message, code, details);
   }
 }
 
@@ -399,6 +407,25 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
       if (value.kind === 'punct') {
         cursor.fail(
           `column ${name}: DEFAULT expressions are unsupported (only literals)`,
+        );
+      }
+      // A word is a literal only as one of SQLite's keyword literals, so
+      // `DEFAULT NOT NULL` cannot swallow the NOT of a constraint.
+      if (
+        value.kind === 'word' &&
+        ![
+          'NULL',
+          'TRUE',
+          'FALSE',
+          'CURRENT_TIME',
+          'CURRENT_DATE',
+          'CURRENT_TIMESTAMP',
+        ].includes(value.text.toUpperCase())
+      ) {
+        cursor.fail(
+          'DEFAULT needs a literal value: a number, a string, NULL, TRUE, FALSE, or CURRENT_TIME/DATE/TIMESTAMP',
+          'typegen.invalid_default',
+          { column: name, found: value.text },
         );
       }
       // Literal defaults are accepted and ignored: typegen extracts the

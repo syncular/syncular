@@ -736,6 +736,58 @@ describe('SYQL schema/SQL validation', () => {
     ]);
   });
 
+  test('a scope proof is a whole WHERE conjunct with nothing around the bind', () => {
+    for (const predicate of [
+      '(todos.list_id = :listId) = 0',
+      'todos.list_id = :listId is false',
+      'iif(todos.list_id = :listId, 0, 1)',
+      'case when todos.list_id = :listId then 1 else 0 end',
+      'todos.list_id = :listId collate nocase',
+      'not todos.list_id = :listId',
+    ]) {
+      const error = frontendError(() =>
+        validate(`sync query q(listId) {
+          select id from todos where ${predicate};
+        }`),
+      );
+      expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+      const query = validate(`query q(listId) {
+        select id from todos where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.dependencies).toEqual([
+        { table: 'todos', scopes: [] },
+      ]);
+    }
+    for (const predicate of [
+      'todos.list_id = :listId',
+      '(todos.list_id = :listId)',
+      "title = 'a' and (todos.list_id = :listId and position between 1 and 9)",
+    ]) {
+      const query = validate(`sync query q(listId) {
+        select id from todos where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.coverage).toEqual([
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['listId'],
+          fixedScopes: [],
+        },
+      ]);
+    }
+  });
+
+  test('refuses a query name that a target cannot emit', () => {
+    const error = frontendError(() =>
+      validate(`query delete(listId) {
+        select id from todos where todos.list_id = :listId;
+      }`),
+    );
+    expect(error.detail).toContain(
+      'not a valid identifier on an emitter target',
+    );
+  });
+
   test('does not allow one side of a self-join to claim sync coverage', () => {
     const error = frontendError(() =>
       validate(`sync query q(listId) by a.list_id {

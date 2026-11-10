@@ -109,7 +109,10 @@ export function initProject(dir: string): InitResult {
   writeFileSync(
     migrationLockPath,
     serializeMigrationLock(
-      buildMigrationLock([{ name: '0001_initial', sql: STARTER_MIGRATION }]),
+      buildMigrationLock(
+        [{ name: '0001_initial', sql: STARTER_MIGRATION }],
+        [{ version: 1, through: '0001_initial' }],
+      ),
     ),
     'utf8',
   );

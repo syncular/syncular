@@ -703,10 +703,9 @@ observable behavior is contractual:
   carries no configured headers, no base-URL userinfo, and no signed
   capability URL; a credential-bearing request is still refused, because
   the configured headers or URL userinfo would replay to the redirect
-  target. The WebSocket handshake obeys the same policy: it may follow a
-  redirect only when it carries no configured headers and its realtime URL
-  has neither userinfo nor a query. A refusal surfaces
-  `transport.redirect`.
+  target. The WebSocket handshake never follows a redirect, whatever the
+  policy (§8.8); a 3xx upgrade response surfaces `transport.redirect`. A
+  refused HTTP redirect surfaces the same code.
 - **Request byte limit.** An HTTP request body larger than the
   configured limit is refused before any network I/O, with
   `transport.request_too_large`.
@@ -945,9 +944,9 @@ the persisted result byte-equivalent. It does not replace the stored result,
 so a later authorized replay still returns the original conflict. Changed
 operations under a reused key are never built, validated, or applied. A client
 MUST NOT reuse a
-`clientCommitId` for changed intent, including after the persisted result
-has been pruned: the ID identifies one logical commit permanently, and a
-later edit is a later commit with a new ID.
+`clientCommitId` for changed intent, including when the server holds no result
+for it (for example after a `logEpoch` rotation, §2.1): the ID identifies one
+logical commit permanently, and a later edit is a later commit with a new ID.
 
 A server MUST NOT derive the idempotency key from the request payload
 bytes. A §5.11 client re-encrypts an encrypted column at every send with
@@ -3212,7 +3211,10 @@ server storage.
    plaintext (§5.10.3), which is impossible over ciphertext;
 3. an **encrypted primary key** — the pk renders the `rowId` (§2.2), a
    plaintext server-side identity;
-4. an `encryptedColumns` entry naming a column the table does not declare.
+4. an `encryptedColumns` entry naming a column the table does not declare;
+5. an **encrypted index column**, unique or not: the server indexes
+   ciphertext under a random nonce, so a `UNIQUE` index there never fires
+   while clients enforce uniqueness on plaintext.
 
 **Optional protected values in shared rows — the sidecar shape.** When a row
 mixes shared operational columns with an optional **non-NULL** protected value
@@ -4297,9 +4299,12 @@ scope patterns differ, `ON UPDATE`, `SET DEFAULT`, `NO ACTION`, and `SET NULL`
 on a non-nullable child column. An absent `ON DELETE` clause means `RESTRICT`.
 The generator records `{ column, parentTable, onDelete }` in the schema IR and
 emits a non-unique index over the child column so the server reaches children
-through `scanRowsByIndex` (§6.8). The server schema compiler refuses a
-reference whose child table is not materialized, because `scanRowsByIndex`
-reads the materialized columns.
+through `scanRowsByIndex` (§6.8). A reference whose child column has no
+single-column index after every migration, for example after a `DROP INDEX`
+of the generated one, is a generation error; the server schema compiler
+refuses it too. The server schema compiler refuses a reference whose child
+table is not materialized, because `scanRowsByIndex` reads the materialized
+columns.
 
 **The local replica DDL omits the clause.** Windowing (§4.8) evicts a parent
 independently of its children, so local SQLite never enforces a reference and
@@ -4930,6 +4935,13 @@ The server keeps N-version codec support for transition windows if it
 chooses (§9); the reference server serves its configured window and
 answers the floor (§1.6) for any other, which is sufficient for both
 triggers below.
+
+A schema version's migration set is fixed once its migrations are locked.
+The generator (`typegen`) records each migration's version in the migration
+lock and refuses a migration appended to a locked version, and a locked
+migration moved to another version. A client resets only when the version
+increases, so a change folded into a deployed version never reaches the local
+tables of a client already at that version.
 
 #### 7.4.1 The persisted schema-version marker
 

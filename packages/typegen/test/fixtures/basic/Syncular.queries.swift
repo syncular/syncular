@@ -8,6 +8,11 @@ import Syncular
 public enum SyncularQueryPresence<Value: Sendable>: Sendable {
     case absent
     case present(Value)
+
+    public var isPresent: Bool {
+        if case .present = self { return true }
+        return false
+    }
 }
 
 public struct SyncularQueryInputError: Error, Sendable {
@@ -627,7 +632,7 @@ public enum BasicSchemaQueries {
     /// Run the taskMetaFilter revision-1 SYQL query.
     public static func taskMetaFilter(client: SyncularClient, projectId: String, meta: SyncularQueryPresence<String?> = .absent) throws -> [TaskMetaFilterRow] {
         var activationMask = 0
-        if { if case .present = meta { return true }; return false }() { activationMask |= 1 }
+        if meta.isPresent { activationMask |= 1 }
         let statementIndex = activationMask * 1 + 0
         let selected: (String, [JSONValue])
         switch statementIndex {

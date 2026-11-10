@@ -149,6 +149,27 @@ describe('§5.11 encryptedColumns → IR', () => {
     );
   });
 
+  test('hard error: encrypted index column, unique or not', () => {
+    for (const unique of ['UNIQUE ', '']) {
+      let error: unknown;
+      try {
+        buildIr(manifest(['body']), [
+          {
+            name: '0001_initial',
+            sql: `${MIGRATIONS[0]?.sql};
+            CREATE ${unique}INDEX idx_notes_body ON notes (project_id, body)`,
+          },
+        ]);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({
+        code: 'typegen.encrypted_index_column',
+        details: { table: 'notes', index: 'idx_notes_body', column: 'body' },
+      });
+    }
+  });
+
   test('hard error: encrypted crdt column', () => {
     expectFail(
       () => buildIr(manifest(['doc']), MIGRATIONS),

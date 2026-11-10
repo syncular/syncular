@@ -71,6 +71,19 @@ window is complete. Use explicit `JOIN ... ON` syntax in both formats. Typegen
 rejects comma-separated table sources so a valid SQLite statement cannot omit a
 table from the reactive metadata.
 
+Both formats prove scope dependencies with one rule ([SYQL §13](/syql/)): a
+scope column compared to a bind proves its scope only as a whole `WHERE`
+conjunct, such as `list_id = :listId` or `list_id in (:a, :b)`. A `.sql` query
+also claims coverage for a table it reads once when every declared scope of
+that table is proven. `not (list_id = :listId)`, `(list_id = :listId) = 0`,
+`collate`, a function or `case` around the comparison, and a literal in the
+`in` list leave the table with a table-wide dependency and no coverage.
+
+Typegen prepares the exact positional SQL it writes into generated code, with
+one value per distinct parameter. String literals, quoted identifiers, and
+comments are atomic: typegen removes comments whole and keeps the text of
+every literal and quoted identifier.
+
 Plain projected columns keep their schema type and nullability. Outer joins add
 SQL null-extension: columns from the optional side of a `LEFT JOIN`, the prior
 side of a `RIGHT JOIN`, and both sides of a `FULL OUTER JOIN` generate as
@@ -86,6 +99,11 @@ Here `id` stays required and `noteTitle` is nullable. Aliases, left-to-right
 join chains, and parenthesized relation groups keep the nullability that an
 earlier outer join introduced. Physical tables inside a derived subquery still
 count as reactive dependencies.
+
+A plain column beside an aggregate in a `SELECT` without `GROUP BY` generates
+as nullable: SQLite returns one row with `NULL` in that column when no row
+matches. A column of a compound `SELECT` (`UNION`, `INTERSECT`, `EXCEPT`) is
+nullable when any branch can yield `NULL` there.
 
 ::checkpoint[`syncular fmt --check queries` passes for `.syql` files.]
 ::::
@@ -177,7 +195,11 @@ let view = syncular_queries::list_todos::snapshot(&mut client, &params)?;
 :::
 
 Casing follows the manifest `naming` mode: generated rows and inputs are
-camelCase, and projections are `AS`-aliased so runtime keys match. The Swift and
+camelCase, and projections are `AS`-aliased so runtime keys match. A query
+name, result column, or input that a configured target cannot emit as an
+identifier, including a reserved word such as `delete` or `default`, fails
+generation with `typegen.invalid_query_identifier` in both naming modes. The
+Swift and
 Kotlin object names default to `SyncularSchema`; set `enumName` or `objectName`
 on the output to change them. React Native and Tauri use the TypeScript output.
 
