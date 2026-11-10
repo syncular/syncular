@@ -40,6 +40,21 @@ void   syncular_free_string(char* ptr);
   the FFI forwards committed core output after each command and after draining
   inbound realtime traffic. It never reconstructs changes from counters.
 
+Every command applies the inbound realtime traffic (deltas, presence fanouts,
+a socket loss) that the socket reader buffered since the previous command.
+When the reader buffers traffic, the transport's wake callback queues one
+`{"type": "realtime-wake"}` event; further traffic adds none until a command
+drains the buffer. A binding answers the event with
+`{"method": "drainRealtime", "params": {}}`, which does nothing beyond that
+drain. The reader holds at most 16 MiB of undrained text and delta payload
+(`INBOUND_BUFFER_LIMIT_BYTES`); past it the reader closes the socket and
+buffers a `transport.failed` loss with `causeKind: "inbound_overflow"`, and the
+drain schedules the reconnect and catch-up pull of SPEC §8.8.
+
+The event queue sits outside the mutex that guards the client, so one pump
+thread may block in `poll_event` while another thread issues commands. The
+host serializes commands.
+
 ### One command surface, conformance-locked
 
 The dispatch is **not** duplicated here. It lives in the shared

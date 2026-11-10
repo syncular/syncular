@@ -19,7 +19,7 @@ Match a symptom to its cause and fix.
 | A legacy commit shows as rejected with `sync.outbox_incompatible` | The stored commit carries values the current codec refuses | Read `details.reason`; resolve it as any rejection |
 | `transport.timeout`, `transport.request_too_large`, or `transport.response_too_large` | A `HostTransportPolicy` bound fired | Raise the bound; see [Platform specifics](/platform-rust-specifics/#native-transport-policy). A `transport.timeout` schedules a Background intent like `transport.failed`, so the host retries after `delay_ms` without a wake-up; the other two do not |
 | `transport.redirect` | The server redirected a credential-bearing request | Point `baseUrl` at the final URL |
-| `transport.failed` | The request failed without a usable response; `details.causeKind` holds `connect`, `tls`, `io`, `request`, `protocol`, `body`, `status` (with `httpStatus`), or `unknown` | Treat `connect`, `tls`, and `transport.timeout` as a missing connection; branch on the code and `causeKind`, never on the message |
+| `transport.failed` | The request failed without a usable response; `details.causeKind` holds `connect`, `tls`, `io`, `request`, `protocol`, `body`, `status` (with `httpStatus`), `inbound_overflow` (the host left 16 MiB of realtime traffic undrained), or `unknown` | Treat `connect`, `tls`, and `transport.timeout` as a missing connection; branch on the code and `causeKind`, never on the message |
 
 For protocol-level failures (`sync.*` codes, revoked subscriptions, conflicts) see [Troubleshooting](/troubleshooting/).
 

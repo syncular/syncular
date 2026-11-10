@@ -3537,6 +3537,7 @@ dependencies = [
  "serde_json",
  "syncular-ssp2",
  "uuid",
+ "yrs",
 ]
 
 [[package]]

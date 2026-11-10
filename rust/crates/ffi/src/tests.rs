@@ -61,7 +61,7 @@ unsafe impl GlobalAlloc for CountAllocations {
 
 #[test]
 fn blob_command_envelopes_move_owned_payloads_without_full_size_copies() {
-    let mut handle = crate::Handle::new(&json!({})).unwrap();
+    let mut handle = crate::Core::new(&json!({})).unwrap();
     let schema = json!({"version": 1, "tables": [{"name": "attachments", "primaryKey": "id",
         "columns": [{"name": "id", "type": "string", "nullable": false},
             {"name": "body", "type": "blob_ref", "nullable": false}], "scopes": []}]});
@@ -101,7 +101,7 @@ fn blob_command_envelopes_move_owned_payloads_without_full_size_copies() {
 /// Typed cells and snapshot metadata survive ownership transfer unchanged.
 #[test]
 fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
-    let mut handle = crate::Handle::new(&json!({})).unwrap();
+    let mut handle = crate::Core::new(&json!({})).unwrap();
     assert_eq!(
         handle.command(&json!({"method": "create", "params": {
             "schema": simple_schema(), "clientId": "query-allocation-test"
@@ -180,7 +180,7 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
 }
 
 /// Send one command and return the parsed reply, freeing the C string.
-fn command(handle: *mut crate::Handle, method: &str, params: Value) -> Value {
+pub(crate) fn command(handle: *mut crate::Handle, method: &str, params: Value) -> Value {
     let cmd = CString::new(json!({ "method": method, "params": params }).to_string()).unwrap();
     let reply_ptr = syncular_client_command(handle, cmd.as_ptr());
     assert!(!reply_ptr.is_null(), "command {method} returned null");
@@ -206,7 +206,7 @@ fn poll_event(handle: *mut crate::Handle) -> Option<Value> {
     Some(serde_json::from_str(&text).unwrap())
 }
 
-fn simple_schema() -> Value {
+pub(crate) fn simple_schema() -> Value {
     json!({
         "version": 1,
         "tables": [{
@@ -293,7 +293,7 @@ fn sync_without_native_transport_fails_loud() {
 
 #[test]
 fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_evidence() {
-    let mut handle = crate::Handle::new(&json!({})).unwrap();
+    let mut handle = crate::Core::new(&json!({})).unwrap();
     let created = handle.command(&json!({"method": "create", "params": {
         "clientId": "diagnostics-comparison", "schema": simple_schema(), "nowMs": 1000
     }}));
@@ -887,7 +887,7 @@ fn local_authority_config_serves_rounds_in_process_and_reports_its_state() {
     let invalid = CString::new(r#"{"localAuthorityPath": 7}"#).unwrap();
     assert!(syncular_client_new(invalid.as_ptr()).is_null());
 
-    let mut handle = crate::Handle::new(&json!({ "localAuthorityPath": ":memory:" })).unwrap();
+    let mut handle = crate::Core::new(&json!({ "localAuthorityPath": ":memory:" })).unwrap();
     let state = handle.command(&json!({ "method": "localAuthorityState", "params": {} }));
     assert_eq!(state, json!({ "result": { "state": null } }));
     let schema = json!({"version": 1, "tables": [{"name": "todos", "primaryKey": "id",

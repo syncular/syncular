@@ -17,7 +17,7 @@
 //!
 //! Inbound realtime frames land in a shared queue the host drains after each
 //! command. An optional wake callback lets mailbox-driven hosts react without
-//! polling. The socket implementation is deliberately singular: fairness and
+//! polling. The queue is bounded by [`INBOUND_BUFFER_LIMIT_BYTES`]. The socket implementation is deliberately singular: fairness and
 //! wire fixes therefore reach FFI, Tauri, and future Rust hosts together.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -179,11 +179,23 @@ pub enum RealtimeReceiptKind {
     Close,
 }
 
+/// Text and delta payload bytes the inbound buffer holds before the reader
+/// ends the connection (§8.8). Deltas are a latency path: the loss schedules a
+/// reconnect and a catch-up pull, so a host that drains late converges.
+pub const INBOUND_BUFFER_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Buffered inbound frames and their text/delta payload size.
+#[derive(Default)]
+struct InboundFrames {
+    list: Vec<Inbound>,
+    bytes: usize,
+}
+
 /// The shared inbound buffer the WS reader thread fills and the command path
 /// drains. The optional callback carries no data; it only wakes an owning
 /// mailbox so the host can drain the buffer promptly.
 pub struct InboundBuffer {
-    frames: Mutex<Vec<Inbound>>,
+    frames: Mutex<InboundFrames>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
     receipts: Mutex<Option<mpsc::SyncSender<RealtimeReceipt>>>,
     dropped_receipts: AtomicU64,
@@ -192,7 +204,7 @@ pub struct InboundBuffer {
 impl Default for InboundBuffer {
     fn default() -> Self {
         Self {
-            frames: Mutex::new(Vec::new()),
+            frames: Mutex::new(InboundFrames::default()),
             notify: None,
             receipts: Mutex::new(None),
             dropped_receipts: AtomicU64::new(0),
@@ -203,7 +215,7 @@ impl Default for InboundBuffer {
 impl InboundBuffer {
     pub fn with_notify(notify: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
-            frames: Mutex::new(Vec::new()),
+            frames: Mutex::new(InboundFrames::default()),
             notify: Some(notify),
             receipts: Mutex::new(None),
             dropped_receipts: AtomicU64::new(0),
@@ -211,13 +223,28 @@ impl InboundBuffer {
     }
 
     pub fn push(&self, frame: Inbound) {
-        self.frames.lock().expect("inbound lock").push(frame);
+        {
+            let mut frames = self.frames.lock().expect("inbound lock");
+            frames.bytes += match &frame {
+                Inbound::Text(text) => text.len(),
+                Inbound::Binary(bytes) => bytes.len(),
+                Inbound::Disconnected(_) => 0,
+            };
+            frames.list.push(frame);
+        }
         if let Some(notify) = &self.notify {
             notify();
         }
     }
+
     fn take(&self) -> Vec<Inbound> {
-        std::mem::take(&mut *self.frames.lock().expect("inbound lock"))
+        std::mem::take(&mut *self.frames.lock().expect("inbound lock")).list
+    }
+
+    /// Whether the undrained frames exceed [`INBOUND_BUFFER_LIMIT_BYTES`].
+    #[cfg(feature = "native-transport")]
+    fn overflowed(&self) -> bool {
+        self.frames.lock().expect("inbound lock").bytes > INBOUND_BUFFER_LIMIT_BYTES
     }
 
     #[cfg(feature = "native-transport")]
@@ -2077,6 +2104,10 @@ mod native {
             // A failed/timed-out write must not remain eligible for delivery
             // behind a later command on the same connection.
             if let Err(error) = &result {
+                // Record the typed failure first: `shutdown` fails an
+                // in-flight round with the generic mid-round loss, and the
+                // first recorded outcome wins.
+                self.round.fail_in_flight(error.clone());
                 self.shutdown();
                 // Some callers (delta acknowledgement) intentionally ignore a
                 // send error. It still invalidates the connection for the host.
@@ -2677,6 +2708,21 @@ mod native {
                             }
                             Ok(_) => {}
                         }
+                        // A host that does not drain loses the socket instead
+                        // of growing the buffer (§8.8).
+                        if inbound.overflowed() {
+                            let _ = ws.close(None);
+                            let _ = ws.flush();
+                            let mut error = TransportError::new(
+                                "transport.failed",
+                                "realtime inbound buffer is full",
+                            );
+                            error.details = Some(serde_json::json!({
+                                "causeKind": "inbound_overflow",
+                                "limit": super::INBOUND_BUFFER_LIMIT_BYTES,
+                            }));
+                            break 'io error;
+                        }
                     }
                     let interest = match ws.flush() {
                         Ok(()) => {
@@ -3240,6 +3286,85 @@ mod native {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn an_undrained_inbound_buffer_past_its_limit_ends_the_connection() {
+        const DELTA_BYTES: usize = 1024 * 1024;
+        let deltas = INBOUND_BUFFER_LIMIT_BYTES / DELTA_BYTES + 1;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(socket).unwrap();
+            for _ in 0..deltas {
+                let mut frame = vec![crate::REALTIME_TAG_DELTA];
+                frame.resize(DELTA_BYTES + 1, 7);
+                socket
+                    .send(tungstenite::Message::Binary(frame.into()))
+                    .unwrap();
+            }
+            while !matches!(socket.read(), Ok(tungstenite::Message::Close(_)) | Err(_)) {}
+        });
+        let (woke, wakes) = mpsc::channel::<()>();
+        let mut transport = HostTransport::from_config_with_notify(
+            &serde_json::json!({"baseUrl": base}),
+            Some(Arc::new(move || {
+                let _ = woke.send(());
+            })),
+        )
+        .unwrap();
+        transport.realtime_connect().unwrap();
+        // One wake per buffered frame: every delta, then the loss.
+        for _ in 0..=deltas {
+            wakes.recv().unwrap();
+        }
+        let inbound = transport.take_inbound();
+        assert_eq!(inbound.len(), deltas + 1);
+        assert!(inbound[..deltas]
+            .iter()
+            .all(|frame| matches!(frame, Inbound::Binary(bytes) if bytes.len() == DELTA_BYTES)));
+        assert!(matches!(
+            &inbound[deltas],
+            Inbound::Disconnected(error) if error.code == "transport.failed"
+                && error.details.as_ref().and_then(|d| d.get("causeKind"))
+                    == Some(&serde_json::json!("inbound_overflow"))
+        ));
+        transport.shutdown();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_round_deadline_expiring_during_a_socket_send_is_the_typed_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (release, released) = mpsc::channel::<()>();
+        // The peer completes the upgrade and never reads, so the request's
+        // send can only end at the round deadline.
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let _socket = tungstenite::accept(socket).unwrap();
+            let _ = released.recv();
+        });
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        transport.realtime_connect().unwrap();
+        transport.set_round_deadline(Some(std::time::Instant::now() + Duration::from_millis(200)));
+        let error = transport
+            .realtime_sync(&vec![0u8; 32 * 1024 * 1024])
+            .unwrap_err();
+        assert_eq!(error.code, "transport.timeout");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "causeKind": "round_deadline" }))
+        );
+        assert!(matches!(
+            &transport.take_inbound()[..],
+            [Inbound::Disconnected(lost)] if lost.code == "transport.timeout"
+        ));
+        transport.shutdown();
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
 
     #[test]
     fn receipt_observer_covers_round_chunks_wakes_reconnect_and_overflow() {
@@ -4227,6 +4352,73 @@ mod local_authority_tests {
             // Attach needs a remote server.
             let error = transport.attach_local_authority().unwrap_err();
             assert_eq!(error.code, "client.local_authority_unconfigured");
+        }
+
+        /// The client's `crdt-yjs` feature gives the local authority its merger,
+        /// so a crdt commit is accepted instead of `sync.crdt_merge_failed`.
+        #[cfg(feature = "crdt-yjs")]
+        #[test]
+        fn a_crdt_commit_through_the_local_authority_is_merged() {
+            let schema = json!({
+                "version": 1,
+                "tables": [{
+                    "name": "notes",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "list_id", "type": "string", "nullable": false },
+                        { "name": "doc", "type": "crdt", "nullable": true, "crdtType": "yjs-doc" }
+                    ],
+                    "primaryKey": "id",
+                    "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+                }]
+            });
+            let mut transport =
+                HostTransport::from_config(&json!({ "localAuthorityPath": ":memory:" }))
+                    .ok()
+                    .unwrap();
+            transport
+                .open_local_authority(&schema, None)
+                .expect("open the local authority");
+            let mut client = SyncClient::new_with_identity(
+                Some("device-1".to_owned()),
+                &schema,
+                ClientLimits::default(),
+            )
+            .expect("client");
+            client
+                .subscribe_many(vec![SubscriptionRequest {
+                    id: "notes".to_owned(),
+                    table: "notes".to_owned(),
+                    scopes: vec![("list_id".to_owned(), vec!["l1".to_owned()])],
+                    params: None,
+                }])
+                .expect("subscribe");
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "notes".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), json!("n1")),
+                        ("list_id".to_owned(), json!("l1")),
+                        ("doc".to_owned(), Value::Null),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("mutate");
+            client
+                .crdt_insert_text("notes", "n1", "doc", "text", 0, "éa")
+                .expect("crdt insert");
+            let outcome = client.sync_until_idle(&mut transport, None);
+            assert!(
+                matches!(outcome, SyncOutcome::Ok(_)),
+                "{:?}",
+                outcome.to_json()
+            );
+            assert!(client.pending_commit_ids().is_empty());
+            assert!(client.rejections().is_empty(), "{:?}", client.rejections());
+            assert_eq!(
+                client.crdt_text("notes", "n1", "doc", "text").unwrap(),
+                "éa"
+            );
         }
 
         #[test]

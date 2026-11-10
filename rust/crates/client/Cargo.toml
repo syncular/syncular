@@ -84,7 +84,8 @@ default = []
 # Internal repository measurements and conformance only. Exposes the owned
 # connection for benchmark reads and deterministic SQLite fault setup.
 bench-internals = ["dep:libc"]
-crdt-yjs = ["dep:yrs"]
+# A local authority merges crdt pushes too (§5.10.3), so it gets the merger.
+crdt-yjs = ["dep:yrs", "syncular-authority?/crdt-yjs"]
 e2ee = ["ssp2/e2ee", "dep:rand_core"]
 native-transport = ["dep:ureq", "dep:tungstenite", "dep:url", "dep:polling"]
 local-authority = ["dep:syncular-authority"]

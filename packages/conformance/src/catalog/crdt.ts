@@ -363,6 +363,63 @@ export const crdtScenarios: readonly Scenario[] = [
   },
 
   {
+    // §5.10.4: native crdt text offsets and lengths count UTF-16 code units,
+    // as `Y.Text` does. "é" is one unit, "😀" is two; a core counting UTF-8
+    // bytes or code points lands the inserts elsewhere.
+    name: 'crdt/native-offsets-count-utf16-code-units',
+    specRefs: ['§5.10.4', '§5.10.5'],
+    requires: ['crdt'] as const,
+    server: CRDT_SERVER,
+    async run(ctx: ScenarioContext) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-a',
+        schema: CRDT_SCHEMA,
+        allowed: P1,
+      });
+      if (
+        a.api.crdtInsertText === undefined ||
+        a.api.crdtDeleteText === undefined ||
+        a.api.crdtText === undefined
+      ) {
+        return;
+      }
+      const target = { table: 'notes', rowId: 'n1', column: 'doc' } as const;
+      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await syncIdle(a);
+      await a.api.mutate([
+        { op: 'upsert', table: 'notes', values: noteRow('n1', 't', null) },
+      ]);
+      await a.api.crdtInsertText({ ...target, index: 0, value: 'éa' });
+      await a.api.crdtInsertText({ ...target, index: 2, value: 'x' });
+      checkEqual(
+        await a.api.crdtText(target),
+        'éax',
+        'an insert at 2 after "éa" appends',
+      );
+      await a.api.crdtInsertText({ ...target, index: 3, value: '😀' });
+      await a.api.crdtInsertText({ ...target, index: 5, value: '!' });
+      checkEqual(
+        await a.api.crdtText(target),
+        'éax😀!',
+        'an astral character spans two offsets',
+      );
+      await a.api.crdtDeleteText({ ...target, index: 3, len: 2 });
+      await syncIdle(a);
+      checkEqual(
+        await a.api.crdtText(target),
+        'éax!',
+        'a two-unit delete removes the astral character',
+      );
+      checkEqual(
+        readText(await docBytesOf(a, 'n1')),
+        'éax!',
+        'the server-merged bytes materialize the same text',
+      );
+    },
+  },
+
+  {
     // B.14(c): A and B edit BOTH the LWW title (from the same baseVersion)
     // and the crdt doc. The loser gets version_conflict whose serverRow
     // carries the MERGED crdt state; after rebase both converge.

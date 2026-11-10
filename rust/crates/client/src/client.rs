@@ -4805,7 +4805,9 @@ mod observation_tests {
             unchanged_rows
         );
         assert_eq!(
-            client.query("SELECT * FROM tasks", &[]).unwrap()[0]["_syncular_version"],
+            client
+                .query("SELECT _sync_version AS version FROM tasks", &[])
+                .unwrap()[0]["version"],
             json!(rounds)
         );
         elapsed
@@ -5357,11 +5359,12 @@ mod observation_tests {
             assert_eq!(client.pending_commit_ids(), vec![id]);
             // The overlay keeps the pending write visible; the row now carries
             // the server row's version it is layered on (§7.1).
-            let mut expected = before[0].clone();
-            expected.insert("_syncular_version".to_owned(), Value::from(2));
+            assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), before);
             assert_eq!(
-                client.query("SELECT * FROM tasks", &[]).unwrap(),
-                vec![expected]
+                client
+                    .query("SELECT _sync_version AS version FROM tasks", &[])
+                    .unwrap()[0]["version"],
+                json!(2)
             );
             assert_eq!(
                 client
@@ -8684,6 +8687,45 @@ mod observation_tests {
     }
 
     #[test]
+    fn query_rows_never_carry_the_unaliased_physical_version_column() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client =
+            SyncClient::new("star".into(), &schema, ClientLimits::default()).expect("client");
+        client.create_synced_tables().expect("create synced tables");
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), Value::from("t1")),
+                    ("project_id".into(), Value::from("p1")),
+                ]),
+                base_version: None,
+            }])
+            .expect("mutate");
+        let row = Map::from_iter([
+            ("id".to_owned(), json!("t1")),
+            ("project_id".to_owned(), json!("p1")),
+        ]);
+        assert_eq!(
+            client.query("SELECT * FROM tasks", &[]),
+            Ok(vec![row.clone()])
+        );
+        assert_eq!(
+            client.query("SELECT id, project_id, _syncular_version FROM tasks", &[]),
+            Ok(vec![row.clone()])
+        );
+        let mut aliased = row;
+        aliased.insert("v".to_owned(), json!(-1));
+        assert_eq!(
+            client.query("SELECT *, _sync_version AS v FROM tasks", &[]),
+            Ok(vec![aliased])
+        );
+    }
+
+    #[test]
     fn caller_value_failures_are_invalid_request_and_leave_no_outbox_entry() {
         let path = std::env::temp_dir().join(format!(
             "syncular-caller-values-{}.db",
@@ -9551,11 +9593,11 @@ mod observation_tests {
         // The pending successor overlays the restored authoritative row, which
         // keeps its server version.
         assert_eq!(
-            reopened.query("SELECT id,title,_syncular_version FROM tasks", &[]),
+            reopened.query("SELECT id,title,_sync_version AS version FROM tasks", &[]),
             Ok(vec![Map::from_iter([
                 ("id".to_owned(), json!("t1")),
                 ("title".to_owned(), json!("successor")),
-                ("_syncular_version".to_owned(), json!(1)),
+                ("version".to_owned(), json!(1)),
             ])])
         );
 
@@ -9584,11 +9626,11 @@ mod observation_tests {
         let late = open(&path);
         assert!(late.pending_commit_ids().is_empty());
         assert_eq!(
-            late.query("SELECT id,title,_syncular_version FROM tasks", &[]),
+            late.query("SELECT id,title,_sync_version AS version FROM tasks", &[]),
             Ok(vec![Map::from_iter([
                 ("id".to_owned(), json!("t1")),
                 ("title".to_owned(), json!("authoritative")),
-                ("_syncular_version".to_owned(), json!(1)),
+                ("version".to_owned(), json!(1)),
             ])])
         );
         drop(late);
@@ -11994,15 +12036,23 @@ fn query_connection(
         .map(json_param_to_sql)
         .collect::<Result<_, _>>()?;
     let mut stmt = conn.prepare(&lowered_sql)?;
-    let column_names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
+    // §2.4: an unaliased physical version column stays engine-internal, so a
+    // `SELECT *` row feeds straight back into mutation values. An explicit
+    // alias (`_sync_version AS v`) returns it as ordinary query data.
+    let columns: Vec<(usize, String)> = stmt
+        .column_names()
+        .enumerate()
+        .filter(|(_, name)| *name != "_syncular_version")
+        .map(|(i, name)| (i, name.to_owned()))
+        .collect();
     let bound_refs: Vec<&dyn rusqlite::ToSql> =
         bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut sql_rows = stmt.query(bound_refs.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = sql_rows.next()? {
         let mut record = Map::new();
-        for (i, name) in column_names.iter().enumerate() {
-            let value = row.get_ref(i)?;
+        for (i, name) in &columns {
+            let value = row.get_ref(*i)?;
             record.insert(name.clone(), sql_ref_to_json_dynamic(value));
         }
         out.push(record);
