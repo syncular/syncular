@@ -518,7 +518,7 @@ export function toSqlValue(
   column: RowColumn,
   value: RowValue,
   dialect: RelationalDialect,
-): unknown {
+): RowValue {
   if (value === null) return null;
   if (column.type === 'boolean' && dialect === 'sqlite') {
     return value === true ? 1 : 0;
@@ -545,7 +545,7 @@ export function upsertValues(
   partition: string,
   row: StoredRow,
   dialect: RelationalDialect,
-): unknown[] {
+): RowValue[] {
   // A non-materialized table skips the decode entirely — the upsert is a
   // six-column meta write (the old blob-store cost).
   const projection = table.materialize
@@ -619,7 +619,7 @@ export function selectRowsSql(table: CompiledTable): string {
 
 export interface IndexRowPageStatement {
   readonly sql: string;
-  readonly params: readonly unknown[];
+  readonly params: readonly RowValue[];
 }
 
 /**
@@ -636,7 +636,7 @@ export function indexRowPageStatement(
   limit: number,
   dialect: RelationalDialect,
 ): IndexRowPageStatement {
-  const params: unknown[] = [partition];
+  const params: RowValue[] = [partition];
   const placeholder = (): string =>
     dialect === 'sqlite' ? '?' : `$${params.length}`;
   const predicates = index.columns.map((columnName, valueIndex) => {
@@ -1124,8 +1124,8 @@ export function rewriteValues(
   rowId: string,
   payload: Uint8Array,
   dialect: RelationalDialect,
-): unknown[] {
-  const out: unknown[] = [];
+): RowValue[] {
+  const out: RowValue[] = [];
   if (table.materialize) {
     const values = decodeRow(table.columns, payload);
     for (let i = 0; i < table.columns.length; i++) {

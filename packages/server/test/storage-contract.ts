@@ -1266,6 +1266,34 @@ export function runStorageContract(
       expect(p2.map((r) => r.rowId)).toEqual(['r1']);
     });
 
+    test('re-scoping one variable keeps the unchanged scope-index key', async () => {
+      const storage = await make();
+      const doc = (project: string, serverVersion: number): StoredRow => ({
+        ...docRow('d1', project, serverVersion),
+        scopes: { org_id: 'o1', project_id: project },
+      });
+      const tx = await storage.begin(PARTITION);
+      await tx.upsertRow('docs', doc('p1', 1));
+      await tx.commit();
+      const move = await storage.begin(PARTITION);
+      await move.upsertRow('docs', doc('p2', 2));
+      await move.commit();
+      // `scanRows` takes its candidates from the scope index, so a dropped
+      // `org_id` key would hide the row from the first scan.
+      const rows = async (variable: string, value: string) =>
+        (
+          await storage.scanRows(PARTITION, {
+            table: 'docs',
+            scopeFilter: { [variable]: [value] },
+            afterRowId: null,
+            limit: 10,
+          })
+        ).map((row) => row.rowId);
+      expect(await rows('org_id', 'o1')).toEqual(['d1']);
+      expect(await rows('project_id', 'p1')).toEqual([]);
+      expect(await rows('project_id', 'p2')).toEqual(['d1']);
+    });
+
     // --- Horizon / pruning (§4.6) ---
 
     test('horizon set/get and pruneCommitsThrough', async () => {
