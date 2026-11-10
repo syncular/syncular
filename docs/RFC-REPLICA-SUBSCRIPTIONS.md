@@ -1,6 +1,6 @@
 # RFC: Unit subscriptions, one replica cursor, registration by reference
 
-- Status: proposal; no implementation, no SPEC change
+- Status: accepted with the decisions in §0; implementation on branch `wire-v4`
 - Date: 2026-11-10
 - Review baseline: `806a45bc` (0.59.0 plus docs)
 - Scope: SPEC §3.2, §3.3, §4.1 to §4.8, §5.4, §5.6, §8.1, §8.2, §8.7, §9,
@@ -8,6 +8,38 @@
   storages, realtime hub; TS and Rust clients; TS and Rust local authority;
   the native bindings' subscribe surface; conformance catalog; docs pages
   `concepts-subscriptions`, `concepts-windowing`, `pitfalls`, `guide-server`
+
+## 0. Decisions
+
+The maintainer delegated the open questions on 2026-11-10 with one rule:
+decide for the future of the project, do not preserve compatibility for its
+own sake, and schedule what should be done. These decisions override the
+text below where they differ.
+
+- **One wire version.** The server reads version 4 only, as it reads
+  version 3 only today. Stages 1 and 3 collapse: there is no side-by-side
+  pull path. A version 3 client receives the existing wire-version error
+  until it updates.
+- **The scope index ships in the same release** (stage 2), so the live scan
+  costs one index range per unit from the first version 4 release.
+- **An upgraded replica keeps its outbox and its rows and registers its units
+  fresh.** It converts no per-table subscription record; every unit
+  bootstraps once. This removes the conversion of multi-value and
+  mixed-table subscriptions and the explicit table lists it needed.
+- **A unit has no table list.** It covers every table that declares all of
+  its scope variables. An app that wants part of a unit's tables on a device
+  gives those tables their own scope variable. `UNIT` carries no `tables`
+  field.
+- **`params` is deleted** from the wire, both clients and the spec. No server
+  reads it.
+- **`maxScopeValuesPerSubscription` is deleted**; `maxSubscriptionsPerRequest`
+  counts units and keeps its default of 500.
+- **The head-of-line delay is accepted.** One stream in commit order is the
+  invariant that makes apply safe without row-version checks. A replica
+  behind the pruning horizon re-bootstraps under the existing §4.6 rule;
+  there is no per-unit fallback.
+- **The idempotency watermark of `RFC-IDEMPOTENCY-RETENTION.md` rides the
+  same wire version.**
 
 ## 1. Decision asked
 

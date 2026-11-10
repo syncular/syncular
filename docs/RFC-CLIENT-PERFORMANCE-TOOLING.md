@@ -1,12 +1,36 @@
 # RFC: Client performance tooling for app developers
 
-- Status: proposal; no implementation, no SPEC or SYQL change
+- Status: accepted with the decisions in §0; implementation on branch `perf-tooling`
 - Date: 2026-11-10
 - Review baseline: `806a45bc` (0.59.0 plus open items)
 - Scope: `packages/typegen`, `packages/web-client` (new `./dev` subpath),
   `packages/testing` (`@syncular/testkit`), `packages/react` (docs only),
   the conformance catalog, the docs site; the Rust core and the native
   bindings in a deferred stage
+
+## 0. Decisions
+
+The maintainer delegated the open questions on 2026-11-10 with one rule:
+decide for the future of the project, do not preserve compatibility for its
+own sake, and schedule what should be done. These decisions override the
+text below where they differ.
+
+1. **A plan finding fails generation.** An author fixes the query, adds the
+   index, or acknowledges the finding.
+2. **The acknowledgement sits on the statement**, with a required reason: a
+   comment directive in `.sql` sources, beside `-- name:` and `-- param`,
+   and an annotation in `.syql` sources (a `docs/SYQL.md` grammar change).
+   There is no manifest allowlist, so the unused-allowlist finding is
+   dropped.
+3. **Strict mode is on by default** in the testkit's client and in a client
+   wrapped by the development entry point. Each perturbation has an opt-out.
+4. **The profiler is `@syncular/client/dev`** (the maintainer's choice).
+5. **Native counters are stage 4 of this program.** The Rust core exposes
+   the same counters through the FFI, so Swift, Kotlin and Flutter apps get
+   the profiler's numbers.
+6. **A duplicate realtime delta gets a conformance scenario first**, before
+   strict mode relies on it. If a core lacks the §8.2 duplicate rule, that
+   core is fixed.
 
 ## 1. Decision asked
 

@@ -1,11 +1,38 @@
 # RFC: Bounding idempotency results with a per-outbox acknowledged watermark
 
-- Status: proposal; no implementation, no SPEC change
+- Status: accepted with the decisions in §0; ships with wire version 4 on branch `wire-v4`
 - Date: 2026-11-10
 - Review baseline: `3bb94ddc` (0.59.0)
 - Scope: SPEC §1.5, §2.3, §4.6, §6.3, §6.10, §10, §12.3; TS and Rust codecs;
   TS and Rust clients; SQLite, Postgres and D1 server storage; TS and Rust
   local authority; conformance catalog
+
+## 0. Decisions
+
+The maintainer delegated the open questions on 2026-11-10 with one rule:
+decide for the future of the project, do not preserve compatibility for its
+own sake, and schedule what should be done. These decisions override the
+text below where they differ.
+
+1. **Wire version 4, no optional frame.** `clientSeq` is a field of
+   `PUSH_COMMIT` and `outboxId` a field of `REQ_HEADER`. Every client sends
+   them. The bump is shared with `RFC-REPLICA-SUBSCRIPTIONS.md`, and the
+   server reads version 4 only, so no sender keeps today's unbounded
+   retention except database-less producers (§6.10) and the attach upload
+   (§12.3), which have no outbox.
+2. **A watermark row lives as long as its client record.** It is one row per
+   outbox. The server deletes it when it deletes the client.
+3. **Results stored before the upgrade are settled by the client's first
+   version 4 request.** That request carries the replica's surviving outbox
+   prefix. The server assigns the request's sequence numbers to the stored
+   results it matches and deletes that client's other sequence-less results.
+   There is no operator command and no age bound.
+4. **A copied replica is refused loudly** with `sync.commit_expired`. Device
+   identity is no prerequisite. The docs tell an app that restores or copies
+   a replica to reset it.
+5. **`admin.findWrite` reports the watermark** for a commit whose result is
+   gone, so an operator reads "expired below sequence N" where the result
+   used to be.
 
 ## 1. Decision asked
 
