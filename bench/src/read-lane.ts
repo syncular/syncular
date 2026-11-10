@@ -130,6 +130,7 @@ export async function runReadLane(options: {
       const work: Record<string, { queries: string[]; transactions: number }> =
         {};
       const originalQuery = database.query;
+      const originalReadOnly = database.queryReadOnly;
       const originalTransaction = database.transaction.bind(database);
       try {
         for (const surface of surfaces) {
@@ -137,6 +138,10 @@ export async function runReadLane(options: {
           database.query = (sql, params) => {
             counts.queries.push(sql);
             return originalQuery.call(database, sql, params);
+          };
+          database.queryReadOnly = (sql, params) => {
+            counts.queries.push(sql);
+            return originalReadOnly.call(database, sql, params);
           };
           database.transaction = <T>(fn: () => T): T => {
             counts.transactions++;
@@ -152,6 +157,7 @@ export async function runReadLane(options: {
         }
       } finally {
         database.query = originalQuery;
+        database.queryReadOnly = originalReadOnly;
         database.transaction = originalTransaction;
       }
       results.push({
