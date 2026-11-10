@@ -162,8 +162,8 @@ a ciphertext across rows that share a key.
 | S10 | medium | U | `push.ts:342`, `push.ts:718-745`, `push.ts:1944-1947` | A conflict record's `serverVersion` and `serverRow` are read from candidate state that includes the same commit's earlier, rolled-back operations. | Re-read the row after the savepoint rollback. | fixed a04b2623 |
 | S11 | low | U | `schema.ts:404-456` | `compileSchema` accepts a reference whose child table has `materialize: false`; every parent delete then fails with a non-catalog error. | One more throw in the reference loop. | fixed a04b2623 |
 | S12 | low | U | `push.ts:1316-1346` | `missing_parent` is judged on the merged row; §6.11 limits it to a present, non-null reference column. | Carry presence in the staged write and skip absent columns. | fixed a04b2623 |
-| S13 | low | U | `push.ts:864-875` | The tombstone probe runs before payload authorization, so `sync.row_deleted` versus `sync.forbidden` discloses deletion. | Move the probe below `authorizeWrite`. | partial a04b2623: a patch without its scope columns still learns of the tombstone |
-| S14 | low | U | `push.ts:946-951`, `push.ts:691-697` | A recreated row restarts at version 1, so a `baseVersion` from the previous incarnation is accepted. | Q3. | open |
+| S13 | low | U | `push.ts:864-875` | The tombstone probe runs before payload authorization, so `sync.row_deleted` versus `sync.forbidden` discloses deletion. | Move the probe below `authorizeWrite`. | fixed a04b2623, 4b2f77ce |
+| S14 | low | U | `push.ts:946-951`, `push.ts:691-697` | A recreated row restarts at version 1, so a `baseVersion` from the previous incarnation is accepted. | Q3. | fixed 4b2f77ce |
 | S15 | low | U | `handler.ts:705-734`, `handler.ts:968-985` | The client record is written before the serve-gate verification that can still refuse the round. §4.5 forbids a failed round changing the cursor. | Move `putClientRecord` and `notifySubscriptions` after the gate. | fixed 156e1356 |
 
 Unconfirmed leads: remote query params are cast, never type-checked
@@ -340,9 +340,9 @@ deadline, FFI string ownership, `ffi.h` signatures.
 | X4 | One row-ownership predicate for eviction, purge, first-page clear and invalidation, in both cores. | The seam behind T4, T9, R2 | fixed 24ed7c61 |
 | X5 | One optimistic base store in the TS client, updated by every server write. | Three stores with different rules; the outbox scans of T14 | declined: touches retained rows, authority and unique-conflict evidence for a 40-line fix |
 | X6 | Ask SQLite whether a statement is read-only (D5). | Two lexical scanners | fixed f698148c: PRAGMA is refused by prefix and node:sqlite keeps a small check |
-| X7 | A typed error enum at the Rust storage and codec boundary. | `starts_with` branching; R9, R10, F14 as a class | in progress |
+| X7 | A typed error enum at the Rust storage and codec boundary. | `starts_with` branching; R9, R10, F14 as a class | declined: about 700 edits for a net change between -50 and +10 lines; six sites branch on error text |
 | X8 | One rollback snapshot type in the Rust client. | About ten hand-rolled snapshot sites | fixed ae437fdb |
-| X9 | Move the test modules out of `client.rs` (12,490 of 24,101 lines). | A 24k-line file | open |
+| X9 | Move the test modules out of `client.rs` (12,490 of 24,101 lines). | A 24k-line file | fixed b151b552 |
 | X10 | Split `docs/RELEASE.md` into the runbook and a release-notes file. (The review also claimed the RFC files carry no status line; they all do.) | A 3,898-line runbook | fixed a5470c66 |
 
 Not in this program: aligning the Rust base/visible table model with the TS
@@ -443,8 +443,6 @@ Follow-ups found while fixing:
   mention the watch cap or serialized refreshes.
 - **Worker bundle ceiling.** `authority-bundle.test.ts` caps the worker at
   186,000 bytes and the margin is a few dozen bytes.
-- **S13 remainder.** Closing it needs scopes on the tombstone or clients
-  that always send scope columns in a patch.
 - **Image temp file.** A crash between staging and removal leaves a
   `.syncular-image-*.tmp`; nothing sweeps it at startup.
 - **Code size.** Through wave 3 the fixes added about 1,100 production lines
@@ -462,3 +460,5 @@ Follow-ups found while fixing:
   outcome resolution, `set_retain_failed_commits`, bootstrap completion.
 - **Binding tests have no socket.** No binding test covers a remote change
   arriving end to end; Kotlin and Flutter changes ran only in CI.
+- **UNIQUE text match.** The Rust client classifies a unique violation by
+  SQLite's message text; only a string reaches that site (`write_row`).
