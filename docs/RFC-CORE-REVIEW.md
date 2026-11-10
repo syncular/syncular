@@ -1,6 +1,6 @@
 # RFC: Core review findings and fix program
 
-- Status: implemented on local branch `core-review` (not pushed), including the second round in §8; N5, float scope columns and the §3.2 questions wait on the maintainer
+- Status: implemented on local branch `core-review` (not pushed), including the second round in §8; and the third round in §9; the §3.2 questions keep their defaults
 - Date: 2026-11-10
 - Review baseline: `a531dcea` (0.58.0)
 - Scope: `packages/core`, `packages/crypto`, `packages/server`,
@@ -118,6 +118,26 @@ asking the prepared statement, and `PRAGMA` leaves the allowlist. The lexical
 an undo marker before the first undo commit. `attach` refuses while the
 marker is set. A retried abandon uses fresh undo commit ids.
 
+**D7. A scope column is a string or an integer (§3.1).** `float` joins the
+refused types. A float scope value rendered three ways across the TS server,
+the Rust authority and the Rust client, and a scope value is an authorization
+key. The float rendering branches are deleted in both cores.
+
+**D8. Presence lives with its connection (§8.6).** The size cap counts one
+connection's documents and scope keys together (default 8,192 bytes, was
+16 KiB per document), which bounds presence memory per connection on every
+host. The Workers host keeps each socket's presence in that socket's
+attachment and restores it after a hibernation, so `leave` and the register
+snapshot hold across one. No storage write, no wire message, no client change.
+
+**Breaking changes, accepted by the maintainer on 2026-11-10:** the wildcard
+scope fence (D1), the 500-subscription default (D3), `useRawSql` requiring
+`dependencies` or `tables`, migration lock format 3, multi-tab protocol 3,
+`query()` refusing `PRAGMA` (D5), float scope columns refused (D7), the
+per-connection presence cap (D8). Q1 stays at its default: an actor allowed
+`workspace_id:[w1]` holds that workspace, and fencing it by an unrelated
+`surgery_id` list would hide rows the host granted.
+
 ### 3.2 Open (default executes unless overturned)
 
 | # | Question | Default |
@@ -186,7 +206,7 @@ error catalog against §10.2.
 | N2 | high | C | `server/src/bucket-blob-store.ts:325-333`, `server/src/blob-store.ts:232-237` | A presign-uploaded object has no metadata, so `sweepOrphans` reads `createdAtMs: 0` and deletes it regardless of grace. The referenced set is snapshotted once before the paged loop. | Re-check the reference index per candidate before delete; take age from the backend's last-modified time; skip when neither exists. | fixed 55f9d816 |
 | N3 | medium | C | `server/src/s3-blob-store.ts:110-132`, `server/src/sigv4.ts:245`, `server/src/blob-handlers.ts:343-354` | The presigned PUT signs only `host`. `maxBlobBytes` is bypassed, and an actor who knows a file's hash uploads garbage under that id; other clients then skip their upload. | Sign `content-length` and `x-amz-checksum-sha256`; §5.9.3 first; both clients send the headers. | fixed 55f9d816 |
 | N4 | medium | C | `server-workers/src/realtime-do.ts:455-467`, `:367-370` | `#rehydrated` is set before the awaited per-socket loop, and pull-only rounds call it outside the FIFO. A concurrent push fans out to an empty session set. | One rehydration promise awaited from every entry point. | fixed bb3b4d8e |
-| N5 | medium | U | `server/src/realtime.ts:129-134`, `server-workers/src/realtime-do.ts:643-719` | Presence lives in hub memory; hibernation discards it while sockets stay open, and no `leave` is sent on a later close. | Persist each socket's published docs in the socket attachment and reload on rehydration. | open: the 16,384-byte attachment limit equals the presence document cap; needs a decision (smaller Workers cap, DO storage, or accept) |
+| N5 | medium | U | `server/src/realtime.ts:129-134`, `server-workers/src/realtime-do.ts:643-719` | Presence lives in hub memory; hibernation discards it while sockets stay open, and no `leave` is sent on a later close. | Persist each socket's published docs in the socket attachment and reload on rehydration. | fixed `1a09358a` (D8) |
 | N6 | medium | U | `server/src/realtime.ts:556-560`, `core/src/stream.ts:85-96` | Socket round assembly doubles its buffer without bound. Presence text frames are parsed twice before the 16 KiB cap, which counts UTF-16 units. | D3 limit in the scanner path; one parse; count bytes. | fixed 156e1356 |
 | N7 | medium | U | `server/src/realtime.ts:806-813`, `:977-997`, `server-workers/src/realtime-do.ts:766-776` | No bound on sent-but-unacked deltas or send buffering. | Track unacked deltas per session; past a limit switch to the existing `catchup-required` wake (§8.2). | fixed bb3b4d8e |
 | N8 | medium | U | `server/src/blob-handlers.ts:183-193`, `server/src/bucket-blob-store.ts:279-281`, `server-hono/src/index.ts:132-150` | Inline blob delivery reads bytes before authorization, buffers them whole and recompresses them. `server-workers.md:66` says the route re-authorizes before it reads. | `has`, authorize, then read; stream through the segment store's `open` shape; serve identity. | fixed 55f9d816 |
@@ -512,19 +532,14 @@ legacy lock path (`57d4dd9e`, `packages/typegen/src` net -234).
 
 Open after the second round:
 
-- **Float scope columns.** For 1e21, 1e-7 and 1.0 the TS server
-  (`1e+21`, `1e-7`, `1`), the Rust authority (`1000000000000000000000`,
-  `0.0000001`, `1`) and the Rust client's text comparison (`1.0e+21`,
-  `1.0e-07`, `1.0`) disagree; only the TS client matches every spelling. Two
-  conformance scenarios scope by a float column on purpose. Decide: refuse
-  float, or define one rendering in SPEC §3.1 and implement it four times.
+- **Float scope columns.** Decided and fixed in §9 (D7).
 - **Lock format 3** refuses older migration locks until
   `syncular migrations upgrade-lock` runs once.
 - **`useRawSql`** throws without `dependencies` or `tables`.
 - **Worker bundle** is 12 bytes under its ceiling.
 - **Not run locally:** Kotlin and Flutter checks, the Kotlin and Dart
   compile gates for generated code, the React Native native modules, the
-  Tauri template CSP in a window, the browser test lane.
+  Tauri template CSP in a window. The browser test lane runs locally (§9).
 - **Unconfirmed leads from the second round:** `useRawSql` with
   `enabled: false` reports `ready` with no rows; a failed
   `beginSecurityPreflight` on Tauri leaves the bridge in preflight; Tauri
@@ -536,3 +551,39 @@ Second-round gate, green on `97694b5b`: `bun run check` (4,099 tests in the
 main lane, the multi-tab lane, the downgrade test, runtime verification),
 the Rust workspace tests, clippy and `cargo fmt`, the Tauri plugin tests and
 clippy, the React Native tests and the Swift binding check.
+
+## 9. Third round: the two maintainer decisions
+
+The maintainer delegated both decisions on 2026-11-10 and accepted the
+breaking changes listed in §3.1.
+
+| # | Finding | Status |
+| --- | --- | --- |
+| D7 | Float scope columns render three ways across the TS server, the Rust authority and the Rust client. | fixed `a3cba445`: typegen, the server, the Rust authority and both clients refuse a scope column that is not `string` or `integer`; the two float scenarios use `integer` |
+| D8 / N5 | A hibernated Durable Object lost presence: no `leave` after a wake, no snapshot for a new registrant. | fixed `1a09358a`: sessions hold their own documents, the Workers host keeps them in the socket attachment, `hub.restore` seeds them without fanout; the cap is per connection (8,192 bytes); scenario `presence/size-cap-per-connection` (293 scenarios) |
+| T24 | `f8976d10` cleared the browser database's statement cache on close without finalizing; sqlite-wasm's `DB.close()` leaves statements open, `pauseVfs()` throws, and a leader whose lock was stolen kept its OPFS handles. `takeOver()` against a hung leader failed with `client.storage_busy`. `main` was unaffected. | fixed `deefb918`; found by `bun run test:browser`, which `bun run check` does not run |
+
+Open after the third round:
+
+- **Both clients discard a presence rejection.** `presence.too_large` and
+  `presence.forbidden` reach the client and stop in
+  `packages/web-client/src/client.ts` `#applyPresence` and
+  `rust/crates/client/src/client.rs` `apply_presence`. App code never learns
+  that a publish was refused. Surfacing it needs one new client surface in
+  both cores, the FFI, the native bridge and the React hook.
+- **Integer scope values above 2^53.** The TS codec and TS client refuse a
+  non-safe integer (`packages/core/src/row-codec.ts:109`); the Rust cores
+  carry full `i64`. The limit is the TS integer rule, and it now also bounds
+  scope values.
+- **The browser lane is outside `bun run check`.** T24 passed every gate of
+  this program until `bun run test:browser` ran. The lane needs Chromium and
+  takes about 70 s; adding it to the gate or to CI is the maintainer's call.
+- **Worker bundle** is 8 bytes under its ceiling (185,992 of 186,000).
+
+Third-round gate, green on `deefb918`: `bun run check` (4,109 tests in the
+main lane, the multi-tab lane, the downgrade test, runtime verification),
+`bun run test:browser` (30 tests), the 1,190 conformance tests, the Rust
+workspace tests, clippy and `cargo fmt`, the Tauri plugin tests and clippy,
+the React Native tests and the Swift binding check. Kotlin and Flutter were
+not run locally.
+
