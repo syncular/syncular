@@ -24,6 +24,7 @@ import { encryptionConfigFromKeyring } from './encryption';
 import {
   classifySqliteFailure,
   ClientSyncError,
+  invalidRequest,
   STORAGE_BUSY_CODE,
 } from './errors';
 import {
@@ -232,6 +233,22 @@ export function startSyncWorkerCore(
       return () => clearTimeout(timer);
     });
 
+  const workerDiagnostics = (snapshot: ClientDiagnosticsSnapshot) =>
+    withClientDiagnosticsHost(snapshot, {
+      kind: 'worker',
+      role: 'leader',
+      connectivity: offline ? 'offline' : snapshot.host.connectivity,
+      realtime: snapshot.host.realtime,
+    });
+  const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void => {
+    if (!closed) {
+      post({
+        t: 'event',
+        event: { kind: 'diagnostics', snapshot: workerDiagnostics(snapshot) },
+      });
+    }
+  };
+
   function runAutoSync(): void {
     if (
       closed ||
@@ -283,6 +300,12 @@ export function startSyncWorkerCore(
       });
   }
 
+  function stopBackground(): void {
+    cancelBackground?.();
+    cancelBackground = undefined;
+    backgroundDue = Number.POSITIVE_INFINITY;
+  }
+
   function consumeSyncIntent(intent: SyncIntent): void {
     if (
       !autoSync ||
@@ -313,11 +336,7 @@ export function startSyncWorkerCore(
       );
       return;
     }
-    if (cancelBackground !== undefined) {
-      cancelBackground();
-      cancelBackground = undefined;
-      backgroundDue = Number.POSITIVE_INFINITY;
-    }
+    stopBackground();
     if (!autoSync || autoSyncScheduled || closed || client === undefined) {
       return;
     }
@@ -428,10 +447,7 @@ export function startSyncWorkerCore(
       realtime: (handlers) => {
         // §12.2: a local authority has no realtime channel.
         if (realtimeConnector === undefined || local?.active()) {
-          throw new ClientSyncError(
-            'sync.invalid_request',
-            'no realtime connector configured',
-          );
+          throw invalidRequest('no realtime connector configured');
         }
         return realtimeConnector(handlers);
       },
@@ -482,21 +498,6 @@ export function startSyncWorkerCore(
     started.onChange((batch) => {
       if (!closed) post({ t: 'event', event: { kind: 'change', batch } });
     });
-    const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void => {
-      if (closed) return;
-      post({
-        t: 'event',
-        event: {
-          kind: 'diagnostics',
-          snapshot: withClientDiagnosticsHost(snapshot, {
-            kind: 'worker',
-            role: 'leader',
-            connectivity: offline ? 'offline' : snapshot.host.connectivity,
-            realtime: snapshot.host.realtime,
-          }),
-        },
-      });
-    };
     started.onDiagnostics(postDiagnostics);
     await started.start();
     realtimeConnector =
@@ -562,9 +563,7 @@ export function startSyncWorkerCore(
       ]),
     ) as Pick<WorkerApi, (typeof coreMethods)[number]>),
     beginSecurityPreflight: async () => {
-      cancelBackground?.();
-      cancelBackground = undefined;
-      backgroundDue = Number.POSITIVE_INFINITY;
+      stopBackground();
       autoSyncScheduled = false;
       await requireClient().beginSecurityPreflight();
     },
@@ -606,15 +605,8 @@ export function startSyncWorkerCore(
     },
     resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,
-    diagnosticsSnapshot: (request) => {
-      const snapshot = requireClient().diagnosticsSnapshot(request);
-      return withClientDiagnosticsHost(snapshot, {
-        kind: 'worker',
-        role: 'leader',
-        connectivity: offline ? 'offline' : snapshot.host.connectivity,
-        realtime: snapshot.host.realtime,
-      });
-    },
+    diagnosticsSnapshot: (request) =>
+      workerDiagnostics(requireClient().diagnosticsSnapshot(request)),
     setHeaders: (next) => {
       headers = next;
     },
@@ -622,23 +614,9 @@ export function startSyncWorkerCore(
       offline = value;
       requireClient().setTransportEnabled(!value);
       if (offline) {
-        cancelBackground?.();
-        cancelBackground = undefined;
-        backgroundDue = Number.POSITIVE_INFINITY;
+        stopBackground();
       } else if (client !== undefined) {
-        const snapshot = client.diagnosticsSnapshot();
-        post({
-          t: 'event',
-          event: {
-            kind: 'diagnostics',
-            snapshot: withClientDiagnosticsHost(snapshot, {
-              kind: 'worker',
-              role: 'leader',
-              connectivity: snapshot.host.connectivity,
-              realtime: snapshot.host.realtime,
-            }),
-          },
-        });
+        postDiagnostics(client.diagnosticsSnapshot());
       }
     },
     ...local?.methods,

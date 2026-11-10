@@ -59,7 +59,7 @@ import {
   withClientDiagnosticsHost,
 } from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import {
   ChangeEmitter,
   type ClientChangeListener,
@@ -161,8 +161,7 @@ export function isolatedReplicaNames(options: {
   readonly replicaId: string;
 }): IsolatedReplicaNames {
   if (!/^[A-Za-z0-9._-]+$/.test(options.replicaId)) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'an isolated replica id must contain only letters, numbers, dot, underscore, or dash',
     );
   }
@@ -1220,8 +1219,7 @@ function resolveReplicaConfig(
 ): SyncClientHandleConfig {
   if (config.replica?.mode !== 'isolated') return config;
   if (config.database.mode !== 'persistent') {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'isolated browser replicas require a named persistent database',
     );
   }

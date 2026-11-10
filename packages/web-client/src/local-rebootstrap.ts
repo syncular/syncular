@@ -7,7 +7,7 @@
  * projection state so the registered subscriptions can bootstrap it again.
  */
 
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 
 const CODE_LIKE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const RESULT_KEYS = [
@@ -85,8 +85,7 @@ export function compileLocalDataRebootstrap(
     input.rebootstrapId.length > 128 ||
     !CODE_LIKE_VALUE.test(input.rebootstrapId)
   ) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'local rebootstrap rebootstrapId must be a 1–128 character code-like identifier',
     );
   }

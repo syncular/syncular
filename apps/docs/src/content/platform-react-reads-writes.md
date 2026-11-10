@@ -121,6 +121,12 @@ stable value without protected data for support diagnostics; the default id is
 still works. Without dependencies, the hook infers tables with a conservative
 `FROM` and `JOIN` scanner.
 
-The core accepts exactly one read-only statement: `SELECT`, `WITH`, `EXPLAIN`,
-`PRAGMA`, or `VALUES`. Writes always go through mutations and the outbox. For
-typed `.sql` reads, see [Named queries](/tooling-queries/).
+The core runs exactly one statement, and only one that SQLite reports read-only
+(`sqlite3_stmt_readonly`) and that returns columns. `node:sqlite` does not
+expose that answer, so its adapter accepts `SELECT`, `VALUES`, `EXPLAIN`, and a
+`WITH` clause whose statement is a `SELECT` or `VALUES`. The core refuses
+`PRAGMA` before SQLite compiles it, because SQLite applies a pragma such as
+`query_only` during compilation. Read a pragma through its table-valued
+function: `SELECT * FROM pragma_table_info('todos')`. Writes always go through
+mutations and the outbox. For typed `.sql` reads, see
+[Named queries](/tooling-queries/).

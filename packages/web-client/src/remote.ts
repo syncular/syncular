@@ -22,7 +22,7 @@ import {
 import type { MutationInput } from './client';
 import type { EncryptionConfig } from './encryption';
 import { encryptRowValues } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import {
   compileClientSchema,
   type ClientSchema,
@@ -97,7 +97,8 @@ export interface RemoteCommandDescriptor<Input = undefined> {
 export function remoteCommand<Input = undefined>(
   id: string,
 ): RemoteCommandDescriptor<Input> {
-  if (id.length === 0) throw invalid('remote command id must be non-empty');
+  if (id.length === 0)
+    throw invalidRequest('remote command id must be non-empty');
   return { id };
 }
 
@@ -106,10 +107,6 @@ export interface RemoteCommandResult {
   readonly status: 'applied' | 'cached' | 'rejected';
   readonly commitSeq?: number;
   readonly results: readonly unknown[];
-}
-
-function invalid(message: string): ClientSyncError {
-  return new ClientSyncError('sync.invalid_request', message);
 }
 
 function operationResponse(bytes: Uint8Array): RemoteOperationResponse {
@@ -239,10 +236,10 @@ export class SyncRemoteClient {
 
   constructor(config: SyncRemoteClientConfig) {
     if (config.clientId.length === 0) {
-      throw invalid('SyncRemoteClient clientId must be non-empty');
+      throw invalidRequest('SyncRemoteClient clientId must be non-empty');
     }
     if (config.logEpoch !== undefined && config.logEpoch.length === 0) {
-      throw invalid('SyncRemoteClient logEpoch must be non-empty');
+      throw invalidRequest('SyncRemoteClient logEpoch must be non-empty');
     }
     this.#schema =
       config.schema === undefined
@@ -265,7 +262,7 @@ export class SyncRemoteClient {
       );
     }
     if (input.requestId.length === 0) {
-      throw invalid('remote commit requestId must be non-empty');
+      throw invalidRequest('remote commit requestId must be non-empty');
     }
     if (input.mutations.length === 0) {
       throw new ClientSyncError(
@@ -324,11 +321,11 @@ export class SyncRemoteClient {
     for (const mutation of input.mutations) {
       const table = schema.tables.get(mutation.table);
       if (table === undefined) {
-        throw invalid('remote commit targets an unknown table');
+        throw invalidRequest('remote commit targets an unknown table');
       }
       if (mutation.op === 'delete') {
         if (mutation.rowId.length === 0) {
-          throw invalid('remote delete rowId must be non-empty');
+          throw invalidRequest('remote delete rowId must be non-empty');
         }
         operations.push({
           table: mutation.table,
@@ -361,9 +358,9 @@ export class SyncRemoteClient {
             ? String(rawRowId)
             : undefined;
       if (rowId === undefined) {
-        throw invalid('remote upsert requires a non-empty primary key');
+        throw invalidRequest('remote upsert requires a non-empty primary key');
       }
-      if (this.#encryption !== undefined && table.hasEncryptedColumns) {
+      if (table.hasEncryptedColumns) {
         values = await encryptRowValues(this.#encryption, table, rowId, values);
       }
       operations.push({
@@ -510,7 +507,7 @@ export class SyncRemoteClient {
       );
     }
     if (requestId.length === 0) {
-      throw invalid('remote command requestId must be non-empty');
+      throw invalidRequest('remote command requestId must be non-empty');
     }
     const response = operationResponse(
       await this.#operations(

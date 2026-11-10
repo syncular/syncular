@@ -46,7 +46,7 @@ export {
   type PreviousVersionReason,
   type PreviousVersionSnapshot,
 } from './previous-version';
-export * from './query-guard';
+export { prepareReadOnly, RawSqlError } from './query-guard';
 export * from './reactive-store';
 export * from './remote';
 export * from './realtime-supervisor';

@@ -1148,7 +1148,7 @@ if (!available) {
             ).toEqual(resolution === 'edit' ? [{ id: loserId }] : []);
           }
         }
-        expect(await client.query('PRAGMA integrity_check')).toEqual([
+        expect(await client.query('SELECT * FROM pragma_integrity_check')).toEqual([
           { integrity_check: 'ok' },
         ]);
         await client.close();

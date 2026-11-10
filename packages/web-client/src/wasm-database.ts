@@ -39,6 +39,7 @@ import {
   STORAGE_FENCED_CODE,
   STORAGE_UNAVAILABLE_CODE,
 } from './errors';
+import { prepareReadOnly } from './query-guard';
 
 /** Structural view of the sqlite3 oo1 surface this binding uses. */
 interface Oo1Database {
@@ -50,6 +51,12 @@ interface Oo1Database {
     rowMode: 'object';
     resultRows: unknown[];
   }): unknown;
+  prepare(sql: string): {
+    readonly pointer?: number;
+    readonly columnCount: number;
+    isReadOnly(): boolean;
+    finalize(): unknown;
+  };
   close(): void;
 }
 
@@ -77,6 +84,7 @@ interface Sqlite3Static {
     SQLITE_DESERIALIZE_FREEONCLOSE: number;
     SQLITE_DESERIALIZE_READONLY: number;
     SQLITE_FCNTL_FILE_POINTER: number;
+    sqlite3_sql(statement: number | undefined): string;
     sqlite3_file_control(
       db: number,
       schema: string,
@@ -193,6 +201,23 @@ class WasmClientDatabase implements ClientDatabase {
       resultRows,
     });
     return resultRows as SqlRow[];
+  }
+
+  queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    this.#assertOwned();
+    prepareReadOnly(sql, () => {
+      const statement = this.#db.prepare(sql);
+      try {
+        return [
+          undefined,
+          this.#sqlite3.capi.sqlite3_sql(statement.pointer),
+          statement.isReadOnly() && statement.columnCount > 0,
+        ] as const;
+      } finally {
+        statement.finalize();
+      }
+    });
+    return this.query(sql, params);
   }
 
   transaction<T>(fn: () => T): T {

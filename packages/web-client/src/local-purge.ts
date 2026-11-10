@@ -8,7 +8,7 @@
  * generated FTS projections, doomed optimistic commits, and blob references.
  */
 
-import { ClientSyncError } from './errors';
+import { invalidRequest } from './errors';
 import type { CompiledClientSchema, CompiledClientTable } from './schema';
 
 const MAX_TARGETS = 64;
@@ -57,10 +57,6 @@ export interface CompiledLocalDataPurge {
   readonly canonicalPlan: string;
 }
 
-function invalid(message: string): never {
-  throw new ClientSyncError('sync.invalid_request', message);
-}
-
 /** Validate and canonicalize before any transaction is entered. */
 export function compileLocalDataPurge(
   schema: CompiledClientSchema,
@@ -71,25 +67,27 @@ export function compileLocalDataPurge(
     input.purgeId.length > 128 ||
     !CODE_LIKE_VALUE.test(input.purgeId)
   ) {
-    invalid(
+    throw invalidRequest(
       'local purge purgeId must be a 1–128 character code-like identifier',
     );
   }
   if (input.targets.length === 0 || input.targets.length > MAX_TARGETS) {
-    invalid(`local purge needs between 1 and ${MAX_TARGETS} targets`);
+    throw invalidRequest(
+      `local purge needs between 1 and ${MAX_TARGETS} targets`,
+    );
   }
 
   const deduplicated = new Map<string, CompiledLocalDataPurgeTarget>();
   for (const target of input.targets) {
     const table = schema.tables.get(target.table);
     if (table === undefined) {
-      invalid(
+      throw invalidRequest(
         `local purge names unknown table ${JSON.stringify(target.table)}`,
       );
     }
     const entries = Object.entries(target.selectors);
     if (entries.length === 0 || entries.length > MAX_SELECTORS_PER_TARGET) {
-      invalid(
+      throw invalidRequest(
         `local purge target ${JSON.stringify(target.table)} needs between 1 and ${MAX_SELECTORS_PER_TARGET} selectors`,
       );
     }
@@ -99,12 +97,12 @@ export function compileLocalDataPurge(
           (candidate) => candidate.name === columnName,
         );
         if (column === undefined) {
-          invalid(
+          throw invalidRequest(
             `local purge target ${JSON.stringify(target.table)} names unknown column ${JSON.stringify(columnName)}`,
           );
         }
         if (column.type !== 'string' || column.encrypted === true) {
-          invalid(
+          throw invalidRequest(
             `local purge selector ${JSON.stringify(target.table)}.${JSON.stringify(columnName)} must be a plaintext string column`,
           );
         }
@@ -112,7 +110,7 @@ export function compileLocalDataPurge(
           rawValues.length === 0 ||
           rawValues.length > MAX_VALUES_PER_SELECTOR
         ) {
-          invalid(
+          throw invalidRequest(
             `local purge selector ${JSON.stringify(target.table)}.${JSON.stringify(columnName)} needs between 1 and ${MAX_VALUES_PER_SELECTOR} values`,
           );
         }
@@ -124,7 +122,7 @@ export function compileLocalDataPurge(
             value.length > MAX_ROUTING_VALUE_LENGTH ||
             !CODE_LIKE_VALUE.test(value)
           ) {
-            invalid(
+            throw invalidRequest(
               `local purge selector values must be 1–${MAX_ROUTING_VALUE_LENGTH} character code-like identifiers`,
             );
           }

@@ -50,9 +50,9 @@ bounded retry with jitter, suspension while the page is hidden or offline,
 cancellation on close, and an explicit catch-up before it publishes
 `connected`. `browserConnectivitySignal()` observes online and offline;
 `documentLifecycleSignal()` observes visibility and page lifecycle. Unknown
-browser connectivity stays connectable. Only the connectivity signal suspends
-the supervisor: a sync round that failed because the server was unreachable
-does not. Each `online` report runs `syncUntilIdle()`, also when realtime is
+browser connectivity stays connectable. The connectivity signal and a closed
+[transport gate](#transport-gate) suspend the supervisor: a sync round that
+failed because the server was unreachable does not. Each `online` report runs `syncUntilIdle()`, also when realtime is
 unsupported or disabled, so a commit written while the network was down
 pushes when it returns.
 
@@ -132,7 +132,9 @@ scheduling. Resuming emits one interactive wake. An already-started round
 finishes its atomic apply; the client closes realtime afterwards and starts no
 follow-up round while the gate is closed. The gate is independent of security
 preflight and defaults open on each new client instance. Install fresh
-transport headers before you resume.
+transport headers before you resume. A realtime supervisor whose connect the
+closed gate refused with `sync.offline` reports phase `offline` and makes no
+further attempt until the client reports the gate open again.
 
 ## Sync progress
 

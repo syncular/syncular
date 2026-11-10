@@ -184,7 +184,6 @@ import {
   commitOutcome as readCommitOutcome,
   recordCommitOutcome,
 } from './outcomes';
-import { assertReadOnlyQuery } from './query-guard';
 import {
   buildPreviousVersionAudit,
   capturePreviousVersion,
@@ -1674,8 +1673,8 @@ export class SyncClient {
   }
 
   /**
-   * The raw-SQL read tier. Guarded (query-guard.ts): a single read-only
-   * statement only — writes must go through `mutate()` so they hit the
+   * The raw-SQL read tier. Guarded (query-guard.ts): a single statement
+   * SQLite reports read-only — writes must go through `mutate()` so they hit the
    * outbox (SPEC §7.1). Reserved `_sync_*` columns are stripped from the
    * result, so a `SELECT *` row is safe to feed back into `mutate()`
    * values; alias explicitly (`_sync_version AS v`) to read one. Engine
@@ -1683,11 +1682,10 @@ export class SyncClient {
    */
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
     this.#requireActive();
-    assertReadOnlyQuery(sql);
     // RFC 0005's container lives in a separate database file, so this
     // connection cannot see it and there is no table-access guard to run.
     try {
-      return stripSyncColumns(this.#db.query(sql, params));
+      return stripSyncColumns(this.#db.queryReadOnly(sql, params));
     } catch (error) {
       throw classifySqliteFailure(error).error;
     }
@@ -1852,13 +1850,12 @@ export class SyncClient {
     };
     let read: SnapshotRead;
     try {
-      for (const statement of request.statements) {
-        assertReadOnlyQuery(statement.sql);
-      }
       read = this.#db.transaction(() => {
         const revision = getLocalRevision(this.#db);
         const queries = request.statements.map((statement) =>
-          stripSyncColumns(this.#db.query(statement.sql, statement.params)),
+          stripSyncColumns(
+            this.#db.queryReadOnly(statement.sql, statement.params),
+          ),
         );
         const pending: WindowUnitRef[] = [];
         const missing: WindowUnitRef[] = [];

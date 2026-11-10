@@ -48,7 +48,7 @@ All three wrappers share these properties:
 | `dbPath` | SQLite file. Without it the replica lives in memory and loses rows, cursors, client identity, and the outbox on restart. |
 | `clientId` | Stable client id. Absent, the core creates one and persists it in the database. |
 | `limits` | Client limits forwarded to `create`. |
-| `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `redirects` | The native transport policy. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) lists the semantics and error codes. |
+| `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, `redirects` | The native transport policy. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) lists the semantics and error codes. |
 
 `setHeaders` replaces the full header set. The next HTTP request uses the new headers. An open WebSocket keeps the headers from its handshake; call `pause()` then `resume()` to repeat the handshake.
 

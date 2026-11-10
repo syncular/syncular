@@ -12029,13 +12029,12 @@ fn query_connection(
     sql: &str,
     params: &[QueryValue],
 ) -> Result<Vec<QueryRow>, QueryReadFailure> {
-    crate::query_guard::assert_read_only_query(sql)?;
     let lowered_sql = crate::query_guard::lower_public_query_sql(sql);
+    let mut stmt = crate::query_guard::prepare_read_only(conn, &lowered_sql)?;
     let bound: Vec<SqlValue> = params
         .iter()
         .map(json_param_to_sql)
         .collect::<Result<_, _>>()?;
-    let mut stmt = conn.prepare(&lowered_sql)?;
     // §2.4: an unaliased physical version column stays engine-internal, so a
     // `SELECT *` row feeds straight back into mutation values. An explicit
     // alias (`_sync_version AS v`) returns it as ordinary query data.
@@ -20610,6 +20609,11 @@ impl SyncClient {
                 format!("subscription table {sub_table:?} is not in the client schema"),
             )
         })?;
+        // §5.11: an image bypasses the decrypt seam, so a server cannot serve
+        // one for a table with encrypted columns.
+        if table.has_encrypted_columns() {
+            return Err(invalid("table has encrypted columns"));
+        }
 
         // The image lands beside the replica so it shares the replica's
         // directory permissions and volume; an in-memory replica has no
@@ -25072,6 +25076,31 @@ mod robustness_tests {
         assert_eq!(leftovers, 0);
         drop(client);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    // T16
+    #[test]
+    fn an_image_for_a_table_with_encrypted_columns_is_rejected() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"note","type":"bytes","nullable":true,
+             "encrypted":true,"declaredType":"string"}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client =
+            SyncClient::new("robust".into(), &schema, ClientLimits::default()).expect("client");
+        client
+            .subscribe("tasks".into(), "tasks".into(), scopes(), None)
+            .unwrap();
+        client.subs[0].effective = Some(scopes());
+        let Err(SectionError::Abort(code, message)) =
+            client.apply_sqlite_segment(0, &image_bytes(), true, 2, 7, "digest")
+        else {
+            panic!("an encrypted table refuses the image");
+        };
+        assert_eq!(code, "sync.invalid_request");
+        assert!(message.contains("encrypted columns"), "{message}");
+        assert_eq!(client.read_rows("tasks").unwrap().len(), 0);
     }
 
     // R7

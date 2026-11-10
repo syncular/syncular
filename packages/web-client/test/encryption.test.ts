@@ -19,6 +19,8 @@ import {
   type RowValue,
 } from '@syncular/core';
 import type { ServerSchema } from '@syncular/server';
+import { applySqliteSegment } from '../src/apply';
+import { BunClientDatabase } from '../src/bun-database';
 import { makeClient, makeServer, PARTITION, tableRows } from './helpers';
 
 const SECRETS_COLUMNS: readonly RowColumn[] = [
@@ -208,6 +210,90 @@ describe('§5.11 encrypted round-trip', () => {
       caught = err;
     }
     expect((caught as { code?: string })?.code).toBe('client.decrypt_failed');
+  });
+
+  test('encrypted columns without an encryption config fail loudly in both directions', async () => {
+    const server = makeServer(SERVER_SCHEMA);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    const plain = await makeClient(server, {
+      clientId: 'client-no-config',
+      schema: CLIENT_SCHEMA,
+    });
+    const id = plain.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: { id: 's4', project_id: 'p1', note: 'plaintext', amount: 1 },
+      },
+    ]);
+    await plain.client.sync();
+    expect(plain.client.commitOutcome(id)).toMatchObject({
+      status: 'rejected',
+      results: [
+        { status: 'error', rejection: { code: 'client.encrypt_failed' } },
+      ],
+    });
+    expect(await server.storage.getRow(PARTITION, 'secrets', 's4')).toBe(
+      undefined,
+    );
+
+    const writer = await makeClient(server, {
+      clientId: 'client-writer',
+      schema: CLIENT_SCHEMA,
+      encryption: { keyProvider: goodProvider },
+    });
+    writer.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: { id: 's5', project_id: 'p1', note: 'sealed', amount: 2 },
+      },
+    ]);
+    await writer.client.sync();
+    plain.client.subscribe({
+      id: 's1',
+      table: 'secrets',
+      scopes: { project_id: ['p1'] },
+    });
+    await expect(plain.client.syncUntilIdle()).rejects.toMatchObject({
+      code: 'client.decrypt_failed',
+    });
+    expect(tableRows(plain.db, 'secrets')).toHaveLength(0);
+
+    const table = compileClientSchema(CLIENT_SCHEMA).tables.get('secrets')!;
+    await expect(
+      encryptRowValues(undefined, table, 's6', ['s6', 'p1', 'x', null]),
+    ).rejects.toMatchObject({ code: 'client.encrypt_failed' });
+    await expect(
+      decryptRowValues(undefined, table, ['s6', 'p1', new Uint8Array(1), null]),
+    ).rejects.toMatchObject({ code: 'client.decrypt_failed' });
+  });
+
+  test('a sqlite image for a table with encrypted columns is rejected', async () => {
+    const schema = compileClientSchema(CLIENT_SCHEMA);
+    const db = new BunClientDatabase();
+    try {
+      await expect(
+        applySqliteSegment(
+          db,
+          schema,
+          schema.tables.get('secrets')!,
+          new Uint8Array(),
+          {
+            table: 'secrets',
+            rowCount: 0,
+            asOfCommitSeq: 1,
+            scopeDigest: 'digest',
+          },
+          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+        ),
+      ).rejects.toMatchObject({
+        code: 'sync.invalid_request',
+        message: expect.stringContaining('encrypted columns'),
+      });
+    } finally {
+      db.close();
+    }
   });
 });
 

@@ -18,7 +18,7 @@ import {
 } from '@syncular/core';
 import type { ClientDatabase, SqlRow } from './database';
 import type { EncryptionConfig } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import {
   type CompiledClientSchema,
   type CompiledClientTable,
@@ -282,13 +282,12 @@ export async function encodeOutboxCommit(
       );
     }
     if (op.values === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `outbox upsert on ${op.table}/${op.rowId} has no values`,
       );
     }
     let values = sparseValues(table, op.values, op.insert === true);
-    if (encryption !== undefined && table.hasEncryptedColumns) {
+    if (table.hasEncryptedColumns) {
       // Lazy: opt-in E2EE never enters an encryption-free app's bundle.
       const { encryptRowValues } = await import('./encryption');
       values = await encryptRowValues(

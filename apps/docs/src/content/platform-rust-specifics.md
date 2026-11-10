@@ -54,6 +54,7 @@ let policy = HostTransportPolicy {
     max_request_bytes: Some(32 * 1024 * 1024),
     max_response_bytes: Some(32 * 1024 * 1024),
     redirects: RedirectPolicy::Deny,
+    realtime_heartbeat: Some(Duration::from_secs(30)),
 };
 ```
 
@@ -61,6 +62,7 @@ let policy = HostTransportPolicy {
 - `round_deadline`: the only bound on total transfer time. The client anchors it on the round's first network call and keeps the anchor across continuations. A bound that elapses returns `transport.timeout`, including when the transfer was still progressing. Leave it unset for hosts on slow links, or set it to the longest transfer you will wait for. It covers network work only; local SQLite and CPU time are not interrupted. Local work before the first network call does not consume the budget, and local work between continuations runs against the remaining budget.
 - `max_request_bytes`: a larger HTTP request body is refused before any network I/O with `transport.request_too_large`. It does not cap a realtime socket buffer.
 - `max_response_bytes`: a larger decoded response body is refused with `transport.response_too_large`, counted after decompression. It does not cap a realtime socket buffer.
+- `realtime_heartbeat`: the server's heartbeat interval (SPEC §8.5); `None` means 30 seconds. A connected realtime socket that delivers no frame for twice the interval closes and queues `Inbound::Disconnected` with `transport.timeout` and `causeKind` `heartbeat`, so an idle replica notices a dead connection. Set it to the interval your server sends heartbeats on; a server that sends none makes idle sockets reconnect every two intervals.
 - `redirects`: `Deny` or `Follow`. `Follow` follows a redirect only for a request with no configured headers, no base-URL userinfo, and no signed capability URL. A credential-bearing request is refused with `transport.redirect` under both policies. The WebSocket handshake obeys the same rule and additionally refuses a realtime URL with userinfo or a query.
 
 A realtime socket round has its own fixed silence bound of 30 seconds, which `request_timeout` does not change. The transport sends a request in `0x01` chunks of at most 64 KiB and restarts the bound on every flushed request chunk and every received response chunk. A round that ends without its response `END` (a silence timeout, a malformed response stream, or the whole-round deadline) closes the socket and queues `Inbound::Disconnected` with the round's code, so the unread tail of that response cannot reach the next round. `SyncClient::realtime_lost` handles it like any other lost socket.
@@ -73,7 +75,7 @@ The reader uses `try_send` and never waits for the observer. `take_dropped_realt
 
 A request that follows a round that failed without a complete response carries a `ROUND_FAILURE` frame with that round's code (SPEC §1.5). The server records it on the client's `sync_clients` row as `lastErrorCode` and `consecutiveFailures`, so a client that stalls on a slow link is visible to an operator. The next request without the frame clears it.
 
-Build the transport with `HostTransport::from_config_with_policy`, or replace the policy with `HostTransport::set_policy`. A JSON config (the `new` command) sets the same fields with `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`. Each numeric bound is a `u64` token of at least 1, so a binding that derives the JSON from a floating-point value must serialize the bound losslessly. An invalid policy fails with `sync.invalid_request` and leaves the current policy in force.
+Build the transport with `HostTransport::from_config_with_policy`, or replace the policy with `HostTransport::set_policy`. A JSON config (the `new` command) sets the same fields with `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, and `redirects`. Each numeric bound is a `u64` token of at least 1, so a binding that derives the JSON from a floating-point value must serialize the bound losslessly. An invalid policy fails with `sync.invalid_request` and leaves the current policy in force.
 
 ## Local authority
 

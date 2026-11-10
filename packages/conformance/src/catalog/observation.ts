@@ -65,6 +65,68 @@ const FTS_SCHEMA = {
 
 export const observationScenarios: readonly Scenario[] = [
   {
+    name: 'observation/raw-sql-refuses-writes-and-pragma-before-they-act',
+    specRefs: ['§7.1', '§7.5'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('kept', 'p1', 'kept')]);
+      const handle = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        allowed: { project_id: ['p1'] },
+      });
+      await handle.api.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await syncIdle(handle);
+      const { querySnapshot } = requireObservation(handle.api);
+      const snapshotRead = requireSnapshotRead(handle.api);
+      for (const sql of [
+        'WITH x$select AS (SELECT 1) DELETE FROM tasks',
+        'PRAGMA query_only = ON',
+        'EXPLAIN PRAGMA query_only = ON',
+        'SELECT 1; PRAGMA query_only = ON',
+      ]) {
+        for (const [surface, read] of [
+          ['querySnapshot', () => querySnapshot(sql)],
+          ['snapshotRead', () => snapshotRead({ statements: [{ sql }] })],
+        ] as const) {
+          let refused = false;
+          try {
+            await read();
+          } catch {
+            refused = true;
+          }
+          check(refused, `${surface} refuses ${sql}`);
+        }
+      }
+      checkEqual(
+        (await querySnapshot('SELECT id FROM tasks ORDER BY id')).rows,
+        [{ id: 'kept' }],
+        'the refused DELETE removed nothing',
+      );
+      checkEqual(
+        (
+          await querySnapshot(
+            "SELECT name FROM pragma_table_info('tasks') WHERE pk = 1",
+          )
+        ).rows,
+        [{ name: 'id' }],
+        'a pragma stays readable through its table-valued function',
+      );
+      // `query_only = ON` would make this local write fail.
+      await handle.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('local', 'p1') },
+      ]);
+      checkEqual(
+        (await handle.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['kept', 'local'],
+        'the refused PRAGMA left the connection writable',
+      );
+    },
+  },
+  {
     name: 'observation/applied-commits-distinguish-subscriptions-and-snapshots',
     specRefs: ['§1.4', '§7.5'],
     async run(ctx) {

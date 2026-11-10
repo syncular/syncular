@@ -4,12 +4,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build as viteBuild } from 'vite';
 
-// Bun 1.4.0, minified browser graphs with SQLite external. After the §12
-// local-authority seam, retained-base proof and the drive deadline's abort
-// signal, the client measures 167193 bytes and the worker 187715 bytes on
-// Bun 1.4.0. The ceilings round up from
-// the maximum observed in source and materialized builds. Independently assert
-// that ordinary imports exclude authority modules.
+// Minified browser graphs with SQLite external. On Bun 1.4.4 the client
+// measures 165106 bytes and the worker 185954 bytes. The ceilings are the
+// values at the start of the core review program; a change that grows a lane
+// removes code to stay under them. Independently assert that ordinary imports
+// exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-authority-bundle-'));
   const root = resolve(import.meta.dir, '../../..');
@@ -19,25 +18,25 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        168000,
+        167000,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        168000,
+        167000,
       ],
       [
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        188000,
+        186000,
       ],
       [
         'remote-worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-remote.ts'; startSyncWorker();`,
         false,
-        188000,
+        186000,
       ],
       [
         'authority-worker',

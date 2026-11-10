@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type {
   ClientDiagnosticsListener,
   ClientDiagnosticsSnapshot,
+  RealtimeSupervisorClient,
   RealtimeSupervisorLifecycleState,
   RealtimeSupervisorProtectionState,
   RealtimeSupervisorSignal,
@@ -674,6 +675,67 @@ describe('supported realtime host supervisor', () => {
     supervisor.stop();
     await a.client.close();
     await b.client.close();
+  });
+
+  test('an app-closed transport gate holds the supervisor offline without reconnecting', async () => {
+    const server = makeServer();
+    const { client } = await makeClient(server, {
+      clientId: 'supervisor-gate',
+    });
+    let connects = 0;
+    const counted: RealtimeSupervisorClient = {
+      connectRealtime: () => {
+        connects += 1;
+        return client.connectRealtime();
+      },
+      disconnectRealtime: () => client.disconnectRealtime(),
+      syncUntilIdle: () => client.syncUntilIdle(),
+      diagnosticsSnapshot: () => client.diagnosticsSnapshot(),
+      onDiagnostics: (listener) => client.onDiagnostics(listener),
+      close: () => client.close(),
+    };
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(counted, {
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await waitFor(
+      () => supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
+      'initial connect',
+    );
+
+    client.setTransportEnabled(false);
+    // The first attempt after the close meets the gate; its `sync.offline`
+    // refusal is the evidence that holds the supervisor offline.
+    const before = connects;
+    timers.runNext();
+    await settle();
+    const refused = connects;
+    expect(refused).toBe(before + 1);
+    expect(supervisor.snapshot()).toEqual({ phase: 'offline', attempt: 0 });
+    expect(timers.pending()).toBe(0);
+    client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await settle();
+    expect(supervisor.snapshot().phase).toBe('offline');
+    expect(timers.pending()).toBe(0);
+    expect(connects).toBe(refused);
+
+    client.setTransportEnabled(true);
+    timers.runNext();
+    await waitFor(
+      () => supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
+      'reconnect after the gate reopens',
+    );
+    expect(connects).toBe(refused + 1);
+    supervisor.stop();
+    await client.close();
   });
 
   test('an unreachable round resumes on the host online report without a local write', async () => {

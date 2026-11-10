@@ -237,6 +237,8 @@ export class RealtimeSupervisor {
   #transportConnected = false;
   #connecting = false;
   #realtimeSupported = true;
+  /** The client refused a connect with `sync.offline`: its transport gate is closed. */
+  #gateClosed = false;
   #diagnosticSecurity: RealtimeSupervisorProtectionState = 'unknown';
   #attempt = 0;
   #generation = 0;
@@ -350,7 +352,9 @@ export class RealtimeSupervisor {
     }
     // Host evidence only: a failed round is not connectivity evidence, and
     // treating it as such would hold the supervisor offline after recovery.
-    if (this.#connectivity?.current() === 'offline') return 'offline';
+    if (this.#gateClosed || this.#connectivity?.current() === 'offline') {
+      return 'offline';
+    }
     if (!this.#sharedTransport && this.#lifecycle?.current() === 'background') {
       return 'background';
     }
@@ -475,11 +479,15 @@ export class RealtimeSupervisor {
         return;
       }
       await this.#catchUpConnectedTransport(generation);
-    } catch {
+    } catch (error) {
       if (generation !== this.#generation) {
         this.#releaseSupersededSocket();
         return;
       }
+      this.#gateClosed =
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'sync.offline';
       failed = true;
       this.#connected = false;
       this.#transportConnected = false;
@@ -561,6 +569,13 @@ export class RealtimeSupervisor {
       // recovers the supervisor. Every other report keeps the latch closed.
       if (snapshot.host.realtime !== 'connected') return;
       this.#realtimeSupported = true;
+    }
+    if (this.#gateClosed && snapshot.host.connectivity !== 'offline') {
+      // A closed transport gate always reports offline, so any other report
+      // means the app reopened it.
+      this.#gateClosed = false;
+      this.#reconcileHostState();
+      return;
     }
     const block = this.#hostBlock();
     if (block) {

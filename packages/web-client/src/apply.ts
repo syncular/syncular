@@ -132,7 +132,7 @@ export async function applyCommitFrame(
       throw invalidRequest('upsert change without row payload');
     }
     let values = decodeRow(table.columns, change.row);
-    if (encryption !== undefined && table.hasEncryptedColumns) {
+    if (table.hasEncryptedColumns) {
       const { decryptRowValues } = await import('./encryption');
       values = await decryptRowValues(encryption, table, values);
     }
@@ -434,6 +434,9 @@ export async function applySqliteSegment(
   if (descriptor.table !== table.name) {
     imageInvalid(`descriptor table ${JSON.stringify(descriptor.table)}`);
   }
+  // §5.11: an image bypasses the decrypt seam, so a server cannot serve one
+  // for a table with encrypted columns.
+  if (table.hasEncryptedColumns) imageInvalid('table has encrypted columns');
   return withImage(bytes, IMAGE_ALIAS, async () => {
     // 1. Metadata vs descriptor (§5.3 rule 2). A file that is not a
     //    SQLite database or lacks the metadata table fails right here.
@@ -614,13 +617,12 @@ export async function applyRowsSegment(
     // aborts before any write in this block.
     const rows: { values: readonly RowValue[]; serverVersion: number }[] = [];
     for (const row of block) {
-      const values =
-        encryption !== undefined && table.hasEncryptedColumns
-          ? await (async () => {
-              const { decryptRowValues } = await import('./encryption');
-              return decryptRowValues(encryption, table, row.values);
-            })()
-          : row.values;
+      const values = table.hasEncryptedColumns
+        ? await (async () => {
+            const { decryptRowValues } = await import('./encryption');
+            return decryptRowValues(encryption, table, row.values);
+          })()
+        : row.values;
       rows.push({ values, serverVersion: row.serverVersion });
     }
     if (options.isCurrent?.() === false) break;

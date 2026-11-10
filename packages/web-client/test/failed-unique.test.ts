@@ -450,7 +450,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
               : [{ id: 'a', body: resolution === 'mine' ? 'mine' : 'latest' }],
           );
         }
-        expect(b.query('PRAGMA integrity_check')).toEqual([
+        expect(b.query('SELECT * FROM pragma_integrity_check')).toEqual([
           { integrity_check: 'ok' },
         ]);
       } finally {

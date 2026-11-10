@@ -59,6 +59,10 @@ class OverlapProbeDatabase implements ClientDatabase {
     return this.inner.query(sql, params);
   }
 
+  queryReadOnly(sql: string, params?: readonly SqlValue[]): SqlRow[] {
+    return this.inner.queryReadOnly(sql, params);
+  }
+
   transaction<T>(fn: () => T): T {
     const isTop = !this.inner.db.inTransaction;
     if (isTop) {

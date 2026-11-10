@@ -15,10 +15,15 @@ import {
   type SqlRow,
   type SqlValue,
 } from './database';
+import { prepareReadOnly } from './query-guard';
 
 declare module 'bun:sqlite' {
   interface Database {
     clearQueryCache(): void;
+  }
+  interface Statement {
+    /** `sqlite3_stmt_readonly`. */
+    readonly readonly: boolean;
   }
 }
 
@@ -62,6 +67,22 @@ export class BunClientDatabase implements ClientDatabase {
 
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     return this.db.query(sql).all(...coerceParams(params)) as SqlRow[];
+  }
+
+  queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    const statement = prepareReadOnly(sql, () => {
+      const prepared = this.db.query(sql);
+      // bun:sqlite exposes no `sqlite3_sql`, so the first statement ends at
+      // the first `;` outside literals, identifiers and comments.
+      return [
+        prepared,
+        /^(?:'[^']*'|"[^"]*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$)|[^;])*/.exec(
+          sql,
+        )![0],
+        prepared.readonly && prepared.columnNames.length > 0,
+      ] as const;
+    });
+    return statement.all(...coerceParams(params)) as SqlRow[];
   }
 
   /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */

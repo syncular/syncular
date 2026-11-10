@@ -35,6 +35,11 @@ export interface ClientDatabase {
   /** Execute a single statement and return its rows as objects. */
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   /**
+   * The raw-SQL tier behind `client.query()`: prepare `sql` through
+   * `prepareReadOnly`, then return the statement's rows.
+   */
+  queryReadOnly(sql: string, params?: readonly SqlValue[]): SqlRow[];
+  /**
    * Run `fn` atomically. Nested calls are savepoints: an inner failure
    * rolls back only the inner scope.
    */
