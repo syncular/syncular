@@ -1,5 +1,88 @@
 # Syncular release notes
 
+## 0.59.0 release notes
+
+0.59.0 ships the core review recorded in `docs/RFC-CORE-REVIEW.md`: fixes to
+the wire codec, the server request path, storage, realtime, both clients, the
+C ABI and typegen, and several removals. SSP2 stays at wire version 3. The
+multi-tab protocol moves to version 3 and the migration lock to format 3.
+
+**Authorization.** A requested scope that passes through an allowed `'*'` is
+narrowed by the actor's other non-wildcard lists (SPEC.md §3.2). A scope
+column must be a `string` or an `integer`: typegen, the server, the Rust
+authority and both clients refuse `float`, `boolean`, `json`, `bytes`,
+`blob_ref` and `crdt`, because those types rendered differently per
+implementation or never matched. Push answers stay inside the writer's
+scopes, and tombstones record the deleted version and scopes, so a recreated
+row starts above the version its tombstone ended at.
+
+**Limits.** `ServerLimits` gains `maxRequestBytes` (16 MiB),
+`maxSubscriptionsPerRequest` (500), `maxScopeValuesPerSubscription` (1,000)
+and `maxWatchesPerSession` (100). An over-limit request is answered with
+`sync.limit_exceeded`. Push admission rejects U+0000 in strings, row ids and
+scope values, non-finite floats, invalid `json` values and non-canonical
+`blob_ref` text on every backend and in both cores.
+
+**Realtime.** `RealtimeHub.heartbeat()` sends the §8.5 heartbeat, and both
+clients reconnect when heartbeats stop. A hub bounds unacknowledged deltas
+(256 deltas, 4 MiB) and sends a catch-up wake past the bound. Presence
+survives Durable Object hibernation: the Workers host keeps each socket's
+documents in its attachment. `maxPresenceBytes` caps what one connection
+holds across all its scope keys (default 8,192 bytes, previously 16 KiB per
+document). A refused presence publish reaches the app through
+`onPresence(scopeKey, error)` and the native `presence` event.
+
+**Clients.** `client.query()` runs one statement that SQLite reports as
+read-only and refuses `PRAGMA`. A rejected edit rolls back to the latest
+server row. Overlapping subscriptions keep their shared rows through a window
+shrink or a revocation. Sync resumes after an outage, a silent fetch or a
+refused blob. A follower's `takeOver()` succeeds against an unresponsive
+leader tab. Swift, Kotlin, Flutter and React Native apps apply realtime
+traffic while idle: the C ABI emits a `realtime-wake` event.
+
+**Typegen.** Native schema constants embed the schema IR, so native clients
+create local indexes and enforce local `UNIQUE`. The emitted SQL is the SQL
+SQLite prepared at generate time. A computed query column takes its type from
+a whole-expression `CAST(... AS <type>)` or `count(...)`; any other
+expression fails with `typegen.computed_column_type`.
+
+**Tauri and React.** Tauri and React Native share one native bridge
+(`@syncular/client/native-bridge`). The Tauri plugin sends sync events only
+to the webview that created the client and refuses commands from any other
+webview with `sync.client_owned_by_another_webview`. `useRawSql` requires
+`dependencies` or `tables`, and a query with `enabled: false` reports phase
+`disabled`.
+
+**Storage.** SQLite and D1 share one SQL implementation. Scope scans seek the
+index, D1 pushes batch their reads, and idempotency results survive pruning.
+An interrupted local-authority abandon blocks attach until it completes.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together.
+
+- Run `syncular migrations upgrade-lock` once; generation refuses a format 2
+  lock with `typegen.migration_lock_outdated`.
+- Change a `float`, `boolean` or `json` scope column to `integer` or `string`
+  before upgrading.
+- Wrap each computed query column in `CAST(... AS INTEGER|REAL|TEXT|BLOB|BOOLEAN)`.
+  `count(*)` columns change from a float to an integer type in Rust, Kotlin,
+  Swift and Dart.
+- Pass `dependencies` or `tables` to every `useRawSql` call, and handle the
+  `disabled` phase where code switches on `phase`.
+- Raise `limits.maxSubscriptionsPerRequest` on the server before upgrading an
+  app whose clients hold more than 500 subscriptions; a client sends its full
+  subscription list on every pull.
+- Keep one connection's presence under 8,192 bytes across all scope keys, or
+  raise `maxPresenceBytes` (at most 9,785 on Workers).
+- Replace `PRAGMA` in `client.query()` with the table-valued form
+  (`SELECT * FROM pragma_table_info('tasks')`).
+- Reload every tab of a web app after deploying. A tab on the new multi-tab
+  protocol takes leadership from an older leader, and an older tab then
+  blocks with `client.leader_incompatible` until it reloads.
+- Tauri code that injects its own `TauriApi` double replaces `listen` with
+  `channel`. Open the client in one webview.
+- Rebuild the native library for the Tauri, Swift, Kotlin, Flutter and React
+  Native bindings, and regenerate with `syncular generate`.
+
 ## 0.58.0 release notes
 
 0.58.0 moves the Rust crates to rusqlite 0.41.1 and libsqlite3-sys 0.39.1,

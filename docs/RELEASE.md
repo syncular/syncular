@@ -1,7 +1,7 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.58.0** (`v0.58.0`). All artifacts use Apache-2.0, except
+current release is **0.59.0** (`v0.59.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 Per-version release notes live in [`RELEASE-NOTES.md`](RELEASE-NOTES.md), newest first. `scripts/version.ts release-notes` reads the section for the root version from that file.
