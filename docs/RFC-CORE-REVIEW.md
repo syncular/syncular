@@ -1,6 +1,6 @@
 # RFC: Core review findings and fix program
 
-- Status: implemented on local branch `core-review` (34 commits, not pushed); N5 and the §3.2 questions wait on the maintainer
+- Status: implemented on local branch `core-review` (not pushed), including the second round in §8; N5, float scope columns and the §3.2 questions wait on the maintainer
 - Date: 2026-11-10
 - Review baseline: `a531dcea` (0.58.0)
 - Scope: `packages/core`, `packages/crypto`, `packages/server`,
@@ -531,3 +531,8 @@ Open after the second round:
   events reach every webview; one native client per Tauri app regardless of
   windows; computed columns typed by the "string" fallback decode four
   different ways across languages.
+
+Second-round gate, green on `97694b5b`: `bun run check` (4,099 tests in the
+main lane, the multi-tab lane, the downgrade test, runtime verification),
+the Rust workspace tests, clippy and `cargo fmt`, the Tauri plugin tests and
+clippy, the React Native tests and the Swift binding check.
