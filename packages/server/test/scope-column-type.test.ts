@@ -1,5 +1,5 @@
 /**
- * §3.1: a scope column is a `string`, `integer` or `float`. `compileSchema`
+ * §3.1: a scope column is a `string` or `integer`. `compileSchema`
  * rejects every other column type with a static code.
  */
 import { describe, expect, test } from 'bun:test';
@@ -24,14 +24,11 @@ function schemaWith(type: RowColumn['type']): ServerSchema {
 }
 
 describe('§3.1 scope column types', () => {
-  test.each(['string', 'integer', 'float'] as const)(
-    '%s is accepted',
-    (type) => {
-      expect(compileSchema(schemaWith(type)).tables.get('tasks')).toBeDefined();
-    },
-  );
+  test.each(['string', 'integer'] as const)('%s is accepted', (type) => {
+    expect(compileSchema(schemaWith(type)).tables.get('tasks')).toBeDefined();
+  });
 
-  test.each(['boolean', 'json', 'bytes', 'blob_ref', 'crdt'] as const)(
+  test.each(['float', 'boolean', 'json', 'bytes', 'blob_ref', 'crdt'] as const)(
     '%s is refused',
     (type) => {
       let error: unknown;

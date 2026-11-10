@@ -133,10 +133,9 @@ pub(crate) fn render(value: &Option<ColumnValue>) -> Option<String> {
     let rendered = match value.as_ref()? {
         ColumnValue::String(s) => s.clone(),
         ColumnValue::Integer(v) => v.to_string(),
-        ColumnValue::Float(v) => v.to_string(),
         ColumnValue::Boolean(v) => v.to_string(),
         ColumnValue::Json(raw) | ColumnValue::BlobRef(raw) => raw.0.clone(),
-        ColumnValue::Bytes(_) | ColumnValue::Crdt(_) => return None,
+        ColumnValue::Float(_) | ColumnValue::Bytes(_) | ColumnValue::Crdt(_) => return None,
     };
     (!rendered.is_empty()).then_some(rendered)
 }

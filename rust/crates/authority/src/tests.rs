@@ -373,6 +373,40 @@ fn count(authority: &LocalAuthority, table: &str) -> i64 {
 }
 
 #[test]
+fn scope_columns_must_be_string_or_integer() {
+    for (ty, accepted) in [
+        ("string", true),
+        ("integer", true),
+        ("float", false),
+        ("boolean", false),
+        ("json", false),
+        ("bytes", false),
+        ("blob_ref", false),
+        ("crdt", false),
+    ] {
+        let mut scope = column("org", ty, false);
+        scope["crdtType"] = json!("yjs-doc");
+        let schema = json!({ "version": 1, "tables": [table(
+            "tasks",
+            vec![column("id", "string", false), scope],
+            json!({}),
+        )] });
+        let opened = LocalAuthority::open(":memory:", &schema);
+        if accepted {
+            opened.unwrap_or_else(|error| panic!("{ty}: {}", error.message));
+        } else {
+            let error = opened
+                .err()
+                .unwrap_or_else(|| panic!("{ty} must be refused"));
+            assert!(
+                error.details.unwrap().to_string().contains("(§3.1)"),
+                "{ty}"
+            );
+        }
+    }
+}
+
+#[test]
 fn push_pull_round_trip() {
     let mut authority = memory();
     let s = authority.schema.clone();

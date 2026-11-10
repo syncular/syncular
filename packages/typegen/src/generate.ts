@@ -101,14 +101,10 @@ function resolveScope(table: ParsedTable, spec: ManifestScopeSpec): IrScope {
       `table ${table.name}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
     );
   }
-  if (
-    scopeColumn.type !== 'string' &&
-    scopeColumn.type !== 'integer' &&
-    scopeColumn.type !== 'float'
-  ) {
+  if (scopeColumn.type !== 'string' && scopeColumn.type !== 'integer') {
     throw new TypegenError(
       MANIFEST_FILENAME,
-      'a scope column must have type string, integer or float (§3.1)',
+      'a scope column must have type string or integer (§3.1)',
       'typegen.scope_column_type',
       { table: table.name, column, type: scopeColumn.type },
     );

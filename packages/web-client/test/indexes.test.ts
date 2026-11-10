@@ -436,6 +436,51 @@ describe('CREATE INDEX subset — client local DDL', () => {
     }
   });
 
+  test('a scope column that is not a string or integer fails at compile', () => {
+    // §3.1: a scope value is an authorization key, so its column type must
+    // render identically in every implementation. An unknown column fails
+    // the same check.
+    for (const type of [
+      'float',
+      'boolean',
+      'json',
+      'bytes',
+      'blob_ref',
+      'crdt',
+    ] as const) {
+      const bad: ClientSchema = {
+        version: 1,
+        tables: [
+          {
+            name: 'tasks',
+            columns: [
+              { name: 'id', type: 'string', nullable: false },
+              { name: 'bucket', type, nullable: false },
+            ],
+            primaryKey: 'id',
+            scopes: ['bucket:{bucket}'],
+          },
+        ],
+      };
+      expect(() => compileClientSchema(bad)).toThrow(
+        /scope column "bucket" must be string or integer/,
+      );
+    }
+    expect(() =>
+      compileClientSchema({
+        version: 1,
+        tables: [
+          {
+            name: 'tasks',
+            columns: [{ name: 'id', type: 'string', nullable: false }],
+            primaryKey: 'id',
+            scopes: ['bucket:{nope}'],
+          },
+        ],
+      }),
+    ).toThrow(/scope column "nope" must be string or integer/);
+  });
+
   test('an index naming an unknown column fails at compile', () => {
     const bad: ClientSchema = {
       version: 1,

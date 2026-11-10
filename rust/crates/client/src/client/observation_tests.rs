@@ -373,7 +373,7 @@ fn patch_scope_column_parity_for_the_primary_key_and_coerced_values() {
                 "primaryKey": "id",
                 "columns": [
                     { "name": "id", "type": "string", "nullable": false },
-                    { "name": "bucket", "type": "float", "nullable": false },
+                    { "name": "bucket", "type": "integer", "nullable": false },
                     { "name": "body", "type": "string", "nullable": false }
                 ],
                 "scopes": [{ "pattern": "bucket:{bucket}" }]
@@ -404,11 +404,11 @@ fn patch_scope_column_parity_for_the_primary_key_and_coerced_values() {
         )
         .expect("the primary-key scope column is proven equal by construction");
 
-    // A stored REAL scope value coerces from a supplied integer.
+    // A supplied integer equal to the stored integer scope value drops from the patch.
     client
         .conn
         .execute(
-            "INSERT INTO buckets (id, bucket, body, _syncular_version) VALUES ('b1', 2.0, 'seed', 1)",
+            "INSERT INTO buckets (id, bucket, body, _syncular_version) VALUES ('b1', 2, 'seed', 1)",
             [],
         )
         .unwrap();
@@ -422,7 +422,7 @@ fn patch_scope_column_parity_for_the_primary_key_and_coerced_values() {
             ]),
             None,
         )
-        .expect("the stored REAL value coerces from a supplied integer");
+        .expect("a supplied integer equal to the stored scope value is accepted");
     let values = client.outbox[1].ops[0]
         .values
         .clone()
@@ -4342,6 +4342,32 @@ fn primary_keys_reject_every_ineligible_column_type() {
             "scopes":[{"pattern":"project:{project_id}"}]}]});
         SyncClient::new("pk-eligibility".into(), &schema, ClientLimits::default())
             .unwrap_or_else(|error| panic!("{ty}: {error}"));
+    }
+}
+
+#[test]
+fn scope_columns_must_be_string_or_integer() {
+    for (ty, accepted) in [
+        ("string", true),
+        ("integer", true),
+        ("float", false),
+        ("boolean", false),
+        ("json", false),
+        ("bytes", false),
+        ("blob_ref", false),
+        ("crdt", false),
+    ] {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
+            "columns":[{"name":"id","type":"string","nullable":false},
+                {"name":"project_id","type":ty,"nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let built = SyncClient::new("scope-types".into(), &schema, ClientLimits::default());
+        match (accepted, built) {
+            (true, Ok(_)) => {}
+            (false, Err(error)) => assert!(error.contains("(§3.1)"), "{ty}: {error}"),
+            (true, Err(error)) => panic!("{ty}: {error}"),
+            (false, Ok(_)) => panic!("{ty} must be refused"),
+        }
     }
 }
 

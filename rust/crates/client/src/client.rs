@@ -758,15 +758,12 @@ fn local_scope_predicate(
             .ok_or(())?;
         let key = quote_ident(name);
         let holes = vec!["?"; values.len()].join(", ");
-        let text_match = format!("CAST({key} AS TEXT) IN ({holes})");
-        clauses.push(match column.ty {
-            ColumnType::String | ColumnType::Json => format!("{key} IN ({holes})"),
-            ColumnType::Integer | ColumnType::Boolean => {
-                params.extend(values.iter().cloned().map(SqlValue::Text));
-                let seek = vec!["+CAST(? AS INTEGER)"; values.len()].join(", ");
-                format!("{key} IN ({seek}) AND {text_match}")
-            }
-            _ => text_match,
+        clauses.push(if column.ty == ColumnType::Integer {
+            params.extend(values.iter().cloned().map(SqlValue::Text));
+            let seek = vec!["+CAST(? AS INTEGER)"; values.len()].join(", ");
+            format!("{key} IN ({seek}) AND CAST({key} AS TEXT) IN ({holes})")
+        } else {
+            format!("{key} IN ({holes})")
         });
         params.extend(values.iter().cloned().map(SqlValue::Text));
     }

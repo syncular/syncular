@@ -1238,10 +1238,13 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   `{ pattern: 'prefix:{variable}', column: 'column_name' }`. Exactly one
   `{variable}` per pattern; a variable MUST NOT map to two different
   columns.
-- A scope column's type MUST be `string`, `integer` or `float`; typegen
-  and the server's schema compile reject `boolean`, `json`, `bytes`,
-  `blob_ref` and `crdt` (`typegen.scope_column_type`,
-  `schema.scope_column_type`). A row whose scope column is NULL has no
+- A scope column's type MUST be `string` or `integer`; typegen, the
+  server's schema compile, the Rust authority and both clients' schema
+  load reject `float`, `boolean`, `json`, `bytes`, `blob_ref` and `crdt`
+  (`typegen.scope_column_type`, `schema.scope_column_type`). A scope value
+  is an authorization key, and a `float` renders differently per
+  implementation (`1e21` is `1e+21` in ECMAScript and `1000000000000000000000`
+  in Rust's `f64::to_string`). A row whose scope column is NULL has no
   stored scope for that variable, so the server rejects every write of it.
 - Every synced table MUST declare **at least one** scope pattern — a
   schema-compile-time requirement (configuring a table without one is a
@@ -1395,11 +1398,11 @@ deletes rows a surviving subscription still claims to hold, and the
 survivor's cursor over-asserts possession (§4.5 C1).
 
 **Matching.** Scope values are text on the wire. A client matches them
-against a local scope column by the column's declared type: a `string` or
-`json` column compares the text; an `integer` or `boolean` column matches
-a stored value whose canonical decimal text equals the scope value, so
-`7` matches `"7"` and never `"07"`. The same rule binds row ids it keeps
-out of a delete (the §4.8 outbox pin).
+against a local scope column by the column's declared type: a `string`
+column compares the text; an `integer` column matches a stored value whose
+canonical decimal text equals the scope value, so `7` matches `"7"` and never
+`"07"`. The same rule binds row ids it keeps out of a delete (the §4.8 outbox
+pin).
 
 **Invalidation.** A scoped delete records the scope keys of its map
 (§7.5). When the map leaves a scope variable of the table unnamed, the

@@ -161,7 +161,7 @@ export interface CompiledSchema {
 
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
 
-/** A scope column has a type other than string, integer or float (§3.1). */
+/** A scope column has a type other than string or integer (§3.1). */
 export class ScopeColumnTypeError extends Error {
   readonly code = 'schema.scope_column_type';
 
@@ -172,7 +172,7 @@ export class ScopeColumnTypeError extends Error {
       readonly type: string;
     },
   ) {
-    super('a scope column must have type string, integer or float (§3.1)');
+    super('a scope column must have type string or integer (§3.1)');
     this.name = 'ScopeColumnTypeError';
   }
 }
@@ -203,7 +203,7 @@ function compilePattern(
     );
   }
   const type = table.columns[index]?.type;
-  if (type !== 'string' && type !== 'integer' && type !== 'float') {
+  if (type !== 'string' && type !== 'integer') {
     throw new ScopeColumnTypeError({
       table: table.name,
       column,

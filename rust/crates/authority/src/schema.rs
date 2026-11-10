@@ -281,6 +281,12 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
                     table.name
                 ))
             })?;
+            if !matches!(columns[column].ty, ColumnType::String | ColumnType::Integer) {
+                return Err(invalid(format!(
+                    "table {:?}: scope column {column_name:?} must be a string or integer column (§3.1)",
+                    table.name
+                )));
+            }
             if scopes
                 .iter()
                 .any(|s| s.variable == variable && s.column != column)

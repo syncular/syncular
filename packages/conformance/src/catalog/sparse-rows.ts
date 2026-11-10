@@ -25,8 +25,8 @@ const P1 = { project_id: ['p1'] } as const;
 
 /**
  * The fixture plus the two shapes §3.4 scope-column parity needs: a primary
- * key that is also a scope column, and a float scope column whose stored
- * REAL value coerces from a supplied integer.
+ * key that is also a scope column, and an integer scope column whose
+ * supplied value equals the stored one.
  */
 const PATCH_SCOPE_SCHEMA: DriverSchema = {
   ...FIXTURE_SCHEMA,
@@ -45,7 +45,7 @@ const PATCH_SCOPE_SCHEMA: DriverSchema = {
       name: 'buckets',
       columns: [
         { name: 'id', type: 'string', nullable: false },
-        { name: 'bucket', type: 'float', nullable: false },
+        { name: 'bucket', type: 'integer', nullable: false },
         { name: 'body', type: 'string', nullable: false },
       ],
       primaryKey: 'id',
@@ -1135,7 +1135,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
       checkEqual(tenant?.values.body, 'created', 'the patch wrote the row');
       checkEqual(tenant?.scopes.tenant_id, 't1', 'the stored scope is the key');
 
-      // A supplied integer for a stored REAL scope value: the value is
+      // A supplied integer for a stored integer scope value: the value is
       // decoded through the column type before the comparison, so the two
       // equal values reach the same representation.
       await a.api.subscribe({

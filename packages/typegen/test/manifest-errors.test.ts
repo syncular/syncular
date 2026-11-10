@@ -475,7 +475,7 @@ describe('scope column types (§3.1)', () => {
   const scopeTypes: readonly [sqlType: string, accepted: boolean][] = [
     ['TEXT', true],
     ['INTEGER', true],
-    ['REAL', true],
+    ['REAL', false],
     ['BOOLEAN', false],
     ['JSON', false],
     ['BLOB', false],

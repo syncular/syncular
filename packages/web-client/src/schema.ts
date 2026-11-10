@@ -166,18 +166,19 @@ export function compileClientSchema(
     const scopePrefixByVariable = new Map<string, string>();
     for (const spec of table.scopes) {
       const pattern = typeof spec === 'string' ? spec : spec.pattern;
-      const match = PATTERN_RE.exec(pattern);
-      if (match === null || match[1] === undefined || match[2] === undefined) {
+      const [, prefix, variable] = PATTERN_RE.exec(pattern) ?? [];
+      if (!prefix || !variable) {
         invalidSchema(
           `${tableLabel}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}'`,
         );
       }
-      const prefix = match[1];
-      const variable = match[2];
       const column = typeof spec === 'string' ? variable : spec.column;
-      if (!columnIndex.has(column)) {
+      // §3.1: a scope value is an authorization key; only these two types
+      // render identically in every implementation.
+      const type = table.columns[columnIndex.get(column) ?? -1]?.type;
+      if (type !== 'string' && type !== 'integer') {
         invalidSchema(
-          `${tableLabel}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
+          `${tableLabel}: scope column ${JSON.stringify(column)} must be string or integer (§3.1)`,
         );
       }
       const existing = scopeColumnByVariable.get(variable);
