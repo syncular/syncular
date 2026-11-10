@@ -409,6 +409,13 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
           `table ${child.name}: reference column ${JSON.stringify(reference.column)} names unknown table ${JSON.stringify(reference.parentTable)}`,
         );
       }
+      if (!child.materialize) {
+        // Enforcement reaches children through `scanRowsByIndex`, which reads
+        // the materialized columns.
+        throw new Error(
+          'a declared reference requires a materialized child table (§6.11)',
+        );
+      }
       const childColumn = child.columns[reference.columnIndex];
       const parentKey = parent.columns[parent.primaryKeyIndex];
       if (childColumn === undefined || parentKey === undefined) {

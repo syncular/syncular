@@ -11,7 +11,13 @@ import {
   type RowColumn,
 } from '@syncular/core';
 import type { ResponseMessage } from '@syncular/core';
-import { compileSchema, type ServerSchema } from '@syncular/server';
+import {
+  compileSchema,
+  type IndexRowScanQuery,
+  type ServerSchema,
+  type ServerStorage,
+  type StorageTransaction,
+} from '@syncular/server';
 import {
   del,
   makeContext,
@@ -279,6 +285,210 @@ describe('declared references (§6.11)', () => {
   });
 });
 
+/** Record every `scanRowsByIndex` page the push transaction reads. */
+function recordIndexScans(
+  storage: ServerStorage,
+  pages: { readonly limit: number; readonly rows: number }[],
+): ServerStorage {
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property === 'begin') {
+        return async (partition: string): Promise<StorageTransaction> => {
+          const tx = await target.begin(partition);
+          return new Proxy(tx, {
+            get(txTarget, txProperty) {
+              if (txProperty === 'scanRowsByIndex') {
+                return async (query: IndexRowScanQuery) => {
+                  const scan = txTarget.scanRowsByIndex;
+                  if (scan === undefined) throw new Error('no index scans');
+                  const rows = await scan.call(txTarget, query);
+                  pages.push({ limit: query.limit, rows: rows.length });
+                  return rows;
+                };
+              }
+              const value = Reflect.get(txTarget, txProperty, txTarget);
+              return typeof value === 'function' ? value.bind(txTarget) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+describe('reference enforcement reads and authorization (§6.11)', () => {
+  test('a parent in a scope the actor cannot authorize answers exactly like an absent parent', async () => {
+    const pushChild = async (parentExists: boolean) => {
+      const t = referenceContext();
+      if (parentExists) {
+        const privileged = {
+          ...t.ctx,
+          resolveScopes: () => ({ project_id: ['p1', 'p2'] }),
+        };
+        const seeded = await sync({ ...t, ctx: privileged }, [
+          pushCommit('parent', [upsert('projects', 'p2', projectRow('p2'))]),
+        ]);
+        expect(pushResults(seeded)[0]?.status).toBe('applied');
+      }
+      const message = await sync(t, [
+        pushCommit('child', [
+          upsert('items', 'i1', itemRow('i1', 'p1', { restrict: 'p2' })),
+        ]),
+      ]);
+      expect(await t.storage.getRow('part-1', 'items', 'i1')).toBeUndefined();
+      return {
+        results: pushResults(message),
+        details: rejectionDetails(message),
+      };
+    };
+    const hidden = await pushChild(true);
+    expect(hidden.details).toEqual([
+      {
+        opIndex: 0,
+        details: {
+          reason: 'missing_parent',
+          fieldPaths: ['restrict_parent'],
+          references: { parent: 'projects', row: 'p2' },
+        },
+      },
+    ]);
+    expect(hidden).toEqual(await pushChild(false));
+  });
+
+  test('a patch that leaves the reference column absent is not checked for a missing parent', async () => {
+    const t = referenceContext();
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    await seed(t, 'c2', 'items', 'i1', itemRow('i1', 'p1', { nullify: 'p1' }));
+    // The patch presents only the label; the same commit deletes the parent,
+    // so the merged row names an absent parent until SET NULL clears it.
+    const patch = encodeSparseRow(CHILD_COLUMNS, 0, [
+      'i1',
+      undefined,
+      'renamed',
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const message = await sync(t, [
+      pushCommit('c3', [upsert('items', 'i1', patch), del('projects', 'p1')]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    const child = await t.storage.getRow('part-1', 'items', 'i1');
+    expect(child?.serverVersion).toBe(3);
+  });
+
+  test('a present reference written earlier in the commit is still checked after a later patch', async () => {
+    const t = referenceContext();
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    const patch = encodeSparseRow(CHILD_COLUMNS, 0, [
+      'i1',
+      undefined,
+      'renamed',
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const message = await sync(t, [
+      pushCommit('c2', [
+        upsert('items', 'i1', itemRow('i1', 'p1', { restrict: 'ghost' })),
+        upsert('items', 'i1', patch),
+      ]),
+    ]);
+    expect(rejectionDetails(message)).toEqual([
+      {
+        opIndex: 1,
+        details: {
+          reason: 'missing_parent',
+          fieldPaths: ['restrict_parent'],
+          references: { parent: 'projects', row: 'ghost' },
+        },
+      },
+    ]);
+  });
+
+  test('RESTRICT reads at most one child row', async () => {
+    const pages: { limit: number; rows: number }[] = [];
+    const t = referenceContext();
+    const scanned = {
+      ...t,
+      ctx: { ...t.ctx, storage: recordIndexScans(t.storage, pages) },
+    };
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    for (const id of ['i1', 'i2', 'i3']) {
+      await seed(
+        t,
+        `c-${id}`,
+        'items',
+        id,
+        itemRow(id, 'p1', { restrict: 'p1' }),
+      );
+    }
+    const message = await sync(scanned, [
+      pushCommit('c5', [del('projects', 'p1')]),
+    ]);
+    expect(rejectionDetails(message)[0]?.details).toMatchObject({
+      reason: 'restricted_delete',
+    });
+    expect(pages.filter((page) => page.rows > 0)).toEqual([
+      { limit: 1, rows: 1 },
+    ]);
+  });
+
+  test('a cascade past the cap reads the cap plus one child', async () => {
+    const pages: { limit: number; rows: number }[] = [];
+    const t = referenceContext({
+      limits: { maxCascadeOperationsPerCommit: 3 },
+    });
+    const scanned = {
+      ...t,
+      ctx: { ...t.ctx, storage: recordIndexScans(t.storage, pages) },
+    };
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    for (let index = 0; index < 10; index++) {
+      const id = `i${index}`;
+      await seed(
+        t,
+        `c-${id}`,
+        'items',
+        id,
+        itemRow(id, 'p1', { cascade: 'p1' }),
+      );
+    }
+    const message = await sync(scanned, [
+      pushCommit('c-delete', [del('projects', 'p1')]),
+    ]);
+    expect(rejectionDetails(message)[0]?.details).toEqual({
+      reason: 'cascade_limit',
+    });
+    expect(pages.reduce((total, page) => total + page.rows, 0)).toBe(4);
+    expect(pages.every((page) => page.limit <= 4)).toBe(true);
+    expect(await t.storage.getRow('part-1', 'items', 'i0')).toBeDefined();
+  });
+
+  test('a cascade within the cap pages through every child', async () => {
+    const t = referenceContext({
+      limits: { maxCascadeOperationsPerCommit: 3 },
+    });
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    for (const id of ['i1', 'i2', 'i3']) {
+      await seed(
+        t,
+        `c-${id}`,
+        'items',
+        id,
+        itemRow(id, 'p1', { cascade: 'p1' }),
+      );
+    }
+    const message = await sync(t, [pushCommit('c5', [del('projects', 'p1')])]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    for (const id of ['i1', 'i2', 'i3']) {
+      expect(await t.storage.getRow('part-1', 'items', id)).toBeUndefined();
+    }
+  });
+});
+
 describe('recursive cascade (§6.11)', () => {
   const SUBITEM_COLUMNS: readonly RowColumn[] = [
     { name: 'id', type: 'string', nullable: false },
@@ -403,6 +613,23 @@ describe('reference schema compilation (§6.11)', () => {
         ],
       }),
     ).toThrow(/MUST NOT cross an authorization boundary/);
+  });
+
+  test('a reference on a non-materialized child table fails loud', () => {
+    expect(() =>
+      compileSchema({
+        version: 1,
+        tables: [
+          REFERENCE_SCHEMA.tables[0] as ServerSchema['tables'][number],
+          {
+            ...(REFERENCE_SCHEMA.tables[1] as ServerSchema['tables'][number]),
+            materialize: false,
+          },
+        ],
+      }),
+    ).toThrow(
+      'a declared reference requires a materialized child table (§6.11)',
+    );
   });
 
   test('same-commit staged insert then delete evaluates final candidate state without false FK violation or phantom cascade', async () => {

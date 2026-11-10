@@ -3,8 +3,20 @@
  * protocol reports conflicts with the server row attached; resolution is
  * app policy, exercised here through the driver surface.
  */
+import {
+  decodeRow,
+  type PushResultFrame,
+  type RowColumn,
+} from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { FIXTURE_SCHEMA, doc, task } from '../fixture';
+import {
+  findTable,
+  rawDelete,
+  rawPushCommit,
+  rawUpsert,
+  responsePushResults,
+} from '../raw';
 import type { Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, seedRows, syncIdle, syncOk } from './util';
 
@@ -494,6 +506,143 @@ export const conflictScenarios: readonly Scenario[] = [
         0,
         'nothing applied',
       );
+    },
+  },
+
+  {
+    name: 'conflict/snapshot-is-the-rolled-back-row',
+    specRefs: ['§6.3', '§6.4'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('actor-1', P1);
+      const push = async (
+        ...commits: Parameters<typeof rawPushCommit>[]
+      ): Promise<PushResultFrame[]> => {
+        const result = await ctx.rawSync(
+          'actor-1',
+          commits.map((commit) => rawPushCommit(...commit)),
+        );
+        if (!result.ok) throw new Error(result.error.code);
+        return responsePushResults(result.message);
+      };
+      await push([
+        'seed',
+        [rawUpsert(ctx.schema, 'tasks', task('t1', 'p1', 'stored'))],
+      ]);
+      const [stale, self] = await push(
+        [
+          'stale',
+          [
+            rawUpsert(ctx.schema, 'tasks', task('t1', 'p1', 'candidate')),
+            rawUpsert(ctx.schema, 'tasks', task('t1', 'p1', 'mine'), 1),
+          ],
+        ],
+        [
+          'self',
+          [
+            rawUpsert(ctx.schema, 'tasks', task('t9', 'p1', 'first'), 0),
+            rawUpsert(ctx.schema, 'tasks', task('t9', 'p1', 'second'), 0),
+          ],
+        ],
+      );
+      const conflict = stale?.results[0];
+      if (conflict?.status !== 'conflict') {
+        throw new Error('the stale operation reports a conflict');
+      }
+      checkEqual(conflict.opIndex, 1, 'the conflicting operation is named');
+      checkEqual(
+        conflict.serverVersion,
+        1,
+        'serverVersion is the version stored before the commit',
+      );
+      checkEqual(
+        decodeRow(
+          findTable(ctx.schema, 'tasks').columns as readonly RowColumn[],
+          conflict.serverRow,
+        )[2],
+        'stored',
+        'serverRow is the row stored before the commit, not the rolled-back candidate',
+      );
+      const missing = self?.results[0];
+      check(
+        missing?.status === 'error' &&
+          missing.opIndex === 1 &&
+          missing.code === 'sync.row_missing',
+        'a conflict with a row only the same commit inserted is row_missing',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => [
+          row.rowId,
+          row.version,
+          row.values.title,
+        ]),
+        [['t1', 1, 'stored']],
+        'both commits roll back whole',
+      );
+    },
+  },
+
+  {
+    name: 'conflict/payload-authorization-precedes-the-tombstone',
+    specRefs: ['§3.4', '§6.2'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('actor-1', P1);
+      const seeded = await ctx.rawSync('actor-1', [
+        rawPushCommit('seed', [
+          rawUpsert(ctx.schema, 'tasks', task('t1', 'p1')),
+        ]),
+        rawPushCommit('delete', [rawDelete('tasks', 't1')]),
+      ]);
+      check(
+        seeded.ok &&
+          responsePushResults(seeded.message).every(
+            (frame) => frame.status === 'applied',
+          ),
+        'the row is created and deleted',
+      );
+      // An empty scope value is a missing one (§3.4 step 2): the payload is
+      // denied whether or not the row id carries a tombstone.
+      const result = await ctx.rawSync('actor-1', [
+        rawPushCommit('deleted', [
+          rawUpsert(ctx.schema, 'tasks', task('t1', '')),
+        ]),
+        rawPushCommit('never', [
+          rawUpsert(ctx.schema, 'tasks', task('t2', '')),
+        ]),
+      ]);
+      if (!result.ok) throw new Error(result.error.code);
+      checkEqual(
+        responsePushResults(result.message).map((frame) => {
+          const record = frame.results[0];
+          return record?.status === 'error' ? record.code : record?.status;
+        }),
+        ['sync.forbidden', 'sync.forbidden'],
+        'the answer does not disclose the deletion',
+      );
+    },
+  },
+
+  {
+    name: 'conflict/row-id-with-nul-is-invalid',
+    specRefs: ['§6.1', '§6.4'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('actor-1', P1);
+      const result = await ctx.rawSync('actor-1', [
+        rawPushCommit('nul', [rawDelete('tasks', 'a\u0000b')]),
+        rawPushCommit('after', [
+          rawUpsert(ctx.schema, 'tasks', task('t1', 'p1')),
+        ]),
+      ]);
+      if (!result.ok) throw new Error(result.error.code);
+      const [rejected, applied] = responsePushResults(result.message);
+      const record = rejected?.results[0];
+      check(
+        rejected?.status === 'rejected' &&
+          record?.status === 'error' &&
+          record.opIndex === 0 &&
+          record.code === 'sync.invalid_request',
+        'the operation is rejected per operation',
+      );
+      checkEqual(applied?.status, 'applied', 'the batch continues (§6.4)');
     },
   },
 ];

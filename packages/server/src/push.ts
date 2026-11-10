@@ -99,6 +99,8 @@ interface StagedWrite {
   readonly opIndex: number;
   /** Final post-merge, post-scope-strip values (upsert only). */
   readonly values?: readonly RowValue[];
+  /** Columns the operation presents (upsert only, §6.11 present reference). */
+  readonly present?: readonly boolean[];
   /** Stored row observed immediately before the write; undefined on insert. */
   readonly stored: StoredRow | undefined;
 }
@@ -188,6 +190,26 @@ function conflictColumnsBitmap(
 interface BlobApplyContext {
   readonly store: BlobStore | undefined;
   readonly partition: string;
+  /** §6.6 per-commit existence answers, keyed by blobId. */
+  readonly presence: Map<string, boolean>;
+}
+
+/** §6.6: answer every not-yet-known blobId with one concurrent round of
+ * existence lookups and remember the answers for the rest of the commit. */
+async function resolveBlobPresence(
+  blobCtx: BlobApplyContext,
+  blobIds: Iterable<string>,
+): Promise<void> {
+  const store = blobCtx.store;
+  if (store === undefined) return;
+  const unknown = [...new Set(blobIds)].filter(
+    (blobId) => !blobCtx.presence.has(blobId),
+  );
+  await Promise.all(
+    unknown.map(async (blobId) => {
+      blobCtx.presence.set(blobId, await store.has(blobCtx.partition, blobId));
+    }),
+  );
 }
 
 /**
@@ -338,6 +360,10 @@ async function applyOperation(
       'sync.forbidden',
       'scope resolution failed (§3.4 step 4)',
     );
+  }
+  if (op.rowId.includes('\u0000')) {
+    // §6.1: no store sees a rowId holding U+0000; PostgreSQL refuses it.
+    return errorRecord(opIndex, 'sync.invalid_request', 'rowId holds U+0000');
   }
   const stored = await tx.getRow(op.table, op.rowId);
 
@@ -538,6 +564,7 @@ async function applyOperation(
         rowId: op.rowId,
         opIndex,
         values,
+        present: table.columns.map(() => true),
         stored,
       },
     };
@@ -835,20 +862,41 @@ async function applyOperation(
           nextServerVersion: newVersion,
         },
       ],
-      staged: { table, op: 'upsert', rowId: op.rowId, opIndex, values, stored },
+      staged: {
+        table,
+        op: 'upsert',
+        rowId: op.rowId,
+        opIndex,
+        values,
+        present,
+        stored,
+      },
     };
   }
 
-  // Insert path: no stored row (§5.2).
+  // Insert path: no stored row (§5.2). The authorization row is the payload
+  // plus the primary key (§3.4 step 2); a missing or empty scope column value
+  // ⇒ deny.
   const values: RowValue[] = sparse.map((value) => value ?? null);
+  const extracted = storedScopesForRow(table, values);
+  const insert =
+    'missing' in extracted
+      ? errorRecord(
+          opIndex,
+          'sync.forbidden',
+          'insert missing scope column value (§3.4)',
+        )
+      : authorizeWrite(table, extracted.scopes, resolved)
+        ? extracted
+        : errorRecord(
+            opIndex,
+            'sync.forbidden',
+            'insert denied by scope authorization (§3.4)',
+          );
   if (op.baseVersion !== undefined && op.baseVersion !== 0) {
     // Authorize the payload first so absence is not disclosed to actors
     // without the scope; then §6.2: baseVersion ≠ 0, row absent.
-    const extractedFirst = storedScopesForRow(table, values);
-    if (
-      'missing' in extractedFirst ||
-      !authorizeWrite(table, extractedFirst.scopes, resolved)
-    ) {
+    if ('kind' in insert) {
       return errorRecord(
         opIndex,
         'sync.forbidden',
@@ -862,6 +910,15 @@ async function applyOperation(
     );
   }
   if (op.baseVersion === undefined) {
+    // §6.2: a payload that presents every scope column is authorized before
+    // the tombstone read, so the answer never discloses a deletion to an
+    // actor who could not write the row.
+    if (
+      'kind' in insert &&
+      table.scopePatterns.every((pattern) => present[pattern.columnIndex])
+    ) {
+      return insert;
+    }
     // §5.2: a delete within the retention horizon beats an unversioned
     // upsert; an explicit insert (baseVersion 0) recreates instead.
     const tombstoneSeq = await tx.getTombstoneSeq(op.table, op.rowId);
@@ -881,22 +938,7 @@ async function applyOperation(
       'a partial payload targets an absent row (§6.3)',
     );
   }
-  const extracted = storedScopesForRow(table, values);
-  if ('missing' in extracted) {
-    // §3.4 step 2: a missing or empty scope column value ⇒ deny.
-    return errorRecord(
-      opIndex,
-      'sync.forbidden',
-      `insert missing scope column value for ${JSON.stringify(extracted.missing)} (§3.4)`,
-    );
-  }
-  if (!authorizeWrite(table, extracted.scopes, resolved)) {
-    return errorRecord(
-      opIndex,
-      'sync.forbidden',
-      'insert denied by scope authorization (§3.4)',
-    );
-  }
+  if ('kind' in insert) return insert;
   // §5.10.3: on insert a crdt column merges against the empty document
   // (stored = null) — normalizes the initial state through the merger.
   const insertMerge = await mergeCrdtColumns(
@@ -946,7 +988,7 @@ async function applyOperation(
   const newRow = {
     rowId: op.rowId,
     serverVersion: 1,
-    scopes: extracted.scopes,
+    scopes: insert.scopes,
     payload: insertPayload,
   };
   await tx.upsertRow(op.table, newRow, { opIndex });
@@ -958,7 +1000,7 @@ async function applyOperation(
         rowId: op.rowId,
         op: 'upsert',
         rowVersion: 1,
-        scopes: extracted.scopes,
+        scopes: insert.scopes,
         payload: insertPayload,
       },
     ],
@@ -979,6 +1021,7 @@ async function applyOperation(
       rowId: op.rowId,
       opIndex,
       values,
+      present,
       stored: undefined,
     },
   };
@@ -1009,14 +1052,15 @@ async function checkAndRecordBlobs(
         'row references a blob but the server has no blob store (§5.9.6)',
       );
     }
-    for (const blobId of blobIds) {
-      if (!(await blobCtx.store.has(blobCtx.partition, blobId))) {
-        return errorRecord(
-          opIndex,
-          'blob.not_found',
-          `push references blob ${blobId} which has not been uploaded (§5.9.6)`,
-        );
-      }
+    // Pushed blobIds were answered before the operation loop; a blobId the
+    // row keeps from its stored values is answered here.
+    await resolveBlobPresence(blobCtx, blobIds);
+    if (blobIds.some((blobId) => blobCtx.presence.get(blobId) !== true)) {
+      return errorRecord(
+        opIndex,
+        'blob.not_found',
+        'push references a blob that has not been uploaded (§5.9.6)',
+      );
     }
   }
   // Update the reference index for this row (empty set clears it, §5.9.4).
@@ -1295,16 +1339,29 @@ async function enforceReferences(
   const operations: ValidateCommitOperation[] = [];
   const originByIndex: number[] = [];
 
+  // A reference column counts as present when any staged upsert of the row
+  // presents it; its value is the row's final value (§6.11).
   const finalByRow = new Map<
     string,
-    { readonly first: StagedWrite; readonly last: StagedWrite }
+    {
+      readonly first: StagedWrite;
+      readonly last: StagedWrite;
+      readonly presentReferences: ReadonlySet<number>;
+    }
   >();
   for (const write of staged) {
     const rowKey = `${write.table.name}\u0000${write.rowId}`;
     const existing = finalByRow.get(rowKey);
+    const presentReferences = new Set(existing?.presentReferences);
+    for (const reference of write.table.references) {
+      if (write.present?.[reference.columnIndex] === true) {
+        presentReferences.add(reference.columnIndex);
+      }
+    }
     finalByRow.set(rowKey, {
       first: existing?.first ?? write,
       last: write,
+      presentReferences,
     });
   }
 
@@ -1313,9 +1370,10 @@ async function enforceReferences(
   // combatants, its chronicle) reads that parent once. Postgres binds the
   // ids as one array per table; SQLite and D1 answer with one lookup per id.
   const parentIds = new Map<string, Set<string>>();
-  for (const { last: write } of finalByRow.values()) {
+  for (const { last: write, presentReferences } of finalByRow.values()) {
     if (write.op !== 'upsert' || write.values === undefined) continue;
     for (const reference of write.table.references) {
+      if (!presentReferences.has(reference.columnIndex)) continue;
       const value = write.values[reference.columnIndex];
       if (value === null || value === undefined) continue;
       const parentRowId = renderScopeValue(value);
@@ -1334,14 +1392,23 @@ async function enforceReferences(
     );
   }
 
-  for (const { last: write } of finalByRow.values()) {
+  for (const { last: write, presentReferences } of finalByRow.values()) {
     if (write.op !== 'upsert' || write.values === undefined) continue;
     for (const reference of write.table.references) {
+      if (!presentReferences.has(reference.columnIndex)) continue;
       const value = write.values[reference.columnIndex];
       if (value === null || value === undefined) continue;
       const parentRowId = renderScopeValue(value);
       if (parentRowId === undefined) continue;
-      if (parents.get(reference.parentTable)?.has(parentRowId) === true) {
+      // A parent the actor cannot authorize (§3.4, on its stored scopes) is
+      // an absent parent: the rejection below is identical either way.
+      const parent = parents.get(reference.parentTable)?.get(parentRowId);
+      const parentTable = schema.tables.get(reference.parentTable);
+      if (
+        parent !== undefined &&
+        parentTable !== undefined &&
+        authorizeWrite(parentTable, parent.scopes, resolved)
+      ) {
         continue;
       }
       return {
@@ -1409,22 +1476,16 @@ async function enforceReferences(
           'storage transaction does not support declared-reference enforcement (scanRowsByIndex)',
         );
       }
-      const children: StoredRow[] = [];
-      let afterRowId: string | null = null;
-      for (;;) {
-        const page = await tx.scanRowsByIndex({
+      if (reference.onDelete === 'RESTRICT') {
+        // One remaining child decides RESTRICT.
+        const blocking = await tx.scanRowsByIndex({
           table: reference.table,
           index: reference.index,
           values: [parentKeyValue],
-          afterRowId,
-          limit: 1_000,
+          afterRowId: null,
+          limit: 1,
         });
-        children.push(...page);
-        if (page.length < 1_000) break;
-        afterRowId = page[page.length - 1]?.rowId ?? null;
-      }
-      if (children.length === 0) continue;
-      if (reference.onDelete === 'RESTRICT') {
+        if (blocking.length === 0) continue;
         return {
           kind: 'terminate',
           record: referenceRejection(
@@ -1443,141 +1504,160 @@ async function enforceReferences(
           `unreachable: reference child table ${reference.table} is not compiled`,
         );
       }
-      for (const childRow of children) {
-        if (!authorizeWrite(child, childRow.scopes, resolved)) {
-          return errorRecord(
-            item.originOpIndex,
-            'sync.forbidden',
-            'cascade denied by scope authorization (§3.4)',
-          );
-        }
-        if (reference.onDelete === 'CASCADE') {
-          if (
-            !schedule(
-              child,
-              childRow.rowId,
+      // Each page reads no more than the remaining cascade budget plus one
+      // child, so a cascade past the cap stops after one extra row. A page is
+      // applied before the next is read; keyset pagination by rowId is
+      // unaffected by deleting or nulling rows already read.
+      let afterRowId: string | null = null;
+      for (;;) {
+        const limit = Math.min(1_000, cascadeLimit - originByIndex.length + 1);
+        const page = await tx.scanRowsByIndex({
+          table: reference.table,
+          index: reference.index,
+          values: [parentKeyValue],
+          afterRowId,
+          limit,
+        });
+        for (const childRow of page) {
+          if (!authorizeWrite(child, childRow.scopes, resolved)) {
+            return errorRecord(
               item.originOpIndex,
-              scheduled,
-              queue,
-            )
-          ) {
+              'sync.forbidden',
+              'cascade denied by scope authorization (§3.4)',
+            );
+          }
+          if (reference.onDelete === 'CASCADE') {
+            if (
+              !schedule(
+                child,
+                childRow.rowId,
+                item.originOpIndex,
+                scheduled,
+                queue,
+              )
+            ) {
+              continue;
+            }
+          } else if (scheduled.has(`${child.name}\u0000${childRow.rowId}`)) {
             continue;
           }
-        } else if (scheduled.has(`${child.name}\u0000${childRow.rowId}`)) {
-          continue;
-        }
-        if (originByIndex.length >= cascadeLimit) {
-          return {
-            kind: 'terminate',
-            record: referenceRejection(
+          if (originByIndex.length >= cascadeLimit) {
+            return {
+              kind: 'terminate',
+              record: referenceRejection(
+                item.originOpIndex,
+                'declared-reference cascade exceeded the per-commit operation cap (§6.11)',
+                { reason: 'cascade_limit' },
+              ),
+            };
+          }
+          const syntheticIndex = clientOpCount + originByIndex.length;
+          const storedValues = decodeRow(child.columns, childRow.payload);
+          if (reference.onDelete === 'CASCADE') {
+            const reject = await runValidator(
+              validators,
+              child,
+              'delete',
+              childRow.rowId,
+              undefined,
+              storedValues,
               item.originOpIndex,
-              'declared-reference cascade exceeded the per-commit operation cap (§6.11)',
-              { reason: 'cascade_limit' },
-            ),
-          };
-        }
-        const syntheticIndex = clientOpCount + originByIndex.length;
-        const storedValues = decodeRow(child.columns, childRow.payload);
-        if (reference.onDelete === 'CASCADE') {
-          const reject = await runValidator(
-            validators,
-            child,
-            'delete',
-            childRow.rowId,
-            undefined,
-            storedValues,
-            item.originOpIndex,
-            tx,
-            partition,
-            actorId,
-          );
-          if (reject !== undefined) {
-            return { kind: 'terminate', record: reject.record };
-          }
-          await tx.deleteRow(child.name, childRow.rowId);
-          changes.push({
-            table: child.name,
-            rowId: childRow.rowId,
-            op: 'delete',
-            scopes: childRow.scopes,
-          });
-          operations.push({
-            opIndex: syntheticIndex,
-            op: 'delete',
-            table: child.name,
-            rowId: childRow.rowId,
-            row: undefined,
-            stored: toValidateRow(child.columns, storedValues),
-            storedServerVersion: childRow.serverVersion,
-          });
-        } else {
-          const values = [...storedValues];
-          values[reference.columnIndex] = null;
-          const reject = await runValidator(
-            validators,
-            child,
-            'upsert',
-            childRow.rowId,
-            values,
-            storedValues,
-            item.originOpIndex,
-            tx,
-            partition,
-            actorId,
-          );
-          if (reject !== undefined) {
-            return { kind: 'terminate', record: reject.record };
-          }
-          const nextServerVersion = childRow.serverVersion + 1;
-          // §6.2: the SET NULL upsert writes only the reference column, so
-          // only that column's version moves.
-          const storedVersions = decodeColumnVersions(childRow.columnVersions);
-          const nextVersions = new Map<number, number>();
-          for (let i = 0; i < child.columns.length; i++) {
-            const version =
-              i === reference.columnIndex
-                ? nextServerVersion
-                : (storedVersions.get(i) ??
-                  (childRow.columnVersions === undefined
-                    ? childRow.serverVersion
-                    : 1));
-            if (version > 1) nextVersions.set(i, version);
-          }
-          const payload = encodeRow(child.columns, values);
-          const cascadeVersions = encodeColumnVersions(nextVersions);
-          await tx.upsertRow(
-            child.name,
-            {
+              tx,
+              partition,
+              actorId,
+            );
+            if (reject !== undefined) {
+              return { kind: 'terminate', record: reject.record };
+            }
+            await tx.deleteRow(child.name, childRow.rowId);
+            changes.push({
+              table: child.name,
               rowId: childRow.rowId,
-              serverVersion: nextServerVersion,
+              op: 'delete',
+              scopes: childRow.scopes,
+            });
+            operations.push({
+              opIndex: syntheticIndex,
+              op: 'delete',
+              table: child.name,
+              rowId: childRow.rowId,
+              row: undefined,
+              stored: toValidateRow(child.columns, storedValues),
+              storedServerVersion: childRow.serverVersion,
+            });
+          } else {
+            const values = [...storedValues];
+            values[reference.columnIndex] = null;
+            const reject = await runValidator(
+              validators,
+              child,
+              'upsert',
+              childRow.rowId,
+              values,
+              storedValues,
+              item.originOpIndex,
+              tx,
+              partition,
+              actorId,
+            );
+            if (reject !== undefined) {
+              return { kind: 'terminate', record: reject.record };
+            }
+            const nextServerVersion = childRow.serverVersion + 1;
+            // §6.2: the SET NULL upsert writes only the reference column, so
+            // only that column's version moves.
+            const storedVersions = decodeColumnVersions(
+              childRow.columnVersions,
+            );
+            const nextVersions = new Map<number, number>();
+            for (let i = 0; i < child.columns.length; i++) {
+              const version =
+                i === reference.columnIndex
+                  ? nextServerVersion
+                  : (storedVersions.get(i) ??
+                    (childRow.columnVersions === undefined
+                      ? childRow.serverVersion
+                      : 1));
+              if (version > 1) nextVersions.set(i, version);
+            }
+            const payload = encodeRow(child.columns, values);
+            const cascadeVersions = encodeColumnVersions(nextVersions);
+            await tx.upsertRow(
+              child.name,
+              {
+                rowId: childRow.rowId,
+                serverVersion: nextServerVersion,
+                scopes: childRow.scopes,
+                payload,
+                ...(cascadeVersions !== undefined
+                  ? { columnVersions: cascadeVersions }
+                  : {}),
+              },
+              { opIndex: syntheticIndex },
+            );
+            changes.push({
+              table: child.name,
+              rowId: childRow.rowId,
+              op: 'upsert',
+              rowVersion: nextServerVersion,
               scopes: childRow.scopes,
               payload,
-              ...(cascadeVersions !== undefined
-                ? { columnVersions: cascadeVersions }
-                : {}),
-            },
-            { opIndex: syntheticIndex },
-          );
-          changes.push({
-            table: child.name,
-            rowId: childRow.rowId,
-            op: 'upsert',
-            rowVersion: nextServerVersion,
-            scopes: childRow.scopes,
-            payload,
-          });
-          operations.push({
-            opIndex: syntheticIndex,
-            op: 'upsert',
-            table: child.name,
-            rowId: childRow.rowId,
-            row: toValidateRow(child.columns, values),
-            stored: toValidateRow(child.columns, storedValues),
-            storedServerVersion: childRow.serverVersion,
-            nextServerVersion,
-          });
+            });
+            operations.push({
+              opIndex: syntheticIndex,
+              op: 'upsert',
+              table: child.name,
+              rowId: childRow.rowId,
+              row: toValidateRow(child.columns, values),
+              stored: toValidateRow(child.columns, storedValues),
+              storedServerVersion: childRow.serverVersion,
+              nextServerVersion,
+            });
+          }
+          originByIndex.push(item.originOpIndex);
         }
-        originByIndex.push(item.originOpIndex);
+        if (page.length < limit) break;
+        afterRowId = page[page.length - 1]?.rowId ?? null;
       }
     }
   }
@@ -1696,7 +1776,9 @@ export async function processPushCommitWithTrace(
   // prefetch statement.
   const targets = new Map<string, string[]>();
   for (const op of frame.operations) {
-    if (!schema.tables.has(op.table)) continue;
+    // A rowId holding U+0000 is rejected per operation (§6.1) before any
+    // store reads it.
+    if (!schema.tables.has(op.table) || op.rowId.includes('\u0000')) continue;
     const ids = targets.get(op.table) ?? [];
     ids.push(op.rowId);
     targets.set(op.table, ids);
@@ -1737,7 +1819,11 @@ export async function processPushOperationsWithTrace(
 ): Promise<ProcessedPushCommit> {
   const { partition } = ctx;
   const createdAtMs = clockOf(ctx)();
-  const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
+  const blobCtx: BlobApplyContext = {
+    store: ctx.blobs,
+    partition,
+    presence: new Map(),
+  };
   const crdtMergers = ctx.crdtMergers;
   const validators = ctx.validators;
   const commitValidator = ctx.commitValidator;
@@ -1833,7 +1919,8 @@ export async function processPushOperationsWithTrace(
     if (tx.prefetchRows !== undefined) {
       const targets = new Map<string, string[]>();
       for (const op of operations) {
-        if (!schema.tables.has(op.table)) continue;
+        if (!schema.tables.has(op.table) || op.rowId.includes('\u0000'))
+          continue;
         const ids = targets.get(op.table) ?? [];
         ids.push(op.rowId);
         targets.set(op.table, ids);
@@ -1844,6 +1931,42 @@ export async function processPushOperationsWithTrace(
         );
       }
     }
+    // §6.6: the blobIds the commit pushes are checked once, concurrently,
+    // before the operation loop. A payload that fails decode is skipped here
+    // and rejected by its operation.
+    const pushedBlobIds: string[] = [];
+    for (const op of operations) {
+      const table = schema.tables.get(op.table);
+      const wireTable = wireSchema.tables.get(op.table);
+      if (
+        op.payload === undefined ||
+        table === undefined ||
+        wireTable === undefined ||
+        table.blobRefColumnIndices.length === 0
+      ) {
+        continue;
+      }
+      let sparse: SparseRowValue[];
+      try {
+        sparse = decodeSparseRow(
+          wireTable.columns,
+          wireTable.primaryKeyIndex,
+          op.payload,
+        );
+      } catch {
+        continue;
+      }
+      for (const index of table.blobRefColumnIndices) {
+        const value = sparse[index];
+        if (typeof value === 'string') {
+          pushedBlobIds.push(parseBlobRef(value).blobId);
+        }
+      }
+    }
+    await resolveBlobPresence(blobCtx, pushedBlobIds);
+    // §6.4: the row each touched (table, rowId) held before this commit, so a
+    // conflict reports the row as stored once the commit rolls back.
+    const storedBeforeCommit = new Map<string, StoredRow | undefined>();
     for (let opIndex = 0; opIndex < operations.length; opIndex++) {
       const op = operations[opIndex];
       if (op === undefined) continue;
@@ -1863,6 +1986,10 @@ export async function processPushOperationsWithTrace(
       if (outcome.kind === 'terminate') {
         terminated = outcome.record;
         break;
+      }
+      const rowKey = `${op.table}\u0000${op.rowId}`;
+      if (!storedBeforeCommit.has(rowKey)) {
+        storedBeforeCommit.set(rowKey, outcome.staged.stored);
       }
       results.push({ opIndex, status: 'applied' });
       validatedOperations.push(...outcome.operations);
@@ -1941,19 +2068,37 @@ export async function processPushOperationsWithTrace(
         terminated.status === 'conflict'
           ? operations[terminated.opIndex]
           : undefined;
-      const conflictRow =
+      // §6.4: a conflict only arises in the operation loop, so a row no
+      // earlier operation touched still reads as stored before the commit.
+      const conflictKey =
         conflictOperation === undefined
           ? undefined
-          : await tx.getRow(conflictOperation.table, conflictOperation.rowId);
-      if (
-        terminated.status === 'conflict' &&
-        (conflictOperation === undefined || conflictRow === undefined)
-      ) {
-        throw new Error('conflict snapshot has no authorization row');
+          : `${conflictOperation.table}\u0000${conflictOperation.rowId}`;
+      const conflictRow =
+        conflictOperation === undefined || conflictKey === undefined
+          ? undefined
+          : storedBeforeCommit.has(conflictKey)
+            ? storedBeforeCommit.get(conflictKey)
+            : await tx.getRow(conflictOperation.table, conflictOperation.rowId);
+      if (terminated.status === 'conflict') {
+        terminated =
+          conflictRow === undefined
+            ? errorRecord(
+                terminated.opIndex,
+                'sync.row_missing',
+                'the conflicting row exists only through an earlier operation of the same commit (§6.4)',
+              ).record
+            : {
+                ...terminated,
+                serverVersion: conflictRow.serverVersion,
+                serverRow: conflictRow.payload,
+              };
       }
       const stored = newStoredPushResult(createdAtMs, {
         status: 'rejected',
-        ...(conflictOperation !== undefined && conflictRow !== undefined
+        ...(terminated.status === 'conflict' &&
+        conflictOperation !== undefined &&
+        conflictRow !== undefined
           ? {
               conflictAuthorization: {
                 table: conflictOperation.table,

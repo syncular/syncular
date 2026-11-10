@@ -259,6 +259,8 @@ struct Staged {
     op_index: i32,
     /// Final values of an upsert; `None` for a delete.
     values: Option<Row>,
+    /// The columns an upsert presents; empty for a delete.
+    present: Vec<bool>,
     /// A stored row existed immediately before the write.
     existed: bool,
 }
@@ -276,18 +278,27 @@ fn apply_operation(
             "the table is not handled by this server",
         ));
     };
+    if op.row_id.contains('\0') {
+        // §6.1: no store sees a rowId holding U+0000.
+        return Err(error(
+            op_index,
+            "sync.invalid_request",
+            "rowId holds U+0000",
+        ));
+    }
     let stored = store::get_row(conn, &table.name, &op.row_id)?;
-    let staged = |values: Option<Row>, existed: bool| Staged {
+    let staged = |values: Option<Row>, present: Vec<bool>, existed: bool| Staged {
         table: table.name.clone(),
         row_id: op.row_id.clone(),
         op_index,
         values,
+        present,
         existed,
     };
     if op.op == Op::Delete {
         // Deleting an absent row is applied with no change (§6.2).
         let Some(stored) = stored else {
-            return Ok((Vec::new(), staged(None, false)));
+            return Ok((Vec::new(), staged(None, Vec::new(), false)));
         };
         if !authorized(table, &stored.scopes) {
             return Err(error(
@@ -305,7 +316,7 @@ fn apply_operation(
             scopes: stored.scopes,
             payload: None,
         };
-        return Ok((vec![change], staged(None, true)));
+        return Ok((vec![change], staged(None, Vec::new(), true)));
     }
     let Some(payload) = &op.payload else {
         return Err(error(
@@ -439,12 +450,14 @@ fn apply_operation(
             scopes: stored.scopes,
             payload: Some(payload),
         };
-        return Ok((vec![change], staged(Some(next), true)));
+        return Ok((vec![change], staged(Some(next), present, true)));
     }
 
-    // Insert path: no stored row (§6.2 tombstone table).
+    // Insert path: no stored row (§6.2 tombstone table). The authorization
+    // row is the payload plus the primary key (§3.4 step 2).
+    let scopes = scopes_of(table, &values);
     if op.base_version.is_some_and(|base| base != 0) {
-        if scopes_of(table, &values).is_none() {
+        if scopes.is_none() {
             return Err(error(
                 op_index,
                 "sync.forbidden",
@@ -457,12 +470,26 @@ fn apply_operation(
             "upsert with baseVersion targets an absent row (§6.2)",
         ));
     }
-    if op.base_version.is_none() && store::has_tombstone(conn, &table.name, &op.row_id)? {
-        return Err(error(
+    let insert_denied = || {
+        error(
             op_index,
-            "sync.row_deleted",
-            "a deleted row rejects an unversioned upsert within the retention horizon (§5.2)",
-        ));
+            "sync.forbidden",
+            "insert missing scope column value (§3.4)",
+        )
+    };
+    if op.base_version.is_none() {
+        // §6.2: a payload that presents every scope column is authorized
+        // before the tombstone read, so the answer never discloses a deletion.
+        if scopes.is_none() && table.scopes.iter().all(|scope| present[scope.column]) {
+            return Err(insert_denied());
+        }
+        if store::has_tombstone(conn, &table.name, &op.row_id)? {
+            return Err(error(
+                op_index,
+                "sync.row_deleted",
+                "a deleted row rejects an unversioned upsert within the retention horizon (§5.2)",
+            ));
+        }
     }
     if present.iter().any(|p| !p) {
         return Err(error(
@@ -471,12 +498,8 @@ fn apply_operation(
             "a partial payload targets an absent row (§6.3)",
         ));
     }
-    let Some(scopes) = scopes_of(table, &values) else {
-        return Err(error(
-            op_index,
-            "sync.forbidden",
-            "insert missing scope column value (§3.4)",
-        ));
+    let Some(scopes) = scopes else {
+        return Err(insert_denied());
     };
     merge_crdt(table, &mut values, None, &present, op_index)?;
     let payload = store::encode_payload(&table.columns, &values);
@@ -500,7 +523,7 @@ fn apply_operation(
         scopes,
         payload: Some(payload),
     };
-    Ok((vec![change], staged(Some(values), false)))
+    Ok((vec![change], staged(Some(values), present, false)))
 }
 
 /// §6.11 once per commit after every client operation is staged: a non-null
@@ -514,28 +537,49 @@ fn enforce_references(
     staged: &[Staged],
     client_ops: usize,
 ) -> Result<Vec<NewChange>, Fail> {
-    let mut order: Vec<(usize, usize)> = Vec::new();
+    const CASCADE_CAP: usize = 1000;
+    // Per row: the first and last staged write, and the columns any staged
+    // upsert of the row presents (§6.11 present reference column).
+    let mut order: Vec<(usize, usize, Vec<bool>)> = Vec::new();
     let mut by_row: HashMap<(&str, &str), usize> = HashMap::new();
     for (index, write) in staged.iter().enumerate() {
-        match by_row.get(&(write.table.as_str(), write.row_id.as_str())) {
-            Some(slot) => order[*slot].1 = index,
+        let slot = match by_row.get(&(write.table.as_str(), write.row_id.as_str())) {
+            Some(slot) => {
+                order[*slot].1 = index;
+                *slot
+            }
             None => {
                 by_row.insert((&write.table, &write.row_id), order.len());
-                order.push((index, index));
+                order.push((index, index, Vec::new()));
+                order.len() - 1
             }
+        };
+        let present = &mut order[slot].2;
+        present.resize(present.len().max(write.present.len()), false);
+        for (column, presented) in write.present.iter().enumerate() {
+            present[column] |= presented;
         }
     }
-    for (_, last) in &order {
+    for (_, last, present) in &order {
         let write = &staged[*last];
         let Some(values) = &write.values else {
             continue;
         };
         let table = schema.table(&write.table).expect("staged tables exist");
         for reference in &table.references {
+            if !present.get(reference.column).copied().unwrap_or(false) {
+                continue;
+            }
             let Some(parent_id) = store::render(&values[reference.column]) else {
                 continue;
             };
-            if store::get_row(conn, &reference.parent, &parent_id)?.is_some() {
+            // A parent the actor cannot authorize (§3.4) is an absent parent.
+            let parent_table = schema
+                .table(&reference.parent)
+                .expect("compiled reference parent");
+            if store::get_row(conn, &reference.parent, &parent_id)?
+                .is_some_and(|parent| authorized(parent_table, &parent.scopes))
+            {
                 continue;
             }
             let column = &table.columns[reference.column].name;
@@ -556,7 +600,7 @@ fn enforce_references(
     let mut appended = 0usize;
     let mut scheduled: HashSet<(String, String)> = HashSet::new();
     let mut queue: Vec<(String, String, i32)> = Vec::new();
-    for (first, last) in &order {
+    for (first, last, _) in &order {
         let write = &staged[*last];
         if write.values.is_none() && staged[*first].existed {
             scheduled.insert((write.table.clone(), write.row_id.clone()));
@@ -576,98 +620,118 @@ fn enforce_references(
             let child = schema
                 .table(&incoming.child)
                 .expect("compiled reference child");
-            let rows = store::children(conn, child, incoming.column, &parent_id)?;
-            if rows.is_empty() {
-                continue;
-            }
             if incoming.on_delete == OnDelete::Restrict {
+                // One remaining child decides RESTRICT.
+                if store::children(conn, child, incoming.column, &parent_id, None, 1)?.is_empty() {
+                    continue;
+                }
                 return Err(reference_error(
                     origin,
                     "delete is blocked by a declared reference with ON DELETE RESTRICT (§6.11)",
                     json!({ "reason": "restricted_delete", "references": { "child": child.name } }),
                 ));
             }
-            for row in rows {
-                if !authorized(child, &row.scopes) {
-                    return Err(error(
-                        origin,
-                        "sync.forbidden",
-                        "cascade denied by scope authorization (§3.4)",
-                    ));
-                }
-                let key = (child.name.clone(), row.row_id.clone());
-                if incoming.on_delete == OnDelete::Cascade {
-                    if !scheduled.insert(key.clone()) {
+            // Each page reads no more than the remaining cascade budget plus
+            // one child and is applied before the next is read; keyset
+            // pagination by row id is unaffected by the rows already applied.
+            let mut after: Option<String> = None;
+            loop {
+                let limit = (CASCADE_CAP - appended + 1).min(1000);
+                let rows = store::children(
+                    conn,
+                    child,
+                    incoming.column,
+                    &parent_id,
+                    after.as_deref(),
+                    limit,
+                )?;
+                let exhausted = rows.len() < limit;
+                after = rows.last().map(|row| row.row_id.clone());
+                for row in rows {
+                    if !authorized(child, &row.scopes) {
+                        return Err(error(
+                            origin,
+                            "sync.forbidden",
+                            "cascade denied by scope authorization (§3.4)",
+                        ));
+                    }
+                    let key = (child.name.clone(), row.row_id.clone());
+                    if incoming.on_delete == OnDelete::Cascade {
+                        if !scheduled.insert(key.clone()) {
+                            continue;
+                        }
+                        queue.push((key.0, key.1, origin));
+                    } else if scheduled.contains(&key) {
                         continue;
                     }
-                    queue.push((key.0, key.1, origin));
-                } else if scheduled.contains(&key) {
-                    continue;
-                }
-                // §6.11 cascade cap per commit (the reference default).
-                if appended >= 1000 {
-                    return Err(reference_error(
+                    // §6.11 cascade cap per commit (the reference default).
+                    if appended >= CASCADE_CAP {
+                        return Err(reference_error(
                         origin,
                         "declared-reference cascade exceeded the per-commit operation cap (§6.11)",
                         json!({ "reason": "cascade_limit" }),
                     ));
+                    }
+                    let synthetic = (client_ops + appended) as i32;
+                    if incoming.on_delete == OnDelete::Cascade {
+                        store::delete_row(conn, &child.name, &row.row_id)?;
+                        changes.push(NewChange {
+                            table: child.name.clone(),
+                            row_id: row.row_id.clone(),
+                            upsert: false,
+                            row_version: None,
+                            scopes: row.scopes,
+                            payload: None,
+                        });
+                    } else {
+                        let mut values = store::decode_payload(&child.columns, &row.payload)?;
+                        values[incoming.column] = None;
+                        // §6.2: the SET NULL upsert writes only the reference column.
+                        let version = row.version + 1;
+                        let stored_versions =
+                            store::decode_column_versions(row.column_versions.as_deref())?;
+                        let next_versions: BTreeMap<usize, i64> = (0..child.columns.len())
+                            .map(|index| {
+                                let previous = stored_versions.get(&index).copied().unwrap_or(
+                                    if row.column_versions.is_none() {
+                                        row.version
+                                    } else {
+                                        1
+                                    },
+                                );
+                                (
+                                    index,
+                                    if index == incoming.column {
+                                        version
+                                    } else {
+                                        previous
+                                    },
+                                )
+                            })
+                            .collect();
+                        let payload = store::encode_payload(&child.columns, &values);
+                        let next = StoredRow {
+                            row_id: row.row_id.clone(),
+                            version,
+                            scopes: row.scopes.clone(),
+                            payload: payload.clone(),
+                            column_versions: store::encode_column_versions(&next_versions),
+                        };
+                        write(conn, child, &next, &values, synthetic)?;
+                        changes.push(NewChange {
+                            table: child.name.clone(),
+                            row_id: row.row_id,
+                            upsert: true,
+                            row_version: Some(version),
+                            scopes: row.scopes,
+                            payload: Some(payload),
+                        });
+                    }
+                    appended += 1;
                 }
-                let synthetic = (client_ops + appended) as i32;
-                if incoming.on_delete == OnDelete::Cascade {
-                    store::delete_row(conn, &child.name, &row.row_id)?;
-                    changes.push(NewChange {
-                        table: child.name.clone(),
-                        row_id: row.row_id.clone(),
-                        upsert: false,
-                        row_version: None,
-                        scopes: row.scopes,
-                        payload: None,
-                    });
-                } else {
-                    let mut values = store::decode_payload(&child.columns, &row.payload)?;
-                    values[incoming.column] = None;
-                    // §6.2: the SET NULL upsert writes only the reference column.
-                    let version = row.version + 1;
-                    let stored_versions =
-                        store::decode_column_versions(row.column_versions.as_deref())?;
-                    let next_versions: BTreeMap<usize, i64> = (0..child.columns.len())
-                        .map(|index| {
-                            let previous = stored_versions.get(&index).copied().unwrap_or(
-                                if row.column_versions.is_none() {
-                                    row.version
-                                } else {
-                                    1
-                                },
-                            );
-                            (
-                                index,
-                                if index == incoming.column {
-                                    version
-                                } else {
-                                    previous
-                                },
-                            )
-                        })
-                        .collect();
-                    let payload = store::encode_payload(&child.columns, &values);
-                    let next = StoredRow {
-                        row_id: row.row_id.clone(),
-                        version,
-                        scopes: row.scopes.clone(),
-                        payload: payload.clone(),
-                        column_versions: store::encode_column_versions(&next_versions),
-                    };
-                    write(conn, child, &next, &values, synthetic)?;
-                    changes.push(NewChange {
-                        table: child.name.clone(),
-                        row_id: row.row_id,
-                        upsert: true,
-                        row_version: Some(version),
-                        scopes: row.scopes,
-                        payload: Some(payload),
-                    });
+                if exhausted {
+                    break;
                 }
-                appended += 1;
             }
         }
     }
@@ -757,24 +821,53 @@ pub(crate) fn process_commit(
                 }
             }
             Err(Fail::Terminate(record)) => {
-                let conflict_authorization = if let StoredOp::Conflict { op_index, .. } = &record {
-                    let operation = operations
-                        .get(*op_index as usize)
-                        .ok_or_else(|| store::corrupt("conflict operation"))?;
-                    let row = store::get_row(conn, &operation.table, &operation.row_id)?
-                        .ok_or_else(|| store::corrupt("conflict authorization row"))?;
-                    Some(ConflictAuthorization {
-                        table: operation.table.clone(),
-                        schema_version: Some(schema.version),
-                        scopes: row.scopes,
-                    })
-                } else {
-                    None
-                };
                 conn.execute_batch(
                     "ROLLBACK TO syncular_push_candidate; RELEASE syncular_push_candidate",
                 )
                 .db()?;
+                // §6.4: a conflict reports the row as stored once the commit
+                // rolls back, never candidate state of an earlier operation.
+                let (record, conflict_authorization) = match record {
+                    StoredOp::Conflict {
+                        op_index,
+                        code,
+                        message,
+                        conflict_columns,
+                        ..
+                    } => {
+                        let operation = operations
+                            .get(op_index as usize)
+                            .ok_or_else(|| store::corrupt("conflict operation"))?;
+                        match store::get_row(conn, &operation.table, &operation.row_id)? {
+                            Some(row) => (
+                                StoredOp::Conflict {
+                                    op_index,
+                                    code,
+                                    message,
+                                    server_version: row.version,
+                                    server_row: row.payload,
+                                    conflict_columns,
+                                },
+                                Some(ConflictAuthorization {
+                                    table: operation.table.clone(),
+                                    schema_version: Some(schema.version),
+                                    scopes: row.scopes,
+                                }),
+                            ),
+                            None => (
+                                StoredOp::Error {
+                                    op_index,
+                                    code: "sync.row_missing".to_owned(),
+                                    message: "the conflicting row exists only through an earlier operation of the same commit (§6.4)".to_owned(),
+                                    retryable: false,
+                                    details: None,
+                                },
+                                None,
+                            ),
+                        }
+                    }
+                    other => (other, None),
+                };
                 StoredResult {
                     applied: false,
                     commit_seq: None,

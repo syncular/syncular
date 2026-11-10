@@ -360,13 +360,16 @@ pub(crate) fn scan_rows(
     Ok(rows)
 }
 
-/// Rows of `child` whose reference `column` names `parent_row_id`, in
-/// `_sync_row_id` order: the §6.11 child probe over the declared index.
+/// Up to `limit` rows of `child` after `after` whose reference `column`
+/// names `parent_row_id`, in `_sync_row_id` order: one page of the §6.11
+/// child probe over the declared index.
 pub(crate) fn children(
     conn: &Connection,
     child: &Table,
     column: usize,
     parent_row_id: &str,
+    after: Option<&str>,
+    limit: usize,
 ) -> Result<Vec<StoredRow>, AuthorityError> {
     let key = match child.columns[column].ty {
         ColumnType::Integer => SqlValue::Integer(
@@ -378,14 +381,14 @@ pub(crate) fn children(
         _ => SqlValue::Text(parent_row_id.to_owned()),
     };
     let sql = format!(
-        "SELECT {ROW_COLUMNS} FROM {} WHERE _sync_partition=?1 AND {}=?2 ORDER BY _sync_row_id",
+        "SELECT {ROW_COLUMNS} FROM {} WHERE _sync_partition=?1 AND {}=?2 AND (?3 IS NULL OR _sync_row_id>?3) ORDER BY _sync_row_id LIMIT ?4",
         quote(&child.name),
         quote(&child.columns[column].name)
     );
     conn.prepare_cached(&sql)
         .and_then(|mut statement| {
             statement
-                .query_map(params![PARTITION, key], read_row)?
+                .query_map(params![PARTITION, key, after, limit as i64], read_row)?
                 .collect()
         })
         .db()

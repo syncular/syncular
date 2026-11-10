@@ -676,6 +676,153 @@ fn the_cascade_cap_rejects_the_originating_delete() {
 }
 
 #[test]
+fn a_conflict_reports_the_row_as_stored_once_the_commit_rolls_back() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    let titled = |title: &str, base| {
+        upsert(
+            &s,
+            "tasks",
+            &[Some("t1"), Some("o1"), None, Some(title), None],
+            base,
+        )
+    };
+    let (status, results, _) = client.push(
+        &mut authority,
+        "b",
+        vec![titled("candidate", None), titled("mine", Some(1))],
+    );
+    assert_eq!(status, PushStatus::Rejected);
+    let OpResult::Conflict {
+        op_index,
+        server_version,
+        server_row,
+        ..
+    } = &results[0]
+    else {
+        panic!("a conflict record: {results:?}");
+    };
+    let row = store::decode_payload(&s.table("tasks").unwrap().columns, server_row).unwrap();
+    assert_eq!(
+        (*op_index, *server_version, row[3].clone()),
+        (1, 1, text("title"))
+    );
+    // A row only an earlier operation of the commit inserted is gone once the
+    // commit rolls back: there is no row to report.
+    let insert = || {
+        upsert(
+            &s,
+            "tasks",
+            &[Some("t9"), Some("o1"), None, Some("x"), None],
+            Some(0),
+        )
+    };
+    let (_, results, _) = client.push(&mut authority, "c", vec![insert(), insert()]);
+    assert_eq!(error_code(&results), (1, "sync.row_missing".to_owned()));
+    assert!(stored(&authority, "tasks", "t9").is_none());
+}
+
+#[test]
+fn a_patch_that_leaves_the_reference_absent_is_not_checked_for_its_parent() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(
+        &mut authority,
+        "a",
+        vec![
+            task(&s, "t1", None, None),
+            upsert(&s, "notes", &[Some("n1"), Some("o1"), Some("t1")], None),
+        ],
+    );
+    let notes = s.table("notes").unwrap();
+    let patch = Operation {
+        table: "notes".to_owned(),
+        row_id: "n1".to_owned(),
+        op: Op::Upsert,
+        base_version: None,
+        payload: Some(encode_sparse_row(
+            &notes.columns,
+            notes.pk,
+            &vec![
+                SparseSlot::Value(ColumnValue::String("n1".to_owned())),
+                SparseSlot::Value(ColumnValue::String("o1".to_owned())),
+                SparseSlot::Absent,
+            ],
+        )),
+    };
+    // The merged row names the parent the same commit deletes until SET NULL
+    // clears the column.
+    let (status, results, _) = client.push(&mut authority, "b", vec![patch, delete("tasks", "t1")]);
+    assert_eq!(status, PushStatus::Applied, "{results:?}");
+    let (version, values) = stored(&authority, "notes", "n1").expect("the child stays");
+    assert_eq!((version, values[2].clone()), (3, None));
+}
+
+#[test]
+fn an_unauthorized_payload_is_denied_before_the_tombstone_read() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    client.push(&mut authority, "b", vec![delete("tasks", "t1")]);
+    // An empty scope value is a missing one (§3.4 step 2).
+    let unscoped = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some(""), None, Some("x"), None],
+        None,
+    );
+    let (_, results, _) = client.push(&mut authority, "c", vec![unscoped]);
+    assert!(
+        matches!(&results[0], OpResult::Error { code, message, .. }
+            if code == "sync.forbidden" && message == "insert missing scope column value (§3.4)"),
+        "{results:?}"
+    );
+}
+
+#[test]
+fn a_row_id_holding_nul_is_an_invalid_request() {
+    let mut authority = memory();
+    let client = Session::new(&mut authority, "c1");
+    let (status, results, _) = client.push(&mut authority, "a", vec![delete("tasks", "a\0b")]);
+    assert_eq!(status, PushStatus::Rejected);
+    assert_eq!(error_code(&results), (0, "sync.invalid_request".to_owned()));
+}
+
+#[test]
+fn the_child_probe_reads_one_page_at_a_time() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let mut operations = vec![task(&s, "t1", None, None)];
+    operations.extend((1..=3).map(|i| {
+        upsert(
+            &s,
+            "pins",
+            &[Some(&format!("x{i}")), Some("o1"), Some("t1")],
+            None,
+        )
+    }));
+    assert_eq!(
+        client.push(&mut authority, "a", operations).0,
+        PushStatus::Applied
+    );
+    let pins = s.table("pins").unwrap();
+    let page = |after: Option<&str>, limit| {
+        store::children(&authority.conn, pins, 2, "t1", after, limit)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.row_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(page(None, 1), ["x1"]);
+    assert_eq!(page(Some("x1"), 5), ["x2", "x3"]);
+}
+
+#[test]
 fn a_unique_index_rejects_the_commit() {
     let mut authority = memory();
     let s = authority.schema.clone();
