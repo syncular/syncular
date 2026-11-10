@@ -27,6 +27,8 @@ test('reads run; writes, PRAGMA and multi-statements are refused before they cha
 
     for (const sql of [
       "UPDATE tasks SET title = 'bypass'",
+      "UPDATE tasks SET title = 'bypass' RETURNING id",
+      'DELETE FROM tasks RETURNING id',
       'WITH x$select AS (SELECT 1) DELETE FROM tasks',
       'PRAGMA query_only = ON',
       'EXPLAIN PRAGMA query_only = ON',

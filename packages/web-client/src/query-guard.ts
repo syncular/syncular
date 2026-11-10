@@ -29,6 +29,13 @@ export class RawSqlError extends Error {
 export const SQL_BLANK =
   /^(?:[\s;]|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$))*/;
 
+/** Refuse a statement the raw-SQL tier does not run. */
+export function refuseRawSql(): never {
+  throw new RawSqlError(
+    'client.query() runs read-only statements and no PRAGMA; write through client.mutate() so the outbox records it (SPEC §7.1).',
+  );
+}
+
 /**
  * Prepare `sql` for the raw-SQL tier or throw `RawSqlError`. `prepare`
  * compiles the first statement only and returns it, the text SQLite compiled
@@ -38,22 +45,17 @@ export function prepareReadOnly<S>(
   sql: string,
   prepare: () => readonly [statement: S, first: string, reads: boolean],
 ): S {
-  const refuse = (): never => {
-    throw new RawSqlError(
-      'client.query() runs read-only statements and no PRAGMA; write through client.mutate() so the outbox records it (SPEC §7.1).',
-    );
-  };
   if (
     /^(?:[\s;]|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$)|explain\b|query\b|plan\b)*pragma\b/i.test(
       sql,
     )
   ) {
-    refuse();
+    refuseRawSql();
   }
   const [statement, first, reads] = prepare();
   if (sql.slice(first.length).replace(SQL_BLANK, '') !== '') {
     throw new RawSqlError('client.query() runs one statement per call.');
   }
-  if (!reads) refuse();
+  if (!reads) refuseRawSql();
   return statement;
 }
