@@ -17,6 +17,108 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title:
+      'Rust and TypeScript clients: refused blob uploads, authoring refusals, revocation drops',
+    body: "The Rust client settles a staged blob the server refuses with a non-retryable code, such as `blob.too_large`, as the TypeScript client does: it deletes the upload, rejects every pending commit that references the blob with the server's code, and continues the round, so unrelated commits push and the pull runs. Both clients refuse at `mutate` and `patch`, with `sync.invalid_request`, the values the server rejects at push admission: a string or delete `rowId` containing U+0000, a `json` value outside the JSON validity rule, and a non-canonical `blob_ref`. A revoked subscription no longer drops a pending commit whose row another active subscription still covers. The Rust client raises sync-needed after a round that failed as unreachable and while a subscription holds a bootstrap resume token.",
+    links: [
+      {
+        href: '/concepts-blobs/',
+        label: 'Blobs',
+      },
+      {
+        href: '/platform-web-reads-writes/#authoring-value-validation',
+        label: 'Authoring value validation',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Blobs and segments: bound presigned uploads, a sweep that re-checks references, streamed blob downloads',
+    body: "A presigned blob upload grant from `s3PresignedBlobUploads` signs `content-length` and `x-amz-checksum-sha256`, and the TypeScript and Rust clients send the checksum header, so S3, R2 and MinIO refuse a PUT of another size or other bytes; before, anyone holding a grant could store other bytes under a file's `blobId`. `presignBlobPut` takes the byte length as its third argument. `sweepOrphanBlobs` reads the reference index again before each delete, ages an object a presigned PUT wrote by its last-modified time instead of deleting it on the first pass, and skips an object with neither metadata nor last-modified time. An idempotent re-upload restarts the grace period. `BlobStore.sweepOrphans` takes an `isReferenced(blobId)` callback in place of a keep-set. The blob download route checks existence and authorization before it reads any byte and streams the body through the new optional `BlobStore.open`; `handleBlobDownload` returns `{ body, byteLength }` or `{ url, urlExpiresAtMs }`. `handleBlobUpload(ctx, blobId, request)` takes the `Request` and answers 413 `blob.too_large` from `Content-Length` before it reads the body and from the counted bytes while it reads. Blob downloads are streamed as stored with identity encoding. A segment republish sends a HEAD instead of uploading and downloading the stored bytes. S3 object keys percent-encode each segment, so a partition id holding `#`, `?` or `:` keeps its own key, and a key with a `.` or `..` segment is refused. A malformed native segment token answers `sync.forbidden`. The presigned blob download answer keeps `Cache-Control: private` and `Vary`. A segment body longer than the descriptor's `byteLength` fails the round with `sync.invalid_request` before the content-address check; the TypeScript client stops reading at that cap, and applies the same cap to a blob fetched by its `blob_ref`.",
+    links: [
+      {
+        href: '/concepts-blobs/',
+        label: 'Blobs',
+      },
+      {
+        href: '/server-operations/#blob-gc',
+        label: 'Operations: blob GC',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Swift, Kotlin, Flutter, and React Native apps apply realtime traffic while idle',
+    body: "Each wrapper now answers the core's `realtime-wake` event with the `drainRealtime` command through its own command path, so an idle app applies realtime deltas, presence fanouts, and a lost socket without waiting for the next command. The wake event is not delivered to `onEvent`, `listener`, `events`, or the React Native bridge. `SyncularConfig` (and `createNativeSyncClient`) takes `realtimeHeartbeatMs`, the heartbeat interval of the realtime server in milliseconds (default 30 000); the native transport treats twice that interval of silence as a lost socket.",
+    links: [
+      {
+        href: '/native-client-api/#events',
+        label: 'Native client API: events',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Realtime: heartbeats, delta flow control, presence identity',
+    body: "`RealtimeHub.heartbeat()` sends the §8.5 `heartbeat` to every socket; call it on your interval, for example `setInterval(() => hub.heartbeat(), 30_000)`. The Workers Durable Object sends it from its alarm while sockets are connected (`heartbeatIntervalMs`, default 30 000); forward `alarm()` from your Durable Object class. The native Rust transport treats a connected socket that delivers no frame for twice `realtimeHeartbeatMs` (default 30 000) as lost, with `transport.timeout` and `causeKind` `heartbeat`, so a host that sends no heartbeats sees idle native sockets reconnect every minute. The hub stops sending deltas to a socket that leaves more than `maxUnackedDeltas` (default 256) or `maxUnackedDeltaBytes` (default 4 MiB) unacknowledged and sends `catchup-required`; the ack after its catch-up round resumes delivery. A presence publish replaces the document another socket of the same `(actorId, clientId)` held, so a reconnected client's stale socket sends no `leave` when it closes. The Durable Object rebuilds hibernated sessions once, and every event, pull-only rounds, upgrades and closes included, waits for that rebuild; it reads the partition once and each client record once. Admin action routes refuse cross-site requests (`Sec-Fetch-Site`, `Origin`) with `sync.forbidden`, and the Workers `realtime` option takes `allowedOrigins` for browser upgrades. A cookie session needs `SameSite=Lax` and an origin check on the upgrade.",
+    links: [
+      {
+        href: '/guide-server/#advanced-wire-the-realtime-hub',
+        label: 'Server setup: wire the realtime hub',
+      },
+      {
+        href: '/server-workers/',
+        label: 'Cloudflare Workers',
+      },
+      {
+        href: '/guide-auth/#cookie-sessions',
+        label: 'Authentication: cookie sessions',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'SQLite and D1 storage: scope scans seek the index, D1 pushes batch their reads',
+    body: "A SQLite or D1 scope scan with two or more values now seeks the `sync_row_scopes` primary key once per value; with `sync_row_scopes_by_row` present the planner walked that index in row order and filtered. The storage drops `sync_row_scopes_by_row` when its DDL runs: on every `SqliteServerStorage` construction, and on D1 in `migrate()` and the core phase of a schema migration. `scanRows` and `readCommitWindow` bind the scope values as one JSON array, so a subscription with 150 values no longer exceeds D1's 100-parameter cap. A D1 push reads the rows and tombstones of all its operations in one `db.batch`: 8 operations issue 6 `db.batch` calls, where they issued 21. Pruning deletes `sync_change_scopes` entries by the keys of the changes it removes, on SQLite, D1 and Postgres, instead of scanning the partition's scope index. `listCommitMetadata`, `scopeActivity` and `listRowsReferencingBlob` issue one grouped statement per page on all three backends. `scanRowPageSql` and `commitWindowPageSql` take a JSON array in place of the value list for the `sqlite` dialect, `selectRowsSql` takes a dialect, and `selectRowScopesSql` is removed.",
+    links: [
+      {
+        href: '/server-storage-reference/#cloudflare-d1',
+        label: 'Server storage reference: D1',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Clients: SQLite decides read-only, and encrypted columns need a config',
+    body: "`query`, `querySnapshot` and `snapshotRead` now run only a statement SQLite reports read-only and refuse `PRAGMA`, in the TypeScript and the Rust client. Before, `WITH x$select AS (SELECT 1) DELETE FROM tasks` passed the lexical check and deleted rows, and `PRAGMA query_only = ON` passed and changed the connection. Read a pragma through its table-valued function, such as `SELECT * FROM pragma_table_info('tasks')`. A web client whose schema has encrypted columns and that has no `encryption` config now rejects the commit with `client.encrypt_failed` and fails the apply with `client.decrypt_failed`; before, it pushed plaintext and stored the ciphertext it received. Both clients reject a `sqlite` image segment for a table with encrypted columns with `sync.invalid_request`. A realtime supervisor on a client the app took offline with `setTransportEnabled(false)` or the worker's `setOffline(true)` reports phase `offline` and stops reconnecting until the gate opens; before, it reported `retrying` and retried with backoff.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/#raw-sql',
+        label: 'React: reads & writes, raw SQL',
+      },
+      {
+        href: '/platform-web-realtime/#transport-gate',
+        label: 'Transport gate',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Local authority: an interrupted abandon blocks attach',
+    body: 'Once `abandonAttach` has sent its first rollback delete, `attach` rejects with `sync.attach_rejected` and `details.reason` `undo_pending` until a retried `abandonAttach` completes. Before, a rollback whose response was lost left the authority attaching, and the next `attach` received `cached` for the deleted rows, retired the authority and dropped its tables, so the rows were gone on both sides. Each abandon attempt now sends its deletes under new commit IDs, so a rollback the remote server refused once, for example over a `RESTRICT` child another client added, applies on a retry after the child is gone. In the Rust authority an unreadable idempotency record answers that commit with the retryable `sync.idempotency_cache_miss` result and lets the rest of the round run; before, it failed the whole round with `sync.internal_error`.',
+    links: [
+      {
+        href: '/guide-local-authority/#when-attach-stops',
+        label: 'Start without a server: when attach stops',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'C ABI: realtime traffic wakes an idle host',
     body: 'When the socket reader buffers a delta, a presence fanout, or a socket loss, `syncular_client_poll_event` now returns one `{"type": "realtime-wake"}` event; answer it with the new `drainRealtime` command. Before, an idle host applied deltas and noticed a dropped socket only on its next command. The reader holds at most 16 MiB of undrained traffic, then closes the socket with `transport.failed` and `causeKind` `inbound_overflow`, and the drain reconnects and pulls. The event queue no longer shares the client\'s mutable state, so a pump thread may block in `poll_event` while another thread issues commands. In the Rust core, native CRDT text offsets count UTF-16 code units as Yjs does (an insert at 2 after `éa` appends), and the `crdt-yjs` feature also gives a local authority its merger. A `SELECT *` from `query` no longer returns the physical `_syncular_version` column; alias `_sync_version` to read the version. Commands refuse a present field of the wrong type, such as `baseVersion: "7"` or a non-string window unit, with `sync.invalid_request` instead of ignoring it. A round deadline that expires during a socket send fails with `transport.timeout` (`causeKind` `round_deadline`), and remote operations take `retryable` from the server\'s error.',
     links: [

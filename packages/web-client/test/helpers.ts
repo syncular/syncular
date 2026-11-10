@@ -279,6 +279,8 @@ export interface ClientFaults {
   truncateResponseOnce: boolean;
   /** Corrupt the Nth remaining segment download (1 = next). 0 = off. */
   corruptSegmentDownload: number;
+  /** Append one byte past the descriptor's byteLength to the next download. */
+  extendSegmentDownloadOnce: boolean;
   /**
    * Fail the next segment download the way a transfer that went silent past
    * the transport's request timeout fails (`causeKind: 'timeout'`).
@@ -350,6 +352,7 @@ export async function makeClient(
     dropResponseOnce: false,
     truncateResponseOnce: false,
     corruptSegmentDownload: 0,
+    extendSegmentDownloadOnce: false,
     stallSegmentDownloadOnce: false,
     duplicatePushResultOnce: false,
     errorFrameOnce: false,
@@ -467,6 +470,12 @@ export async function makeClient(
         corrupted[corrupted.length - 1] =
           (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
         return corrupted;
+      }
+      if (faults.extendSegmentDownloadOnce) {
+        faults.extendSegmentDownloadOnce = false;
+        const extended = new Uint8Array(result.bytes.length + 1);
+        extended.set(result.bytes);
+        return extended;
       }
       return result.bytes;
     },

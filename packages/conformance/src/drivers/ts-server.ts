@@ -421,6 +421,7 @@ class TsServerInstance implements ServerInstance {
     inlineSegmentMaxBytes: number;
     maxCascadeOperationsPerCommit: number;
   };
+  readonly #maxBlobBytes: number | undefined;
   #resolverFailing = false;
   #resolverOutage = false;
   #failNextIdempotencyLookup = false;
@@ -464,6 +465,7 @@ class TsServerInstance implements ServerInstance {
       maxCascadeOperationsPerCommit:
         options.limits?.maxCascadeOperationsPerCommit ?? 1_000,
     };
+    this.#maxBlobBytes = options.limits?.maxBlobBytes;
     this.#segments = new MemorySegmentStore(
       options.limits?.segmentTtlMs !== undefined
         ? { ttlMs: options.limits.segmentTtlMs }
@@ -669,6 +671,9 @@ class TsServerInstance implements ServerInstance {
       storage: this.#wrapped,
       segments: this.#segments,
       blobs: this.#blobs,
+      ...(this.#maxBlobBytes !== undefined
+        ? { maxBlobBytes: this.#maxBlobBytes }
+        : {}),
       // §5.10.2: the reference yjs-doc merger, kept out of core/server.
       crdtMergers: yjsCrdtMergers,
       resolveScopes: (args) => this.#resolveScopes(args.actorId),

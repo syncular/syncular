@@ -505,6 +505,59 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
     expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['d1']);
   });
 
+  test('a revocation drops only pending commits no other subscription covers', async () => {
+    const server = makeServer();
+    // One commit per request keeps the doc writes pending through the
+    // revoking round.
+    const a = await makeClient(server, {
+      clientId: 'client-a',
+      limits: { maxPushCommitsPerRequest: 1 },
+    });
+    a.client.subscribe({
+      id: 'org',
+      table: 'docs',
+      scopes: { org_id: ['o1'] },
+    });
+    a.client.subscribe({
+      id: 'project',
+      table: 'docs',
+      scopes: { projectId: ['p1'] },
+    });
+    await a.client.syncUntilIdle();
+    server.allowed['actor-1'] = {
+      project_id: ['*'],
+      projectId: ['p9'],
+      org_id: ['o1'],
+    };
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('filler', 'p1') },
+    ]);
+    const shared = a.client.mutate([doc('d1', 'o1', 'p1')]);
+    // Whole-commit: one doomed upsert takes its sibling with it.
+    const doomed = a.client.mutate([
+      doc('d2', 'o2', 'p1'),
+      doc('d3', 'o1', 'p2'),
+    ]);
+    const deleteOnly = a.client.mutate([
+      { table: 'docs', op: 'delete', rowId: 'd4' },
+    ]);
+
+    const summary = await a.client.sync();
+
+    expect(summary.revoked).toEqual(['project']);
+    // `org` still covers d1; a delete carries no values to test.
+    expect(a.client.pendingCommits().map((c) => c.clientCommitId)).toEqual([
+      shared,
+      deleteOnly,
+    ]);
+    expect(
+      a.client.rejections().map((r) => [r.clientCommitId, r.opIndex, r.code]),
+    ).toEqual([
+      [doomed, 0, 'sync.scope_revoked'],
+      [doomed, 1, 'sync.scope_revoked'],
+    ]);
+  });
+
   test('a fresh first-page clear keeps rows a complete subscription owns', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });

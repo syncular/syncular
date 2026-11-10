@@ -58,15 +58,17 @@ export interface BlobTransport {
   /**
    * `GET <mount>/blobs/{blobId}` — re-authorized (§5.9.5). Returns inline
    * bytes, or a presigned `url` the client core fetches via `fetchUrl`.
+   * `byteLength` is the BlobRef's declared size when the caller passed one;
+   * reading inline bytes stops once the body exceeds it.
    */
-  download(blobId: string): Promise<BlobDownloadResponse>;
+  download(blobId: string, byteLength?: number): Promise<BlobDownloadResponse>;
   /**
    * §5.9.5 presigned-download fetch: a bare GET of the signed `url`. Present
    * iff the transport can consume URLs. MUST attach NO host authentication —
    * the URL is the entire grant (§5.4). Only called when `download` returned
-   * a `url` arm.
+   * a `url` arm. Reading stops once the body exceeds `byteLength`.
    */
-  fetchUrl?(url: string): Promise<Uint8Array>;
+  fetchUrl?(url: string, byteLength?: number): Promise<Uint8Array>;
   /**
    * §5.9.3 presigned-upload grant: `POST /blobs/{blobId}/upload-grant` with
    * the declared size. Present iff the transport supports the grant flow;
@@ -81,8 +83,10 @@ export interface BlobTransport {
   ): Promise<BlobUploadGrant>;
   /**
    * §5.9.3 direct-to-storage PUT of the granted `url`. MUST attach NO host
-   * authentication — the presigned URL is the entire grant (§5.4). Only
-   * called when `uploadGrant` returned a `url` arm.
+   * authentication — the presigned URL is the entire grant (§5.4) — and MUST
+   * send `x-amz-checksum-sha256` (base64 of the body's SHA-256), which the
+   * grant signs beside `content-length`. Only called when `uploadGrant`
+   * returned a `url` arm.
    */
   uploadToUrl?(
     url: string,

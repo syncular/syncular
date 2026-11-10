@@ -387,8 +387,18 @@ class ShimProcess {
         error: {
           code: errorCodeOf(error),
           message: error instanceof Error ? error.message : String(error),
-          ...(error instanceof EndpointError && error.details !== undefined
-            ? { details: error.details }
+          // The native HTTP transport folds the server body's `retryable`
+          // into the details; a refused blob upload reads it (§5.9.7).
+          ...(error instanceof EndpointError
+            ? {
+                details: {
+                  retryable: error.retryable,
+                  ...(typeof error.details === 'object' &&
+                  error.details !== null
+                    ? error.details
+                    : {}),
+                },
+              }
             : {}),
         },
       });

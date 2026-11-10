@@ -2043,6 +2043,9 @@ mod observation_tests {
                 client.drain_sync_intents().is_empty(),
                 "{cause} scheduled a retry"
             );
+            // The round's work is still owed: the host's connectivity resume
+            // runs it.
+            assert!(client.sync_needed(), "{cause} left sync-needed lowered");
         }
 
         // Every other retryable transport cause keeps the background retry.
@@ -2057,6 +2060,40 @@ mod observation_tests {
             client.drain_sync_intents().as_slice(),
             [SyncIntent::Background { delay_ms: 250 }]
         ));
+        assert!(!client.sync_needed());
+    }
+
+    #[test]
+    fn a_subscription_holding_a_resume_token_raises_sync_needed() {
+        // §4.7: the bootstrap continues on the next round, also when the
+        // drive that started it ends early.
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        let p1 = vec![("project_id".to_owned(), vec!["p1".to_owned()])];
+        client
+            .subscribe("paged".into(), "tasks".into(), p1.clone(), None)
+            .unwrap();
+        let mut transport = failure_transport([Ok(completed_response(vec![
+            Frame::SubStart {
+                id: "paged".into(),
+                status: SubStatus::Active,
+                reason_code: String::new(),
+                effective_scopes: p1,
+                bootstrap: true,
+            },
+            Frame::SubEnd {
+                next_cursor: 0,
+                bootstrap_state: Some(RawJson(r#"{"page":1}"#.into())),
+            },
+        ]))]);
+
+        let outcome = client.sync(&mut transport);
+
+        let SyncOutcome::Ok(report) = outcome else {
+            panic!("the paged round succeeds: {outcome:?}")
+        };
+        assert_eq!(report.bootstrapping, vec!["paged".to_owned()]);
+        assert!(client.sync_needed());
     }
 
     #[test]
@@ -8741,7 +8778,9 @@ mod observation_tests {
             {"name":"title","type":"string","nullable":false},
             {"name":"priority","type":"integer","nullable":false},
             {"name":"payload","type":"bytes","nullable":false},
-            {"name":"extra","type":"bytes","nullable":true}],"scopes":[{"pattern":"project:{project_id}"}]}]});
+            {"name":"extra","type":"bytes","nullable":true},
+            {"name":"doc","type":"json","nullable":true},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[{"pattern":"project:{project_id}"}]}]});
         let mut client = SyncClient::open_path(
             "caller-values".into(),
             &schema,
@@ -8807,6 +8846,36 @@ mod observation_tests {
                 ("payload", json!({"nested": true})),
                 "expected exactly",
             ),
+            // §2.4/§7.1: the push admission values the server rejects.
+            (
+                "string with U+0000",
+                ("title", json!("a\u{0}b")),
+                "not a push admission value",
+            ),
+            (
+                "json number beyond binary64",
+                ("doc", json!("[1e999]")),
+                "not a push admission value",
+            ),
+            (
+                "json nested 65 deep",
+                (
+                    "doc",
+                    json!(format!("{}{}", "[".repeat(65), "]".repeat(65))),
+                ),
+                "not a push admission value",
+            ),
+            (
+                "blob_ref with reordered keys",
+                (
+                    "file",
+                    json!(format!(
+                        "{{\"byteLength\":3,\"blobId\":\"sha256:{}\"}}",
+                        "0".repeat(64)
+                    )),
+                ),
+                "not a push admission value",
+            ),
         ] {
             let mut full = values("t2");
             full.insert(override_value.0.to_owned(), override_value.1);
@@ -8856,6 +8925,11 @@ mod observation_tests {
                 "expected an integer",
             ),
             ("patch unknown column", ("nope", json!(1)), "unknown column"),
+            (
+                "patch string with U+0000",
+                ("title", json!("\u{0}")),
+                "not a push admission value",
+            ),
         ] {
             let error = client
                 .patch(
@@ -8875,6 +8949,14 @@ mod observation_tests {
                 "{label}"
             );
         }
+        let delete_error = client
+            .mutate(vec![Mutation::Delete {
+                table: "tasks".into(),
+                row_id: "t\u{0}1".into(),
+                base_version: None,
+            }])
+            .expect_err("rowId with U+0000");
+        assert_eq!(delete_error.code, "sync.invalid_request");
         assert_eq!(client.pending_commit_ids(), vec![seed.clone()]);
         assert_eq!(client.local_revision().unwrap(), 1);
         assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
@@ -10349,6 +10431,8 @@ mod observation_tests {
         requests: Vec<Message>,
         batches: Vec<Vec<String>>,
         uploads: Vec<String>,
+        /// Answers the upload of this blob id with this error.
+        refused_upload: Option<(String, TransportError)>,
         sync_calls: usize,
         realtime_sync_calls: usize,
     }
@@ -10361,6 +10445,7 @@ mod observation_tests {
                 requests: Vec::new(),
                 batches: Vec::new(),
                 uploads: Vec::new(),
+                refused_upload: None,
                 sync_calls: 0,
                 realtime_sync_calls: 0,
             }
@@ -10499,7 +10584,10 @@ mod observation_tests {
             _media_type: Option<&str>,
         ) -> Result<(), TransportError> {
             self.uploads.push(blob_id.to_owned());
-            Ok(())
+            match &self.refused_upload {
+                Some((refused, error)) if refused == blob_id => Err(error.clone()),
+                _ => Ok(()),
+            }
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
@@ -10695,6 +10783,129 @@ mod observation_tests {
                 .query("SELECT id, project_id FROM attachments", &[])
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn a_non_retryable_upload_refusal_rejects_its_commits_and_the_round_continues() {
+        // §5.9.7: the refusal is the body's final outcome; a retryable one and
+        // a failure without a server code still fail the round.
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let refused_bytes = b"refused body";
+        let kept_bytes = b"kept body";
+        let refusal = |retryable: Option<bool>| {
+            let mut error = TransportError::new("blob.too_large", "blob exceeds the byte cap");
+            error.details = retryable.map(|retryable| json!({ "retryable": retryable }));
+            error
+        };
+        for split in [false, true] {
+            for retryable in [Some(false), Some(true), None] {
+                let label = format!("split={split} retryable={retryable:?}");
+                let mut client =
+                    SyncClient::new("refused-upload".into(), &schema, ClientLimits::default())
+                        .unwrap();
+                client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+                let mut attach = |id: &str, bytes: &[u8]| {
+                    client.upload_blob(bytes, None, None).unwrap();
+                    client
+                        .mutate(vec![Mutation::Upsert {
+                            table: "attachments".into(),
+                            values: Map::from_iter([
+                                ("id".into(), Value::from(id)),
+                                ("project_id".into(), Value::from("p1")),
+                                (
+                                    "file".into(),
+                                    Value::from(format!(
+                                        "{{\"blobId\":\"{}\",\"byteLength\":{}}}",
+                                        blob_id_for(bytes),
+                                        bytes.len()
+                                    )),
+                                ),
+                            ]),
+                            base_version: None,
+                        }])
+                        .unwrap()
+                };
+                let refused = attach("big", refused_bytes);
+                let kept = attach("small", kept_bytes);
+                let mut transport = SplitParityTransport::new(RoundReplyScript::PushAck);
+                transport.refused_upload = Some((blob_id_for(refused_bytes), refusal(retryable)));
+
+                let outcome = if split {
+                    sync_split(&mut client, &mut transport)
+                } else {
+                    client.sync(&mut transport)
+                };
+
+                if retryable != Some(false) {
+                    assert!(
+                        matches!(&outcome, SyncOutcome::Failed { error_code, .. } if error_code == "blob.too_large"),
+                        "{label}: {outcome:?}"
+                    );
+                    assert!(transport.requests.is_empty(), "{label}");
+                    assert_eq!(client.pending_commit_ids(), vec![refused, kept], "{label}");
+                    assert!(client.rejections.is_empty(), "{label}");
+                    continue;
+                }
+                let SyncOutcome::Ok(report) = outcome else {
+                    panic!("{label}: the round continues: {outcome:?}")
+                };
+                assert_eq!(report.pushed, 1, "{label}");
+                assert_eq!(
+                    transport.uploads,
+                    [blob_id_for(refused_bytes), blob_id_for(kept_bytes)],
+                    "{label}"
+                );
+                let pushed = transport.requests[0]
+                    .frames
+                    .iter()
+                    .filter_map(|frame| match frame {
+                        Frame::PushCommit {
+                            client_commit_id, ..
+                        } => Some(client_commit_id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(pushed, vec![kept.clone()], "{label}");
+                assert!(client.pending_commit_ids().is_empty(), "{label}");
+                assert_eq!(
+                    client
+                        .rejections
+                        .iter()
+                        .map(|rejection| (
+                            rejection.client_commit_id.clone(),
+                            rejection.code.clone(),
+                            rejection.retryable
+                        ))
+                        .collect::<Vec<_>>(),
+                    vec![(refused.clone(), "blob.too_large".to_owned(), false)],
+                    "{label}"
+                );
+                assert_eq!(
+                    client
+                        .conn
+                        .query_row("SELECT count(*) FROM _syncular_blob_uploads", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    0,
+                    "{label}"
+                );
+                assert_eq!(
+                    client
+                        .query("SELECT id FROM attachments ORDER BY id", &[])
+                        .unwrap()
+                        .iter()
+                        .map(|row| row["id"].clone())
+                        .collect::<Vec<_>>(),
+                    vec![json!("small")],
+                    "{label}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -11463,6 +11674,44 @@ mod row_ownership_tests {
             "revoked"
         );
         assert_eq!(ids(&client, "docs"), vec!["shared"]);
+    }
+
+    #[test]
+    fn a_revocation_keeps_pending_commits_another_active_subscription_covers() {
+        let mut client = client();
+        synced(&mut client, "org", "docs", scopes("org_id", &["o1"]));
+        synced(
+            &mut client,
+            "project",
+            "docs",
+            scopes("project_id", &["p1"]),
+        );
+        let [shared, lone] = [("shared", "o1"), ("lone", "o2")].map(|(id, org)| {
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "docs".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!(id)),
+                        ("org_id".into(), json!(org)),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("mutate")
+        });
+
+        let outcome = client.sync(&mut Reply(response(revoke("project"))));
+
+        assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+        assert_eq!(client.pending_commit_ids(), vec![shared]);
+        assert_eq!(
+            client
+                .rejections
+                .iter()
+                .map(|rejection| (rejection.client_commit_id.clone(), rejection.code.clone()))
+                .collect::<Vec<_>>(),
+            vec![(lone, "sync.scope_revoked".to_owned())]
+        );
     }
 
     #[test]
@@ -15233,6 +15482,23 @@ impl SyncClient {
         if incompatible.is_empty() {
             return Ok(false);
         }
+        self.drop_outbox_commits(
+            &incompatible,
+            OUTBOX_INCOMPATIBLE_CODE,
+            "the persisted commit cannot encode under the current schema",
+        )?;
+        Ok(true)
+    }
+
+    /// §7.4.4 incompatible-commit path, also taken by a refused blob upload
+    /// (§5.9.7) with the server's code: reject every operation of `commits`,
+    /// remove them from the outbox, and undo their optimistic rows.
+    fn drop_outbox_commits(
+        &mut self,
+        incompatible: &[Arc<OutboxCommit>],
+        code: &str,
+        message: &str,
+    ) -> Result<(), String> {
         // §7.4.4: one observation covers the durable outcome writes, the outbox
         // removal, the in-memory drop, and the overlay rebuild, so a storage
         // fault leaves the replica and the client unchanged and publishes no
@@ -15244,7 +15510,7 @@ impl SyncClient {
         let mut batch = ChangeAccumulator::default();
         let dropped = (|| -> Result<(), String> {
             let mut rejections = Vec::new();
-            for commit in &incompatible {
+            for commit in incompatible {
                 let results = commit
                     .ops
                     .iter()
@@ -15253,9 +15519,8 @@ impl SyncClient {
                         let rejection = RejectionRecord {
                             client_commit_id: commit.client_commit_id.clone(),
                             op_index: op_index as i32,
-                            code: OUTBOX_INCOMPATIBLE_CODE.to_owned(),
-                            message: "the persisted commit cannot encode under the current schema"
-                                .to_owned(),
+                            code: code.to_owned(),
+                            message: message.to_owned(),
                             retryable: false,
                             details: None,
                             operation: Some(CommitOperation::from(operation)),
@@ -15314,7 +15579,7 @@ impl SyncClient {
             self.restore(rollback);
             return Err(error);
         }
-        Ok(true)
+        Ok(())
     }
 
     /// §7.4.3: (re)create the base + visible table pair for every synced
@@ -17125,6 +17390,12 @@ impl SyncClient {
                     } => {
                         if self.schema.table(&table).is_none() {
                             return Err(format!("sync.unknown_table: unknown table {table:?}"));
+                        }
+                        // §2.4: the server rejects a rowId holding U+0000.
+                        if row_id.contains('\0') {
+                            return Err(
+                                "sync.invalid_request: rowId holds U+0000 (§2.4)".to_owned()
+                            );
                         }
                         ops.push(OutboxOp {
                             upsert: false,
@@ -18994,7 +19265,7 @@ impl SyncClient {
         &mut self,
         completed: crate::CompletedSyncRound,
     ) -> crate::AppliedSyncRound {
-        let prepared = completed.prepared;
+        let mut prepared = completed.prepared;
         if self.active_round != Some(prepared.id) || self.security_preflight {
             return crate::AppliedSyncRound::Complete {
                 outcome: SyncOutcome::Failed {
@@ -19011,6 +19282,50 @@ impl SyncClient {
         self.storage_failure.borrow_mut().take();
         let (response, mut downloads, transport_failed) = match completed.exchange {
             crate::round::ExchangeResult::Upload { id, result } => {
+                let result = match result {
+                    // §5.9.7: a non-retryable server refusal (`blob.too_large`)
+                    // is the body's final outcome. The commits naming it take
+                    // the incompatible-commit path with the server's code and
+                    // leave this round's request; the round continues.
+                    Err(error)
+                        if error
+                            .details
+                            .as_ref()
+                            .and_then(|details| details.get("retryable"))
+                            == Some(&Value::Bool(false)) =>
+                    {
+                        self.conn
+                            .prepare(
+                                "SELECT commit_id FROM _syncular_blob_commit_refs WHERE blob_id = ?",
+                            )
+                            .and_then(|mut statement| {
+                                statement
+                                    .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
+                                    .collect::<Result<HashSet<_>, _>>()
+                            })
+                            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+                            .and_then(|refused| {
+                                let commits = self
+                                    .outbox
+                                    .iter()
+                                    .filter(|commit| refused.contains(&commit.client_commit_id))
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                if !commits.is_empty() {
+                                    self.drop_outbox_commits(&commits, &error.code, &error.message)?;
+                                }
+                                prepared.message.frames.retain(|frame| {
+                                    !matches!(frame, Frame::PushCommit { client_commit_id, .. }
+                                        if refused.contains(client_commit_id))
+                                });
+                                prepared.meta.pushed_ids.retain(|id| !refused.contains(id));
+                                prepared.continuation = Some(crate::round::RoundPhase::UploadGrant);
+                                Ok(())
+                            })
+                            .map_err(|message| TransportError::new("client.failed", message))
+                    }
+                    result => result,
+                };
                 let result = result.and_then(|()| {
                     self.conn
                         .execute(
@@ -19033,9 +19348,11 @@ impl SyncClient {
                         details,
                     }) => {
                         self.active_round = None;
-                        if Self::retryable_failure_code(&code)
-                            && !Self::unreachable_transport(&details)
-                        {
+                        if Self::unreachable_transport(&details) {
+                            // The round's work is still owed; the host's
+                            // connectivity resume runs it.
+                            self.set_sync_needed(true, false);
+                        } else if Self::retryable_failure_code(&code) {
                             self.schedule_background_retry();
                         }
                         let recommended_action = recommended_action_of(&details);
@@ -19141,6 +19458,19 @@ impl SyncClient {
             self.previous_version_lifetime_check();
             outcome
         })();
+        match &outcome {
+            // §4.7: a subscription that still holds a resume token needs
+            // another round, also when the drive that started it ends early.
+            SyncOutcome::Ok(report) if !report.bootstrapping.is_empty() => {
+                self.set_sync_needed(true, false)
+            }
+            // The round's work is still owed; the host's connectivity resume
+            // runs it.
+            SyncOutcome::Failed { details, .. } if Self::unreachable_transport(details) => {
+                self.set_sync_needed(true, false)
+            }
+            _ => {}
+        }
         let more = self.transport_enabled
             && matches!(&outcome, SyncOutcome::Ok(report)
                 if report.schema_floor.is_none()
@@ -20062,14 +20392,12 @@ impl SyncClient {
                                 reason_code.to_owned()
                             });
                             report.revoked.push(id.to_owned());
-                            let doomed_effective = effective;
-                            let sub_table = table;
                             self.persist_sub(&self.subs[sub_index].clone())
                                 .map_err(|message| {
                                     SectionError::Abort("storage.failed".into(), message)
                                 })?;
                             let dropped = self
-                                .drop_doomed_outbox(&sub_table, &doomed_effective)
+                                .drop_doomed_outbox(&scoped_table, &effective, &owners)
                                 .map_err(|message| {
                                     SectionError::Abort("storage.failed".to_owned(), message)
                                 })?;
@@ -21803,46 +22131,28 @@ impl SyncClient {
     }
 
     /// §3.3: drop pending commits whose upserts provably land in the
-    /// revoked effective scopes — whole-commit, never per-operation.
+    /// revoked effective scopes and no other owner covers (row ownership)
+    /// — whole-commit, never per-operation.
     fn drop_doomed_outbox(
         &mut self,
-        table_name: &str,
+        table: &TableSchema,
         effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
     ) -> Result<bool, String> {
-        if effective.is_empty() {
-            return Ok(false);
-        }
-        let Some(table) = self.schema.table(table_name).cloned() else {
-            return Ok(false);
-        };
-        let mut mappings: Vec<(&str, &Vec<String>)> = Vec::new();
-        for (variable, values) in effective {
-            match table.scope_column(variable) {
-                Some(column) => mappings.push((column, values)),
-                None => return Ok(false), // not provable without a mapping
-            }
-        }
-        let doomed: Vec<_> = self
-            .outbox
-            .iter()
-            .filter(|commit| {
-                commit.ops.iter().any(|op| {
-                    op.upsert
-                        && op.table == table_name
-                        && op.values.as_ref().is_some_and(|values| {
-                            mappings
-                                .iter()
-                                .all(|(column, allowed)| match values.get(*column) {
-                                    Some(Value::String(s)) => allowed.contains(s),
-                                    Some(Value::Number(n)) => allowed.contains(&n.to_string()),
-                                    Some(Value::Bool(b)) => allowed.contains(&b.to_string()),
-                                    _ => false,
-                                })
-                        })
+        let doomed: Vec<_> =
+            self.outbox
+                .iter()
+                .filter(|commit| {
+                    commit.ops.iter().any(|op| {
+                        op.upsert
+                            && op.table == table.name
+                            && op.values.as_ref().is_some_and(|values| {
+                                owns_local_row(table, effective, owners, values)
+                            })
+                    })
                 })
-            })
-            .cloned()
-            .collect();
+                .cloned()
+                .collect();
         if doomed.is_empty() {
             return Ok(false);
         }

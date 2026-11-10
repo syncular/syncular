@@ -245,11 +245,12 @@ export function webSocketRemoteOperationConnector(
  * Resolution (which path a descriptor takes, expiry, no fall-through)
  * lives in the client core, not here.
  */
-async function readSegmentBody(
+async function readBody(
   response: Response,
   onProgress?: (bytesReceived: number) => void,
+  maxBytes?: number,
 ): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
   let received = 0;
   let reported = 0;
   const reader = response.body?.getReader();
@@ -260,6 +261,11 @@ async function readSegmentBody(
         if (done) break;
         chunks.push(value);
         received += value.byteLength;
+        // The caller rejects a body longer than its declared byteLength.
+        if (received > (maxBytes ?? received)) {
+          await reader.cancel();
+          break;
+        }
         if (received - reported >= 64 * 1024) {
           onProgress?.(received);
           reported = received;
@@ -270,13 +276,7 @@ async function readSegmentBody(
     }
   }
   if (received !== reported) onProgress?.(received);
-  const bytes = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  return new Uint8Array(await new Blob(chunks).arrayBuffer());
 }
 
 export function httpSegmentDownloader(
@@ -289,6 +289,7 @@ export function httpSegmentDownloader(
     init?: RequestInit,
     onProgress?: (bytesReceived: number) => void,
     signed = false,
+    maxBytes?: number,
   ) => {
     const response = await transfer('segment transfer failed', () =>
       doFetch(url, init),
@@ -297,20 +298,21 @@ export function httpSegmentDownloader(
       if (!signed) await throwHttpError(response);
       throw new ClientSyncError(
         'sync.transport_failed',
-        'signed segment request failed; invalidate the descriptor and re-pull',
+        'signed segment request failed',
         true,
         { causeKind: 'status', httpStatus: response.status },
       );
     }
     return transfer(
       'segment transfer failed',
-      () => readSegmentBody(response, onProgress),
+      () => readBody(response, onProgress, maxBytes),
       response.status,
     );
   };
   const direct = (request: {
     readonly segmentId: string;
     readonly requestedScopesJson: string;
+    readonly byteLength?: number;
     readonly onProgress?: (bytesReceived: number) => void;
     readonly signal?: AbortSignal;
   }) =>
@@ -324,18 +326,22 @@ export function httpSegmentDownloader(
         ...(request.signal !== undefined ? { signal: request.signal } : {}),
       },
       request.onProgress,
+      false,
+      request.byteLength,
     );
   // Deliberately headerless: the URL is the bearer grant (§5.4).
   const fetchUrl = (
     url: string,
     onProgress?: (bytesReceived: number) => void,
     signal?: AbortSignal,
+    byteLength?: number,
   ) =>
     download(
       url,
       signal !== undefined ? { signal } : undefined,
       onProgress,
       true,
+      byteLength,
     );
   return Object.assign(direct, { fetchUrl });
 }
@@ -368,7 +374,7 @@ export function httpBlobTransport(
       );
       if (!response.ok) await throwHttpError(response);
     },
-    download: async (blobId) => {
+    download: async (blobId, byteLength) => {
       const response = await transfer('blob download failed', () =>
         doFetch(blobUrl(blobId), {
           headers: { ...hostHeaders(options) },
@@ -386,17 +392,16 @@ export function httpBlobTransport(
                 : 'sync.transport_failed',
         );
       // §5.9.5 always-issue: a JSON body with a `url` means presigned delivery;
-      // any other body is inline bytes. The body is read exactly once as bytes,
-      // so an inline blob stored as `application/json` stays readable.
-      const contentType = response.headers.get('content-type') ?? '';
-      const bytes = new Uint8Array(
-        await transfer(
-          'blob download body read failed',
-          () => response.arrayBuffer(),
-          response.status,
-        ),
+      // any other body is inline bytes, capped by the declared byteLength.
+      const json = (response.headers.get('content-type') ?? '').includes(
+        'application/json',
       );
-      if (contentType.includes('application/json')) {
+      const bytes = await transfer(
+        'blob body read failed',
+        () => readBody(response, undefined, json ? undefined : byteLength),
+        response.status,
+      );
+      if (json) {
         let envelope: { url?: unknown; urlExpiresAtMs?: unknown } | null = null;
         try {
           envelope = JSON.parse(new TextDecoder().decode(bytes));
@@ -416,24 +421,22 @@ export function httpBlobTransport(
       return { kind: 'bytes', bytes };
     },
     // §5.9.5: bare GET of the signed URL — no host auth (the URL is the grant).
-    fetchUrl: async (url) => {
+    fetchUrl: async (url, byteLength) => {
       const response = await transfer('signed blob download failed', () =>
         doFetch(url),
       );
       if (!response.ok) {
         throw new ClientSyncError(
           'sync.transport_failed',
-          'signed blob download failed; re-request to recover',
+          'signed blob download failed',
           true,
           { causeKind: 'status', httpStatus: response.status },
         );
       }
-      return new Uint8Array(
-        await transfer(
-          'response body read failed',
-          () => response.arrayBuffer(),
-          response.status,
-        ),
+      return transfer(
+        'response body read failed',
+        () => readBody(response, undefined, byteLength),
+        response.status,
       );
     },
     // §5.9.3: presigned-upload grant.
@@ -454,7 +457,7 @@ export function httpBlobTransport(
       );
       if (!response.ok) await throwHttpError(response);
       const body = (await transfer(
-        'blob upload grant body read failed',
+        'blob grant read failed',
         () => response.json(),
         response.status,
       )) as {
@@ -476,20 +479,29 @@ export function httpBlobTransport(
     },
     // §5.9.3: direct-to-storage PUT — no host auth (the URL is the grant).
     uploadToUrl: async (url, bytes, mediaType, signal) => {
+      const body = bytes.slice().buffer as ArrayBuffer;
+      // The grant signs content-length (set by fetch from the body) and this
+      // checksum, so the object store rejects any other bytes (§5.9.3).
+      const checksum = btoa(
+        String.fromCharCode(
+          ...new Uint8Array(await crypto.subtle.digest('SHA-256', body)),
+        ),
+      );
       const response = await transfer('signed blob upload failed', () =>
         doFetch(url, {
           method: 'PUT',
           headers: {
             'Content-Type': mediaType ?? 'application/octet-stream',
+            'x-amz-checksum-sha256': checksum,
           },
-          body: bytes.slice().buffer as ArrayBuffer,
+          body,
           ...(signal !== undefined ? { signal } : {}),
         }),
       );
       if (!response.ok) {
         throw new ClientSyncError(
           'sync.transport_failed',
-          'signed blob upload failed; re-request a grant or stream direct',
+          'signed blob upload failed',
           true,
           { causeKind: 'status', httpStatus: response.status },
         );

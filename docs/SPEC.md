@@ -37,27 +37,36 @@ transport compression, §1.3).
 | `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). "Code unit" means **UTF-16 code units** — the order JavaScript string comparison yields; it diverges from UTF-8 byte order exactly when keys mix U+E000–U+FFFF characters with supplementary-plane characters, so implementations in byte-oriented languages MUST compare by UTF-16 code units, not encoded bytes. A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
 | `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string is a valid JSON document under the JSON validity rule below (a value that is not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
 
-**JSON validity rule.** A JSON document is valid when it parses per RFC
-8259 and meets three limits:
+**JSON validity rule.** The rule is defined on the raw text. A JSON document
+is valid when the text parses per RFC 8259 and meets three limits, each
+applying to every token in the text, including a value that a later
+duplicate key shadows (`{"a":1e999,"a":1}` is invalid):
 
-- it nests at most 64 containers: every array or object adds one level, so
-  `[]` has depth 1 and a top-level scalar has depth 0;
-- every number, rounded to nearest binary64, is finite: `1e999` and
+- container nesting is at most 64 levels: every array or object adds one
+  level, so `[]` has depth 1 and a top-level scalar has depth 0;
+- every number token, rounded to nearest binary64, is finite: `1e999` and
   `-1e999` are invalid, `1e-999` is valid and reads as 0,
   `1.7976931348623157e308` is valid and `1.7976931348623159e308` is not;
-- no string, object keys included, contains U+0000 or an unpaired
-  surrogate (the escape `\ud800` without a following low-surrogate escape).
+- no string token, object keys included, contains U+0000 or an unpaired
+  surrogate, written literally or as a `\u` escape (the escape `\ud800`
+  without a following low-surrogate escape).
+
+A decoder cannot satisfy the rule on the parsed value alone, because
+ECMAScript `JSON.parse` drops a shadowed value and `serde_json` parses it
+first. Each reference core runs its parser and one lexical pass over the
+text for what the parser does not see.
 
 Duplicate object keys and insignificant whitespace are valid; the parsed
 value of a duplicated key is the last one. Every reference codec decodes
 the envelope `json` fields (`params`, `bootstrapState`, `ERROR.details`,
-`PUSH_RESULT_DETAILS.details`), push-payload `json` columns (§2.4) and
-`blob_ref` values (§5.9.1) against this rule. The rule exists because the
-reference cores disagree outside it: ECMAScript `JSON.parse` accepts
-`1e999` as `Infinity`, lone surrogates and any depth, while `serde_json`
-rejects all three, and a PostgreSQL store rejects U+0000 that SQLite
-stores. Full-row `json` columns (`COMMIT` payloads, segments, conflict
-`serverRow`) are outside the rule (§2.4).
+`PUSH_RESULT_DETAILS.details`), push-payload `json` columns (§2.4),
+`blob_ref` values (§5.9.1), decrypted `json` and `blob_ref` plaintext
+(§5.11) and realtime control messages (§8) against this rule. The rule
+exists because the reference cores disagree outside it: ECMAScript
+`JSON.parse` accepts `1e999` as `Infinity`, lone surrogates and any depth,
+while `serde_json` rejects the first two and any depth beyond 127, and a
+PostgreSQL store rejects U+0000 that SQLite stores. Full-row `json`
+columns (`COMMIT` payloads, segments, conflict `serverRow`) are outside the rule (§2.4).
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
@@ -1355,8 +1364,8 @@ When `SUB_START.status = revoked`:
   drop them locally on revocation instead of replaying them into
   guaranteed rejections. The drop is **whole-commit**: when any upsert
   in a pending commit provably lands in the revoked effective scopes
-  (its scope-column values match them under the purge rule above), the
-  entire commit is dropped — commits are atomic (§6.4) and their content
+  (its scope-column values match them under the purge rule above and no
+  owner covers the row), the entire commit is dropped — commits are atomic (§6.4) and their content
   is pinned by the idempotency key (§2.3), so operations are never
   removed individually. Delete operations carry no row values to test,
   so delete-only commits are not provably in scope: they replay and rely
@@ -2266,7 +2275,7 @@ lock across processes.
 | `segmentId` | `str` | §5.1 |
 | `mediaType` | `u8` | `1` = rows, `2` = sqlite |
 | `table` | `str` | |
-| `byteLength` | `i64` | Uncompressed size (progress UI, sanity cap) |
+| `byteLength` | `i64` | Uncompressed size: progress UI and the client's read cap (below) |
 | `rowCount` | `i64` | |
 | `asOfCommitSeq` | `i64` | MUST equal the bootstrap pin |
 | `scopeDigest` | `str` | §3.5 |
@@ -2295,8 +2304,9 @@ bit 3. Three MUSTs pin the url path:
   `sync.segment_expired` semantics (§10.2): re-pulling mints fresh
   descriptors.
 - **Failure invalidates the descriptor.** A failed url fetch — expired
-  before fetch, transport error, non-success status, or a §5.1
-  content-address mismatch — invalidates the whole descriptor. The
+  before fetch, transport error, non-success status, a body longer than
+  `byteLength`, or a §5.1 content-address mismatch — invalidates the
+  whole descriptor. The
   client MUST NOT fall through to the direct endpoint (a second
   delivery attempt under a different auth story is exactly the fallback
   class SSP2 removes) and MUST abort the subscription per §1.4 rule 5;
@@ -2312,6 +2322,13 @@ value, debug value, or source chain. This rule applies to direct endpoints and
 signed URLs. Authenticated server catalog responses are distinct from
 client-generated transport exceptions. This privacy rule does not require a
 transport adapter to decode the server's HTTP JSON error body.
+
+**Read cap.** On both delivery paths the client enforces `byteLength`:
+it MUST stop reading the body once more decoded bytes than `byteLength`
+arrived and fail the descriptor with `sync.invalid_request` and the static
+message `segment exceeds its byteLength`, before the §5.1 content-address
+check. The cap bounds client memory without a host-configured response
+limit.
 
 A `url` on a descriptor when the client did not advertise bit 3 is a
 broken server: reject as `sync.invalid_request`, aborting per §1.4
@@ -2595,6 +2612,14 @@ Existence model for this rung (kept minimal and honest):
   expiry. The sweep consults the reference index (§5.9.4): a blob with
   zero index entries and an upload age past the grace period is deleted.
   Deleting a still-referenced blob is a host bug; the sweep never does it.
+  The sweep MUST read the reference index for a candidate again right
+  before deleting it, so a reference that lands while the sweep runs keeps
+  its blob. A blob's upload age runs from its latest upload: the store's
+  recorded upload time, or, for an object a presigned PUT wrote without
+  Syncular metadata, the object store's last-modified time. An object with
+  neither is never swept. An idempotent re-upload of an existing blob
+  (§5.9.3) sets the recorded upload time to the re-upload time, which
+  restarts its grace period.
 
 #### 5.9.3 Upload — `PUT <mount>/blobs/{blobId}`
 
@@ -2618,9 +2643,10 @@ the *decoded* bytes).
   media type for a blob stored without one records it. A recorded media
   type never changes.
 - The server MAY enforce a **maximum blob size** (host-configured); an
-  over-limit body is HTTP 413 `blob.too_large` (non-retryable). Enforced
-  by declared `Content-Length` where present and again on the streamed
-  byte count.
+  over-limit body is HTTP 413 `blob.too_large` (non-retryable). The
+  server enforces it on the declared `Content-Length` before reading the
+  body and again on the decoded byte count while reading, so it never
+  buffers an over-limit body.
 - On success the response is HTTP 200 with an empty body; the blob is now
   present for reference by a subsequent push. Upload authorization is
   **host authentication only** — uploading bytes is not a scope-bearing
@@ -2646,8 +2672,8 @@ The grant flow, three hops, no new trust model:
    knows the id before any round-trip, §5.9.2).
 2. **Authorize + presign.** Upload authorization is **host authentication
    only**, identical to the direct PUT — uploading bytes is not a
-   scope-bearing act, because the id discloses nothing and the content
-   address is verified at *reference* time, not upload time. *Any
+   scope-bearing act, because the id discloses nothing and the object
+   store verifies the signed content address on the PUT. *Any
    authenticated actor may obtain a grant within the host size cap.* The
    server enforces the §5.9.3 size cap **here, up front**, against the
    declared `byteLength`: an over-cap request is HTTP 413 `blob.too_large`
@@ -2659,14 +2685,20 @@ The grant flow, three hops, no new trust model:
    an explicit non-goal, this rung and the next; resumable upload, when it
    comes, is provider multipart behind this same grant, never our own chunk
    framing) whose signed object key embeds exactly the `{blobId}` and whose
-   expiry obeys the §5.4 TTL guidance (≤ 15 min). The presign SHOULD bind
-   `Content-Length` (S3 conditional) to the declared `byteLength` so the
-   object cannot exceed the granted size. Response:
+   expiry obeys the §5.4 TTL guidance (≤ 15 min). The presign MUST bind
+   the PUT to the declared `byteLength` and to the content address: an
+   S3-compatible grant signs `content-length` (the declared `byteLength`)
+   and `x-amz-checksum-sha256` (the `{blobId}` digest, re-encoded from 64
+   lowercase hex digits to the base64 of its 32 raw bytes) beside `host`,
+   so the object store rejects a PUT of any other size (signature mismatch)
+   or any other bytes (checksum mismatch). Response:
    `{"url":"<presigned PUT>","urlExpiresAtMs":<i64>}` (the JSON envelope;
    `urlExpiresAtMs` present iff `url` is, the §5.4 pairing), or
    `{"present":true}` for the idempotent-skip case.
 3. **PUT direct.** The client `PUT`s the raw bytes to `url` with **no host
-   authentication attached** — the presigned URL is the entire grant, the
+   authentication attached** and with the `x-amz-checksum-sha256` header
+   (the base64 SHA-256 of the body; `Content-Length` comes from the body)
+   — the presigned URL is the entire grant, the
    §5.4 rule verbatim: a signed URL points at an object host that must never
    see host auth. All §5.4 client URL MUSTs apply: no `PUT` at or past
    `urlExpiresAtMs`; a failed `PUT` (expired, transport error, non-success
@@ -2679,19 +2711,16 @@ The grant flow, three hops, no new trust model:
    **different, host-authenticated capability**, not a fall-through of the
    grant (the direct endpoint was always the client's other path, §5.9.7 B4).
 
-**The content address is still the whole trust model.** The object store
-does not recompute the SHA-256 (it is not the sync server); the presign
-merely places bytes at the content-addressed key. Integrity is enforced
-**at reference time**: the §5.9.6 push existence check verifies the
-`{blobId}` object *exists* (a HEAD/`has`), and the §5.9.1 download check on
-every consumer re-verifies the content address over the received bytes
-(§5.9.5 inherits §5.1). A client that PUTs bytes not matching `{blobId}`
-poisons only its own upload — the object lands at the wrong key or a
-`Content-Length`-conditioned PUT rejects it, and no honest reference ever
-resolves to it. So presigned upload adds **no new integrity surface**: the
-address check that made the direct PUT safe still runs, just at the two
-points that already run it (push existence, download verify). This mirrors
-§5.4's stance — presign is an equivalence, not a new contract.
+**The content address is still the whole trust model.** On the direct PUT
+the sync server recomputes it; on a presigned PUT the object store
+recomputes it from the signed checksum. Without that binding, an actor who
+knows a file's `blobId` could PUT other bytes under it: the object would sit
+at the honest key, the §5.9.6 push existence check (a HEAD/`has`) would
+pass for every client referencing that file, those clients would skip their
+own upload, and every download would fail the §5.1 check. Signing the size
+and the checksum closes that: a mismatching PUT is refused by the object
+store and leaves no object behind. The §5.9.5 download check still
+re-verifies the content address over the received bytes on every consumer.
 
 #### 5.9.4 The reference index
 
@@ -2744,8 +2773,11 @@ lookup (candidate rows for the blob) followed by the existing per-row scope
 test — the same machinery write authorization already runs. `'*'` in the
 actor's allowed values passes as everywhere else.
 
-- **Inline delivery.** Without signed URLs the server answers the bytes
-  with the media type the blob store recorded for the blob (§5.9.3), so a
+- **Inline delivery.** Without signed URLs the server checks that the blob
+  exists, runs the authorization rule above, and only then reads the
+  bytes; it streams them as stored with identity encoding and
+  `Content-Length`. It answers them with the media type the blob store
+  recorded for the blob (§5.9.3), so a
   browser element that points at the route (`<img src>`) renders them.
   The response always carries `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: sandbox; default-src 'none'`: the media type
@@ -2798,6 +2830,10 @@ descriptor with exactly one delivery attempt. A client that received
 - MUST fetch the bytes from `url` with **no host authentication** attached
   (§5.4: the URL points at a CDN/object host that must never see host auth).
 - MUST NOT start a fetch at or past `urlExpiresAtMs` (client clock).
+- MUST stop reading once more bytes than the BlobRef's `byteLength`
+  arrived, when the caller supplied the BlobRef, and fail the fetch with
+  `sync.invalid_request` before the content-address check (the §5.4 read
+  cap; inline and url paths alike).
 - MUST verify the §5.1 content address over the received bytes before
   caching — a mismatch is a failed fetch, exactly as on the inline path.
 - On any failure (expired before fetch, transport error, non-success status,
@@ -2812,12 +2848,12 @@ descriptor with exactly one delivery attempt. A client that received
   never fall-through.
 - Response headers on the direct path: `Content-Type` per the inline
   delivery rule above; `ETag: "<blobId>"`;
-  `Cache-Control: private, max-age=0`;
-  `Vary: Authorization, Accept-Encoding`. `If-None-Match` with a matching
-  ETag returns 304. Blobs are opaque bytes; the server MUST NOT
-  re-compress at rest (content address = stored bytes, §5.8 rule), though
-  the serving hop MAY apply transport compression (`Content-Encoding`)
-  over the wire like any other body.
+  `Cache-Control: private, max-age=0`; `Vary: Authorization`. The
+  signed-URL envelope carries the same `ETag`, `Cache-Control` and `Vary`.
+  `If-None-Match` with a matching ETag returns 304. Blobs are opaque
+  bytes; the server MUST NOT re-compress at rest (content address =
+  stored bytes, §5.8 rule). Transport compression is optional; the
+  reference server serves identity.
 
 #### 5.9.6 Push-time existence check
 
@@ -2903,9 +2939,9 @@ the body's upload row, drops every outbox commit that names the body in
 `_syncular_blob_commit_refs` through the incompatible-commit path of §7.4.4
 with the server's code as the rejection code, and continues the round without
 those commits. A retryable refusal, or a failure that carries no server code
-(the TypeScript `sync.transport_failed`), fails the round and keeps the upload
-row and the commits. The rule applies to the TypeScript client; the Rust
-client still fails the round on every upload failure.
+(the TypeScript `sync.transport_failed`, a Rust transport error whose details
+lack the server's `retryable: false`), fails the round and keeps the upload
+row and the commits.
 
 Client download resolution: a query/read that surfaces a `blob_ref` value
 gives the app the `blobId` + metadata; the app requests bytes through the
@@ -7056,7 +7092,7 @@ byte-identical output):
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
-| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |
+| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key, and `1e999`, an unpaired surrogate, a `\u0000` escape, nesting 65 deep or nesting 128 deep inside a value that a later duplicate key shadows; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |
 
 ---
 

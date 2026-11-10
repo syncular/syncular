@@ -100,6 +100,22 @@ test('mutate refuses every value the declared column type rejects', async () => 
     ['bytes, no envelope', { ...valid, payload: { nested: true } }],
     ['bytes, bare number', { ...valid, payload: 7 }],
     ['crdt, malformed envelope', { ...valid, doc: { $bytes: 'zz' } }],
+    // §2.4: the push admission values the server rejects.
+    ['string column, U+0000', { ...valid, title: 'a\u0000b' }],
+    ['primary key, U+0000', { ...valid, id: 't\u0000' }],
+    ['json, number beyond binary64', { ...valid, meta: '[1e999]' }],
+    [
+      'json, nested 65 deep',
+      { ...valid, meta: `${'['.repeat(65)}${']'.repeat(65)}` },
+    ],
+    ['json, unpaired surrogate', { ...valid, meta: '"\\ud800"' }],
+    [
+      'blob_ref, reordered keys',
+      {
+        ...valid,
+        ref: `{"byteLength":3,"blobId":"sha256:${'0'.repeat(64)}"}`,
+      },
+    ],
   ];
   for (const [label, values] of cases) {
     expect(
@@ -130,6 +146,10 @@ test('mutate refuses every value the declared column type rejects', async () => 
       },
     }),
   );
+  expect(() =>
+    client.mutate([{ op: 'delete', table: 'tasks', rowId: 't\u0000' }]),
+  ).toThrow(expect.objectContaining({ code: 'sync.invalid_request' }));
+  expect(client.pendingCommits()).toHaveLength(1);
   expect(client.pendingCommits()[0]?.clientCommitId).toBe(first);
   expect(changes.flatMap((batch) => batch.tables)).toEqual([]);
   await client.close();
@@ -148,6 +168,8 @@ test('patch refuses a malformed envelope and a wrong type before recording', asy
     { payload: { $bytes: 'zz' } },
     { priority: 'high' },
     { meta: { a: 1 } },
+    { title: '\u0000' },
+    { meta: '{"a":1e999}' },
   ]) {
     expect(
       () => client.patch('tasks', 't1', partial as never),

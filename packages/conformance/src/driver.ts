@@ -160,6 +160,8 @@ export interface ServerLimitsOptions {
   readonly segmentTtlMs?: number;
   /** §8.6.2 presence document size cap (bytes). */
   readonly maxPresenceBytes?: number;
+  /** §5.9.3 blob upload size cap (bytes); a larger body is `blob.too_large`. */
+  readonly maxBlobBytes?: number;
 }
 
 /** §5.4 signed-URL issuance (native HMAC scheme) for the server under

@@ -13,7 +13,6 @@ import {
   encodeSparseRow,
   type PushCommitFrame,
   type PushOperation,
-  type ScopeMap,
   type SparseRowValue,
 } from '@syncular/core';
 import type { ClientDatabase, SqlRow } from './database';
@@ -24,7 +23,6 @@ import {
   type CompiledClientTable,
   type JsonRowValue,
   jsonToRowValue,
-  matchesLocalScopes,
 } from './schema';
 
 export interface OutboxOperation {
@@ -311,32 +309,4 @@ export async function encodeOutboxCommit(
     clientCommitId: commit.clientCommitId,
     operations,
   };
-}
-
-/**
- * §3.3: drop pending commits that write into a revoked scope instead of
- * replaying them into guaranteed rejections. A whole commit is dropped when
- * any of its upserts provably lands in the revoked effective scopes —
- * commits are atomic and their content is pinned by the idempotency key,
- * so ops are never removed individually. Returns dropped commit ids.
- */
-export function dropOutboxCommitsInScope(
-  db: ClientDatabase,
-  table: CompiledClientTable,
-  effective: ScopeMap,
-): string[] {
-  const entries = Object.entries(effective);
-  if (entries.length === 0) return [];
-  const dropped: string[] = [];
-  for (const commit of listOutbox(db)) {
-    const inScope = commit.operations.some((op) => {
-      if (op.table !== table.name || op.values === undefined) return false;
-      return matchesLocalScopes(table, effective, op.values);
-    });
-    if (inScope) {
-      deleteOutboxCommit(db, commit.clientCommitId);
-      dropped.push(commit.clientCommitId);
-    }
-  }
-  return dropped;
 }

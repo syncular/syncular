@@ -679,3 +679,75 @@ test('an HTTP error body keeps its code, recommendedAction and details', async (
     httpStatus: 400,
   });
 });
+
+/** A finite body of `chunks` 8-byte chunks that counts how often it is pulled. */
+function countedBody(chunks: number) {
+  const counter = { pulls: 0 };
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        counter.pulls += 1;
+        if (counter.pulls > chunks) controller.close();
+        else controller.enqueue(new Uint8Array(8));
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { counter, body };
+}
+
+for (const signed of [false, true]) {
+  test(`a segment body stops being read past its byteLength (signed=${signed})`, async () => {
+    const { counter, body } = countedBody(1000);
+    const downloader = httpSegmentDownloader('https://host/segments', {
+      fetch: Object.assign(async () => new Response(body), {
+        preconnect: fetch.preconnect,
+      }),
+    });
+    const bytes = await (signed
+      ? downloader.fetchUrl!('https://cdn/image', undefined, undefined, 10)
+      : downloader({
+          segmentId: 'sha256:test',
+          table: 'tasks',
+          requestedScopesJson: '{}',
+          byteLength: 10,
+        }));
+    // Two chunks pass the declared 10 bytes; the client core rejects them.
+    expect(bytes.byteLength).toBe(16);
+    expect(counter.pulls).toBe(2);
+  });
+}
+
+test('a blob body stops being read past the declared byteLength', async () => {
+  const inline = countedBody(1000);
+  const signed = countedBody(1000);
+  const blobs = httpBlobTransport('/blobs', {
+    fetch: Object.assign(
+      async (input: URL | RequestInfo) =>
+        new Response(
+          String(input).startsWith('/blobs') ? inline.body : signed.body,
+        ),
+      { preconnect: fetch.preconnect },
+    ),
+  });
+  const response = await blobs.download('sha256:test', 10);
+  if (response.kind !== 'bytes') throw new Error('expected inline bytes');
+  expect(response.bytes.byteLength).toBe(16);
+  expect(inline.counter.pulls).toBe(2);
+  expect((await blobs.fetchUrl!('https://cdn/blob', 10)).byteLength).toBe(16);
+  expect(signed.counter.pulls).toBe(2);
+});
+
+test('a presigned blob PUT sends the body checksum the grant signs (§5.9.3)', async () => {
+  const { seen, doFetch } = fakeFetch();
+  const blobs = httpBlobTransport('/blobs', { fetch: doFetch });
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  await blobs.uploadToUrl!('https://store/put?X-Amz-Signature=x', bytes);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', bytes.slice()),
+  );
+  expect(seen[0]?.headers['x-amz-checksum-sha256']).toBe(
+    btoa(String.fromCharCode(...digest)),
+  );
+  expect(seen[0]?.headers.authorization).toBeUndefined();
+});

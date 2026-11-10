@@ -6,7 +6,7 @@
 import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { ScenarioSkip } from '../scenario';
-import type { DriverSchema, DriverTable } from '../driver';
+import type { DriverRow, DriverSchema, DriverTable } from '../driver';
 import { ALL_SCOPES, doc, FIXTURE_SCHEMA, task } from '../fixture';
 import {
   rawDelete,
@@ -730,6 +730,58 @@ export const scopeScenarios: readonly Scenario[] = [
         (await a.api.readRows('docs'))[0]?.values.body,
         'edited',
         'the surviving subscription keeps syncing the shared row',
+      );
+    },
+  },
+
+  {
+    name: 'scopes/revocation-keeps-pending-commits-another-subscription-covers',
+    specRefs: ['§3.3'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      // One commit per request keeps the doc writes pending through the
+      // revoking round.
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1', 'o2'], projectId: ['p1', 'p9'] },
+        limits: { maxPushCommitsPerRequest: 1 },
+      });
+      await a.api.subscribe({
+        id: 'org',
+        table: 'docs',
+        scopes: { org_id: ['o1'] },
+      });
+      await a.api.subscribe({
+        id: 'project',
+        table: 'docs',
+        scopes: { projectId: ['p1'] },
+      });
+      await syncIdle(a);
+
+      await ctx.server.setAllowedScopes('actor-a', {
+        org_id: ['o1', 'o2'],
+        projectId: ['p9'],
+      });
+      const upsert = (row: DriverRow) =>
+        a.api.mutate([{ op: 'upsert', table: 'docs', values: row }]);
+      await upsert(doc('filler', 'o1', 'p9'));
+      const shared = await upsert(doc('shared', 'o1', 'p1'));
+      const lone = await upsert(doc('lone', 'o2', 'p1'));
+      const report = await syncOk(a);
+
+      checkEqual(report.revoked, ['project'], 'only the project grant ended');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [shared],
+        'the commit the org subscription still covers stays pending',
+      );
+      checkEqual(
+        (await a.api.rejections())
+          .filter((rejection) => rejection.code === 'sync.scope_revoked')
+          .map((rejection) => rejection.clientCommitId),
+        [lone],
+        'the commit only the revoked grant covered is dropped',
       );
     },
   },

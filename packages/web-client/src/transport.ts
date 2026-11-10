@@ -39,6 +39,11 @@ export interface SegmentFetchRequest {
   readonly table: string;
   /** Canonical JSON (§11.2) of the requested scope map (§5.5 header). */
   readonly requestedScopesJson: string;
+  /**
+   * The descriptor's `byteLength` (§5.4): the downloader stops reading once
+   * the body exceeds it, and the client core rejects the result.
+   */
+  readonly byteLength?: number;
   readonly onProgress?: (bytesReceived: number) => void;
   /** Aborts with the round when the `syncUntilIdle` deadline elapses (§7.7). */
   readonly signal?: AbortSignal;
@@ -58,6 +63,8 @@ export interface SegmentDownloader {
     url: string,
     onProgress?: (bytesReceived: number) => void,
     signal?: AbortSignal,
+    /** The descriptor's `byteLength`; reading stops once the body exceeds it. */
+    byteLength?: number,
   ) => Promise<Uint8Array>;
 }
 

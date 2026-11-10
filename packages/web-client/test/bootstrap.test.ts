@@ -339,6 +339,27 @@ describe('external segments (SEGMENT_REF)', () => {
   });
 });
 
+describe('segment byteLength cap (§5.4)', () => {
+  test('a body longer than its descriptor fails before the content-address check', async () => {
+    const server = makeServer();
+    server.limits.inlineSegmentMaxBytes = 0;
+    await seedTasks(server, 3);
+    const b = await makeClient(server, { clientId: 'client-b' });
+    b.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    b.faults.extendSegmentDownloadOnce = true;
+    await expect(b.client.sync()).rejects.toThrow(
+      'segment exceeds its byteLength',
+    );
+    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks')).toHaveLength(3);
+  });
+});
+
 describe('bootstrap resume (§4.7)', () => {
   test('a paged bootstrap resumes from the opaque token and hands off at the pin', async () => {
     const server = makeServer();

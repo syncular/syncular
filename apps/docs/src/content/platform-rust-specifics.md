@@ -130,7 +130,8 @@ Both validate the caller's values before recording anything. These report `sync.
 - an unknown column or an internal `_sync_` column;
 - a value whose JSON form does not match the column type;
 - an absent required column in a full-row upsert;
-- a primary key the wire cannot render.
+- a primary key the wire cannot render;
+- a value the server refuses at push admission: a string or delete `rowId` containing U+0000, a `json` value outside the JSON validity rule, or a non-canonical `blob_ref`.
 
 A rejected call preserves the outbox, the optimistic rows, and the local revision. `SyncRemoteClient::prepare_commit` classifies the same failures with the same code.
 

@@ -42,6 +42,7 @@ import {
   PROTOCOL_WIRE_VERSION,
   type PresenceKind,
   type PushResultFrame,
+  parseJsonDocument,
   parseRealtimeServerEvent,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
@@ -155,7 +156,6 @@ import {
 import {
   appendOutboxCommit,
   deleteOutboxCommit,
-  dropOutboxCommitsInScope,
   encodeOutboxCommit,
   listOutbox,
   iterateOutbox,
@@ -2574,9 +2574,7 @@ export class SyncClient {
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
     if (this.#config.blobs === undefined) {
-      throw invalidRequest(
-        'uploadBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
-      );
+      throw invalidRequest('uploadBlob requires a blob transport');
     }
     const blobId = await computeBlobId(bytes);
     const nowMs = this.#now();
@@ -2609,29 +2607,28 @@ export class SyncClient {
   }
 
   async #fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
-    const blobId = blobIdOrRef.startsWith('sha256:')
-      ? blobIdOrRef
-      : parseBlobRef(blobIdOrRef).blobId;
+    // A BlobRef declares the size that caps the download (§5.9.5); a bare
+    // blobId declares none.
+    const ref = blobIdOrRef.startsWith('sha256:')
+      ? undefined
+      : parseBlobRef(blobIdOrRef);
+    const blobId = ref?.blobId ?? blobIdOrRef;
     const cached = getCachedBlob(this.#db, blobId);
     if (cached !== undefined) return cached;
     const transport = this.#config.blobs;
     if (transport === undefined) {
-      throw invalidRequest(
-        'fetchBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
-      );
+      throw invalidRequest('fetchBlob requires a blob transport');
     }
     // §5.9.5: the authorized endpoint serves bytes inline OR (always-issue,
     // presign configured) a signed url the client fetches directly. On a url
     // arm the client MUST NOT attach host auth and MUST NOT fall through:
     // failure => re-request, the caller's next fetchBlob mints a fresh url.
     this.#requireTransport();
-    const response = await transport.download(blobId);
+    const response = await transport.download(blobId, ref?.byteLength);
     let bytes: Uint8Array;
     if (response.kind === 'url') {
       if (transport.fetchUrl === undefined) {
-        throw invalidRequest(
-          'blob download returned a url but the transport cannot fetch urls (§5.9.5)',
-        );
+        throw invalidRequest('blob transport cannot fetch urls');
       }
       if (
         response.urlExpiresAtMs !== undefined &&
@@ -2640,22 +2637,22 @@ export class SyncClient {
         // §5.9.5: MUST NOT start a fetch at/past expiry — re-request recovers.
         throw new ClientSyncError(
           'sync.segment_expired',
-          `blob url for ${blobId} expired before fetch — re-request mints a fresh url (§5.9.5)`,
+          'blob url expired before fetch',
           true,
         );
       }
-      bytes = await transport.fetchUrl(response.url);
+      bytes = await transport.fetchUrl(response.url, ref?.byteLength);
     } else {
       bytes = response.bytes;
     }
-    const computed = await computeBlobId(bytes);
-    if (computed !== blobId) {
-      // §5.9.5 inherits §5.1: verify the content address, reject on mismatch.
-      // On the url path this invalidates the fetch (no fall-through) — the
-      // next fetchBlob re-requests the authorized endpoint (§5.9.5 recovery).
-      throw invalidRequest(
-        `blob content address mismatch for ${blobId} (§5.9.5)`,
-      );
+    // §5.9.5 inherits §5.1: the declared size caps the body and the content
+    // address must match. On the url path either failure invalidates the
+    // fetch (no fall-through); the next fetchBlob re-requests the endpoint.
+    if (bytes.byteLength > (ref?.byteLength ?? bytes.byteLength)) {
+      throw invalidRequest('blob exceeds its byteLength');
+    }
+    if ((await computeBlobId(bytes)) !== blobId) {
+      throw invalidRequest('blob content address mismatch');
     }
     putCachedBlob(this.#db, blobId, bytes, this.#now());
     this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -3491,6 +3488,9 @@ export class SyncClient {
     const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
+        // §2.4: the server rejects a rowId holding U+0000.
+        if (mutation.rowId.includes('\u0000'))
+          throw invalidRequest('rowId holds U+0000');
         return definedObject({
           table: mutation.table,
           rowId: mutation.rowId,
@@ -5273,11 +5273,7 @@ export class SyncClient {
     if (header?.type !== 'RESP_HEADER') {
       throw invalidRequest('missing RESP_HEADER');
     }
-    if (
-      message.wireVersion < 2 ||
-      header.logEpoch === undefined ||
-      header.resetRequired === undefined
-    ) {
+    if (message.wireVersion < 2) {
       throw new ClientSyncError(
         'client.invalid_host_response',
         'the server response does not carry wire version 2 log-epoch state',
@@ -6210,19 +6206,24 @@ export class SyncClient {
           true,
         );
       }
-      bytes = await fetchUrl(frame.url, onProgress, signal);
+      bytes = await fetchUrl(frame.url, onProgress, signal, frame.byteLength);
     } else {
       bytes = await downloader({
         segmentId: frame.segmentId,
         table: frame.table,
         requestedScopesJson: canonicalScopeJson(sub.scopes),
+        byteLength: frame.byteLength,
         onProgress,
         ...(signal !== undefined ? { signal } : {}),
       });
     }
-    // §5.1: verify the content address before applying; on mismatch the
-    // segment is discarded and the cursor/resume token stay unpersisted,
-    // so the next pull re-delivers.
+    // §5.4: the descriptor's byteLength caps the body; §5.1: verify the
+    // content address before applying. On either failure the segment is
+    // discarded and the cursor/resume token stay unpersisted, so the next
+    // pull re-delivers.
+    if (bytes.byteLength > frame.byteLength) {
+      throw invalidRequest('segment exceeds its byteLength', true);
+    }
     onProgress(bytes.byteLength);
     const hash = await sha256Hex(bytes);
     if (`sha256:${hash}` !== frame.segmentId) {
@@ -6359,21 +6360,20 @@ export class SyncClient {
           ];
           deleteScopedRows(this.#db, table, lastEffective, owners);
           batch.scopeMap(table, lastEffective);
-          const pendingById = new Map(
-            listOutbox(this.#db).map((commit) => [
-              commit.clientCommitId,
-              commit,
-            ]),
+          // §3.3: a whole pending commit leaves when one of its upserts
+          // provably lands in the revoked scopes and no other owner covers it.
+          const doomed = listOutbox(this.#db).filter((commit) =>
+            commit.operations.some(
+              (op) =>
+                op.table === table.name &&
+                op.values !== undefined &&
+                ownsLocalRow(table, lastEffective, owners, op.values),
+            ),
           );
-          const droppedIds = dropOutboxCommitsInScope(
-            this.#db,
-            table,
-            lastEffective,
-          );
-          if (droppedIds.length > 0) {
-            for (const clientCommitId of droppedIds) {
-              const commit = pendingById.get(clientCommitId);
-              if (commit === undefined) continue;
+          if (doomed.length > 0) {
+            for (const commit of doomed) {
+              const { clientCommitId } = commit;
+              deleteOutboxCommit(this.#db, clientCommitId);
               const results: CommitOperationOutcome[] = commit.operations.map(
                 (operation, opIndex) => {
                   const rejection: RejectionRecord = {
@@ -6743,27 +6743,30 @@ export class SyncClient {
       type: localColumnType(column),
     }));
     const sparse: Array<RowValue | undefined> = [];
-    for (const column of table.columns) {
-      const raw = values[column.name];
+    for (const { name, type } of declared) {
+      const raw = values[name];
       if (raw === undefined) {
         sparse.push(undefined);
         continue;
       }
-      // §7.1: the schema-agnostic outbox form serializes through JSON, which
-      // turns NaN and ±Infinity into null. The authoring boundary refuses them
-      // instead of recording a different value; the wire `f64` encoding itself
-      // stays IEEE-754 binary64 (§2.4).
+      // §2.4/§7.1: authoring refuses the push admission values the server
+      // rejects. JSON would also turn NaN and ±Infinity into null, so the
+      // outbox never records a different value.
       if (
-        localColumnType(column) === 'float' &&
-        typeof raw === 'number' &&
-        !Number.isFinite(raw)
+        (type === 'float' &&
+          typeof raw === 'number' &&
+          !Number.isFinite(raw)) ||
+        (type === 'string' && typeof raw === 'string' && raw.includes('\0'))
       )
-        return `column ${column.name} (float) requires a finite number value`;
+        return `column ${name} holds a value push admission rejects`;
       try {
+        if (typeof raw === 'string' && type === 'json')
+          parseJsonDocument(raw, 'json value');
+        if (typeof raw === 'string' && type === 'blob_ref') parseBlobRef(raw);
         sparse.push(jsonToRowValue(raw));
       } catch (error) {
-        if (error instanceof ClientSyncError)
-          return `column ${column.name}: ${error.message}`;
+        if (error instanceof ClientSyncError || error instanceof DecodeError)
+          return `column ${name}: ${error.message}`;
         throw error;
       }
     }
