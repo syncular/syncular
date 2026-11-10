@@ -105,7 +105,7 @@ as nullable: SQLite returns one row with `NULL` in that column when no row
 matches. A column of a compound `SELECT` (`UNION`, `INTERSECT`, `EXCEPT`) is
 nullable when any branch can yield `NULL` there.
 
-::checkpoint[`syncular fmt --check queries` passes for `.syql` files.]
+::checkpoint[`syncular fmt --check` passes for `.syql` files.]
 ::::
 
 ::::step{title="Turn on the output for your SDK" time="1 min"}
@@ -144,8 +144,8 @@ The `syncular` CLI ships in `@syncular/typegen`:
 ```sh title="terminal"
 bunx syncular generate --manifest-dir .
 bunx syncular generate --manifest-dir . --check
-bunx syncular fmt queries
-bunx syncular fmt --check queries
+bunx syncular fmt
+bunx syncular fmt --check
 ```
 
 Run both `--check` commands in CI. Each queries file carries a do-not-edit
@@ -174,7 +174,7 @@ import { useQuery } from '@syncular/react';
 import { listTodosQuery } from './syncular.queries';
 
 const todos = useQuery(listTodosQuery, { listId });
-// todos.rows: ListTodosRow[]; todos.phase: loading | partial | ready | error
+// todos.rows: ListTodosRow[]; todos.phase: loading | partial | ready | blocked | error
 ```
 ```swift sdk=swift title="Todos.swift"
 let rows = try SyncularSchemaQueries.listTodos(client: client, listId: listId)
@@ -183,7 +183,7 @@ let rows = try SyncularSchemaQueries.listTodos(client: client, listId: listId)
 val rows = SyncularSchemaQueries.listTodos(client, listId)
 ```
 ```dart sdk=flutter title="lib/todos.dart"
-final rows = syncularListTodosQuery(client, listId);
+final rows = syncularListTodosQuery(client, listId: listId);
 ```
 ```rust sdk=rust title="src/todos.rs"
 mod syncular_queries;
@@ -214,7 +214,7 @@ on the output to change them. React Native and Tauri use the TypeScript output.
 | TypeScript | `ListTodosRow`, `ListTodosParams`, `listTodosTables`, `async listTodos(client, params)`, and a `listTodosQuery` descriptor for React |
 | Swift | `struct ListTodosRow` with `init?(row:)`, `<Enum>Queries.listTodos(client:listId:)`, `listTodosTables` |
 | Kotlin | `data class ListTodosRow` with `fromRow`, `<Object>Queries.listTodos(client, listId)`, `listTodosTables` |
-| Dart | `class ListTodosRow` with `fromRow`, `syncularListTodosQuery(client, listId)`, `syncularListTodosQueryTables` |
+| Dart | `class ListTodosRow` with `fromRow`, `syncularListTodosQuery(client, listId: listId)`, `syncularListTodosQueryTables` |
 | Rust | `list_todos::{Row, Params, DESCRIPTOR, select, run, snapshot}` |
 
 The TypeScript runner takes a structural `QueryClient` with one method,

@@ -23,7 +23,7 @@ client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
 client.unsubscribe('todos');
 ```
 
-`subscriptionState(id)` returns `active`, `revoked`, or `failed`. Repeating a subscribe with the same definition is a no-op; a different definition under an existing id throws. The generated `syncular.generated.dart` carries a typed row class and a subscription helper per table declared in `syncular.json`.
+`subscriptionState(id)` returns `active`, `revoked`, or `failed`. Repeating a subscribe with the same definition is a no-op; a different definition under an existing id throws. The generated `syncular.generated.dart` carries a typed row class per table and a subscription helper per subscription declared in `syncular.json`.
 
 ## Write
 

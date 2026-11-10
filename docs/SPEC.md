@@ -1238,6 +1238,11 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   `{ pattern: 'prefix:{variable}', column: 'column_name' }`. Exactly one
   `{variable}` per pattern; a variable MUST NOT map to two different
   columns.
+- A scope column's type MUST be `string`, `integer` or `float`; typegen
+  and the server's schema compile reject `boolean`, `json`, `bytes`,
+  `blob_ref` and `crdt` (`typegen.scope_column_type`,
+  `schema.scope_column_type`). A row whose scope column is NULL has no
+  stored scope for that variable, so the server rejects every write of it.
 - Every synced table MUST declare **at least one** scope pattern — a
   schema-compile-time requirement (configuring a table without one is a
   server bug, rejected before serving). Rationale: a zero-scope table

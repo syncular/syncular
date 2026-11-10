@@ -94,10 +94,23 @@ function resolveScope(table: ParsedTable, spec: ManifestScopeSpec): IrScope {
   }
   const variable = match[2];
   const column = typeof spec === 'string' ? variable : spec.column;
-  if (!table.columns.some((c) => c.name === column)) {
+  const scopeColumn = table.columns.find((c) => c.name === column);
+  if (scopeColumn === undefined) {
     throw new TypegenError(
       MANIFEST_FILENAME,
       `table ${table.name}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
+    );
+  }
+  if (
+    scopeColumn.type !== 'string' &&
+    scopeColumn.type !== 'integer' &&
+    scopeColumn.type !== 'float'
+  ) {
+    throw new TypegenError(
+      MANIFEST_FILENAME,
+      'a scope column must have type string, integer or float (§3.1)',
+      'typegen.scope_column_type',
+      { table: table.name, column, type: scopeColumn.type },
     );
   }
   return { pattern, variable, column };

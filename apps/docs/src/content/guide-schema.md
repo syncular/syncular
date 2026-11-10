@@ -131,6 +131,11 @@ The `tables` array order is the bootstrap order: parents before children. List
 every table present at the head of migration history; omit a table that
 `DROP TABLE` retired. Unknown manifest keys are hard errors.
 
+A scope column has type `TEXT`, `INTEGER`, or `REAL`. `syncular generate`
+rejects `BOOLEAN`, `JSON`, `BLOB`, `BLOB_REF`, and `CRDT` scope columns with
+`typegen.scope_column_type`. A row whose scope column is NULL has no stored
+scope, so the server rejects every write of it.
+
 ::checkpoint[`syncular.json` names every table that `up.sql` creates.]
 ::::
 

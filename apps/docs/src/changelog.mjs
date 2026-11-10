@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'A scope column must be a string, integer, or float',
+    body: 'Generation refuses a scope column of type `boolean`, `json`, `bytes`, `blob_ref`, or `crdt` with `typegen.scope_column_type`, and the server schema compile refuses the same types with `schema.scope_column_type`. A `bytes` or `crdt` scope column made every write fail with `sync.forbidden`, and a `boolean` scope column never matched in the client purge and eviction predicates, so revoked rows stayed readable. A row with a NULL scope value is still unwritable.',
+    links: [
+      {
+        href: '/guide-schema/',
+        label: 'Schema guide',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title:
       'Native schemas carry indexes and references; the migration lock records schema versions',
     body: 'The Swift, Kotlin, and Dart schema constants parse the same schema JSON the TS module embeds, so native clients now create local indexes, enforce local `UNIQUE`, and pass declared references to the local authority. The Dart constant is now `final` (decoded with `dart:convert`) instead of `const`. Migration lock format 3 records the schema version of every locked migration: generation refuses a migration that joins a locked version (`typegen.schema_version_locked`) or a locked migration moved to another version (`typegen.migration_version_changed`). A format 1 or 2 lock fails with `typegen.migration_lock_outdated` until `syncular migrations upgrade-lock` converts it once. Generation also refuses an encrypted column in any index, a declared reference whose single-column index a migration dropped, table or column names that differ only in letter case, two names that map to one generated type or field name, and reserved words on every emitted target in both naming modes. `DEFAULT -1` is accepted, and `DEFAULT NOT NULL` is a parse error.',

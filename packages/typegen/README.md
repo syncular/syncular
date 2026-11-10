@@ -764,7 +764,7 @@ represented by the same proof model.
 | TS | `listTodosRow` interface + `ListTodosParams` + `listTodosTables` + `async listTodos(client, params): Promise<ListTodosRow[]>` + a `listTodosQuery` descriptor for React |
 | Swift | `struct ListTodosRow` + `init?(row:)` and `<Enum>Queries.listTodos(client:listId:) throws -> [ListTodosRow]` + `listTodosTables` |
 | Kotlin | `data class ListTodosRow` + `fromRow` and `<Object>Queries.listTodos(client, listId): List<ListTodosRow>` + `listTodosTables` |
-| Dart | `class ListTodosRow` + `fromRow` and `syncularListTodosQuery(client, listId): List<ListTodosRow>` + `syncularListTodosQueryTables` |
+| Dart | `class ListTodosRow` + `fromRow` and `syncularListTodosQuery(client, listId: listId): List<ListTodosRow>` + `syncularListTodosQueryTables` |
 | Rust | `list_todos::{Row, Params, DESCRIPTOR, select, run, snapshot}` with strict decoding, `i64` fidelity, reactive dependencies, `WindowCoverage`, and proven `row_key` |
 
 Each projection row is its **own** generated type per query (the drift-kill:
@@ -811,5 +811,5 @@ revisioned store:
 ```ts
 import { listTodosQuery } from './syncular.queries';
 const todos = useQuery(listTodosQuery, { listId });
-// todos.rows: ListTodosRow[]; todos.phase: loading | partial | ready | error
+// todos.rows: ListTodosRow[]; todos.phase: loading | partial | ready | blocked | error
 ```

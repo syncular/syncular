@@ -161,6 +161,22 @@ export interface CompiledSchema {
 
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
 
+/** A scope column has a type other than string, integer or float (§3.1). */
+export class ScopeColumnTypeError extends Error {
+  readonly code = 'schema.scope_column_type';
+
+  constructor(
+    readonly details: {
+      readonly table: string;
+      readonly column: string;
+      readonly type: string;
+    },
+  ) {
+    super('a scope column must have type string, integer or float (§3.1)');
+    this.name = 'ScopeColumnTypeError';
+  }
+}
+
 /**
  * Compile one `prefix:{variable}` scope pattern against the table's column
  * list, resolving the scope column's positional index for row extraction.
@@ -185,6 +201,14 @@ function compilePattern(
     throw new Error(
       `table ${table.name}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
     );
+  }
+  const type = table.columns[index]?.type;
+  if (type !== 'string' && type !== 'integer' && type !== 'float') {
+    throw new ScopeColumnTypeError({
+      table: table.name,
+      column,
+      type: type ?? 'undefined',
+    });
   }
   return { variable, prefix, column, columnIndex: index };
 }

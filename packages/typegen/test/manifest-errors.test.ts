@@ -470,3 +470,50 @@ describe('declared references (§6.11)', () => {
     });
   });
 });
+
+describe('scope column types (§3.1)', () => {
+  const scopeTypes: readonly [sqlType: string, accepted: boolean][] = [
+    ['TEXT', true],
+    ['INTEGER', true],
+    ['REAL', true],
+    ['BOOLEAN', false],
+    ['JSON', false],
+    ['BLOB', false],
+    ['BLOB_REF', false],
+    ['CRDT', false],
+  ];
+
+  test.each(scopeTypes)(
+    '%s scope column, accepted: %p',
+    (sqlType, accepted) => {
+      const build = () =>
+        buildIr(manifest(), [
+          {
+            name: '0001_initial',
+            sql: `CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id ${sqlType} NOT NULL)`,
+          },
+        ]);
+      if (accepted) {
+        expect(build().tables[0]?.scopes).toEqual([
+          {
+            pattern: 'project:{project_id}',
+            variable: 'project_id',
+            column: 'project_id',
+          },
+        ]);
+        return;
+      }
+      let error: unknown;
+      try {
+        build();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TypegenError);
+      expect(error).toMatchObject({
+        code: 'typegen.scope_column_type',
+        details: { table: 'tasks', column: 'project_id' },
+      });
+    },
+  );
+});
