@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-10',
+    title: 'Follower replies reach only the tab that asked',
+    body: "Multi-tab protocol 3 addresses each leader reply to the follower that sent the request. Before, two followers whose requests shared an id could settle each other's calls. Tabs of an older build block with `leader-incompatible` until they reload. A follower whose core fails to start after it wins the lock reports `leader-start-failed` and contests the lock again, at most three times, and a newer tab deposes every older tab that promotes ahead of it.",
+    links: [
+      {
+        href: '/platform-web-specifics/#build-compatibility',
+        label: 'Build compatibility',
+      },
+    ],
+  },
+  {
     date: '2026-11-09',
     title: 'Rust crates bundle SQLite 3.54.1',
     body: 'The Rust crates and native bindings move to rusqlite 0.41, which bundles SQLite 3.54.1 and closes CVE-2026-119375 (RUSTSEC-2026-0459). An app that passes its own `rusqlite::Connection` to `SyncClient::with_connection` upgrades to rusqlite 0.41 and Rust 1.89.',

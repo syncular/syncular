@@ -862,7 +862,14 @@ async function startWorkerCore(options: {
   dispatchEvent: (event: SyncWorkerEvent) => void;
 }): Promise<LeaderCore> {
   const { config, initConfig, lease } = options;
-  const worker = config.worker();
+  let worker: Worker;
+  try {
+    worker = config.worker();
+  } catch (error) {
+    // No worker exists to terminate; the lease is the only thing held.
+    await lease.release();
+    throw error;
+  }
   const pending = new Map<number, Pending>();
   const nextId = { value: 1 };
   let terminated = false;

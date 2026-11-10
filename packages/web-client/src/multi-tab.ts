@@ -19,7 +19,9 @@
  *     announce {t,epoch,clientId,protocol,schemaVersion}
  *                                              — "I am the leader, this epoch";
  *                                                the answer to every hello
- *     res      {t,epoch,reqId,ok,value|error} — reply to one req
+ *     res      {t,epoch,to,reqId,ok,value|error}
+ *                                              — reply to one req, for the
+ *                                                follower `to` that sent it
  *     event    {t,epoch,event,to?}            — fan-out (invalidate/presence/…),
  *                                                or one tab's event when `to` is set
  *
@@ -29,17 +31,21 @@
  * from a stale epoch, and a follower discards any `res`/`event` that does not
  * match its current epoch — so a late reply from a tab that has since died
  * (or a duplicate from a previous leader) can never be mistaken for a live
- * one. Epoch is derived deterministically from a per-origin clock: each
- * promoter reads the highest epoch it has seen and adds one, so successive
- * leaders always strictly increase it even across the lock-handover gap.
+ * one. Every follower counts its `reqId`s from 1, so a follower also discards
+ * a `res` whose `to` names another tab. Epoch is derived deterministically
+ * from a per-origin clock: each promoter reads the highest epoch it has seen
+ * and adds one, so successive leaders always strictly increase it even across
+ * the lock-handover gap.
  *
  * Identity: every hello, req, and announce carries the sender's
  * {@link MULTI_TAB_PROTOCOL_VERSION} and application schema version. A leader
  * serves only requests with its own identity. A follower whose leader has a
  * different identity goes `blocked` with `leader-incompatible` and sends it
  * nothing. A leader that hears a hello from a newer tab closes its core and
- * releases the lock, so the newer tab takes over. Tabs from before protocol 1
- * send no identity and count as older.
+ * releases the lock, so the newer tab takes over. A newer follower sends one
+ * hello to every older leader it hears announce, so an older tab that promotes
+ * after the first one stepped down steps down as well. Tabs from before
+ * protocol 1 send no identity and count as older.
  *
  * Liveness is follower-driven: the leader runs no timer. Browsers throttle
  * the timers of a hidden tab (Chrome's intensive throttling wakes them about
@@ -93,7 +99,7 @@ export const TAKEOVER_REFUSED_CODE = 'client.takeover_refused';
  * with every change to a message shape or to a forwarded method's arguments
  * or result, so tabs of different builds never serve each other.
  */
-export const MULTI_TAB_PROTOCOL_VERSION = 2;
+export const MULTI_TAB_PROTOCOL_VERSION = 3;
 
 /** What a tab must share with its leader to be served by it. */
 export interface TabIdentity {
@@ -133,6 +139,20 @@ export type LeadershipState =
   | {
       readonly state: 'waiting';
       readonly reason: 'handover' | 'leader-announcement';
+    }
+  | {
+      /**
+       * This tab won the lock after the leader left and its core failed to
+       * start. It released the lock and, while `retrying`, asks for it again
+       * behind every other waiting tab; after the third failed start it stops
+       * contesting and binds to whichever tab leads next.
+       */
+      readonly state: 'waiting';
+      readonly reason: 'leader-start-failed';
+      readonly error: ClientSyncError;
+      /** Failed starts of this tab's core so far. */
+      readonly attempt: number;
+      readonly retrying: boolean;
     }
   | {
       readonly state: 'blocked';
@@ -191,6 +211,8 @@ interface AnnounceMessage extends IdentityFields {
 interface ResMessage {
   readonly t: 'res';
   readonly epoch: number;
+  /** The follower that sent the request. */
+  readonly to: string;
   readonly reqId: number;
   readonly ok: boolean;
   readonly value?: unknown;
@@ -358,6 +380,7 @@ export class LeaderBridge<E = SyncWorkerEvent> {
       this.#channel.postMessage({
         t: 'res',
         epoch: this.#epoch,
+        to: fromId,
         reqId,
         ok: false,
         error: {
@@ -379,6 +402,7 @@ export class LeaderBridge<E = SyncWorkerEvent> {
         this.#channel.postMessage({
           t: 'res',
           epoch: this.#epoch,
+          to: fromId,
           reqId,
           ok: true,
           value,
@@ -405,6 +429,7 @@ export class LeaderBridge<E = SyncWorkerEvent> {
         this.#channel.postMessage({
           t: 'res',
           epoch: this.#epoch,
+          to: fromId,
           reqId,
           ok: false,
           error: shape,
@@ -471,6 +496,8 @@ export class FollowerLink<E = SyncWorkerEvent> {
   #nextReqId = 1;
   readonly #inFlight = new Map<number, QueuedCall>();
   readonly #replayOnHandover: ReadonlySet<string>;
+  /** `epoch:clientId` of every older leader this tab asked to step down. */
+  readonly #deposed = new Set<string>();
   #queue: QueuedCall[] = [];
   #closed = false;
   #state: LeadershipState = {
@@ -707,6 +734,13 @@ export class FollowerLink<E = SyncWorkerEvent> {
       if (message.epoch < this.#epoch) return;
       const relation = compareTabIdentity(message, this.#identity);
       if (relation !== 0) {
+        // An older leader steps down for this tab's hello. Each one hears it
+        // once: an older tab that promotes later is another leader.
+        const leader = `${message.epoch}:${message.clientId}`;
+        if (relation < 0 && !this.#deposed.has(leader)) {
+          this.#deposed.add(leader);
+          this.#probe();
+        }
         this.#setIncompatible(relation < 0 ? 'older' : 'newer');
         return;
       }
@@ -742,8 +776,9 @@ export class FollowerLink<E = SyncWorkerEvent> {
     }
     if (message.t === 'res') {
       // Discard a reply for a stale epoch — the leader that produced it is
-      // gone; the request (if still pending) is being retried elsewhere.
-      if (message.epoch !== this.#epoch) return;
+      // gone; the request (if still pending) is being retried elsewhere. A
+      // reply for another follower carries a `reqId` of that tab's counter.
+      if (message.epoch !== this.#epoch || message.to !== this.#fromId) return;
       const inflight = this.#inFlight.get(message.reqId);
       if (inflight === undefined) return;
       this.#inFlight.delete(message.reqId);
@@ -883,9 +918,9 @@ export class FollowerLink<E = SyncWorkerEvent> {
   }
 
   /**
-   * The leader runs another build. Send it nothing and stay unbound until a
-   * leader with this tab's identity announces (a newer leader's own hello
-   * already asked an older one to step down; see the module comment).
+   * The leader runs another build. Send it nothing but the one step-down
+   * hello for an older leader, and stay unbound until a leader with this
+   * tab's identity announces (see the module comment).
    */
   #setIncompatible(leader: 'older' | 'newer'): void {
     this.#clearReachabilityTimers();
@@ -1438,26 +1473,49 @@ export async function createTabCoordinator<E>(
       : {}),
   });
   follower = link;
+  let failedStarts = 0;
   // Granted only when the lock is released: the leader's tab closed, or this
   // tab's own failed takeover let go of it.
-  void lock.acquire(config.name).then(async (promoted) => {
-    if (closed || follower !== link) {
-      // Closed, or this tab already leads through takeOver(): promoting would
-      // hold the lock forever.
-      await promoted.release();
-      return;
-    }
-    // The new leader must exceed every epoch this tab saw, so stale replies
-    // and events are discarded everywhere.
-    const epoch = link.maxEpochSeen + 1;
-    link.unbind();
-    try {
-      await lead(promoted, epoch, false);
-    } catch {
-      // The core failed to start: release so the next tab tries.
-      await promoted.release();
-    }
-  });
+  const contest = (): void => {
+    void lock.acquire(config.name).then(async (promoted) => {
+      if (closed || follower !== link) {
+        // Closed, or this tab already leads through takeOver(): promoting
+        // would hold the lock forever.
+        await promoted.release();
+        return;
+      }
+      // The new leader must exceed every epoch this tab saw, so stale replies
+      // and events are discarded everywhere.
+      const epoch = link.maxEpochSeen + 1;
+      link.unbind();
+      try {
+        await lead(promoted, epoch, false);
+      } catch (error) {
+        // Release so the next waiting tab tries, then queue behind it. Three
+        // failed starts stop the contest: a core that fails the same way each
+        // time (a changed worker bundle, an unreadable database) would
+        // otherwise take and drop the lock in a loop while this tab is alone.
+        await promoted.release();
+        failedStarts += 1;
+        const retrying = failedStarts < 3 && !closed;
+        setState({
+          state: 'waiting',
+          reason: 'leader-start-failed',
+          error:
+            error instanceof ClientSyncError
+              ? error
+              : new ClientSyncError(
+                  WORKER_FAILED_CODE,
+                  'the core failed to start',
+                ),
+          attempt: failedStarts,
+          retrying,
+        });
+        if (retrying) contest();
+      }
+    });
+  };
+  contest();
   // Return bound: an event the leader fans out before binding is dropped.
   try {
     await link.waitUntilBound();
