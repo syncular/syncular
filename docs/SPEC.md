@@ -35,7 +35,29 @@ transport compression, §1.3).
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
 | `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). "Code unit" means **UTF-16 code units** — the order JavaScript string comparison yields; it diverges from UTF-8 byte order exactly when keys mix U+E000–U+FFFF characters with supplementary-plane characters, so implementations in byte-oriented languages MUST compare by UTF-16 code units, not encoded bytes. A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
-| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string parses as a JSON document (a value that does not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string is a valid JSON document under the JSON validity rule below (a value that is not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+
+**JSON validity rule.** A JSON document is valid when it parses per RFC
+8259 and meets three limits:
+
+- it nests at most 64 containers: every array or object adds one level, so
+  `[]` has depth 1 and a top-level scalar has depth 0;
+- every number, rounded to nearest binary64, is finite: `1e999` and
+  `-1e999` are invalid, `1e-999` is valid and reads as 0,
+  `1.7976931348623157e308` is valid and `1.7976931348623159e308` is not;
+- no string, object keys included, contains U+0000 or an unpaired
+  surrogate (the escape `\ud800` without a following low-surrogate escape).
+
+Duplicate object keys and insignificant whitespace are valid; the parsed
+value of a duplicated key is the last one. Every reference codec decodes
+the envelope `json` fields (`params`, `bootstrapState`, `ERROR.details`,
+`PUSH_RESULT_DETAILS.details`), push-payload `json` columns (§2.4) and
+`blob_ref` values (§5.9.1) against this rule. The rule exists because the
+reference cores disagree outside it: ECMAScript `JSON.parse` accepts
+`1e999` as `Infinity`, lone surrogates and any depth, while `serde_json`
+rejects all three, and a PostgreSQL store rejects U+0000 that SQLite
+stores. Full-row `json` columns (`COMMIT` payloads, segments, conflict
+`serverRow`) are outside the rule (§2.4).
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
@@ -523,15 +545,14 @@ contrast, is cross-message state and stays a producer conformance rule.
 
 | Field | Type | Versions | Semantics |
 |---|---|---|---|
-| `requiredSchemaVersion` | `opt(i32)` | 1, 2 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
-| `latestSchemaVersion` | `opt(i32)` | 1, 2 | Informational: newest schema version the server knows. MUST NOT block syncing |
-| `logEpoch` | `str` | 2 | The current partition log identity (§2.1), non-empty |
-| `resetRequired` | `bool` | 2 | True when the request omitted `logEpoch` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
+| `requiredSchemaVersion` | `opt(i32)` | 3 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
+| `latestSchemaVersion` | `opt(i32)` | 3 | Informational: newest schema version the server knows. MUST NOT block syncing |
+| `logEpoch` | `str` | 3 | The current partition log identity (§2.1), non-empty |
+| `resetRequired` | `bool` | 3 | True when the request omitted `logEpoch` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
 
-Wire version 1 ends after `latestSchemaVersion`. Wire version 2 adds
-`logEpoch` and `resetRequired`. A version 2 schema-floor response still
-carries both version fields, `logEpoch`, and `resetRequired`; schema upgrade
-takes precedence in the client surface.
+`logEpoch` and `resetRequired` are present in every response. A
+schema-floor response carries both schema-version fields next to them;
+schema upgrade takes precedence in the client surface.
 
 **Schema-floor response.** When the request's `schemaVersion` is not
 served — below the floor *or* newer than anything the server knows —
@@ -763,7 +784,7 @@ MUST NOT write the registry row when the stored timestamp is less than
 the row and returns it unchanged, so a request that only reads takes no write
 lock. A missing row is always created.
 
-A version 2 client persists the accepted `logEpoch` in the same durable
+A client persists the accepted `logEpoch` in the same durable
 database as its cursors and outbox. It sends that value in every later
 `REQ_HEADER`. The server compares it before scope resolution, lease issuance,
 push application, pull reads, or client-record updates:
@@ -917,9 +938,9 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `2` | `integer` | `i64` |
 | `3` | `float` | `f64` |
 | `4` | `boolean` | `bool` |
-| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The Conventions `json` MUST applies at **row-codec decode**: a value that does not parse as a JSON document is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list) — decode validates exactly what the §11 rendering would later parse, so the two can never disagree. The raw string is still preserved verbatim for re-encoding |
+| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The full-row codec checks at **row-codec decode** that the value parses as a JSON document; a value that does not is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list), so decode validates what the §11 rendering would later parse. A full-row decoder MUST accept every document the Conventions JSON validity rule accepts and MAY reject a document outside it: rows stored before the rule keep decoding wherever they decoded before. The sparse row codec applies the JSON validity rule itself (push admission values, below). The raw string is preserved verbatim for re-encoding |
 | `6` | `bytes` | `bytes` |
-| `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST parse as JSON **and** satisfy the BlobRef shape (§5.9.1) at row-codec decode, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
+| `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST be a valid JSON document (Conventions), satisfy the BlobRef shape **and** equal its canonical serialization (§5.9.1) at every row-codec decode, full row and sparse row alike, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
 | `8` | `crdt` | `bytes` containing an **opaque CRDT update/state** (§5.10). On the wire and in the codec a `crdt` value is byte-for-byte a `bytes` (tag 6): a `u32` length prefix plus raw bytes, with **no structural validation at decode** — the bytes are host/merger-opaque (a Yjs update, a state vector, an RGA log; the codec neither parses nor trusts them). The distinct tag exists so schema, apply, and query surfaces recognize a column as *collaborative state the server merges rather than overwrites* (§5.10, §6.2 crdt interaction) — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `bytes` machinery. Beyond the tag, the schema IR marks a `crdt` column with a `crdtType` name (§5.10.1) that selects the server merger; `crdtType` is IR metadata, **never on the wire** (unlike `nullable`, which is), so it does not appear in the SSG2 column table |
 
 **Encrypted columns (§5.11).** A column marked for client-side encryption
@@ -998,6 +1019,23 @@ for an absent column); a null bit for a non-nullable column. A full row is
 the special case with every presence bit set; it still carries the
 presence bitmap and a null bitmap over all columns, so its bytes differ
 from the full-row codec's.
+
+**Push admission values.** Sparse-row decode also rejects, each a decode
+error (`sync.invalid_request`), a present non-NULL value that a reference
+store or core would treat differently:
+
+- a `string` value containing U+0000;
+- a `json` value that is not a valid JSON document under the Conventions
+  JSON validity rule;
+- a `float` value that is NaN, `Infinity` or `-Infinity`;
+- a `blob_ref` value that is not canonical (§5.9.1).
+
+The full-row codec does not apply the first three: `COMMIT` payloads,
+segments and conflict `serverRow` keep decoding rows stored before the
+rule. A server therefore admits one value set on every storage backend: a
+U+0000 string applies on SQLite and fails on PostgreSQL, and a NaN `float`
+applies on PostgreSQL and fails a SQLite `NOT NULL` column, so neither
+reaches storage.
 
 The sparse row is the `payload` format of push operations (§6.1) at wire
 version 3 (§9's window is `[3]`). Every other surface keeps the full-row
@@ -2405,14 +2443,28 @@ cross-implementation rendering all agree):
   parses or trusts it (content addressing is over bytes, not type).
 - `name` (**optional**): an advisory display filename.
 
-**Canonical key order is exactly `blobId`, `byteLength`, `mediaType`,
-`name`**, absent optional keys omitted; the JSON has no insignificant
-whitespace. A `blob_ref` value that parses as JSON but violates this shape
-(missing/malformed `blobId`, missing/negative/non-integer `byteLength`,
-non-string optional fields, unknown keys, or non-canonical key order) is a
-**row-codec decode error** (`sync.invalid_request`, in §5.2's closed
-list) — validated at the same decode point as the `json` tag-5 parse, so
-codec and rendering never disagree. The BlobRef is host-opaque beyond this
+A `blob_ref` value is valid when three checks pass, in this order:
+
+1. the text is a valid JSON document under the Conventions JSON validity
+   rule;
+2. the parsed value is an object with the shape above: no unknown keys,
+   `blobId` well-formed, `byteLength` an integer in `[0, 2^53−1]`,
+   `mediaType` and `name` strings when present;
+3. the text is byte-identical to the **canonical serialization** of the
+   parsed fields.
+
+The canonical serialization writes the keys in the order `blobId`,
+`byteLength`, `mediaType`, `name`, omits absent optional keys, has no
+insignificant whitespace, writes `byteLength` as the shortest decimal
+integer (no sign, fraction, exponent or leading zero), and escapes strings
+as ECMAScript `JSON.stringify` does: `"` and `\` as `\"` and `\\`,
+U+0008, U+0009, U+000A, U+000C and U+000D as `\b`, `\t`, `\n`, `\f` and
+`\r`, every other code point below U+0020 as `\u00` plus two lowercase
+hex digits, and nothing else. Reordered keys, duplicate keys, whitespace
+and a `byteLength` written `1e2`, `3.0` or `-0` all fail check 3. A
+failure is a **row-codec decode error** (`sync.invalid_request`, in §5.2's
+closed list) on every decode path: `COMMIT` payloads, segments, conflict
+`serverRow` and push payloads. The BlobRef is host-opaque beyond this
 shape check: the codec preserves the raw string byte-for-byte for
 re-encoding exactly as it does a `json` value.
 
@@ -3299,7 +3351,7 @@ Operation record:
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins. Presence is deliberately **not** tied to `op`: a `delete` operation MAY carry a `baseVersion`, which the codec accepts and preserves and the server ignores (deletes perform no version check, §6.2) |
-| `payload` | `opt(bytes)` | One **sparse row** (§2.4) encoded for the request's `schemaVersion`: the columns the operation writes — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail sparse-row decode are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
+| `payload` | `opt(bytes)` | One **sparse row** (§2.4) encoded for the request's `schemaVersion`: the columns the operation writes — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail sparse-row decode, including a push admission value (§2.4), are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
 
 Servers MUST enforce an operation-count cap per request, counted as the
 **total operations across all `PUSH_COMMIT` frames in the request**
@@ -4141,9 +4193,12 @@ value the generated row codec cannot encode is refused with
 no local row, publishes no revision, and emits no observation event.
 
 The schema-agnostic outbox form (§0) serializes values as JSON, so an
-unrepresentable value is refused. A `float` column accepts a finite number: `NaN`, `Infinity` and `-Infinity` are
-refused at authoring, while the §2.4 `f64` wire encoding stays IEEE-754
-binary64 and is unchanged. A `bytes` or `crdt` column accepts the canonical
+unrepresentable value is refused. Authoring refuses every push admission
+value of §2.4, because the server would reject it: a `string` containing
+U+0000, a `json` value outside the Conventions JSON validity rule, a
+`float` that is `NaN`, `Infinity` or `-Infinity`, and a non-canonical
+`blob_ref` (§5.9.1). The §2.4 `f64` wire encoding stays IEEE-754 binary64
+and is unchanged. A `bytes` or `crdt` column accepts the canonical
 envelope `{"$bytes": "<hex>"}`: exactly one `$bytes` key holding a string of
 hexadecimal digit pairs, with uppercase digits accepted and lowercase digits
 emitted. Any other envelope, including an odd digit count, a non-hexadecimal
@@ -6783,15 +6838,18 @@ byte-identical output):
 | 21 | `realtime/presence-publish` + `realtime/presence-fanout` | JSON control vectors (`.json` only — no binary form): a client→server publish (§8.6.2 `{scopeKey, doc}`) and a server→client `join` fanout (`{scopeKey, kind, actorId, clientId, doc, timestamp}`). Pins the new `presence` event shape in both directions; a feature-off peer ignores it by event name (§8.6), so no binary vector or wire-version bump |
 | 22 | `crypto/aes-gcm-*` | §5.11 ciphertext envelope, byte-pinned per `declaredType` with a **fixed** key and nonce (test-only injection): one case per value type (`string`, `json`, `integer`, `float`, `boolean`, `bytes`) — plaintext value, key, nonce, and expected envelope bytes. Both cores reproduce the envelope byte-for-byte and round-trip decrypt. A separate `crypto/` kind (not a wire message; the envelope is a codec-level value, exercised directly, not inside an SSP2 frame) |
 | 23 | `crypto/x25519-wrap` | §5.11 X25519 sealed-box key wrap: a fixed recipient keypair, a fixed ephemeral secret and nonce, a fixed 32-byte symmetric key, and the expected wrap envelope; both cores wrap to the same bytes and unwrap back to the key. Proves the async-encryption utilities are cross-core byte-compatible |
-| 24 | `request/epoch-bound` | Wire version 2 request header with the client's stored partition `logEpoch` |
-| 25 | `response/epoch-reset` | Wire version 2 header-only response with a new `logEpoch` and `resetRequired = true` |
+| 24 | `request/epoch-bound` | Request header with the client's stored partition `logEpoch` |
+| 25 | `response/epoch-reset` | Header-only response with a new `logEpoch` and `resetRequired = true` |
 | 26 | `push/sparse-row` + `push/sparse-row-full` | Sparse row push payloads (RFC §6.1), exercised at the codec level (not inside an SSP2 frame): a partial row with a present-NULL column, and the full-row case with every presence bit set. Nine columns covering every §2.4 type, so the presence bitmap spans two bytes and both bitmaps carry padding bits |
 | 27 | `request/round-failure-report` | A request with the optional `ROUND_FAILURE` frame (§1.5) directly after `REQ_HEADER`, followed by a pull: pins the `0x05` frame and its grammar position |
-| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar |
-| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
-| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
+| 28 | `request/json-boundaries` | The Conventions JSON validity rule at its accepting edge: `params` nested exactly 64 containers deep, `bootstrapState` with whitespace, a duplicate key, the largest finite binary64 and escapes |
+| 29 | `push/admission-*` | Push admission values (§2.4) over a five-column table the manifest carries per case: `json` nested 64 deep, `json` with whitespace and a duplicate key, a `float` holding the largest finite binary64, and a canonical `blob_ref` whose `name` exercises every escape class of §5.9.1 |
+| 30 | `segment/full-row-admission-values` | A full row keeps decoding a `string` holding U+0000 (the push admission values apply to sparse rows only) next to the canonical `blob_ref` of case 29 |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `SUBSCRIPTION.params` holding `1e999`, `SUBSCRIPTION.bootstrapState` nested 65 deep |
+| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape |
+| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
-| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column |
+| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |
 
 ---
 

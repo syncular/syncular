@@ -2,15 +2,14 @@
  * Canonical BlobRef documents (SPEC.md §5.9.1) — the value carried by a
  * `blob_ref` column (§2.4 tag 7).
  *
- * A `blob_ref` value is a `str` holding a JSON document with a pinned shape
- * and pinned key order: `blobId` (content address), `byteLength`, then the
- * optional `mediaType` and `name`. On the wire and in the codec it is
- * byte-for-byte a `str`, validated at decode exactly like `json` (tag 5)
- * plus the shape check below; the raw string is preserved verbatim for
- * re-encoding. Nothing here re-serializes a decoded value — round-trip
- * fidelity is the same rule the `json` tag obeys.
+ * A `blob_ref` value is a `str` holding the canonical serialization of a
+ * pinned shape: `blobId` (content address), `byteLength`, then the optional
+ * `mediaType` and `name`. On the wire and in the codec it is byte-for-byte a
+ * `str`; decode accepts exactly the canonical text, so the raw string a
+ * decoder preserves for re-encoding is the canonical one.
  */
 import { DecodeError } from './errors';
+import { parseJsonDocument } from './json-document';
 
 /** The content-address prefix, identical in form to `segmentId` (§5.1). */
 const BLOB_ID_RE = /^sha256:[0-9a-f]{64}$/;
@@ -26,30 +25,14 @@ export interface BlobRef {
   readonly name?: string;
 }
 
-/** Canonical key order (§5.9.1): blobId, byteLength, mediaType, name. */
-const CANONICAL_KEYS: readonly string[] = [
-  'blobId',
-  'byteLength',
-  'mediaType',
-  'name',
-];
-
 /**
- * Parse and validate a raw `blob_ref` string against the §5.9.1 shape. A
- * failure is a row-codec decode error (`sync.invalid_request`), the same
- * class as the tag-5 json parse failure — so codec and §11 rendering can
- * never disagree.
+ * Parse and validate a raw `blob_ref` string (§5.9.1): a valid JSON document
+ * (Conventions JSON validity rule), the pinned shape, and text byte-identical
+ * to `serializeBlobRef` of the parsed fields. A failure is a row-codec decode
+ * error (`sync.invalid_request`) on every decode path.
  */
 export function parseBlobRef(raw: string): BlobRef {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new DecodeError(
-      'sync.invalid_request',
-      'blob_ref value does not parse as a JSON document (§5.9.1)',
-    );
-  }
+  const parsed = parseJsonDocument(raw, 'blob_ref value');
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new DecodeError(
       'sync.invalid_request',
@@ -57,13 +40,12 @@ export function parseBlobRef(raw: string): BlobRef {
     );
   }
   const obj = parsed as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (!CANONICAL_KEYS.includes(key)) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `blob_ref has unknown key ${JSON.stringify(key)} (§5.9.1)`,
-      );
-    }
+  const keys = ['blobId', 'byteLength', 'mediaType', 'name'];
+  if (Object.keys(obj).some((key) => !keys.includes(key))) {
+    throw new DecodeError(
+      'sync.invalid_request',
+      'blob_ref has an unknown key (§5.9.1)',
+    );
   }
   const { blobId, byteLength, mediaType, name } = obj;
   if (typeof blobId !== 'string' || !BLOB_ID_RE.test(blobId)) {
@@ -94,23 +76,21 @@ export function parseBlobRef(raw: string): BlobRef {
       'blob_ref.name must be a string when present (§5.9.1)',
     );
   }
-  // Canonical key order: the raw string's keys, in appearance order, must be
-  // a prefix-consistent subsequence of CANONICAL_KEYS (present keys in the
-  // pinned order, absent keys omitted).
-  const presentInOrder = Object.keys(obj);
-  const expectedOrder = CANONICAL_KEYS.filter((k) => Object.hasOwn(obj, k));
-  if (presentInOrder.join(',') !== expectedOrder.join(',')) {
-    throw new DecodeError(
-      'sync.invalid_request',
-      'blob_ref keys are not in canonical order (§5.9.1)',
-    );
-  }
-  return {
+  const ref: BlobRef = {
     blobId,
     byteLength,
     ...(mediaType !== undefined ? { mediaType } : {}),
     ...(name !== undefined ? { name } : {}),
   };
+  // Reordered or duplicate keys, whitespace, and a byteLength written as
+  // `1e2`, `3.0` or `-0` all differ from the canonical text.
+  if (serializeBlobRef(ref) !== raw) {
+    throw new DecodeError(
+      'sync.invalid_request',
+      'blob_ref is not in canonical form (§5.9.1)',
+    );
+  }
+  return ref;
 }
 
 /** Serialize a BlobRef to its canonical string form (§5.9.1 key order). */

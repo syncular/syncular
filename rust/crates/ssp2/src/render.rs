@@ -141,12 +141,8 @@ fn render_frame(frame: &Frame) -> Value {
             if let Some(v) = latest_schema_version {
                 entries.push(("latestSchemaVersion", Value::from(*v)));
             }
-            if let Some(value) = log_epoch {
-                entries.push(("logEpoch", Value::from(value.clone())));
-            }
-            if let Some(value) = reset_required {
-                entries.push(("resetRequired", Value::from(*value)));
-            }
+            entries.push(("logEpoch", Value::from(log_epoch.clone())));
+            entries.push(("resetRequired", Value::from(*reset_required)));
         }
         Frame::Lease {
             lease_id,

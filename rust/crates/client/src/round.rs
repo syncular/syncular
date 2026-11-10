@@ -349,7 +349,7 @@ impl PreparedSyncRound {
                 let mut planned: Vec<PlannedFetch> = Vec::new();
                 // A reset/floor/invalid header cannot authorize any segment
                 // fetch.
-                if matches!(response.frames.first(), Some(Frame::RespHeader { required_schema_version: None, reset_required: Some(false), log_epoch: Some(epoch), .. }) if self.message.frames.first().is_some_and(|f| matches!(f, Frame::ReqHeader { log_epoch: Some(request_epoch), .. } if request_epoch == epoch)))
+                if matches!(response.frames.first(), Some(Frame::RespHeader { required_schema_version: None, reset_required: false, log_epoch: epoch, .. }) if self.message.frames.first().is_some_and(|f| matches!(f, Frame::ReqHeader { log_epoch: Some(request_epoch), .. } if request_epoch == epoch)))
                 {
                     let mut scope: Option<(&str, &str)> = None;
                     // §5.4 / §5.5: collect every eligible descriptor first so

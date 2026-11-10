@@ -1044,8 +1044,8 @@ mod observation_tests {
             frames: vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: Some("epoch-1".into()),
-                reset_required: Some(false),
+                log_epoch: "epoch-1".into(),
+                reset_required: false,
             }],
         };
         let mut seq = 0;
@@ -1297,8 +1297,8 @@ mod observation_tests {
                         Frame::RespHeader {
                             required_schema_version: None,
                             latest_schema_version: None,
-                            log_epoch: Some("epoch-1".into()),
-                            reset_required: Some(false),
+                            log_epoch: "epoch-1".into(),
+                            reset_required: false,
                         },
                         Frame::SubStart {
                             id: "tasks".into(),
@@ -1698,8 +1698,8 @@ mod observation_tests {
             Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: Some("epoch-1".into()),
-                reset_required: Some(false),
+                log_epoch: "epoch-1".into(),
+                reset_required: false,
             },
             Frame::SubStart {
                 id: "tasks".into(),
@@ -1855,8 +1855,8 @@ mod observation_tests {
                     Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: Some("epoch-1".to_owned()),
-                        reset_required: Some(false),
+                        log_epoch: "epoch-1".to_owned(),
+                        reset_required: false,
                     },
                     Frame::Error {
                         code: self.code.to_owned(),
@@ -2179,8 +2179,8 @@ mod observation_tests {
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".into()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".into(),
+                    reset_required: false,
                 },
                 Frame::SubStart {
                     id: "tasks".into(),
@@ -2216,8 +2216,8 @@ mod observation_tests {
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".into()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".into(),
+                    reset_required: false,
                 },
                 Frame::Error {
                     code: "sync.internal_error".into(),
@@ -2267,8 +2267,8 @@ mod observation_tests {
             frames: vec![Frame::RespHeader {
                 required_schema_version: Some(2),
                 latest_schema_version: Some(2),
-                log_epoch: Some("epoch-1".into()),
-                reset_required: Some(false),
+                log_epoch: "epoch-1".into(),
+                reset_required: false,
             }],
         };
         let mut transport = ScriptedSyncTransport {
@@ -2341,8 +2341,8 @@ mod observation_tests {
         let mut all = vec![Frame::RespHeader {
             required_schema_version: None,
             latest_schema_version: None,
-            log_epoch: Some("epoch-1".into()),
-            reset_required: Some(false),
+            log_epoch: "epoch-1".into(),
+            reset_required: false,
         }];
         all.extend(frames);
         encode_message(&Message {
@@ -3817,8 +3817,8 @@ mod observation_tests {
                     Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: Some("epoch-1".into()),
-                        reset_required: Some(false),
+                        log_epoch: "epoch-1".into(),
+                        reset_required: false,
                     },
                     Frame::PushResult {
                         client_commit_id: id,
@@ -3889,8 +3889,8 @@ mod observation_tests {
                 frames: vec![Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-new".into()),
-                    reset_required: Some(true),
+                    log_epoch: "epoch-new".into(),
+                    reset_required: true,
                 }],
             };
             let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
@@ -4054,8 +4054,8 @@ mod observation_tests {
             let mut frames = vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: Some("epoch-1".into()),
-                reset_required: Some(false),
+                log_epoch: "epoch-1".into(),
+                reset_required: false,
             }];
             frames.extend(meta.pushed_ids.iter().enumerate().map(|(index, id)| {
                 Frame::PushResult {
@@ -4182,8 +4182,8 @@ mod observation_tests {
         let mut frames = vec![Frame::RespHeader {
             required_schema_version: None,
             latest_schema_version: None,
-            log_epoch: Some("epoch-1".to_owned()),
-            reset_required: Some(false),
+            log_epoch: "epoch-1".to_owned(),
+            reset_required: false,
         }];
         frames.extend(request_meta.pushed_ids.iter().enumerate().map(
             |(index, client_commit_id)| Frame::PushResult {
@@ -4870,8 +4870,8 @@ mod observation_tests {
                             Frame::RespHeader {
                                 required_schema_version: None,
                                 latest_schema_version: None,
-                                log_epoch: Some("epoch".into()),
-                                reset_required: Some(false),
+                                log_epoch: "epoch".into(),
+                                reset_required: false,
                             },
                             Frame::PushResult {
                                 client_commit_id: commit.clone(),
@@ -5573,8 +5573,8 @@ mod observation_tests {
                 frames: vec![Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".to_owned()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".to_owned(),
+                    reset_required: false,
                 }],
             };
             for id in [&ids[0], &ids[0], "unknown", &ids[1], &ids[2]] {
@@ -5723,8 +5723,8 @@ mod observation_tests {
                         Frame::RespHeader {
                             required_schema_version: None,
                             latest_schema_version: None,
-                            log_epoch: Some("epoch-1".to_owned()),
-                            reset_required: Some(false),
+                            log_epoch: "epoch-1".to_owned(),
+                            reset_required: false,
                         },
                         Frame::PushResult {
                             client_commit_id: ids[0].clone(),
@@ -5811,8 +5811,8 @@ mod observation_tests {
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".to_owned()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".to_owned(),
+                    reset_required: false,
                 },
                 Frame::PushResult {
                     client_commit_id: ids[0].clone(),
@@ -6171,8 +6171,8 @@ mod observation_tests {
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".into()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".into(),
+                    reset_required: false,
                 },
                 Frame::PushResult {
                     client_commit_id: id.clone(),
@@ -10286,8 +10286,8 @@ mod observation_tests {
                     let mut frames = vec![Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: Some("epoch-1".into()),
-                        reset_required: Some(false),
+                        log_epoch: "epoch-1".into(),
+                        reset_required: false,
                     }];
                     let mut commit_seq = 0;
                     for frame in &message.frames {
@@ -10462,8 +10462,8 @@ mod observation_tests {
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".into()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".into(),
+                    reset_required: false,
                 },
                 Frame::SubStart {
                     id: "tasks".into(),
@@ -10623,8 +10623,8 @@ mod observation_tests {
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch-1".into()),
-                    reset_required: Some(false),
+                    log_epoch: "epoch-1".into(),
+                    reset_required: false,
                 },
                 Frame::SubStart {
                     id: "tasks".into(),
@@ -18410,22 +18410,6 @@ impl SyncClient {
                 log_epoch,
                 reset_required,
             }) => {
-                let Some(log_epoch) = log_epoch else {
-                    return SyncOutcome::Failed {
-                        details: None,
-                        error_code: "client.invalid_host_response".to_owned(),
-                        message: "response header omits logEpoch".to_owned(),
-                        recommended_action: None,
-                    };
-                };
-                let Some(reset_required) = reset_required else {
-                    return SyncOutcome::Failed {
-                        details: None,
-                        error_code: "client.invalid_host_response".to_owned(),
-                        message: "response header omits resetRequired".to_owned(),
-                        recommended_action: None,
-                    };
-                };
                 if let Some(required) = required_schema_version {
                     // §1.6 schema-floor response: nothing else is processed;
                     // stop syncing and surface the upgrade requirement.
@@ -23640,8 +23624,8 @@ mod scope_move_delivery_tests {
             let mut frames = vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: Some("epoch-1".to_owned()),
-                reset_required: Some(false),
+                log_epoch: "epoch-1".to_owned(),
+                reset_required: false,
             }];
             for id in order {
                 let project = if id == "old" { "p1" } else { "p2" };

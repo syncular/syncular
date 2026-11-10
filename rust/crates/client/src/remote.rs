@@ -796,8 +796,8 @@ mod tests {
                     Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: Some("epoch-1".to_owned()),
-                        reset_required: Some(false),
+                        log_epoch: "epoch-1".to_owned(),
+                        reset_required: false,
                     },
                     Frame::PushResult {
                         client_commit_id: "job-1".to_owned(),

@@ -3252,8 +3252,8 @@ mod tests {
             frames: vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: Some("epoch".into()),
-                reset_required: Some(false),
+                log_epoch: "epoch".into(),
+                reset_required: false,
             }],
         });
         let server_response = response.clone();
@@ -3410,8 +3410,8 @@ mod tests {
                         frames: vec![Frame::RespHeader {
                             required_schema_version: None,
                             latest_schema_version: None,
-                            log_epoch: Some("epoch".into()),
-                            reset_required: Some(true),
+                            log_epoch: "epoch".into(),
+                            reset_required: true,
                         }],
                     });
                     let mut chunk = vec![crate::REALTIME_TAG_ROUND];
@@ -3474,8 +3474,8 @@ mod tests {
             frames: vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: Some("epoch".into()),
-                reset_required: Some(true),
+                log_epoch: "epoch".into(),
+                reset_required: true,
             }],
         })
     }

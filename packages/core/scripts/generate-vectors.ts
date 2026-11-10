@@ -29,6 +29,7 @@ import {
   renderSparseRowValue,
   type SparseRowValue,
   decodeSparseRow,
+  serializeBlobRef,
   utf8Encode,
 } from '../src/index';
 
@@ -1185,6 +1186,196 @@ const invalidSparseAbsentPrimaryKey = (() => {
   return w.finish();
 })();
 
+// Push admission values (SPEC.md §2.4) and the JSON validity rule
+// (Conventions). The admission table has one column per rule, so each probe
+// is a sparse payload of the primary key plus one value. The encoders do not
+// police values, so invalid payloads come straight from the codec.
+const ADMISSION_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'text', type: 'string', nullable: true },
+  { name: 'score', type: 'float', nullable: true },
+  { name: 'meta', type: 'json', nullable: true },
+  { name: 'file', type: 'blob_ref', nullable: true },
+];
+const admissionManifest = {
+  columns: ADMISSION_COLUMNS.map((column) => ({
+    name: column.name,
+    type: column.type,
+    nullable: column.nullable,
+  })),
+  primaryKey: 'id',
+};
+
+function admissionPayload(column: string, value: RowValue): Uint8Array {
+  return encodeSparseRow(
+    ADMISSION_COLUMNS,
+    0,
+    ADMISSION_COLUMNS.map((c) =>
+      c.name === 'id' ? 'a-1' : c.name === column ? value : undefined,
+    ),
+  );
+}
+
+function renderAdmission(bytes: Uint8Array): JsonValue {
+  return renderSparseRowValue(
+    ADMISSION_COLUMNS,
+    decodeSparseRow(ADMISSION_COLUMNS, 0, bytes),
+  );
+}
+
+const jsonDepth = (depth: number): string =>
+  `${'['.repeat(depth)}${']'.repeat(depth)}`;
+
+// Valid under the rule although no core would emit it: whitespace, a
+// duplicate key (the last value wins), the largest finite binary64 and an
+// escaped surrogate pair next to an escaped control character.
+const JSON_HOST_OPAQUE =
+  '{ "a" : 1 , "a" : [true, null] , "max" : 1.7976931348623157e308 , "pair" : "\\ud83d\\ude00\\u0001" }';
+
+const BLOB_ID = `sha256:${sha256Hex('syncular-vector:blob')}`;
+
+// Canonical text whose name exercises every JSON.stringify escape class:
+// quote, backslash, the five short escapes, \u00xx controls, and characters
+// left raw (DEL, non-ASCII, a supplementary character, U+2028).
+const BLOB_REF_CANONICAL = serializeBlobRef({
+  blobId: BLOB_ID,
+  byteLength: 1024,
+  mediaType: 'text/plain',
+  name: '"q" \\ \b\f\n\r\t\u0001\u001f\u007f é 😀 \u2028',
+});
+
+// Each fails the §5.9.1 canonical check on every decode path.
+const BLOB_REF_INVALID: ReadonlyArray<{
+  name: string;
+  raw: string;
+  covers: string;
+}> = [
+  {
+    name: 'reordered-keys',
+    raw: `{"byteLength":1024,"blobId":"${BLOB_ID}"}`,
+    covers: 'byteLength before blobId',
+  },
+  {
+    name: 'byte-length-exponent',
+    raw: `{"blobId":"${BLOB_ID}","byteLength":1e2}`,
+    covers: 'byteLength written 1e2',
+  },
+  {
+    name: 'byte-length-fraction',
+    raw: `{"blobId":"${BLOB_ID}","byteLength":3.0}`,
+    covers: 'byteLength written 3.0',
+  },
+  {
+    name: 'byte-length-negative-zero',
+    raw: `{"blobId":"${BLOB_ID}","byteLength":-0}`,
+    covers: 'byteLength written -0',
+  },
+  {
+    name: 'whitespace',
+    raw: `{"blobId": "${BLOB_ID}", "byteLength": 1024}`,
+    covers: 'insignificant whitespace after the colons and comma',
+  },
+  {
+    name: 'duplicate-key',
+    raw: `{"blobId":"${BLOB_ID}","byteLength":1,"byteLength":1024}`,
+    covers: 'byteLength twice; the parsed value serializes without the first',
+  },
+  {
+    name: 'lone-surrogate-name',
+    raw: `{"blobId":"${BLOB_ID}","byteLength":1024,"name":"\\ud800"}`,
+    covers:
+      'name holds an unpaired surrogate escape, the text JSON.stringify would write for it (JSON validity rule)',
+  },
+  {
+    name: 'nul-name',
+    raw: `{"blobId":"${BLOB_ID}","byteLength":1024,"name":"\\u0000"}`,
+    covers: 'name holds U+0000 (JSON validity rule)',
+  },
+];
+
+const FILES_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'text', type: 'string', nullable: true },
+  { name: 'file', type: 'blob_ref', nullable: true },
+];
+
+function filesSegment(values: readonly RowValue[]): Uint8Array {
+  return encodeRowsSegment({
+    table: 'files',
+    schemaVersion: 1,
+    columns: FILES_COLUMNS,
+    blocks: [[{ serverVersion: 1, values }]],
+  });
+}
+
+const jsonBoundaries: RequestMessage = {
+  wireVersion: 3,
+  msgKind: 'request',
+  frames: [
+    { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
+    {
+      type: 'PULL_HEADER',
+      limitCommits: 0,
+      limitSnapshotRows: 0,
+      maxSnapshotPages: 0,
+      accept: 0b0011,
+    },
+    {
+      type: 'SUBSCRIPTION',
+      id: 'sub-notes',
+      table: 'notes',
+      scopes: { project: ['p1'] },
+      params: jsonDepth(64),
+      cursor: -1,
+      bootstrapState: JSON_HOST_OPAQUE,
+    },
+  ],
+};
+
+function pullWithSubscriptionJson(
+  field: 'params' | 'bootstrapState',
+  raw: string,
+): Uint8Array {
+  return encodeMessage({
+    wireVersion: 3,
+    msgKind: 'request',
+    frames: [
+      { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
+      {
+        type: 'PULL_HEADER',
+        limitCommits: 0,
+        limitSnapshotRows: 0,
+        maxSnapshotPages: 0,
+        accept: 0b0011,
+      },
+      {
+        type: 'SUBSCRIPTION',
+        id: 'sub-notes',
+        table: 'notes',
+        scopes: { project: ['p1'] },
+        cursor: -1,
+        [field]: raw,
+      },
+    ],
+  });
+}
+
+const invalidErrorDetailsNulKey = encodeMessage({
+  ...errorMidStream,
+  frames: errorMidStream.frames.map((frame) =>
+    frame.type === 'ERROR' ? { ...frame, details: '{"\\u0000":1}' } : frame,
+  ),
+});
+
+const invalidSubEndLoneSurrogate = encodeMessage({
+  ...pullEmpty,
+  frames: pullEmpty.frames.map((frame) =>
+    frame.type === 'SUB_END'
+      ? { ...frame, bootstrapState: '"\\udc00"' }
+      : frame,
+  ),
+});
+
 // Realtime invalid cases (.json only — malformed *known* events; unknown
 // event names are tolerated per §8.1 and are not invalid cases).
 const invalidWakeRequiresPullFalse = {
@@ -1271,6 +1462,8 @@ interface BinaryCase {
   bytes: Uint8Array;
   render: (bytes: Uint8Array) => JsonValue;
   covers: string;
+  /** Codec-level kinds: a column table that overrides the kind's own. */
+  manifest?: ManifestExtra;
 }
 
 interface JsonCase {
@@ -1284,6 +1477,8 @@ interface InvalidCase {
   bytes: Uint8Array;
   error: string;
   covers: string;
+  /** Codec-level kinds: a column table that overrides the kind's own. */
+  manifest?: ManifestExtra;
 }
 
 /** Manifest fields shared by every case of a codec-level kind (the sparse
@@ -1320,7 +1515,7 @@ function emitKind(
     mkdirSync(join(kindDir, 'invalid'));
   }
 
-  const manifestCases: Array<Record<string, string>> = [];
+  const manifestCases: Array<Record<string, unknown>> = [];
   for (const c of cases) {
     writeFileSync(join(kindDir, `${c.name}.bin`), c.bytes);
     writeFileSync(join(kindDir, `${c.name}.json`), jsonText(c.render(c.bytes)));
@@ -1329,6 +1524,7 @@ function emitKind(
       bin: `${c.name}.bin`,
       json: `${c.name}.json`,
       covers: c.covers,
+      ...c.manifest,
     });
   }
   for (const c of jsonCases) {
@@ -1339,13 +1535,14 @@ function emitKind(
       covers: c.covers,
     });
   }
-  const manifestInvalid: Array<Record<string, string>> = invalid.map((c) => {
+  const manifestInvalid: Array<Record<string, unknown>> = invalid.map((c) => {
     writeFileSync(join(kindDir, 'invalid', `${c.name}.bin`), c.bytes);
     return {
       name: c.name,
       bin: `invalid/${c.name}.bin`,
       error: c.error,
       covers: c.covers,
+      ...c.manifest,
     };
   });
   for (const c of jsonInvalid) {
@@ -1411,6 +1608,13 @@ total += emitKind(
       bytes: encodeMessage(epochBound),
       render: renderMessage,
       covers: 'Request carrying the client partition log epoch (§2.1)',
+    },
+    {
+      name: 'json-boundaries',
+      bytes: encodeMessage(jsonBoundaries),
+      render: renderMessage,
+      covers:
+        'JSON validity rule (Conventions) at its accepting edge: params nested exactly 64 containers deep, bootstrapState with whitespace, a duplicate key, the largest finite binary64 and escapes',
     },
     {
       name: 'round-failure-report',
@@ -1483,6 +1687,20 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers:
         'ROUND_FAILURE code outside the §1.5 grammar (hyphen instead of a dotted segment)',
+    },
+    {
+      name: 'params-json-number-overflow',
+      bytes: pullWithSubscriptionJson('params', '{"limit":1e999}'),
+      error: 'sync.invalid_request',
+      covers:
+        'SUBSCRIPTION.params holds 1e999, outside finite binary64 (Conventions JSON validity rule)',
+    },
+    {
+      name: 'bootstrap-state-json-depth-65',
+      bytes: pullWithSubscriptionJson('bootstrapState', jsonDepth(65)),
+      error: 'sync.invalid_request',
+      covers:
+        'SUBSCRIPTION.bootstrapState nests 65 containers (Conventions JSON validity rule)',
     },
   ],
 );
@@ -1593,6 +1811,20 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers: 'SUB_START.bootstrap bool byte 0x02',
     },
+    {
+      name: 'error-details-json-nul-key',
+      bytes: invalidErrorDetailsNulKey,
+      error: 'sync.invalid_request',
+      covers:
+        'ERROR.details has an object key holding U+0000 (Conventions JSON validity rule)',
+    },
+    {
+      name: 'sub-end-bootstrap-state-lone-surrogate',
+      bytes: invalidSubEndLoneSurrogate,
+      error: 'sync.invalid_request',
+      covers:
+        'SUB_END.bootstrapState is an unpaired low-surrogate escape (Conventions JSON validity rule)',
+    },
   ],
 );
 
@@ -1612,6 +1844,13 @@ total += emitKind(
       render: renderRowsSegment,
       covers:
         'SSG2 for a table with a crdt column (§2.4 tag 8, §5.10): the crdt value rides the bytes machinery (merged bytes, empty, and NULL)',
+    },
+    {
+      name: 'full-row-admission-values',
+      bytes: filesSegment(['f-1', 'nul \u0000 kept', BLOB_REF_CANONICAL]),
+      render: renderRowsSegment,
+      covers:
+        'Full rows keep decoding a string with U+0000 (§2.4 push admission values apply to sparse rows only); a canonical blob_ref whose name exercises every escape class (§5.9.1)',
     },
   ],
   [],
@@ -1642,6 +1881,12 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers: 'Row record serverVersion 0 — must be ≥ 1 (SPEC.md §5.2)',
     },
+    ...BLOB_REF_INVALID.map((probe) => ({
+      name: `blob-ref-${probe.name}`,
+      bytes: filesSegment(['f-1', null, probe.raw]),
+      error: 'sync.invalid_request',
+      covers: `Full-row blob_ref that is not canonical (§5.9.1): ${probe.covers}`,
+    })),
   ],
 );
 
@@ -1669,6 +1914,36 @@ total += emitKind(
       render: renderSparseRow,
       covers:
         'The full-row special case: every presence bit set (incl. the second presence byte), a present-NULL title, and all nine §2.4 column types',
+    },
+    {
+      name: 'admission-json-depth-64',
+      bytes: admissionPayload('meta', jsonDepth(64)),
+      render: renderAdmission,
+      covers: 'json value nested exactly 64 containers deep (accepted)',
+      manifest: admissionManifest,
+    },
+    {
+      name: 'admission-json-host-opaque',
+      bytes: admissionPayload('meta', JSON_HOST_OPAQUE),
+      render: renderAdmission,
+      covers:
+        'json value with whitespace, a duplicate key, the largest finite binary64 and escapes (accepted, raw text preserved)',
+      manifest: admissionManifest,
+    },
+    {
+      name: 'admission-float-max',
+      bytes: admissionPayload('score', Number.MAX_VALUE),
+      render: renderAdmission,
+      covers: 'float holding the largest finite binary64 (accepted)',
+      manifest: admissionManifest,
+    },
+    {
+      name: 'admission-blob-ref-canonical',
+      bytes: admissionPayload('file', BLOB_REF_CANONICAL),
+      render: renderAdmission,
+      covers:
+        'canonical blob_ref whose name exercises every escape class (accepted, §5.9.1)',
+      manifest: admissionManifest,
     },
   ],
   [],
@@ -1700,6 +1975,75 @@ total += emitKind(
       covers:
         'Sparse row whose presence bitmap omits the primary-key column (RFC §6.1)',
     },
+    ...[
+      {
+        name: 'string-nul',
+        bytes: admissionPayload('text', 'a\u0000b'),
+        covers: 'string value holding U+0000',
+      },
+      {
+        name: 'json-depth-65',
+        bytes: admissionPayload('meta', jsonDepth(65)),
+        covers: 'json value nested 65 containers deep',
+      },
+      {
+        name: 'json-number-overflow',
+        bytes: admissionPayload('meta', '1e999'),
+        covers: 'json number 1e999, outside finite binary64',
+      },
+      {
+        name: 'json-number-above-max',
+        bytes: admissionPayload('meta', '[1.7976931348623159e308]'),
+        covers:
+          'json number 1.7976931348623159e308, which rounds to infinity (the largest finite binary64 is accepted)',
+      },
+      {
+        name: 'json-lone-surrogate',
+        bytes: admissionPayload('meta', '"\\ud800"'),
+        covers: 'json string that is an unpaired high-surrogate escape',
+      },
+      {
+        name: 'json-lone-surrogate-key',
+        bytes: admissionPayload('meta', '{"\\udc00":1}'),
+        covers: 'json object key that is an unpaired low-surrogate escape',
+      },
+      {
+        name: 'json-nul-escape',
+        bytes: admissionPayload('meta', '"\\u0000"'),
+        covers: 'json string holding U+0000',
+      },
+      {
+        name: 'json-nul-key',
+        bytes: admissionPayload('meta', '{"\\u0000":1}'),
+        covers: 'json object key holding U+0000',
+      },
+      {
+        name: 'float-nan',
+        bytes: admissionPayload('score', Number.NaN),
+        covers: 'float value NaN',
+      },
+      {
+        name: 'float-infinity',
+        bytes: admissionPayload('score', Number.POSITIVE_INFINITY),
+        covers: 'float value Infinity',
+      },
+      {
+        name: 'float-negative-infinity',
+        bytes: admissionPayload('score', Number.NEGATIVE_INFINITY),
+        covers: 'float value -Infinity',
+      },
+      ...BLOB_REF_INVALID.map((probe) => ({
+        name: `blob-ref-${probe.name}`,
+        bytes: admissionPayload('file', probe.raw),
+        covers: `blob_ref that is not canonical (§5.9.1): ${probe.covers}`,
+      })),
+    ].map((probe) => ({
+      name: `admission-${probe.name}`,
+      bytes: probe.bytes,
+      error: 'sync.invalid_request',
+      covers: `Push admission value (SPEC.md §2.4): ${probe.covers}`,
+      manifest: admissionManifest,
+    })),
   ],
   [],
   {

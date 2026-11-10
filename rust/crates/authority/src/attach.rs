@@ -243,11 +243,7 @@ impl<'r, 'a> Remote<'r, 'a> {
                 },
             ],
         )?;
-        let Some(Frame::RespHeader {
-            log_epoch: Some(log_epoch),
-            ..
-        }) = frames.into_iter().next()
-        else {
+        let Some(Frame::RespHeader { log_epoch, .. }) = frames.into_iter().next() else {
             return Err(request_failed("sync.invalid_request", false));
         };
         Ok(Remote {
@@ -281,7 +277,7 @@ impl<'r, 'a> Remote<'r, 'a> {
         if matches!(
             frames.first(),
             Some(Frame::RespHeader {
-                reset_required: Some(true),
+                reset_required: true,
                 ..
             })
         ) {

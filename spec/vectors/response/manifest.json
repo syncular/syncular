@@ -93,6 +93,18 @@
       "bin": "invalid/bool-byte-out-of-range.bin",
       "error": "sync.invalid_request",
       "covers": "SUB_START.bootstrap bool byte 0x02"
+    },
+    {
+      "name": "error-details-json-nul-key",
+      "bin": "invalid/error-details-json-nul-key.bin",
+      "error": "sync.invalid_request",
+      "covers": "ERROR.details has an object key holding U+0000 (Conventions JSON validity rule)"
+    },
+    {
+      "name": "sub-end-bootstrap-state-lone-surrogate",
+      "bin": "invalid/sub-end-bootstrap-state-lone-surrogate.bin",
+      "error": "sync.invalid_request",
+      "covers": "SUB_END.bootstrapState is an unpaired low-surrogate escape (Conventions JSON validity rule)"
     }
   ]
 }

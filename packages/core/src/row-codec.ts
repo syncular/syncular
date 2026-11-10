@@ -15,6 +15,7 @@
 import { parseBlobRef } from './blob-ref';
 import { ByteReader, ByteWriter } from './bytes';
 import { DecodeError, EncodeError } from './errors';
+import { parseJsonDocument } from './json-document';
 
 export type ColumnType =
   | 'string'
@@ -148,9 +149,10 @@ function readValue(reader: ByteReader, column: RowColumn): RowValue {
     case 'string':
       return reader.str();
     case 'json': {
-      // Conventions `json` MUST, applied at row-codec decode (SPEC.md §2.4
-      // tag 5): the value must parse as a JSON document; the raw string is
-      // preserved verbatim for round-trip fidelity.
+      // SPEC.md §2.4 tag 5: the value must parse as a JSON document; the raw
+      // string is preserved verbatim for round-trip fidelity. Full rows stay
+      // this permissive so stored rows keep decoding; `decodeSparseRow`
+      // applies the JSON validity rule on top.
       const raw = reader.str();
       try {
         JSON.parse(raw);
@@ -164,8 +166,8 @@ function readValue(reader: ByteReader, column: RowColumn): RowValue {
     }
     case 'blob_ref': {
       // §2.4 tag 7: the value is a canonical BlobRef JSON document
-      // (§5.9.1). Validated at decode, same class as tag-5 json; the raw
-      // string is preserved verbatim for re-encoding.
+      // (§5.9.1), checked on every decode path; the raw string is preserved
+      // verbatim for re-encoding.
       const raw = reader.str();
       parseBlobRef(raw);
       return raw;
@@ -262,7 +264,10 @@ export function encodeSparseRow(
  *
  * Decode checks, in order (each a decode error, RFC §6.1): a set presence
  * padding bit, an absent primary-key column, a set null-bitmap padding bit
- * (a null for an absent column), a null bit for a non-nullable column.
+ * (a null for an absent column), a null bit for a non-nullable column. Each
+ * present value must also be a push admission value (SPEC.md §2.4): no
+ * U+0000 in a `string`, a `json` value under the JSON validity rule, a finite
+ * `float`, a canonical `blob_ref`.
  */
 export function decodeSparseRow(
   columns: readonly RowColumn[],
@@ -318,7 +323,34 @@ export function decodeSparseRow(
     const isNull = bitmapBit(nulls, present);
     present++;
     if (!isNull) {
-      values.push(readValue(reader, column));
+      const value = readValue(reader, column);
+      // Push admission values (SPEC.md §2.4): one value set every storage
+      // backend and core accepts. `blob_ref` canonicality is already checked
+      // by `readValue` on every path.
+      if (
+        column.type === 'string' &&
+        typeof value === 'string' &&
+        value.includes('\u0000')
+      ) {
+        throw new DecodeError(
+          'sync.invalid_request',
+          `string column ${column.name} holds U+0000`,
+        );
+      }
+      if (column.type === 'json' && typeof value === 'string') {
+        parseJsonDocument(value, `json column ${column.name}`);
+      }
+      if (
+        column.type === 'float' &&
+        typeof value === 'number' &&
+        !Number.isFinite(value)
+      ) {
+        throw new DecodeError(
+          'sync.invalid_request',
+          `float column ${column.name} holds NaN or an infinity`,
+        );
+      }
+      values.push(value);
       continue;
     }
     if (!column.nullable) {

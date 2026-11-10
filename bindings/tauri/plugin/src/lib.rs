@@ -2141,8 +2141,8 @@ mod tests {
                 let mut frames = vec![Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch".into()),
-                    reset_required: Some(reset),
+                    log_epoch: "epoch".into(),
+                    reset_required: reset,
                 }];
                 if !reset {
                     let commits: Vec<_> = request
@@ -2512,8 +2512,8 @@ mod tests {
                         frames: vec![Frame::RespHeader {
                             required_schema_version: None,
                             latest_schema_version: None,
-                            log_epoch: Some("epoch-1".into()),
-                            reset_required: Some(true),
+                            log_epoch: "epoch-1".into(),
+                            reset_required: true,
                         }],
                     });
                     write!(
@@ -2643,8 +2643,8 @@ mod tests {
                 let mut frames = vec![Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
-                    log_epoch: Some("epoch".into()),
-                    reset_required: Some(reset),
+                    log_epoch: "epoch".into(),
+                    reset_required: reset,
                 }];
                 if !reset {
                     for frame in &request.frames {

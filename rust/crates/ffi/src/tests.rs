@@ -451,8 +451,8 @@ fn ffi_progress_and_diagnostics_distinguish_connection_and_http_failure() {
                     frames: vec![Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: Some("epoch-1".into()),
-                        reset_required: Some(true),
+                        log_epoch: "epoch-1".into(),
+                        reset_required: true,
                     }],
                 });
                 write!(

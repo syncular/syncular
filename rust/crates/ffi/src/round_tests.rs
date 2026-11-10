@@ -48,8 +48,8 @@ fn response_bytes() -> Vec<u8> {
         frames: vec![Frame::RespHeader {
             required_schema_version: None,
             latest_schema_version: None,
-            log_epoch: Some("epoch-1".to_owned()),
-            reset_required: Some(false),
+            log_epoch: "epoch-1".to_owned(),
+            reset_required: false,
         }],
     })
 }
@@ -224,8 +224,8 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
         frames: vec![Frame::RespHeader {
             required_schema_version: Some(7),
             latest_schema_version: Some(7),
-            log_epoch: Some("epoch-1".to_owned()),
-            reset_required: Some(false),
+            log_epoch: "epoch-1".to_owned(),
+            reset_required: false,
         }],
     });
     let server_response = response.clone();

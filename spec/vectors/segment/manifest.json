@@ -13,6 +13,12 @@
       "bin": "crdt-column.bin",
       "json": "crdt-column.json",
       "covers": "SSG2 for a table with a crdt column (§2.4 tag 8, §5.10): the crdt value rides the bytes machinery (merged bytes, empty, and NULL)"
+    },
+    {
+      "name": "full-row-admission-values",
+      "bin": "full-row-admission-values.bin",
+      "json": "full-row-admission-values.json",
+      "covers": "Full rows keep decoding a string with U+0000 (§2.4 push admission values apply to sparse rows only); a canonical blob_ref whose name exercises every escape class (§5.9.1)"
     }
   ],
   "invalid": [
@@ -39,6 +45,54 @@
       "bin": "invalid/server-version-zero.bin",
       "error": "sync.invalid_request",
       "covers": "Row record serverVersion 0 — must be ≥ 1 (SPEC.md §5.2)"
+    },
+    {
+      "name": "blob-ref-reordered-keys",
+      "bin": "invalid/blob-ref-reordered-keys.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): byteLength before blobId"
+    },
+    {
+      "name": "blob-ref-byte-length-exponent",
+      "bin": "invalid/blob-ref-byte-length-exponent.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): byteLength written 1e2"
+    },
+    {
+      "name": "blob-ref-byte-length-fraction",
+      "bin": "invalid/blob-ref-byte-length-fraction.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): byteLength written 3.0"
+    },
+    {
+      "name": "blob-ref-byte-length-negative-zero",
+      "bin": "invalid/blob-ref-byte-length-negative-zero.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): byteLength written -0"
+    },
+    {
+      "name": "blob-ref-whitespace",
+      "bin": "invalid/blob-ref-whitespace.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): insignificant whitespace after the colons and comma"
+    },
+    {
+      "name": "blob-ref-duplicate-key",
+      "bin": "invalid/blob-ref-duplicate-key.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): byteLength twice; the parsed value serializes without the first"
+    },
+    {
+      "name": "blob-ref-lone-surrogate-name",
+      "bin": "invalid/blob-ref-lone-surrogate-name.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): name holds an unpaired surrogate escape, the text JSON.stringify would write for it (JSON validity rule)"
+    },
+    {
+      "name": "blob-ref-nul-name",
+      "bin": "invalid/blob-ref-nul-name.bin",
+      "error": "sync.invalid_request",
+      "covers": "Full-row blob_ref that is not canonical (§5.9.1): name holds U+0000 (JSON validity rule)"
     }
   ]
 }

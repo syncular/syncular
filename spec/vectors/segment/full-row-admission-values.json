@@ -1,0 +1,40 @@
+{
+  "magic": "SSG2",
+  "formatVersion": 1,
+  "table": "files",
+  "schemaVersion": 1,
+  "columns": [
+    {
+      "name": "id",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "text",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "file",
+      "type": "blob_ref",
+      "nullable": true
+    }
+  ],
+  "blocks": [
+    [
+      {
+        "serverVersion": 1,
+        "values": {
+          "id": "f-1",
+          "text": "nul \u0000 kept",
+          "file": {
+            "blobId": "sha256:8fa5bb10db16a69de3a2ebeb8856246190a25c07852bf735100cc5c97abc45b0",
+            "byteLength": 1024,
+            "mediaType": "text/plain",
+            "name": "\"q\" \\ \b\f\n\r\t\u0001\u001f é 😀  "
+          }
+        }
+      }
+    ]
+  ]
+}

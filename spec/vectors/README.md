@@ -22,7 +22,9 @@ spec/vectors/
   segment/           standalone SSG2 rows segments
   realtime/          JSON control messages (no binary form)
   push/              sparse row push payloads (codec-level: the manifest
-                     carries the column table the bytes decode against)
+                     carries the column table the bytes decode against;
+                     a case MAY carry its own `columns` and `primaryKey`,
+                     which replace the kind-level table for that case)
   crypto/            §5.11 crypto vectors (vectors.json)
     <case>.bin       canonical encoded bytes (binary kinds)
     <case>.json      canonical JSON debug rendering (SPEC.md §11 —
@@ -54,7 +56,7 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative vector list (28 valid cases + 26 invalid cases) is
+The authoritative vector list (34 valid cases + 57 invalid cases) is
 SPEC.md Appendix A. Summary of what it covers:
 
 - requests: minimal pull, bootstrap pull (accept bits, resume token),
@@ -73,7 +75,17 @@ SPEC.md Appendix A. Summary of what it covers:
 - push: sparse row payloads (RFC §6.1) decoded against the manifest's
   column table: a partial row with a present-NULL column and the full-row
   case with every presence bit set, over nine columns covering every
-  §2.4 type
+  §2.4 type; push admission values (SPEC.md §2.4) over a five-column
+  table carried per case: the accepting edge (json nested 64 deep, json
+  with whitespace and a duplicate key, the largest finite binary64, a
+  canonical `blob_ref` with every escape class) and one invalid case per
+  rejected value
+- JSON validity rule (SPEC.md Conventions) in the envelope: a request
+  whose `params` nests 64 deep and whose `bootstrapState` carries
+  whitespace and a duplicate key; invalid `params`, `bootstrapState`,
+  `ERROR.details` and `SUB_END.bootstrapState` documents
+- segment: a full row keeps decoding a string with U+0000; non-canonical
+  `blob_ref` values fail on the full-row path too (§5.9.1)
 - realtime: `wake` and `hello` JSON control vectors
 - invalid: truncated envelope (missing END), bad magic, unsupported
   wireVersion, non-zero flags, overlong frame length, bad bool byte,
@@ -83,5 +95,10 @@ SPEC.md Appendix A. Summary of what it covers:
   `PUSH_COMMIT`, code outside the dotted grammar),
   sparse row violations (presence padding bit, null bit for an absent
   column, null bit for a non-nullable column, absent primary key),
+  push admission values (U+0000 in a string; json nested 65 deep, `1e999`,
+  `1.7976931348623159e308`, unpaired surrogate value and key, U+0000
+  value and key; NaN, `Infinity` and `-Infinity` floats; `blob_ref` with
+  reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace,
+  a duplicate key, an unpaired surrogate or U+0000 in `name`),
   wake with `requiresPull` not the literal `true`, fractional realtime
   numeric field

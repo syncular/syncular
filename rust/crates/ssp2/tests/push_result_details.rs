@@ -6,8 +6,8 @@ fn header() -> Frame {
     Frame::RespHeader {
         required_schema_version: None,
         latest_schema_version: Some(1),
-        log_epoch: Some("epoch-1".to_owned()),
-        reset_required: Some(false),
+        log_epoch: "epoch-1".to_owned(),
+        reset_required: false,
     }
 }
 

@@ -350,3 +350,74 @@ describe('sparse row codec (RFC §6.1)', () => {
     );
   });
 });
+
+describe('push admission values (SPEC.md §2.4)', () => {
+  const columns: readonly RowColumn[] = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'text', type: 'string', nullable: true },
+    { name: 'score', type: 'float', nullable: true },
+    { name: 'meta', type: 'json', nullable: true },
+    { name: 'file', type: 'blob_ref', nullable: true },
+  ];
+  const blobId = `sha256:${'ab'.repeat(32)}`;
+  const at = (index: number, value: RowValue): RowValue[] =>
+    columns.map((_, i) => (i === 0 ? 'r-1' : i === index ? value : null));
+
+  const rejected: ReadonlyArray<readonly [string, RowValue[]]> = [
+    ['a string with U+0000', at(1, 'a\u0000b')],
+    ['a NaN float', at(2, Number.NaN)],
+    ['an infinite float', at(2, Number.POSITIVE_INFINITY)],
+    ['a negative infinite float', at(2, Number.NEGATIVE_INFINITY)],
+    ['json outside finite binary64', at(3, '1e999')],
+    ['json nested 65 deep', at(3, `${'['.repeat(65)}${']'.repeat(65)}`)],
+    ['json with an unpaired surrogate', at(3, '"\\ud800"')],
+    ['json with U+0000', at(3, '{"\\u0000":1}')],
+    ['a reordered blob_ref', at(4, `{"byteLength":1,"blobId":"${blobId}"}`)],
+  ];
+
+  for (const [name, values] of rejected) {
+    it(`sparse decode rejects ${name}`, () => {
+      const bytes = encodeSparseRow(columns, 0, values);
+      let thrown: unknown;
+      try {
+        decodeSparseRow(columns, 0, bytes);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(DecodeError);
+      expect(thrown).toMatchObject({ code: 'sync.invalid_request' });
+    });
+  }
+
+  it('sparse decode accepts the edge values the rule admits', () => {
+    const values = [
+      'r-1',
+      'a\u0001b',
+      Number.MAX_VALUE,
+      `${'['.repeat(64)}${']'.repeat(64)}`,
+      `{"blobId":"${blobId}","byteLength":1}`,
+    ];
+    expect(
+      decodeSparseRow(columns, 0, encodeSparseRow(columns, 0, values)),
+    ).toEqual(values);
+  });
+
+  it('full rows keep decoding values stored before the rule', () => {
+    for (const values of [
+      at(1, 'a\u0000b'),
+      at(2, Number.NaN),
+      at(3, '1e999'),
+      at(3, '"\\ud800"'),
+    ]) {
+      expect(decodeRow(columns, encodeRow(columns, values))).toEqual(values);
+    }
+  });
+
+  it('full rows reject a non-canonical blob_ref', () => {
+    const bytes = encodeRow(
+      columns,
+      at(4, `{"blobId":"${blobId}", "byteLength":1}`),
+    );
+    expect(() => decodeRow(columns, bytes)).toThrow(DecodeError);
+  });
+});

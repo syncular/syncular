@@ -176,8 +176,8 @@ impl Session {
                 .expect("acquire"),
         );
         let Some(Frame::RespHeader {
-            log_epoch: Some(epoch),
-            reset_required: Some(true),
+            log_epoch: epoch,
+            reset_required: true,
             ..
         }) = frames.first()
         else {
@@ -1014,7 +1014,7 @@ fn request_validation_fails_before_any_byte() {
     assert!(matches!(
         &frames[..],
         [Frame::RespHeader {
-            reset_required: Some(true),
+            reset_required: true,
             ..
         }]
     ));
