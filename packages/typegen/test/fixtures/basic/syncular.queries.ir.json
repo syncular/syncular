@@ -4,8 +4,8 @@
     {
       "name": "booleanResults",
       "file": "boolean-results.sql",
-      "sourceSql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS is_done, t.reviewed AS maybe_done\nFROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
-      "sql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS \"isDone\", t.reviewed AS \"maybeDone\" FROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
+      "sourceSql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\n-- allow automatic_index docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\n-- allow unbounded tasks: the fixture types boolean projections over every task\nSELECT t.id, t.done AS is_done, t.reviewed AS maybe_done\nFROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
+      "sql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\n-- allow automatic_index docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\n-- allow unbounded tasks: the fixture types boolean projections over every task\nSELECT t.id, t.done AS \"isDone\", t.reviewed AS \"maybeDone\" FROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
       "positionalSql": "SELECT t.id, t.done AS \"isDone\", t.reviewed AS \"maybeDone\" FROM tasks t JOIN docs d ON d.project_id = t.project_id ORDER BY t.id",
       "relations": [
         {
@@ -78,8 +78,8 @@
     {
       "name": "findDocByOrg",
       "file": "doc-lookup.sql",
-      "sourceSql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
-      "sql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
+      "sourceSql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\n-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
+      "sql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\n-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
       "positionalSql": "SELECT id, body FROM docs WHERE org_id = ? ORDER BY id",
       "relations": [
         {
@@ -228,8 +228,8 @@
     {
       "name": "docWithBody",
       "file": "doc-with-body.sql",
-      "sourceSql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS doc_id, d.body, t.title AS task_title\nFROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
-      "sql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS \"docId\", d.body, t.title AS \"taskTitle\" FROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
+      "sourceSql": "-- Join across docs+tasks (same project); projection mixes both tables.\n-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT d.id AS doc_id, d.body, t.title AS task_title\nFROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
+      "sql": "-- Join across docs+tasks (same project); projection mixes both tables.\n-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT d.id AS \"docId\", d.body, t.title AS \"taskTitle\" FROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
       "positionalSql": "SELECT d.id AS \"docId\", d.body, t.title AS \"taskTitle\" FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?",
       "relations": [
         {
@@ -316,8 +316,8 @@
     {
       "name": "docsInProject",
       "file": "docs-in-project.sql",
-      "sourceSql": "SELECT id, body\nFROM docs\nWHERE org_id = :orgId AND project_id = :projectId\nORDER BY id",
-      "sql": "SELECT id, body\nFROM docs\nWHERE org_id = :orgId AND project_id = :projectId\nORDER BY id",
+      "sourceSql": "-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId AND project_id = :projectId\nORDER BY id",
+      "sql": "-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId AND project_id = :projectId\nORDER BY id",
       "positionalSql": "SELECT id, body FROM docs WHERE org_id = ? AND project_id = ? ORDER BY id",
       "relations": [
         {
@@ -599,8 +599,8 @@
     {
       "name": "outerJoinValues",
       "file": "outer-join-values.sql",
-      "sourceSql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS task_id, t.title, d.body AS doc_body\nFROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
-      "sql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS \"taskId\", t.title, d.body AS \"docBody\" FROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
+      "sourceSql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\n-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT t.id AS task_id, t.title, d.body AS doc_body\nFROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
+      "sql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\n-- allow scan docs: the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes\nSELECT t.id AS \"taskId\", t.title, d.body AS \"docBody\" FROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
       "positionalSql": "SELECT t.id AS \"taskId\", t.title, d.body AS \"docBody\" FROM tasks AS t LEFT JOIN docs AS d ON d.project_id = t.project_id WHERE t.id = ?",
       "relations": [
         {
@@ -679,8 +679,8 @@
     {
       "name": "projectDocCount",
       "file": "project-doc-count.sql",
-      "sourceSql": "-- Aggregate (a whole-expression count(*) is integer) + a plain grouped ref.\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
-      "sql": "-- Aggregate (a whole-expression count(*) is integer) + a plain grouped ref.\nSELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs\nGROUP BY project_id",
+      "sourceSql": "-- Aggregate (a whole-expression count(*) is integer) + a plain grouped ref.\n-- allow unbounded docs: the fixture types an aggregate over every doc\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
+      "sql": "-- Aggregate (a whole-expression count(*) is integer) + a plain grouped ref.\n-- allow unbounded docs: the fixture types an aggregate over every doc\nSELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs\nGROUP BY project_id",
       "positionalSql": "SELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs GROUP BY project_id",
       "relations": [
         {
@@ -726,8 +726,8 @@
     {
       "name": "reportingTasksByPriority",
       "file": "reporting/tasks-by-priority.sql",
-      "sourceSql": "-- Nested-folder query: default name is path-derived\n-- (reporting/tasks-by-priority.sql → reportingTasksByPriority).\nSELECT id, title, priority\nFROM tasks\nWHERE priority = :priority\nORDER BY id",
-      "sql": "-- Nested-folder query: default name is path-derived\n-- (reporting/tasks-by-priority.sql → reportingTasksByPriority).\nSELECT id, title, priority\nFROM tasks\nWHERE priority = :priority\nORDER BY id",
+      "sourceSql": "-- Nested-folder query: default name is path-derived\n-- (reporting/tasks-by-priority.sql → reportingTasksByPriority).\n-- allow scan tasks: the fixture types a nested-folder query and keeps tasks without a priority index\nSELECT id, title, priority\nFROM tasks\nWHERE priority = :priority\nORDER BY id",
+      "sql": "-- Nested-folder query: default name is path-derived\n-- (reporting/tasks-by-priority.sql → reportingTasksByPriority).\n-- allow scan tasks: the fixture types a nested-folder query and keeps tasks without a priority index\nSELECT id, title, priority\nFROM tasks\nWHERE priority = :priority\nORDER BY id",
       "positionalSql": "SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id",
       "relations": [
         {
@@ -956,8 +956,8 @@
     {
       "name": "taskTitles",
       "file": "task-titles.sql",
-      "sourceSql": "-- Projection subset (a narrow row), no params.\nSELECT id, title FROM tasks",
-      "sql": "-- Projection subset (a narrow row), no params.\nSELECT id, title FROM tasks",
+      "sourceSql": "-- Projection subset (a narrow row), no params.\n-- allow unbounded tasks: the fixture types a narrow projection over every task\nSELECT id, title FROM tasks",
+      "sql": "-- Projection subset (a narrow row), no params.\n-- allow unbounded tasks: the fixture types a narrow projection over every task\nSELECT id, title FROM tasks",
       "positionalSql": "SELECT id, title FROM tasks",
       "relations": [
         {
@@ -1187,8 +1187,8 @@
     {
       "name": "tasksSince",
       "file": "tasks-since.sql",
-      "sourceSql": "-- Comment-typed param: :sinceMs isn't compared to a plain column (it hits an\n-- expression), so its type is declared explicitly.\n-- param :sinceMs integer\nSELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0",
-      "sql": "-- Comment-typed param: :sinceMs isn't compared to a plain column (it hits an\n-- expression), so its type is declared explicitly.\n-- param :sinceMs integer\nSELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0",
+      "sourceSql": "-- Comment-typed param: :sinceMs isn't compared to a plain column (it hits an\n-- expression), so its type is declared explicitly.\n-- param :sinceMs integer\n-- allow scan tasks: the fixture types a comment-declared param and keeps tasks without an estimated_at index\nSELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0",
+      "sql": "-- Comment-typed param: :sinceMs isn't compared to a plain column (it hits an\n-- expression), so its type is declared explicitly.\n-- param :sinceMs integer\n-- allow scan tasks: the fixture types a comment-declared param and keeps tasks without an estimated_at index\nSELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0",
       "positionalSql": "SELECT id, title FROM tasks WHERE estimated_at > ? + 0",
       "relations": [
         {

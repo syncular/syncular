@@ -282,6 +282,23 @@ export interface QueryRelation {
   readonly alias?: string;
 }
 
+/** The findings of the query plan check (`docs/SYQL.md` §14.5). */
+export const QUERY_PLAN_FINDINGS = [
+  'scan',
+  'automatic_index',
+  'unbounded',
+  'many_tables',
+] as const;
+export type QueryPlanFinding = (typeof QUERY_PLAN_FINDINGS)[number];
+
+/** An author's acknowledgement of one plan finding, with its reason. */
+export interface QueryAcknowledgement {
+  readonly finding: QueryPlanFinding;
+  /** Absent for `many_tables`. */
+  readonly table?: string;
+  readonly reason: string;
+}
+
 export interface AnalyzedQuery {
   /** camelCase function name (path-derived, or a `-- name:` override). */
   readonly name: string;
@@ -307,6 +324,8 @@ export interface AnalyzedQuery {
   /** Revision-1 frontend/public-input and physical execution contract. When
    * present, emitters use this instead of treating `params` as the API. */
   readonly syql?: QuerySyqlMetadata;
+  /** Plan findings the author acknowledged on the statement. */
+  readonly acknowledgements: readonly QueryAcknowledgement[];
 }
 
 /** The public SYQL input an emitter binds by name. */
@@ -532,6 +551,47 @@ function parseCommentParams(file: string, raw: string): CommentParam[] {
       );
     }
     out.push({ name, type: type as IrColumnType });
+  }
+  return out;
+}
+
+const ACKNOWLEDGEMENT_RE = new RegExp(
+  `^--\\s*allow\\s+(${QUERY_PLAN_FINDINGS.join('|')})\\b`,
+);
+
+/** Parse the `-- allow <finding> [table]: <reason>` acknowledgements of the
+ * leading comment block (`docs/SYQL.md` §14.5). */
+function parseCommentAcknowledgements(
+  file: string,
+  raw: string,
+): QueryAcknowledgement[] {
+  const out: QueryAcknowledgement[] = [];
+  for (const comment of leadingComments(raw)) {
+    const kind = ACKNOWLEDGEMENT_RE.exec(comment)?.[1];
+    const finding = QUERY_PLAN_FINDINGS.find((name) => name === kind);
+    if (finding === undefined) continue;
+    const match =
+      /^--\s*allow\s+\w+(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*:\s*(\S.*?)\s*$/.exec(
+        comment,
+      );
+    const table = match?.[1];
+    if (
+      match === null ||
+      (finding === 'many_tables') !== (table === undefined) ||
+      out.some((other) => other.finding === finding && other.table === table)
+    ) {
+      throw new TypegenError(
+        file,
+        'invalid query plan acknowledgement; write `-- allow <finding> <table>: <reason>` once per finding',
+        'typegen.query_acknowledgement_invalid',
+        { file, comment },
+      );
+    }
+    out.push({
+      finding,
+      ...(table === undefined ? {} : { table }),
+      reason: match[2] as string,
+    });
   }
   return out;
 }
@@ -1589,6 +1649,13 @@ export interface QueryDb {
     declaredTypes: readonly (string | null)[];
     paramsCount: number;
   };
+  /** The `EXPLAIN QUERY PLAN` rows of `sql`. With `index`, a `CREATE INDEX`
+   * statement, SQLite plans as if that index existed; the database keeps no
+   * trace of it afterwards. */
+  plan(
+    sql: string,
+    index?: string,
+  ): readonly { id: number; parent: number; detail: string }[];
 }
 
 /** Synthesize the schema DDL from the IR (the reverse of the migration
@@ -1860,6 +1927,7 @@ export function analyzeStatement(
 ): AnalyzedQuery {
   const file = location;
   const commentParams = parseCommentParams(file, statementText);
+  const acknowledgements = parseCommentAcknowledgements(file, statementText);
   const sourceSql = statementText.trim();
   if (sourceSql.length === 0) {
     throw new TypegenError(file, 'query file is empty');
@@ -2232,6 +2300,7 @@ export function analyzeStatement(
     columns,
     tables,
     reactive,
+    acknowledgements,
   };
 }
 
@@ -2294,4 +2363,154 @@ export function analyzeQuery(
   }
   const results = analyzeQueryFile(file, raw, ir, db, naming);
   return results[0] as AnalyzedQuery;
+}
+
+/**
+ * The query plan check (`docs/SYQL.md` §14.5): plan every physical statement
+ * against the schema database and fail on the first finding the query does
+ * not acknowledge, then on the first acknowledgement that matches no finding.
+ */
+export function checkQueryPlan(
+  query: AnalyzedQuery,
+  ir: IrDocument,
+  db: QueryDb,
+): void {
+  const findings: {
+    readonly finding: QueryPlanFinding;
+    readonly table?: string;
+    readonly details: Readonly<Record<string, unknown>>;
+  }[] = [];
+  const tables = new Map(ir.tables.map((table) => [table.name, table]));
+  const statements = query.syql?.plan.statements ?? [query];
+  statements.forEach(({ positionalSql: sql, relations }, statement) => {
+    const rows = db.plan(sql);
+    const plan = rows.map((row) => row.detail);
+    const scans = (details: readonly string[]): number =>
+      details.filter(
+        (detail) =>
+          detail.startsWith('SCAN ') && !detail.includes(' VIRTUAL TABLE'),
+      ).length;
+    // A plan names a relation by its alias, or by its table when unaliased.
+    const tableOf = (name: string): string =>
+      relations.find((relation) => (relation.alias ?? relation.table) === name)
+        ?.table ?? name;
+    const context = { query: query.name, file: query.file, statement, sql };
+    for (const detail of plan) {
+      const automatic =
+        /^SEARCH (\S+) USING AUTOMATIC (?:PARTIAL )?(?:COVERING )?INDEX \((.*)\)/.exec(
+          detail,
+        );
+      if (automatic === null) continue;
+      const table = tableOf(automatic[1] as string);
+      findings.push({
+        finding: 'automatic_index',
+        table,
+        details: {
+          ...context,
+          table,
+          columns: [...(automatic[2] as string).matchAll(/(\w+)[=<>]/g)].map(
+            (key) => key[1],
+          ),
+          plan,
+        },
+      });
+    }
+    const scanCount = scans(plan);
+    if (scanCount > 0) {
+      for (const table of [
+        ...new Set(relations.map((relation) => relation.table)),
+      ]) {
+        const columns = (tables.get(table)?.columns ?? [])
+          .map((column) => column.name)
+          .filter(
+            (column) =>
+              scans(
+                db
+                  .plan(
+                    sql,
+                    `CREATE INDEX "__syncular_plan_probe" ON "${table}" ("${column}")`,
+                  )
+                  .map((row) => row.detail),
+              ) < scanCount,
+          );
+        if (columns.length > 0) {
+          findings.push({
+            finding: 'scan',
+            table,
+            details: { ...context, table, columns, plan },
+          });
+        }
+      }
+    }
+    const { tokens, depths } = sqlStructure(sql);
+    const bounded = tokens.some(
+      (token, index) =>
+        depths[index] === 0 &&
+        ['where', 'limit'].includes(lowerWord(token) ?? ''),
+    );
+    const topScan = rows.find(
+      (row) =>
+        row.parent === 0 &&
+        scans([row.detail]) === 1 &&
+        tables.has(tableOf(row.detail.split(' ')[1] as string)),
+    );
+    if (!bounded && topScan !== undefined) {
+      const table = tableOf(topScan.detail.split(' ')[1] as string);
+      findings.push({
+        finding: 'unbounded',
+        table,
+        details: { ...context, table, plan },
+      });
+    }
+  });
+  const dependencies = [
+    ...new Set(query.reactive.dependencies.map(({ table }) => table)),
+  ].sort();
+  if (dependencies.length > 4) {
+    findings.push({
+      finding: 'many_tables',
+      details: { query: query.name, file: query.file, tables: dependencies },
+    });
+  }
+
+  const messages: Record<QueryPlanFinding, string> = {
+    scan: 'the query plan scans a table that an index on one of the listed columns would let SQLite search; declare the index or acknowledge the finding',
+    automatic_index:
+      'the query plan builds an automatic index on every run; declare an index on the listed columns or acknowledge the finding',
+    unbounded:
+      'the query reads every row of a table, with no WHERE and no LIMIT; bound the query or acknowledge the finding',
+    many_tables:
+      'the query reads more than four tables, and a change to any of them re-runs it; split the query or acknowledge the finding',
+  };
+  const acknowledged = (
+    acknowledgement: QueryAcknowledgement,
+    found: (typeof findings)[number],
+  ): boolean =>
+    acknowledgement.finding === found.finding &&
+    acknowledgement.table === found.table;
+  for (const found of findings) {
+    if (!query.acknowledgements.some((ack) => acknowledged(ack, found))) {
+      throw new TypegenError(
+        query.file,
+        messages[found.finding],
+        `typegen.query_${found.finding}`,
+        found.details,
+      );
+    }
+  }
+  for (const ack of query.acknowledgements) {
+    if (!findings.some((found) => acknowledged(ack, found))) {
+      throw new TypegenError(
+        query.file,
+        'the query plan acknowledgement matches no finding of its query; remove it',
+        'typegen.query_acknowledgement_unused',
+        {
+          query: query.name,
+          file: query.file,
+          finding: ack.finding,
+          table: ack.table ?? null,
+        },
+      );
+    }
+  }
 }

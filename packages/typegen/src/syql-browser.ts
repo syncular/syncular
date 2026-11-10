@@ -9,6 +9,7 @@
 import { formatSyql } from './fmt';
 import type { IrDocument } from './ir';
 import {
+  checkQueryPlan,
   type QueryBackend,
   type QueryDb,
   type QueryNamingOptions,
@@ -65,13 +66,13 @@ export function compileSyqlSource(
   const file = options.file ?? SYQL_BROWSER_DEFAULT_FILE;
   const semantic = analyzeSyqlSemantics(singleFileGraph(file, source));
   const validated = validateSyqlProgram(semantic, ir, db, options.naming);
-  return {
-    queries: validated.queries.map((query) =>
-      lowerSyqlQuery(query, ir, db, options.naming, {
-        ...(options.backend === undefined ? {} : { backend: options.backend }),
-      }),
-    ),
-  };
+  const queries = validated.queries.map((query) =>
+    lowerSyqlQuery(query, ir, db, options.naming, {
+      ...(options.backend === undefined ? {} : { backend: options.backend }),
+    }),
+  );
+  for (const query of queries) checkQueryPlan(query.analysis, ir, db);
+  return { queries };
 }
 
 /** Format one virtual source file with the canonical SYQL formatter. */

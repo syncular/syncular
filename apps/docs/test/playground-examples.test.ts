@@ -207,6 +207,26 @@ describe('SYQL playground examples', () => {
     }
   });
 
+  test('a query that scans a filtered table fails with the plan finding', () => {
+    let thrown: unknown;
+    try {
+      compileSyqlSource(
+        'query byTitle(title: string) { select id from cards where title = :title; }',
+        BOARD_SCHEMA,
+        db.queryDb,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(playgroundDiagnostic(thrown).code).toBe('typegen.query_scan');
+    // The probe index is rolled back: the seeded board still has none on title.
+    expect(
+      db.database.selectValues(
+        "select name from sqlite_schema where type = 'index' and sql like '%title%'",
+      ),
+    ).toEqual([]);
+  });
+
   for (const item of PLAYGROUND_EXAMPLES) {
     const plan = PLANS[item.id];
     if (plan === undefined) {

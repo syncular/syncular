@@ -56,6 +56,7 @@ import { type NamingTarget, validateSchemaIdentifiers } from './naming';
 import {
   type AnalyzedQuery,
   analyzeQueryFile,
+  checkQueryPlan,
   type QueryDb,
   type QueryNamingOptions,
   synthesizeDdl,
@@ -525,6 +526,20 @@ export function makeQueryDb(ir: IrDocument): {
         stmt.finalize();
       }
     },
+    plan(sql, index) {
+      if (index !== undefined) sqlite.run(`SAVEPOINT plan_probe; ${index}`);
+      try {
+        return sqlite
+          .query<{ id: number; parent: number; detail: string }, []>(
+            `EXPLAIN QUERY PLAN ${sql}`,
+          )
+          .all();
+      } finally {
+        if (index !== undefined) {
+          sqlite.run('ROLLBACK TO plan_probe; RELEASE plan_probe');
+        }
+      }
+    },
   };
   return { db, close: () => sqlite.close() };
 }
@@ -590,6 +605,7 @@ export function analyzeQueries(
       }
       seen.set(q.name, q.file);
     }
+    for (const query of analyzed) checkQueryPlan(query, ir, db);
     return analyzed;
   } finally {
     close();

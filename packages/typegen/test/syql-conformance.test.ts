@@ -291,6 +291,12 @@ function fixtureDatabase(): {
           statement.finalize();
         }
       },
+      plan: (sql: string) =>
+        sqlite
+          .query<{ id: number; parent: number; detail: string }, []>(
+            `EXPLAIN QUERY PLAN ${sql}`,
+          )
+          .all(),
     },
   };
 }
