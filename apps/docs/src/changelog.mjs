@@ -17,8 +17,24 @@
 export const changelog = [
   {
     date: '2026-11-10',
-    title: 'A scope column must be a string, integer, or float',
-    body: 'Generation refuses a scope column of type `boolean`, `json`, `bytes`, `blob_ref`, or `crdt` with `typegen.scope_column_type`, and the server schema compile refuses the same types with `schema.scope_column_type`. A `bytes` or `crdt` scope column made every write fail with `sync.forbidden`, and a `boolean` scope column never matched in the client purge and eviction predicates, so revoked rows stayed readable. A row with a NULL scope value is still unwritable.',
+    title:
+      'Presence survives Durable Object hibernation; the presence cap is per connection',
+    body: "On Cloudflare Workers the host keeps each socket's presence documents in that socket's attachment and restores them after a hibernation. Peers receive `leave` when a socket closes after a wake, and a newly registered socket receives the snapshot of the peers already present. `maxPresenceBytes` now caps the presence one connection holds across all its scope keys (scope key plus document, UTF-8 bytes, default 8,192; previously 16 KiB per document). The Workers host refuses a `maxPresenceBytes` above 9,785 with `realtime.presence_exceeds_attachment`, because the attachment holds 16,384 bytes.",
+    links: [
+      {
+        href: '/concepts-realtime/#presence',
+        label: 'Presence',
+      },
+      {
+        href: '/server-workers/',
+        label: 'Workers host',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'A scope column must be a string or an integer',
+    body: 'Generation refuses a scope column of type `float`, `boolean`, `json`, `bytes`, `blob_ref`, or `crdt` with `typegen.scope_column_type`, and the server schema compile refuses the same types with `schema.scope_column_type`. The Rust authority and both clients refuse them when they load a schema. A `float` scope value rendered differently per implementation (`1e21` is `1e+21` on the TS server and `1000000000000000000000` in the Rust authority), so one row could sit in two different scopes. A `bytes` or `crdt` scope column made every write fail with `sync.forbidden`, and a `boolean` scope column never matched in the client purge and eviction predicates, so revoked rows stayed readable. Change a `float` scope column to `integer` or `string` before upgrading. A row with a NULL scope value is still unwritable.',
     links: [
       {
         href: '/guide-schema/',
