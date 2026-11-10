@@ -306,7 +306,7 @@ mod observation_tests {
         let mut client =
             SyncClient::open_path("authority".into(), &schema, limits, path.to_str().unwrap())
                 .unwrap();
-        client.begin_security_preflight();
+        client.begin_security_preflight().unwrap();
         let update = |conn: &Connection, revision: i64| {
             conn.execute_batch("BEGIN IMMEDIATE").unwrap();
             conn.execute(
@@ -739,6 +739,7 @@ mod observation_tests {
         let table = client.schema.table("patients").unwrap();
         let fallback = client
             .stored_key_fallback(table, "5")
+            .unwrap()
             .expect("the stored integer key resolves the fallback");
         assert_eq!(fallback[1], Some(ColumnValue::String("k1".to_owned())));
     }
@@ -938,7 +939,7 @@ mod observation_tests {
             } else {
                 client.query("SELECT * FROM _syncular_blobs", &[]).unwrap()
             };
-            client.set_meta(LOG_EPOCH_KEY, "epoch");
+            client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
             let mut transport = CountingRealtimeTransport::default();
             let error = flush_blob_uploads(&mut client, &mut transport).unwrap_err();
             assert_eq!(
@@ -1037,7 +1038,7 @@ mod observation_tests {
     /// registered and the response.
     fn coalesced_fixture(sections: usize, commits: usize, rows: usize) -> (SyncClient, Message) {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut response = Message {
             wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Response,
@@ -1053,7 +1054,7 @@ mod observation_tests {
             let project = format!("p{section}");
             let scopes = vec![("project_id".to_owned(), vec![project.clone()])];
             client
-                .subscribe(format!("s{section}"), "tasks".into(), scopes.clone(), None)
+                .register_subscription(format!("s{section}"), "tasks".into(), scopes.clone(), None)
                 .unwrap();
             let sub = client.subs.last_mut().unwrap();
             sub.cursor = 0;
@@ -1208,7 +1209,7 @@ mod observation_tests {
         let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
         let (_, meta) = client.build_request(false).unwrap();
         let subs = client.subs.clone();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         let outcome = client.process_response(&mut transport, response.clone(), &meta);
         assert!(
             matches!(&outcome, SyncOutcome::Failed { error_code, .. } if error_code == "storage.failed"),
@@ -1216,7 +1217,7 @@ mod observation_tests {
         );
         assert!(client.conn.is_autocommit());
         assert!(client.coalesced.is_none() && client.coalesced_failure.is_none());
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert!(client
             .drain_change_batches()
             .iter()
@@ -1272,9 +1273,9 @@ mod observation_tests {
                     path.to_str().unwrap(),
                 )
                 .unwrap();
-                client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+                client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
                 client
-                    .subscribe(
+                    .register_subscription(
                         "tasks".into(),
                         "tasks".into(),
                         vec![("project_id".into(), vec!["p1".into()])],
@@ -1380,7 +1381,7 @@ mod observation_tests {
                 };
                 let expected_revision = count + u64::from(realtime && fault != "none");
                 assert_eq!(
-                    client.local_revision(),
+                    client.local_revision().unwrap(),
                     expected_revision,
                     "{realtime}/{fault}"
                 );
@@ -1436,7 +1437,7 @@ mod observation_tests {
                     path.to_str().unwrap(),
                 )
                 .unwrap();
-                assert_eq!(reopened.local_revision(), expected_revision);
+                assert_eq!(reopened.local_revision().unwrap(), expected_revision);
                 assert_eq!(
                     reopened
                         .query("SELECT id FROM tasks ORDER BY id", &[])
@@ -1493,7 +1494,7 @@ mod observation_tests {
                     .unwrap();
                 let ids = client.pending_commit_ids();
                 let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
-                let revision = client.local_revision();
+                let revision = client.local_revision().unwrap();
                 client.drain_change_batches();
                 let (_, meta) = client.build_request(false).unwrap();
                 client.conn.execute_batch(if fault == "subscription" {
@@ -1527,7 +1528,7 @@ mod observation_tests {
                 assert!(client.commit_outcome(&ids[0]).unwrap().is_none());
                 assert!(client.rejections.is_empty());
                 assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
-                assert_eq!(client.local_revision(), revision);
+                assert_eq!(client.local_revision().unwrap(), revision);
                 assert!(client.drain_change_batches().is_empty());
                 assert!(report.revoked.is_empty() && report.resets.is_empty());
             }
@@ -1538,7 +1539,7 @@ mod observation_tests {
     fn rows_segment_blocks_commit_independently_and_clear_with_the_first_block() {
         let mut client = client();
         client
-            .subscribe(
+            .register_subscription(
                 "tasks".into(),
                 "tasks".into(),
                 vec![("project_id".into(), vec!["p1".into()])],
@@ -1569,7 +1570,7 @@ mod observation_tests {
                 .unwrap(),
             vec![Map::from_iter([("id".into(), Value::from("first"))])]
         );
-        assert_eq!(client.local_revision(), 1);
+        assert_eq!(client.local_revision().unwrap(), 1);
         assert_eq!(client.drain_change_batches().len(), 1);
         assert_eq!(client.subs[0].cursor, -1);
         client
@@ -1577,7 +1578,7 @@ mod observation_tests {
             .execute_batch("DROP TRIGGER fail_block")
             .unwrap();
         assert!(matches!(client.apply_segment(0, &segment, true), Ok(3)));
-        assert_eq!(client.local_revision(), 3);
+        assert_eq!(client.local_revision().unwrap(), 3);
         assert_eq!(client.drain_change_batches().len(), 2);
     }
 
@@ -1656,7 +1657,7 @@ mod observation_tests {
     #[test]
     fn a_response_fetches_all_its_segment_pages_in_one_ordered_batch() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
             .subscribe(
                 "tasks".into(),
@@ -1898,7 +1899,7 @@ mod observation_tests {
     #[test]
     fn a_retryable_in_band_failure_keeps_the_socket_connected_and_still_asks_for_a_retry() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = ServerErrorTransport {
             code: "sync.schema_not_ready",
             retryable: true,
@@ -1929,7 +1930,7 @@ mod observation_tests {
     #[test]
     fn retryable_server_error_schedules_a_background_retry() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = ServerErrorTransport {
             code: "sync.internal_error",
             retryable: true,
@@ -1970,7 +1971,7 @@ mod observation_tests {
         assert!(exhausted["report"].is_object());
 
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         // Zero explicit budget is a caller error, not an exhaustion.
         let mut idle_transport = HostTransport::new_from_config(&json!({})).unwrap();
         let zero = client.sync_until_idle(&mut idle_transport, Some(0));
@@ -2031,7 +2032,7 @@ mod observation_tests {
         // refused or unreachable endpoint; neither earns another backoff.
         for cause in ["connect", "network"] {
             let mut client = client();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             let mut transport = CauseTransport(cause);
             assert!(matches!(
                 client.sync(&mut transport),
@@ -2045,7 +2046,7 @@ mod observation_tests {
 
         // Every other retryable transport cause keeps the background retry.
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = CauseTransport("timeout");
         assert!(matches!(
             client.sync(&mut transport),
@@ -2061,7 +2062,7 @@ mod observation_tests {
     fn sync_until_idle_reports_its_total_deadline() {
         assert_eq!(SyncClient::SYNC_IDLE_TIMEOUT_MS, 60_000);
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
 
         // A zero deadline is a caller error, like a zero round budget.
@@ -2147,7 +2148,7 @@ mod observation_tests {
             path.to_str().unwrap(),
         )
         .expect("open client");
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
             .subscribe(
                 "tasks".into(),
@@ -2260,7 +2261,7 @@ mod observation_tests {
     #[test]
     fn sync_until_idle_stops_on_a_schema_floor() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let floor = Message {
             wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Response,
@@ -2443,7 +2444,7 @@ mod observation_tests {
             ),
         ] {
             let mut client = client();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             let mut error = TransportError::new(code, secret);
             error.details = Some(details);
             let mut transport = failure_transport([Err(error), Ok(completed_response(vec![]))]);
@@ -2482,7 +2483,7 @@ mod observation_tests {
     #[test]
     fn a_round_without_a_complete_response_reports_its_code_on_every_following_request() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = failure_transport([
             Err(TransportError::new("transport.timeout", "round timed out")),
             Ok(completed_response(Vec::new())),
@@ -2510,7 +2511,7 @@ mod observation_tests {
     #[test]
     fn a_newer_round_failure_replaces_the_kept_code() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = failure_transport([
             Err(TransportError::new("transport.timeout", "round timed out")),
             Err(TransportError::new("transport.failed", "socket closed")),
@@ -2534,7 +2535,7 @@ mod observation_tests {
     #[test]
     fn an_in_band_error_completes_the_round_and_is_never_reported() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = failure_transport([
             Err(TransportError::new("transport.timeout", "round timed out")),
             Ok(completed_response(vec![Frame::Error {
@@ -2566,7 +2567,7 @@ mod observation_tests {
     #[test]
     fn a_silent_segment_fetch_is_retryable_and_reported_on_the_next_request() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
             .subscribe(
                 "tasks".into(),
@@ -2663,7 +2664,7 @@ mod observation_tests {
     #[test]
     fn a_code_the_frame_grammar_rejects_is_not_attached() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = failure_transport([
             Err(TransportError::new("offline", "no dotted code")),
             Ok(completed_response(Vec::new())),
@@ -2693,7 +2694,7 @@ mod observation_tests {
     fn push_capacity_limits_are_hard_and_keep_intent() {
         // The configured operation cap is hard for the first commit.
         let mut c = client();
-        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         c.limits.max_push_operations_per_request = Some(1);
         let id = c
             .mutate(vec![
@@ -2734,7 +2735,7 @@ mod observation_tests {
 
         // The commit-count cap defers whole later commits.
         let mut c = client();
-        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         c.limits.max_push_commits_per_request = Some(1);
         let first = c
             .mutate(vec![Mutation::Upsert {
@@ -2767,7 +2768,7 @@ mod observation_tests {
         // Two small commits: a cap just below the full request defers the
         // last commit and sends the fitting prefix (header + first commit).
         let mut c = client();
-        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let first = c
             .mutate(vec![Mutation::Upsert {
                 table: "tasks".into(),
@@ -2800,7 +2801,7 @@ mod observation_tests {
         // A single commit larger than the budget is a typed capacity error and
         // stays queued, reporting the full projected request size.
         let mut c = client();
-        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let huge = c
             .mutate(vec![Mutation::Upsert {
                 table: "tasks".into(),
@@ -2834,7 +2835,7 @@ mod observation_tests {
 
         // A cap smaller than the fixed frames reports no blocked commit.
         let mut c = client();
-        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         c.limits.max_push_request_bytes = Some(1);
         let error = c.build_request(false).unwrap_err();
         let SyncOutcome::Failed { details, .. } = *error else {
@@ -2912,7 +2913,7 @@ mod observation_tests {
     #[test]
     fn failed_progress_retry_delay_doubles_to_the_cap() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = ServerErrorTransport {
             code: "sync.internal_error",
             retryable: true,
@@ -2953,7 +2954,7 @@ mod observation_tests {
     #[test]
     fn log_epoch_reset_requests_an_immediate_follow_up_round() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
             .subscribe(
                 "epoch-tasks".to_owned(),
@@ -3170,7 +3171,7 @@ mod observation_tests {
         client.connect_realtime(&mut transport).unwrap();
         client.set_transport_enabled(&mut transport, false);
         assert_eq!(transport.closes, 1);
-        client.begin_security_preflight();
+        client.begin_security_preflight().unwrap();
         client.activate_security(Default::default()).unwrap();
         client
             .subscribe(
@@ -3688,7 +3689,9 @@ mod observation_tests {
                 None,
             )
             .expect("subscribe");
-        malformed.set_meta("localRebootstrap:malformed", "{\"version\":2}");
+        malformed
+            .set_meta("localRebootstrap:malformed", "{\"version\":2}")
+            .unwrap();
         malformed.drain_change_batches();
         malformed.drain_sync_intents();
         let malformed_error = malformed
@@ -3745,10 +3748,12 @@ mod observation_tests {
     #[test]
     fn local_rebootstrap_cannot_bypass_schema_floor() {
         let mut client = client();
-        client.set_schema_floor(Some(SchemaFloor {
-            required_schema_version: Some(2),
-            latest_schema_version: Some(2),
-        }));
+        client
+            .set_schema_floor(Some(SchemaFloor {
+                required_schema_version: Some(2),
+                latest_schema_version: Some(2),
+            }))
+            .unwrap();
         let error = client
             .rebootstrap_local_data(&LocalDataRebootstrapInput {
                 rebootstrap_id: "blocked-floor".to_owned(),
@@ -3767,7 +3772,7 @@ mod observation_tests {
             "scopes":[{"pattern":"project:{project_id}"}]}]});
         let mut client =
             SyncClient::new("diego-ack-gap".into(), &schema, ClientLimits::default()).unwrap();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
             .write_base_row(
                 "tasks",
@@ -3877,7 +3882,7 @@ mod observation_tests {
                 }])
                 .unwrap();
             if let Some(epoch) = stored {
-                client.set_meta(LOG_EPOCH_KEY, epoch);
+                client.set_meta(LOG_EPOCH_KEY, epoch).unwrap();
             }
             let before = serde_json::to_value(client.subscription_state("tasks")).unwrap();
             let (_, meta) = client.build_request(false).unwrap();
@@ -3906,7 +3911,10 @@ mod observation_tests {
                     vec!["tasks".into()]
                 }
             );
-            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-new"));
+            assert_eq!(
+                client.get_meta(LOG_EPOCH_KEY).unwrap().as_deref(),
+                Some("epoch-new")
+            );
             assert_eq!(client.pending_commit_ids(), vec![id]);
             assert_eq!(
                 client.query("SELECT id FROM tasks", &[]).unwrap()[0]["id"],
@@ -3956,16 +3964,16 @@ mod observation_tests {
                     base_version: None,
                 }])
                 .unwrap();
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             let needed = client.sync_needed;
             client.drain_change_batches();
             client.drain_sync_intents();
             client.conn.execute_batch(&format!("CREATE TRIGGER fail_acquisition BEFORE INSERT ON _syncular_meta WHEN NEW.key='{key}' BEGIN SELECT RAISE(FAIL,'injected acquisition failure'); END")).unwrap();
             assert!(client.run_log_epoch_reset("epoch-new").is_err());
-            assert!(client.get_meta(LOG_EPOCH_KEY).is_none());
+            assert!(client.get_meta(LOG_EPOCH_KEY).unwrap().is_none());
             assert!(!client.upgrading);
             assert_eq!(client.sync_needed, needed);
-            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.local_revision().unwrap(), revision);
             assert_eq!(client.pending_commit_ids(), [id]);
             assert!(client.drain_change_batches().is_empty());
             assert!(client.drain_sync_intents().is_empty());
@@ -3981,7 +3989,7 @@ mod observation_tests {
             "localRevision",
         ] {
             let mut client = client();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-old");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-old").unwrap();
             let commit = client
                 .mutate(vec![Mutation::Upsert {
                     table: "tasks".into(),
@@ -3996,18 +4004,21 @@ mod observation_tests {
             client.overlay_dirty.set(false);
             let round = client.active_round;
             let needed = client.sync_needed;
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             let rows = serde_json::to_value(client.read_rows("tasks").unwrap()).unwrap();
             client.drain_change_batches();
             client.drain_sync_intents();
             client.conn.execute_batch(&format!("CREATE TRIGGER fail_reset BEFORE INSERT ON _syncular_meta WHEN NEW.key='{key}' BEGIN SELECT RAISE(FAIL,'injected reset failure'); END")).unwrap();
             assert!(client.run_log_epoch_reset("epoch-new").is_err(), "{key}");
-            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-old"));
+            assert_eq!(
+                client.get_meta(LOG_EPOCH_KEY).unwrap().as_deref(),
+                Some("epoch-old")
+            );
             assert!(!client.upgrading);
             assert_eq!(client.active_round, round);
             assert!(!client.overlay_dirty.get());
             assert_eq!(client.sync_needed, needed);
-            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.local_revision().unwrap(), revision);
             assert_eq!(
                 client.pending_commit_ids().as_slice(),
                 std::slice::from_ref(&commit)
@@ -4024,7 +4035,10 @@ mod observation_tests {
                 .execute_batch("DROP TRIGGER fail_reset")
                 .unwrap();
             client.run_log_epoch_reset("epoch-new").unwrap();
-            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-new"));
+            assert_eq!(
+                client.get_meta(LOG_EPOCH_KEY).unwrap().as_deref(),
+                Some("epoch-new")
+            );
             assert_eq!(client.pending_commit_ids(), [commit]);
         }
     }
@@ -4036,7 +4050,7 @@ mod observation_tests {
                 { "name": "tasks", "primaryKey": "id", "columns": [{ "name": "id", "type": "string", "nullable": false }, { "name": "project_id", "type": "string", "nullable": false }], "scopes": [{ "pattern": "project:{project_id}" }] },
                 { "name": "docs", "primaryKey": "id", "columns": [{ "name": "id", "type": "string", "nullable": false }, { "name": "project_id", "type": "string", "nullable": false }], "scopes": [{ "pattern": "project:{project_id}" }] }
             ] }), ClientLimits::default()).unwrap();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             client.conn.execute_batch("CREATE TABLE ack_writes(kind TEXT); CREATE TRIGGER count_ack_restore AFTER DELETE ON tasks BEGIN INSERT INTO ack_writes VALUES('restore'); END; CREATE TRIGGER count_ack_replay AFTER INSERT ON tasks BEGIN INSERT INTO ack_writes VALUES('replay'); END;").unwrap();
             for index in 0..32 {
                 client
@@ -4161,7 +4175,7 @@ mod observation_tests {
     #[test]
     fn batched_push_acknowledgements_rebuild_overlay_once_per_response() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         const COMMIT_COUNT: usize = 32;
 
         for index in 0..COMMIT_COUNT {
@@ -4285,7 +4299,10 @@ mod observation_tests {
                     reference.query(sql, &[]).unwrap()
                 );
             }
-            assert_eq!(incremental.local_revision(), reference.local_revision());
+            assert_eq!(
+                incremental.local_revision().unwrap(),
+                reference.local_revision().unwrap()
+            );
             assert_eq!(
                 serde_json::to_value(incremental.drain_change_batches()).unwrap(),
                 serde_json::to_value(reference.drain_change_batches()).unwrap()
@@ -4611,7 +4628,10 @@ mod observation_tests {
                         assert_eq!(incremental.query(&sql, &[]).unwrap(), reference.query(&sql, &[]).unwrap(), "unique={unique}, frame={index}: {sql}");
                     }
                 }
-                assert_eq!(incremental.local_revision(), reference.local_revision());
+                assert_eq!(
+                    incremental.local_revision().unwrap(),
+                    reference.local_revision().unwrap()
+                );
                 assert_eq!(
                     serde_json::to_value(incremental.drain_change_batches()).unwrap(),
                     serde_json::to_value(reference.drain_change_batches()).unwrap()
@@ -4827,7 +4847,7 @@ mod observation_tests {
             "failed-rebootstrap",
         ] {
             let mut client = client();
-            client.set_meta(LOG_EPOCH_KEY, "epoch");
+            client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
             client
                 .subscribe(
                     "tasks".into(),
@@ -4909,7 +4929,7 @@ mod observation_tests {
                 },
             };
             match barrier {
-                "preflight" => client.begin_security_preflight(),
+                "preflight" => client.begin_security_preflight().unwrap(),
                 "purge" => {
                     client
                         .purge_local_data(&LocalDataPurgeInput {
@@ -4938,7 +4958,7 @@ mod observation_tests {
                         "CREATE TRIGGER fail_local BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(ABORT, 'local fault'); END"
                     };
                     client.conn.execute_batch(trigger).unwrap();
-                    let revision = client.local_revision();
+                    let revision = client.local_revision().unwrap();
                     if barrier == "failed-rebootstrap" {
                         assert!(client
                             .rebootstrap_local_data(&LocalDataRebootstrapInput {
@@ -4959,7 +4979,7 @@ mod observation_tests {
                             })
                             .is_err());
                     }
-                    assert_eq!(client.local_revision(), revision);
+                    assert_eq!(client.local_revision().unwrap(), revision);
                     assert_eq!(client.pending_commit_ids(), vec![commit.clone()]);
                     client
                         .conn
@@ -4987,7 +5007,7 @@ mod observation_tests {
                     continue;
                 }
                 "subscription" => {
-                    client.unsubscribe("tasks");
+                    client.unsubscribe("tasks").unwrap();
                     client
                         .subscribe(
                             "tasks".into(),
@@ -5000,12 +5020,12 @@ mod observation_tests {
                 _ => unreachable!(),
             }
             let pending_before_reply = client.pending_commit_ids();
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             let applied = client.apply_sync_round(completed);
             assert!(
                 matches!(applied, crate::AppliedSyncRound::Complete { outcome: SyncOutcome::Failed { ref error_code, .. }, ref controls, .. } if error_code == "client.round_cancelled" && controls.is_empty())
             );
-            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.local_revision().unwrap(), revision);
             assert!(client
                 .conn
                 .query_row(
@@ -5068,7 +5088,7 @@ mod observation_tests {
             {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
         let mut client =
             SyncClient::new("deadline-round".into(), &schema, Default::default()).unwrap();
-        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
         client
             .upload_blob(b"pending upload", Some("text/plain".into()), None)
             .unwrap();
@@ -5188,7 +5208,7 @@ mod observation_tests {
             {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
         let mut client =
             SyncClient::new("deadline-unusable".into(), &schema, ClientLimits::default()).unwrap();
-        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
         client
             .upload_blob(b"pending upload", Some("text/plain".into()), None)
             .unwrap();
@@ -5250,7 +5270,7 @@ mod observation_tests {
         }
 
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
         let prepared = client.prepare_sync_round(false).unwrap();
         let outcome = match client.apply_sync_round(prepared.exchange(&mut HugeBudget)) {
             crate::AppliedSyncRound::Complete { outcome, .. } => outcome,
@@ -5286,7 +5306,7 @@ mod observation_tests {
                 }])
                 .unwrap();
             client.drain_change_batches();
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             let before = client.query("SELECT * FROM tasks", &[]).unwrap();
             let trigger = match failure {
                 "visible" => "CREATE TRIGGER fail_pending BEFORE INSERT ON tasks WHEN NEW.project_id = 'remote' BEGIN SELECT RAISE(ABORT, 'injected visible failure'); END".to_owned(),
@@ -5318,7 +5338,7 @@ mod observation_tests {
                 .is_err());
             assert!(client.conn.is_autocommit());
             assert!(!client.overlay_dirty.get());
-            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.local_revision().unwrap(), revision);
             assert!(client.drain_change_batches().is_empty());
             assert_eq!(client.pending_commit_ids(), vec![id.clone()]);
             assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), before);
@@ -5333,7 +5353,7 @@ mod observation_tests {
             client
                 .apply_commit_frame(&["tasks".into()], &[change], None)
                 .unwrap();
-            assert_eq!(client.local_revision(), revision + 1);
+            assert_eq!(client.local_revision().unwrap(), revision + 1);
             assert_eq!(client.pending_commit_ids(), vec![id]);
             // The overlay keeps the pending write visible; the row now carries
             // the server row's version it is layered on (§7.1).
@@ -5423,7 +5443,10 @@ mod observation_tests {
                 "SELECT _syncular_source_id FROM tasks_fts WHERE tasks_fts MATCH 'needle1' ORDER BY _syncular_source_id"] {
                 assert_eq!(incremental.query(sql, &[]).unwrap(), reference.query(sql, &[]).unwrap(), "commit {index}: {sql}");
             }
-            assert_eq!(incremental.local_revision(), reference.local_revision());
+            assert_eq!(
+                incremental.local_revision().unwrap(),
+                reference.local_revision().unwrap()
+            );
             assert_eq!(
                 serde_json::to_value(incremental.drain_change_batches()).unwrap(),
                 serde_json::to_value(reference.drain_change_batches()).unwrap()
@@ -5453,9 +5476,9 @@ mod observation_tests {
                 format!("CREATE TRIGGER fail_append BEFORE INSERT ON _syncular_meta WHEN NEW.key = '{LOCAL_REVISION_KEY}' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END")
             };
             client.conn.execute_batch(&trigger).unwrap();
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             assert!(client.mutate(vec![mutation.clone()]).is_err(), "{fail_at}");
-            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.local_revision().unwrap(), revision);
             assert!(client.outbox.is_empty());
             assert!(client.query("SELECT * FROM tasks", &[]).unwrap().is_empty());
             assert_eq!(
@@ -5503,7 +5526,7 @@ mod observation_tests {
         };
         let mut invalid = first.clone();
         invalid.table_index = 1;
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         client.begin_observation("failed_mirror").unwrap();
         assert!(client
             .apply_commit_changes(&tables, &[first, invalid])
@@ -5521,7 +5544,7 @@ mod observation_tests {
                 .unwrap(),
             0
         );
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert!(client.drain_change_batches().is_empty());
     }
 
@@ -5529,7 +5552,7 @@ mod observation_tests {
     fn successful_acknowledgement_runs_are_atomic_and_preserve_completed_runs() {
         for failure in ["journal", "revision", "commit", "later-frame"] {
             let mut client = client();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             for id in ["first", "second"] {
                 client
                     .mutate(vec![Mutation::Upsert {
@@ -5558,7 +5581,7 @@ mod observation_tests {
             let rows = client
                 .query("SELECT * FROM tasks ORDER BY id", &[])
                 .unwrap();
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             client.drain_change_batches();
             if failure != "later-frame" {
                 client.conn.execute_batch(match failure {
@@ -5615,13 +5638,13 @@ mod observation_tests {
                 let batches = client.drain_change_batches();
                 assert_eq!(batches.len(), 1);
                 assert_eq!(batches[0].status.as_ref().unwrap().outbox, 1);
-                assert_eq!(client.local_revision(), revision + 1);
+                assert_eq!(client.local_revision().unwrap(), revision + 1);
                 response.frames.pop();
             } else {
                 assert_eq!(client.pending_commit_ids(), ids);
                 assert!(client.commit_outcome(&ids[0]).unwrap().is_none());
                 assert!(client.commit_outcome(&ids[1]).unwrap().is_none());
-                assert_eq!(client.local_revision(), revision);
+                assert_eq!(client.local_revision().unwrap(), revision);
                 assert!(client.drain_change_batches().is_empty());
                 assert_eq!(
                     client
@@ -5654,7 +5677,7 @@ mod observation_tests {
             if let Some(batch) = batches.first() {
                 assert_eq!(batch.status.as_ref().unwrap().outbox, 1);
             }
-            assert_eq!(client.local_revision(), revision + 1);
+            assert_eq!(client.local_revision().unwrap(), revision + 1);
         }
     }
 
@@ -5663,7 +5686,7 @@ mod observation_tests {
         for failure in ["revision", "journal", "commit"] {
             for status in ["applied", "cached", "rejected", "conflict"] {
                 let mut client = client();
-                client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+                client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
                 for id in ["first", "later"] {
                     client
                         .mutate(vec![Mutation::Upsert {
@@ -5681,7 +5704,7 @@ mod observation_tests {
                 let rows = client
                     .query("SELECT * FROM tasks ORDER BY id", &[])
                     .unwrap();
-                let revision = client.local_revision();
+                let revision = client.local_revision().unwrap();
                 client.drain_change_batches();
                 let (push_status, results) = match status {
                     "applied" => (PushStatus::Applied, vec![OpResult::Applied { op_index: 0 }]),
@@ -5747,7 +5770,7 @@ mod observation_tests {
                     "{failure}/{status}: pending identity"
                 );
                 assert_eq!(
-                    client.local_revision(),
+                    client.local_revision().unwrap(),
                     revision,
                     "{failure}/{status}: revision"
                 );
@@ -5787,7 +5810,7 @@ mod observation_tests {
     #[test]
     fn mixed_push_results_reconcile_each_boundary_and_prune_once_per_response() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         for index in 0..4 {
             client
                 .mutate(vec![Mutation::Upsert {
@@ -5904,8 +5927,8 @@ mod observation_tests {
                     base_version: None,
                 }])
                 .unwrap();
-            client.set_meta(LOG_EPOCH_KEY, "old");
-            let revision = client.local_revision();
+            client.set_meta(LOG_EPOCH_KEY, "old").unwrap();
+            let revision = client.local_revision().unwrap();
             let needed = client.sync_needed;
             client.drain_change_batches();
             client.drain_sync_intents();
@@ -5923,11 +5946,14 @@ mod observation_tests {
             }
             assert!(!client.upgrading);
             assert_eq!(client.sync_needed, needed);
-            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.local_revision().unwrap(), revision);
             assert_eq!(client.pending_commit_ids(), vec![id.clone()]);
             assert!(client.rejections.is_empty());
             assert!(client.commit_outcome(&id).unwrap().is_none());
-            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("old"));
+            assert_eq!(
+                client.get_meta(LOG_EPOCH_KEY).unwrap().as_deref(),
+                Some("old")
+            );
             assert_eq!(
                 client
                     .query("SELECT title FROM tasks WHERE id='queued'", &[])
@@ -5962,7 +5988,7 @@ mod observation_tests {
             .unwrap();
         client.subs[0].effective = Some(vec![]);
         client.persist_sub(&client.subs[0]).unwrap();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         let (_, meta) = client.build_request(false).unwrap();
         let mut transport = CountingRealtimeTransport::default();
         let mut report = SyncReport::default();
@@ -5981,7 +6007,7 @@ mod observation_tests {
             )
             .is_err());
         assert_eq!(client.subs[0].state, SubState::Active);
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert!(report.revoked.is_empty());
         assert!(client.conn.is_autocommit());
         client
@@ -6040,7 +6066,7 @@ mod observation_tests {
                 .unwrap()
         });
         client.conn.execute_batch("DELETE FROM tasks; CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END;").unwrap();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         drop(client);
         let error = SyncClient::open_path(
             "replay".into(),
@@ -6064,7 +6090,7 @@ mod observation_tests {
             2
         );
         assert_eq!(
-            meta_get(&conn, LOCAL_REVISION_KEY),
+            meta_get(&conn, LOCAL_REVISION_KEY).unwrap(),
             Some(revision.to_string())
         );
         conn.execute_batch("DROP TRIGGER fail_replay").unwrap();
@@ -6093,7 +6119,7 @@ mod observation_tests {
         let schema = replay_schema(false);
         let mut client =
             SyncClient::new("replay".into(), &schema, ClientLimits::default()).unwrap();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
             .write_base_row(
                 "tasks",
@@ -6119,7 +6145,7 @@ mod observation_tests {
         let base = client
             .query("SELECT * FROM _syncular_base_tasks", &[])
             .unwrap();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         client.drain_change_batches();
         client.conn.execute_batch("CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.title='local' BEGIN SELECT RAISE(ABORT,'replay failed'); END").unwrap();
         let remote = vec![
@@ -6162,7 +6188,7 @@ mod observation_tests {
                 .unwrap(),
             base
         );
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert!(client.drain_change_batches().is_empty());
         let response = Message {
             wire_version: 2,
@@ -6209,7 +6235,7 @@ mod observation_tests {
             0
         );
         assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert!(client.drain_change_batches().is_empty());
         client
             .conn
@@ -6723,10 +6749,12 @@ mod observation_tests {
                     None,
                 )
                 .expect("persist subscription");
-            first.set_schema_floor(Some(SchemaFloor {
-                required_schema_version: Some(22),
-                latest_schema_version: Some(22),
-            }));
+            first
+                .set_schema_floor(Some(SchemaFloor {
+                    required_schema_version: Some(22),
+                    latest_schema_version: Some(22),
+                }))
+                .unwrap();
         }
 
         let mut reopened = SyncClient::open_path_with_identity(
@@ -6737,7 +6765,7 @@ mod observation_tests {
         )
         .expect("reopen");
         assert!(reopened.schema_floor().is_none());
-        assert!(reopened.get_meta(SCHEMA_FLOOR_KEY).is_none());
+        assert!(reopened.get_meta(SCHEMA_FLOOR_KEY).unwrap().is_none());
         assert!(reopened.sync_needed());
         assert!(matches!(
             reopened.drain_sync_intents().as_slice(),
@@ -6782,10 +6810,12 @@ mod observation_tests {
                     None,
                 )
                 .expect("persist subscription");
-            first.set_schema_floor(Some(SchemaFloor {
-                required_schema_version: Some(2),
-                latest_schema_version: Some(2),
-            }));
+            first
+                .set_schema_floor(Some(SchemaFloor {
+                    required_schema_version: Some(2),
+                    latest_schema_version: Some(2),
+                }))
+                .unwrap();
         }
 
         let reopened = SyncClient::open_path_with_identity(
@@ -7358,7 +7388,7 @@ mod observation_tests {
                 base_version: None,
             }])
             .expect("mutate");
-        let revision = client.local_revision().to_string();
+        let revision = client.local_revision().unwrap().to_string();
 
         let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
         assert_eq!(reader.local_revision().expect("revision"), revision);
@@ -7601,7 +7631,7 @@ mod observation_tests {
                 base_version: None,
             }])
             .expect("seed row");
-        let revision_before = client.local_revision().to_string();
+        let revision_before = client.local_revision().unwrap().to_string();
 
         // A writer on a second connection commits while the reader is between
         // statements; the hook rendezvous is a barrier, not a sleep.
@@ -8128,10 +8158,10 @@ mod observation_tests {
             INSERT INTO _syncular_base_tasks SELECT printf('%05d',x),'p1',1 FROM n;
             INSERT INTO tasks SELECT * FROM _syncular_base_tasks;
             CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         assert!(client.set_window(&base, &[]).is_err());
         assert!(client.conn.is_autocommit());
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert_eq!(
             client
                 .query("SELECT count(*) AS n FROM tasks", &[])
@@ -8369,7 +8399,7 @@ mod observation_tests {
             let fts_before = actual
                 .query("SELECT * FROM tasks_fts ORDER BY _syncular_source_id", &[])
                 .unwrap();
-            let revision = actual.local_revision();
+            let revision = actual.local_revision().unwrap();
             actual.conn.execute_batch("CREATE TRIGGER fail_import BEFORE INSERT ON tasks WHEN new.id='b' BEGIN SELECT RAISE(ABORT,'restore failed'); END").unwrap();
             let table = actual.schema.table("tasks").unwrap().clone();
             let segment = RowsSegment {
@@ -8399,7 +8429,7 @@ mod observation_tests {
                     .unwrap(),
                 fts_before
             );
-            assert_eq!(actual.local_revision(), revision);
+            assert_eq!(actual.local_revision().unwrap(), revision);
             assert_eq!(actual.pending_commit_ids(), pending);
         }
     }
@@ -8613,7 +8643,7 @@ mod observation_tests {
         assert!(busy.retryable);
         assert_eq!(busy.details.as_ref().unwrap()["sqliteCode"], 5);
         assert!(client.pending_commit_ids().is_empty());
-        assert_eq!(client.local_revision(), 0);
+        assert_eq!(client.local_revision().unwrap(), 0);
 
         // A stale classified failure must not classify a later unrelated one.
         let invalid = client.mutate(Vec::new()).expect_err("empty commit");
@@ -8630,7 +8660,7 @@ mod observation_tests {
         locker.execute_batch("ROLLBACK").unwrap();
         let id = client.mutate(upsert("t1")).expect("retry after busy");
         assert_eq!(client.pending_commit_ids(), vec![id]);
-        assert_eq!(client.local_revision(), 1);
+        assert_eq!(client.local_revision().unwrap(), 1);
 
         // A later storage failure reports its own code and details.
         locker.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -8746,7 +8776,7 @@ mod observation_tests {
                 "{label}: {legacy}"
             );
             assert_eq!(client.pending_commit_ids(), vec![seed.clone()], "{label}");
-            assert_eq!(client.local_revision(), 1, "{label}");
+            assert_eq!(client.local_revision().unwrap(), 1, "{label}");
             assert_eq!(
                 client.query("SELECT * FROM tasks", &[]).unwrap(),
                 rows,
@@ -8800,7 +8830,7 @@ mod observation_tests {
             );
         }
         assert_eq!(client.pending_commit_ids(), vec![seed.clone()]);
-        assert_eq!(client.local_revision(), 1);
+        assert_eq!(client.local_revision().unwrap(), 1);
         assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
 
         // Nullable explicit null, an empty envelope, and uppercase digits stay
@@ -8957,7 +8987,7 @@ mod observation_tests {
                 "{label}"
             );
             assert_eq!(reopened.pending_commit_ids(), vec![successor.clone()]);
-            assert_eq!(reopened.pending_payloads().len(), 1, "{label}");
+            assert_eq!(reopened.pending_payloads().unwrap().len(), 1, "{label}");
             assert!(!reopened
                 .drop_unencodable_outbox(false, None)
                 .expect("idempotent prepass"));
@@ -8967,7 +8997,7 @@ mod observation_tests {
             assert_eq!(reopened.pending_commit_ids(), vec![successor.clone()]);
             let next = reopened.mutate(upsert(row("t3"))).expect("after the drop");
             assert_eq!(reopened.pending_commit_ids(), vec![successor, next]);
-            assert_eq!(reopened.pending_payloads().len(), 2, "{label}");
+            assert_eq!(reopened.pending_payloads().unwrap().len(), 2, "{label}");
             drop(reopened);
             let _ = std::fs::remove_file(&path);
         }
@@ -9088,7 +9118,7 @@ mod observation_tests {
                 vec![Map::from_iter([("id".to_owned(), json!("t2"))])],
                 "{label}"
             );
-            let revision = reopened.local_revision();
+            let revision = reopened.local_revision().unwrap();
             let batches = reopened.drain_change_batches();
             assert!(
                 batches.iter().any(|batch| batch.rejections_changed
@@ -9102,7 +9132,7 @@ mod observation_tests {
             // An ordinary reopen with nothing to recover publishes nothing and
             // leaves the revision alone.
             let mut stable = open(&path);
-            assert_eq!(stable.local_revision(), revision, "{label}");
+            assert_eq!(stable.local_revision().unwrap(), revision, "{label}");
             assert!(stable.drain_change_batches().is_empty(), "{label}");
             assert_eq!(stable.pending_commit_ids(), vec![successor], "{label}");
             drop(stable);
@@ -9306,7 +9336,7 @@ mod observation_tests {
             // The successor survives and still encodes. It carries §7.1
             // insert intent, so after a bump that appends a nullable column it
             // replays as a full row with that column NULL.
-            assert_eq!(reopened.pending_payloads().len(), 1, "{label}");
+            assert_eq!(reopened.pending_payloads().unwrap().len(), 1, "{label}");
             if label == "version-bump reset" {
                 assert_eq!(
                     reopened
@@ -9322,7 +9352,7 @@ mod observation_tests {
                 // batch carries the recovery's rejection, outcome, and table
                 // domains at the revision it advanced to.
                 let mut next = reopened;
-                let revision = next.local_revision();
+                let revision = next.local_revision().unwrap();
                 let batches = next.drain_change_batches();
                 assert!(
                     batches.iter().any(|batch| batch.rejections_changed
@@ -9339,7 +9369,7 @@ mod observation_tests {
                 ])))
                 .expect("v2 authoring after the reset");
                 assert_eq!(next.pending_commit_ids().len(), 2, "{label}");
-                assert_eq!(next.pending_payloads().len(), 2, "{label}");
+                assert_eq!(next.pending_payloads().unwrap().len(), 2, "{label}");
                 drop(next);
             } else {
                 assert_eq!(
@@ -9380,7 +9410,7 @@ mod observation_tests {
                     "{label}: the in-place plant must hit the queued commit"
                 );
                 drop(connection);
-                let revision_before = recreated.local_revision();
+                let revision_before = recreated.local_revision().unwrap();
                 recreated
                     .recreate_with_schema(&v1)
                     .unwrap_or_else(|error| panic!("{label}: recreation failed: {error}"));
@@ -9409,8 +9439,11 @@ mod observation_tests {
                     ),
                     "{label}"
                 );
-                assert!(recreated.local_revision() > revision_before, "{label}");
-                let revision = recreated.local_revision();
+                assert!(
+                    recreated.local_revision().unwrap() > revision_before,
+                    "{label}"
+                );
+                let revision = recreated.local_revision().unwrap();
                 let batches = recreated.drain_change_batches();
                 assert_eq!(batches.len(), 1, "{label}: one recovery batch");
                 assert!(
@@ -9420,7 +9453,7 @@ mod observation_tests {
                         && batch.revision == revision.to_string()),
                     "{label}: {batches:?}"
                 );
-                assert_eq!(recreated.pending_payloads().len(), 1, "{label}");
+                assert_eq!(recreated.pending_payloads().unwrap().len(), 1, "{label}");
                 assert_eq!(
                     recreated
                         .query("SELECT id FROM tasks ORDER BY id", &[])
@@ -9623,7 +9656,7 @@ mod observation_tests {
             )
             .expect("plant legacy intent");
         assert_eq!(affected, 1, "the planted row must exist");
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         let rows = client.query("SELECT * FROM tasks", &[]).expect("rows");
         let prior_outbox = client.pending_commit_ids();
         let prior_rejections = client.rejections().len();
@@ -9645,7 +9678,7 @@ mod observation_tests {
             .expect_err("a blocked COMMIT must refuse the recovery");
         assert!(error.starts_with("client.storage_busy:"), "{error}");
         assert!(client.conn.is_autocommit(), "the transaction is released");
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert_eq!(client.pending_commit_ids(), prior_outbox);
         assert_eq!(client.rejections().len(), prior_rejections);
         assert_eq!(client.change_queue.len(), prior_changes);
@@ -9669,7 +9702,7 @@ mod observation_tests {
             .expect("retry after the blocked commit");
         assert!(client.pending_commit_ids().is_empty());
         assert_eq!(client.rejections().len(), prior_rejections + 1);
-        assert!(client.local_revision() > revision);
+        assert!(client.local_revision().unwrap() > revision);
         let batches = client.drain_change_batches();
         assert!(
             batches.iter().any(|batch| batch.rejections_changed
@@ -9718,7 +9751,7 @@ mod observation_tests {
             }])
             .expect("queued write");
         client.drain_change_batches();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         let prior_outbox = client.pending_commit_ids();
         let prior_rejections = client.rejections().len();
         let prior_failed = client.failed_commits.len();
@@ -9737,7 +9770,7 @@ mod observation_tests {
         assert_eq!(client.failed_commits.len(), prior_failed);
         assert_eq!(client.pending_commit_ids(), prior_outbox);
         assert_eq!(client.rejections().len(), prior_rejections);
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         // The retry retains the failed commit and drops it from the outbox.
         reader.execute_batch("ROLLBACK").expect("release reader");
         client
@@ -9870,9 +9903,16 @@ mod observation_tests {
         assert!(busy.retryable);
         assert_eq!(busy.details.as_ref().unwrap()["sqliteCode"], 5);
         assert!(client.pending_commit_ids().is_empty());
-        assert_eq!(client.local_revision(), 0);
+        let revision_error = client
+            .local_revision()
+            .expect_err("a locked database fails the revision read");
+        assert!(
+            revision_error.starts_with("client.storage_busy"),
+            "{revision_error}"
+        );
 
         locker.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(client.local_revision().unwrap(), 0);
         drop(locker);
         drop(client);
         let _ = std::fs::remove_file(&path);
@@ -10437,7 +10477,7 @@ mod observation_tests {
         let [exchange, split] = ["parity-exchange", "parity-split"].map(|id| {
             let mut client =
                 SyncClient::new(id.to_owned(), &schema, ClientLimits::default()).unwrap();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             client
                 .subscribe(
                     "tasks".into(),
@@ -10539,7 +10579,7 @@ mod observation_tests {
         let [mut exchange, mut split] = ["parity-push-exchange", "parity-push-split"].map(|id| {
             let mut client =
                 SyncClient::new(id.to_owned(), &schema, ClientLimits::default()).unwrap();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             client
                 .subscribe(
                     "attachments".into(),
@@ -10806,7 +10846,7 @@ mod row_ownership_tests {
              "scopes":[{"pattern":"project:{project_id}"}]}]});
         let client =
             SyncClient::new("ownership".into(), &schema, ClientLimits::default()).expect("client");
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
     }
 
@@ -11570,27 +11610,29 @@ pub(crate) fn quote_ident(name: &str) -> String {
 /// §7.4.1 `_syncular_meta` helpers. Free functions so RFC 0005's
 /// previous-version module reads and writes the SAME records as the client
 /// instead of growing a parallel meta layer.
-pub(crate) fn meta_get(conn: &Connection, key: &str) -> Option<String> {
+pub(crate) fn meta_get(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "SELECT value FROM _syncular_meta WHERE key = ?1",
         rusqlite::params![key],
         |row| row.get::<_, String>(0),
     )
-    .ok()
+    .optional()
 }
 
-pub(crate) fn meta_set(conn: &Connection, key: &str, value: &str) {
-    let _ = conn.execute(
+pub(crate) fn meta_set(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
         "INSERT OR REPLACE INTO _syncular_meta (key, value) VALUES (?1, ?2)",
         rusqlite::params![key, value],
-    );
+    )
+    .map(|_| ())
 }
 
-pub(crate) fn meta_delete(conn: &Connection, key: &str) {
-    let _ = conn.execute(
+pub(crate) fn meta_delete(conn: &Connection, key: &str) -> rusqlite::Result<()> {
+    conn.execute(
         "DELETE FROM _syncular_meta WHERE key = ?1",
         rusqlite::params![key],
-    );
+    )
+    .map(|_| ())
 }
 
 /// Seek by the existing key while retaining the exact legacy text match.
@@ -12671,13 +12713,13 @@ impl SyncClient {
     /// socket is closed so the next connection registers with the new id.
     /// The replica and its outbox stay in place; wipe them yourself when the
     /// stored data belongs to the account that signed out.
-    pub fn reset_client_id(&mut self, transport: &mut dyn Transport) -> String {
+    pub fn reset_client_id(&mut self, transport: &mut dyn Transport) -> Result<String, String> {
         self.disconnect_realtime(transport);
         let client_id = uuid::Uuid::new_v4().to_string();
+        self.set_meta(CLIENT_ID_KEY, &client_id)?;
         self.client_id.clone_from(&client_id);
-        self.set_meta(CLIENT_ID_KEY, &client_id);
         self.round_failure = None;
-        client_id
+        Ok(client_id)
     }
 
     /// Build a client over a caller-supplied rusqlite connection — the seam a
@@ -12792,7 +12834,7 @@ impl SyncClient {
             // New app indexes may reference columns that only exist after a
             // version-bump reset.
             client.create_bookkeeping_tables()?;
-            match client.get_meta(CLIENT_ID_KEY) {
+            match client.get_meta(CLIENT_ID_KEY)? {
                 Some(existing) => match client_id {
                     Some(requested) if existing != requested => {
                         return Err(format!(
@@ -12801,7 +12843,7 @@ impl SyncClient {
                     }
                     _ => client.client_id = existing,
                 },
-                None => client.set_meta(CLIENT_ID_KEY, &client.client_id),
+                None => client.set_meta(CLIENT_ID_KEY, &client.client_id)?,
             }
             client.restore_persisted_state()?;
             client.failed_commits = client.load_failed_commits()?;
@@ -12809,7 +12851,7 @@ impl SyncClient {
                 None => {
                     client.create_synced_tables()?;
                     client.persist_schema_version()?;
-                    client.save_subscription_scope_schema();
+                    client.save_subscription_scope_schema()?;
                 }
                 Some(version) if version == client.schema.version => {
                     client.create_synced_tables()?;
@@ -12818,7 +12860,7 @@ impl SyncClient {
                     // NEXT bump can capture without needing a schema bump first.
                     set_local_schema_descriptor(&client.conn, &client.schema)
                         .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
-                    client.save_subscription_scope_schema();
+                    client.save_subscription_scope_schema()?;
                 }
                 Some(_) => client.run_schema_reset()?,
             }
@@ -12828,7 +12870,7 @@ impl SyncClient {
             // OLD marker, and the next open at that version runs no reset. Discard
             // it before anything can read it. No-op when no container exists.
             client.reconcile_previous_version_at_boot()?;
-            client.clear_satisfied_persisted_schema_floor();
+            client.clear_satisfied_persisted_schema_floor()?;
             client.prune_unknown_subscriptions(false)?;
             // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
             // the full startup/reset reconciliation boundary, inside this open
@@ -12842,7 +12884,7 @@ impl SyncClient {
             if marker == Some(client.schema.version)
                 && (!client.outbox.is_empty()
                     || !client.failed_commits.is_empty()
-                    || client.has_acknowledged_rows())
+                    || client.has_acknowledged_rows()?)
             {
                 // Reconstruct the visible optimistic overlay from the durable
                 // base plus outbox instead of trusting a process-interrupted
@@ -12937,11 +12979,11 @@ impl SyncClient {
     ///
     /// Use [`SyncClient::seal_security_on_teardown`] for the shutdown barrier,
     /// which must NOT leave that durable mark.
-    pub fn begin_security_preflight(&mut self) {
+    pub fn begin_security_preflight(&mut self) -> Result<(), String> {
         self.seal_security_on_teardown();
         // Persist the quarantine so it survives handle teardown and restart:
         // reopening this replica re-enters preflight until activation clears it.
-        self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1");
+        self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1")
     }
 
     /// Release core-owned key material as a host tears the client down,
@@ -12972,9 +13014,9 @@ impl SyncClient {
             );
         }
         self.enqueue_startup_sync_if_needed()?;
+        self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY)?;
         self.encryption = encryption;
         self.security_preflight = false;
-        self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY);
         Ok(())
     }
 
@@ -12995,6 +13037,8 @@ impl SyncClient {
                    commit_id TEXT NOT NULL, idx INTEGER NOT NULL, tbl TEXT NOT NULL, id TEXT NOT NULL,
                    commit_seq INTEGER NOT NULL, op_json TEXT NOT NULL, intent_json TEXT,
                    PRIMARY KEY(commit_id, idx));
+                 CREATE INDEX IF NOT EXISTS _syncular_acked_rows_row
+                   ON _syncular_acked_rows(tbl, id);
                  CREATE TABLE IF NOT EXISTS _syncular_failed_commits (
                    seq INTEGER PRIMARY KEY AUTOINCREMENT, client_commit_id TEXT NOT NULL UNIQUE,
                    operations_json TEXT NOT NULL, initial_json TEXT NOT NULL);
@@ -13033,8 +13077,8 @@ impl SyncClient {
         let _ = self
             .conn
             .execute_batch("ALTER TABLE _syncular_commit_outcomes ADD COLUMN operations_json TEXT");
-        if self.get_meta(LOCAL_REVISION_KEY).is_none() {
-            self.set_meta(LOCAL_REVISION_KEY, "0");
+        if self.get_meta(LOCAL_REVISION_KEY)?.is_none() {
+            self.set_meta(LOCAL_REVISION_KEY, "0")?;
         }
         // §5.9.7 blob cache. Mutable upload state stays off the body row so
         // completing a large upload does not rewrite its BLOB record.
@@ -13105,21 +13149,9 @@ impl SyncClient {
 
     // -- meta (§7.4.1 marker, bookkeeping) ------------------------------------
 
-    fn get_meta(&self, key: &str) -> Option<String> {
+    fn get_meta(&self, key: &str) -> Result<Option<String>, String> {
         meta_get(&self.conn, key)
-    }
-
-    fn get_meta_strict(&self, key: &str) -> Result<Option<String>, String> {
-        self.conn
-            .query_row(
-                "SELECT value FROM _syncular_meta WHERE key = ?1",
-                rusqlite::params![key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|_| {
-                "sync.local_corrupt: persisted local rebootstrap receipt is unreadable".to_owned()
-            })
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     // The caller holds the startup/reset transaction. Either both schema
@@ -13135,12 +13167,14 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    pub(crate) fn set_meta(&self, key: &str, value: &str) {
-        meta_set(&self.conn, key, value);
+    pub(crate) fn set_meta(&self, key: &str, value: &str) -> Result<(), String> {
+        meta_set(&self.conn, key, value)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    fn delete_meta(&self, key: &str) {
-        meta_delete(&self.conn, key);
+    fn delete_meta(&self, key: &str) -> Result<(), String> {
+        meta_delete(&self.conn, key)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     /// §7.1: the durable outbox in FIFO order, in schema-agnostic local form.
@@ -13276,25 +13310,25 @@ impl SyncClient {
             .collect();
 
         self.lease_state = self
-            .get_meta(LEASE_STATE_KEY)
+            .get_meta(LEASE_STATE_KEY)?
             .map(|raw| serde_json::from_str(&raw))
             .transpose()
             .map_err(|error| format!("invalid persisted lease state: {error}"))?;
         self.schema_floor = self
-            .get_meta(SCHEMA_FLOOR_KEY)
+            .get_meta(SCHEMA_FLOOR_KEY)?
             .map(|raw| serde_json::from_str(&raw))
             .transpose()
             .map_err(|error| format!("invalid persisted schema floor: {error}"))?;
         self.stopped = self.schema_floor.is_some();
         // A replica left in unactivated preflight reopens gated: the quarantine
         // decision persists with the data across handle teardown and restart.
-        if self.get_meta(SECURITY_PREFLIGHT_PENDING_KEY).as_deref() == Some("1") {
+        if self.get_meta(SECURITY_PREFLIGHT_PENDING_KEY)?.as_deref() == Some("1") {
             self.security_preflight = true;
         }
         Ok(())
     }
 
-    fn save_subscription_scope_schema(&self) {
+    fn save_subscription_scope_schema(&self) -> Result<(), String> {
         let declarations: BTreeMap<_, BTreeMap<_, _>> = self
             .schema
             .tables
@@ -13318,13 +13352,13 @@ impl SyncClient {
         self.set_meta(
             "subscriptionScopeSchema",
             &serde_json::to_string(&declarations).expect("scope schema serialization"),
-        );
+        )
     }
 
     /// Remove registrations with incompatible table/key/prefix/column meaning.
     fn prune_unknown_subscriptions(&mut self, bump: bool) -> Result<(), String> {
         let previous: Option<BTreeMap<String, BTreeMap<String, [String; 2]>>> = if bump {
-            self.get_meta("subscriptionScopeSchema")
+            self.get_meta("subscriptionScopeSchema")?
                 .map(|raw| serde_json::from_str(&raw))
                 .transpose()
                 .map_err(|error| format!("invalid persisted scope schema: {error}"))?
@@ -13402,11 +13436,11 @@ impl SyncClient {
         Ok(())
     }
 
-    #[must_use]
-    pub fn local_revision(&self) -> u64 {
-        self.get_meta(LOCAL_REVISION_KEY)
+    pub fn local_revision(&self) -> Result<u64, String> {
+        Ok(self
+            .get_meta(LOCAL_REVISION_KEY)?
             .and_then(|value| value.parse().ok())
-            .unwrap_or(0)
+            .unwrap_or(0))
     }
 
     /// §7.5: resolve a snapshot read on the mutable owner connection through
@@ -13489,9 +13523,11 @@ impl SyncClient {
     }
 
     /// RFC 0005 D6: the advisory pre-reset compatibility audit.
-    #[must_use]
-    pub fn previous_version_audit(&self) -> Option<crate::previous_version::PreviousVersionAudit> {
+    pub fn previous_version_audit(
+        &self,
+    ) -> Result<Option<crate::previous_version::PreviousVersionAudit>, String> {
         crate::previous_version::stored_previous_version_audit(&self.conn)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     /// RFC 0005 A2/D9: the executable downgrade step. Drop the container file
@@ -13499,23 +13535,20 @@ impl SyncClient {
     /// Idempotent: absence is a successful no-op.
     pub fn previous_version_discard(
         &self,
-    ) -> crate::previous_version::PreviousVersionDiscardOutcome {
+    ) -> Result<crate::previous_version::PreviousVersionDiscardOutcome, String> {
         self.drop_previous_version()
     }
 
-    /// The module's discard has no failure path (it removes the file even when
-    /// the container cannot be opened), so the only error a caller could ever
-    /// see is a bug; report absence rather than claiming a discard happened.
-    fn drop_previous_version(&self) -> crate::previous_version::PreviousVersionDiscardOutcome {
-        let absent = crate::previous_version::PreviousVersionDiscardOutcome {
-            present: false,
-            discarded: false,
-        };
+    fn drop_previous_version(
+        &self,
+    ) -> Result<crate::previous_version::PreviousVersionDiscardOutcome, String> {
         let Some(replica_path) = self.previous_version_replica_path() else {
-            return absent;
+            return Ok(crate::previous_version::PreviousVersionDiscardOutcome {
+                present: false,
+                discarded: false,
+            });
         };
         crate::previous_version::discard_previous_version(&self.conn, &replica_path)
-            .unwrap_or(absent)
     }
 
     /// RFC 0005 D7: `leaseState.errorCode` or an expired lease.
@@ -13738,7 +13771,7 @@ impl SyncClient {
                     .and_then(|floor| floor.latest_schema_version),
             },
             replica: ClientDiagnosticsReplica {
-                local_revision: self.local_revision().to_string(),
+                local_revision: self.local_revision()?.to_string(),
                 sync_needed: self.sync_needed,
                 pending_outbox: self.outbox.len(),
             },
@@ -14078,7 +14111,7 @@ impl SyncClient {
             return Ok(());
         }
         let revision = self
-            .local_revision()
+            .local_revision()?
             .checked_add(1)
             .ok_or_else(|| "local revision exhausted u64".to_owned())?;
         self.conn
@@ -14350,13 +14383,13 @@ impl SyncClient {
             if marker == Some(self.schema.version)
                 && (!self.outbox.is_empty()
                     || !self.failed_commits.is_empty()
-                    || self.has_acknowledged_rows())
+                    || self.has_acknowledged_rows()?)
             {
                 self.overlay_dirty.set(true);
                 self.rebuild_overlay()?;
             }
             self.prune_unknown_subscriptions(false)?;
-            self.save_subscription_scope_schema();
+            self.save_subscription_scope_schema()?;
             // The conformance recreate is the in-memory equivalent of reopening
             // a durable client. Apply the same startup catch-up contract even
             // when the schema itself did not change.
@@ -14398,7 +14431,7 @@ impl SyncClient {
     fn enqueue_startup_sync_if_needed(&mut self) -> Result<(), String> {
         let startup_work = !self.stopped
             && (!self.outbox.is_empty()
-                || self.has_acknowledged_rows()
+                || self.has_acknowledged_rows()?
                 || !self.load_pending_evictions()?.is_empty()
                 || self.subs.iter().any(|sub| sub.state == SubState::Active));
         if startup_work {
@@ -14414,18 +14447,19 @@ impl SyncClient {
     /// server was restarted after catching up to an app that was ahead).
     /// Clear it and let the normal startup pull re-negotiate. If the server is
     /// still incompatible it will return the floor again in that first round.
-    fn clear_satisfied_persisted_schema_floor(&mut self) {
+    fn clear_satisfied_persisted_schema_floor(&mut self) -> Result<(), String> {
         let satisfied = self
             .schema_floor
             .as_ref()
             .and_then(|floor| floor.required_schema_version)
             .is_some_and(|required| self.schema.version >= required);
         if !satisfied {
-            return;
+            return Ok(());
         }
+        self.delete_meta(SCHEMA_FLOOR_KEY)?;
         self.schema_floor = None;
         self.stopped = false;
-        self.delete_meta(SCHEMA_FLOOR_KEY);
+        Ok(())
     }
 
     /// RFC 0005 D1: discard an orphan or stale container at boot. The reset
@@ -14497,7 +14531,7 @@ impl SyncClient {
     }
 
     fn run_log_epoch_reset(&mut self, log_epoch: &str) -> Result<Vec<String>, String> {
-        if self.get_meta(LOG_EPOCH_KEY).is_none() {
+        if self.get_meta(LOG_EPOCH_KEY)?.is_none() {
             self.begin_observation("syncular_epoch_acquisition")?;
             let previous_sync_needed = self.sync_needed;
             if let Err(error) = self.conn.execute(
@@ -14590,7 +14624,7 @@ impl SyncClient {
         // is incompatible.
         if self.previous_version.is_some_and(|config| config.enabled) {
             let previous_version = self
-                .get_meta(LOCAL_SCHEMA_VERSION_KEY)
+                .get_meta(LOCAL_SCHEMA_VERSION_KEY)?
                 .and_then(|value| value.parse::<i32>().ok())
                 .unwrap_or(self.schema.version);
             let pending = self
@@ -14610,7 +14644,7 @@ impl SyncClient {
                     self.schema.version,
                     self.clock_now_ms(),
                 ),
-            );
+            )?;
         }
         // RFC 0005 D5: the container lives in its own FILE, so the reset can
         // never reach it. Sweep first (unconditional — also on the log-epoch
@@ -14621,7 +14655,7 @@ impl SyncClient {
             if capture {
                 if let Some(config) = self.previous_version.filter(|config| config.enabled) {
                     let previous_version = self
-                        .get_meta(LOCAL_SCHEMA_VERSION_KEY)
+                        .get_meta(LOCAL_SCHEMA_VERSION_KEY)?
                         .and_then(|value| value.parse::<i32>().ok())
                         .unwrap_or(self.schema.version);
                     capture_previous_version_from_replica(
@@ -14721,10 +14755,10 @@ impl SyncClient {
         // The stop state is over: this client now ships a servable schema.
         self.stopped = false;
         self.schema_floor = None;
-        self.delete_meta(SCHEMA_FLOOR_KEY);
+        self.delete_meta(SCHEMA_FLOOR_KEY)?;
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
         self.persist_schema_version()?;
-        self.save_subscription_scope_schema();
+        self.save_subscription_scope_schema()?;
         // §7.1/§7.4.4: the previous-version capture and audit above saw the
         // original pending intent; the synced tables now carry the new schema, so
         // recover intrinsically codec-invalid persisted values here, before the
@@ -15468,10 +15502,10 @@ impl SyncClient {
         {
             let mut rows = Vec::new();
             for operation in &commit.ops {
-                let table = self
-                    .schema
-                    .table(&operation.table)
-                    .ok_or_else(|| "sync.unknown_table".to_owned())?;
+                // A table the current schema removed has no rows to retain.
+                let Some(table) = self.schema.table(&operation.table) else {
+                    continue;
+                };
                 let key =
                     serde_json::to_string(&(operation.table.clone(), operation.row_id.clone()))
                         .map_err(|_| "sync.local_corrupt".to_owned())?;
@@ -15866,6 +15900,7 @@ impl SyncClient {
 
     // -- driver surface ---------------------------------------------------------
 
+    /// Register one subscription; see [`SyncClient::subscribe_many`].
     pub fn subscribe(
         &mut self,
         id: String,
@@ -15873,6 +15908,23 @@ impl SyncClient {
         scopes: Vec<(String, Vec<String>)>,
         params: Option<String>,
     ) -> Result<(), String> {
+        self.subscribe_many(vec![SubscriptionRequest {
+            id,
+            table,
+            scopes,
+            params,
+        }])
+    }
+
+    /// Persist one registration or re-arm without raising sync-needed.
+    /// Returns whether the registry changed.
+    fn register_subscription(
+        &mut self,
+        id: String,
+        table: String,
+        scopes: Vec<(String, Vec<String>)>,
+        params: Option<String>,
+    ) -> Result<bool, String> {
         if self.schema.table(&table).is_none() {
             return Err(format!("unknown table {table:?}"));
         }
@@ -15896,7 +15948,7 @@ impl SyncClient {
             // asks for a pull, which resolves its scopes from scratch. A
             // `failed` registration is a configuration error and stays put.
             if existing.state != SubState::Revoked {
-                return Ok(());
+                return Ok(false);
             }
         }
         let sub = Subscription {
@@ -15917,26 +15969,29 @@ impl SyncClient {
             None => self.subs.push(sub),
         }
         self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
-        // Only a re-arm asks for a sync here: a fresh registration reaches the
-        // next round through the host's schedule, and `set_window` (§4.8)
-        // batches its own intent for the units it registers.
-        if registered_at.is_some() {
-            self.set_sync_needed(true, true);
-        }
-        Ok(())
+        Ok(true)
     }
 
     /// Register several subscriptions in one local transaction: the same
     /// rules as `subscribe` for each request, and one commit for all of them
     /// (on OPFS a commit costs milliseconds, so a cold start with hundreds of
     /// registrations pays it once). An error rolls back every registration
-    /// of the call.
+    /// of the call. A call that registers or re-arms anything raises
+    /// sync-needed with an interactive intent (§4.1), as the TS client does;
+    /// `set_window` (§4.8) registers through the same path without it and
+    /// batches its own intent.
     pub fn subscribe_many(&mut self, requests: Vec<SubscriptionRequest>) -> Result<(), String> {
         let prior_subs = self.subs.clone();
         self.begin_observation("syncular_subscribe")?;
+        let mut registered_any = false;
         let registered = (|| {
             for request in requests {
-                self.subscribe(request.id, request.table, request.scopes, request.params)?;
+                registered_any |= self.register_subscription(
+                    request.id,
+                    request.table,
+                    request.scopes,
+                    request.params,
+                )?;
             }
             self.conn
                 .execute_batch("RELEASE syncular_subscribe")
@@ -15947,19 +16002,30 @@ impl SyncClient {
             self.subs = prior_subs;
             return Err(error);
         }
+        if registered_any {
+            self.set_sync_needed(true, true);
+        }
         Ok(())
     }
 
-    pub fn unsubscribe(&mut self, id: &str) {
-        if self.subs.iter().any(|s| s.id == id) {
-            self.cancel_sync_round();
-            self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
+    /// Remove a registration. Removing a registered id raises sync-needed with
+    /// an interactive intent (§4.1), as the TS client does; an unknown id is a
+    /// no-op.
+    pub fn unsubscribe(&mut self, id: &str) -> Result<(), String> {
+        if !self.subs.iter().any(|s| s.id == id) {
+            return Ok(());
         }
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_subscriptions WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.cancel_sync_round();
+        self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
         self.subs.retain(|s| s.id != id);
-        let _ = self.conn.execute(
-            "DELETE FROM _syncular_subscriptions WHERE id = ?1",
-            rusqlite::params![id],
-        );
+        self.set_sync_needed(true, true);
+        Ok(())
     }
 
     // -- windowed subscriptions (§4.8) ------------------------------------------
@@ -16001,7 +16067,7 @@ impl SyncClient {
                 let sub_id = derive_sub_id(base, unit);
                 self.delete_pending_evict(&sub_id)?;
                 self.insert_window_unit(&base_key, unit, &sub_id)?;
-                self.subscribe(
+                self.register_subscription(
                     sub_id,
                     base.table.clone(),
                     unit_scopes(base, unit),
@@ -16471,10 +16537,10 @@ impl SyncClient {
     fn retain_failed_commit(&mut self, id: &str, operations: &[OutboxOp]) -> Result<(), String> {
         let mut initial = Map::new();
         for operation in operations {
-            let table = self
-                .schema
-                .table(&operation.table)
-                .ok_or_else(|| "sync.unknown_table".to_owned())?;
+            // A table the current schema removed has no rows to retain.
+            let Some(table) = self.schema.table(&operation.table) else {
+                continue;
+            };
             let initial_row = match self.stored_row(table, &operation.row_id, true)? {
                 Some(row) => Some(row),
                 None => self.visible_row(table, &operation.row_id)?,
@@ -16888,27 +16954,43 @@ impl SyncClient {
     /// §5.11 key-id fallback: the stored local row's selector value as a
     /// positional row (only the selector slot filled). Returns None when no
     /// selector is configured, the row is locally absent, or the stored
-    /// value is not a usable key id.
-    fn stored_key_fallback(&self, table: &TableSchema, row_id: &str) -> Option<Row> {
-        let selector = self.encryption.key_id_columns.get(&table.name)?;
-        let index = table
+    /// value is not a usable key id. A failed storage read is an error.
+    fn stored_key_fallback(
+        &self,
+        table: &TableSchema,
+        row_id: &str,
+    ) -> Result<Option<Row>, String> {
+        let Some(selector) = self.encryption.key_id_columns.get(&table.name) else {
+            return Ok(None);
+        };
+        let Some(index) = table
             .columns
             .iter()
-            .position(|column| &column.name == selector)?;
+            .position(|column| &column.name == selector)
+        else {
+            return Ok(None);
+        };
         let sql = format!(
             "SELECT {} FROM {} WHERE {}",
             quote_ident(selector),
             visible_table(&table.name),
             row_id_predicate(table)
         );
-        let key: Option<String> = self
+        let key = self
             .conn
-            .query_row(&sql, rusqlite::params![row_id], |row| row.get(0))
-            .ok()?;
-        let key = key.filter(|key| !key.is_empty())?;
+            .query_row(&sql, rusqlite::params![row_id], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .optional()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+            .flatten()
+            .filter(|key| !key.is_empty());
+        let Some(key) = key else {
+            return Ok(None);
+        };
         let mut fallback: Row = vec![None; table.columns.len()];
         fallback[index] = Some(ColumnValue::String(key));
-        Some(fallback)
+        Ok(Some(fallback))
     }
 
     /// §5.11/§10.3 author-time encode check: a structural failure (a
@@ -16945,43 +17027,44 @@ impl SyncClient {
         with_encryption: bool,
         batch: Option<&mut ChangeAccumulator>,
     ) -> Result<bool, String> {
-        let failures = self
-            .outbox
-            .iter()
-            .filter_map(|commit| {
-                commit
-                    .ops
-                    .iter()
-                    .find_map(|op| {
-                        let table = self.schema.table(&op.table).filter(|_| op.upsert)?;
-                        // An insert lacking a non-nullable column is left to
-                        // `drop_incompatible_outbox` (§7.4.4).
-                        let values = op.presented_values(table)?;
-                        let fallback = self.stored_key_fallback(table, &op.row_id);
-                        match encode_sparse_row_json(
-                            table,
-                            &op.row_id,
-                            &values,
-                            &self.encryption,
-                            fallback.as_ref(),
-                        ) {
-                            Err(error) if error.starts_with(ENCRYPT_FAILED_CODE) => {
-                                with_encryption.then_some((error, ENCRYPT_FAILED_CODE))
-                            }
-                            // §7.1/§7.4.4: a value the current codec refuses was
-                            // persisted by a version that accepted it; it leaves
-                            // through the incompatible-outbox path, so the FIFO
-                            // queue never wedges.
-                            Err(error) if error.starts_with(INVALID_REQUEST_CODE) => Some((
-                                LEGACY_VALUE_REFUSAL_MESSAGE.to_owned(),
-                                OUTBOX_INCOMPATIBLE_CODE,
-                            )),
-                            _ => None,
-                        }
-                    })
-                    .map(|(error, code)| (commit.clone(), error, code))
-            })
-            .collect::<Vec<_>>();
+        let mut failures = Vec::new();
+        for commit in &self.outbox {
+            for op in &commit.ops {
+                let Some(table) = self.schema.table(&op.table).filter(|_| op.upsert) else {
+                    continue;
+                };
+                // An insert lacking a non-nullable column is left to
+                // `drop_incompatible_outbox` (§7.4.4).
+                let Some(values) = op.presented_values(table) else {
+                    continue;
+                };
+                let fallback = self.stored_key_fallback(table, &op.row_id)?;
+                let failure = match encode_sparse_row_json(
+                    table,
+                    &op.row_id,
+                    &values,
+                    &self.encryption,
+                    fallback.as_ref(),
+                ) {
+                    Err(error) if error.starts_with(ENCRYPT_FAILED_CODE) => {
+                        with_encryption.then_some((error, ENCRYPT_FAILED_CODE))
+                    }
+                    // §7.1/§7.4.4: a value the current codec refuses was
+                    // persisted by a version that accepted it; it leaves
+                    // through the incompatible-outbox path, so the FIFO
+                    // queue never wedges.
+                    Err(error) if error.starts_with(INVALID_REQUEST_CODE) => Some((
+                        LEGACY_VALUE_REFUSAL_MESSAGE.to_owned(),
+                        OUTBOX_INCOMPATIBLE_CODE,
+                    )),
+                    _ => None,
+                };
+                if let Some((error, code)) = failure {
+                    failures.push((commit.clone(), error, code));
+                    break;
+                }
+            }
+        }
         if failures.is_empty() {
             return Ok(false);
         }
@@ -17105,7 +17188,7 @@ impl SyncClient {
     /// §6.1: the sparse push payload bytes of every pending upsert operation,
     /// FIFO — exactly what the next push round would put on the wire. Used by
     /// conformance B.21(h) to pin cross-core byte identity.
-    pub fn pending_payloads(&self) -> Vec<Vec<u8>> {
+    pub fn pending_payloads(&self) -> Result<Vec<Vec<u8>>, String> {
         let mut payloads = Vec::new();
         for commit in &self.outbox {
             for op in &commit.ops {
@@ -17115,7 +17198,7 @@ impl SyncClient {
                 let Some(values) = op.presented_values(table) else {
                     continue;
                 };
-                let fallback = self.stored_key_fallback(table, &op.row_id);
+                let fallback = self.stored_key_fallback(table, &op.row_id)?;
                 if let Ok(payload) = encode_sparse_row_json(
                     table,
                     &op.row_id,
@@ -17127,7 +17210,7 @@ impl SyncClient {
                 }
             }
         }
-        payloads
+        Ok(payloads)
     }
 
     pub fn conflicts(&self) -> &[ConflictRecord] {
@@ -17288,65 +17371,67 @@ impl SyncClient {
 
     /// §7.3.5: record a request-level lease error (stop-and-surface). Only
     /// the two lease codes set it; other errors leave leaseState untouched.
-    fn record_lease_error(&mut self, code: &str) {
+    fn record_lease_error(&mut self, code: &str) -> Result<(), String> {
         if code != "sync.auth_lease_required" && code != "sync.auth_lease_revoked" {
-            return;
+            return Ok(());
         }
         let mut next = self.lease_state.clone().unwrap_or_default();
         next.error_code = Some(code.to_owned());
-        self.set_lease_state(Some(next));
+        self.set_lease_state(Some(next))
     }
 
-    fn set_lease_state(&mut self, next: Option<LeaseState>) {
+    fn set_lease_state(&mut self, next: Option<LeaseState>) -> Result<(), String> {
         if self.lease_state == next {
-            return;
+            return Ok(());
         }
-        if self.begin_observation("syncular_lease").is_err() {
-            return;
-        }
-        self.lease_state = next;
-        if let Some(lease) = &self.lease_state {
-            if let Ok(json) = serde_json::to_string(lease) {
-                self.set_meta(LEASE_STATE_KEY, &json);
-            }
-        } else {
-            self.delete_meta(LEASE_STATE_KEY);
-        }
+        self.begin_observation("syncular_lease")?;
+        let prior = std::mem::replace(&mut self.lease_state, next);
+        let persisted = match &self.lease_state {
+            Some(lease) => serde_json::to_string(lease)
+                .map_err(|error| error.to_string())
+                .and_then(|json| self.set_meta(LEASE_STATE_KEY, &json)),
+            None => self.delete_meta(LEASE_STATE_KEY),
+        };
         let batch = ChangeAccumulator {
             status: true,
             ..ChangeAccumulator::default()
         };
-        if self.finish_observation("syncular_lease", batch).is_err() {
+        if let Err(error) =
+            persisted.and_then(|()| self.finish_observation("syncular_lease", batch))
+        {
             self.rollback_observation("syncular_lease");
+            self.lease_state = prior;
+            return Err(error);
         }
+        Ok(())
     }
 
-    fn set_schema_floor(&mut self, next: Option<SchemaFloor>) {
+    fn set_schema_floor(&mut self, next: Option<SchemaFloor>) -> Result<(), String> {
         if self.schema_floor == next {
-            return;
+            return Ok(());
         }
-        if self.begin_observation("syncular_schema_floor").is_err() {
-            return;
-        }
-        self.schema_floor = next;
-        self.stopped = self.schema_floor.is_some();
-        if let Some(floor) = &self.schema_floor {
-            if let Ok(json) = serde_json::to_string(floor) {
-                self.set_meta(SCHEMA_FLOOR_KEY, &json);
-            }
-        } else {
-            self.delete_meta(SCHEMA_FLOOR_KEY);
-        }
+        self.begin_observation("syncular_schema_floor")?;
+        let prior = std::mem::replace(&mut self.schema_floor, next);
+        let prior_stopped = std::mem::replace(&mut self.stopped, self.schema_floor.is_some());
+        let persisted = match &self.schema_floor {
+            Some(floor) => serde_json::to_string(floor)
+                .map_err(|error| error.to_string())
+                .and_then(|json| self.set_meta(SCHEMA_FLOOR_KEY, &json)),
+            None => self.delete_meta(SCHEMA_FLOOR_KEY),
+        };
         let batch = ChangeAccumulator {
             status: true,
             ..ChangeAccumulator::default()
         };
-        if self
-            .finish_observation("syncular_schema_floor", batch)
-            .is_err()
+        if let Err(error) =
+            persisted.and_then(|()| self.finish_observation("syncular_schema_floor", batch))
         {
             self.rollback_observation("syncular_schema_floor");
+            self.schema_floor = prior;
+            self.stopped = prior_stopped;
+            return Err(error);
         }
+        Ok(())
     }
 
     fn set_upgrading(&mut self, value: bool) {
@@ -17644,7 +17729,7 @@ impl SyncClient {
             .map_err(|e| e.to_string())?;
         let result = (|| {
             let revision = self
-                .get_meta(LOCAL_REVISION_KEY)
+                .get_meta(LOCAL_REVISION_KEY)?
                 .ok_or("sync.local_corrupt: authority revision is missing")?;
             let parsed_revision = revision
                 .parse::<u64>()
@@ -17935,7 +18020,14 @@ impl SyncClient {
     fn build_request(&self, url_capable: bool) -> Result<(Message, RequestMeta), Box<SyncOutcome>> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::RequestPrepare);
-        let log_epoch = self.get_meta(LOG_EPOCH_KEY);
+        let log_epoch = self.get_meta(LOG_EPOCH_KEY).map_err(|message| {
+            Box::new(SyncOutcome::Failed {
+                error_code: "storage.failed".into(),
+                message,
+                details: None,
+                recommended_action: None,
+            })
+        })?;
         let max_commits = self.limits.max_push_commits_per_request;
         let max_ops = self
             .limits
@@ -18060,36 +18152,51 @@ impl SyncClient {
                 .ops
                 .iter()
                 .map(|op| {
-                    let payload = self.schema.table(&op.table).and_then(|table| {
-                        let values = op.presented_values(table)?;
-                        // §0: outbox entries encode at send time with the
-                        // current codec (validated at mutate()). §6.1: the
-                        // values map's keys are the sparse presence set; an
-                        // insert-intent operation presents every column (§7.1).
-                        // §5.11: encrypted columns are encrypted here, with
-                        // an absent key-id selector read from the stored row.
-                        // `sync_inner` runs `drop_unencodable_outbox` first,
-                        // so an encrypt failure cannot reach this encode; the
-                        // author seam validated every other failure.
-                        let fallback = self.stored_key_fallback(table, &op.row_id);
-                        encode_sparse_row_json(
-                            table,
-                            &op.row_id,
-                            &values,
-                            &self.encryption,
-                            fallback.as_ref(),
-                        )
-                        .ok()
-                    });
-                    ssp2::model::Operation {
+                    let payload = match self
+                        .schema
+                        .table(&op.table)
+                        .and_then(|table| Some((table, op.presented_values(table)?)))
+                    {
+                        Some((table, values)) => {
+                            // §0: outbox entries encode at send time with the
+                            // current codec (validated at mutate()). §6.1: the
+                            // values map's keys are the sparse presence set; an
+                            // insert-intent operation presents every column (§7.1).
+                            // §5.11: encrypted columns are encrypted here, with
+                            // an absent key-id selector read from the stored row.
+                            // `sync_inner` runs `drop_unencodable_outbox` first,
+                            // so an encrypt failure cannot reach this encode; the
+                            // author seam validated every other failure.
+                            let fallback =
+                                self.stored_key_fallback(table, &op.row_id)
+                                    .map_err(|message| {
+                                        Box::new(SyncOutcome::Failed {
+                                            error_code: "storage.failed".into(),
+                                            message,
+                                            details: None,
+                                            recommended_action: None,
+                                        })
+                                    })?;
+                            encode_sparse_row_json(
+                                table,
+                                &op.row_id,
+                                &values,
+                                &self.encryption,
+                                fallback.as_ref(),
+                            )
+                            .ok()
+                        }
+                        None => None,
+                    };
+                    Ok(ssp2::model::Operation {
                         table: op.table.clone(),
                         row_id: op.row_id.clone(),
                         op: if op.upsert { Op::Upsert } else { Op::Delete },
                         base_version: op.base_version,
                         payload,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, Box<SyncOutcome>>>()?;
             let frame = Frame::PushCommit {
                 client_commit_id: commit.client_commit_id.clone(),
                 operations,
@@ -18228,10 +18335,12 @@ impl SyncClient {
             ..
         } = &mut outcome
         {
-            if let Some(failure) = self.storage_failure.borrow().as_ref() {
-                let code = failure
-                    .code
-                    .expect("retained storage failures are classified");
+            if let Some((failure, code)) = self
+                .storage_failure
+                .borrow()
+                .as_ref()
+                .and_then(|failure| failure.code.map(|code| (failure, code)))
+            {
                 *error_code = code.to_owned();
                 *message = match code {
                     "client.storage_busy" => "local SQLite storage is busy",
@@ -18409,7 +18518,15 @@ impl SyncClient {
                         recommended_action: None,
                     })
                 })?;
-            let uploads = if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
+            let has_log_epoch = self.get_meta(LOG_EPOCH_KEY).map_err(|message| {
+                Box::new(SyncOutcome::Failed {
+                    error_code: "storage.failed".into(),
+                    message,
+                    details: None,
+                    recommended_action: None,
+                })
+            })?;
+            let uploads = if has_log_epoch.is_some() && self.schema_has_blobs() {
                 self.pending_blob_uploads().map_err(|e| {
                     Box::new(SyncOutcome::Failed {
                         error_code: e.code,
@@ -18577,7 +18694,14 @@ impl SyncClient {
                         if prepared.realtime {
                             self.set_realtime_state(RealtimeState::Lost, Some(&code));
                         }
-                        self.record_lease_error(&code);
+                        if let Err(message) = self.record_lease_error(&code) {
+                            return SyncOutcome::Failed {
+                                error_code: "storage.failed".to_owned(),
+                                message,
+                                details: None,
+                                recommended_action: None,
+                            };
+                        }
                     }
                     if Self::retryable_failure_code(&code) && !Self::unreachable_transport(&details)
                     {
@@ -18866,7 +18990,14 @@ impl SyncClient {
                         required_schema_version: Some(required),
                         latest_schema_version,
                     };
-                    self.set_schema_floor(Some(floor.clone()));
+                    if let Err(message) = self.set_schema_floor(Some(floor.clone())) {
+                        return SyncOutcome::Failed {
+                            details: None,
+                            error_code: "storage.failed".to_owned(),
+                            message,
+                            recommended_action: None,
+                        };
+                    }
                     report.schema_floor = Some(floor);
                     return SyncOutcome::Ok(report);
                 }
@@ -18894,7 +19025,18 @@ impl SyncClient {
                         }
                     }
                 }
-                if self.get_meta(LOG_EPOCH_KEY).as_deref() != Some(log_epoch.as_str()) {
+                let stored_epoch = match self.get_meta(LOG_EPOCH_KEY) {
+                    Ok(stored) => stored,
+                    Err(message) => {
+                        return SyncOutcome::Failed {
+                            details: None,
+                            error_code: "storage.failed".to_owned(),
+                            message,
+                            recommended_action: None,
+                        };
+                    }
+                };
+                if stored_epoch.as_deref() != Some(log_epoch.as_str()) {
                     return SyncOutcome::Failed {
                         details: None,
                         error_code: "client.invalid_host_response".to_owned(),
@@ -19022,11 +19164,14 @@ impl SyncClient {
                 } => {
                     // §7.3.5: persist the opaque lease; a fresh lease clears
                     // any prior lease error (the outage/revocation is over).
-                    self.set_lease_state(Some(LeaseState {
+                    if let Err(message) = self.set_lease_state(Some(LeaseState {
                         lease_id: Some(lease_id),
                         expires_at_ms: Some(expires_at_ms),
                         error_code: None,
-                    }));
+                    })) {
+                        failure = Some(("storage.failed".to_owned(), message, None, None));
+                        break;
+                    }
                 }
                 Frame::Error {
                     code,
@@ -20060,6 +20205,18 @@ impl SyncClient {
             let mut batch = ChangeAccumulator::default();
             self.record_commit_changes(&mut batch, tables, changes);
             if let Some(sequence) = commit_seq {
+                let storage_failed = |error| {
+                    (
+                        "storage.failed".to_owned(),
+                        Self::sqlite_failure(&self.storage_failure, error),
+                    )
+                };
+                let pinned: HashSet<(&str, &str)> = self
+                    .outbox
+                    .iter()
+                    .flat_map(|commit| &commit.ops)
+                    .map(|op| (op.table.as_str(), op.row_id.as_str()))
+                    .collect();
                 for change in changes {
                     let table = tables.get(change.table_index as usize).ok_or_else(|| {
                         (
@@ -20067,17 +20224,14 @@ impl SyncClient {
                             "change tableIndex out of range".to_owned(),
                         )
                     })?;
-                    if self
-                        .outbox
-                        .iter()
-                        .flat_map(|commit| &commit.ops)
-                        .any(|op| op.table == *table && op.row_id == change.row_id)
-                    {
-                        self.conn.execute("INSERT INTO _syncular_row_deliveries(tbl,id,commit_seq) VALUES (?1,?2,?3) ON CONFLICT(tbl,id) DO UPDATE SET commit_seq=MAX(commit_seq,excluded.commit_seq)", rusqlite::params![table, change.row_id, sequence])
-                        .map_err(|error| ("storage.failed".to_owned(), Self::sqlite_failure(&self.storage_failure, error)))?;
+                    if pinned.contains(&(table.as_str(), change.row_id.as_str())) {
+                        self.conn.prepare_cached("INSERT INTO _syncular_row_deliveries(tbl,id,commit_seq) VALUES (?1,?2,?3) ON CONFLICT(tbl,id) DO UPDATE SET commit_seq=MAX(commit_seq,excluded.commit_seq)")
+                            .and_then(|mut statement| statement.execute(rusqlite::params![table, change.row_id, sequence]))
+                            .map_err(storage_failed)?;
                     }
-                    self.conn.execute("DELETE FROM _syncular_acked_rows WHERE tbl=?1 AND id=?2 AND commit_seq<=?3", rusqlite::params![table, change.row_id, sequence])
-                        .map_err(|error| ("storage.failed".to_owned(), Self::sqlite_failure(&self.storage_failure, error)))?;
+                    self.conn.prepare_cached("DELETE FROM _syncular_acked_rows WHERE tbl=?1 AND id=?2 AND commit_seq<=?3")
+                        .and_then(|mut statement| statement.execute(rusqlite::params![table, change.row_id, sequence]))
+                        .map_err(storage_failed)?;
                 }
             }
             self.apply_commit_changes(tables, changes)?;
@@ -20104,7 +20258,10 @@ impl SyncClient {
         // so those frames still require the complete FIFO replay below.
         let mirror_visible = !self.overlay_dirty.get()
             && self.failed_commits.is_empty()
-            && ((self.outbox.is_empty() && !self.has_acknowledged_rows())
+            && ((self.outbox.is_empty()
+                && !self
+                    .has_acknowledged_rows()
+                    .map_err(|message| ("storage.failed".to_owned(), message))?)
                 || changes.iter().all(|change| {
                     tables
                         .get(change.table_index as usize)
@@ -20136,8 +20293,15 @@ impl SyncClient {
                     let row = {
                         #[cfg(feature = "bench-internals")]
                         let _phase = self.benchmark_phases.start(Phase::RowDecode);
-                        decode_row_bytes(table, payload, &self.encryption)
-                            .map_err(|m| ("sync.invalid_request".to_owned(), m))?
+                        decode_row_bytes(table, payload, &self.encryption).map_err(|m| {
+                            // §5.11: a decrypt failure keeps its own identity.
+                            match m.strip_prefix("client.decrypt_failed: ") {
+                                Some(detail) => {
+                                    ("client.decrypt_failed".to_owned(), detail.to_owned())
+                                }
+                                None => ("sync.invalid_request".to_owned(), m),
+                            }
+                        })?
                     };
                     let version = change.row_version.unwrap_or(0);
                     let table_name = table.name.clone();
@@ -20262,7 +20426,10 @@ impl SyncClient {
                     .flat_map(|commit| &commit.ops)
                     .any(|op| op.table == table.name);
             let mirror_visible = !reconcile_pending
-                && (self.failed_commits.is_empty() && !self.has_acknowledged_rows());
+                && (self.failed_commits.is_empty()
+                    && !self.has_acknowledged_rows().map_err(|message| {
+                        SectionError::Abort("storage.failed".into(), message)
+                    })?);
             self.coalesce_unit(block.len())
                 .and_then(|()| self.begin_observation("syncular_segment_block"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -20322,7 +20489,11 @@ impl SyncClient {
                     self.reconcile_imported_rows(&table, &mut changed_keys)
                         .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
-                if self.failed_commits.is_empty() && !self.has_acknowledged_rows() {
+                if self.failed_commits.is_empty()
+                    && !self
+                        .has_acknowledged_rows()
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?
+                {
                     self.apply_outbox_ops(
                         self.outbox
                             .iter()
@@ -20390,29 +20561,42 @@ impl SyncClient {
             )
         })?;
 
-        let path = std::env::temp_dir().join(format!("syncular-image-{}.db", uuid::Uuid::new_v4()));
-        std::fs::write(&path, bytes).map_err(|_| invalid("image temp file write failed"))?;
-        let img = match rusqlite::Connection::open_with_flags(
-            &path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) {
-            Ok(conn) => conn,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
-                return Err(invalid("bytes do not open as a SQLite database"));
-            }
-        };
-        let outcome = self.apply_sqlite_image(
-            &img,
-            &table,
-            first_fresh_page,
-            &effective,
-            &owners,
-            row_count,
-            as_of_commit_seq,
-            scope_digest,
-        );
-        drop(img);
+        // The image lands beside the replica so it shares the replica's
+        // directory permissions and volume; an in-memory replica has no
+        // directory and uses the system temp dir. The file is owner-only.
+        let directory = self
+            .previous_version_replica_path()
+            .and_then(|replica| std::path::Path::new(&replica).parent().map(Into::into))
+            .unwrap_or_else(std::env::temp_dir);
+        let path = directory.join(format!(".syncular-image-{}.tmp", uuid::Uuid::new_v4()));
+        let outcome = (|| {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            std::io::Write::write_all(
+                &mut options
+                    .open(&path)
+                    .map_err(|_| invalid("image temp file write failed"))?,
+                bytes,
+            )
+            .map_err(|_| invalid("image temp file write failed"))?;
+            let img = rusqlite::Connection::open_with_flags(
+                &path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(|_| invalid("bytes do not open as a SQLite database"))?;
+            self.apply_sqlite_image(
+                &img,
+                &table,
+                first_fresh_page,
+                &effective,
+                &owners,
+                row_count,
+                as_of_commit_seq,
+                scope_digest,
+            )
+        })();
         let _ = std::fs::remove_file(&path);
         outcome
     }
@@ -20565,7 +20749,10 @@ impl SyncClient {
                     .flat_map(|commit| &commit.ops)
                     .any(|op| op.table == table.name);
             let mirror_visible = !reconcile_pending
-                && (self.failed_commits.is_empty() && !self.has_acknowledged_rows());
+                && (self.failed_commits.is_empty()
+                    && !self.has_acknowledged_rows().map_err(|message| {
+                        SectionError::Abort("storage.failed".into(), message)
+                    })?);
             // A chunk holds up to 1,024 rows (§5.3).
             self.coalesce_unit(1024)
                 .and_then(|()| self.begin_observation("syncular_image_chunk"))
@@ -20655,7 +20842,11 @@ impl SyncClient {
                     self.reconcile_imported_rows(table, &mut changed_keys)
                         .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
-                if self.failed_commits.is_empty() && !self.has_acknowledged_rows() {
+                if self.failed_commits.is_empty()
+                    && !self
+                        .has_acknowledged_rows()
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?
+                {
                     self.apply_outbox_ops(
                         self.outbox
                             .iter()
@@ -20684,9 +20875,14 @@ impl SyncClient {
             self.progress
                 .update(|p| p.rows_processed = u64::from(applied));
             std::thread::yield_now();
-            if i64::from(applied) == actual_count {
+            if processed < 1024 || i64::from(applied) == actual_count {
                 break;
             }
+        }
+        if i64::from(applied) != actual_count {
+            return Err(invalid(format!(
+                "image yielded {applied} rows, expected {actual_count}"
+            )));
         }
         Ok(applied)
     }
@@ -21135,7 +21331,9 @@ impl SyncClient {
             );
         }
         let meta_key = format!("localRebootstrap:{}", input.rebootstrap_id);
-        if let Some(persisted) = self.get_meta_strict(&meta_key)? {
+        if let Some(persisted) = meta_get(&self.conn, &meta_key).map_err(|_| {
+            "sync.local_corrupt: persisted local rebootstrap receipt is unreadable".to_owned()
+        })? {
             let (retained_commits, reset_subscriptions) =
                 decode_local_rebootstrap_receipt(&persisted)?;
             return Ok(LocalDataRebootstrapResult {
@@ -21730,14 +21928,14 @@ impl SyncClient {
         Ok(())
     }
 
-    fn has_acknowledged_rows(&self) -> bool {
+    fn has_acknowledged_rows(&self) -> Result<bool, String> {
         self.conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM _syncular_acked_rows)",
                 [],
                 |row| row.get(0),
             )
-            .expect("read acknowledged intent")
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn acknowledged_operations(
@@ -22685,7 +22883,7 @@ mod previous_version_wiring_tests {
         let changes = client.conn.total_changes();
         let outbox = client.pending_commit_ids();
         assert!(outbox.contains(&commit));
-        let descriptor = client.get_meta("localSchemaDescriptor");
+        let descriptor = client.get_meta("localSchemaDescriptor").unwrap();
         let container = format!(
             "{path_str}{}",
             crate::previous_version::PREVIOUS_VERSION_CONTAINER_SUFFIX
@@ -22698,7 +22896,10 @@ mod previous_version_wiring_tests {
         assert_eq!(client.schema.version, 3);
         assert_eq!(client.conn.total_changes(), changes);
         assert_eq!(client.pending_commit_ids(), outbox);
-        assert_eq!(client.get_meta("localSchemaDescriptor"), descriptor);
+        assert_eq!(
+            client.get_meta("localSchemaDescriptor").unwrap(),
+            descriptor
+        );
         assert_eq!(
             client
                 .conn
@@ -22767,8 +22968,10 @@ mod previous_version_wiring_tests {
                 .expect("queued row remains"),
             "v3-only"
         );
-        reopened.delete_meta(LOCAL_SCHEMA_VERSION_KEY);
-        reopened.delete_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY);
+        reopened.delete_meta(LOCAL_SCHEMA_VERSION_KEY).unwrap();
+        reopened
+            .delete_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY)
+            .unwrap();
         drop(reopened);
         let legacy = SyncClient::open_path(
             "downgrade".into(),
@@ -23203,7 +23406,9 @@ mod previous_version_wiring_tests {
         );
         assert_eq!(std::fs::read(&path).expect("after"), before);
         assert_eq!(
-            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY)
+                .unwrap()
+                .as_deref(),
             Some("2")
         );
         drop(probe);
@@ -23247,7 +23452,9 @@ mod previous_version_wiring_tests {
         assert!(error.starts_with("client.schema_downgrade:"), "{error}");
         let probe = Connection::open(path_str).expect("probe");
         assert_eq!(
-            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY)
+                .unwrap()
+                .as_deref(),
             Some("2"),
             "the concurrent upgrade survives"
         );
@@ -23297,7 +23504,9 @@ mod previous_version_wiring_tests {
         );
         let probe = Connection::open(path_str).expect("probe");
         assert_eq!(
-            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY)
+                .unwrap()
+                .as_deref(),
             Some("2")
         );
         drop(probe);
@@ -23317,16 +23526,20 @@ mod previous_version_wiring_tests {
                 ClientLimits::default(),
             )
             .expect("v1");
-            let marker = client.get_meta(LOCAL_SCHEMA_VERSION_KEY);
-            let descriptor = client.get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY);
+            let marker = client.get_meta(LOCAL_SCHEMA_VERSION_KEY).unwrap();
+            let descriptor = client
+                .get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY)
+                .unwrap();
             client.conn.execute_batch(&format!("CREATE TRIGGER refuse_schema_record BEFORE INSERT ON _syncular_meta WHEN NEW.key = '{key}' BEGIN SELECT RAISE(ABORT, 'refuse schema record'); END")).expect("fault");
             client
                 .recreate_with_schema(&previous_version_schema(2))
                 .expect_err("both record writes must propagate failure");
             assert_eq!(client.schema.version, 1);
-            assert_eq!(client.get_meta(LOCAL_SCHEMA_VERSION_KEY), marker);
+            assert_eq!(client.get_meta(LOCAL_SCHEMA_VERSION_KEY).unwrap(), marker);
             assert_eq!(
-                client.get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY),
+                client
+                    .get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY)
+                    .unwrap(),
                 descriptor
             );
             client
@@ -23372,8 +23585,8 @@ mod previous_version_wiring_tests {
             json!([{ "name": "id", "type": "string", "nullable": false }]);
         // Prior database and memory state: the refused COMMIT must restore all
         // of it.
-        let marker = meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY);
-        let revision = client.local_revision();
+        let marker = meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY).unwrap();
+        let revision = client.local_revision().unwrap();
         let rows = client.query("SELECT * FROM tasks", &[]).expect("rows");
         let columns: i64 = client
             .conn
@@ -23414,8 +23627,11 @@ mod previous_version_wiring_tests {
         );
         assert!(client.conn.is_autocommit(), "the transaction is released");
         // Database: the rolled-back reset left nothing behind.
-        assert_eq!(meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY), marker);
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(
+            meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY).unwrap(),
+            marker
+        );
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert_eq!(
             client.query("SELECT * FROM tasks", &[]).expect("rows"),
             rows
@@ -23499,7 +23715,7 @@ mod previous_version_wiring_tests {
                 .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE),
             "the dropped-column commit surfaced as a rejection at send time"
         );
-        client.previous_version_discard();
+        client.previous_version_discard().unwrap();
         drop(client);
         std::fs::remove_file(path).expect("remove replica");
     }
@@ -23557,7 +23773,7 @@ mod previous_version_wiring_tests {
         ] {
             client.set_sync_needed(false, false);
             client.drain_change_batches();
-            let revision = client.local_revision();
+            let revision = client.local_revision().unwrap();
             let trigger = match fault {
                 "outcome-insert" => {
                     "CREATE TRIGGER fail_drop BEFORE INSERT ON _syncular_commit_outcomes BEGIN SELECT RAISE(ABORT,'drop fault'); END"
@@ -23600,7 +23816,11 @@ mod previous_version_wiring_tests {
                 client.commit_outcome(&dropped).unwrap().is_none(),
                 "{fault}: the durable outcome rolled back"
             );
-            assert_eq!(client.local_revision(), revision, "{fault}: revision");
+            assert_eq!(
+                client.local_revision().unwrap(),
+                revision,
+                "{fault}: revision"
+            );
             assert_eq!(
                 client.query("SELECT * FROM tasks", &[]).unwrap(),
                 rows,
@@ -23624,7 +23844,10 @@ mod previous_version_wiring_tests {
             .unwrap();
         assert!(client.drop_incompatible_outbox().is_err());
         assert!(!client.conn.is_autocommit());
-        assert_eq!(client.get_meta("outerProbe").as_deref(), Some("kept"));
+        assert_eq!(
+            client.get_meta("outerProbe").unwrap().as_deref(),
+            Some("kept")
+        );
         assert_eq!(
             client.pending_commit_ids(),
             vec![dropped.clone(), survivor.clone()]
@@ -23639,10 +23862,10 @@ mod previous_version_wiring_tests {
         // intent queued for the same round. A log epoch is required before a
         // round builds push frames at all, so the classification provably runs
         // before any operation of the dropped commit is sent.
-        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
         client.set_sync_needed(false, false);
         client.drain_change_batches();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         let prepared = client.prepare_sync_round(false).expect("the drop succeeds");
         assert_eq!(client.pending_commit_ids(), vec![survivor.clone()]);
         assert_eq!(
@@ -23668,7 +23891,11 @@ mod previous_version_wiring_tests {
                 .status,
             CommitOutcomeStatus::Rejected
         );
-        assert_eq!(client.local_revision(), revision + 1, "one revision");
+        assert_eq!(
+            client.local_revision().unwrap(),
+            revision + 1,
+            "one revision"
+        );
         let batches = client.drain_change_batches();
         assert_eq!(batches.len(), 1, "one change batch");
         assert!(
@@ -23716,7 +23943,7 @@ mod previous_version_wiring_tests {
         assert_eq!(rows.len(), 1, "the optimistic row is visible");
         client.set_sync_needed(false, false);
         client.drain_change_batches();
-        let revision = client.local_revision();
+        let revision = client.local_revision().unwrap();
         let reader = Connection::open(path_str).expect("reader");
         reader
             .execute_batch("BEGIN; SELECT count(*) FROM _syncular_meta;")
@@ -23737,7 +23964,7 @@ mod previous_version_wiring_tests {
         assert_eq!(client.pending_commit_ids(), vec![dropped.clone()]);
         assert!(client.rejections.is_empty());
         assert!(client.commit_outcome(&dropped).unwrap().is_none());
-        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.local_revision().unwrap(), revision);
         assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
         assert!(client.drain_change_batches().is_empty());
         // The same round succeeds once the reader releases.
@@ -24016,7 +24243,7 @@ mod scope_move_delivery_tests {
     fn a_scope_move_keeps_the_row_in_either_section_order() {
         for order in [["old", "new"], ["new", "old"]] {
             let mut client = client();
-            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
             client
                 .subscribe(
                     "old".into(),
@@ -24142,7 +24369,7 @@ mod scope_move_delivery_tests {
     #[test]
     fn an_http_refusal_carries_its_code_and_recommended_action() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let outcome = client.sync(&mut RefusalTransport);
         let SyncOutcome::Failed {
             error_code,
@@ -24166,13 +24393,13 @@ mod scope_move_delivery_tests {
     #[test]
     fn reset_client_id_persists_and_changes_the_request_identity() {
         let mut client = client();
-        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let previous = client.client_id().to_owned();
         let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
-        let next = client.reset_client_id(&mut transport);
+        let next = client.reset_client_id(&mut transport).unwrap();
         assert_ne!(next, previous);
         assert_eq!(client.client_id(), next);
-        assert_eq!(client.get_meta(CLIENT_ID_KEY), Some(next.clone()));
+        assert_eq!(client.get_meta(CLIENT_ID_KEY).unwrap(), Some(next.clone()));
 
         client
             .subscribe(
@@ -24367,7 +24594,7 @@ mod insert_intent_tests {
             "the replayed insert is visible with the appended column NULL"
         );
         assert_eq!(
-            client.pending_payloads(),
+            client.pending_payloads().unwrap(),
             vec![sparse_payload(
                 &client,
                 json!({ "id": "q", "title": "new", "note": null })
@@ -24404,7 +24631,7 @@ mod insert_intent_tests {
             "a partial operation over an absent row stays invisible"
         );
         assert_eq!(
-            client.pending_payloads(),
+            client.pending_payloads().unwrap(),
             vec![sparse_payload(
                 &client,
                 json!({ "id": "q", "title": "new" })
@@ -24502,5 +24729,483 @@ mod insert_intent_tests {
             &delete,
             json!(true)
         )));
+    }
+}
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema() -> Value {
+        json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]})
+    }
+
+    fn client() -> SyncClient {
+        SyncClient::new("robust".into(), &schema(), ClientLimits::default()).expect("client")
+    }
+
+    fn scopes() -> Vec<(String, Vec<String>)> {
+        vec![("project_id".to_owned(), vec!["p1".to_owned()])]
+    }
+
+    fn operation(table: &str) -> OutboxOp {
+        OutboxOp {
+            table: table.into(),
+            row_id: "t1".into(),
+            upsert: true,
+            insert: false,
+            base_version: Some(1),
+            values: Some(Map::from_iter([("id".into(), json!("t1"))])),
+        }
+    }
+
+    // R3
+    #[test]
+    fn retained_failed_commits_skip_operations_on_removed_tables() {
+        let mut client = client();
+        let removed = operation("removed");
+        client
+            .retain_failed_commit("c1", std::slice::from_ref(&removed))
+            .expect("a removed table is skipped, not an error");
+        assert_eq!(client.failed_commits.len(), 1);
+        client
+            .persist_commit_outcome(
+                "c1",
+                CommitOutcomeStatus::Rejected,
+                &[CommitOperationOutcome::Error {
+                    rejection: RejectionRecord {
+                        client_commit_id: "c1".into(),
+                        op_index: 0,
+                        code: "validation.denied".into(),
+                        message: "denied".into(),
+                        retryable: false,
+                        details: None,
+                        operation: None,
+                    },
+                }],
+                Some(&[removed]),
+            )
+            .unwrap();
+        let outcome = client.commit_outcome("c1").unwrap().expect("outcome");
+        assert_eq!(outcome.retained_rows, Some(Vec::new()));
+    }
+
+    // R5
+    #[test]
+    fn a_failed_acknowledged_rows_read_is_an_error() {
+        let client = client();
+        assert!(!client.has_acknowledged_rows().unwrap());
+        client
+            .conn
+            .execute_batch("DROP TABLE _syncular_acked_rows")
+            .unwrap();
+        assert!(client.has_acknowledged_rows().is_err());
+    }
+
+    // R5
+    #[test]
+    fn finishing_a_round_tolerates_an_unclassified_storage_failure() {
+        let mut client = client();
+        *client.storage_failure.borrow_mut() =
+            Some(QueryReadFailure::from(rusqlite::Error::QueryReturnedNoRows));
+        let outcome = client.finish_sync_round(
+            0,
+            SyncOutcome::Failed {
+                error_code: "sync.invalid_request".into(),
+                message: "original".into(),
+                details: None,
+                recommended_action: None,
+            },
+        );
+        let SyncOutcome::Failed {
+            error_code,
+            message,
+            ..
+        } = outcome
+        else {
+            panic!("a failed round stays failed");
+        };
+        assert_eq!(error_code, "sync.invalid_request");
+        assert_eq!(message, "original");
+    }
+
+    // R6
+    #[test]
+    fn a_failed_security_preflight_marker_write_fails_the_preflight() {
+        let mut client = client();
+        client
+            .conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_meta
+                 WHEN NEW.key = '{SECURITY_PREFLIGHT_PENDING_KEY}'
+                 BEGIN SELECT RAISE(FAIL, 'injected marker failure'); END"
+            ))
+            .unwrap();
+        let error = client
+            .begin_security_preflight()
+            .expect_err("the marker write failed");
+        assert!(error.contains("injected marker failure"), "{error}");
+        assert_eq!(
+            client.get_meta(SECURITY_PREFLIGHT_PENDING_KEY).unwrap(),
+            None
+        );
+    }
+
+    // R6
+    #[test]
+    fn a_failed_log_epoch_read_fails_the_round_instead_of_adopting_an_epoch() {
+        let mut client = client();
+        client
+            .conn
+            .execute_batch("ALTER TABLE _syncular_meta RENAME TO _syncular_meta_unreadable")
+            .unwrap();
+        assert!(matches!(
+            client.build_request(false).err().as_deref(),
+            Some(SyncOutcome::Failed { .. })
+        ));
+        assert!(client.run_log_epoch_reset("epoch-2").is_err());
+    }
+
+    // R7
+    #[test]
+    fn an_image_scan_that_disagrees_with_its_count_aborts() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-image-fixture-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let image = Connection::open(&path).unwrap();
+        image
+            .execute_batch(
+                "PRAGMA page_size = 512;
+                 CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+                 CREATE INDEX tasks_version ON tasks(_syncular_version);
+                 INSERT INTO tasks VALUES ('a','p1',1),('b','p1',2),('c','p1',3);
+                 CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+                 INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',2);",
+            )
+            .unwrap();
+        let root: usize = image
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'tasks_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(image);
+        // Drop the last entry of the version index: `count(*)` reads the
+        // index and reports 2 while the primary-key scan still yields 3 rows.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let header = (root - 1) * 512;
+        bytes[header + 3..header + 5].copy_from_slice(&2u16.to_be_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        let image =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(
+            image
+                .query_row("SELECT count(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+
+        let mut client = client();
+        let table = client.schema.table("tasks").unwrap().clone();
+        let error = client
+            .apply_sqlite_image(&image, &table, true, &scopes(), &[], 2, 7, "digest")
+            .expect_err("a scan longer than the declared count aborts");
+        let SectionError::Abort(code, message) = error else {
+            panic!("expected an abort");
+        };
+        assert_eq!(code, "sync.invalid_request");
+        assert!(message.contains("expected 2"), "{message}");
+        drop(image);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn image_bytes() -> Vec<u8> {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-image-fixture-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let image = Connection::open(&path).unwrap();
+        image
+            .execute_batch(
+                "CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+                 INSERT INTO tasks VALUES ('a','p1',1),('b','p1',1);
+                 CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+                 INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',2);",
+            )
+            .unwrap();
+        drop(image);
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        bytes
+    }
+
+    #[cfg(unix)]
+    /// Lists the image temp files in `directory` with their modes, read from
+    /// the commit hook of the first image chunk while the apply is running.
+    fn watch_image_files(
+        client: &mut SyncClient,
+        directory: std::path::PathBuf,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<(std::path::PathBuf, u32)>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        client
+            .conn
+            .commit_hook(Some(move || {
+                for entry in std::fs::read_dir(&directory).unwrap().flatten() {
+                    if entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".syncular-image-")
+                    {
+                        let mode = std::os::unix::fs::PermissionsExt::mode(
+                            &entry.metadata().unwrap().permissions(),
+                        ) & 0o777;
+                        sink.lock().unwrap().push((entry.path(), mode));
+                    }
+                }
+                false
+            }))
+            .unwrap();
+        seen
+    }
+
+    // R7
+    #[cfg(unix)]
+    #[test]
+    fn the_image_temp_file_sits_beside_the_replica_owner_only_and_is_removed() {
+        let directory =
+            std::env::temp_dir().join(format!("syncular-image-dir-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let replica = directory.join("replica.db");
+        let mut client = SyncClient::open_path(
+            "image-beside".into(),
+            &schema(),
+            ClientLimits::default(),
+            replica.to_str().unwrap(),
+        )
+        .unwrap();
+        client
+            .subscribe("tasks".into(), "tasks".into(), scopes(), None)
+            .unwrap();
+        client.subs[0].effective = Some(scopes());
+        let seen = watch_image_files(&mut client, directory.clone());
+        let applied = client
+            .apply_sqlite_segment(0, &image_bytes(), true, 2, 7, "digest")
+            .unwrap_or_else(|_| panic!("image applies"));
+        assert_eq!(applied, 2);
+        let seen = seen.lock().unwrap();
+        assert!(!seen.is_empty(), "the image was staged beside the replica");
+        assert!(seen
+            .iter()
+            .all(|(path, mode)| path.parent() == Some(directory.as_path()) && *mode == 0o600));
+        drop(seen);
+        // Every exit path removes it, including a rejected image.
+        assert!(client
+            .apply_sqlite_segment(0, b"not a database", true, 2, 7, "digest")
+            .is_err());
+        let leftovers = std::fs::read_dir(&directory)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".syncular-image-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        drop(client);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    // R7
+    #[cfg(unix)]
+    #[test]
+    fn an_in_memory_replica_stages_the_image_owner_only_in_the_system_temp_dir() {
+        let mut client = client();
+        client
+            .subscribe("tasks".into(), "tasks".into(), scopes(), None)
+            .unwrap();
+        client.subs[0].effective = Some(scopes());
+        let seen = watch_image_files(&mut client, std::env::temp_dir());
+        let applied = client
+            .apply_sqlite_segment(0, &image_bytes(), true, 2, 7, "digest")
+            .unwrap_or_else(|_| panic!("image applies"));
+        assert_eq!(applied, 2);
+        let seen = seen.lock().unwrap();
+        assert!(!seen.is_empty());
+        assert!(seen.iter().all(|(_, mode)| *mode == 0o600));
+    }
+
+    // R8
+    #[test]
+    fn subscribe_and_unsubscribe_raise_sync_needed() {
+        let mut client = client();
+        client
+            .subscribe("sub".into(), "tasks".into(), scopes(), None)
+            .unwrap();
+        assert!(client.sync_needed);
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
+        ));
+
+        // Registering the same intent again changes nothing.
+        client.sync_needed = false;
+        client
+            .subscribe("sub".into(), "tasks".into(), scopes(), None)
+            .unwrap();
+        assert!(!client.sync_needed);
+        assert!(client.sync_intent_queue.is_empty());
+
+        client.unsubscribe("sub").unwrap();
+        assert!(client.sync_needed);
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
+        ));
+
+        // An unknown id is a no-op.
+        client.sync_needed = false;
+        client.unsubscribe("sub").unwrap();
+        assert!(!client.sync_needed);
+        assert!(client.sync_intent_queue.is_empty());
+    }
+
+    fn encrypted_client() -> SyncClient {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "patients",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false },
+                    { "name": "encryption_key_id", "type": "string", "nullable": true },
+                    { "name": "note", "type": "bytes", "nullable": true,
+                      "encrypted": true, "declaredType": "string" }
+                ],
+                "scopes": []
+            }]
+        });
+        let mut client = SyncClient::new("encrypted".into(), &schema, ClientLimits::default())
+            .expect("test client");
+        client.create_synced_tables().unwrap();
+        let mut config = crate::values::EncryptionConfig::default();
+        config.keys.insert("k1".to_owned(), vec![0x2A; 32]);
+        config
+            .key_id_columns
+            .insert("patients".to_owned(), "encryption_key_id".to_owned());
+        client.set_encryption(config);
+        client
+    }
+
+    // R9
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn a_failed_key_selector_read_is_an_error_and_an_absent_key_is_none() {
+        let client = encrypted_client();
+        let table = client.schema.table("patients").unwrap();
+        assert!(client.stored_key_fallback(table, "5").unwrap().is_none());
+        client
+            .conn
+            .execute(
+                "INSERT INTO patients (id, encryption_key_id, note, _syncular_version) VALUES (5, 'k1', NULL, 1)",
+                [],
+            )
+            .unwrap();
+        assert!(client.stored_key_fallback(table, "5").unwrap().is_some());
+        client.conn.execute_batch("DROP TABLE patients").unwrap();
+        assert!(client.stored_key_fallback(table, "5").is_err());
+    }
+
+    // R10
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn a_commit_frame_decrypt_failure_keeps_its_identity() {
+        let mut client = encrypted_client();
+        let table = client.schema.table("patients").unwrap();
+        let values = Map::from_iter([
+            ("id".into(), json!(5)),
+            ("encryption_key_id".into(), json!("k1")),
+            ("note".into(), json!("secret")),
+        ]);
+        let payload =
+            crate::values::encode_row_json(table, "5", &values, &client.encryption).unwrap();
+        // The receiving client holds no key for the envelope.
+        client.set_encryption(crate::values::EncryptionConfig::default());
+        let change = ssp2::model::Change {
+            table_index: 0,
+            row_id: "5".into(),
+            op: Op::Upsert,
+            row_version: Some(1),
+            scopes: Vec::new(),
+            row: Some(payload),
+        };
+        let (code, _) = client
+            .apply_commit_changes(&["patients".to_owned()], &[change])
+            .expect_err("the envelope cannot be decrypted");
+        assert_eq!(code, "client.decrypt_failed");
+    }
+
+    // R11
+    #[test]
+    fn acknowledged_row_lookups_by_table_and_id_use_an_index() {
+        let client = client();
+        let plan: String = client
+            .conn
+            .query_row(
+                "EXPLAIN QUERY PLAN DELETE FROM _syncular_acked_rows WHERE tbl = 't' AND id = 'i' AND commit_seq <= 1",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("_syncular_acked_rows_row"), "{plan}");
+    }
+
+    // R11
+    #[test]
+    fn commit_frames_record_deliveries_only_for_rows_pinned_by_the_outbox() {
+        let mut client = client();
+        client
+            .subscribe("sub".into(), "tasks".into(), scopes(), None)
+            .unwrap();
+        client.outbox.push(OutboxCommit {
+            client_commit_id: "pending".into(),
+            ops: vec![operation("tasks")],
+        });
+        let table = client.schema.table("tasks").unwrap();
+        let change = |id: &str| {
+            let values =
+                Map::from_iter([("id".into(), json!(id)), ("project_id".into(), json!("p1"))]);
+            ssp2::model::Change {
+                table_index: 0,
+                row_id: id.into(),
+                op: Op::Upsert,
+                row_version: Some(1),
+                scopes: Vec::new(),
+                row: Some(
+                    crate::values::encode_row_json(table, id, &values, &client.encryption).unwrap(),
+                ),
+            }
+        };
+        let changes = vec![change("t1"), change("other")];
+        client
+            .apply_commit_frame(&["tasks".to_owned()], &changes, Some(9))
+            .unwrap();
+        let delivered: Vec<(String, i64)> = client
+            .conn
+            .prepare("SELECT id, commit_seq FROM _syncular_row_deliveries ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(delivered, vec![("t1".to_owned(), 9)]);
     }
 }

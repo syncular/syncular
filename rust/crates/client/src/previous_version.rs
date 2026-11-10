@@ -305,10 +305,13 @@ pub fn set_local_schema_descriptor(
     Ok(())
 }
 
-/// Load and strictly decode the stored descriptor; `None` when absent/corrupt.
-pub fn load_local_schema_descriptor(conn: &Connection) -> Option<LocalSchemaDescriptor> {
-    let raw = meta_get(conn, LOCAL_SCHEMA_DESCRIPTOR_KEY)?;
-    decode_local_schema_descriptor(&raw).ok()
+/// Load and strictly decode the stored descriptor; `None` when absent or
+/// undecodable. A failed storage read is an error.
+pub fn load_local_schema_descriptor(
+    conn: &Connection,
+) -> rusqlite::Result<Option<LocalSchemaDescriptor>> {
+    Ok(meta_get(conn, LOCAL_SCHEMA_DESCRIPTOR_KEY)?
+        .and_then(|raw| decode_local_schema_descriptor(&raw).ok()))
 }
 
 // ---------------------------------------------------------------------------
@@ -815,7 +818,7 @@ fn write_previous_version_refusal(
     conn: &Connection,
     reason: PreviousVersionRefusalReason,
     measurement: CaptureMeasurement,
-) {
+) -> Result<(), String> {
     meta_set(
         conn,
         PREVIOUS_VERSION_CONTEXT_KEY,
@@ -827,7 +830,8 @@ fn write_previous_version_refusal(
             "bytes": measurement.bytes,
         })
         .to_string(),
-    );
+    )
+    .map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -863,8 +867,7 @@ pub fn sweep_previous_version_container(
         let _ = container.close();
     }
     remove_previous_version_files(&path);
-    meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY);
-    Ok(())
+    meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY).map_err(|error| error.to_string())
 }
 
 /// D5 steps 2-5: load the stored descriptor, then capture into the container
@@ -880,6 +883,7 @@ pub fn capture_previous_version_from_replica(
 ) -> Result<CaptureOutcome, String> {
     let path = previous_version_container_path(replica_path);
     let descriptor = load_local_schema_descriptor(replica)
+        .map_err(|error| error.to_string())?
         .filter(|descriptor| descriptor.version == previous_version);
     let Some(descriptor) = descriptor else {
         // D1: no fallback and no inference — a database last opened by an
@@ -889,7 +893,7 @@ pub fn capture_previous_version_from_replica(
             replica,
             PreviousVersionRefusalReason::NoPreviousDescriptor,
             measurement,
-        );
+        )?;
         return Ok(CaptureOutcome::Refused {
             reason: PreviousVersionRefusalReason::NoPreviousDescriptor,
             measurement,
@@ -908,14 +912,15 @@ pub fn capture_previous_version_from_replica(
     let _ = container.close();
     match outcome {
         Ok(CaptureOutcome::Captured(measurement)) => {
-            meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY);
+            meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY)
+                .map_err(|error| error.to_string())?;
             Ok(CaptureOutcome::Captured(measurement))
         }
         Ok(CaptureOutcome::Refused {
             reason,
             measurement,
         }) => {
-            write_previous_version_refusal(replica, reason, measurement);
+            write_previous_version_refusal(replica, reason, measurement)?;
             remove_previous_version_files(&path);
             Ok(CaptureOutcome::Refused {
                 reason,
@@ -1076,6 +1081,7 @@ pub fn previous_version_snapshot(
     }
     let Some(record) = record else {
         let reason = stored_previous_version_refusal(replica)
+            .map_err(|error| error.to_string())?
             .unwrap_or(PreviousVersionRefusalReason::NoPreviousDescriptor);
         return Ok(PreviousVersionSnapshot::unavailable(
             current_version,
@@ -1123,12 +1129,16 @@ pub fn previous_version_snapshot(
 
 /// Decode the durable refusal; `None` when absent or corrupt. The successful
 /// record lives inside the container file, so this key is absent whenever a
-/// container is present.
+/// container is present. A failed storage read is an error.
 pub fn stored_previous_version_refusal(
     replica: &Connection,
-) -> Option<PreviousVersionRefusalReason> {
-    let raw = meta_get(replica, PREVIOUS_VERSION_CONTEXT_KEY)?;
-    let parsed: Value = serde_json::from_str(&raw).ok()?;
+) -> rusqlite::Result<Option<PreviousVersionRefusalReason>> {
+    Ok(meta_get(replica, PREVIOUS_VERSION_CONTEXT_KEY)?
+        .and_then(|raw| decode_previous_version_refusal(&raw)))
+}
+
+fn decode_previous_version_refusal(raw: &str) -> Option<PreviousVersionRefusalReason> {
+    let parsed: Value = serde_json::from_str(raw).ok()?;
     let Value::Object(record) = &parsed else {
         return None;
     };
@@ -1279,16 +1289,25 @@ pub fn build_previous_version_audit<'a>(
     }
 }
 
-pub fn write_previous_version_audit(replica: &Connection, audit: &PreviousVersionAudit) {
-    if let Ok(encoded) = serde_json::to_string(audit) {
-        meta_set(replica, PREVIOUS_VERSION_AUDIT_KEY, &encoded);
-    }
+pub fn write_previous_version_audit(
+    replica: &Connection,
+    audit: &PreviousVersionAudit,
+) -> Result<(), String> {
+    let encoded = serde_json::to_string(audit).map_err(|error| error.to_string())?;
+    meta_set(replica, PREVIOUS_VERSION_AUDIT_KEY, &encoded).map_err(|error| error.to_string())
 }
 
-/// Strict decode; `None` when absent or malformed.
-pub fn stored_previous_version_audit(replica: &Connection) -> Option<PreviousVersionAudit> {
-    let raw = meta_get(replica, PREVIOUS_VERSION_AUDIT_KEY)?;
-    let parsed: Value = serde_json::from_str(&raw).ok()?;
+/// Strict decode; `None` when absent or malformed. A failed storage read is an
+/// error.
+pub fn stored_previous_version_audit(
+    replica: &Connection,
+) -> rusqlite::Result<Option<PreviousVersionAudit>> {
+    Ok(meta_get(replica, PREVIOUS_VERSION_AUDIT_KEY)?
+        .and_then(|raw| decode_previous_version_audit(&raw)))
+}
+
+fn decode_previous_version_audit(raw: &str) -> Option<PreviousVersionAudit> {
+    let parsed: Value = serde_json::from_str(raw).ok()?;
     let Value::Object(record) = &parsed else {
         return None;
     };
@@ -1426,13 +1445,17 @@ pub fn discard_previous_version(
         }
         remove_previous_version_files(&path);
     }
-    if meta_get(replica, PREVIOUS_VERSION_CONTEXT_KEY).is_some()
-        || meta_get(replica, PREVIOUS_VERSION_AUDIT_KEY).is_some()
+    if meta_get(replica, PREVIOUS_VERSION_CONTEXT_KEY)
+        .map_err(|error| error.to_string())?
+        .is_some()
+        || meta_get(replica, PREVIOUS_VERSION_AUDIT_KEY)
+            .map_err(|error| error.to_string())?
+            .is_some()
     {
         present = true;
     }
-    meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY);
-    meta_delete(replica, PREVIOUS_VERSION_AUDIT_KEY);
+    meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY).map_err(|error| error.to_string())?;
+    meta_delete(replica, PREVIOUS_VERSION_AUDIT_KEY).map_err(|error| error.to_string())?;
     Ok(PreviousVersionDiscardOutcome {
         present,
         discarded: present,
@@ -1659,7 +1682,10 @@ mod tests {
                 !Path::new(&container_path).exists(),
                 "{expected:?} must physically remove the container"
             );
-            assert_eq!(meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY), None);
+            assert_eq!(
+                meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY).unwrap(),
+                None
+            );
         }
     }
 
@@ -1806,8 +1832,11 @@ mod tests {
             .expect("encode audit")
             .contains("\"reason\":\"missing-required-column\""));
 
-        write_previous_version_audit(&replica, &audit);
-        assert_eq!(stored_previous_version_audit(&replica), Some(audit));
+        write_previous_version_audit(&replica, &audit).unwrap();
+        assert_eq!(
+            stored_previous_version_audit(&replica).unwrap(),
+            Some(audit)
+        );
     }
 
     #[test]
@@ -1866,17 +1895,20 @@ mod tests {
         assert!(encoded.contains("\"reason\":\"unknown-column\""));
         assert!(encoded.contains("\"reason\":\"unknown-table\""));
 
-        write_previous_version_audit(&replica, &audit);
-        assert_eq!(stored_previous_version_audit(&replica), Some(audit.clone()));
+        write_previous_version_audit(&replica, &audit).unwrap();
+        assert_eq!(
+            stored_previous_version_audit(&replica).unwrap(),
+            Some(audit.clone())
+        );
         // Strict decode: a malformed record reads as absent.
-        meta_set(&replica, PREVIOUS_VERSION_AUDIT_KEY, "{\"v\":1}");
-        assert_eq!(stored_previous_version_audit(&replica), None);
+        meta_set(&replica, PREVIOUS_VERSION_AUDIT_KEY, "{\"v\":1}").unwrap();
+        assert_eq!(stored_previous_version_audit(&replica).unwrap(), None);
         meta_set(
             &replica,
             PREVIOUS_VERSION_AUDIT_KEY,
             "{\"v\":1,\"atMs\":0,\"fromVersion\":1,\"toVersion\":2,\"pending\":0,\"encodable\":0,\"truncated\":false,\"incompatible\":[{\"commitId\":\"c\",\"table\":\"t\",\"reason\":\"other\"}]}",
-        );
-        assert_eq!(stored_previous_version_audit(&replica), None);
+        ).unwrap();
+        assert_eq!(stored_previous_version_audit(&replica).unwrap(), None);
 
         // Bounded at MAX_AUDIT_INCOMPATIBLE entries with `truncated`.
         let many = (0..MAX_AUDIT_INCOMPATIBLE + 5)
@@ -1999,7 +2031,7 @@ mod tests {
         // D1: the descriptor the bump's capture reads, exactly as the client
         // writes it — plus the §7.4.1 marker of the version that wrote it.
         set_local_schema_descriptor(&replica, &schema(1)).expect("descriptor");
-        meta_set(&replica, LOCAL_SCHEMA_VERSION_KEY, "1");
+        meta_set(&replica, LOCAL_SCHEMA_VERSION_KEY, "1").unwrap();
     }
 
     fn descriptor() -> LocalSchemaDescriptor {
@@ -2016,7 +2048,9 @@ mod tests {
         let schema = schema(4);
         set_local_schema_descriptor(&conn, &schema).expect("descriptor");
 
-        let stored = meta_get(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY).expect("descriptor written");
+        let stored = meta_get(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY)
+            .unwrap()
+            .expect("descriptor written");
         let parsed: Value = serde_json::from_str(&stored).expect("descriptor is JSON");
         assert_eq!(parsed.as_object().expect("object").len(), 3, "{stored}");
         assert_eq!(parsed["v"], json!(1));
@@ -2044,7 +2078,9 @@ mod tests {
             build_local_schema_descriptor(&schema)
         );
         assert_eq!(
-            load_local_schema_descriptor(&conn).expect("loaded"),
+            load_local_schema_descriptor(&conn)
+                .unwrap()
+                .expect("loaded"),
             build_local_schema_descriptor(&schema)
         );
 
@@ -2067,8 +2103,8 @@ mod tests {
         }
 
         // A corrupt stored value reads as absent (the reset then refuses).
-        meta_set(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY, "{broken");
-        assert_eq!(load_local_schema_descriptor(&conn), None);
+        meta_set(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY, "{broken").unwrap();
+        assert_eq!(load_local_schema_descriptor(&conn).unwrap(), None);
     }
 
     #[test]
@@ -2223,6 +2259,7 @@ mod tests {
             // All-or-nothing: no partial copy, and no file at all.
             assert!(!Path::new(&container_path).exists(), "{label}");
             let refusal = meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY)
+                .unwrap()
                 .unwrap_or_else(|| panic!("{label}: refusal recorded"));
             assert!(refusal.contains("capture-exceeded-budget"), "{refusal}");
         }
@@ -2237,7 +2274,7 @@ mod tests {
         let container_path = previous_version_container_path(&replica_path);
 
         // No descriptor at all: a database last opened by an unaware binary.
-        meta_delete(&replica, LOCAL_SCHEMA_DESCRIPTOR_KEY);
+        meta_delete(&replica, LOCAL_SCHEMA_DESCRIPTOR_KEY).unwrap();
         let outcome = capture_previous_version_from_replica(
             &replica,
             &replica_path,
@@ -2255,7 +2292,9 @@ mod tests {
             }
         );
         assert!(!Path::new(&container_path).exists());
-        let refusal = meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY).expect("refusal");
+        let refusal = meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY)
+            .unwrap()
+            .expect("refusal");
         assert!(refusal.contains("no-previous-descriptor"), "{refusal}");
 
         // A descriptor for a DIFFERENT version is treated exactly the same.
@@ -2263,7 +2302,8 @@ mod tests {
             &replica,
             LOCAL_SCHEMA_DESCRIPTOR_KEY,
             &encode_local_schema_descriptor(&descriptor()),
-        );
+        )
+        .unwrap();
         let outcome = capture_previous_version_from_replica(
             &replica,
             &replica_path,
@@ -2302,7 +2342,7 @@ mod tests {
         .expect("capture");
         assert!(matches!(outcome, CaptureOutcome::Captured(_)));
         assert!(Path::new(&container_path).exists());
-        meta_set(&replica, PREVIOUS_VERSION_AUDIT_KEY, "{\"v\":1}");
+        meta_set(&replica, PREVIOUS_VERSION_AUDIT_KEY, "{\"v\":1}").unwrap();
 
         let discarded = discard_previous_version(&replica, &replica_path).expect("discard");
         assert!(discarded.present);
@@ -2311,8 +2351,14 @@ mod tests {
         assert!(!Path::new(&container_path).exists());
         assert!(!Path::new(&format!("{container_path}-wal")).exists());
         assert!(!Path::new(&format!("{container_path}-shm")).exists());
-        assert_eq!(meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY), None);
-        assert_eq!(meta_get(&replica, PREVIOUS_VERSION_AUDIT_KEY), None);
+        assert_eq!(
+            meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY).unwrap(),
+            None
+        );
+        assert_eq!(
+            meta_get(&replica, PREVIOUS_VERSION_AUDIT_KEY).unwrap(),
+            None
+        );
 
         // A no-op discard succeeds (the RFC 0006 key-loss contract needs it).
         let again = discard_previous_version(&replica, &replica_path).expect("discard again");
@@ -2330,6 +2376,11 @@ mod tests {
         // every statement fail with "file is not a database".
         std::fs::write(&container_path, b"not a sqlite database").expect("write garbage");
         let replica = Connection::open(temp.replica()).expect("open replica");
+        replica
+            .execute_batch(
+                "CREATE TABLE _syncular_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            )
+            .expect("create meta");
 
         // The sweep must still remove it, and must not error.
         sweep_previous_version_container(&replica, &replica_path)
@@ -2348,6 +2399,8 @@ mod tests {
         // it on the bump path.
         std::fs::write(&container_path, b"not a sqlite database")
             .expect("write garbage a third time");
+        drop(replica);
+        std::fs::remove_file(temp.replica()).expect("remove the bare replica");
         seed_replica(temp.replica(), 1);
         {
             SyncClient::open_path(
@@ -2387,7 +2440,9 @@ mod tests {
         assert!(Path::new(&container_path).exists());
         // The replica never committed: the marker is still 1.
         assert_eq!(
-            meta_get(&replica, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            meta_get(&replica, LOCAL_SCHEMA_VERSION_KEY)
+                .unwrap()
+                .as_deref(),
             Some("1")
         );
         drop(replica);
@@ -2410,8 +2465,14 @@ mod tests {
         // Read storage directly, never through a read API.
         assert!(!Path::new(&container_path).exists());
         let inspect = Connection::open(&replica_path).expect("inspect after open");
-        assert_eq!(meta_get(&inspect, PREVIOUS_VERSION_CONTEXT_KEY), None);
-        assert_eq!(meta_get(&inspect, PREVIOUS_VERSION_AUDIT_KEY), None);
+        assert_eq!(
+            meta_get(&inspect, PREVIOUS_VERSION_CONTEXT_KEY).unwrap(),
+            None
+        );
+        assert_eq!(
+            meta_get(&inspect, PREVIOUS_VERSION_AUDIT_KEY).unwrap(),
+            None
+        );
         assert_eq!(
             inspect
                 .query_row(
@@ -2481,8 +2542,9 @@ mod tests {
         }
         {
             let inspect = Connection::open(&replica_path).expect("inspect v1");
-            let descriptor =
-                load_local_schema_descriptor(&inspect).expect("descriptor after install");
+            let descriptor = load_local_schema_descriptor(&inspect)
+                .unwrap()
+                .expect("descriptor after install");
             assert_eq!(descriptor.version, 1);
             assert_eq!(descriptor.tables.len(), 2);
             assert_eq!(
@@ -2495,7 +2557,7 @@ mod tests {
         // A same-version open backfills a descriptor an unaware binary never wrote.
         {
             let inspect = Connection::open(&replica_path).expect("inspect");
-            meta_delete(&inspect, LOCAL_SCHEMA_DESCRIPTOR_KEY);
+            meta_delete(&inspect, LOCAL_SCHEMA_DESCRIPTOR_KEY).unwrap();
         }
         {
             let _client = SyncClient::open_path(
@@ -2510,6 +2572,7 @@ mod tests {
             let inspect = Connection::open(&replica_path).expect("inspect v1 again");
             assert_eq!(
                 load_local_schema_descriptor(&inspect)
+                    .unwrap()
                     .expect("backfilled")
                     .version,
                 1
@@ -2534,6 +2597,7 @@ mod tests {
             let inspect = Connection::open(&replica_path).expect("inspect v2");
             assert_eq!(
                 load_local_schema_descriptor(&inspect)
+                    .unwrap()
                     .expect("descriptor after bump")
                     .version,
                 2

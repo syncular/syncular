@@ -779,7 +779,7 @@ pub fn dispatch<T: Transport>(
                 instance.set_encryption(config);
             }
             if security_preflight {
-                instance.begin_security_preflight();
+                instance.begin_security_preflight().map_err(client_err)?;
             }
             if let Some(enabled) = params.get("transportEnabled") {
                 let enabled = enabled.as_bool().ok_or_else(|| {
@@ -797,7 +797,7 @@ pub fn dispatch<T: Transport>(
         "beginSecurityPreflight" => {
             let running = need_client(client)?;
             running.disconnect_realtime(transport);
-            running.begin_security_preflight();
+            running.begin_security_preflight().map_err(client_err)?;
             effects.security_preflight_pending = true;
             Ok(json!({}))
         }
@@ -894,7 +894,7 @@ pub fn dispatch<T: Transport>(
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| client_err("unsubscribe missing id".to_owned()))?;
-            need_client(client)?.unsubscribe(id);
+            need_client(client)?.unsubscribe(id).map_err(client_err)?;
             Ok(json!({}))
         }
         "setWindow" => {
@@ -1024,7 +1024,9 @@ pub fn dispatch<T: Transport>(
             Ok(outcome.to_json())
         }
         "resetClientId" | "reset_client_id" => {
-            let client_id = need_client(client)?.reset_client_id(transport);
+            let client_id = need_client(client)?
+                .reset_client_id(transport)
+                .map_err(client_err)?;
             Ok(json!({ "clientId": client_id }))
         }
         "syncUntilIdle" => {
@@ -1217,16 +1219,21 @@ pub fn dispatch<T: Transport>(
                 .map_err(client_err)?;
             serde_json::to_value(snapshot).map_err(|error| client_err(error.to_string()))
         }
-        "previousVersionAudit" | "previous_version_audit" => {
-            Ok(match need_client(client)?.previous_version_audit() {
+        "previousVersionAudit" | "previous_version_audit" => Ok(
+            match need_client(client)?
+                .previous_version_audit()
+                .map_err(client_err)?
+            {
                 Some(audit) => {
                     serde_json::to_value(audit).map_err(|error| client_err(error.to_string()))?
                 }
                 None => Value::Null,
-            })
-        }
+            },
+        ),
         "previousVersionDiscard" | "previous_version_discard" => {
-            let outcome = need_client(client)?.previous_version_discard();
+            let outcome = need_client(client)?
+                .previous_version_discard()
+                .map_err(client_err)?;
             Ok(json!({
                 "present": outcome.present,
                 "discarded": outcome.discarded,
@@ -1421,7 +1428,9 @@ pub fn dispatch<T: Transport>(
             Ok(json!({ "ids": ids }))
         }
         "pendingPayloads" => {
-            let payloads = need_client(client)?.pending_payloads();
+            let payloads = need_client(client)?
+                .pending_payloads()
+                .map_err(client_err)?;
             Ok(json!({
                 "payloads": payloads.iter().map(|p| bytes_value(p)).collect::<Vec<_>>()
             }))
@@ -2035,6 +2044,33 @@ mod tests {
             )
             .expect("subscription state");
             assert_eq!(state["state"]["table"], "todos");
+        }
+    }
+
+    #[test]
+    fn subscribe_and_unsubscribe_queue_an_interactive_sync_intent() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let mut run = |command: &str, params: Value| {
+            dispatch(&mut transport, &mut client, &mut effects, command, &params)
+                .expect("command succeeds")
+        };
+        run("create", json!({ "schema": schema() }));
+        run("drainSyncIntents", json!({}));
+        for command in ["subscribe", "unsubscribe"] {
+            let params = if command == "subscribe" {
+                json!({ "id": "a", "table": "todos", "scopes": { "list_id": ["list-1"] } })
+            } else {
+                json!({ "id": "a" })
+            };
+            run(command, params);
+            let intents = run("drainSyncIntents", json!({}));
+            assert_eq!(
+                intents["intents"],
+                json!([{ "kind": "interactive" }]),
+                "{command}"
+            );
         }
     }
 

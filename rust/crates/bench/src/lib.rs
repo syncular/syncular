@@ -863,7 +863,11 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
         .and_then(Value::as_array)
         .filter(|queries| queries.len() == 2)
         .ok_or_else(|| client_err("Read fixture requires two queries".to_owned()))?;
-    let revision = client.instance()?.local_revision().to_string();
+    let revision = client
+        .instance()?
+        .local_revision()
+        .map_err(client_err)?
+        .to_string();
     let mut results = Vec::new();
     for query in queries {
         let sql = query
@@ -1037,7 +1041,13 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
         }
         results.push(result);
     }
-    if client.instance()?.local_revision().to_string() != revision {
+    if client
+        .instance()?
+        .local_revision()
+        .map_err(client_err)?
+        .to_string()
+        != revision
+    {
         return Err(client_err(
             "Read benchmark changed local revision".to_owned(),
         ));
@@ -1967,7 +1977,7 @@ mod tests {
             assert_eq!(result["nsPerCommit"].as_array().unwrap().len(), 10);
             let instance = client.as_mut().unwrap();
             assert_eq!(instance.status_snapshot().outbox, 10);
-            assert_eq!(instance.local_revision(), 10);
+            assert_eq!(instance.local_revision().unwrap(), 10);
             snapshots.push(
                 instance
                     .query("SELECT * FROM tasks ORDER BY id", &[])

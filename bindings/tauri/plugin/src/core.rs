@@ -766,9 +766,12 @@ mod tests {
         core.set_now_ms(3000).unwrap();
         assert!(core.command(&read).get("error").is_none());
         assert!(core.drain_events().is_empty());
-        let revision = core.client.as_ref().unwrap().local_revision();
+        let revision = core.client.as_ref().unwrap().local_revision().unwrap();
         core.command(&json!({"method": "sync", "params": {}}));
-        assert_eq!(core.client.as_ref().unwrap().local_revision(), revision);
+        assert_eq!(
+            core.client.as_ref().unwrap().local_revision().unwrap(),
+            revision
+        );
         let expected = serde_json::to_value(
             core.client
                 .as_ref()

@@ -911,7 +911,9 @@ mod tests {
             {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
         let mut client =
             SyncClient::new("spent-deadline".into(), &schema, Default::default()).unwrap();
-        client.set_meta(crate::client::LOG_EPOCH_KEY, "epoch");
+        client
+            .set_meta(crate::client::LOG_EPOCH_KEY, "epoch")
+            .unwrap();
         client
             .upload_blob(b"body", Some("text/plain".into()), None)
             .unwrap();

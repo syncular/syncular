@@ -464,7 +464,13 @@ pub fn decode_row_bytes(
         return Err("row payload has trailing bytes".to_owned());
     }
     if table.has_encrypted_columns() {
-        decrypt_row(table, &mut row, encryption)?;
+        decrypt_row(table, &mut row, encryption).map_err(|message| {
+            if message.starts_with("client.decrypt_failed") {
+                message
+            } else {
+                format!("client.decrypt_failed: {message}")
+            }
+        })?;
     }
     Ok(row)
 }
