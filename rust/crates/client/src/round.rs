@@ -388,6 +388,8 @@ impl PreparedSyncRound {
                                 if !advertised || (url.is_some() && self.meta.accept & 8 == 0) {
                                     break;
                                 }
+                                // A negative byteLength admits no body (§5.4).
+                                let cap = u64::try_from(*byte_length).unwrap_or(0);
                                 let expired = url.is_some()
                                     && url_expires_at_ms
                                         .is_some_and(|expiry| expiry <= batch_started_at);
@@ -397,7 +399,10 @@ impl PreparedSyncRound {
                                         if expired {
                                             None
                                         } else {
-                                            Some(SegmentFetch::Url(url.clone()))
+                                            Some(SegmentFetch::Url {
+                                                url: url.clone(),
+                                                byte_length: cap,
+                                            })
                                         },
                                     ),
                                     None => (
@@ -410,6 +415,7 @@ impl PreparedSyncRound {
                                             segment_id: segment_id.clone(),
                                             table: table.clone(),
                                             requested_scopes_json: scopes.to_owned(),
+                                            byte_length: cap,
                                         })),
                                     ),
                                 };
@@ -488,18 +494,6 @@ impl PreparedSyncRound {
                         // A shorter result list means the batch stopped after an
                         // earlier error, and apply aborts there.
                         Some(_) => match results.next() {
-                            // §5.4: the descriptor's byteLength caps the body;
-                            // the check runs before the content-address check.
-                            Some(Ok(bytes))
-                                if planned_fetch
-                                    .bytes_total
-                                    .is_some_and(|total| bytes.len() as u64 > total) =>
-                            {
-                                Err(TransportError::new(
-                                    "sync.invalid_request",
-                                    "segment exceeds its byteLength",
-                                ))
-                            }
                             Some(result) => result,
                             None => break,
                         },
@@ -777,7 +771,12 @@ impl Transport for DownloadResults {
             request.requested_scopes_json.clone(),
         ))
     }
-    fn fetch_url(&mut self, url: &str, _: &mut dyn FnMut(u64)) -> Result<Vec<u8>, TransportError> {
+    fn fetch_url(
+        &mut self,
+        url: &str,
+        _: u64,
+        _: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         self.take(DownloadKey::Url(url.to_owned()))
     }
     fn segment_fetch_started_at(&self, url: &str) -> Option<i64> {
@@ -1132,6 +1131,7 @@ mod tests {
                     segment_id: format!("sha256:{id}"),
                     table: "tasks".to_owned(),
                     requested_scopes_json: "{}".to_owned(),
+                    byte_length: 4,
                 })
             })
             .collect();

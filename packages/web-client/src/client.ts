@@ -115,6 +115,7 @@ import {
   classifySqliteFailure,
   REALTIME_LOST_CODE,
   RealtimeUnavailableError,
+  transportFailed,
 } from './errors';
 import {
   ChangeAccumulator,
@@ -446,6 +447,15 @@ export interface SyncClientConfig {
    * `required` without a `realtime` connector is refused at construction.
    */
   readonly realtimePolicy?: RealtimePolicy;
+  /**
+   * SPEC §8.5: the server's heartbeat interval in ms, default 30,000. The
+   * socket's first `heartbeat` event arms a watchdog; once armed, twice the
+   * interval without an inbound frame loses the socket with
+   * `transport.timeout` (`causeKind` `heartbeat`).
+   */
+  readonly realtimeHeartbeatMs?: number;
+  /** Timer seam for the heartbeat watchdog; defaults to `setTimeout`. */
+  readonly schedule?: (callback: () => void, delayMs: number) => () => void;
   /** Stable per-device id (§1.5); defaults to a persisted random UUID. */
   readonly clientId?: string;
   readonly leaderLock?: LeaderLock;
@@ -770,6 +780,15 @@ const PREVIOUS_VERSION_DEFAULT_MAX_TABLES = 32;
 const PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES = 1024 * 1024;
 const PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/** §7.7: an explicit round budget is a strict positive u32 count. */
+function requireRoundBudget(maxRounds: number | undefined): void {
+  if (
+    maxRounds !== undefined &&
+    (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
+  )
+    throw invalidRequest('maxRounds must be a positive integer');
+}
+
 function boundedBudget(
   value: number | undefined,
   fallback: number,
@@ -918,6 +937,10 @@ export class SyncClient {
   #realtimeRetryDelayMs: number | undefined;
   #realtimeConnectPromise: Promise<void> | undefined;
   #realtimeGeneration = 0;
+  readonly #heartbeatMs: number;
+  readonly #schedule: NonNullable<SyncClientConfig['schedule']>;
+  /** SPEC §8.5: cancels the armed heartbeat watchdog; unset while unarmed. */
+  #watchdog: (() => void) | undefined;
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   readonly #progress = new ProgressEmitter();
@@ -1052,6 +1075,23 @@ export class SyncClient {
         "realtimePolicy 'required' needs a realtime connector",
       );
     }
+    // Twice the interval must stay within the 2^31 - 1 ms timer range.
+    const heartbeatMs = config.realtimeHeartbeatMs ?? 30_000;
+    if (
+      !Number.isInteger(heartbeatMs) ||
+      heartbeatMs < 1 ||
+      heartbeatMs > 2 ** 30
+    )
+      throw invalidRequest(
+        'realtimeHeartbeatMs must be an integer in 1..=2^30',
+      );
+    this.#heartbeatMs = heartbeatMs;
+    this.#schedule =
+      config.schedule ??
+      ((callback, delayMs) => {
+        const timer = setTimeout(callback, delayMs);
+        return () => clearTimeout(timer);
+      });
     this.#config = config;
     this.#realtimePolicy = realtimePolicy;
     this.#realtimeState =
@@ -1563,6 +1603,7 @@ export class SyncClient {
     if (this.#transportEnabled === enabled) return;
     this.#transportEnabled = enabled;
     this.#transportEpoch += 1;
+    this.#disarm();
     if (!enabled && !this.#syncOutstanding) this.disconnectRealtime();
     this.#emitSyncIntent(
       enabled && this.#securityLifecycle === 'active'
@@ -2814,11 +2855,7 @@ export class SyncClient {
     maxRounds?: number,
   ): Promise<CurrentBaseProof> {
     this.#requireActive();
-    if (
-      maxRounds !== undefined &&
-      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
-    )
-      throw invalidRequest('maxRounds must be a positive integer');
+    requireRoundBudget(maxRounds);
     const { clientCommitId, sequence } = outcome;
     const provable = (
       candidate: CommitOutcome | undefined,
@@ -4667,11 +4704,7 @@ export class SyncClient {
         : (options?.timeoutMs ?? SYNC_IDLE_TIMEOUT_MS);
     // §7.7: an explicit budget is a strict positive round count. Zero,
     // fractional, and out-of-range values are caller errors.
-    if (
-      maxRounds !== undefined &&
-      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
-    )
-      throw invalidRequest('maxRounds must be a positive integer');
+    requireRoundBudget(maxRounds);
     if (
       timeoutMs !== Number.POSITIVE_INFINITY &&
       !(Number.isFinite(timeoutMs) && timeoutMs > 0)
@@ -4709,17 +4742,8 @@ export class SyncClient {
   ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
-      pushed: 0,
-      applied: [] as string[],
-      rejected: [] as string[],
-      retryable: [] as string[],
-      conflicts: [] as ConflictRecord[],
-      commitsApplied: 0,
-      segmentRowsApplied: 0,
+      ...emptySummary(0),
       bootstrapping: [] as string[],
-      resets: [] as string[],
-      revoked: [] as string[],
-      failed: [] as string[],
       deferredCommits: 0,
       schemaFloor: undefined as SchemaFloor | undefined,
     };
@@ -4748,18 +4772,20 @@ export class SyncClient {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // One signal reaches every transport call of the drive's rounds.
     const controller = new AbortController();
+    const expiredError = () =>
+      new ClientSyncError(
+        'sync.idle_timeout',
+        'syncUntilIdle exceeded its deadline',
+        true,
+        { timeoutMs, rounds: round },
+      );
     const deadline =
       timeoutMs === Number.POSITIVE_INFINITY
         ? undefined
         : new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               expired = true;
-              const error = new ClientSyncError(
-                'sync.idle_timeout',
-                'syncUntilIdle exceeded its deadline',
-                true,
-                { timeoutMs, rounds: round },
-              );
+              const error = expiredError();
               // The transport may never answer; release the round so the
               // client can run another one after the caller sees the error.
               controller.abort(error);
@@ -4770,13 +4796,7 @@ export class SyncClient {
     const drive = (async (): Promise<SyncIdleResult> => {
       for (; round < budget; round++) {
         // The race already rejected; stop spending rounds on a dead drive.
-        if (expired)
-          throw new ClientSyncError(
-            'sync.idle_timeout',
-            'syncUntilIdle exceeded its deadline',
-            true,
-            { timeoutMs, rounds: round },
-          );
+        if (expired) throw expiredError();
         const before = JSON.stringify(
           loadSubscriptions(this.#db).map((sub) => [
             sub.id,
@@ -4870,12 +4890,9 @@ export class SyncClient {
           // Rust core records when its realtime round call fails (§8.8).
           this.#setRealtimeState('lost', 'sync.transport_failed');
           reject(
-            new ClientSyncError(
-              'sync.transport_failed',
-              'socket round send failed',
-              true,
-              { causeKind: 'unknown' },
-            ),
+            transportFailed('socket round send failed', {
+              causeKind: 'unknown',
+            }),
           );
         }
       });
@@ -4894,12 +4911,9 @@ export class SyncClient {
         ) {
           throw error;
         }
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'transport round failed',
-          true,
-          { causeKind: 'unknown' },
-        );
+        throw transportFailed('transport round failed', {
+          causeKind: 'unknown',
+        });
       });
   }
 
@@ -4925,11 +4939,11 @@ export class SyncClient {
   }
 
   /** Abort the in-flight socket round (socket closed or disconnected). */
-  #abortPendingRound(reason: string): void {
+  #abortPendingRound(reason: string | ClientSyncError): void {
     const round = this.#pendingRound;
     if (round === undefined) return;
     this.#pendingRound = undefined;
-    round.reject(new ClientSyncError('sync.transport_failed', reason, true));
+    round.reject(typeof reason === 'string' ? transportFailed(reason) : reason);
   }
 
   // -- realtime (§8 client side) ----------------------------------------------
@@ -4994,16 +5008,18 @@ export class SyncClient {
       const socket = await connector({
         onText: (text) => {
           if (generation !== this.#realtimeGeneration || !this.#started) return;
-          this.#handleRealtimeText(text);
+          this.#heard(this.#handleRealtimeText(text));
         },
         onBinary: (bytes) => {
           if (generation !== this.#realtimeGeneration || !this.#started) return;
+          this.#heard();
           this.#routeRealtimeBinary(bytes);
         },
         onClose: () => {
           if (openedSocket === undefined || this.#socket !== openedSocket)
             return;
           this.#socket = undefined;
+          this.#disarm();
           this.#presence.clear(); // §8.6.1: presence is per-connection
           // §8.8: an undesired close is a visible lost state, not a silent
           // downgrade to HTTP rounds.
@@ -5045,6 +5061,7 @@ export class SyncClient {
     this.#realtimeConnectPromise = undefined;
     this.#socket?.close();
     this.#socket = undefined;
+    this.#disarm();
     this.#presence.clear(); // §8.6.1: presence is per-connection
     this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
     this.#setRealtimeState(
@@ -5062,13 +5079,47 @@ export class SyncClient {
    * Close the socket and record the loss; later rounds use the configured
    * transport until the supervisor reconnects.
    */
-  #loseSocket(): void {
+  #loseSocket(code = REALTIME_LOST_CODE): void {
     const socket = this.#socket;
     this.#socket = undefined;
+    this.#disarm();
     this.#presence.clear(); // §8.6.1: presence is per-connection
-    this.#setRealtimeState('lost', REALTIME_LOST_CODE);
+    this.#setRealtimeState('lost', code);
     socket?.close();
     this.#emitDiagnostics();
+  }
+
+  /**
+   * SPEC §8.5 watchdog: the connection's first `heartbeat` arms it; once
+   * armed, every inbound frame restarts it, and twice the interval of
+   * silence loses the socket. A server that sends no heartbeats never arms it.
+   */
+  #heard(heartbeat?: boolean): void {
+    if (
+      this.#socket === undefined ||
+      !this.#transportEnabled ||
+      (this.#watchdog === undefined && heartbeat !== true)
+    )
+      return;
+    this.#watchdog?.();
+    this.#watchdog = this.#schedule(() => {
+      this.#loseSocket('transport.timeout');
+      this.#abortPendingRound(
+        new ClientSyncError(
+          'transport.timeout',
+          'realtime heartbeat missed',
+          true,
+          {
+            causeKind: 'heartbeat',
+          },
+        ),
+      );
+    }, 2 * this.#heartbeatMs);
+  }
+
+  #disarm(): void {
+    this.#watchdog?.();
+    this.#watchdog = undefined;
   }
 
   /**
@@ -5110,7 +5161,8 @@ export class SyncClient {
     // Unknown tag: tolerated and ignored (§8.7 closed registry).
   }
 
-  #handleRealtimeText(text: string): void {
+  /** Returns whether the text was a §8.5 `heartbeat`. */
+  #handleRealtimeText(text: string): boolean | undefined {
     let parsed: ReturnType<typeof parseRealtimeServerEvent>;
     try {
       parsed = parseRealtimeServerEvent(text);
@@ -5132,9 +5184,8 @@ export class SyncClient {
       this.#emitSyncNeeded(event.data.reason);
       return;
     }
-    if (event.event === 'presence') {
-      this.#applyPresence(event.data);
-    }
+    if (event.event === 'presence') this.#applyPresence(event.data);
+    return event.event === 'heartbeat';
   }
 
   /** §8.6 apply an inbound presence fanout to the local map. */
@@ -5336,15 +5387,37 @@ export class SyncClient {
       mode === 'pull' ? subsById.keys() : [],
     );
 
-    // §5.4/§5.5: issue every segment download of this response before the
-    // apply loop reaches the first one, so a paged bootstrap overlaps its page
-    // fetches instead of paying one blocking round trip per page. Eligibility
-    // mirrors the loop: a descriptor outside an applied section, inside a
-    // skipped delta section, or from an unconfigured downloader is never
-    // fetched, and a prefetched failure is only observed where the loop awaits
-    // it. A promise left over because an earlier frame ended apply is handled
-    // at creation, never unhandled.
+    // §5.4/§5.5: queue every segment download of this response, so a paged
+    // bootstrap overlaps its page fetches instead of paying one blocking round
+    // trip per page. At most four downloads run at once, the Rust native
+    // transport's pool size: enough to overlap round trips, while the client
+    // holds at most four bodies, the one being applied and three ahead. The
+    // loop takes each body out of the map before applying it and tops the
+    // window up at the next descriptor. Eligibility mirrors the loop: a
+    // descriptor outside an applied section, inside a skipped delta section,
+    // or from an unconfigured downloader is never queued, and a failure is
+    // only observed where the loop awaits it. A promise left over because an
+    // earlier frame ended apply is handled at creation, never unhandled.
+    const queued: [SegmentRefFrame, SubscriptionRecord][] = [];
     const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
+    const prefetch = () => {
+      for (let next; prefetched.size < 4 && (next = queued.shift());) {
+        const [frame, sub] = next;
+        const pending = this.#downloadSegment(
+          frame,
+          sub,
+          (bytes) => {
+            // Only the descriptor the loop is applying reports bytes; a
+            // sibling still in flight would overwrite its progress.
+            if (reporting === frame)
+              this.#progress.update({ bytesReceived: bytes });
+          },
+          signal,
+        );
+        pending.catch(() => {});
+        prefetched.set(frame, pending);
+      }
+    };
     let reporting: SegmentRefFrame | undefined;
     const deleteKey = (commitSeq: number, table: string, rowId: string) =>
       `${commitSeq}\u0000${table}\u0000${rowId}`;
@@ -5367,21 +5440,10 @@ export class SyncClient {
             (this.#acceptMask() & ACCEPT_SQLITE) === 0
           )
         ) {
-          const pending = this.#downloadSegment(
-            frame,
-            openSub,
-            (bytes) => {
-              // Only the descriptor the loop is applying reports bytes; a
-              // sibling still in flight would overwrite its progress.
-              if (reporting === frame)
-                this.#progress.update({ bytesReceived: bytes });
-            },
-            signal,
-          );
-          pending.catch(() => {});
-          prefetched.set(frame, pending);
+          queued.push([frame, openSub]);
         }
       }
+      prefetch();
     }
 
     // §2.2 scope migration: the server emits the delete tagged with the old
@@ -5595,9 +5657,11 @@ export class SyncClient {
                 rowsProcessed: 0,
                 rowsTotal: frame.rowCount,
               });
-              const prefetch = prefetched.get(frame);
-              if (prefetch !== undefined) reporting = frame;
-              bytes = await (prefetch ??
+              prefetch();
+              const pending = prefetched.get(frame);
+              prefetched.delete(frame);
+              if (pending !== undefined) reporting = frame;
+              bytes = await (pending ??
                 this.#downloadSegment(
                   frame,
                   section.sub,

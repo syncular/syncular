@@ -1624,7 +1624,7 @@ mod observation_tests {
                     .iter()
                     .map(|fetch| match fetch {
                         crate::SegmentFetch::Direct(request) => request.segment_id.clone(),
-                        crate::SegmentFetch::Url(url) => url.clone(),
+                        crate::SegmentFetch::Url { url, .. } => url.clone(),
                     })
                     .collect(),
             );
@@ -3036,7 +3036,11 @@ mod observation_tests {
             Ok(())
         }
 
-        fn blob_download(&mut self, _blob_id: &str) -> Result<BlobDownload, TransportError> {
+        fn blob_download(
+            &mut self,
+            _blob_id: &str,
+            _byte_length: Option<u64>,
+        ) -> Result<BlobDownload, TransportError> {
             self.blob_download
                 .clone()
                 .map(BlobDownload::Bytes)
@@ -3125,6 +3129,40 @@ mod observation_tests {
                 "client.failed".to_owned(),
                 "blob ref is not JSON".to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn a_blob_longer_than_its_declared_byte_length_fails_before_the_content_check() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        // The body hashes to its content address, so only the §5.4 cap can
+        // refuse it; a bare blobId declares no size and fetches it.
+        let bytes = b"twelve bytes".to_vec();
+        let blob_id = blob_id_for(&bytes);
+        let reference = json!({"blobId": blob_id, "byteLength": 4}).to_string();
+        let mut transport = CountingRealtimeTransport {
+            blob_download: Some(bytes.clone()),
+            ..Default::default()
+        };
+        let mut client =
+            SyncClient::new("blob-cap".to_owned(), &schema, ClientLimits::default()).unwrap();
+        assert_eq!(
+            client
+                .fetch_blob_bytes(&mut transport, &reference)
+                .unwrap_err(),
+            (
+                "sync.invalid_request".to_owned(),
+                "blob exceeds its byteLength".to_owned()
+            )
+        );
+        assert_eq!(
+            client
+                .fetch_blob_bytes(&mut transport, &blob_id)
+                .unwrap()
+                .bytes,
+            bytes
         );
     }
 
@@ -10544,7 +10582,7 @@ mod observation_tests {
                     .iter()
                     .map(|fetch| match fetch {
                         crate::SegmentFetch::Direct(request) => request.segment_id.clone(),
-                        crate::SegmentFetch::Url(url) => url.clone(),
+                        crate::SegmentFetch::Url { url, .. } => url.clone(),
                     })
                     .collect(),
             );
@@ -20757,7 +20795,11 @@ impl SyncClient {
                             ));
                         }
                         transport
-                            .fetch_url(&url, &mut on_progress)
+                            .fetch_url(
+                                &url,
+                                u64::try_from(byte_length).unwrap_or(0),
+                                &mut on_progress,
+                            )
                             .map_err(|e| self.segment_fetch_failed(e))?
                     } else {
                         let requested_scopes_json =
@@ -20768,12 +20810,22 @@ impl SyncClient {
                                     segment_id: segment_id.clone(),
                                     table,
                                     requested_scopes_json,
+                                    byte_length: u64::try_from(byte_length).unwrap_or(0),
                                 },
                                 &mut on_progress,
                             )
                             .map_err(|e| self.segment_fetch_failed(e))?
                     };
-                    // §5.1: verify the content address before applying.
+                    // §5.4: the descriptor's byteLength caps the body before
+                    // §5.1 verifies the content address; the client discards
+                    // the segment and re-pulls on either failure.
+                    if bytes.len() as i64 > byte_length {
+                        self.schedule_background_retry();
+                        return Err(SectionError::Abort(
+                            "sync.invalid_request".to_owned(),
+                            "segment exceeds its byteLength".to_owned(),
+                        ));
+                    }
                     on_progress(bytes.len() as u64);
                     let digest = Sha256::digest(&bytes);
                     let expected = segment_id
@@ -22250,16 +22302,21 @@ impl SyncClient {
         blob_id_or_ref: &str,
     ) -> Result<FetchedBlob, (String, String)> {
         let simple = |m: String| ("client.failed".to_owned(), m);
-        let blob_id = if blob_id_or_ref.starts_with("sha256:") {
-            blob_id_or_ref.to_owned()
+        // A BlobRef declares the size that caps the download (§5.9.5); a bare
+        // blobId declares none.
+        let (blob_id, byte_length) = if blob_id_or_ref.starts_with("sha256:") {
+            (blob_id_or_ref.to_owned(), None)
         } else {
             let value: Value = serde_json::from_str(blob_id_or_ref)
                 .map_err(|_| simple("blob ref is not JSON".to_owned()))?;
-            value
-                .get("blobId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| simple("blob ref has no blobId".to_owned()))?
-                .to_owned()
+            (
+                value
+                    .get("blobId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| simple("blob ref has no blobId".to_owned()))?
+                    .to_owned(),
+                value.get("byteLength").and_then(Value::as_u64),
+            )
         };
         if let Some(cached) = self.get_cached_blob_bytes(&blob_id).map_err(simple)? {
             return Ok(cached);
@@ -22275,7 +22332,7 @@ impl SyncClient {
         #[cfg(feature = "bench-internals")]
         let download_phase = self.benchmark_phases.start(Phase::BlobDownload);
         let bytes = match transport
-            .blob_download(&blob_id)
+            .blob_download(&blob_id, byte_length)
             .map_err(|e| (e.code, e.message))?
         {
             BlobDownload::Bytes(bytes) => bytes,
@@ -22293,7 +22350,7 @@ impl SyncClient {
                     ));
                 }
                 transport
-                    .fetch_blob_url(&url)
+                    .fetch_blob_url(&url, byte_length)
                     .map_err(|e| (e.code, e.message))?
             }
         };
@@ -22301,7 +22358,14 @@ impl SyncClient {
         drop(download_phase);
         #[cfg(feature = "bench-internals")]
         let validate_phase = self.benchmark_phases.start(Phase::BlobValidate);
-        // §5.9.5 inherits §5.1: verify the content address, reject mismatch.
+        // §5.9.5 inherits §5.1: the declared size caps the body before the
+        // content address is verified.
+        if byte_length.is_some_and(|cap| bytes.len() as u64 > cap) {
+            return Err((
+                "sync.invalid_request".to_owned(),
+                "blob exceeds its byteLength".to_owned(),
+            ));
+        }
         if blob_id_for(&bytes) != blob_id {
             return Err(simple(format!(
                 "blob content address mismatch for {blob_id}"

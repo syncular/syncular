@@ -287,7 +287,7 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
 });
 ```
 
-Send heartbeats from the host. Clients treat a socket that delivers no frame for twice the interval as lost, and the native Rust transport assumes 30 seconds unless its `realtimeHeartbeatMs` says otherwise, so a host without this line sees idle native sockets reconnect every minute:
+Send heartbeats from the host. After a connection's first heartbeat, both reference clients treat a socket that delivers no frame for twice the interval as lost. They assume 30 seconds unless their `realtimeHeartbeatMs` says otherwise. A host without this line keeps idle sockets open, and a client then detects a dead connection only when a send or a socket round fails:
 
 ```ts title="src/server.ts"
 setInterval(() => hub.heartbeat(), 30_000);

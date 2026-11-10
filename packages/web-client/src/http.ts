@@ -6,7 +6,7 @@
  */
 import type { BlobTransport } from './blob';
 import { SSP2_CONTENT_TYPE } from './content-type';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, transportFailed } from './errors';
 import type {
   RealtimeConnector,
   RemoteOperationTransport,
@@ -35,7 +35,7 @@ async function transfer<T>(
             : error instanceof TypeError
               ? 'network'
               : 'unknown';
-    throw new ClientSyncError('sync.transport_failed', message, true, {
+    throw transportFailed(message, {
       causeKind,
       ...(httpStatus !== undefined ? { httpStatus } : {}),
     });
@@ -172,7 +172,7 @@ function socketOperation<T>(message: string, operation: () => T): T {
   try {
     return operation();
   } catch {
-    throw new ClientSyncError('sync.transport_failed', message, true, {
+    throw transportFailed(message, {
       causeKind: 'unknown',
     });
   }
@@ -209,10 +209,8 @@ export function webSocketRemoteOperationConnector(
       socket.onerror = () => {
         if (!opened) {
           reject(
-            new ClientSyncError(
-              'sync.transport_failed',
+            transportFailed(
               'remote operation realtime socket failed to connect',
-              true,
             ),
           );
         }
@@ -225,10 +223,8 @@ export function webSocketRemoteOperationConnector(
       socket.onclose = () => {
         if (!opened) {
           reject(
-            new ClientSyncError(
-              'sync.transport_failed',
+            transportFailed(
               'remote operation realtime socket closed while connecting',
-              true,
             ),
           );
         }
@@ -296,12 +292,10 @@ export function httpSegmentDownloader(
     );
     if (!response.ok) {
       if (!signed) await throwHttpError(response);
-      throw new ClientSyncError(
-        'sync.transport_failed',
-        'signed segment request failed',
-        true,
-        { causeKind: 'status', httpStatus: response.status },
-      );
+      throw transportFailed('signed segment request failed', {
+        causeKind: 'status',
+        httpStatus: response.status,
+      });
     }
     return transfer(
       'segment transfer failed',
@@ -426,12 +420,10 @@ export function httpBlobTransport(
         doFetch(url),
       );
       if (!response.ok) {
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'signed blob download failed',
-          true,
-          { causeKind: 'status', httpStatus: response.status },
-        );
+        throw transportFailed('signed blob download failed', {
+          causeKind: 'status',
+          httpStatus: response.status,
+        });
       }
       return transfer(
         'response body read failed',
@@ -499,12 +491,10 @@ export function httpBlobTransport(
         }),
       );
       if (!response.ok) {
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'signed blob upload failed',
-          true,
-          { causeKind: 'status', httpStatus: response.status },
-        );
+        throw transportFailed('signed blob upload failed', {
+          causeKind: 'status',
+          httpStatus: response.status,
+        });
       }
     },
   };
@@ -542,13 +532,7 @@ export function webSocketRealtimeConnector(
       };
       socket.onerror = () => {
         if (!opened) {
-          reject(
-            new ClientSyncError(
-              'sync.transport_failed',
-              'realtime socket failed to connect',
-              true,
-            ),
-          );
+          reject(transportFailed('realtime socket failed to connect'));
         }
         try {
           socket.close();
@@ -558,13 +542,7 @@ export function webSocketRealtimeConnector(
       };
       socket.onclose = () => {
         if (!opened) {
-          reject(
-            new ClientSyncError(
-              'sync.transport_failed',
-              'realtime socket closed while connecting',
-              true,
-            ),
-          );
+          reject(transportFailed('realtime socket closed while connecting'));
         }
         handlers.onClose?.();
       };

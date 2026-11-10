@@ -580,14 +580,15 @@ impl Transport for HostTransport {
     fn fetch_url(
         &mut self,
         url: &str,
+        byte_length: u64,
         on_progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<u8>, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("fetchUrl")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.fetch_url(url, on_progress),
+            HostTransport::Native(t) => t.fetch_url(url, byte_length, on_progress),
             #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.fetch_url(url, on_progress),
+            HostTransport::Local(t) => t.fetch_url(url, byte_length, on_progress),
         }
     }
 
@@ -606,23 +607,31 @@ impl Transport for HostTransport {
         }
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+    fn blob_download(
+        &mut self,
+        blob_id: &str,
+        byte_length: Option<u64>,
+    ) -> Result<BlobDownload, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("blobDownload")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.blob_download(blob_id),
+            HostTransport::Native(t) => t.blob_download(blob_id, byte_length),
             #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.blob_download(blob_id),
+            HostTransport::Local(t) => t.blob_download(blob_id, byte_length),
         }
     }
 
-    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_blob_url(
+        &mut self,
+        url: &str,
+        byte_length: Option<u64>,
+    ) -> Result<Vec<u8>, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("fetchBlobUrl")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.fetch_blob_url(url),
+            HostTransport::Native(t) => t.fetch_blob_url(url, byte_length),
             #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.fetch_blob_url(url),
+            HostTransport::Local(t) => t.fetch_blob_url(url, byte_length),
         }
     }
 
@@ -918,12 +927,13 @@ mod local {
         fn fetch_url(
             &mut self,
             url: &str,
+            byte_length: u64,
             on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             if self.local_active() {
                 return Err(refused("the local authority has no segment endpoint"));
             }
-            self.remote.fetch_url(url, on_progress)
+            self.remote.fetch_url(url, byte_length, on_progress)
         }
 
         fn blob_upload(
@@ -935,12 +945,20 @@ mod local {
             self.remote.blob_upload(blob_id, bytes, media_type)
         }
 
-        fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
-            self.remote.blob_download(blob_id)
+        fn blob_download(
+            &mut self,
+            blob_id: &str,
+            byte_length: Option<u64>,
+        ) -> Result<BlobDownload, TransportError> {
+            self.remote.blob_download(blob_id, byte_length)
         }
 
-        fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
-            self.remote.fetch_blob_url(url)
+        fn fetch_blob_url(
+            &mut self,
+            url: &str,
+            byte_length: Option<u64>,
+        ) -> Result<Vec<u8>, TransportError> {
+            self.remote.fetch_blob_url(url, byte_length)
         }
 
         fn blob_upload_grant(
@@ -2018,7 +2036,7 @@ mod native {
             let resp = req
                 .send(body)
                 .map_err(|e| http_err("sync request failed", e))?;
-            read_body(resp, None, self.policy.max_response_bytes)
+            read_body(resp, None, self.policy.max_response_bytes, None)
         }
 
         fn post_operation(&self, body: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -2036,21 +2054,7 @@ mod native {
             let response = req
                 .send(body)
                 .map_err(|error| http_err("remote operation request failed", error))?;
-            read_body(response, None, self.policy.max_response_bytes)
-        }
-
-        fn get_bytes(&self, url: &str, with_headers: bool) -> Result<Vec<u8>, TransportError> {
-            // The only caller is a signed blob URL: the URL is the capability,
-            // so the request is credential bearing either way.
-            let mut req = self.agent.get(url);
-            if with_headers {
-                for (k, v) in &self.headers {
-                    req = req.header(k.as_str(), v.as_str());
-                }
-            }
-            let req = self.finish_request(req, true)?;
-            let resp = req.call().map_err(|e| http_err("URL fetch failed", e))?;
-            read_body(resp, None, self.policy.max_response_bytes)
+            read_body(response, None, self.policy.max_response_bytes, None)
         }
 
         pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
@@ -2176,10 +2180,15 @@ mod native {
         error
     }
 
+    /// Reads a response body. `max` is the transport limit, refused with
+    /// `transport.response_too_large`; `stop` is a declared `byteLength`
+    /// (§5.4): reading ends once the body exceeds it and the caller rejects
+    /// the longer body.
     fn read_body(
         resp: ureq::http::Response<ureq::Body>,
         mut progress: Option<&mut dyn FnMut(u64)>,
         max: Option<u64>,
+        stop: Option<u64>,
     ) -> Result<Vec<u8>, TransportError> {
         redirect_refused(&resp)?;
         use std::io::Read;
@@ -2207,6 +2216,9 @@ mod native {
                 }
             }
             bytes.extend_from_slice(&chunk[..n]);
+            if stop.is_some_and(|stop| bytes.len() as u64 > stop) {
+                break;
+            }
             if bytes.len() - reported >= 64 * 1024 {
                 if let Some(callback) = progress.as_mut() {
                     callback(bytes.len() as u64);
@@ -2307,8 +2319,13 @@ mod native {
             let resp = req
                 .call()
                 .map_err(|error| segment_error(http_err("segment request failed", error)))?;
-            read_body(resp, Some(on_progress), self.policy.max_response_bytes)
-                .map_err(segment_error)
+            read_body(
+                resp,
+                Some(on_progress),
+                self.policy.max_response_bytes,
+                Some(request.byte_length),
+            )
+            .map_err(segment_error)
         }
 
         fn supports_url_fetch(&self) -> bool {
@@ -2355,7 +2372,9 @@ mod native {
                                 SegmentFetch::Direct(request) => {
                                     worker.download_segment(request, &mut report)
                                 }
-                                SegmentFetch::Url(url) => worker.fetch_url(url, &mut report),
+                                SegmentFetch::Url { url, byte_length } => {
+                                    worker.fetch_url(url, *byte_length, &mut report)
+                                }
                             };
                             *slots[index].lock().expect("segment result slot") = Some(result);
                         }
@@ -2372,6 +2391,7 @@ mod native {
         fn fetch_url(
             &mut self,
             url: &str,
+            byte_length: u64,
             on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             // §5.4: the URL is the entire grant — no host credentials attached.
@@ -2379,8 +2399,13 @@ mod native {
             let resp = req
                 .call()
                 .map_err(|error| segment_error(http_err("segment request failed", error)))?;
-            read_body(resp, Some(on_progress), self.policy.max_response_bytes)
-                .map_err(segment_error)
+            read_body(
+                resp,
+                Some(on_progress),
+                self.policy.max_response_bytes,
+                Some(byte_length),
+            )
+            .map_err(segment_error)
         }
 
         fn blob_upload(
@@ -2405,11 +2430,15 @@ mod native {
             let resp = req
                 .send(bytes)
                 .map_err(|e| http_err("blob upload failed", e))?;
-            read_body(resp, None, self.policy.max_response_bytes)?;
+            read_body(resp, None, self.policy.max_response_bytes, None)?;
             Ok(())
         }
 
-        fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+        fn blob_download(
+            &mut self,
+            blob_id: &str,
+            byte_length: Option<u64>,
+        ) -> Result<BlobDownload, TransportError> {
             // Full `sha256:<hex>` id in the path — the reference server's
             // isBlobId check rejects a bare hex id (§5.9.1).
             let credentialed = self.credentialed();
@@ -2449,8 +2478,11 @@ mod native {
                 .get(ureq::http::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.contains("application/json"));
-            let body =
-                read_body(resp, None, self.policy.max_response_bytes).map_err(|mut error| {
+            // A JSON envelope is not the blob body, so the declared size caps
+            // inline bytes only.
+            let stop = byte_length.filter(|_| !is_json);
+            let body = read_body(resp, None, self.policy.max_response_bytes, stop).map_err(
+                |mut error| {
                     // The blob endpoint keeps its status classification: an
                     // error body supplies details, but the HTTP status decides
                     // the code.
@@ -2483,7 +2515,8 @@ mod native {
                         None => {}
                     }
                     error
-                })?;
+                },
+            )?;
             if is_json {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
                     if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -2499,9 +2532,16 @@ mod native {
             Ok(BlobDownload::Bytes(body))
         }
 
-        fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
-            // §5.9.5: the URL is the entire grant — no host credentials.
-            self.get_bytes(url, false)
+        fn fetch_blob_url(
+            &mut self,
+            url: &str,
+            byte_length: Option<u64>,
+        ) -> Result<Vec<u8>, TransportError> {
+            // §5.9.5: the URL is the entire grant — no host credentials, and
+            // the URL capability makes the request credential bearing.
+            let req = self.finish_request(self.agent.get(url), true)?;
+            let resp = req.call().map_err(|e| http_err("URL fetch failed", e))?;
+            read_body(resp, None, self.policy.max_response_bytes, byte_length)
         }
 
         fn blob_upload_grant(
@@ -2529,7 +2569,7 @@ mod native {
             let resp = req
                 .send(body)
                 .map_err(|e| http_err("blob upload grant request failed", e))?;
-            let grant_body = read_body(resp, None, self.policy.max_response_bytes)?;
+            let grant_body = read_body(resp, None, self.policy.max_response_bytes, None)?;
             let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
                 .map_err(|_| transfer_error("blob upload grant decode failed", "decode", None))?;
             if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -2571,7 +2611,7 @@ mod native {
             let resp = req
                 .send(bytes)
                 .map_err(|e| http_err("signed blob upload failed", e))?;
-            read_body(resp, None, self.policy.max_response_bytes)?;
+            read_body(resp, None, self.policy.max_response_bytes, None)?;
             Ok(())
         }
 
@@ -2663,8 +2703,10 @@ mod native {
             let inbound = Arc::clone(&self.inbound);
             let stop = Arc::clone(&self.reader_stop);
             let round = Arc::clone(&self.round);
-            // §8.5: any inbound frame proves the socket; twice the heartbeat
-            // interval of silence loses it.
+            // §8.5: the connection's first heartbeat arms the watchdog; once
+            // armed, any inbound frame proves the socket and twice the
+            // heartbeat interval of silence loses it. A server that sends no
+            // heartbeats never arms it.
             let silence = 2 * self
                 .policy
                 .realtime_heartbeat
@@ -2672,7 +2714,7 @@ mod native {
             self.reader = Some(std::thread::spawn(move || {
                 let mut events = Events::new();
                 let mut pending: Option<mpsc::Sender<Result<(), TransportError>>> = None;
-                let mut heard = Instant::now();
+                let mut heard: Option<Instant> = None;
                 let failure = 'io: loop {
                     if stop.load(Ordering::SeqCst) {
                         let _ = ws.close(None);
@@ -2697,10 +2739,14 @@ mod native {
                     let mut drained = false;
                     for _ in 0..64 {
                         let received = ws.read();
-                        if received.is_ok() {
-                            heard = Instant::now();
-                        }
                         if let Ok(message) = &received {
+                            let armed = heard.is_some()
+                                || matches!(message, Message::Text(text)
+                                    if serde_json::from_str::<serde_json::Value>(text)
+                                        .is_ok_and(|event| event["event"] == "heartbeat"));
+                            if armed {
+                                heard = Some(Instant::now());
+                            }
                             let kind = match message {
                                 Message::Text(_) => Some(RealtimeReceiptKind::Text),
                                 Message::Binary(bytes) => Some(match bytes.first() {
@@ -2781,14 +2827,13 @@ mod native {
                     if let Err(error) = registration.poller.modify(&registration.stream, interest) {
                         break io_err("realtime rearm failed", error);
                     }
-                    let Some(wait) = (heard + silence)
-                        .checked_duration_since(Instant::now())
-                        .filter(|wait| !wait.is_zero())
-                    else {
+                    let wait = heard
+                        .map(|heard| (heard + silence).saturating_duration_since(Instant::now()));
+                    if wait.is_some_and(|wait| wait.is_zero()) {
                         break timeout_error("realtime heartbeat missed", "heartbeat");
-                    };
+                    }
                     events.clear();
-                    if let Err(error) = registration.poller.wait(&mut events, Some(wait)) {
+                    if let Err(error) = registration.poller.wait(&mut events, wait) {
                         if error.kind() != std::io::ErrorKind::Interrupted {
                             break io_err("realtime wait failed", error);
                         }
@@ -2900,10 +2945,10 @@ mod native {
                     let result = match operation {
                         "sync" => transport.sync(&[]).map(|_| ()),
                         "remote" => transport.remote_operation(&[]).map(|_| ()),
-                        "segment" => transport.download_segment(&SegmentRequest { segment_id: "sha256:test".into(), table: "tasks".into(), requested_scopes_json: "{}".into() }, &mut progress).map(|_| ()),
-                        "signed_segment" => transport.fetch_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", &mut progress).map(|_| ()),
-                        "blob" => transport.blob_download("sha256:test").map(|_| ()),
-                        "signed_blob" => transport.fetch_blob_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment").map(|_| ()),
+                        "segment" => transport.download_segment(&SegmentRequest { segment_id: "sha256:test".into(), table: "tasks".into(), requested_scopes_json: "{}".into(), byte_length: 1 << 20 }, &mut progress).map(|_| ()),
+                        "signed_segment" => transport.fetch_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", 1 << 20, &mut progress).map(|_| ()),
+                        "blob" => transport.blob_download("sha256:test", None).map(|_| ()),
+                        "signed_blob" => transport.fetch_blob_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", None).map(|_| ()),
                         "upload" => transport.blob_upload("sha256:test", &[], None),
                         "grant" => transport.blob_upload_grant("sha256:test", 0, None).map(|_| ()),
                         _ => transport.blob_put_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", &[], None),
@@ -2960,7 +3005,7 @@ mod native {
                 .status(200)
                 .body(ureq::Body::builder().reader(FailingRead))
                 .unwrap();
-            let error = segment_error(read_body(response, None, None).unwrap_err());
+            let error = segment_error(read_body(response, None, None, None).unwrap_err());
             assert_eq!(error.code, "sync.transport_failed");
             assert_eq!(error.message, "segment transfer failed");
             assert_eq!(
@@ -3028,7 +3073,7 @@ mod native {
                     .status(200)
                     .body(ureq::Body::builder().reader(TimeoutRead(compressed)))
                     .unwrap();
-                let error = read_body(response, None, None).unwrap_err();
+                let error = read_body(response, None, None, None).unwrap_err();
                 assert_eq!(error.code, "transport.timeout", "{compressed}");
                 assert_eq!(
                     error.details,
@@ -3113,7 +3158,7 @@ mod native {
             let mut transport =
                 NativeTransport::new("http://127.0.0.1:9", &serde_json::json!({}), None).unwrap();
             transport.set_round_deadline(Some(std::time::Instant::now() - Duration::from_secs(1)));
-            let error = transport.blob_download("sha256:test").unwrap_err();
+            let error = transport.blob_download("sha256:test", None).unwrap_err();
             assert_eq!(error.code, "transport.timeout");
             assert_eq!(
                 error.details,
@@ -3392,14 +3437,21 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_socket_is_lost_after_twice_the_heartbeat_interval() {
+    fn the_first_heartbeat_arms_silence_detection() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let (beat, heartbeat) = mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             let mut socket = tungstenite::accept(socket).unwrap();
             socket
                 .send(tungstenite::Message::Text("{\"event\":\"hello\"}".into()))
+                .unwrap();
+            heartbeat.recv().unwrap();
+            socket
+                .send(tungstenite::Message::Text(
+                    "{\"event\":\"heartbeat\",\"data\":{\"timestamp\":1}}".into(),
+                ))
                 .unwrap();
             // Then silence until the client gives up on the socket.
             while socket.read().is_ok() {}
@@ -3413,18 +3465,85 @@ mod tests {
         )
         .unwrap();
         transport.realtime_connect().unwrap();
+        wakes.recv_timeout(Duration::from_secs(10)).unwrap();
+        // §8.5: before the first heartbeat no silence bound applies, so five
+        // intervals of silence keep the socket.
+        assert!(wakes.recv_timeout(Duration::from_millis(250)).is_err());
+        beat.send(()).unwrap();
         for _ in 0..2 {
             wakes.recv_timeout(Duration::from_secs(10)).unwrap();
         }
         let inbound = transport.take_inbound();
+        assert_eq!(inbound.len(), 3);
         assert!(matches!(&inbound[0], Inbound::Text(_)));
+        assert!(matches!(&inbound[1], Inbound::Text(text) if text.contains("heartbeat")));
         assert!(matches!(
-            &inbound[1],
+            &inbound[2],
             Inbound::Disconnected(error) if error.code == "transport.timeout"
                 && error.details == Some(serde_json::json!({ "causeKind": "heartbeat" }))
         ));
         transport.shutdown();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn segment_and_blob_reads_stop_past_the_declared_byte_length() {
+        for case in ["segment", "signed_segment", "blob", "signed_blob"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let body = vec![7u8; 4 << 20];
+                // The client stops reading, so the rest of the write may fail.
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(&body);
+            });
+            let mut transport =
+                HostTransport::from_config(&serde_json::json!({ "baseUrl": base })).unwrap();
+            let mut progress = |_| {};
+            let bytes = match case {
+                "segment" => transport.download_segment(
+                    &SegmentRequest {
+                        segment_id: "sha256:test".into(),
+                        table: "tasks".into(),
+                        requested_scopes_json: "{}".into(),
+                        byte_length: 16,
+                    },
+                    &mut progress,
+                ),
+                "signed_segment" => {
+                    transport.fetch_url(&format!("{base}/signed"), 16, &mut progress)
+                }
+                "blob" => transport
+                    .blob_download("sha256:test", Some(16))
+                    .map(|download| match download {
+                        BlobDownload::Bytes(bytes) => bytes,
+                        BlobDownload::Url { .. } => panic!("expected inline bytes"),
+                    }),
+                _ => transport.fetch_blob_url(&format!("{base}/signed"), Some(16)),
+            }
+            .unwrap();
+            // §5.4: reading ends with the chunk that passes the cap; the
+            // client rejects the longer body.
+            assert!(
+                bytes.len() > 16 && bytes.len() <= 16 + 64 * 1024,
+                "{case} read {} bytes",
+                bytes.len()
+            );
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -3770,6 +3889,7 @@ mod tests {
                     segment_id: "sha256:test".into(),
                     table: "tasks".into(),
                     requested_scopes_json: "{}".into(),
+                    byte_length: 1 << 20,
                 },
                 &mut |bytes| received = bytes,
             )
@@ -3886,13 +4006,18 @@ mod tests {
                     HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
                 let mut progress = |_| {};
                 let error = if signed {
-                    transport.fetch_url(&format!("{base}/signed?signature=secret"), &mut progress)
+                    transport.fetch_url(
+                        &format!("{base}/signed?signature=secret"),
+                        1 << 20,
+                        &mut progress,
+                    )
                 } else {
                     transport.download_segment(
                         &SegmentRequest {
                             segment_id: "sha256:test".into(),
                             table: "tasks".into(),
                             requested_scopes_json: "{}".into(),
+                            byte_length: 1 << 20,
                         },
                         &mut progress,
                     )
@@ -3939,7 +4064,7 @@ mod tests {
             });
             let mut transport =
                 HostTransport::new_from_config(&serde_json::json!({"baseUrl":base})).unwrap();
-            let error = transport.blob_download("sha256:test").unwrap_err();
+            let error = transport.blob_download("sha256:test", None).unwrap_err();
             assert_eq!(error.code, expected);
             assert_eq!(
                 error.details,
@@ -3965,13 +4090,18 @@ mod tests {
                 HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
             let mut progress = |_| {};
             let error = if signed {
-                transport.fetch_url(&format!("{base}/signed?signature=secret"), &mut progress)
+                transport.fetch_url(
+                    &format!("{base}/signed?signature=secret"),
+                    1 << 20,
+                    &mut progress,
+                )
             } else {
                 transport.download_segment(
                     &SegmentRequest {
                         segment_id: "sha256:test".into(),
                         table: "tasks".into(),
                         requested_scopes_json: "{}".into(),
+                        byte_length: 1 << 20,
                     },
                     &mut progress,
                 )
@@ -4019,7 +4149,7 @@ mod tests {
             let mut progress = |bytes| updates.push(bytes);
             let bytes = if signed {
                 transport
-                    .fetch_url(&format!("{base}/signed"), &mut progress)
+                    .fetch_url(&format!("{base}/signed"), 1 << 20, &mut progress)
                     .unwrap()
             } else {
                 transport
@@ -4028,6 +4158,7 @@ mod tests {
                             segment_id: "sha256:test".into(),
                             table: "tasks".into(),
                             requested_scopes_json: "{}".into(),
+                            byte_length: 1 << 20,
                         },
                         &mut progress,
                     )
@@ -4101,7 +4232,7 @@ mod tests {
                     "headers": headers,
                 }))
                 .unwrap();
-                let error = transport.blob_download("sha256:test").unwrap_err();
+                let error = transport.blob_download("sha256:test", None).unwrap_err();
                 assert_eq!(
                     error.code, "transport.redirect",
                     "{credentials} {redirects}"
@@ -4306,7 +4437,7 @@ mod tests {
                 &serde_json::json!({"baseUrl": base, "maxResponseBytes": cap}),
             )
             .unwrap();
-            let result = transport.fetch_blob_url(&format!("{base}/signed"));
+            let result = transport.fetch_blob_url(&format!("{base}/signed"), None);
             if cap == 200000 {
                 let body = result.expect("a cap equal to the decoded size admits the body");
                 assert_eq!(body.len(), 200000);
@@ -4474,7 +4605,10 @@ mod local_authority_tests {
                 "sync.invalid_request"
             );
             let refused = transport.download_segments(
-                &[SegmentFetch::Url("https://cdn.example.com/s1".to_owned())],
+                &[SegmentFetch::Url {
+                    url: "https://cdn.example.com/s1".to_owned(),
+                    byte_length: 1 << 20,
+                }],
                 &mut |_, _| {},
             );
             assert_eq!(refused.len(), 1);

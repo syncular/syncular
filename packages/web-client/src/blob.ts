@@ -203,7 +203,7 @@ export function enforceBlobCacheCap(
   if (total <= maxBytes) return [];
   // Oldest eligible body first, with blob ID as a stable tie.
   const candidates = db.query(
-    `SELECT blob_id,byte_length FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${visibleBlobIdsSql(schema)})ORDER BY created_at_ms ASC,blob_id ASC`,
+    `SELECT blob_id,byte_length ${unreferencedBlobsSql(schema)}ORDER BY created_at_ms ASC,blob_id ASC`,
   );
   const evicted: string[] = [];
   db.transaction(() => {
@@ -281,7 +281,8 @@ export function schemaHasBlobs(schema: CompiledClientSchema): boolean {
   return false;
 }
 
-function visibleBlobIdsSql(schema: CompiledClientSchema): string {
+/** The cached bodies no upload, pending commit, or visible row references. */
+function unreferencedBlobsSql(schema: CompiledClientSchema): string {
   const selects: string[] = [];
   for (const [tableName, columns] of blobRefColumnsBySchema(schema)) {
     for (const column of columns) {
@@ -291,18 +292,14 @@ function visibleBlobIdsSql(schema: CompiledClientSchema): string {
       );
     }
   }
-  return selects.length === 0
-    ? 'SELECT NULL AS blob_id WHERE 0'
-    : selects.join(' UNION ');
+  return `FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${selects.length === 0 ? 'SELECT NULL AS blob_id WHERE 0' : selects.join(' UNION ')})`;
 }
 
 export function deleteUnreferencedCachedBlobs(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
-  db.exec(
-    `DELETE FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${visibleBlobIdsSql(schema)})`,
-  );
+  db.exec(`DELETE ${unreferencedBlobsSql(schema)}`);
 }
 
 export type { BlobRef };

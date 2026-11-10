@@ -94,6 +94,10 @@ try {
 
 `diagnosticsSnapshot().host` reports the same vocabulary: `realtime` (`connected`, `connecting`, `disconnected`, `lost`, `refused`, `disabled`, or `unsupported`), `realtimePolicy`, `realtimeReasonCode`, and `realtimeRetryDelayMs`. `optional` also reports the explicit state, so an application can render "realtime connecting" or "realtime lost" without a policy change.
 
+### Heartbeats
+
+The server sends a `heartbeat` event on a host interval ([SPEC §8.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#85-heartbeat)); [Run the server](/guide-server/#advanced-wire-the-realtime-hub) shows the host line. Both reference clients take the interval from `realtimeHeartbeatMs` (default 30 000 ms). A connection's first heartbeat arms silence detection. Once armed, a connection that receives no frame for twice the interval is lost: `realtime` becomes `lost` with `realtimeReasonCode` `transport.timeout`, and a socket round in flight fails with `transport.timeout` and `causeKind` `heartbeat`. A server that sends no heartbeats never arms it, so its idle sockets stay open. Every new connection starts unarmed. The worker handle forwards `realtimeHeartbeatMs` to its client core, and the native bindings pass it in their transport policy.
+
 ## Deltas and wake-ups
 
 When a commit lands that a connected client cares about, the server pushes it as a delta: an ordinary sync response over the socket. The client applies it and acknowledges.

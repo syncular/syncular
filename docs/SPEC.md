@@ -6113,12 +6113,17 @@ for 2× the interval SHOULD reconnect. No client→server ping is specified.
 The reference hub sends the event to every connection when the host calls
 `RealtimeHub.heartbeat()`; the host owns the interval. The Workers Durable
 Object host sends it from the object's alarm while sockets are connected
-(`heartbeatIntervalMs`, default 30 000). The native Rust transport takes the
-interval from the transport config key `realtimeHeartbeatMs` (default
-30 000). A connected socket that delivers no frame for twice that interval
-ends with `Inbound::Disconnected` carrying `transport.timeout` and
-`causeKind` `heartbeat` (§8.8 unsolicited termination). A host that never
-sends heartbeats therefore sees idle native sockets reconnect every 60 s.
+(`heartbeatIntervalMs`, default 30 000). Both reference clients take the
+interval from the config key `realtimeHeartbeatMs` (default 30 000; the native
+Rust transport reads it from its transport config). Silence detection arms
+when a connection receives its first `heartbeat` event; before that no silence
+bound applies, so a server that sends no heartbeats keeps idle sockets open.
+Once armed, a connection that receives no inbound frame (text, delta or round
+chunk) for twice the interval is lost with `transport.timeout` and `causeKind`
+`heartbeat`: the native Rust transport ends it with `Inbound::Disconnected`
+(§8.8 unsolicited termination), and the TypeScript client closes the socket,
+marks the state `lost` with that code, and fails an in-flight socket round with
+the same error. Every new connection starts unarmed.
 
 ### 8.6 Presence
 

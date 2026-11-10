@@ -727,3 +727,141 @@ for (const socket of [false, true]) {
     }
   });
 }
+
+describe('heartbeat watchdog (§8.5)', () => {
+  const heartbeat = JSON.stringify({
+    event: 'heartbeat',
+    data: { timestamp: 1 },
+  });
+
+  async function watchedClient(clientId: string) {
+    const timers: Array<{
+      readonly callback: () => void;
+      readonly delayMs: number;
+      cancelled: boolean;
+    }> = [];
+    const sockets: RealtimeHandlers[] = [];
+    let closes = 0;
+    let sent: () => void = () => {};
+    const db = new BunClientDatabase();
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      clientId,
+      transport: async () => {
+        throw new Error('unused transport');
+      },
+      realtimeHeartbeatMs: 1_000,
+      schedule: (callback, delayMs) => {
+        const timer = { callback, delayMs, cancelled: false };
+        timers.push(timer);
+        return () => {
+          timer.cancelled = true;
+        };
+      },
+      realtime: async (handlers) => {
+        sockets.push(handlers);
+        return {
+          send: () => {},
+          sendBytes: () => sent(),
+          close: () => {
+            closes += 1;
+          },
+        };
+      },
+    });
+    await client.start();
+    return {
+      client,
+      db,
+      timers,
+      armed: () => timers.filter((timer) => !timer.cancelled),
+      socket: () => sockets.at(-1)!,
+      closes: () => closes,
+      roundSent: () =>
+        new Promise<void>((resolve) => {
+          sent = resolve;
+        }),
+    };
+  }
+
+  test('a socket stays unarmed until its first heartbeat, then silence loses it and its round', async () => {
+    const watched = await watchedClient('heartbeat-armed');
+    const { client } = watched;
+    await client.connectRealtime();
+    // A server that sends no heartbeats never arms the watchdog.
+    watched.socket().onText('{"event":"unknown","data":{}}');
+    watched.socket().onBinary(new Uint8Array([0x7f]));
+    expect(watched.timers).toEqual([]);
+
+    watched.socket().onText(heartbeat);
+    expect(watched.armed().map((timer) => timer.delayMs)).toEqual([2_000]);
+    // Once armed, any inbound frame restarts it.
+    watched.socket().onBinary(new Uint8Array([0x7f]));
+    expect(watched.timers.map((timer) => timer.cancelled)).toEqual([
+      true,
+      false,
+    ]);
+
+    client.mutate([
+      { op: 'upsert', table: 'tasks', values: taskValues('silent', 'p1') },
+    ]);
+    const sent = watched.roundSent();
+    const round = client.sync();
+    await sent;
+    watched.armed()[0]!.callback();
+    await expect(round).rejects.toMatchObject({
+      code: 'transport.timeout',
+      message: 'realtime heartbeat missed',
+      details: { causeKind: 'heartbeat' },
+    });
+    expect(client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'lost',
+      realtimeReasonCode: 'transport.timeout',
+    });
+    expect(watched.closes()).toBe(1);
+    expect(watched.armed()).toEqual([]);
+
+    // A new connection starts unarmed.
+    await client.connectRealtime();
+    watched.socket().onBinary(new Uint8Array([0x7f]));
+    expect(watched.armed()).toEqual([]);
+    await client.close();
+    watched.db.close();
+  });
+
+  test('a deliberate disconnect and a closing transport gate cancel the watchdog', async () => {
+    const watched = await watchedClient('heartbeat-cancelled');
+    const { client } = watched;
+    await client.connectRealtime();
+    watched.socket().onText(heartbeat);
+    expect(watched.armed()).toHaveLength(1);
+    client.disconnectRealtime();
+    expect(watched.armed()).toEqual([]);
+
+    await client.connectRealtime();
+    watched.socket().onText(heartbeat);
+    expect(watched.armed()).toHaveLength(1);
+    client.setTransportEnabled(false);
+    expect(watched.armed()).toEqual([]);
+    await client.close();
+    watched.db.close();
+  });
+
+  test('the interval is an integer in 1..=2^30', () => {
+    for (const realtimeHeartbeatMs of [0, 1.5, 2 ** 30 + 1]) {
+      expect(
+        () =>
+          new SyncClient({
+            database: new BunClientDatabase(),
+            schema: CLIENT_SCHEMA,
+            clientId: 'heartbeat-invalid',
+            transport: async () => {
+              throw new Error('unused transport');
+            },
+            realtimeHeartbeatMs,
+          }),
+      ).toThrow('realtimeHeartbeatMs must be an integer in 1..=2^30');
+    }
+  });
+});

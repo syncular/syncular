@@ -208,7 +208,8 @@ describe('external segments (SEGMENT_REF)', () => {
     pages: { segmentId: string; bytes: Uint8Array }[];
     started: string[];
     gates: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
-    allIssued: Promise<void>;
+    /** Settles once `count` downloads have started. */
+    issued: (count: number) => Promise<void>;
   }> {
     const db = new BunClientDatabase();
     const { response, pages } = await pageResponse(ids);
@@ -217,10 +218,15 @@ describe('external segments (SEGMENT_REF)', () => {
       string,
       { resolve: () => void; reject: (error: Error) => void }
     >();
-    let markIssued!: () => void;
-    const allIssued = new Promise<void>((resolve) => {
-      markIssued = resolve;
-    });
+    const waiters: Array<() => void> = [];
+    const issued = (count: number) =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (started.length >= count) resolve();
+        };
+        waiters.push(check);
+        check();
+      });
     const segments = (request: SegmentFetchRequest): Promise<Uint8Array> => {
       started.push(request.segmentId);
       const bytes = pages.find(
@@ -228,7 +234,7 @@ describe('external segments (SEGMENT_REF)', () => {
       )!.bytes;
       return new Promise<Uint8Array>((resolve, reject) => {
         gates.set(request.segmentId, { resolve: () => resolve(bytes), reject });
-        if (gates.size === pages.length) markIssued();
+        for (const check of waiters) check();
       });
     };
     const client = new SyncClient({
@@ -247,15 +253,15 @@ describe('external segments (SEGMENT_REF)', () => {
       table: 'tasks',
       scopes: { project_id: ['p1'] },
     });
-    return { client, pages, started, gates, allIssued };
+    return { client, pages, started, gates, issued };
   }
 
   test('every page download of one response is in flight before the first applies', async () => {
     const ids = ['a', 'b', 'c'] as const;
-    const { client, pages, started, gates, allIssued } = await gatedClient(ids);
+    const { client, pages, started, gates, issued } = await gatedClient(ids);
     try {
       const round = client.sync();
-      await allIssued;
+      await issued(ids.length);
       expect(started).toEqual(pages.map((page) => page.segmentId));
       // No page has resolved, so the apply loop is still parked on the first
       // one and nothing has applied yet.
@@ -276,15 +282,34 @@ describe('external segments (SEGMENT_REF)', () => {
     }
   });
 
-  test('a page fetch apply never awaits cannot surface as an unhandled rejection', async () => {
-    const { client, pages, gates, allIssued } = await gatedClient([
-      'a',
-      'b',
-      'c',
-    ]);
+  test('a response downloads through a window of four and each applied page starts the next', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'] as const;
+    const { client, pages, started, gates, issued } = await gatedClient(ids);
+    const segmentIds = pages.map((page) => page.segmentId);
     try {
       const round = client.sync();
-      await allIssued;
+      await issued(4);
+      expect(started).toEqual(segmentIds.slice(0, 4));
+      // Applying the first page frees its slot for the fifth download.
+      gates.get(segmentIds[0]!)!.resolve();
+      await issued(5);
+      expect(started).toEqual(segmentIds.slice(0, 5));
+      gates.get(segmentIds[1]!)!.resolve();
+      await issued(6);
+      for (const segmentId of segmentIds.slice(2))
+        gates.get(segmentId)!.resolve();
+      expect((await round).segmentRowsApplied).toBe(6);
+      expect(started).toEqual(segmentIds);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a page fetch apply never awaits cannot surface as an unhandled rejection', async () => {
+    const { client, pages, gates, issued } = await gatedClient(['a', 'b', 'c']);
+    try {
+      const round = client.sync();
+      await issued(3);
       // The first page fails, so the apply loop aborts before the others are
       // awaited; their rejections must stay handled.
       gates.get(pages[0]!.segmentId)!.reject(new Error('segment fetch failed'));

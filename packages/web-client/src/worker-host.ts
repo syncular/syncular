@@ -212,6 +212,8 @@ export interface SyncClientHandleConfig {
    * `WorkerInitConfig`. Absent ⇒ `optional`.
    */
   readonly realtimePolicy?: RealtimePolicy;
+  /** SPEC §8.5 heartbeat interval, forwarded into `WorkerInitConfig`. */
+  readonly realtimeHeartbeatMs?: number;
   /**
    * RFC 0005 previous-version context, forwarded into the worker's
    * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
@@ -1038,6 +1040,9 @@ function buildInitConfig(
       : {}),
     ...(config.realtimePolicy !== undefined
       ? { realtimePolicy: config.realtimePolicy }
+      : {}),
+    ...(config.realtimeHeartbeatMs !== undefined
+      ? { realtimeHeartbeatMs: config.realtimeHeartbeatMs }
       : {}),
     ...(config.previousVersionContext !== undefined
       ? { previousVersionContext: config.previousVersionContext }

@@ -18,6 +18,22 @@ export const changelog = [
   {
     date: '2026-11-10',
     title:
+      'Heartbeat silence detection in both clients, byteLength caps on Rust downloads',
+    body: "Both clients take the server's heartbeat interval from `realtimeHeartbeatMs` (default 30 000 ms) and arm silence detection on a connection's first `heartbeat` event. Once armed, twice the interval without an inbound frame loses the socket with `transport.timeout` and `causeKind` `heartbeat`. A server that sends no heartbeats never arms it, so a host that has not added the `hub.heartbeat()` interval keeps its idle sockets open. The Rust client caps every segment and blob download by its declared `byteLength`: the native transport stops reading past it, and the client fails with `segment exceeds its byteLength` or `blob exceeds its byteLength` before the content-address check. The TypeScript client downloads at most four segments of one response at a time and drops each body once applied.",
+    links: [
+      {
+        href: '/concepts-realtime/#heartbeats',
+        label: 'Heartbeats',
+      },
+      {
+        href: '/platform-rust-specifics/#native-transport-policy',
+        label: 'Native transport policy',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
       'Rust and TypeScript clients: refused blob uploads, authoring refusals, revocation drops',
     body: "The Rust client settles a staged blob the server refuses with a non-retryable code, such as `blob.too_large`, as the TypeScript client does: it deletes the upload, rejects every pending commit that references the blob with the server's code, and continues the round, so unrelated commits push and the pull runs. Both clients refuse at `mutate` and `patch`, with `sync.invalid_request`, the values the server rejects at push admission: a string or delete `rowId` containing U+0000, a `json` value outside the JSON validity rule, and a non-canonical `blob_ref`. A revoked subscription no longer drops a pending commit whose row another active subscription still covers. The Rust client raises sync-needed after a round that failed as unreachable and while a subscription holds a bootstrap resume token.",
     links: [

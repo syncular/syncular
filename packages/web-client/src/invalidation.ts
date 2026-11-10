@@ -244,23 +244,24 @@ export class ChangeAccumulator {
   }
 }
 
-/** Exception-isolated synchronous change listener set. */
-export class ChangeEmitter {
-  readonly #listeners = new Set<ClientChangeListener>();
+/** Exception-isolated synchronous listener set; observer code must never
+ * corrupt the committed core path. */
+export class ChangeEmitter<T = ClientChangeBatch> {
+  readonly #listeners = new Set<(value: T) => void>();
 
-  on(listener: ClientChangeListener): () => void {
+  on(listener: (value: T) => void): () => void {
     this.#listeners.add(listener);
     return () => {
       this.#listeners.delete(listener);
     };
   }
 
-  emit(batch: ClientChangeBatch): void {
+  emit(value: T): void {
     for (const listener of this.#listeners) {
       try {
-        listener(batch);
+        listener(value);
       } catch {
-        // Observer code must never corrupt the committed core path.
+        // Isolated: a throwing observer does not stop the others.
       }
     }
   }
@@ -301,30 +302,7 @@ export function invalidationFromChange(
   return { tables, scopeKeys };
 }
 
-export class InvalidationEmitter {
-  readonly #listeners = new Set<InvalidationListener>();
-
-  on(listener: InvalidationListener): () => void {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
-  }
-
-  emit(event: InvalidationEvent): void {
-    for (const listener of this.#listeners) {
-      try {
-        listener(event);
-      } catch {
-        // Compatibility observers are isolated like exact observers.
-      }
-    }
-  }
-
-  get size(): number {
-    return this.#listeners.size;
-  }
-}
+export class InvalidationEmitter extends ChangeEmitter<InvalidationEvent> {}
 
 /** @deprecated Use {@link ChangeAccumulator}. */
 export { ChangeAccumulator as Invalidation };

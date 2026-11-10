@@ -65,7 +65,10 @@ export interface SyncWorkerOverrides {
   ) => Promise<ClientDatabase> | ClientDatabase;
   /** Retry deadline indirection for deterministic worker-host tests. */
   readonly waitForStorageRetry?: (delayMs: number) => Promise<void>;
-  /** Background-intent deadline indirection for deterministic worker-host tests. */
+  /**
+   * Timer indirection for deterministic worker-host tests: background-intent
+   * deadlines and the client's §8.5 heartbeat watchdog.
+   */
   readonly scheduleBackground?: (
     callback: () => void,
     delayMs: number,
@@ -460,6 +463,10 @@ export function startSyncWorkerCore(
       ...(config.realtimePolicy !== undefined
         ? { realtimePolicy: config.realtimePolicy }
         : {}),
+      ...(config.realtimeHeartbeatMs !== undefined
+        ? { realtimeHeartbeatMs: config.realtimeHeartbeatMs }
+        : {}),
+      schedule: scheduleBackground,
       ...(config.encryption !== undefined
         ? { encryption: encryptionConfigFromKeyring(config.encryption) }
         : {}),

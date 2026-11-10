@@ -1627,3 +1627,41 @@ test('concurrent and repeated handle close join one held worker close', async ()
   await handle.close();
   expect(closeCalls).toBe(1);
 });
+
+test('the worker core forwards the heartbeat interval and runs the §8.5 watchdog', async () => {
+  const worker = new Worker(
+    new URL('./heartbeat-worker.ts', import.meta.url).href,
+  );
+  const posted: Array<{ readonly t?: string; readonly delayMs?: number }> = [];
+  worker.addEventListener('message', (event) => {
+    const message = event.data as { readonly t?: string };
+    if (message.t === 'timer' || message.t === 'socket-closed')
+      posted.push(event.data);
+  });
+  const { handle } = await makeHandle({
+    clientId: 'rpc-heartbeat',
+    worker: () => worker,
+    autoSync: false,
+    realtimeHeartbeatMs: 1_000,
+  });
+  await handle.connectRealtime();
+  // Messages to the worker are handled in order, so an RPC reply proves the
+  // socket text before it was applied.
+  worker.postMessage({ t: 'socket-text', text: '{"event":"x","data":{}}' });
+  await handle.statusSnapshot();
+  expect(posted).toEqual([]);
+
+  worker.postMessage({
+    t: 'socket-text',
+    text: JSON.stringify({ event: 'heartbeat', data: { timestamp: 1 } }),
+  });
+  await handle.statusSnapshot();
+  expect(posted).toEqual([{ t: 'timer', delayMs: 2_000 }]);
+
+  worker.postMessage({ t: 'fire-timer' });
+  expect((await handle.diagnosticsSnapshot()).host.realtime).toBe('lost');
+  expect(posted).toEqual([
+    { t: 'timer', delayMs: 2_000 },
+    { t: 'socket-closed' },
+  ]);
+});

@@ -372,10 +372,11 @@ impl Transport for BenchTransport {
     fn fetch_url(
         &mut self,
         url: &str,
+        byte_length: u64,
         on_progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<u8>, TransportError> {
         self.count_request(0);
-        let response = self.inner.fetch_url(url, on_progress)?;
+        let response = self.inner.fetch_url(url, byte_length, on_progress)?;
         self.stats.response_bytes += response.len() as u64;
         Ok(response)
     }
@@ -397,13 +398,17 @@ impl Transport for BenchTransport {
         result
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+    fn blob_download(
+        &mut self,
+        blob_id: &str,
+        byte_length: Option<u64>,
+    ) -> Result<BlobDownload, TransportError> {
         if !self.blob_diagnostics {
-            return self.inner.blob_download(blob_id);
+            return self.inner.blob_download(blob_id, byte_length);
         }
         self.count_request(0);
         let started = Instant::now();
-        let result = self.inner.blob_download(blob_id);
+        let result = self.inner.blob_download(blob_id, byte_length);
         let elapsed_ns = started.elapsed().as_nanos() as u64;
         let bytes = match &result {
             Ok(BlobDownload::Bytes(bytes)) => bytes.len(),
@@ -417,13 +422,17 @@ impl Transport for BenchTransport {
         result
     }
 
-    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_blob_url(
+        &mut self,
+        url: &str,
+        byte_length: Option<u64>,
+    ) -> Result<Vec<u8>, TransportError> {
         if !self.blob_diagnostics {
-            return self.inner.fetch_blob_url(url);
+            return self.inner.fetch_blob_url(url, byte_length);
         }
         self.count_request(0);
         let started = Instant::now();
-        let result = self.inner.fetch_blob_url(url);
+        let result = self.inner.fetch_blob_url(url, byte_length);
         let elapsed_ns = started.elapsed().as_nanos() as u64;
         let bytes = result.as_ref().map_or(0, Vec::len);
         self.stats.response_bytes += bytes as u64;

@@ -49,7 +49,7 @@ The core is thread-affine, which the lock satisfies. Never call the FFM function
 | `maxRequestBytes` | `Long?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `Long?` | Larger decoded responses fail with `transport.response_too_large` |
 | `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |
-| `realtimeHeartbeatMs` | `Long?` | Heartbeat interval of the realtime server in milliseconds (default 30000); twice that interval of silence closes the socket as lost |
+| `realtimeHeartbeatMs` | `Long?` | Heartbeat interval of the realtime server in milliseconds (default 30000); after the first heartbeat, twice that interval of silence closes the socket as lost |
 
 The wrapper serializes each bound as an exact integer token and throws `IllegalArgumentException` for a `Long` above 2^53 that has no exact `Double` representation. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) gives the full semantics.
 

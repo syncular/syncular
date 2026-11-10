@@ -147,6 +147,8 @@ export interface WorkerInitConfig {
    * Absent ⇒ `optional` (a connected socket, otherwise `POST /sync`).
    */
   readonly realtimePolicy?: RealtimePolicy;
+  /** SPEC §8.5 heartbeat interval for the worker-owned core; forwarded verbatim. */
+  readonly realtimeHeartbeatMs?: number;
   /**
    * RFC 0005 previous-version context, forwarded verbatim into the worker's
    * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
