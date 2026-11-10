@@ -170,8 +170,12 @@ async function harness(backend: Backend): Promise<Harness> {
   };
 }
 
+/** Index drops of the schema diff; the core DDL's legacy-index drop is not one. */
 const dropped = (log: readonly string[]): string[] =>
-  log.filter((sql) => sql.startsWith('DROP INDEX'));
+  log.filter(
+    (sql) =>
+      sql.startsWith('DROP INDEX') && !sql.includes('sync_row_scopes_by_row'),
+  );
 
 describe('schema bump index diff', () => {
   for (const backend of ['sqlite', 'postgres', 'd1'] as const) {

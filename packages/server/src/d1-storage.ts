@@ -63,6 +63,7 @@ import {
   type SqliteTableIndexRow,
   sqliteIndexSignatures,
   selectRowSql,
+  selectRowsSql,
   selectRowsForRewriteSql,
   tableColumnNames,
   toSqlValue,
@@ -215,6 +216,19 @@ class D1Transaction
    */
   readonly #pending = new Map<string, PendingRow>();
   readonly #clearedTombstones = new Set<string>();
+  /**
+   * `prefetchRows` snapshot keyed `tbl\u0000rowId`: the stored row and its §5
+   * tombstone, `undefined` when absent. Nothing persists before `commit()`,
+   * so the snapshot stays exact; the `#pending` overlay still wins for rows
+   * this transaction wrote.
+   */
+  readonly #prefetched = new Map<
+    string,
+    {
+      readonly row: StoredRow | undefined;
+      readonly tombstoneSeq: number | undefined;
+    }
+  >();
 
   constructor(
     db: Pick<D1Database, 'prepare' | 'batch'>,
@@ -260,6 +274,8 @@ class D1Transaction
     if (pending !== undefined) {
       return pending.kind === 'row' ? pending.row : undefined;
     }
+    const prefetched = this.#prefetched.get(D1Transaction.#key(table, rowId));
+    if (prefetched !== undefined) return prefetched.row;
     const record = await this.#db
       .prepare(selectRowSql(this.table(table), 'sqlite'))
       .bind(this.partition, rowId)
@@ -275,9 +291,72 @@ class D1Transaction
     // Persisted read, no #pending overlay: a delete buffered by this commit
     // records its tombstone at appendCommit, matching the SQLite/Postgres
     // adapters where the tombstone insert also runs at commit append.
-    return this.#clearedTombstones.has(D1Transaction.#key(table, rowId))
-      ? undefined
-      : super.getTombstoneSeq(table, rowId);
+    const key = D1Transaction.#key(table, rowId);
+    if (this.#clearedTombstones.has(key)) return undefined;
+    const prefetched = this.#prefetched.get(key);
+    return prefetched === undefined
+      ? super.getTombstoneSeq(table, rowId)
+      : prefetched.tombstoneSeq;
+  }
+
+  /**
+   * Read every named row and its tombstone in one `db.batch` (two statements
+   * per table, ids bound as a JSON array), so a multi-operation push pays one
+   * round trip instead of up to two per operation.
+   */
+  async prefetchRows(
+    targets: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[],
+  ): Promise<void> {
+    this.assertOpen();
+    const specs = targets
+      .map(({ table, rowIds }) => ({
+        table,
+        ids: [...new Set(rowIds)].filter(
+          (rowId) => !this.#prefetched.has(D1Transaction.#key(table, rowId)),
+        ),
+      }))
+      .filter(({ ids }) => ids.length > 0);
+    if (specs.length === 0) return;
+    const results = await this.#db.batch(
+      specs.flatMap(({ table, ids }) => {
+        const bound = JSON.stringify(ids);
+        return [
+          this.#db
+            .prepare(selectRowsSql(this.table(table), 'sqlite'))
+            .bind(this.partition, bound),
+          this.#db
+            .prepare(
+              'SELECT row_id, commit_seq FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id IN (SELECT value FROM json_each(?))',
+            )
+            .bind(this.partition, table, bound),
+        ];
+      }),
+    );
+    specs.forEach(({ table, ids }, i) => {
+      const rows = new Map(
+        (batchRows(results[2 * i]) as SqliteRowRecord[]).map((record) => [
+          record.row_id,
+          toStoredRow(record),
+        ]),
+      );
+      const tombstones = new Map(
+        (
+          batchRows(results[2 * i + 1]) as {
+            row_id: string;
+            commit_seq: number;
+          }[]
+        ).map((record) => [record.row_id, record.commit_seq]),
+      );
+      for (const rowId of ids) {
+        this.#prefetched.set(D1Transaction.#key(table, rowId), {
+          row: rows.get(rowId),
+          tombstoneSeq: tombstones.get(rowId),
+        });
+      }
+    });
   }
 
   override async clearTombstone(table: string, rowId: string): Promise<void> {
@@ -326,7 +405,7 @@ class D1Transaction
           this.partition,
           query.table,
           firstVariable,
-          ...firstValues,
+          JSON.stringify(firstValues),
           afterRowId,
           batchSize,
           this.partition,

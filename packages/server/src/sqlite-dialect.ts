@@ -29,7 +29,7 @@ import {
   indexRowPageStatement,
   quoteIdent,
   scanRowPageSql,
-  selectRowScopesSql,
+  rowsReferencingBlobSql,
   selectRowSql,
   SYNC_COLUMN_VERSIONS_COLUMN,
   SYNC_PARTITION_COLUMN,
@@ -104,11 +104,15 @@ import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
  * the Postgres storage documents (§3.1, performance-by-
  * construction).
  *
- * `sync_row_scopes_by_row` is the one secondary scope index: a per-row
- * scope replacement predicates on `(partition, tbl, row_id)`, and `row_id`
- * is the LAST PRIMARY KEY column, so that predicate cannot narrow the
- * inverted index. Declared here so every SQLite-family storage (and D1,
- * which applies this same DDL) keeps the same plan shape as Postgres.
+ * The old `sync_row_scopes_by_row` index is dropped: with it present the
+ * planner answered a scope scan of two or more values by walking the index
+ * in `row_id` order and filtering, instead of seeking the PRIMARY KEY once
+ * per value. The per-row scope replacement (`deleteSqliteRowScopesSql`)
+ * binds `(partition, tbl, var, value, row_id)` and needs no secondary index.
+ * `DROP INDEX IF EXISTS` stays in the DDL so existing databases lose the
+ * index the next time the DDL runs: on every `SqliteServerStorage`
+ * construction, and on D1 in `migrate()` and the core phase of
+ * `migrateSchema`.
  */
 export const SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
@@ -127,8 +131,7 @@ CREATE TABLE IF NOT EXISTS sync_row_scopes(
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
   PRIMARY KEY(partition, tbl, var, value, row_id)
 );
-CREATE INDEX IF NOT EXISTS sync_row_scopes_by_row
-  ON sync_row_scopes(partition, tbl, row_id);
+DROP INDEX IF EXISTS sync_row_scopes_by_row;
 CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq INTEGER NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
@@ -677,30 +680,31 @@ export abstract class SqliteFamilyStorage {
     if (initialLogEpoch.length === 0) {
       throw new Error('initial log epoch must be non-empty');
     }
-    const select = async () =>
-      (
-        await this.all<SqlitePartitionRegistryRecord>(
-          `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms
-             FROM sync_partition_registry WHERE partition=?`,
-          [partition],
-        )
-      )[0];
-    let row = await select();
-    if (
-      row === undefined ||
-      authenticatedAtMs - row.last_authenticated_at_ms >=
-        PARTITION_TOUCH_INTERVAL_MS
-    ) {
-      await this.all(
-        `INSERT INTO sync_partition_registry(
-           partition, log_epoch, last_authenticated_at_ms
-         ) VALUES (?,?,?)
-         ON CONFLICT(partition) DO UPDATE SET
-           last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
-        [partition, initialLogEpoch, authenticatedAtMs],
-      );
-      row = await select();
-    }
+    // One atomic unit, so an idle SQLite connection runs both statements at
+    // call time, before a `close()` in the same tick. The upsert writes only
+    // a new partition or one whose last authentication is a full interval old.
+    const [, rows] = await this.atomic([
+      {
+        sql: `INSERT INTO sync_partition_registry(
+                partition, log_epoch, last_authenticated_at_ms
+              ) VALUES (?,?,?)
+              ON CONFLICT(partition) DO UPDATE SET
+                last_authenticated_at_ms=excluded.last_authenticated_at_ms
+              WHERE excluded.last_authenticated_at_ms - last_authenticated_at_ms >= ?`,
+        params: [
+          partition,
+          initialLogEpoch,
+          authenticatedAtMs,
+          PARTITION_TOUCH_INTERVAL_MS,
+        ],
+      },
+      {
+        sql: `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms
+                FROM sync_partition_registry WHERE partition=?`,
+        params: [partition],
+      },
+    ]);
+    const row = rows?.[0] as SqlitePartitionRegistryRecord | undefined;
     if (row === undefined)
       throw new Error('partition registry write did not persist');
     return toPartitionRegistryEntry(row);
@@ -803,13 +807,19 @@ export abstract class SqliteFamilyStorage {
         sql: `SELECT horizon_seq, (SELECT count(*) FROM sync_commits WHERE partition=? AND commit_seq<=${horizon}) AS removed_commits FROM sync_partitions WHERE partition=?`,
         params: [partition, partition, partition],
       },
+      // Change-scope entries go first, by the keys of the changes being
+      // pruned: a predicate on `commit_seq` alone would scan the partition's
+      // whole scope index, because `commit_seq` is its last key column.
+      {
+        sql: `DELETE FROM sync_change_scopes WHERE (partition, tbl, var, value, commit_seq) IN (
+                SELECT c.partition, c.tbl, j.key, j.value, c.commit_seq
+                FROM sync_changes c, json_each(c.scopes) j
+                WHERE c.partition=? AND c.commit_seq<=${horizon})
+              AND ${epochGuard}`,
+        params: [partition, partition, partition, query.logEpoch],
+      },
       // §4.6: tombstones prune in the same pass as the commit log.
-      ...[
-        'sync_commits',
-        'sync_changes',
-        'sync_change_scopes',
-        'sync_tombstones',
-      ].map((table) => ({
+      ...['sync_commits', 'sync_changes', 'sync_tombstones'].map((table) => ({
         sql: `DELETE FROM ${table} WHERE partition=? AND commit_seq<=${horizon} AND ${epochGuard}`,
         params: [partition, partition, partition, query.logEpoch],
       })),
@@ -1141,7 +1151,7 @@ export abstract class SqliteFamilyStorage {
         partition,
         query.table,
         firstVariable,
-        ...firstValues,
+        JSON.stringify(firstValues),
         afterSeq,
         query.throughSeq,
         batchSize,
@@ -1185,7 +1195,7 @@ export abstract class SqliteFamilyStorage {
         partition,
         query.table,
         firstVariable,
-        ...firstValues,
+        JSON.stringify(firstValues),
         afterRowId,
         batchSize,
         partition,
@@ -1357,32 +1367,30 @@ export abstract class SqliteFamilyStorage {
       readonly scopes: Record<string, string>;
     }[]
   > {
-    // Candidate rows via the by-blob index (§5.9.4/§5.9.5); each row's
-    // stored scopes come from its row table for the §3.4 authorization test.
-    const refs = await this.guardedAll<{ tbl: string; row_id: string }>(
-      'SELECT tbl, row_id FROM sync_blob_refs WHERE partition=? AND blob_id=?',
-      [partition, blobId],
+    // One statement: the by-blob index (§5.9.4/§5.9.5) supplies the candidate
+    // rows and each row's stored scopes come from its row table for the §3.4
+    // authorization test (see `rowsReferencingBlobSql`).
+    if (this.tables === undefined || this.tables.size === 0) return [];
+    return (
+      await this.guardedAll<{
+        tbl: string;
+        row_id: string;
+        scopes: string | null;
+      }>(rowsReferencingBlobSql(this.tables.values(), 'sqlite'), [
+        partition,
+        blobId,
+      ])
+    ).flatMap((row) =>
+      row.scopes === null
+        ? []
+        : [
+            {
+              table: row.tbl,
+              rowId: row.row_id,
+              scopes: JSON.parse(row.scopes) as Record<string, string>,
+            },
+          ],
     );
-    const out: {
-      table: string;
-      rowId: string;
-      scopes: Record<string, string>;
-    }[] = [];
-    for (const ref of refs) {
-      const compiled = this.tables?.get(ref.tbl);
-      if (compiled === undefined) continue; // table no longer in the schema
-      const [row] = await this.guardedAll<{ scopes: string }>(
-        selectRowScopesSql(compiled, 'sqlite'),
-        [partition, ref.row_id],
-      );
-      if (row === undefined) continue;
-      out.push({
-        table: ref.tbl,
-        rowId: ref.row_id,
-        scopes: JSON.parse(row.scopes) as Record<string, string>,
-      });
-    }
-    return out;
   }
 
   async listReferencedBlobIds(partition: string): Promise<string[]> {
@@ -1499,48 +1507,57 @@ export abstract class SqliteFamilyStorage {
         ? [partition, query.afterSeq, beforeSeq, query.table, query.limit]
         : [partition, query.afterSeq, beforeSeq, query.limit],
     );
-    // `changeSample`: one extra statement for the whole page — the first
-    // `sample` changes (change-index order) of every listed commit. A page
-    // larger than the bound-parameter cap splits into a few chunk statements,
-    // never one per commit.
+    // One grouped statement for the page's per-table change counts and, with
+    // `changeSample`, one for the first `sample` changes (change-index order)
+    // of every listed commit. The commit ids bind as one JSON array, so the
+    // statement count does not grow with the page.
     const sampleCount =
       query.changeSample !== undefined &&
       Number.isInteger(query.changeSample) &&
       query.changeSample > 0
         ? query.changeSample
         : 0;
+    const seqs = JSON.stringify(rows.map((row) => row.commit_seq));
+    const counts = new Map<number, { tbl: string; n: number }[]>();
+    for (const count of rows.length === 0
+      ? []
+      : await this.all<{ commit_seq: number; tbl: string; n: number }>(
+          `SELECT commit_seq, tbl, count(*) AS n FROM sync_changes
+           WHERE partition=? AND commit_seq IN (SELECT value FROM json_each(?))
+           GROUP BY commit_seq, tbl ORDER BY commit_seq, tbl`,
+          [partition, seqs],
+        )) {
+      counts.set(count.commit_seq, [
+        ...(counts.get(count.commit_seq) ?? []),
+        count,
+      ]);
+    }
     const samples = new Map<number, CommitChangeSummary[]>();
-    const seqs = sampleCount > 0 ? rows.map((row) => row.commit_seq) : [];
-    const chunkSize = this.maxBindParams - 2;
-    for (let offset = 0; offset < seqs.length; offset += chunkSize) {
-      const chunk = seqs.slice(offset, offset + chunkSize);
-      const changes = await this.all<{
-        commit_seq: number;
-        tbl: string;
-        row_id: string;
-        op: number;
-      }>(
-        `SELECT commit_seq, tbl, row_id, op FROM sync_changes
-         WHERE partition=? AND commit_seq IN (${placeholders(chunk.length)}) AND idx<?
-         ORDER BY commit_seq, idx`,
-        [partition, ...chunk, sampleCount],
-      );
-      for (const change of changes) {
-        const sample = samples.get(change.commit_seq) ?? [];
-        sample.push({
+    for (const change of sampleCount === 0 || rows.length === 0
+      ? []
+      : await this.all<{
+          commit_seq: number;
+          tbl: string;
+          row_id: string;
+          op: number;
+        }>(
+          `SELECT commit_seq, tbl, row_id, op FROM sync_changes
+           WHERE partition=? AND commit_seq IN (SELECT value FROM json_each(?)) AND idx<?
+           ORDER BY commit_seq, idx`,
+          [partition, seqs, sampleCount],
+        )) {
+      samples.set(change.commit_seq, [
+        ...(samples.get(change.commit_seq) ?? []),
+        {
           table: change.tbl,
           rowId: change.row_id,
           op: change.op === 1 ? 'upsert' : 'delete',
-        });
-        samples.set(change.commit_seq, sample);
-      }
+        },
+      ]);
     }
     const out: CommitMetadata[] = [];
     for (const row of rows) {
-      const changes = await this.all<{ tbl: string; n: number }>(
-        'SELECT tbl, count(*) AS n FROM sync_changes WHERE partition=? AND commit_seq=? GROUP BY tbl',
-        [partition, row.commit_seq],
-      );
+      const changes = counts.get(row.commit_seq) ?? [];
       out.push({
         commitSeq: row.commit_seq,
         clientId: row.client_id,
@@ -1666,36 +1683,44 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     query: ScopeActivityQuery,
   ): Promise<ScopeCommitActivity[]> {
-    // Candidate commits via the change-scope index (§3.1) — never a scan.
-    const rows = await this.all<{ commit_seq: number; tbl: string }>(
-      `SELECT DISTINCT commit_seq, tbl FROM sync_change_scopes
-       WHERE partition=? AND var=? AND value=?
-       ORDER BY commit_seq DESC LIMIT ?`,
-      [partition, query.variable, query.value, query.limit],
-    );
-    const out: ScopeCommitActivity[] = [];
-    for (const row of rows) {
-      const [meta] = await this.all<{
+    // One statement for the page: candidate (commit, table) pairs from the
+    // change-scope index, joined to the commit metadata with the table's
+    // change count. `tbl` sits between `partition` and `var` in the index key,
+    // so the `var`/`value` filter ranges over the partition's change-scope
+    // entries; only the LIMIT bounds the output. A candidate whose commit was
+    // pruned has no metadata and is skipped.
+    return (
+      await this.all<{
+        commit_seq: number;
+        tbl: string;
         actor_id: string;
         created_at_ms: number;
+        n: number;
       }>(
-        'SELECT actor_id, created_at_ms FROM sync_commits WHERE partition=? AND commit_seq=?',
-        [partition, row.commit_seq],
-      );
-      if (meta === undefined) continue;
-      const [count] = await this.all<{ n: number }>(
-        'SELECT count(*) AS n FROM sync_changes WHERE partition=? AND commit_seq=? AND tbl=?',
-        [partition, row.commit_seq, row.tbl],
-      );
-      out.push({
-        commitSeq: row.commit_seq,
-        table: row.tbl,
-        createdAtMs: meta.created_at_ms,
-        actorId: meta.actor_id,
-        changeCount: count?.n ?? 0,
-      });
-    }
-    return out;
+        `SELECT s.commit_seq, s.tbl, m.actor_id, m.created_at_ms,
+           (SELECT count(*) FROM sync_changes ch
+             WHERE ch.partition=? AND ch.commit_seq=s.commit_seq AND ch.tbl=s.tbl) AS n
+         FROM (SELECT DISTINCT commit_seq, tbl FROM sync_change_scopes
+           WHERE partition=? AND var=? AND value=?
+           ORDER BY commit_seq DESC LIMIT ?) s
+         JOIN sync_commits m ON m.partition=? AND m.commit_seq=s.commit_seq
+         ORDER BY s.commit_seq DESC`,
+        [
+          partition,
+          partition,
+          query.variable,
+          query.value,
+          query.limit,
+          partition,
+        ],
+      )
+    ).map((row) => ({
+      commitSeq: row.commit_seq,
+      table: row.tbl,
+      createdAtMs: row.created_at_ms,
+      actorId: row.actor_id,
+      changeCount: row.n,
+    }));
   }
 
   async listPartitions(): Promise<string[]> {

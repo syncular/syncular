@@ -90,7 +90,7 @@ import {
   indexSignature,
   schemaDdl,
   serverIndexDdl,
-  selectRowScopesSql,
+  rowsReferencingBlobSql,
   selectRowSql,
   selectRowsSql,
   prefetchRowsBatchSql,
@@ -1325,7 +1325,7 @@ class PostgresTransaction implements StorageTransaction {
     // `#client` flushes this transaction's staged upserts first, so the rows
     // are the final candidate state.
     const { rows: records } = await this.#client.query<RowRecord>(
-      selectRowsSql(this.#resolveTable(table)),
+      selectRowsSql(this.#resolveTable(table), 'postgres'),
       [this.#partition, missing],
     );
     for (const record of records) rows.set(record.row_id, toStoredRow(record));
@@ -2588,12 +2588,20 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         'DELETE FROM sync_commits WHERE partition=$1 AND commit_seq<=$2 RETURNING commit_seq',
         [partition, horizonSeq],
       );
+      // Scope entries go by the keys of the changes being pruned, before
+      // those changes are deleted: a `commit_seq` predicate alone would scan
+      // the partition's whole scope index (`commit_seq` is its last key column).
       await client.query(
-        'DELETE FROM sync_changes WHERE partition=$1 AND commit_seq<=$2',
+        `DELETE FROM sync_change_scopes s USING (
+           SELECT DISTINCT c.tbl, e.key, e.value, c.commit_seq
+           FROM sync_changes c CROSS JOIN LATERAL jsonb_each_text(c.scopes) e
+           WHERE c.partition=$1 AND c.commit_seq<=$2) k
+         WHERE s.partition=$1 AND s.tbl=k.tbl AND s.var=k.key
+           AND s.value=k.value AND s.commit_seq=k.commit_seq`,
         [partition, horizonSeq],
       );
       await client.query(
-        'DELETE FROM sync_change_scopes WHERE partition=$1 AND commit_seq<=$2',
+        'DELETE FROM sync_changes WHERE partition=$1 AND commit_seq<=$2',
         [partition, horizonSeq],
       );
       // §4.6: tombstones prune in the same pass as the commit log.
@@ -3328,36 +3336,29 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       readonly scopes: Record<string, string>;
     }[]
   > {
-    // Candidate rows via the by-blob index (§5.9.4/§5.9.5); each row's
-    // stored scopes come from sync_rows for the §3.4 authorization test.
-    const { rows: refs } = await this.#exec.query<{
+    // One statement: the by-blob index (§5.9.4/§5.9.5) supplies the candidate
+    // rows and each row's stored scopes come from its row table for the §3.4
+    // authorization test (see `rowsReferencingBlobSql`).
+    if (this.#tables === undefined || this.#tables.size === 0) return [];
+    const { rows } = await this.#exec.query<{
       tbl: string;
       row_id: string;
-    }>(
-      'SELECT tbl, row_id FROM sync_blob_refs WHERE partition=$1 AND blob_id=$2',
-      [partition, blobId],
+      scopes: unknown;
+    }>(rowsReferencingBlobSql(this.#tables.values(), 'postgres'), [
+      partition,
+      blobId,
+    ]);
+    return rows.flatMap((row) =>
+      row.scopes === null
+        ? []
+        : [
+            {
+              table: row.tbl,
+              rowId: row.row_id,
+              scopes: asJson<Record<string, string>>(row.scopes),
+            },
+          ],
     );
-    const out: {
-      table: string;
-      rowId: string;
-      scopes: Record<string, string>;
-    }[] = [];
-    for (const ref of refs) {
-      const compiled = this.#tables?.get(ref.tbl);
-      if (compiled === undefined) continue; // table no longer in the schema
-      const { rows } = await this.#exec.query<{ scopes: unknown }>(
-        selectRowScopesSql(compiled, 'postgres'),
-        [partition, ref.row_id],
-      );
-      const row = rows[0];
-      if (row === undefined) continue;
-      out.push({
-        table: ref.tbl,
-        rowId: ref.row_id,
-        scopes: asJson<Record<string, string>>(row.scopes),
-      });
-    }
-    return out;
   }
 
   async listReferencedBlobIds(partition: string): Promise<string[]> {
@@ -3517,53 +3518,72 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
            ORDER BY commit_seq DESC LIMIT $4`,
           [partition, query.afterSeq, beforeSeq, query.limit],
         );
-    // `changeSample`: one extra statement for the whole page — the first
-    // `sample` changes (change-index order) of every listed commit.
+    // One grouped statement for the page's per-table change counts and, with
+    // `changeSample`, one for the first `sample` changes (change-index order)
+    // of every listed commit.
     const sampleCount =
       query.changeSample !== undefined &&
       Number.isInteger(query.changeSample) &&
       query.changeSample > 0
         ? query.changeSample
         : 0;
+    const seqs = rows.map((row) => asNumber(row.commit_seq));
+    const counts = new Map<number, { tbl: string; n: unknown }[]>();
+    for (const count of seqs.length === 0
+      ? []
+      : (
+          await this.#exec.query<{
+            commit_seq: unknown;
+            tbl: string;
+            n: unknown;
+          }>(
+            `SELECT commit_seq, tbl, count(*) AS n FROM sync_changes
+             WHERE partition=$1 AND commit_seq=ANY($2::bigint[])
+             GROUP BY commit_seq, tbl ORDER BY commit_seq, tbl`,
+            [partition, seqs],
+          )
+        ).rows) {
+      const seq = asNumber(count.commit_seq);
+      counts.set(seq, [...(counts.get(seq) ?? []), count]);
+    }
     const samples = new Map<number, CommitChangeSummary[]>();
-    if (sampleCount > 0 && rows.length > 0) {
-      const seqs = rows.map((row) => asNumber(row.commit_seq));
-      const { rows: changeRows } = await this.#exec.query<{
-        commit_seq: unknown;
-        tbl: string;
-        row_id: string;
-        op: unknown;
-      }>(
-        `SELECT commit_seq, tbl, row_id, op FROM sync_changes
-         WHERE partition=$1 AND commit_seq IN (${seqs.map((_, index) => `$${index + 2}`).join(',')}) AND idx<$${seqs.length + 2}
-         ORDER BY commit_seq, idx`,
-        [partition, ...seqs, sampleCount],
-      );
-      for (const change of changeRows) {
-        const sample = samples.get(asNumber(change.commit_seq)) ?? [];
-        sample.push({
+    for (const change of sampleCount === 0 || seqs.length === 0
+      ? []
+      : (
+          await this.#exec.query<{
+            commit_seq: unknown;
+            tbl: string;
+            row_id: string;
+            op: unknown;
+          }>(
+            `SELECT commit_seq, tbl, row_id, op FROM sync_changes
+             WHERE partition=$1 AND commit_seq=ANY($2::bigint[]) AND idx<$3
+             ORDER BY commit_seq, idx`,
+            [partition, seqs, sampleCount],
+          )
+        ).rows) {
+      const seq = asNumber(change.commit_seq);
+      samples.set(seq, [
+        ...(samples.get(seq) ?? []),
+        {
           table: change.tbl,
           rowId: change.row_id,
           op: asNumber(change.op) === 1 ? 'upsert' : 'delete',
-        });
-        samples.set(asNumber(change.commit_seq), sample);
-      }
+        },
+      ]);
     }
     const out: CommitMetadata[] = [];
     for (const row of rows) {
       const commitSeq = asNumber(row.commit_seq);
-      const changes = await this.#exec.query<{ tbl: string; n: unknown }>(
-        'SELECT tbl, count(*) AS n FROM sync_changes WHERE partition=$1 AND commit_seq=$2 GROUP BY tbl',
-        [partition, commitSeq],
-      );
+      const changes = counts.get(commitSeq) ?? [];
       out.push({
         commitSeq,
         clientId: row.client_id,
         clientCommitId: row.client_commit_id,
         actorId: row.actor_id,
         createdAtMs: asNumber(row.created_at_ms),
-        changeCount: changes.rows.reduce((sum, c) => sum + asNumber(c.n), 0),
-        tables: changes.rows.map((c) => c.tbl),
+        changeCount: changes.reduce((sum, c) => sum + asNumber(c.n), 0),
+        tables: changes.map((c) => c.tbl),
         ...(sampleCount > 0 ? { sample: samples.get(commitSeq) ?? [] } : {}),
       });
     }
@@ -3689,41 +3709,36 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     query: ScopeActivityQuery,
   ): Promise<ScopeCommitActivity[]> {
+    // One statement for the page: candidate (commit, table) pairs from the
+    // change-scope index, joined to the commit metadata with the table's
+    // change count. `tbl` sits between `partition` and `var` in the index key,
+    // so the `var`/`value` filter ranges over the partition's change-scope
+    // entries; only the LIMIT bounds the output. A candidate whose commit was
+    // pruned has no metadata and is skipped.
     const { rows } = await this.#exec.query<{
       commit_seq: unknown;
       tbl: string;
+      actor_id: string;
+      created_at_ms: unknown;
+      n: unknown;
     }>(
-      `SELECT DISTINCT commit_seq, tbl FROM sync_change_scopes
-       WHERE partition=$1 AND var=$2 AND value=$3
-       ORDER BY commit_seq DESC LIMIT $4`,
+      `SELECT s.commit_seq, s.tbl, m.actor_id, m.created_at_ms,
+         (SELECT count(*) FROM sync_changes ch
+           WHERE ch.partition=$1 AND ch.commit_seq=s.commit_seq AND ch.tbl=s.tbl) AS n
+       FROM (SELECT DISTINCT commit_seq, tbl FROM sync_change_scopes
+         WHERE partition=$1 AND var=$2 AND value=$3
+         ORDER BY commit_seq DESC LIMIT $4) s
+       JOIN sync_commits m ON m.partition=$1 AND m.commit_seq=s.commit_seq
+       ORDER BY s.commit_seq DESC`,
       [partition, query.variable, query.value, query.limit],
     );
-    const out: ScopeCommitActivity[] = [];
-    for (const row of rows) {
-      const commitSeq = asNumber(row.commit_seq);
-      const meta = await this.#exec.query<{
-        actor_id: string;
-        created_at_ms: unknown;
-      }>(
-        'SELECT actor_id, created_at_ms FROM sync_commits WHERE partition=$1 AND commit_seq=$2',
-        [partition, commitSeq],
-      );
-      const metaRow = meta.rows[0];
-      if (metaRow === undefined) continue;
-      const count = await this.#exec.query<{ n: unknown }>(
-        'SELECT count(*) AS n FROM sync_changes WHERE partition=$1 AND commit_seq=$2 AND tbl=$3',
-        [partition, commitSeq, row.tbl],
-      );
-      out.push({
-        commitSeq,
-        table: row.tbl,
-        createdAtMs: asNumber(metaRow.created_at_ms),
-        actorId: metaRow.actor_id,
-        changeCount:
-          count.rows[0] === undefined ? 0 : asNumber(count.rows[0].n),
-      });
-    }
-    return out;
+    return rows.map((row) => ({
+      commitSeq: asNumber(row.commit_seq),
+      table: row.tbl,
+      createdAtMs: asNumber(row.created_at_ms),
+      actorId: row.actor_id,
+      changeCount: asNumber(row.n),
+    }));
   }
 
   async listPartitions(): Promise<string[]> {
