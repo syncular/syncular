@@ -252,7 +252,8 @@ query searchCards(boardId, term: string) {
     description: 'GROUP BY with count and sum; grouped rows carry no row key.',
     params: { boardId: 'web' },
     source: `query columnTotals(boardId) {
-  select column_id, count(*) as cards, sum(estimate) as points
+  select column_id, count(*) as cards,
+    cast(sum(estimate) as integer) as points
   from cards
   where cards.board_id = :boardId
   group by column_id
@@ -268,7 +269,7 @@ query searchCards(boardId, term: string) {
     params: { boardId: 'mobile', minPoints: 5 },
     source: `query assigneeLoad(boardId, minPoints?: integer) {
   select members.name, count(cards.id) as cards,
-    sum(cards.estimate) as points
+    cast(sum(cards.estimate) as integer) as points
   from cards
   join members on members.id = cards.assignee_id
   where cards.board_id = :boardId
@@ -324,12 +325,12 @@ query searchCards(boardId, term: string) {
     params: { boardId: 'web' },
     source: `query columnRanks(boardId) {
   select c.id, c.title, c.column_id, c.estimate,
-    (
+    cast((
       select count(*) from cards as bigger
       where bigger.board_id = c.board_id
         and bigger.column_id = c.column_id
         and bigger.estimate > c.estimate
-    ) + 1 as rank_in_column
+    ) + 1 as integer) as rank_in_column
   from cards as c
   where c.board_id = :boardId
   order by c.column_id, rank_in_column, c.id;
