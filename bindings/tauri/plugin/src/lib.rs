@@ -269,6 +269,9 @@ struct SyncularState {
     /// The IPC channel of the webview whose `create` opened the client. Only
     /// that webview receives the client's events.
     events: Arc<Mutex<Option<Channel<Value>>>>,
+    /// The label of the webview whose `create` succeeded last. The app has one
+    /// client, so every other command from another webview is refused.
+    owner: Mutex<Option<String>>,
 }
 
 struct SecurityGateState {
@@ -346,6 +349,23 @@ impl Drop for SecurityReadGuard<'_> {
 }
 
 impl SyncularState {
+    /// `Err` is the structured reply for a webview that does not own the
+    /// client. Before the first `create` nobody owns it, and the router
+    /// answers with its own no-client error.
+    fn require_owner(&self, label: &str) -> Result<(), Value> {
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| client_error("syncular owner poisoned"))?;
+        match owner.as_deref() {
+            Some(owner) if owner != label => Err(json!({ "error": {
+                "code": "sync.client_owned_by_another_webview",
+                "message": "the native client belongs to another webview"
+            } })),
+            _ => Ok(()),
+        }
+    }
+
     fn send(&self, request: Request) -> Result<(), String> {
         self.sender
             .lock()
@@ -987,6 +1007,12 @@ async fn syncular_command<R: Runtime>(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
+    if method != "create" {
+        if let Err(reply) = app.state::<SyncularState>().require_owner(webview.label()) {
+            return Ok(reply);
+        }
+    }
+    let label = webview.label().to_owned();
     // §7.6: the generic command entry delegates both owned snapshot reads to
     // the dedicated Tauri read commands, so one existing read path produces the
     // owner-failure bookkeeping the sidecar's transition mirror tracks. It runs
@@ -1002,6 +1028,7 @@ async fn syncular_command<R: Runtime>(
             };
             return syncular_query_snapshot(
                 app,
+                webview,
                 sql.to_owned(),
                 params.get("params").cloned(),
                 params.get("coverage").cloned(),
@@ -1135,6 +1162,12 @@ async fn syncular_command<R: Runtime>(
             .lock()
             .map_err(|_| "syncular event channel poisoned".to_owned())? = previous;
     }
+    if succeeded && method == "create" {
+        *state
+            .owner
+            .lock()
+            .map_err(|_| "syncular owner poisoned".to_owned())? = Some(label);
+    }
     if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
         let next = match database.filter(|path| path.as_str() != ":memory:") {
             Some(path) => Some(spawn_reader(
@@ -1169,9 +1202,13 @@ async fn syncular_command<R: Runtime>(
 #[tauri::command]
 async fn syncular_set_headers<R: Runtime>(
     app: tauri::AppHandle<R>,
+    webview: tauri::Webview<R>,
     headers: std::collections::BTreeMap<String, String>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    if let Err(reply) = state.require_owner(webview.label()) {
+        return Ok(reply);
+    }
     // Runtime bearer replacement is an active-session operation. Hold the
     // same gate as fast reads so beginSecurityPreflight both rejects new
     // replacements and waits for an already-started mailbox update.
@@ -1192,10 +1229,14 @@ async fn syncular_set_headers<R: Runtime>(
 #[tauri::command]
 async fn syncular_query<R: Runtime>(
     app: tauri::AppHandle<R>,
+    webview: tauri::Webview<R>,
     sql: String,
     params: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    if let Err(reply) = state.require_owner(webview.label()) {
+        return Ok(reply);
+    }
     let _read_guard = match state.security_gate.enter_read() {
         Ok(guard) => guard,
         Err(reply) => return Ok(reply),
@@ -1217,12 +1258,16 @@ async fn syncular_query<R: Runtime>(
 #[tauri::command]
 async fn syncular_query_snapshot<R: Runtime>(
     app: tauri::AppHandle<R>,
+    webview: tauri::Webview<R>,
     sql: String,
     params: Option<Value>,
     coverage: Option<Value>,
     owner: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    if let Err(reply) = state.require_owner(webview.label()) {
+        return Ok(reply);
+    }
     let _read_guard = match state.security_gate.enter_read() {
         Ok(guard) => guard,
         Err(reply) => return Ok(reply),
@@ -1448,6 +1493,7 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
                 // whether this process starts active or in preflight.
                 security_gate: SecurityGate::new_preflight(),
                 events,
+                owner: Mutex::new(None),
             });
             let emit = move |value: &Value| {
                 // Best-effort: a webview that has gone away must not crash the
@@ -1479,10 +1525,25 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
 mod tests {
     use super::*;
 
-    /// Run one `syncular_command` from the mock `main` webview. A `create`
-    /// carries that webview's events channel unless the test sets `events`.
-    fn run_command(
+    /// The mock webview with this label, created on first use.
+    fn webview(
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        label: &str,
+    ) -> tauri::Webview<tauri::test::MockRuntime> {
+        let window = match app.get_webview_window(label) {
+            Some(window) => window,
+            None => tauri::WebviewWindowBuilder::new(app, label, Default::default())
+                .build()
+                .expect("mock webview"),
+        };
+        window.as_ref().clone()
+    }
+
+    /// Run one `syncular_command` from the mock webview `label`. A `create`
+    /// carries that webview's events channel unless the test sets `events`.
+    fn run_command_from(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        label: &str,
         mut command: Value,
     ) -> Result<Value, String> {
         if command["method"] == "create" {
@@ -1492,14 +1553,15 @@ mod tests {
                     .or_insert_with(|| json!("__CHANNEL__:1"));
             }
         }
-        let window = match app.get_webview_window("main") {
-            Some(window) => window,
-            None => tauri::WebviewWindowBuilder::new(app, "main", Default::default())
-                .build()
-                .expect("mock webview"),
-        };
-        let webview = window.as_ref().clone();
-        tauri::async_runtime::block_on(syncular_command(app.clone(), webview, command))
+        tauri::async_runtime::block_on(syncular_command(app.clone(), webview(app, label), command))
+    }
+
+    /// Run one `syncular_command` from the mock `main` webview.
+    fn run_command(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        command: Value,
+    ) -> Result<Value, String> {
+        run_command_from(app, "main", command)
     }
 
     #[test]
@@ -1621,6 +1683,7 @@ mod tests {
 
         let blocked = tauri::async_runtime::block_on(syncular_set_headers(
             app.handle().clone(),
+            webview(app.handle(), "main"),
             BTreeMap::from([("authorization".to_owned(), "Bearer blocked".to_owned())]),
         ))
         .expect("preflight reply");
@@ -1644,6 +1707,7 @@ mod tests {
 
         let active = tauri::async_runtime::block_on(syncular_set_headers(
             app.handle().clone(),
+            webview(app.handle(), "main"),
             BTreeMap::from([("authorization".to_owned(), "Bearer active".to_owned())]),
         ))
         .expect("active reply");
@@ -1729,6 +1793,7 @@ mod tests {
         );
         let read = tauri::async_runtime::block_on(syncular_query(
             app.handle().clone(),
+            webview(app.handle(), "main"),
             "SELECT 1".to_owned(),
             None,
         ))
@@ -1746,6 +1811,7 @@ mod tests {
         assert!(activated.get("error").is_none(), "{activated}");
         let read = tauri::async_runtime::block_on(syncular_query(
             app.handle().clone(),
+            webview(app.handle(), "main"),
             "SELECT 1 AS value".to_owned(),
             None,
         ))
@@ -1853,6 +1919,7 @@ mod tests {
         assert_eq!(
             tauri::async_runtime::block_on(syncular_query(
                 app.handle().clone(),
+                webview(app.handle(), "main"),
                 "SELECT id FROM authority".into(),
                 None
             ))
@@ -1862,6 +1929,7 @@ mod tests {
         assert_eq!(
             tauri::async_runtime::block_on(syncular_query_snapshot(
                 app.handle().clone(),
+                webview(app.handle(), "main"),
                 "SELECT id FROM authority".into(),
                 None,
                 None,
@@ -2012,6 +2080,7 @@ mod tests {
         let snapshot = |sql: &str| {
             tauri::async_runtime::block_on(syncular_query_snapshot(
                 app.handle().clone(),
+                webview(app.handle(), "main"),
                 sql.to_owned(),
                 None,
                 None,
@@ -2149,6 +2218,114 @@ mod tests {
         // The owner pumps a command's events before it serves the next one.
         call(json!({ "method": "localRevision", "params": {} }));
         assert_eq!(broadcast.load(Ordering::SeqCst), 0);
+    }
+
+    /// The app has one client, owned by the webview whose `create` succeeded
+    /// last. Every other command from another webview is refused with a
+    /// static code and never reaches the client.
+    #[test]
+    fn only_the_owning_webview_reaches_the_client() {
+        let app = tauri::test::mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let schema = json!({ "version": 1, "tables": [{
+            "name": "todo", "primaryKey": "id",
+            "columns": [{ "name": "id", "type": "string", "nullable": false }],
+            "scopes": []
+        }] });
+        let from =
+            |label: &str, command: Value| run_command_from(app.handle(), label, command).unwrap();
+        let count = |label: &str| {
+            tauri::async_runtime::block_on(syncular_query(
+                app.handle().clone(),
+                webview(app.handle(), label),
+                "SELECT count(*) AS n FROM todo".to_owned(),
+                None,
+            ))
+            .unwrap()
+        };
+        let refusal = json!({ "error": {
+            "code": "sync.client_owned_by_another_webview",
+            "message": "the native client belongs to another webview"
+        } });
+        let mutate = json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "t1" }
+        }] } });
+
+        // Before any create nobody owns the client; the router answers.
+        assert_ne!(
+            from("second", json!({ "method": "localRevision", "params": {} })),
+            refusal
+        );
+
+        let created = from(
+            "main",
+            json!({ "method": "create", "params": { "schema": schema } }),
+        );
+        assert!(created.get("error").is_none(), "{created}");
+        assert_eq!(from("second", mutate.clone()), refusal);
+        assert_eq!(
+            from(
+                "second",
+                json!({ "method": "querySnapshot", "params": { "sql": "SELECT 1" } })
+            ),
+            refusal
+        );
+        assert_eq!(
+            from(
+                "second",
+                json!({ "method": "snapshotRead", "params": { "statements": [] } })
+            ),
+            refusal
+        );
+        assert_eq!(count("second"), refusal);
+        assert_eq!(
+            tauri::async_runtime::block_on(syncular_set_headers(
+                app.handle().clone(),
+                webview(app.handle(), "second"),
+                std::collections::BTreeMap::new(),
+            ))
+            .unwrap(),
+            refusal
+        );
+        assert_eq!(
+            count("main")["result"]["rows"][0]["n"],
+            0,
+            "the refused mutate reached the client"
+        );
+        let owned = from("main", mutate.clone());
+        assert!(owned.get("error").is_none(), "{owned}");
+        assert_eq!(count("main")["result"]["rows"][0]["n"], 1);
+
+        // A second webview's create takes over; the first is then refused.
+        let taken = from(
+            "second",
+            json!({ "method": "create", "params": { "schema": schema } }),
+        );
+        assert!(taken.get("error").is_none(), "{taken}");
+        assert_eq!(from("main", mutate.clone()), refusal);
+        assert_eq!(count("main"), refusal);
+        assert_eq!(count("second")["result"]["rows"][0]["n"], 0);
+
+        // A refused create leaves the owner in place.
+        let refused = from(
+            "main",
+            json!({ "method": "create", "params": { "schema": schema, "events": null } }),
+        );
+        assert_eq!(
+            refused["error"]["code"], "sync.invalid_request",
+            "{refused}"
+        );
+        assert_eq!(from("main", mutate), refusal);
+        assert!(
+            from("second", json!({ "method": "localRevision", "params": {} }))
+                .get("error")
+                .is_none()
+        );
     }
 
     /// The owner-thread mailbox loop end-to-end, without any Tauri window: post
@@ -3363,6 +3540,7 @@ mod tests {
         let dedicated_snapshot = |sql: &str, owner: Option<Value>| {
             tauri::async_runtime::block_on(syncular_query_snapshot(
                 app.handle().clone(),
+                webview(app.handle(), "main"),
                 sql.to_owned(),
                 None,
                 None,

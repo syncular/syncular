@@ -60,7 +60,11 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
   `@syncular/crdt-yjs` helper (a Tauri app and a browser edit the same doc).
   The example enables the feature; a lean plugin build omits `yrs`.
 - **`events` channel** — exact revisioned `change` batches plus ephemeral
-  `presence`, sent only to the webview whose `create` opened the client. Table/scope/window/status/conflict/rejection facts stay in the
+  `presence`, sent only to the webview whose `create` opened the client. A
+  `presence` event carries `error` (`presence.too_large` / `presence.forbidden`)
+  when the server refuses this client's publish. A `create` from another
+  webview takes the client over; every other command from a webview that does
+  not own it is refused with `sync.client_owned_by_another_webview`. Table/scope/window/status/conflict/rejection facts stay in the
   one committed batch instead of being re-inferred by the bridge. Bytes ride
   as `{ "$bytes": "<hex>" }` everywhere, the driver-protocol convention.
 

@@ -426,8 +426,8 @@ impl SyncularCore {
         for frame in frames {
             match frame {
                 transport::Inbound::Text(text) => {
-                    if let Some(scope_key) = presence_scope_key(&text) {
-                        self.push(json!({ "type": "presence", "scopeKey": scope_key }));
+                    if let Some(event) = presence_event(&text) {
+                        self.push(event);
                     }
                     if let Some(client) = self.client.as_mut() {
                         client.on_realtime_text(&text);
@@ -508,18 +508,21 @@ impl SyncularCore {
     }
 }
 
-/// A presence fanout control frame (§8.6.2) — `{"event":"presence",...}`, the
-/// one inbound realtime event a native host surfaces directly.
-fn presence_scope_key(text: &str) -> Option<String> {
-    serde_json::from_str::<Value>(text).ok().and_then(|v| {
-        if v.get("event").and_then(Value::as_str) != Some("presence") {
-            return None;
-        }
-        v.get("data")?
-            .get("scopeKey")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
+/// A well-formed presence control frame (§8.6.2), the one inbound realtime
+/// event a native host surfaces as an event: a fanout, or the server's refusal
+/// of this client's own publish, which carries the server's `error` code.
+fn presence_event(text: &str) -> Option<Value> {
+    let Ok(ssp2::ControlMessage::Presence {
+        scope_key, error, ..
+    }) = ssp2::parse_control(text)
+    else {
+        return None;
+    };
+    let mut event = json!({ "type": "presence", "scopeKey": scope_key });
+    if let Some(error) = error {
+        event["error"] = Value::from(error);
+    }
+    Some(event)
 }
 
 #[cfg(test)]
@@ -527,19 +530,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presence_scope_key_reads_the_fanout_data() {
+    fn presence_event_carries_the_fanout_scope_and_the_publish_refusal() {
         assert_eq!(
-            presence_scope_key(
+            presence_event(
                 r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"leave","actorId":"a","clientId":"c","doc":null,"timestamp":1}}"#
-            )
-            .as_deref(),
-            Some("room:42")
+            ),
+            Some(json!({ "type": "presence", "scopeKey": "room:42" }))
         );
-        assert_eq!(
-            presence_scope_key(r#"{"event":"presence","data":{}}"#),
-            None
-        );
-        assert_eq!(presence_scope_key(r#"{"event":"sync","data":{}}"#), None);
+        for code in ["presence.too_large", "presence.forbidden"] {
+            let frame = format!(
+                r#"{{"event":"presence","data":{{"scopeKey":"room:42","error":"{code}"}}}}"#
+            );
+            assert_eq!(
+                presence_event(&frame),
+                Some(json!({ "type": "presence", "scopeKey": "room:42", "error": code }))
+            );
+        }
+    }
+
+    #[test]
+    fn presence_event_ignores_malformed_frames_and_unknown_codes() {
+        for frame in [
+            r#"{"event":"presence","data":{}}"#,
+            r#"{"event":"presence","data":{"scopeKey":"room:42","error":"presence.nope"}}"#,
+            r#"{"event":"presence","data":{"scopeKey":"room:42","error":7}}"#,
+            r#"{"event":"sync","data":{}}"#,
+            "not json",
+        ] {
+            assert_eq!(presence_event(frame), None, "{frame}");
+        }
     }
 
     fn simple_schema() -> Value {

@@ -74,13 +74,17 @@ the conformance shim and the C-ABI FFI use, so the surface is conformance-locked
 | `syncular_query(sql, params)` | The raw read-only SQL fast path. |
 | `syncular_query_snapshot(sql, params, coverage)` | One IPC read for rows, window completeness, and the exact local revision. |
 | `syncular_set_headers(headers)` | Replaces the native transport's request headers at runtime. |
-| `events` channel | Exact revisioned `change` batches plus `presence` and lifecycle events. The bridge passes a Tauri IPC `Channel` in the `create` params. |
+| `events` channel | Exact revisioned `change` batches plus `presence` and lifecycle events. A `presence` event carries `error` (`presence.too_large` or `presence.forbidden`) when the server refuses this client's publish. The bridge passes a Tauri IPC `Channel` in the `create` params. |
 
 The plugin runs one native client per app. Only the webview whose `create`
 succeeded last receives its events; other webviews receive nothing, including
 webviews granted `core:event:default`. A `create` without an `events` channel
 fails with `sync.invalid_request`. A `create` from a second webview replaces
-the first webview's client, so open the client in one webview.
+the first webview's client and moves ownership to the second webview. The
+plugin refuses every other command from a webview that does not own the client
+with `sync.client_owned_by_another_webview`, and the command never reaches the
+client. A reload keeps the webview's label, so the owner stays the owner. Open
+the client in one webview.
 
 The Rust core originates the table, scope, window, status, and conflict domains.
 The bridge forwards them without counter diffing or a global-invalidation

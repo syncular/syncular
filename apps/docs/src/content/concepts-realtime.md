@@ -134,7 +134,7 @@ client.onPresence((scopeKey, error) => {
 });
 ```
 
-The listener fires without `error` for peer joins, updates and leaves. The `onPresence` config option has the same signature. On the native core, the `presence` event carries the code in its `error` field, and the Swift, Kotlin and Flutter bindings pass it through in the event payload.
+The listener fires without `error` for peer joins, updates and leaves. The `onPresence` config option has the same signature. On the native core, the `presence` event carries the code in its `error` field, and the Tauri, Swift, Kotlin and Flutter bindings pass it through in the event payload.
 
 In React, `usePresence(scopeKey)` keeps the peer list live. It clears the previous peers when the client or scope changes. Overlapping reads publish the newest requested snapshot, and an older response cannot replace it, including after the newer read fails. Cleanup invalidates pending reads.
 
