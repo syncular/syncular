@@ -64,6 +64,11 @@ export interface SyncWorkerOverrides {
   ) => Promise<ClientDatabase> | ClientDatabase;
   /** Retry deadline indirection for deterministic worker-host tests. */
   readonly waitForStorageRetry?: (delayMs: number) => Promise<void>;
+  /** Background-intent deadline indirection for deterministic worker-host tests. */
+  readonly scheduleBackground?: (
+    callback: () => void,
+    delayMs: number,
+  ) => () => void;
   readonly createTransport?: (config: WorkerInitConfig) => SyncTransport;
   readonly createSegments?: (
     config: WorkerInitConfig,
@@ -216,8 +221,16 @@ export function startSyncWorkerCore(
   // -- SPEC §7.5 host loop: event-driven intents, no interactive polling --
   let autoSync = true;
   let autoSyncScheduled = false;
-  let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelBackground: (() => void) | undefined;
   let backgroundDue = Number.POSITIVE_INFINITY;
+  // §7.6 backoff for drives that end without a client retry intent.
+  let retryDelayMs = 250;
+  const scheduleBackground =
+    overrides.scheduleBackground ??
+    ((callback: () => void, delayMs: number): (() => void) => {
+      const timer = setTimeout(callback, delayMs);
+      return () => clearTimeout(timer);
+    });
 
   function runAutoSync(): void {
     if (
@@ -238,15 +251,34 @@ export function startSyncWorkerCore(
       return running.syncUntilIdle();
     })
       .then((summary) => {
+        retryDelayMs = 250;
         if (!closed) post({ t: 'event', event: { kind: 'synced', summary } });
         if (summary.budgetExhausted) consumeSyncIntent({ kind: 'interactive' });
       })
       .catch((error: unknown) => {
-        if (!closed) {
-          post({
-            t: 'event',
-            event: { kind: 'synced', error: toErrorShape(error) },
-          });
+        if (closed) return;
+        post({
+          t: 'event',
+          event: { kind: 'synced', error: toErrorShape(error) },
+        });
+        // §7.7: a retryable drive rejection owes another drive. A retryable
+        // round failure already handed this loop its background intent; the
+        // drive deadline did not. An unreachable endpoint waits for the
+        // host's connectivity resume (§1.8).
+        const causeKind =
+          error instanceof ClientSyncError
+            ? error.details?.['causeKind']
+            : undefined;
+        if (
+          error instanceof ClientSyncError &&
+          error.retryable &&
+          causeKind !== 'network' &&
+          causeKind !== 'connect' &&
+          cancelBackground === undefined &&
+          !autoSyncScheduled
+        ) {
+          consumeSyncIntent({ kind: 'background', delayMs: retryDelayMs });
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
         }
       });
   }
@@ -265,12 +297,12 @@ export function startSyncWorkerCore(
     if (intent.kind === 'background') {
       if (autoSyncScheduled) return;
       const due = Date.now() + Math.max(0, intent.delayMs);
-      if (backgroundTimer !== undefined && due >= backgroundDue) return;
-      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+      if (cancelBackground !== undefined && due >= backgroundDue) return;
+      cancelBackground?.();
       backgroundDue = due;
-      backgroundTimer = setTimeout(
+      cancelBackground = scheduleBackground(
         () => {
-          backgroundTimer = undefined;
+          cancelBackground = undefined;
           backgroundDue = Number.POSITIVE_INFINITY;
           if (!autoSyncScheduled) {
             autoSyncScheduled = true;
@@ -281,9 +313,9 @@ export function startSyncWorkerCore(
       );
       return;
     }
-    if (backgroundTimer !== undefined) {
-      clearTimeout(backgroundTimer);
-      backgroundTimer = undefined;
+    if (cancelBackground !== undefined) {
+      cancelBackground();
+      cancelBackground = undefined;
       backgroundDue = Number.POSITIVE_INFINITY;
     }
     if (!autoSync || autoSyncScheduled || closed || client === undefined) {
@@ -530,8 +562,8 @@ export function startSyncWorkerCore(
       ]),
     ) as Pick<WorkerApi, (typeof coreMethods)[number]>),
     beginSecurityPreflight: async () => {
-      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
-      backgroundTimer = undefined;
+      cancelBackground?.();
+      cancelBackground = undefined;
       backgroundDue = Number.POSITIVE_INFINITY;
       autoSyncScheduled = false;
       await requireClient().beginSecurityPreflight();
@@ -590,8 +622,8 @@ export function startSyncWorkerCore(
       offline = value;
       requireClient().setTransportEnabled(!value);
       if (offline) {
-        if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
-        backgroundTimer = undefined;
+        cancelBackground?.();
+        cancelBackground = undefined;
         backgroundDue = Number.POSITIVE_INFINITY;
       } else if (client !== undefined) {
         const snapshot = client.diagnosticsSnapshot();
@@ -612,7 +644,7 @@ export function startSyncWorkerCore(
     ...local?.methods,
     close: async () => {
       closed = true;
-      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+      cancelBackground?.();
       await client?.close();
       local?.close();
       database?.close();

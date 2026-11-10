@@ -42,10 +42,19 @@ export type BlobUploadGrant =
   | { readonly kind: 'present' }
   | { readonly kind: 'none' };
 
-/** The transport seam for blob upload/download (§5.9.3/§5.9.5). */
+/**
+ * The transport seam for blob upload/download (§5.9.3/§5.9.5). The upload
+ * calls receive the round's `signal`, which aborts when the `syncUntilIdle`
+ * deadline elapses (§7.7).
+ */
 export interface BlobTransport {
   /** `PUT <mount>/blobs/{blobId}` — host-authenticated direct upload (§5.9.3). */
-  upload(blobId: string, bytes: Uint8Array, mediaType?: string): Promise<void>;
+  upload(
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /**
    * `GET <mount>/blobs/{blobId}` — re-authorized (§5.9.5). Returns inline
    * bytes, or a presigned `url` the client core fetches via `fetchUrl`.
@@ -68,6 +77,7 @@ export interface BlobTransport {
     blobId: string,
     byteLength: number,
     mediaType?: string,
+    signal?: AbortSignal,
   ): Promise<BlobUploadGrant>;
   /**
    * §5.9.3 direct-to-storage PUT of the granted `url`. MUST attach NO host
@@ -78,6 +88,7 @@ export interface BlobTransport {
     url: string,
     bytes: Uint8Array,
     mediaType?: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 }
 

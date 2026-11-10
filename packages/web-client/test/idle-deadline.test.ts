@@ -3,7 +3,15 @@
  * §1.8: a refused or unreachable endpoint stops without another backoff.
  */
 import { expect, test } from 'bun:test';
-import { makeClient, makeServer, responseGate } from './helpers';
+import { httpSyncTransport } from '@syncular/client';
+import { handleSyncRequest } from '@syncular/server';
+import {
+  makeClient,
+  makeServer,
+  responseGate,
+  taskValues,
+  waitFor,
+} from './helpers';
 
 test('a transport that never answers rejects with sync.idle_timeout', async () => {
   const local = await makeClient(makeServer(), { clientId: 'idle-deadline' });
@@ -29,6 +37,65 @@ test('a transport that never answers rejects with sync.idle_timeout', async () =
   gate.release();
   await completed;
   off();
+  await local.client.close();
+  local.db.close();
+});
+
+test('the deadline aborts a silent fetch, and the client syncs again', async () => {
+  const server = makeServer();
+  const aborted: unknown[] = [];
+  let silent = true;
+  const fetchStub = async (
+    _url: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const signal = init?.signal;
+    if (silent) {
+      silent = false;
+      // A silent transport: no answer, no error, until the signal aborts.
+      return new Promise<Response>((_, reject) => {
+        signal?.addEventListener('abort', () => {
+          aborted.push(signal.reason);
+          reject(signal.reason);
+        });
+      });
+    }
+    const body = new Uint8Array(init?.body as ArrayBuffer);
+    const bytes = await handleSyncRequest(body, server.ctxFor('actor-1'));
+    return new Response(bytes.slice().buffer as ArrayBuffer, { status: 200 });
+  };
+  const local = await makeClient(server, {
+    clientId: 'idle-abort',
+    realtimePolicy: 'off',
+    transport: httpSyncTransport('https://sync.test/sync', {
+      fetch: Object.assign(fetchStub, { preconnect: fetch.preconnect }),
+    }),
+  });
+  local.client.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'held') },
+  ]);
+
+  await expect(
+    local.client.syncUntilIdle({ timeoutMs: 20 }),
+  ).rejects.toMatchObject({ code: 'sync.idle_timeout', retryable: true });
+  expect(aborted).toHaveLength(1);
+  expect(aborted[0]).toMatchObject({ code: 'sync.idle_timeout' });
+  // The aborted round ends with the deadline's error and releases the loop.
+  await waitFor(
+    () => {
+      const round = local.client.diagnosticsSnapshot().lastRound;
+      return (
+        round?.status === 'failed' && round.errorCode === 'sync.idle_timeout'
+      );
+    },
+    (notify) => local.client.onDiagnostics(notify),
+    'the aborted round settles',
+  );
+  expect(local.intents.at(-1)).toEqual({ kind: 'background', delayMs: 250 });
+
+  const summary = await local.client.sync();
+  expect(summary.pushed).toBe(1);
+  expect(local.client.pendingCommits()).toHaveLength(0);
   await local.client.close();
   local.db.close();
 });

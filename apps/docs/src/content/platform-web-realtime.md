@@ -50,7 +50,11 @@ bounded retry with jitter, suspension while the page is hidden or offline,
 cancellation on close, and an explicit catch-up before it publishes
 `connected`. `browserConnectivitySignal()` observes online and offline;
 `documentLifecycleSignal()` observes visibility and page lifecycle. Unknown
-browser connectivity stays connectable.
+browser connectivity stays connectable. Only the connectivity signal suspends
+the supervisor: a sync round that failed because the server was unreachable
+does not. Each `online` report runs `syncUntilIdle()`, also when realtime is
+unsupported or disabled, so a commit written while the network was down
+pushes when it returns.
 
 For an encrypted or locked app, also pass the host's protection signal. An
 explicit protection signal keeps the supervisor suspended until it reports
@@ -165,7 +169,10 @@ React Native handles expose the same listener and snapshot methods.
 
 Keep calling `mutate` with the network gone: the outbox accumulates and local
 reads stay live. On reconnect, the next sync drains the outbox with
-[idempotent retry](/concepts-commits/). Applied commits leave the outbox;
+[idempotent retry](/concepts-commits/). A round that fails because the server
+is unreachable schedules no retry; the supervisor's `online` report or a socket
+reconnect starts the next drive. A host without the supervisor calls
+`syncUntilIdle()` from its own connectivity handler. Applied commits leave the outbox;
 conflicts and rejections surface. The outbox is schema-agnostic and re-encodes
 at send time, so a schema upgrade loses nothing. Whole-origin deletion or
 eviction is outside that guarantee: use the

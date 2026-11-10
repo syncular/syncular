@@ -17,6 +17,7 @@ import {
   type SyncClientConfig,
   type SyncClientLimits,
   type SyncIntent,
+  type SyncTransport,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { ClientSyncError } from '../src/errors';
@@ -331,6 +332,8 @@ export interface MakeClientOptions {
   readonly blobCacheMaxBytes?: number;
   /** Override only the realtime seam for focused ownership/lifecycle tests. */
   readonly realtime?: RealtimeConnector;
+  /** Replace the loopback round transport (faults and counters bypassed). */
+  readonly transport?: SyncTransport;
   /** SPEC §8.8 realtime policy; absent ⇒ `optional`. */
   readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
   /** RFC 0005 previous-version context config. */
@@ -379,67 +382,69 @@ export async function makeClient(
     ...(options.blobCacheMaxBytes !== undefined
       ? { blobCacheMaxBytes: options.blobCacheMaxBytes }
       : {}),
-    transport: async (bytes) => {
-      httpRounds.count += 1;
-      requests.push(bytes);
-      if (faults.refuseConnectionOnce) {
-        faults.refuseConnectionOnce = false;
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'connection refused',
-          true,
-          { causeKind: 'connect' },
-        );
-      }
-      const response = await handleSyncRequest(bytes, server.ctxFor(actorId));
-      if (faults.dropResponseOnce) {
-        faults.dropResponseOnce = false;
-        throw new Error('simulated response loss');
-      }
-      if (faults.truncateResponseOnce) {
-        faults.truncateResponseOnce = false;
-        // Every SSP2 message ends with a 5-byte END frame (§1.2 rule 1).
-        return response.slice(0, response.length - 5);
-      }
-      if (faults.errorFrameOnce) {
-        faults.errorFrameOnce = false;
-        const message = decodeMessage(response);
-        if (message.msgKind === 'response') {
-          return encodeMessage({
-            wireVersion: message.wireVersion,
-            msgKind: 'response',
-            frames: [
-              message.frames[0]!,
-              {
-                type: 'ERROR',
-                code: 'sync.rate_limited',
-                message: 'slow down',
-                category: 'rate-limited',
-                retryable: true,
-                recommendedAction: 'retryLater',
-              },
-            ],
-          });
-        }
-      }
-      const hold = faults.holdResponseOnce;
-      if (hold !== undefined) {
-        faults.holdResponseOnce = undefined;
-        hold.onHeld?.();
-        await hold.opened;
-      }
-      if (faults.duplicatePushResultOnce) {
-        faults.duplicatePushResultOnce = false;
-        const message = decodeMessage(response);
-        if (message.msgKind === 'response') {
-          const frames = message.frames.flatMap((frame): ResponseFrame[] =>
-            frame.type === 'PUSH_RESULT' ? [frame, frame] : [frame],
+    transport:
+      options.transport ??
+      (async (bytes) => {
+        httpRounds.count += 1;
+        requests.push(bytes);
+        if (faults.refuseConnectionOnce) {
+          faults.refuseConnectionOnce = false;
+          throw new ClientSyncError(
+            'sync.transport_failed',
+            'connection refused',
+            true,
+            { causeKind: 'connect' },
           );
-          return encodeMessage({ ...message, frames });
         }
-      }
-      return response;
-    },
+        const response = await handleSyncRequest(bytes, server.ctxFor(actorId));
+        if (faults.dropResponseOnce) {
+          faults.dropResponseOnce = false;
+          throw new Error('simulated response loss');
+        }
+        if (faults.truncateResponseOnce) {
+          faults.truncateResponseOnce = false;
+          // Every SSP2 message ends with a 5-byte END frame (§1.2 rule 1).
+          return response.slice(0, response.length - 5);
+        }
+        if (faults.errorFrameOnce) {
+          faults.errorFrameOnce = false;
+          const message = decodeMessage(response);
+          if (message.msgKind === 'response') {
+            return encodeMessage({
+              wireVersion: message.wireVersion,
+              msgKind: 'response',
+              frames: [
+                message.frames[0]!,
+                {
+                  type: 'ERROR',
+                  code: 'sync.rate_limited',
+                  message: 'slow down',
+                  category: 'rate-limited',
+                  retryable: true,
+                  recommendedAction: 'retryLater',
+                },
+              ],
+            });
+          }
+        }
+        const hold = faults.holdResponseOnce;
+        if (hold !== undefined) {
+          faults.holdResponseOnce = undefined;
+          hold.onHeld?.();
+          await hold.opened;
+        }
+        if (faults.duplicatePushResultOnce) {
+          faults.duplicatePushResultOnce = false;
+          const message = decodeMessage(response);
+          if (message.msgKind === 'response') {
+            const frames = message.frames.flatMap((frame): ResponseFrame[] =>
+              frame.type === 'PUSH_RESULT' ? [frame, frame] : [frame],
+            );
+            return encodeMessage({ ...message, frames });
+          }
+        }
+        return response;
+      }),
     segments: async (request: SegmentFetchRequest) => {
       if (faults.stallSegmentDownloadOnce) {
         faults.stallSegmentDownloadOnce = false;

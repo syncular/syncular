@@ -2677,15 +2677,25 @@ export class SyncClient {
     enforceBlobCacheCap(this.#db, this.#schema, cap);
   }
 
-  /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
+  /**
+   * Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. It
+   * runs on the round's operation chain because a refused upload drops
+   * outbox commits a round may have captured.
+   */
   flushBlobUploads(): Promise<void> {
     this.#requireTransport();
-    return this.#runProtectedAsync(() => this.#flushBlobUploads());
+    return this.#runProtectedAsync(async () => {
+      await this.#serialize(() => this.#flushBlobUploads(undefined));
+    });
   }
 
-  async #flushBlobUploads(): Promise<void> {
+  /** Returns the ids of the commits a refused upload dropped (§5.9.7). */
+  async #flushBlobUploads(
+    signal: AbortSignal | undefined,
+  ): Promise<ReadonlySet<string>> {
+    const refused = new Set<string>();
     const transport = this.#config.blobs;
-    if (transport === undefined || !this.#hasBlobs) return;
+    if (transport === undefined || !this.#hasBlobs) return refused;
     for (const pending of listPendingUploads(this.#db)) {
       const cached = getCachedBlob(this.#db, pending.blobId);
       if (
@@ -2700,14 +2710,47 @@ export class SyncClient {
           'Pending blob upload body is missing or corrupt',
         );
       }
-      await this.#uploadOne(
-        transport,
-        pending.blobId,
-        cached.bytes,
-        pending.mediaType,
-      );
+      try {
+        await this.#uploadOne(
+          transport,
+          pending.blobId,
+          cached.bytes,
+          pending.mediaType,
+          signal,
+        );
+      } catch (error) {
+        // §5.9.7: a non-retryable server refusal is this body's final
+        // outcome. Retryable refusals and transport failures fail the round.
+        // A failure without a server code (`sync.transport_failed`: no
+        // response, or a response without a JSON error body) is not one.
+        if (
+          !(error instanceof Error) ||
+          !('code' in error) ||
+          typeof error.code !== 'string' ||
+          error.code === 'sync.transport_failed' ||
+          !('retryable' in error) ||
+          error.retryable !== false
+        )
+          throw error;
+        clearPendingUpload(this.#db, pending.blobId);
+        const referencing = new Set(
+          this.#db
+            .query(
+              `SELECT commit_id FROM ${BLOB_COMMIT_REFS} WHERE blob_id=?`,
+              [pending.blobId],
+            )
+            .map((row) => row.commit_id),
+        );
+        for (const commit of listOutbox(this.#db)) {
+          if (!referencing.has(commit.clientCommitId)) continue;
+          this.#dropIncompatibleCommit(commit, error.message, error.code);
+          refused.add(commit.clientCommitId);
+        }
+        continue;
+      }
       clearPendingUpload(this.#db, pending.blobId);
     }
+    return refused;
   }
 
   /**
@@ -2722,7 +2765,8 @@ export class SyncClient {
     transport: BlobTransport,
     blobId: string,
     bytes: Uint8Array,
-    mediaType?: string,
+    mediaType: string | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<void> {
     if (
       transport.uploadGrant !== undefined &&
@@ -2732,6 +2776,7 @@ export class SyncClient {
         blobId,
         bytes.length,
         mediaType,
+        signal,
       );
       if (grant.kind === 'present') return; // idempotent §5.9.3 — no PUT needed
       if (grant.kind === 'url') {
@@ -2740,7 +2785,7 @@ export class SyncClient {
           grant.urlExpiresAtMs > this.#now()
         ) {
           try {
-            await transport.uploadToUrl(grant.url, bytes, mediaType);
+            await transport.uploadToUrl(grant.url, bytes, mediaType, signal);
             return;
           } catch {
             // Grant PUT failed — stream through the direct endpoint below.
@@ -2750,7 +2795,7 @@ export class SyncClient {
       // grant.kind === 'none' (no presign store) or a failed/expired grant:
       // stream through the direct host-authenticated endpoint.
     }
-    await transport.upload(blobId, bytes, mediaType);
+    await transport.upload(blobId, bytes, mediaType, signal);
   }
 
   conflicts(): readonly ConflictRecord[] {
@@ -4223,6 +4268,11 @@ export class SyncClient {
    * `setWindow` at an await point.
    */
   sync(): Promise<SyncSummary> {
+    return this.#sync();
+  }
+
+  /** `signal` is the `syncUntilIdle` deadline (§7.7); `sync()` has none. */
+  #sync(signal?: AbortSignal): Promise<SyncSummary> {
     this.#requireActive();
     if (this.#syncOutstanding) {
       return Promise.reject(
@@ -4232,7 +4282,7 @@ export class SyncClient {
     this.#syncOutstanding = true;
     this.#beginDiagnosticsDeferral();
     const startedAtMs = this.#now();
-    return this.#serialize(() => this.#runSync())
+    return this.#serialize(() => this.#runSync(signal))
       .then(
         (summary) => {
           const completedAtMs = this.#now();
@@ -4351,7 +4401,7 @@ export class SyncClient {
       : 'client.unknown_failure';
   }
 
-  async #runSync(): Promise<SyncSummary> {
+  async #runSync(signal: AbortSignal | undefined): Promise<SyncSummary> {
     this.#requireTransport();
     this.#roundRetryDelayMs = undefined;
     this.#progress.emit({
@@ -4409,7 +4459,14 @@ export class SyncClient {
         this.#hasBlobs &&
         this.#config.blobs !== undefined
       ) {
-        await this.#flushBlobUploads();
+        const refused = await this.#flushBlobUploads(signal);
+        // §5.9.7: a commit whose blob the server refused left the outbox.
+        for (let index = outbox.length - 1; index >= 0; index--) {
+          if (!refused.has(outbox[index]!.clientCommitId)) continue;
+          outbox.splice(index, 1);
+          pushFrames.splice(index, 1);
+          frameBytes.splice(index, 1);
+        }
       }
       // Captured after encoding: a subscribe/unsubscribe during the
       // encryption await must not make the final request exceed the byte
@@ -4484,7 +4541,7 @@ export class SyncClient {
         msgKind: 'request',
         frames,
       });
-      const responseBytes = await this.#roundTrip(requestBytes);
+      const responseBytes = await this.#roundTrip(requestBytes, signal);
       const message = decodeMessage(responseBytes);
       if (message.msgKind !== 'response') {
         throw invalidRequest('transport returned a non-response message');
@@ -4497,6 +4554,7 @@ export class SyncClient {
         subs,
         'pull',
         resetEpoch,
+        signal,
       );
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
@@ -4507,6 +4565,9 @@ export class SyncClient {
           : { state: 'complete' },
       );
       this.#retryDelayMs = 250;
+      // §4.7: a subscription that still holds a resume token needs another
+      // round, also when the drive that started its bootstrap ends early.
+      if (summary.bootstrapping.length > 0) this.#setSyncNeeded(true);
       if (deferred > 0) {
         // §6.1 splitBatch remainder: more queued commits than this request
         // could carry — keep the sync-needed signal raised for the host.
@@ -4514,11 +4575,14 @@ export class SyncClient {
         return { ...summary, deferredCommits: deferred };
       }
       return summary;
-    } catch (error) {
+    } catch (caught) {
       // §1.5: a round that ended without a complete, decodable response is a
       // failure the server could not see — keep its code for the next request.
-      const unseen = this.#unseenRoundFailureCode(error);
+      const unseen = this.#unseenRoundFailureCode(caught);
       if (unseen !== undefined) this.#roundFailureCode = unseen;
+      // §7.7: a round the drive deadline aborted ends with the deadline's
+      // error, whichever transport call observed the abort.
+      const error: unknown = signal?.aborted === true ? signal.reason : caught;
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
       // in leaseState (no local-data purge, §7.3.4) and re-throw. Not a
       // silent retry: the app drives recovery to a live resolver. The
@@ -4552,6 +4616,8 @@ export class SyncClient {
           ? details.causeKind
           : undefined;
       const unreachable = causeKind === 'connect' || causeKind === 'network';
+      // The round's work is still owed; the host's connectivity resume runs it.
+      if (unreachable) this.#setSyncNeeded(true);
       if (retryable && !unreachable) {
         const realtimeUnavailable = error instanceof RealtimeUnavailableError;
         const delay = realtimeUnavailable
@@ -4683,23 +4749,25 @@ export class SyncClient {
     let round = 0;
     let expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // One signal reaches every transport call of the drive's rounds.
+    const controller = new AbortController();
     const deadline =
       timeoutMs === Number.POSITIVE_INFINITY
         ? undefined
         : new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               expired = true;
+              const error = new ClientSyncError(
+                'sync.idle_timeout',
+                'syncUntilIdle exceeded its deadline',
+                true,
+                { timeoutMs, rounds: round },
+              );
               // The transport may never answer; release the round so the
               // client can run another one after the caller sees the error.
+              controller.abort(error);
               this.#abortPendingRound('syncUntilIdle deadline exceeded');
-              reject(
-                new ClientSyncError(
-                  'sync.idle_timeout',
-                  'syncUntilIdle exceeded its deadline',
-                  true,
-                  { timeoutMs, rounds: round },
-                ),
-              );
+              reject(error);
             }, timeoutMs);
           });
     const drive = (async (): Promise<SyncIdleResult> => {
@@ -4718,7 +4786,7 @@ export class SyncClient {
             sub.bootstrapState,
           ]),
         );
-        const last = await this.sync();
+        const last = await this.#sync(controller.signal);
         // Historical counters accumulate; current readiness (`bootstrapping`,
         // `deferredCommits`, `schemaFloor`) describes the latest round.
         aggregate.pushed += last.pushed;
@@ -4781,7 +4849,10 @@ export class SyncClient {
    * refuses the round with `RealtimeUnavailableError` instead of using the
    * seam (SPEC §8.8).
    */
-  #roundTrip(request: Uint8Array): Promise<Uint8Array> {
+  #roundTrip(
+    request: Uint8Array,
+    signal: AbortSignal | undefined,
+  ): Promise<Uint8Array> {
     const socket = this.#socket;
     if (socket !== undefined && this.#realtimePolicy !== 'off') {
       return new Promise<Uint8Array>((resolve, reject) => {
@@ -4818,7 +4889,7 @@ export class SyncClient {
       throw this.#realtimeUnavailableError();
     }
     return Promise.resolve()
-      .then(() => this.#config.transport(request))
+      .then(() => this.#config.transport(request, signal))
       .catch((error: unknown) => {
         if (
           error instanceof ClientSyncError ||
@@ -5172,6 +5243,7 @@ export class SyncClient {
     sentSubs: readonly SubscriptionRecord[] | undefined,
     mode: 'pull' | 'delta',
     resetEpoch: number = this.#localResetEpoch,
+    signal?: AbortSignal,
   ): Promise<SyncSummary> {
     const summary = emptySummary(sentCommits.length);
     const commitsById = new Map(
@@ -5302,12 +5374,17 @@ export class SyncClient {
             (this.#acceptMask() & ACCEPT_SQLITE) === 0
           )
         ) {
-          const pending = this.#downloadSegment(frame, openSub, (bytes) => {
-            // Only the descriptor the loop is applying reports bytes; a
-            // sibling still in flight would overwrite its progress.
-            if (reporting === frame)
-              this.#progress.update({ bytesReceived: bytes });
-          });
+          const pending = this.#downloadSegment(
+            frame,
+            openSub,
+            (bytes) => {
+              // Only the descriptor the loop is applying reports bytes; a
+              // sibling still in flight would overwrite its progress.
+              if (reporting === frame)
+                this.#progress.update({ bytesReceived: bytes });
+            },
+            signal,
+          );
           pending.catch(() => {});
           prefetched.set(frame, pending);
         }
@@ -5528,8 +5605,11 @@ export class SyncClient {
               const prefetch = prefetched.get(frame);
               if (prefetch !== undefined) reporting = frame;
               bytes = await (prefetch ??
-                this.#downloadSegment(frame, section.sub, (bytesReceived) =>
-                  this.#progress.update({ bytesReceived }),
+                this.#downloadSegment(
+                  frame,
+                  section.sub,
+                  (bytesReceived) => this.#progress.update({ bytesReceived }),
+                  signal,
                 ));
             } else {
               bytes = frame.payload;
@@ -6099,6 +6179,7 @@ export class SyncClient {
     frame: SegmentRefFrame,
     sub: SubscriptionRecord,
     onProgress: (bytesReceived: number) => void,
+    signal: AbortSignal | undefined,
   ): Promise<Uint8Array> {
     const downloader = this.#config.segments;
     if (downloader === undefined) {
@@ -6132,13 +6213,14 @@ export class SyncClient {
           true,
         );
       }
-      bytes = await fetchUrl(frame.url, onProgress);
+      bytes = await fetchUrl(frame.url, onProgress, signal);
     } else {
       bytes = await downloader({
         segmentId: frame.segmentId,
         table: frame.table,
         requestedScopesJson: canonicalScopeJson(sub.scopes),
         onProgress,
+        ...(signal !== undefined ? { signal } : {}),
       });
     }
     // §5.1: verify the content address before applying; on mismatch the

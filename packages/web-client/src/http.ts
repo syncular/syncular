@@ -117,7 +117,7 @@ export function httpSyncTransport(
   options?: HttpTransportOptions,
 ): SyncTransport {
   const doFetch = options?.fetch ?? fetch;
-  return async (request) => {
+  return async (request, signal) => {
     const response = await transfer('sync request failed', () =>
       doFetch(syncUrl, {
         method: 'POST',
@@ -126,6 +126,7 @@ export function httpSyncTransport(
           ...hostHeaders(options),
         },
         body: request.slice().buffer as ArrayBuffer,
+        ...(signal !== undefined ? { signal } : {}),
       }),
     );
     if (!response.ok) await throwHttpError(response);
@@ -311,6 +312,7 @@ export function httpSegmentDownloader(
     readonly segmentId: string;
     readonly requestedScopesJson: string;
     readonly onProgress?: (bytesReceived: number) => void;
+    readonly signal?: AbortSignal;
   }) =>
     download(
       `${segmentsBaseUrl}/${encodeURIComponent(request.segmentId)}`,
@@ -319,6 +321,7 @@ export function httpSegmentDownloader(
           'X-Syncular-Scopes': request.requestedScopesJson,
           ...hostHeaders(options),
         },
+        ...(request.signal !== undefined ? { signal: request.signal } : {}),
       },
       request.onProgress,
     );
@@ -326,7 +329,14 @@ export function httpSegmentDownloader(
   const fetchUrl = (
     url: string,
     onProgress?: (bytesReceived: number) => void,
-  ) => download(url, undefined, onProgress, true);
+    signal?: AbortSignal,
+  ) =>
+    download(
+      url,
+      signal !== undefined ? { signal } : undefined,
+      onProgress,
+      true,
+    );
   return Object.assign(direct, { fetchUrl });
 }
 
@@ -344,7 +354,7 @@ export function httpBlobTransport(
   const blobUrl = (blobId: string) =>
     `${blobsBaseUrl}/${encodeURIComponent(blobId)}`;
   return {
-    upload: async (blobId, bytes, mediaType) => {
+    upload: async (blobId, bytes, mediaType, signal) => {
       const response = await transfer('blob upload failed', () =>
         doFetch(blobUrl(blobId), {
           method: 'PUT',
@@ -353,6 +363,7 @@ export function httpBlobTransport(
             ...hostHeaders(options),
           },
           body: bytes.slice().buffer as ArrayBuffer,
+          ...(signal !== undefined ? { signal } : {}),
         }),
       );
       if (!response.ok) await throwHttpError(response);
@@ -426,7 +437,7 @@ export function httpBlobTransport(
       );
     },
     // §5.9.3: presigned-upload grant.
-    uploadGrant: async (blobId, byteLength, mediaType) => {
+    uploadGrant: async (blobId, byteLength, mediaType, signal) => {
       const response = await transfer('blob upload grant request failed', () =>
         doFetch(`${blobUrl(blobId)}/upload-grant`, {
           method: 'POST',
@@ -438,6 +449,7 @@ export function httpBlobTransport(
             byteLength,
             ...(mediaType !== undefined ? { mediaType } : {}),
           }),
+          ...(signal !== undefined ? { signal } : {}),
         }),
       );
       if (!response.ok) await throwHttpError(response);
@@ -463,7 +475,7 @@ export function httpBlobTransport(
       return { kind: 'none' };
     },
     // §5.9.3: direct-to-storage PUT — no host auth (the URL is the grant).
-    uploadToUrl: async (url, bytes, mediaType) => {
+    uploadToUrl: async (url, bytes, mediaType, signal) => {
       const response = await transfer('signed blob upload failed', () =>
         doFetch(url, {
           method: 'PUT',
@@ -471,6 +483,7 @@ export function httpBlobTransport(
             'Content-Type': mediaType ?? 'application/octet-stream',
           },
           body: bytes.slice().buffer as ArrayBuffer,
+          ...(signal !== undefined ? { signal } : {}),
         }),
       );
       if (!response.ok) {

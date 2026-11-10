@@ -1508,6 +1508,56 @@ test('wake-ups during a queued round share one follow-up drive', async () => {
   }
 });
 
+test('a drive deadline rejection re-arms the worker host loop', async () => {
+  const worker = new Worker(
+    new URL('./idle-retry-worker.ts', import.meta.url).href,
+  );
+  const backgrounds: number[] = [];
+  let notify: () => void = () => {};
+  worker.addEventListener('message', (event) => {
+    const message = event.data as {
+      readonly t?: string;
+      readonly delayMs?: number;
+    };
+    if (message.t !== 'background' || message.delayMs === undefined) return;
+    backgrounds.push(message.delayMs);
+    notify();
+  });
+  const { handle, events } = await makeHandle({
+    clientId: 'rpc-idle-retry',
+    worker: () => worker,
+    autoSync: true,
+    realtimePolicy: 'off',
+    onSynced: (result) => {
+      events.synced.push(result);
+      notify();
+    },
+  });
+  const observe = (next: () => void) => {
+    notify = next;
+    return () => {
+      notify = () => {};
+    };
+  };
+  await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('retry', 'p-retry') },
+  ]);
+  await waitFor(
+    () => backgrounds.length === 1,
+    observe,
+    'the loop schedules a retry after the deadline',
+  );
+  // §7.7: the deadline is retryable, so the loop owes another drive.
+  expect(events.synced[0]?.error?.code).toBe('sync.idle_timeout');
+  expect(backgrounds).toEqual([250]);
+  expect(await handle.pendingCommits()).toHaveLength(1);
+
+  worker.postMessage({ t: 'fire-background' });
+  await waitFor(() => events.synced.length === 2, observe, 'the retried drive');
+  expect(events.synced[1]?.error).toBeUndefined();
+  expect(await handle.pendingCommits()).toHaveLength(0);
+});
+
 test('concurrent and repeated handle close join one held worker close', async () => {
   let releaseClose: (() => void) | undefined;
   let closeCalls = 0;

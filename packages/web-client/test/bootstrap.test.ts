@@ -388,6 +388,30 @@ describe('bootstrap resume (§4.7)', () => {
     expect(b.client.subscription('s1')?.bootstrapState).toBeUndefined();
   });
 
+  test('a subscription left mid-bootstrap keeps sync-needed raised', async () => {
+    const server = makeServer();
+    await seedTasks(server, 5);
+    const b = await makeClient(server, {
+      clientId: 'client-b',
+      limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
+    });
+    b.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+
+    // A drive that ends early (deadline, budget, a manual sync) leaves the
+    // resume token; the status tells every host loop more rounds are owed.
+    const first = await b.client.sync();
+    expect(first.bootstrapping).toEqual(['s1']);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(true);
+
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks')).toHaveLength(5);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
+  });
+
   test('a lost response mid-bootstrap resumes without loss or duplication', async () => {
     const server = makeServer();
     await seedTasks(server, 5);

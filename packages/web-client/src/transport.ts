@@ -5,8 +5,15 @@
  * loopback doctrine; HTTP/WebSocket bindings live in `./http`.
  */
 
-/** One combined push+pull round trip: SSP2 request bytes → response bytes. */
-export type SyncTransport = (request: Uint8Array) => Promise<Uint8Array>;
+/**
+ * One combined push+pull round trip: SSP2 request bytes → response bytes.
+ * `signal` aborts when the `syncUntilIdle` deadline elapses (§7.7); a
+ * transport that honors it releases the round instead of holding it open.
+ */
+export type SyncTransport = (
+  request: Uint8Array,
+  signal?: AbortSignal,
+) => Promise<Uint8Array>;
 
 /** One registered authoritative query or command request. */
 export type RemoteOperationTransport = (
@@ -33,6 +40,8 @@ export interface SegmentFetchRequest {
   /** Canonical JSON (§11.2) of the requested scope map (§5.5 header). */
   readonly requestedScopesJson: string;
   readonly onProgress?: (bytesReceived: number) => void;
+  /** Aborts with the round when the `syncUntilIdle` deadline elapses (§7.7). */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -48,6 +57,7 @@ export interface SegmentDownloader {
   readonly fetchUrl?: (
     url: string,
     onProgress?: (bytesReceived: number) => void,
+    signal?: AbortSignal,
   ) => Promise<Uint8Array>;
 }
 
