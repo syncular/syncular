@@ -408,6 +408,11 @@ beside each fix; docs and changelog with user-visible changes; no push.
 - 2026-11-10: the wave 1 server task stopped once on an account limit,
   resumed, and landed as `156e1356`. New code `sync.limit_exceeded`; defaults
   16 MiB request, 500 subscriptions, 1,000 scope values, 100 watches.
+- 2026-11-10: wave 1 gate green on `16585749`: typecheck, lint, knip,
+  `test:main` (3,834 pass), `test:isolated`, `test:downgrade`,
+  `verify:runtimes`, Rust workspace tests and clippy. Wave 2 started: push
+  path and authority parity, client round fencing and row ownership, storage
+  correctness.
 
 Follow-ups found while fixing:
 
