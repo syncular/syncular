@@ -7,8 +7,7 @@ Match a symptom to its cause and fix.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `UnsatisfiedLinkError: no syncular in java.library.path` | Neither load mechanism found the library | Set `-Dsyncular.library.path=/abs/path/libsyncular.dylib`, or add its directory to `java.library.path` |
-| `UnsupportedClassVersionError` or a missing `java.lang.foreign` class | The JVM is older than 21 | Run on JDK 21 or newer |
-| Preview-feature error on JDK 21 | The JVM lacks `--enable-preview` | Add `--enable-preview` to the app and test JVM args |
+| `UnsupportedClassVersionError` or a missing `java.lang.foreign` class | The JVM is older than 22 | Run on JDK 22 or newer |
 | Warning: restricted method called | The JVM lacks native-access permission | Add `--enable-native-access=ALL-UNNAMED` |
 | `create` throws `client.failed` | A `baseUrl` was passed to a core built without `native-transport`, or the config is malformed | Rebuild with `rust/scripts/build-native.sh` (it enables `native-transport`) |
 | `sync()` returns `{ok: false, errorCode: "transport.unavailable"}` | No `baseUrl`, so the client runs the lean core | Pass `baseUrl`; the outbox keeps the commits until a round succeeds |

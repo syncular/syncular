@@ -2,7 +2,7 @@
 
 An idiomatic Kotlin/JVM wrapper over the **syncular-ffi** C-ABI native core (the
 five functions in [`rust/ffi.h`](../../rust/ffi.h)), via **FFM**
-(`java.lang.foreign`, JDK 21+). A `SyncularClient` owns the opaque handle,
+(`java.lang.foreign`, JDK 22+). A `SyncularClient` owns the opaque handle,
 marshals JSON commands, offers typed conveniences over the common command set,
 and runs the `poll_event` loop on a background thread delivering to a listener.
 
@@ -25,12 +25,12 @@ Why FFM over JNA:
 - **The ONLY runtime surface is the JDK.** No third-party jar. Even the JSON is
   hand-rolled ([`JsonValue.kt`](src/main/kotlin/dev/syncular/JsonValue.kt)) so
   the wrapper pulls in nothing beyond `kotlin-stdlib`.
-- **Stable path:** FFM is preview in JDK 21 (`--enable-preview`) and **stable in
-  JDK 22+**. The build targets a JDK-21 toolchain with the preview flag; on 22+
-  the flag is benign.
+- **Stable API:** FFM is stable from JDK 22. The build compiles against the
+  JDK 22 API (`-Xjdk-release=22`) and emits JDK 22 bytecode on any newer JDK;
+  CI builds and tests on JDK 25. No preview flags.
 
-**No JDK<21 fallback** (no-fallbacks doctrine, 2026-07-05): JDK 21+ with
-FFM is the one supported path for this JVM wrapper.
+**No fallback for JDK 21 or older** (no-fallbacks doctrine): JDK 22+ with the
+stable FFM API is the one supported path for this JVM wrapper.
 
 ## The surface
 
@@ -156,7 +156,7 @@ row back. See [`example/README.md`](example/README.md) for the run recipe.
 1. Builds the lean `libsyncular` for this machine and vendors it.
 2. `gradle test` against it (the FFM `SymbolLookup` loads the vendored library
    via the `syncular.library.path` system property; `build.gradle.kts` sets the
-   `--enable-native-access` / `--enable-preview` JVM args).
+   `--enable-native-access` JVM arg).
 
 The tests are **hermetic and offline-first** — no server. Coverage mirrors the
 Swift suite: init/create, raw command round-trip, mutate → readRows (the
@@ -167,7 +167,7 @@ reporting `transport.unavailable` on the lean core (`sync()` returns
 `pause()`/`resume()` cycle. The Rust FFI suite covers empty event-queue polling
 directly.
 
-**Detect-and-skip:** the gate needs JDK 21+ and Gradle. On a machine without
+**Detect-and-skip:** the gate needs JDK 22+ and Gradle. On a machine without
 them (e.g. a Command-Line-Tools-only mac, which ships a non-functional
 `/usr/bin/java` stub) `check.sh` prints why and exits 0 — mirroring
 `build-native.sh`'s doctrine. No `gradlew` wrapper is committed because
@@ -178,7 +178,7 @@ else a system `gradle`.
 
 Unlike Swift (which needs an expensive macOS runner and is a local-only gate),
 the Kotlin/FFM gate is **cheap to compile-check on Ubuntu** with a JDK — so the
-`swift-kotlin-bindings` job in `.github/workflows/ci.yml` sets up JDK 21, builds
+`swift-kotlin-bindings` job in `.github/workflows/ci.yml` sets up JDK 25, builds
 the lean dylib, and runs `gradle test` on Linux. That exercises the real FFM
 downcalls against the real native core.
 

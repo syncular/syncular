@@ -88,7 +88,7 @@ Each binding ships a runnable example: a todo list over the native Rust core. Th
 | Platform | Example |
 |---|---|
 | Swift (macOS) | A SwiftUI window and a terminal variant over `SyncularClient`, with a `TodoStore` of about 30 lines. [bindings/swift/example](https://github.com/syncular/syncular/tree/main/bindings/swift/example) |
-| Kotlin (JVM) | A terminal app over `SyncularClient` (FFM, JDK 21+) with the same `TodoStore` shape. [bindings/kotlin/example](https://github.com/syncular/syncular/tree/main/bindings/kotlin/example) |
+| Kotlin (JVM) | A terminal app over `SyncularClient` (FFM, JDK 22+) with the same `TodoStore` shape. [bindings/kotlin/example](https://github.com/syncular/syncular/tree/main/bindings/kotlin/example) |
 | Flutter | A todo list of about 150 lines over the Dart `SyncularClient` through `dart:ffi`. [bindings/flutter/example](https://github.com/syncular/syncular/tree/main/bindings/flutter/example) |
 | React Native | The `@syncular/react` hooks over `createNativeSyncClient()`, a Rust-core TurboModule. [bindings/react-native/example](https://github.com/syncular/syncular/tree/main/bindings/react-native/example) |
 | Tauri | The same hooks over `createTauriSyncClient()`, with a native instance in the Tauri host process. [bindings/tauri/example](https://github.com/syncular/syncular/tree/main/bindings/tauri/example) |

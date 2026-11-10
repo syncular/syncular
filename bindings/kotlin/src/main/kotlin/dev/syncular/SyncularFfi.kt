@@ -9,7 +9,7 @@ import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandle
 
 /**
- * The FFM (java.lang.foreign, JDK 21+) binding to the five C functions of the
+ * The FFM (java.lang.foreign, JDK 22+) binding to the five C functions of the
  * syncular-ffi native core (rust/ffi.h). ZERO native-glue code — no JNI C shim,
  * no cbindgen: pure Panama downcalls. This keeps the Kotlin wrapper as thin as
  * the Swift one.
@@ -64,7 +64,7 @@ internal object SyncularFfi {
     /** `syncular_client_new(configJson)` → opaque handle (MemorySegment), or NULL. */
     fun clientNew(configJson: String): MemorySegment {
         Arena.ofConfined().use { arena ->
-            val config = arena.allocateUtf8String(configJson)
+            val config = arena.allocateFrom(configJson)
             return hNew.invokeExact(config) as MemorySegment
         }
     }
@@ -72,7 +72,7 @@ internal object SyncularFfi {
     /** `syncular_client_command(handle, commandJson)` → reply JSON (owned; freed here). */
     fun clientCommand(handle: MemorySegment, commandJson: String): String? {
         Arena.ofConfined().use { arena ->
-            val command = arena.allocateUtf8String(commandJson)
+            val command = arena.allocateFrom(commandJson)
             val reply = hCommand.invokeExact(handle, command) as MemorySegment
             return takeOwnedString(reply)
         }
@@ -97,7 +97,7 @@ internal object SyncularFfi {
         if (ptr.address() == 0L) return null
         // The library did not tell us the length; reinterpret unbounded so we
         // can read the NUL-terminated string, then free the original pointer.
-        val str = ptr.reinterpret(Long.MAX_VALUE).getUtf8String(0)
+        val str = ptr.reinterpret(Long.MAX_VALUE).getString(0)
         hFreeString.invokeExact(ptr) as Unit
         return str
     }

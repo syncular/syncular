@@ -87,7 +87,7 @@ data class SyncularConfig(
 
 /**
  * An idiomatic Kotlin/JVM wrapper over the syncular-ffi C core, via FFM
- * (java.lang.foreign, JDK 21+) — see [SyncularFfi]. Deliberately THIN: it owns
+ * (java.lang.foreign, JDK 22+) — see [SyncularFfi]. Deliberately THIN: it owns
  * the opaque handle, marshals JSON, exposes typed conveniences over the common
  * commands, and runs the `poll_event` loop on a background thread delivering to
  * a registered listener.

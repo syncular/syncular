@@ -7,8 +7,9 @@
 #   1. Build the lean libsyncular for THIS machine and vendor it (the dart:ffi
 #      loader opens it via SYNCULAR_LIBRARY_PATH, set below from vendor/).
 #   2. `dart pub get` in the binding.
-#   3. `dart analyze` the binding (and the example lib — see note below).
+#   3. `dart analyze` the binding.
 #   4. `dart test` (offline-first hermetic suite) against the real native core.
+#   5. `flutter analyze` the example lib (only when `flutter` is on PATH).
 #
 # Detect-and-skip (mirroring build-native.sh / the Swift+Kotlin gates): the
 # wrapper needs a Dart SDK (bundled with Flutter, or standalone `dart`). On a
@@ -93,5 +94,14 @@ echo "== dart analyze (syncular) =="
 
 echo "== dart test (syncular, offline hermetic) =="
 ( cd "${SYNCULAR_PKG}" && "${DART_CMD}" test )
+
+# The example app shares the binding's lib; analyze it too. Building it needs
+# the GTK desktop toolchain or a device, a documented local step.
+if command -v flutter >/dev/null 2>&1; then
+  echo "== flutter analyze (example lib) =="
+  ( cd "${FLUTTER_DIR}/example" && flutter pub get && flutter analyze lib )
+else
+  echo "SKIP: no flutter; the example lib is not analyzed."
+fi
 
 echo "OK: flutter/dart bindings gate is green"

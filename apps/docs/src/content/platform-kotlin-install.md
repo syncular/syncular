@@ -1,6 +1,6 @@
 # Install & first sync (Kotlin)
 
-Put `dev.syncular` and `libsyncular` on a JDK 21 or newer runtime, create a `SyncularClient`, and sync one row with the quickstart server.
+Put `dev.syncular` and `libsyncular` on a JDK 22 or newer runtime, create a `SyncularClient`, and sync one row with the quickstart server.
 
 ::meta{for="Android and JVM developers adding Syncular to a Gradle project" time="15 minutes"}
 
@@ -10,17 +10,17 @@ Put `dev.syncular` and `libsyncular` on a JDK 21 or newer runtime, create a `Syn
 - **Native transport**: The core's HTTP and WebSocket stack, compiled in by the `native-transport` feature.
 :::
 
-You need JDK 21 or newer, a Rust toolchain, Gradle, and a Syncular server (the [Quickstart](/quickstart/) server on port 8787 works). Declare a `kotlin` output in `syncular.json` so `syncular generate` emits `Syncular.generated.kt` ([Schema & typegen](/guide-schema/)).
+You need JDK 22 or newer, a Rust toolchain, Gradle, and a Syncular server (the [Quickstart](/quickstart/) server on port 8787 works). Declare a `kotlin` output in `syncular.json` so `syncular generate` emits `Syncular.generated.kt` ([Schema & typegen](/guide-schema/)).
 
-:::figure{title="What FFM needs from the JVM" note="JDK 21 or newer only"}
+:::figure{title="What FFM needs from the JVM" note="JDK 22 or newer only"}
 <div class="d-row">
-<div class="node"><span class="t">JDK 21</span>FFM is a preview API:<br><code>--enable-preview</code></div>
+<div class="node ok"><span class="t">JDK 22+</span>FFM is stable;<br>no preview flag</div>
 <span class="d-arrow"></span>
-<div class="node ok"><span class="t">JDK 22+</span>FFM is stable;<br>the preview flag is harmless</div>
-<span class="d-arrow"></span>
-<div class="node bad"><span class="t">JDK 20 or older</span>unsupported, no fallback</div>
+<div class="node bad"><span class="t">JDK 21 or older</span>unsupported, no fallback</div>
 </div>
 :::
+
+The binding uses the stable FFM API and ships JDK 22 bytecode, so JDK 21 is no longer supported: JDK 21 exposes FFM only as a preview API under other method names (`allocateUtf8String`, `getUtf8String`). CI builds and tests the binding on JDK 25.
 
 ::::::steps
 :::::step{title="Build the core" time="5 min"}
@@ -34,19 +34,18 @@ rust/scripts/build-native.sh
 :::::
 
 :::::step{title="Add the library and JVM flags" time="5 min"}
-`bindings/kotlin` is a Gradle project; add it to your build as an included build or a subproject. The JVM that runs the app needs the FFM flags, and the JVM that runs the tests needs them too:
+`bindings/kotlin` is a Gradle project; add it to your build as an included build or a subproject. The JVM that runs the app needs the native-access flag, and the JVM that runs the tests needs it too:
 
 ```kotlin title="build.gradle.kts"
-kotlin { jvmToolchain(21) }
 tasks.withType<JavaExec>().configureEach {
-    jvmArgs("--enable-preview", "--enable-native-access=ALL-UNNAMED")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
     systemProperty("syncular.library.path", "/abs/path/libsyncular.dylib")
 }
 ```
 
 `--enable-native-access` silences the restricted-method warning for the FFM downcalls. [Platform specifics](/platform-kotlin-specifics/#library-loading) lists the load order.
 
-::checkpoint[`import dev.syncular.*` compiles, and the JVM starts with both flags.]
+::checkpoint[`import dev.syncular.*` compiles, and the JVM starts with `--enable-native-access`.]
 :::::
 
 :::::step{title="Create a client" time="3 min"}

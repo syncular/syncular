@@ -108,7 +108,7 @@ client.onEvent = { event in
   {
     id: 'kotlin',
     label: 'KOTLIN',
-    core: 'RUST CORE · FFM, JDK 21+',
+    core: 'RUST CORE · FFM, JDK 22+',
     lang: 'kotlin',
     code: `import dev.syncular.*
 

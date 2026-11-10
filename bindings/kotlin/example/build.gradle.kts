@@ -16,8 +16,16 @@ repositories {
     mavenCentral()
 }
 
+// Same JDK 22 target as the wrapper (see ../build.gradle.kts).
 kotlin {
-    jvmToolchain(21) // FFM (java.lang.foreign): preview in 21, stable in 22.
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_22)
+        freeCompilerArgs.add("-Xjdk-release=22")
+    }
+}
+
+java {
+    targetCompatibility = JavaVersion.VERSION_22
 }
 
 dependencies {
@@ -26,8 +34,8 @@ dependencies {
 
 application {
     mainClass.set("dev.syncular.example.MainKt")
-    // FFM downcalls need native access enabled; preview flag on JDK 21 (benign 22+).
-    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--enable-preview")
+    // FFM downcalls need native access enabled.
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
 // The vendored native library path (check.sh builds + copies it into the root
@@ -44,11 +52,4 @@ tasks.named<JavaExec>("run") {
     // Forward stdin so the app's readlnOrNull loop drives interactively / piped.
     standardInput = System.`in`
     vendoredLib?.let { systemProperty("syncular.library.path", it) }
-}
-
-// FFM preview needs the flag at compile time on JDK 21; harmless on 22+.
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    compilerOptions {
-        freeCompilerArgs.add("-Xjvm-enable-preview")
-    }
 }

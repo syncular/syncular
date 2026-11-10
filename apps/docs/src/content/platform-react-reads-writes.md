@@ -127,11 +127,11 @@ hook throws a `ClientSyncError` with code
 `client.raw_sql_dependencies_required` when it mounts.
 
 The core runs exactly one statement, and only one that SQLite reports read-only
-(`sqlite3_stmt_readonly`) and that returns columns. `node:sqlite` does not
-expose that answer, so its adapter accepts `SELECT`, `VALUES`, `EXPLAIN`, and a
-`WITH` clause whose statement is a `SELECT` or `VALUES`. The core refuses
-`PRAGMA` before SQLite compiles it, because SQLite applies a pragma such as
-`query_only` during compilation. Read a pragma through its table-valued
-function: `SELECT * FROM pragma_table_info('todos')`. Writes always go through
+(`sqlite3_stmt_readonly`) and that returns columns. The Bun and Node adapters
+run the statement under `PRAGMA query_only`, so SQLite refuses a write before
+it changes anything. The core refuses `PRAGMA` before SQLite compiles it,
+because SQLite applies a pragma such as `query_only` during compilation. Read a
+pragma through its table-valued function:
+`SELECT * FROM pragma_table_info('todos')`. Writes always go through
 mutations and the outbox. For typed `.sql` reads, see
 [Named queries](/tooling-queries/).

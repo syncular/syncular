@@ -130,5 +130,5 @@ The CRDT helpers `crdtText`, `crdtInsertText`, `crdtDeleteText`, and `crdtApplyU
 ## SDK pages
 
 - [Swift](/platform-swift/): `SyncularClient` over SwiftPM.
-- [Kotlin](/platform-kotlin/): `dev.syncular` over FFM on JDK 21 or newer.
+- [Kotlin](/platform-kotlin/): `dev.syncular` over FFM on JDK 22 or newer.
 - [Flutter](/platform-flutter/): the `syncular` pub package over `dart:ffi`.

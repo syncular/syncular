@@ -200,7 +200,7 @@ it from the repository checkout:
 | Binding | What it is | How you consume it |
 |---|---|---|
 | [bindings/swift](https://github.com/syncular/syncular/tree/main/bindings/swift) | `SyncularClient`, a Swift wrapper over `syncular-ffi` ([Swift](/platform-swift/)) | A separate SwiftPM package (`Package.swift`); add it as a SwiftPM dependency |
-| [bindings/kotlin](https://github.com/syncular/syncular/tree/main/bindings/kotlin) | `SyncularClient`, a Kotlin/JVM wrapper over `syncular-ffi` through FFM (JDK 21 or newer, no runtime dependencies beyond the stdlib) ([Kotlin](/platform-kotlin/)) | A separate Gradle project; depend on it from your Gradle build |
+| [bindings/kotlin](https://github.com/syncular/syncular/tree/main/bindings/kotlin) | `SyncularClient`, a Kotlin/JVM wrapper over `syncular-ffi` through FFM (JDK 22 or newer, no runtime dependencies beyond the stdlib) ([Kotlin](/platform-kotlin/)) | A separate Gradle project; depend on it from your Gradle build |
 | [bindings/flutter](https://github.com/syncular/syncular/tree/main/bindings/flutter) | `SyncularClient`, a Dart wrapper over `syncular-ffi` through `dart:ffi` ([Flutter](/platform-flutter/)) | The `syncular` Dart package at `bindings/flutter/syncular`; add it as a pub path dependency |
 | [bindings/tauri](https://github.com/syncular/syncular/tree/main/bindings/tauri) | `tauri-plugin-syncular`, the client core running natively in the Tauri host process ([Tauri](/platform-tauri/)) | A cargo path or git dependency on `bindings/tauri/plugin`, paired with `@syncular/tauri` in the webview |
 
