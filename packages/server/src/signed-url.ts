@@ -146,8 +146,8 @@ export async function issueBlobUrl(
  * twin of `BlobPresignConfig`: the provider signs a single PUT whose object
  * key embeds the `blobId`. Issuance happens ONLY after host authentication in
  * the upload-grant handler (uploading is host-auth-only, not scope-bearing —
- * §5.9.3). The `byteLength` rides through so a provider MAY bind
- * `Content-Length` (S3 conditional) to the granted size. Never a multipart or
+ * §5.9.3). The provider MUST bind the PUT to the granted `byteLength` and to
+ * the content address, so the object store rejects other bytes. Never a multipart or
  * chunk protocol — single PUT only, this rung and the next (§5.9.3 non-goal).
  * `S3BlobStore.presignBlobPut` (via `s3PresignedBlobUploads`) is the in-tree
  * implementation.
@@ -286,8 +286,14 @@ export async function verifySegmentToken(
     syncError('sync.forbidden', `segment token rejected: ${reason}`);
   const dot = token.indexOf('.');
   if (dot < 0) throw forbidden('malformed token');
-  const payload = fromBase64url(token.slice(0, dot));
-  const mac = fromBase64url(token.slice(dot + 1));
+  let payload: Uint8Array;
+  let mac: Uint8Array;
+  try {
+    payload = fromBase64url(token.slice(0, dot));
+    mac = fromBase64url(token.slice(dot + 1));
+  } catch {
+    throw forbidden('malformed token');
+  }
   const computed = await hmac(key, payload);
   if (!constantTimeEqual(mac, computed)) throw forbidden('bad MAC');
   let claims: SegmentTokenClaims;

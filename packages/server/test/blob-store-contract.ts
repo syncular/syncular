@@ -15,6 +15,7 @@ import { type BlobStore, blobIdFor } from '@syncular/server';
 export const CONTRACT_NOW = 1_750_000_000_000;
 const PARTITION = 'p';
 const OTHER_PARTITION = 'q';
+const unreferenced = async (): Promise<boolean> => false;
 
 export function runBlobStoreContract(
   name: string,
@@ -83,7 +84,7 @@ export function runBlobStoreContract(
       expect(await store.has(PARTITION, blobId)).toBe(true);
     });
 
-    test('re-put of identical bytes is idempotent and keeps the first createdAt', async () => {
+    test('re-put of identical bytes is idempotent and refreshes createdAt', async () => {
       const store = await makeStore();
       const bytes = new Uint8Array([9, 9, 9, 9]);
       const blobId = await blobIdFor(bytes);
@@ -94,10 +95,18 @@ export function runBlobStoreContract(
         bytes,
         CONTRACT_NOW + 5_000,
       );
-      // §5.9.2 upload age: a re-upload must NOT reset the sweep grace clock.
-      expect(second.createdAtMs).toBe(CONTRACT_NOW);
+      // §5.9.2: a re-upload restarts the sweep grace period.
+      expect(second.createdAtMs).toBe(CONTRACT_NOW + 5_000);
       const got = await store.get(PARTITION, blobId);
-      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW);
+      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW + 5_000);
+      expect(got?.bytes).toEqual(bytes);
+      if (store.stats !== undefined)
+        expect((await store.stats(PARTITION)).count).toBe(1);
+      // A sweep with the cutoff between both uploads keeps the blob.
+      expect(
+        await store.sweepOrphans(PARTITION, CONTRACT_NOW + 1, unreferenced),
+      ).toEqual([]);
+      expect(await store.has(PARTITION, blobId)).toBe(true);
     });
 
     test('a re-put records a missing media type and never replaces one', async () => {
@@ -113,11 +122,11 @@ export function runBlobStoreContract(
         'image/jpeg',
       );
       expect(named.mediaType).toBe('image/jpeg');
-      expect(named.createdAtMs).toBe(CONTRACT_NOW);
+      expect(named.createdAtMs).toBe(CONTRACT_NOW + 5);
       await store.put(PARTITION, blobId, bytes, CONTRACT_NOW + 6, 'text/html');
       const got = await store.get(PARTITION, blobId);
       expect(got?.record.mediaType).toBe('image/jpeg');
-      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW);
+      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW + 6);
       expect(got?.bytes).toEqual(bytes);
     });
 
@@ -162,7 +171,7 @@ export function runBlobStoreContract(
         const swept = await store.sweepOrphans(
           PARTITION,
           CONTRACT_NOW,
-          new Set(),
+          unreferenced,
         );
         expect(swept).toEqual([blobId]);
         expect(await store.has(PARTITION, blobId)).toBe(false);
@@ -176,7 +185,7 @@ export function runBlobStoreContract(
         const swept = await store.sweepOrphans(
           PARTITION,
           CONTRACT_NOW,
-          new Set([blobId]),
+          async (id) => id === blobId,
         );
         expect(swept).toEqual([]);
         expect(await store.has(PARTITION, blobId)).toBe(true);
@@ -191,10 +200,51 @@ export function runBlobStoreContract(
         const swept = await store.sweepOrphans(
           PARTITION,
           CONTRACT_NOW,
-          new Set(),
+          unreferenced,
         );
         expect(swept).toEqual([]);
         expect(await store.has(PARTITION, blobId)).toBe(true);
+      });
+
+      test('re-checks the reference index per candidate at delete time', async () => {
+        const store = await makeStore();
+        const a = new Uint8Array([11]);
+        const b = new Uint8Array([12]);
+        const aId = await blobIdFor(a);
+        const bId = await blobIdFor(b);
+        await store.put(PARTITION, aId, a, CONTRACT_NOW - 10_000);
+        await store.put(PARTITION, bId, b, CONTRACT_NOW - 10_000);
+        // A push referencing the other candidate lands while the sweep is
+        // deleting the first one: the later lookup sees it.
+        let first: string | undefined;
+        const swept = await store.sweepOrphans(
+          PARTITION,
+          CONTRACT_NOW,
+          async (blobId) => {
+            if (first === undefined) {
+              first = blobId;
+              return false;
+            }
+            return blobId !== first;
+          },
+        );
+        expect(swept).toEqual([first ?? '']);
+        expect(await store.has(PARTITION, first === aId ? bId : aId)).toBe(
+          true,
+        );
+      });
+
+      test('never asks the reference index about a blob inside the grace period', async () => {
+        const store = await makeStore();
+        const bytes = new Uint8Array([13]);
+        const blobId = await blobIdFor(bytes);
+        await store.put(PARTITION, blobId, bytes, CONTRACT_NOW);
+        const asked: string[] = [];
+        await store.sweepOrphans(PARTITION, CONTRACT_NOW, async (id) => {
+          asked.push(id);
+          return false;
+        });
+        expect(asked).toEqual([]);
       });
 
       test('sweeps only within the given partition', async () => {
@@ -206,7 +256,7 @@ export function runBlobStoreContract(
         const swept = await store.sweepOrphans(
           PARTITION,
           CONTRACT_NOW,
-          new Set(),
+          unreferenced,
         );
         expect(swept).toEqual([blobId]);
         // The other partition's copy is untouched.

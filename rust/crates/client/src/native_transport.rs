@@ -2551,12 +2551,21 @@ mod native {
             media_type: Option<&str>,
         ) -> Result<(), TransportError> {
             // §5.9.3: the presigned URL is the entire grant — no host auth.
+            // The grant signs content-length (ureq sets it from the body) and
+            // this checksum, so the object store rejects any other bytes.
+            use sha2::Digest;
             self.check_request_bytes(bytes.len() as u64)?;
             let req = self.finish_request(
-                self.agent.put(url).header(
-                    "content-type",
-                    media_type.unwrap_or("application/octet-stream"),
-                ),
+                self.agent
+                    .put(url)
+                    .header(
+                        "content-type",
+                        media_type.unwrap_or("application/octet-stream"),
+                    )
+                    .header(
+                        "x-amz-checksum-sha256",
+                        ssp2::util::base64(&sha2::Sha256::digest(bytes)),
+                    ),
                 true,
             )?;
             let resp = req
@@ -3688,6 +3697,45 @@ mod tests {
                 reset_required: true,
             }],
         })
+    }
+
+    #[test]
+    fn a_presigned_blob_put_sends_the_checksum_the_grant_signs() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut head = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line.trim_end().split_once(": ").unwrap_or((&line, ""));
+                head.push(format!("{}: {value}", name.to_ascii_lowercase()));
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            head
+        });
+        let mut transport =
+            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        transport
+            .blob_put_url(
+                &format!("{base}/bucket/key?X-Amz-Signature=x"),
+                b"body",
+                None,
+            )
+            .unwrap();
+        let head = server.join().unwrap();
+        // base64 of SHA-256("body"); content-length comes from the body.
+        assert!(head.contains(
+            &"x-amz-checksum-sha256: Iw2DWNyOiJC0xY3utikS7i8gNXrpKlzIYbmOaP4xrLU=".to_owned()
+        ));
+        assert!(head.contains(&"content-length: 4".to_owned()));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 /**
  * `handleBlobDownload` (SPEC.md §5.9.5): the row-derived authorization gate,
- * and the additive delegated-presign issuance — a signed URL is minted ONLY
- * after the authorization check passes, never as a bearer capability from the
- * blobId alone.
+ * streamed inline delivery, and the additive delegated-presign issuance — a
+ * signed URL is minted ONLY after the authorization check passes, never as a
+ * bearer capability from the blobId alone. `handleBlobUpload` (§5.9.3): the
+ * size cap holds before and while the body is read.
  */
 import { describe, expect, test } from 'bun:test';
 import { encodeRow } from '@syncular/core';
@@ -11,6 +12,7 @@ import {
   blobIdFor,
   compileSchema,
   handleBlobDownload,
+  handleBlobUpload,
   handleBlobUploadGrant,
   MemoryBlobStore,
   S3BlobStore,
@@ -89,12 +91,15 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
     await seedReferencedBlob(storage, blobId, 'p1');
 
     const result = await handleBlobDownload(baseCtx(storage, blobs), blobId);
-    expect(result.bytes).toEqual(bytes);
+    if ('url' in result) throw new Error('expected inline delivery');
+    expect(result.byteLength).toBe(bytes.length);
+    expect(
+      new Uint8Array(await new Response(result.body).arrayBuffer()),
+    ).toEqual(bytes);
     // §5.9.5: inline bytes carry the stored media type, never sniffed.
     expect(result.headers['Content-Type']).toBe('image/png');
     expect(result.headers['X-Content-Type-Options']).toBe('nosniff');
-    // No presign configured ⇒ no url on the result.
-    expect(result.url).toBeUndefined();
+    expect(result.headers.Vary).toBe('Authorization');
     expect(await storage.listPartitionRegistry()).toEqual([
       {
         partition: PARTITION,
@@ -132,6 +137,129 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
       handleBlobDownload(baseCtx(storage, blobs), blobId),
     ).rejects.toThrow(/no referencing row/);
   });
+
+  test('reads no blob byte before authorization passes', async () => {
+    const storage = new SqliteServerStorage();
+    const inner = new MemoryBlobStore();
+    const bytes = new Uint8Array([5, 6, 7]);
+    const blobId = await blobIdFor(bytes);
+    await inner.put(PARTITION, blobId, bytes, NOW);
+    await seedReferencedBlob(storage, blobId, 'p2');
+    const reads: string[] = [];
+    const blobs: BlobStore = {
+      put: (...args) => inner.put(...args),
+      has: (...args) => inner.has(...args),
+      get: (partition, id) => {
+        reads.push('get');
+        return inner.get(partition, id);
+      },
+      open: async (partition, id) => {
+        reads.push('open');
+        const entry = await inner.get(partition, id);
+        return entry === undefined
+          ? undefined
+          : {
+              record: entry.record,
+              body:
+                new Response(entry.bytes.slice()).body ?? new ReadableStream(),
+              byteLength: entry.bytes.length,
+            };
+      },
+      sweepOrphans: (...args) => inner.sweepOrphans(...args),
+      delete: (...args) => inner.delete(...args),
+    };
+    await expect(
+      handleBlobDownload(baseCtx(storage, blobs), blobId),
+    ).rejects.toThrow(/no referencing row/);
+    expect(reads).toEqual([]);
+    // The authorized actor streams through `open`, never `get`.
+    const result = await handleBlobDownload(
+      baseCtx(storage, blobs, {
+        resolveScopes: () => ({ project_id: ['p2'] }),
+      }),
+      blobId,
+    );
+    if ('url' in result) throw new Error('expected inline delivery');
+    expect(reads).toEqual(['open']);
+    expect(
+      new Uint8Array(await new Response(result.body).arrayBuffer()),
+    ).toEqual(bytes);
+  });
+});
+
+describe('handleBlobUpload size cap (§5.9.3)', () => {
+  const upload = (body: BodyInit | ReadableStream, headers: HeadersInit) =>
+    new Request('http://host/blobs/x', {
+      method: 'PUT',
+      body,
+      headers,
+      duplex: 'half',
+    } as RequestInit);
+
+  test('a declared Content-Length over the cap fails before any byte is read', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const blobId = await blobIdFor(new Uint8Array([1]));
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array(8));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await expect(
+      handleBlobUpload(
+        baseCtx(storage, blobs, { maxBlobBytes: 10 }),
+        blobId,
+        upload(body, { 'content-length': '11' }),
+      ),
+    ).rejects.toMatchObject({ code: 'blob.too_large' });
+    expect(pulls).toBe(0);
+  });
+
+  test('an undeclared body stops being read once it passes the cap', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const blobId = await blobIdFor(new Uint8Array([1]));
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array(8));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await expect(
+      handleBlobUpload(
+        baseCtx(storage, blobs, { maxBlobBytes: 10 }),
+        blobId,
+        upload(body, {}),
+      ),
+    ).rejects.toMatchObject({ code: 'blob.too_large' });
+    // Two 8-byte chunks pass the 10-byte cap; the stream is never drained.
+    expect(pulls).toBe(2);
+    expect(await blobs.has(PARTITION, blobId)).toBe(false);
+  });
+
+  test('stores a body within the cap with its media type', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const blobId = await blobIdFor(bytes);
+    await handleBlobUpload(
+      baseCtx(storage, blobs, { maxBlobBytes: 10 }),
+      blobId,
+      upload(bytes, { 'content-type': 'image/png' }),
+    );
+    expect((await blobs.get(PARTITION, blobId))?.record.mediaType).toBe(
+      'image/png',
+    );
+  });
 });
 
 describe('handleBlobDownload delegated presign (§5.9.5 additive url)', () => {
@@ -164,7 +292,8 @@ describe('handleBlobDownload delegated presign (§5.9.5 additive url)', () => {
       }),
       blobId,
     );
-    if (result.url === undefined) throw new Error('expected a presigned url');
+    if (!('url' in result)) throw new Error('expected a presigned url');
+    expect(result.headers['Cache-Control']).toBe('private, max-age=0');
     expect(result.urlExpiresAtMs).toBe((Math.floor(NOW / 1000) + 600) * 1000);
     // §5.9.5 equivalence: the signed key embeds the blobId.
     expect(new URL(result.url).pathname).toContain(blobId.replace(':', '/'));

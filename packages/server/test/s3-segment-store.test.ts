@@ -209,7 +209,7 @@ describe('concurrent publication of one content address (§5.1)', () => {
     expect(stored?.record.publications).toHaveLength(3);
   });
 
-  test('the bytes object is written once and never rewritten', async () => {
+  test('republishing stored bytes sends no bytes PUT (HEAD first)', async () => {
     const store = makeStore();
     const bytes = new Uint8Array([1, 2, 3]);
     const record = await store.put(META, bytes, NOW);
@@ -221,13 +221,14 @@ describe('concurrent publication of one content address (§5.1)', () => {
     };
     try {
       // A second publication of the same content adds a digest to the record
-      // and leaves the immutable bytes object alone: only the record carries
-      // the union, so only the record needs a conditional write.
+      // and leaves the immutable bytes object alone: a HEAD finds it, so the
+      // bytes are neither uploaded again nor downloaded for comparison.
       await store.put({ ...META, scopeDigest: 'digest-b' }, bytes, NOW + 1);
+      await store.put(META, bytes, NOW + 2);
     } finally {
       beforePutHook = undefined;
     }
-    expect(bytesPuts).toBe(1);
+    expect(bytesPuts).toBe(0);
     expect(stub.objects.get(bytesKey)?.bytes).toEqual(stored);
     expect((await store.get(record.segmentId))?.record.scopeDigests).toContain(
       'digest-b',

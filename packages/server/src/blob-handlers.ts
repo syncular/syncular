@@ -6,7 +6,8 @@
  * `blobId` is never a bearer capability. Framework-free; the hono/runtime
  * adapters map these onto `PUT/GET <mount>/blobs/{blobId}`.
  */
-import { type BlobRecord, blobIdFor, isBlobId } from './blob-store';
+import { blobIdFor, isBlobId } from './blob-store';
+import { decodeRequestBody } from './content-encoding';
 import type { SyncRequestContext } from './context';
 import {
   clockOf,
@@ -17,36 +18,29 @@ import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
 import { authorizeWrite, type ResolvedScopes } from './scopes';
+import { bytesStream } from './segment-store';
 import { issueBlobUploadUrl, issueBlobUrl } from './signed-url';
 
 const DEFAULT_MAX_BLOB_BYTES = 64 * 1024 * 1024;
 
-export interface BlobUploadRequest {
-  readonly blobId: string;
-  readonly bytes: Uint8Array;
-  /** Advisory MIME type from the upload `Content-Type`, if any. */
-  readonly mediaType?: string;
-}
-
-export interface BlobDownloadResult {
-  /**
-   * The blob bytes, when served inline. **Absent** when the host configured
-   * `blobSignedUrls` and a `url` was issued: the sync server exits the egress
-   * path and the client fetches `url` directly (§5.9.5 always-issue).
-   */
-  readonly bytes?: Uint8Array;
-  readonly headers: Record<string, string>;
-  /**
-   * §5.9.5 delegated presign (always-issue): a provider-signed GET URL for
-   * the bytes, issued only after the row-derived authorization check passed.
-   * Present iff the host configured `blobSignedUrls`; when present, `bytes` is
-   * absent and the client MUST fetch the URL directly (no host auth), verify
-   * the content address, and on failure re-request this endpoint — never fall
-   * through (§5.9.5 recovery rule).
-   */
-  readonly url?: string;
-  readonly urlExpiresAtMs?: number;
-}
+/**
+ * A §5.9.5 download: the stored bytes as a stream with their length (inline
+ * delivery), or, when the host configured `blobSignedUrls`, a provider-signed
+ * GET URL issued after the row-derived authorization check. The client
+ * fetches a URL directly (no host auth), verifies the content address, and on
+ * failure re-requests this endpoint (§5.9.5 recovery rule).
+ */
+export type BlobDownloadResult =
+  | {
+      readonly headers: Record<string, string>;
+      readonly body: ReadableStream<Uint8Array<ArrayBuffer>>;
+      readonly byteLength: number;
+    }
+  | {
+      readonly headers: Record<string, string>;
+      readonly url: string;
+      readonly urlExpiresAtMs: number;
+    };
 
 /** `POST <mount>/blobs/{blobId}/upload-grant` request body (§5.9.3). */
 export interface BlobUploadGrantRequest {
@@ -71,43 +65,67 @@ export interface BlobUploadGrantResult {
   readonly present?: boolean;
 }
 
-/** `PUT <mount>/blobs/{blobId}` (§5.9.3). Host auth is the adapter's job. */
+/**
+ * `PUT <mount>/blobs/{blobId}` (§5.9.3). Host auth is the adapter's job. The
+ * size cap applies to the declared `Content-Length` before any byte is read
+ * and again to the counted decoded bytes while reading, so an oversized body
+ * is never buffered whole.
+ */
 export async function handleBlobUpload(
   ctx: SyncRequestContext,
-  request: BlobUploadRequest,
+  blobId: string,
+  request: Request,
 ): Promise<void> {
   await touchAuthenticatedPartition(ctx);
   const store = ctx.blobs;
   if (store === undefined) {
     throw syncError('blob.not_found', 'this server has no blob store (§5.9)');
   }
-  if (!isBlobId(request.blobId)) {
+  if (!isBlobId(blobId)) {
     throw syncError(
       'blob.hash_mismatch',
       'blobId path is not "sha256:<64 hex>" (§5.9.1)',
     );
   }
   const maxBytes = ctx.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
-  if (request.bytes.length > maxBytes) {
-    throw syncError(
-      'blob.too_large',
-      `blob exceeds the ${maxBytes}-byte cap (§5.9.3)`,
-    );
+  const tooLarge = syncError(
+    'blob.too_large',
+    'blob exceeds the server size cap (§5.9.3)',
+    JSON.stringify({ max: maxBytes }),
+  );
+  if (Number(request.headers.get('content-length')) > maxBytes) throw tooLarge;
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = await decodeRequestBody(request, maxBytes);
+  } catch (error) {
+    throw error instanceof SyncError && error.code === 'sync.limit_exceeded'
+      ? tooLarge
+      : error;
   }
-  const computed = await blobIdFor(request.bytes);
-  if (computed !== request.blobId) {
+  if (bytes === undefined) {
+    throw syncError('sync.invalid_request', 'unsupported content encoding');
+  }
+  if ((await blobIdFor(bytes)) !== blobId) {
     throw syncError(
       'blob.hash_mismatch',
       'uploaded bytes do not hash to the blobId path (§5.9.3)',
     );
   }
+  const contentType = request.headers
+    .get('content-type')
+    ?.split(';')[0]
+    ?.trim();
   const clock = clockOf(ctx);
   await store.put(
     ctx.partition,
-    request.blobId,
-    request.bytes,
+    blobId,
+    bytes,
     clock(),
-    request.mediaType,
+    contentType === undefined ||
+      contentType === '' ||
+      contentType === 'application/octet-stream'
+      ? undefined
+      : contentType,
   );
   if (ctx.events !== undefined) {
     emitEvent(ctx.events, {
@@ -115,8 +133,8 @@ export async function handleBlobUpload(
       atMs: clock(),
       partition: ctx.partition,
       actorId: ctx.actorId,
-      blobId: request.blobId,
-      bytes: request.bytes.length,
+      blobId,
+      bytes: bytes.length,
     });
   }
 }
@@ -146,7 +164,7 @@ export async function handleBlobDownload(
       outcome: 'ok',
       // Presigned delivery carries no inline bytes (§5.9.5 always-issue); the
       // byte count is unknown to the sync server, which exited the egress path.
-      bytes: result.bytes?.length ?? 0,
+      bytes: 'byteLength' in result ? result.byteLength : 0,
       durationMs: clock() - startedAtMs,
     });
     return result;
@@ -176,20 +194,10 @@ async function downloadBlob(
   if (!isBlobId(blobId)) {
     throw syncError('blob.not_found', 'malformed blobId (§5.9.1)');
   }
-  // §5.9.5 always-issue: when presign is configured the server exits the
-  // egress path — it only needs to know the object EXISTS (a HEAD/`has`), not
-  // the bytes. Inline delivery loads the bytes; presigned delivery does not.
-  const presignConfigured = ctx.blobSignedUrls !== undefined;
-  let entry: { record: BlobRecord; bytes: Uint8Array } | undefined;
-  if (presignConfigured) {
-    if (!(await store.has(ctx.partition, blobId))) {
-      throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
-    }
-  } else {
-    entry = await store.get(ctx.partition, blobId);
-    if (entry === undefined) {
-      throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
-    }
+  // Existence first (a HEAD), authorization second, bytes last: no blob byte
+  // is read for an actor the reference index does not authorize (§5.9.5).
+  if (!(await store.has(ctx.partition, blobId))) {
+    throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
   }
 
   // §5.9.5 authorization: resolve once, then test referencing rows.
@@ -264,25 +272,37 @@ async function downloadBlob(
       headers: {
         ETag: `"${blobId}"`,
         'Cache-Control': 'private, max-age=0',
-        Vary: 'Authorization, Accept-Encoding',
+        Vary: 'Authorization',
       },
       url: issued.url,
       urlExpiresAtMs: issued.urlExpiresAtMs,
     };
   }
 
-  // Inline delivery (no presign store configured): the bytes were loaded.
-  const bytes = entry?.bytes;
-  if (bytes === undefined) {
-    // Unreachable: presign not configured ⇒ `entry` was loaded above.
-    throw syncError('blob.not_found', 'blob bytes unavailable (§5.9.5)');
+  // Inline delivery streams the stored bytes verbatim (identity encoding,
+  // §5.9.5). A store without `open` serves its `get` bytes as one chunk.
+  const opened =
+    store.open !== undefined
+      ? await store.open(ctx.partition, blobId)
+      : await store.get(ctx.partition, blobId).then((entry) =>
+          entry === undefined
+            ? undefined
+            : {
+                record: entry.record,
+                body: bytesStream(entry.bytes),
+                byteLength: entry.bytes.length,
+              },
+        );
+  if (opened === undefined) {
+    throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
   }
   // §5.9.5: inline bytes carry the stored media type, so an <img> or <a>
   // pointed at the route renders them. A JSON type stays octet-stream: a
   // JSON body is reserved for the signed-URL envelope.
-  const mediaType = entry?.record.mediaType;
+  const mediaType = opened.record.mediaType;
   return {
-    bytes,
+    body: opened.body,
+    byteLength: opened.byteLength,
     headers: {
       'Content-Type':
         mediaType === undefined ||
@@ -293,7 +313,7 @@ async function downloadBlob(
       'Content-Security-Policy': "sandbox; default-src 'none'",
       ETag: `"${blobId}"`,
       'Cache-Control': 'private, max-age=0',
-      Vary: 'Authorization, Accept-Encoding',
+      Vary: 'Authorization',
     },
   };
 }
@@ -303,11 +323,9 @@ async function downloadBlob(
  * auth is the adapter's job — uploading is host-auth-only, not scope-bearing,
  * so any authenticated actor may obtain a grant within the size cap (§5.9.3).
  *
- * The size cap is enforced HERE, up front, against the declared `byteLength`
- * (the object-store hop cannot re-check the streamed byte count). Integrity is
- * NOT checked here: the object store places bytes at the content-addressed key,
- * and the address is verified at reference time (§5.9.6 push existence) and on
- * every download (§5.9.5/§5.1). Returns a presigned single PUT, or a
+ * The size cap is enforced HERE, up front, against the declared `byteLength`;
+ * the presigned PUT binds that length and the content address, so the object
+ * store rejects any other bytes (§5.9.3). Returns a presigned single PUT, or a
  * `present` marker if the blob already exists (idempotent §5.9.3), or an empty
  * result when no presigned-upload store is configured (client streams direct).
  */
@@ -335,7 +353,8 @@ export async function handleBlobUploadGrant(
     // §5.9.3: cap enforced at grant issuance, before any URL is minted.
     throw syncError(
       'blob.too_large',
-      `blob byteLength exceeds the ${maxBytes}-byte cap (§5.9.3)`,
+      'blob byteLength exceeds the server size cap (§5.9.3)',
+      JSON.stringify({ max: maxBytes }),
     );
   }
   // §5.9.3 no presigned-upload store: report no grant; the client streams

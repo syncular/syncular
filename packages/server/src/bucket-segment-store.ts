@@ -58,7 +58,6 @@ import {
   mergeSegmentRecord,
   publicationRecord,
   publicationsForRecord,
-  segmentBytesEqual,
   segmentIdFor,
   selectSegmentPublication,
 } from './segment-store';
@@ -440,23 +439,29 @@ export class BucketSegmentStore implements SegmentStore {
   }
 
   /**
-   * Write the immutable bytes object. Create-only, so a second publisher of
-   * identical bytes is a no-op and a second publisher of DIFFERENT bytes under
-   * the same content address is the hash collision §5.1 requires to fail
-   * loudly instead of overwriting.
+   * Write the immutable bytes object unless it is stored already. A HEAD
+   * comes first, so republishing a segment (every bootstrap pull of an
+   * unchanged window) moves no bytes. The write is create-only, so two first
+   * publishers cannot overwrite each other. A stored object under the same
+   * content address with a different size is the hash collision §5.1
+   * requires to fail loudly; equal size under one SHA-256 address is the same
+   * content.
    */
   async #putBytes(segmentId: string, bytes: Uint8Array): Promise<void> {
     const key = this.objectKeyFor(segmentId);
-    const written = await this.#bucket.put(key, {
-      body: bytes,
-      contentType: 'application/octet-stream',
-      createOnly: true,
-    });
-    if (written) return;
-    const current = await this.#bucket.get(key);
-    if (current === undefined) return;
-    const stored = new Uint8Array(await current.arrayBuffer());
-    if (!segmentBytesEqual(stored, bytes)) {
+    const head = await this.#bucket.head(key);
+    if (
+      head === undefined &&
+      (await this.#bucket.put(key, {
+        body: bytes,
+        contentType: 'application/octet-stream',
+        createOnly: true,
+      }))
+    ) {
+      return;
+    }
+    const stored = head ?? (await this.#bucket.head(key));
+    if (stored !== undefined && stored.size !== bytes.length) {
       throw new Error(
         `${this.#label}: content-address collision at ${segmentId} (§5.1)`,
       );

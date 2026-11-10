@@ -10,10 +10,14 @@ import {
   encodeMessage,
   encodeRemoteOperationRequest,
   decodeRemoteOperationResponse,
+  encodeRow,
   encodeSparseRow,
   type RowColumn,
 } from '@syncular/core';
 import {
+  blobIdFor,
+  compileSchema,
+  MemoryBlobStore,
   MemorySegmentStore,
   registerRemoteQuery,
   RemoteOperationRegistry,
@@ -941,6 +945,122 @@ describe('large segment downloads', () => {
     expect(Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer()))).toEqual(
       bytes,
     );
+  });
+});
+
+describe('blob routes (§5.9.3, §5.9.5)', () => {
+  const BLOB_SCHEMA: ServerSchema = {
+    version: 1,
+    tables: [
+      {
+        name: 'files',
+        primaryKey: 'id',
+        scopes: ['project:{project_id}'],
+        columns: [
+          { name: 'id', type: 'string', nullable: false },
+          { name: 'project_id', type: 'string', nullable: false },
+          { name: 'attachment', type: 'blob_ref', nullable: true },
+        ],
+      },
+    ],
+  };
+
+  async function makeBlobApp(overrides?: Partial<SyncServerConfig>) {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(BLOB_SCHEMA));
+    const blobs = new MemoryBlobStore();
+    const app = new Hono();
+    app.route(
+      '/',
+      createSyncularHono({
+        config: {
+          schema: BLOB_SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          blobs,
+          resolveScopes: () => ({ project_id: ['p1'] }),
+          ...overrides,
+        },
+        authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+      }),
+    );
+    const reference = async (blobId: string) => {
+      const tx = await storage.begin('part-1');
+      if (tx.setBlobRefs === undefined) throw new Error('no setBlobRefs');
+      await tx.upsertRow('files', {
+        rowId: 'f1',
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+        payload: encodeRow(BLOB_SCHEMA.tables[0]?.columns ?? [], [
+          'f1',
+          'p1',
+          null,
+        ]),
+      });
+      await tx.setBlobRefs('files', 'f1', [blobId]);
+      await tx.commit();
+    };
+    return { app, blobs, reference };
+  }
+
+  test('PUT answers 413 from Content-Length before reading, and from the counted read', async () => {
+    const { app, blobs } = await makeBlobApp({ maxBlobBytes: 4 });
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const blobId = await blobIdFor(bytes);
+    const declared = await app.request(`/blobs/${blobId}`, {
+      method: 'PUT',
+      body: bytes.slice().buffer as ArrayBuffer,
+    });
+    expect(declared.status).toBe(413);
+    expect(await declared.json()).toMatchObject({ code: 'blob.too_large' });
+    const streamed = await app.request(`/blobs/${blobId}`, {
+      method: 'PUT',
+      body: new Blob([bytes.slice()]).stream(),
+      duplex: 'half',
+    } as RequestInit);
+    expect(streamed.status).toBe(413);
+    expect(await blobs.has('part-1', blobId)).toBe(false);
+  });
+
+  test('GET streams the stored bytes with identity encoding', async () => {
+    const { app, blobs, reference } = await makeBlobApp();
+    const bytes = new TextEncoder().encode('x'.repeat(4096));
+    const blobId = await blobIdFor(bytes);
+    await blobs.put('part-1', blobId, bytes, Date.now(), 'text/plain');
+    await reference(blobId);
+    const response = await app.request(`/blobs/${blobId}`, {
+      headers: { 'accept-encoding': 'zstd, gzip' },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-encoding')).toBeNull();
+    expect(response.headers.get('content-length')).toBe(String(bytes.length));
+    expect(response.headers.get('content-type')).toBe('text/plain');
+    expect(response.headers.get('vary')).toBe('Authorization');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
+
+  test('the signed-URL answer keeps the handler cache headers', async () => {
+    const { app, blobs, reference } = await makeBlobApp({
+      blobSignedUrls: {
+        presign: () => ({
+          url: 'https://cdn.test/blob',
+          urlExpiresAtMs: 1_750_000_900_000,
+        }),
+      },
+    });
+    const bytes = new Uint8Array([3, 3, 3]);
+    const blobId = await blobIdFor(bytes);
+    await blobs.put('part-1', blobId, bytes, Date.now());
+    await reference(blobId);
+    const response = await app.request(`/blobs/${blobId}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, max-age=0');
+    expect(response.headers.get('vary')).toBe('Authorization');
+    expect(response.headers.get('etag')).toBe(`"${blobId}"`);
+    expect(await response.json()).toEqual({
+      url: 'https://cdn.test/blob',
+      urlExpiresAtMs: 1_750_000_900_000,
+    });
   });
 });
 

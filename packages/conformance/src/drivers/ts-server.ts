@@ -752,11 +752,15 @@ class TsServerInstance implements ServerInstance {
     mediaType?: string,
   ): Promise<{ ok: true } | { ok: false; error: DriverError }> {
     try {
-      await handleBlobUpload(this.#ctx(actorId), {
+      await handleBlobUpload(
+        this.#ctx(actorId),
         blobId,
-        bytes,
-        ...(mediaType !== undefined ? { mediaType } : {}),
-      });
+        new Request('http://driver/blobs', {
+          method: 'PUT',
+          body: bytes.slice(),
+          headers: mediaType !== undefined ? { 'Content-Type': mediaType } : {},
+        }),
+      );
       return { ok: true };
     } catch (error) {
       if (error instanceof SyncError) {
@@ -772,17 +776,18 @@ class TsServerInstance implements ServerInstance {
   ): Promise<BlobDownloadResult> {
     try {
       const result = await handleBlobDownload(this.#ctx(actorId), blobId);
-      if (result.url !== undefined) {
+      if ('url' in result) {
         // §5.9.5 always-issue: the server exited the egress path.
         return {
           ok: true,
           url: result.url,
-          ...(result.urlExpiresAtMs !== undefined
-            ? { urlExpiresAtMs: result.urlExpiresAtMs }
-            : {}),
+          urlExpiresAtMs: result.urlExpiresAtMs,
         };
       }
-      return { ok: true, bytes: result.bytes ?? new Uint8Array(0) };
+      return {
+        ok: true,
+        bytes: new Uint8Array(await new Response(result.body).arrayBuffer()),
+      };
     } catch (error) {
       if (error instanceof SyncError) {
         return { ok: false, error: toDriverError(error) };

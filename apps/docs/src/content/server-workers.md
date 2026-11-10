@@ -63,7 +63,7 @@ const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
 };
 ```
 
-A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself: `GET /segments/:id` streams the R2 object through `open` without buffering it in the isolate, and `GET /blobs/:id` re-authorizes the row references before it reads ([Blobs](/concepts-blobs/)).
+A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself. `GET /segments/:id` and `GET /blobs/:id` stream the R2 object body through `open` without buffering it in the isolate. The blob route checks that the object exists and authorizes the referencing rows before it opens the object ([Blobs](/concepts-blobs/)).
 
 Both stores write the same object keys as `S3SegmentStore` and `S3BlobStore`. One bucket therefore serves both access paths: a Bun or Node host that holds R2 S3 credentials publishes through the S3 endpoint, and the Worker reads the same objects through the binding. To get presigned URLs, use `S3SegmentStore` and `S3BlobStore` with `s3PresignedUrls` and `s3PresignedBlobUrls` on the Workers host as well, and set the R2 endpoint and access key secrets listed in step 4.
 
@@ -279,7 +279,7 @@ Retention windows, eligibility rules, and what to alert on are in [Operations an
 
 Cloudflare's edge does not compress `application/vnd.syncular.*` or `application/octet-stream` bodies, so the Worker compresses them (SPEC §1.3). `POST /sync` and `POST /operations` are answered by the partition's Durable Object as identity bodies. The Worker is the outermost hop, so it declares `Content-Encoding: gzip` on a 200 response whose body declares no encoding when the request accepts gzip, and leaves `encodeBody` at its default: workerd gzips the body once as it leaves the edge. A response that already declares an encoding passes through unchanged, so no body is encoded twice.
 
-Segment and blob routes run inside `createSyncularHono`, which encodes its own bodies from `Accept-Encoding` and marks them `encodeBody: 'manual'`. On Workers the only codec is gzip through `CompressionStream`; a Bun deployment of the same adapter prefers zstd. Every response whose body was negotiated carries `Vary: Accept-Encoding`.
+Segment routes run inside `createSyncularHono`, which encodes its own bodies from `Accept-Encoding` and marks them `encodeBody: 'manual'`. On Workers the only codec is gzip through `CompressionStream`; a Bun deployment of the same adapter prefers zstd. Every response whose body was negotiated carries `Vary: Accept-Encoding`. Blob downloads stream the stored bytes with identity encoding and declare no `Content-Encoding`, so workerd does not encode them either.
 
 Clients may gzip a request body. The forwarded `/sync` and `/operations` requests keep the client's `Content-Encoding` header, and the Durable Object decodes gzip before it parses SSP2. Any other request encoding is answered with HTTP 415.
 

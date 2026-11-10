@@ -132,15 +132,15 @@ Give a client `httpSyncTransport('http://localhost:8787/sync')` and a subscripti
 | `/sync` | POST | Combined push and pull; the whole protocol runs through here. Accepts a gzip request body and compresses its response per `Accept-Encoding` |
 | `/operations` | POST | Registered queries and commands ([Remote server operations](/guide-remote-operations/)); answers `operation.unknown` unless the `operations` option is set. Compresses its response per `Accept-Encoding` |
 | `/segments/:segmentId` | GET | Bootstrap segment download, compressed per `Accept-Encoding` |
-| `/blobs/:blobId` | PUT | Blob upload, content-address verified |
-| `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows, compressed per `Accept-Encoding` |
+| `/blobs/:blobId` | PUT | Blob upload, content-address verified; refused with 413 `blob.too_large` from `Content-Length` before the body is read |
+| `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows before any byte is read, streamed with identity encoding |
 | `/blobs/:blobId/upload-grant` | POST | Presigned direct-to-storage upload grant, only when configured |
 
 `GET /realtime` is a WebSocket upgrade that depends on the runtime, so your host owns it ([below](#advanced-wire-the-realtime-hub)). `GET /admin` is the optional operator console, which the `admin` option mounts behind your guard ([Admin console](/server-admin-console/)).
 
 ## Transport compression
 
-Every buffered response the adapter serves is encoded per the request's `Accept-Encoding`: zstd first when the codec exists, gzip otherwise, identity when the client offers neither or the body is under 1 KiB (SPEC §1.3). On Bun the codecs are `Bun.zstdCompressSync` and `Bun.gzipSync`; on workerd, Node, and Deno the adapter uses `CompressionStream('gzip')`. An encoded response carries `Content-Encoding` and `Vary: Accept-Encoding`, and it is marked `encodeBody: 'manual'` so workerd never encodes it a second time.
+The `/sync`, `/operations` and segment responses are encoded per the request's `Accept-Encoding`: zstd first when the codec exists, gzip otherwise, identity when the client offers neither or the body is under 1 KiB (SPEC §1.3). On Bun the codecs are `Bun.zstdCompressSync` and `Bun.gzipSync`; on workerd, Node, and Deno the adapter uses `CompressionStream('gzip')`. An encoded response carries `Content-Encoding` and `Vary: Accept-Encoding`, and it is marked `encodeBody: 'manual'` so workerd never encodes it a second time. Blob downloads are streamed as stored with `Content-Length` and identity encoding (SPEC §5.9.5).
 
 `POST /sync` and `POST /operations` accept a gzip request body (`Content-Encoding: gzip`) and decode it before parsing SSP2. Any other request `Content-Encoding` is answered with HTTP 415 and an error body (`sync.invalid_request`, or `operation.invalid_request` on the operations route) instead of being parsed as protocol bytes. A gzip body that does not decompress is HTTP 400 `sync.invalid_request`.
 
@@ -171,7 +171,7 @@ const config: SyncServerConfig = {
 
 ## Add CORS and other host headers
 
-Mount `createSyncularHono` behind the host's Hono middleware. Headers set with `c.header()` before `await next()` carry through successful sync, operations, segment, and blob responses, 304 replies, and adapter errors. This includes the CORS headers a Tauri WebView or a browser on another origin needs. The adapter keeps `encodeBody: 'manual'` for every body it compressed itself, which matters on Cloudflare Workers.
+Mount `createSyncularHono` behind the host's Hono middleware. Headers set with `c.header()` before `await next()` carry through successful sync, operations, segment, and blob responses, 304 replies, and adapter errors. This includes the CORS headers a Tauri WebView or a browser on another origin needs. The adapter keeps `encodeBody: 'manual'` for every body it compressed itself, which matters on Cloudflare Workers. The presigned-URL answer of `GET /blobs/:blobId` keeps the handler's `Cache-Control: private, max-age=0`, `ETag` and `Vary` headers.
 
 ```ts title="src/server.ts"
 import { Hono } from 'hono';

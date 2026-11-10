@@ -34,6 +34,8 @@ export interface BucketObject {
 export interface BucketObjectHead {
   readonly etag: string | undefined;
   readonly size: number | undefined;
+  /** Backend last-modified time (epoch ms): S3 `Last-Modified`, R2 `uploaded`. */
+  readonly lastModifiedMs: number | undefined;
   readonly metadata: Readonly<Record<string, string>>;
 }
 

@@ -583,7 +583,7 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 | `reaction.prune_completed` | One bounded terminal-reaction retention pass finished | `completedBeforeMs`, `deadLetterBeforeMs`, `limit`, `removedCompleted`, `removedDeadLetter`, `mayHaveMore` |
 | `pull.served` | Once per served pull half, after all sections streamed | `clientId`, `subscriptions[]`: `{id, table, status, mode` (`bootstrap` \| `incremental` \| `none`)`, fromCursor, nextCursor, commits, changes, segments[]}`; each segment: `{mediaType` (`rows` \| `sqlite`)`, delivery` (`inline` \| `ref`)`, origin` (`built` \| `reused`)`, bytes, rows}` |
 | `segment.downloaded` | Every direct segment download (§5.5), success or failure | `segmentId`, `outcome` (`ok` \| `error`), `errorCode?`, `mediaType?`, `bytes?`, `durationMs` |
-| `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (keep-set size), `graceMs` |
+| `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (old candidates still referenced), `graceMs` |
 | `realtime.opened` | A socket registered with the hub and got `hello` (§8.1) | `sessionId`, `clientId`, `registrations`, `cursor`, `latestSeq` |
 | `realtime.closed` | A session left the hub (once per session) | `sessionId`, `durationMs` |
 | `realtime.delta` | A delta message pushed over the socket (§8.2) | `sessionId`, `commitSeq`, `bytes`, `changes` |
@@ -959,12 +959,12 @@ and mints a fresh URL) — never a fall-through.
 `{ byteLength, mediaType? }`) mints a single presigned PUT; the client PUTs
 bytes straight to the object store. **Upload authz is host-authentication only**
 (any authenticated actor may obtain a grant within the size cap) — uploading
-bytes is not a scope-bearing act, because the content address discloses nothing
-and integrity is enforced at *reference time* (the §5.9.6 push existence check
-+ every download's content-address verify), never by a store-side hash
-recompute. The **size cap is enforced up front** against the declared
-`byteLength`, before any URL is minted (the object-store hop cannot re-check the
-streamed byte count). An already-present blob returns `{ present: true }` (skip
+bytes is not a scope-bearing act, because the content address discloses
+nothing. The grant signs `content-length` (the declared `byteLength`) and
+`x-amz-checksum-sha256` (the `blobId` digest as base64), and the client sends
+that checksum header, so the object store refuses a PUT of another size or
+other bytes. The **size cap is enforced up front** against the declared
+`byteLength`, before any URL is minted. An already-present blob returns `{ present: true }` (skip
 the PUT, idempotent §5.9.3). A **single PUT only** — never a multipart or chunk
 protocol; resumable upload, when it lands, is provider multipart behind this
 same grant. Absent config ⇒ the client streams through the direct
@@ -1006,8 +1006,11 @@ Nothing reclaims blobs automatically — the host schedules the sweep, the blob
 analogue of `pruneCommitLog`. `sweepOrphanBlobs(storage, blobStore, partition,
 { graceMs })` reads the live keep-set from the §5.9.4 reference index
 (`storage.listReferencedBlobIds`) and deletes every blob that is **both**
-unreferenced **and** older than the grace period. It emits one `blob.swept`
-ops event (`{ swept, referenced, graceMs }`) and returns the deleted ids.
+unreferenced **and** older than the grace period. Before each delete it reads
+the index again, so a reference that lands during the sweep keeps its blob. It
+emits one `blob.swept` ops event (`{ swept, referenced, graceMs }`, where
+`referenced` counts old candidates a row still references) and returns the
+deleted ids.
 
 ```ts
 import { sweepOrphanBlobs } from '@syncular/server';
@@ -1028,8 +1031,10 @@ arrived. So the grace period must comfortably exceed any sane upload→push
 latency — the **default is 24 h**, deliberately far above any push window.
 Lower it only if you fully understand your clients' outbox latency; there is
 no upside to a tight grace and a real data-loss risk. The sweep compares
-against the blob's **upload time** (`createdAtMs` from object metadata), and an
-idempotent re-upload does **not** reset that clock.
+against the blob's **latest upload time**: `createdAtMs` from object metadata,
+or the object's last-modified time for an object a presigned PUT wrote. An
+object with neither is skipped, and an idempotent re-upload rewrites the
+object with the re-upload time, which restarts its grace period.
 
 `sweepOrphanBlobs` **requires** `storage.listReferencedBlobIds` (the §5.9.4
 reference index — SQLite, D1, and Postgres all implement it). Against a

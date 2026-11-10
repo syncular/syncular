@@ -29,10 +29,17 @@
  *
  * The orphan sweep is the ONLY operation that LISTs: `sweepOrphans` pages a
  * prefix listing over the `blob/` prefix (an admin/GC path, off the hot path)
- * to find candidates, reads each object's `createdAtMs` from its metadata for
- * the grace check, and DELETEs the unreferenced-and-old ones.
+ * to find candidates, reads each object's upload time from its metadata (or
+ * the backend's last-modified time for an object a presigned PUT wrote), and
+ * DELETEs the old ones the reference index does not name at that moment.
  */
-import type { BlobRecord, BlobStore, BlobStoreStats } from './blob-store';
+import type {
+  BlobRecord,
+  BlobStore,
+  BlobStoreStats,
+  BlobStream,
+} from './blob-store';
+import type { BucketObject } from './object-bucket';
 import type { ObjectBucket } from './object-bucket';
 
 export interface BucketBlobStoreOptions {
@@ -215,41 +222,27 @@ export class BucketBlobStore implements BlobStore {
     };
     const objectKey = this.objectKeyFor(partition, blobId);
     // Idempotent re-put (same content-address ⇒ same key): count each distinct
-    // blob once, and preserve the FIRST createdAtMs so the sweep's grace clock
-    // is not reset by a re-upload (§5.9.2 upload age).
+    // blob once. A re-upload rewrites the object so its metadata carries the
+    // re-upload time (the sweep's grace clock, §5.9.2) and keeps a recorded
+    // media type.
     const preexisting = await this.#bucket.head(objectKey);
     const storedMeta = preexisting?.metadata[BLOB_META_KEY];
     const existing =
       storedMeta === undefined
         ? undefined
         : parseMetaJson(base64urlToUtf8(storedMeta), blobId, this.#label);
-    if (
-      existing !== undefined &&
-      (existing.mediaType !== undefined || mediaType === undefined)
-    ) {
-      return {
-        blobId,
-        partition,
-        byteLength: existing.byteLength,
-        ...(existing.mediaType !== undefined
-          ? { mediaType: existing.mediaType }
-          : {}),
-        createdAtMs: existing.createdAtMs,
-      };
-    }
-    // A re-upload that names the media type an earlier upload left out
-    // rewrites the object under the same precondition, keeping its age.
+    const storedType = existing?.mediaType ?? mediaType;
     const meta: BlobMeta = {
       byteLength: bytes.length,
-      ...(mediaType !== undefined ? { mediaType } : {}),
-      createdAtMs: existing?.createdAtMs ?? nowMs,
+      ...(storedType !== undefined ? { mediaType: storedType } : {}),
+      createdAtMs: Math.max(existing?.createdAtMs ?? nowMs, nowMs),
     };
     // Conditional write: of two concurrent uploads of the same blob exactly
-    // one lands, so the first createdAtMs survives and the blob counts once.
-    // The loser re-reads and returns the winner's record.
+    // one lands per pre-state and the blob counts once. The loser re-reads
+    // and writes over the winner.
     const written = await this.#bucket.put(objectKey, {
       body: bytes,
-      contentType: mediaType ?? 'application/octet-stream',
+      contentType: storedType ?? 'application/octet-stream',
       metadata: { [BLOB_META_KEY]: utf8ToBase64url(metaToJson(meta)) },
       ...(preexisting === undefined
         ? { createOnly: true }
@@ -258,7 +251,11 @@ export class BucketBlobStore implements BlobStore {
     if (!written) return this.put(partition, blobId, bytes, nowMs, mediaType);
     if (preexisting === undefined)
       await this.#bumpStats({ count: 1, bytes: bytes.length });
-    return { ...record, createdAtMs: meta.createdAtMs };
+    return {
+      ...record,
+      ...(storedType !== undefined ? { mediaType: storedType } : {}),
+      createdAtMs: meta.createdAtMs,
+    };
   }
 
   async delete(partition: string, blobId: string): Promise<void> {
@@ -275,38 +272,67 @@ export class BucketBlobStore implements BlobStore {
     partition: string,
     blobId: string,
   ): Promise<{ record: BlobRecord; bytes: Uint8Array } | undefined> {
-    if (!BLOB_ID_PATTERN.test(blobId)) return undefined;
-    const object = await this.#bucket.get(this.objectKeyFor(partition, blobId));
+    const object = await this.#object(partition, blobId);
     if (object === undefined) return undefined;
     const bytes = new Uint8Array(await object.arrayBuffer());
+    return {
+      record: this.#record(partition, blobId, object, bytes.length),
+      bytes,
+    };
+  }
+
+  /** The record plus the object GET's body, never buffered (see `get`). */
+  async open(
+    partition: string,
+    blobId: string,
+  ): Promise<BlobStream | undefined> {
+    const object = await this.#object(partition, blobId);
+    if (object === undefined || object.body === null) return undefined;
+    const record = this.#record(partition, blobId, object, object.size ?? 0);
+    return { record, body: object.body, byteLength: record.byteLength };
+  }
+
+  async #object(
+    partition: string,
+    blobId: string,
+  ): Promise<BucketObject | undefined> {
+    if (!BLOB_ID_PATTERN.test(blobId)) return undefined;
+    return this.#bucket.get(this.objectKeyFor(partition, blobId));
+  }
+
+  /** An object without Syncular metadata was written by a presigned PUT. */
+  #record(
+    partition: string,
+    blobId: string,
+    object: BucketObject,
+    byteLength: number,
+  ): BlobRecord {
     const rawMeta = object.metadata[BLOB_META_KEY];
     const meta =
       rawMeta !== undefined
         ? parseMetaJson(base64urlToUtf8(rawMeta), blobId, this.#label)
-        : { byteLength: bytes.length, createdAtMs: 0 };
+        : { byteLength, createdAtMs: 0 };
     return {
-      record: {
-        blobId,
-        partition,
-        byteLength: meta.byteLength,
-        ...(meta.mediaType !== undefined ? { mediaType: meta.mediaType } : {}),
-        createdAtMs: meta.createdAtMs,
-      },
-      bytes,
+      blobId,
+      partition,
+      byteLength: meta.byteLength,
+      ...(meta.mediaType !== undefined ? { mediaType: meta.mediaType } : {}),
+      createdAtMs: meta.createdAtMs,
     };
   }
 
   /**
    * §5.9.2 orphan sweep — the ONLY LISTing operation. Page the `{prefix}blob/
-   * {partition}/` prefix, HEAD each object for its `createdAtMs`, and DELETE
-   * the ones both older than `olderThanMs` AND absent from
-   * `referencedBlobIds`. Returns the deleted blobIds. Never deletes a
-   * referenced blob (§5.9.2). Off the hot path — a host-scheduled GC job.
+   * {partition}/` prefix, HEAD each object for its upload time (the metadata
+   * `createdAtMs`, else the backend's last-modified time; an object with
+   * neither is skipped), and DELETE the ones older than `olderThanMs` that
+   * `isReferenced` denies right before the delete. Returns the deleted
+   * blobIds. Off the hot path — a host-scheduled GC job.
    */
   async sweepOrphans(
     partition: string,
     olderThanMs: number,
-    referencedBlobIds: ReadonlySet<string>,
+    isReferenced: (blobId: string) => Promise<boolean>,
   ): Promise<string[]> {
     const listPrefix = `${this.#prefix}blob/${partition}/`;
     const swept: string[] = [];
@@ -321,18 +347,19 @@ export class BucketBlobStore implements BlobStore {
         if (!rest.startsWith('sha256/')) continue;
         const blobId = `sha256:${rest.slice('sha256/'.length)}`;
         if (!BLOB_ID_PATTERN.test(blobId)) continue;
-        if (referencedBlobIds.has(blobId)) continue;
         const head = await this.#bucket.head(key);
         if (head === undefined) continue;
         const rawMeta = head.metadata[BLOB_META_KEY];
-        const meta =
+        const uploadedAtMs =
           rawMeta !== undefined
             ? parseMetaJson(base64urlToUtf8(rawMeta), blobId, this.#label)
-            : { byteLength: head.size ?? 0, createdAtMs: 0 };
-        if (meta.createdAtMs >= olderThanMs) continue;
+                .createdAtMs
+            : head.lastModifiedMs;
+        if (uploadedAtMs === undefined || uploadedAtMs >= olderThanMs) continue;
+        if (await isReferenced(blobId)) continue;
         await this.#bucket.delete(key);
         swept.push(blobId);
-        deletedBytes += meta.byteLength;
+        deletedBytes += head.size ?? 0;
       }
     } while (cursor !== undefined);
     if (swept.length > 0) {

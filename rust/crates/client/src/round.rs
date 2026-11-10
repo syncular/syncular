@@ -488,6 +488,18 @@ impl PreparedSyncRound {
                         // A shorter result list means the batch stopped after an
                         // earlier error, and apply aborts there.
                         Some(_) => match results.next() {
+                            // §5.4: the descriptor's byteLength caps the body;
+                            // the check runs before the content-address check.
+                            Some(Ok(bytes))
+                                if planned_fetch
+                                    .bytes_total
+                                    .is_some_and(|total| bytes.len() as u64 > total) =>
+                            {
+                                Err(TransportError::new(
+                                    "sync.invalid_request",
+                                    "segment exceeds its byteLength",
+                                ))
+                            }
                             Some(result) => result,
                             None => break,
                         },
@@ -964,6 +976,109 @@ mod tests {
                 assert_eq!(error_code, "transport.timeout")
             }
             other => panic!("expected a typed upload failure, got {other:?}"),
+        }
+    }
+
+    /// Answers one response that references one segment and serves a body
+    /// longer than the descriptor declares.
+    struct OversizedSegment {
+        segment_id: String,
+        body: Vec<u8>,
+    }
+
+    impl Transport for OversizedSegment {
+        fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Ok(encode_message(&Message {
+                wire_version: ssp2::decode::WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames: vec![
+                    Frame::RespHeader {
+                        required_schema_version: None,
+                        latest_schema_version: None,
+                        log_epoch: "epoch".into(),
+                        reset_required: false,
+                    },
+                    Frame::SubStart {
+                        id: "tasks".into(),
+                        status: SubStatus::Active,
+                        reason_code: String::new(),
+                        effective_scopes: Vec::new(),
+                        bootstrap: true,
+                    },
+                    Frame::SegmentRef {
+                        segment_id: self.segment_id.clone(),
+                        media_type: MediaType::Rows,
+                        table: "tasks".into(),
+                        byte_length: 4,
+                        row_count: 1,
+                        as_of_commit_seq: 1,
+                        scope_digest: "digest".into(),
+                        row_cursor: None,
+                        next_row_cursor: None,
+                        url: None,
+                        url_expires_at_ms: None,
+                    },
+                    Frame::SubEnd {
+                        next_cursor: 1,
+                        bootstrap_state: None,
+                    },
+                ],
+            }))
+        }
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+        fn download_segment(
+            &mut self,
+            _: &SegmentRequest,
+            _: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Ok(self.body.clone())
+        }
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_segment_body_longer_than_its_byte_length_fails_before_the_content_check() {
+        use sha2::Digest;
+        let schema = serde_json::json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false}],"scopes":[]}]});
+        let mut client = SyncClient::new("oversized".into(), &schema, Default::default()).unwrap();
+        client
+            .set_meta(crate::client::LOG_EPOCH_KEY, "epoch")
+            .unwrap();
+        client
+            .subscribe("tasks".into(), "tasks".into(), Vec::new(), None)
+            .unwrap();
+        // The body hashes to its content address, so only the §5.4 cap can
+        // refuse it.
+        let body = b"twelve bytes".to_vec();
+        let segment_id = format!(
+            "sha256:{}",
+            sha2::Sha256::digest(&body)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let mut transport = OversizedSegment { segment_id, body };
+        match client.sync(&mut transport) {
+            SyncOutcome::Failed {
+                error_code,
+                message,
+                ..
+            } => {
+                assert_eq!(error_code, "sync.invalid_request");
+                assert_eq!(message, "segment exceeds its byteLength");
+            }
+            other => panic!("expected the byteLength cap to fail the round, got {other:?}"),
         }
     }
 

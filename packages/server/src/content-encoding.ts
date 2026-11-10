@@ -1,7 +1,7 @@
 /**
- * §1.3 transport compression for every buffered HTTP body the adapters
- * serve — `<mount>/sync`, `<mount>/operations`, blob GETs and segment
- * downloads: negotiate `Content-Encoding` from the request's
+ * §1.3 transport compression for the HTTP bodies the adapters serve —
+ * `<mount>/sync`, `<mount>/operations` and segment downloads (blob downloads
+ * stream identity, §5.9.5): negotiate `Content-Encoding` from the request's
  * `Accept-Encoding` (zstd preferred, gzip fallback, identity when the client
  * offers neither), feature-detecting the runtime's codecs, zero
  * dependencies. Bun supplies zstd + gzip natively; every other runtime

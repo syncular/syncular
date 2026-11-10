@@ -199,7 +199,7 @@ const { swept } = await sweepOrphanBlobs(storage, blobs, partition, {
 });
 ```
 
-The sweep reads the live keep-set from the storage reference index and deletes only blobs that are both unreferenced and older than the grace period. Clients upload bytes before they push the row that references them, so a fresh upload is unreferenced until its push lands, and the grace period covers that gap. The 24 h default sits far above any push window. Lower it only when you know your clients' outbox latency, because a grace period that is too tight deletes blobs that are still needed. The helper throws against a storage without the reference index instead of sweeping with an empty keep-set.
+The sweep deletes only blobs that are both unreferenced and older than the grace period. It reads the keep-set from the storage reference index when it starts and reads the index again right before each delete, so a push that lands during the sweep keeps its blob. A blob's age runs from its latest upload: the recorded upload time, or the object store's last-modified time for an object a presigned PUT wrote. An object with neither is never swept, and an idempotent re-upload restarts the grace period. Clients upload bytes before they push the row that references them, so a fresh upload is unreferenced until its push lands, and the grace period covers that gap. The 24 h default sits far above any push window. Lower it only when you know your clients' outbox latency, because a grace period that is too tight deletes blobs that are still needed. The helper throws against a storage without the reference index instead of sweeping with an empty keep-set.
 
 ## Erasing a scope value
 

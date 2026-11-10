@@ -358,6 +358,19 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
     ).rejects.toMatchObject({ code: 'sync.forbidden' });
   });
 
+  test('a malformed token is sync.forbidden, never a decode exception', async () => {
+    for (const token of ['%%%.@@@', 'a.b!', '.', 'no-dot']) {
+      await expect(
+        verifySegmentToken('key', token, {
+          segmentId: `sha256:${'a'.repeat(64)}`,
+          scopeDigest: 'digest-a',
+          audience: 'aud-part-1',
+          nowMs: 1_750_000_000_000,
+        }),
+      ).rejects.toMatchObject({ code: 'sync.forbidden' });
+    }
+  });
+
   test('a token verifies against any digest in the record set (§5.4)', async () => {
     const key = 'set-signing-key';
     const segmentId = `sha256:${'a'.repeat(64)}`;

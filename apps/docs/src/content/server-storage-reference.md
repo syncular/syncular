@@ -214,7 +214,7 @@ Blobs are durable and never expire. A blob referenced by a live row must stay do
 An S3 or R2 lifecycle-expiration rule on the `blob/` prefix deletes attachments that live rows still reference. Reclamation is reference-driven: the scheduled `sweepOrphanBlobs` pass deletes only blobs that no live row references ([Blob GC](/server-operations/#blob-gc)).
 :::
 
-Two independent presign switches take the server out of the blob byte path. `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned download URLs after the row-derived authorization check. `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage upload grants. Without them, clients stream through the direct `PUT /blobs/:blobId` endpoint, which is fully supported.
+Two independent presign switches take the server out of the blob byte path. `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned download URLs after the row-derived authorization check. `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage upload grants that sign `content-length` and `x-amz-checksum-sha256`, so S3, R2 and MinIO refuse a PUT of another size or other bytes. Without them, clients stream through the direct `PUT /blobs/:blobId` endpoint, which is fully supported.
 
 ## Upgrading a server database
 
