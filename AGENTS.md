@@ -210,7 +210,7 @@ notes, run `bun run version:check`, the release gates, then commit, tag
 `v<version>` and push the tag. `release.yml` publishes npm and crates.io in
 dependency order using OIDC. Both jobs skip already-published versions, so a
 partial-failure rerun publishes the missing artifacts. Runbook:
-`docs/RELEASE.md`. The docs banner reads the root release version at build time.
+`docs/RELEASE.md`; per-version notes live in `docs/RELEASE-NOTES.md`. The docs banner reads the root release version at build time.
 
 ## Contributions
 
