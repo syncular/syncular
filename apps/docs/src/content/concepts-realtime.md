@@ -114,7 +114,7 @@ The protocol has one delta kind and one wake-up kind. The wake-up tells the clie
 
 ## Presence
 
-The socket also carries presence: ephemeral, scope-keyed peer state (who is here, what they are doing), held in memory only. A disconnect removes the member ([SPEC §8.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#86-presence)).
+The socket also carries presence: ephemeral, scope-keyed peer state (who is here, what they are doing) that the server never writes to storage or the commit log. A disconnect removes the member ([SPEC §8.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#86-presence)).
 
 ```ts title="src/presence.ts"
 await client.setPresence('list:groceries', { editing: 'todo-1' }); // join or update
@@ -123,6 +123,8 @@ const peers = await client.presence('list:groceries');             // [{ actorId
 ```
 
 Authorization uses the same registration as sync. A connection publishes to and receives from a scope key only if it holds that key, and publishing to an unheld key returns `presence.forbidden`. Peers are identified as `(actorId, clientId)` and are visible only to scope-mates.
+
+The server caps the presence one connection holds. Each held scope key's UTF-8 bytes plus its serialized document's UTF-8 bytes, summed over the connection's keys, stay at or under `maxPresenceBytes`, a `RealtimeHubConfig` field with a default of 8,192. The server answers a publish over the cap with `presence.too_large` to the publisher and changes nothing. A republish on a key replaces that key's bytes, and a leave frees them.
 
 In React, `usePresence(scopeKey)` keeps the peer list live. It clears the previous peers when the client or scope changes. Overlapping reads publish the newest requested snapshot, and an older response cannot replace it, including after the newer read fails. Cleanup invalidates pending reads.
 

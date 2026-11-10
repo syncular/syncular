@@ -233,6 +233,50 @@ export const presenceScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'presence/size-cap-per-connection',
+    specRefs: ['§8.6.2', 'B.16'],
+    requires: ['realtime', 'server-limits'],
+    // 'project:pN' is 10 bytes and `{"s":"…20…"}` 28: one key fits, two
+    // do not.
+    server: { limits: { maxPresenceBytes: 64 } },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'seed')]);
+      const both = { project_id: ['p1', 'p2'] };
+      const a = await connectedOn(ctx, 'actor-a', 'client-a', both);
+      const b = await connectedOn(ctx, 'actor-b', 'client-b', both);
+
+      await a.api.setPresence?.(KEY_P1, { s: 'x'.repeat(20) });
+      await b.realtime.waitForPresence(1);
+      // Within the cap alone, over it beside A's p1 document.
+      await a.api.setPresence?.(KEY_P2, { s: 'y'.repeat(20) });
+      await a.realtime.waitForPresence(1);
+      checkEqual(
+        [
+          a.realtime.presenceEvents[0]?.scopeKey,
+          a.realtime.presenceEvents[0]?.error,
+        ],
+        [KEY_P2, 'presence.too_large'],
+        'the cap counts every key the connection holds (§8.6.2)',
+      );
+
+      // Leaving p1 frees its budget for p2.
+      await a.api.setPresence?.(KEY_P1, null);
+      await b.realtime.waitForPresence(2);
+      await a.api.setPresence?.(KEY_P2, { s: 'y'.repeat(20) });
+      await b.realtime.waitForPresence(3);
+      checkEqual(
+        b.realtime.presenceEvents.map((e) => [e.kind, e.scopeKey]),
+        [
+          ['join', KEY_P1],
+          ['leave', KEY_P1],
+          ['join', KEY_P2],
+        ],
+        'the rejected publish fanned out nothing and changed nothing',
+      );
+    },
+  },
+
+  {
     name: 'presence/survives-a-socket-sync-round',
     specRefs: ['§8.6.3', '§8.7', 'B.16'],
     requires: ['realtime'],

@@ -1286,6 +1286,131 @@ describe('presence (§8.6)', () => {
     expect(lastPresence(b.wire)?.kind).toBe('leave');
   });
 
+  test('the cap counts every key a connection holds (§8.6.2)', async () => {
+    const t = makeContext();
+    // 'project:pN' is 10 bytes and `{"s":"…15…"}` 23: 33 per key.
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      maxPresenceBytes: 60,
+    });
+    Object.assign(t.ctx, { realtime: hub });
+    const both = { project_id: ['p1', 'p2'] };
+    t.scopes.value = both;
+    const reports: string[][] = [];
+    await sync(t, [pullHeader(), subFrame('s1', 'tasks', both, -1)], {
+      clientId: 'client-a',
+    });
+    const aWire = makeWire();
+    const a = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-a',
+      send: aWire.send,
+      onPresence: (presence) => reports.push([...presence.keys()]),
+    });
+    const b = await presentClient(t, hub, 'client-b', both);
+    const publish = (scopeKey: string, doc: Record<string, unknown> | null) =>
+      a.handleMessage(
+        JSON.stringify({ event: 'presence', data: { scopeKey, doc } }),
+      );
+    publish('project:p1', { s: 'x'.repeat(15) });
+    // A republish on the same key replaces that key's charge.
+    publish('project:p1', { s: 'y'.repeat(15) });
+    publish('project:p2', { s: 'z'.repeat(15) });
+    expect(lastPresence(aWire)).toMatchObject({
+      scopeKey: 'project:p2',
+      error: 'presence.too_large',
+    });
+    expect(
+      presenceEvents(b.wire).map(({ kind, scopeKey }) => [kind, scopeKey]),
+    ).toEqual([
+      ['join', 'project:p1'],
+      ['update', 'project:p1'],
+    ]);
+    expect(reports).toEqual([['project:p1'], ['project:p1']]);
+    // Leaving a key frees its budget.
+    publish('project:p1', null);
+    publish('project:p2', { s: 'z'.repeat(15) });
+    expect(
+      presenceEvents(b.wire).map(({ kind, scopeKey }) => [kind, scopeKey]),
+    ).toEqual([
+      ['join', 'project:p1'],
+      ['update', 'project:p1'],
+      ['leave', 'project:p1'],
+      ['join', 'project:p2'],
+    ]);
+    expect(reports.slice(2)).toEqual([[], ['project:p2']]);
+    // A closed connection reports nothing more.
+    a.close();
+    expect(reports).toHaveLength(4);
+    expect(lastPresence(b.wire)?.kind).toBe('leave');
+  });
+
+  test('restore holds reported presence silently; an uncovered key and a failed socket leave (§8.6.1)', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    const hub = makeHub(t);
+    const b = await presentClient(t, hub, 'client-b', {
+      project_id: ['p1', 'p2'],
+    });
+    // client-a held p1 and p2 before the eviction; its record covers p1 now.
+    await sync(
+      t,
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      {
+        clientId: 'client-a',
+      },
+    );
+    const aWire = makeWire();
+    const reserved = '["remote-command","x"]';
+    const restored = await hub.restore([
+      {
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: 'client-a',
+        send: aWire.send,
+        presence: new Map([
+          ['project:p1', '{"v":1}'],
+          ['project:p2', '{"v":2}'],
+        ]),
+      },
+      {
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: reserved,
+        send: makeWire().send,
+        presence: new Map([['project:p1', '{"v":3}']]),
+      },
+    ]);
+    expect(restored.map((result) => result.status)).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expect(
+      presenceEvents(b.wire).map(({ kind, clientId, scopeKey }) => [
+        kind,
+        clientId,
+        scopeKey,
+      ]),
+    ).toEqual([
+      ['leave', 'client-a', 'project:p2'],
+      ['leave', reserved, 'project:p1'],
+    ]);
+    // No hello and no snapshot again; only the failed socket's leave.
+    expect(aWire.texts).toHaveLength(1);
+    expect(presenceEvents(aWire)).toMatchObject([
+      { kind: 'leave', clientId: reserved },
+    ]);
+    // A new registrant receives the restored document in its snapshot.
+    const c = await presentClient(t, hub, 'client-c');
+    expect(presenceEvents(c.wire)).toMatchObject([
+      { kind: 'join', clientId: 'client-a', doc: { v: 1 } },
+    ]);
+  });
+
   test('a publish reuses the scope keys computed when registrations were assigned', async () => {
     const t = makeContext();
     const hub = makeHub(t);

@@ -51,6 +51,7 @@ import {
   createWorkersFetchHandler,
   D1ServerStorage,
   durableObjectRealtimeNotifier,
+  PresenceAttachmentError,
   REALTIME_DO_UPGRADE_PATH,
   type RealtimeDOConfig,
   setWebSocketPair,
@@ -1635,6 +1636,109 @@ describe('hibernation rehydration (§8.1)', () => {
         (m) => m.event === 'hello',
       ),
     ).toHaveLength(3);
+  });
+
+  test('presence survives a hibernation in the socket attachment (§8.6.1)', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const { do_, server: a } = await connect(ns, 'a');
+    await sendRound(do_, a, SUBSCRIBE, 'a');
+    const { server: b } = await connect(ns, 'b');
+    await sendRound(do_, b, SUBSCRIBE, 'b');
+    const publish = (v: number) =>
+      do_.deliver(
+        a,
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'list:L', doc: { v, name: 'Zoë' } },
+        }),
+      );
+    const presence = (ws: FakeWebSocket) =>
+      textFrames(ws.sent)
+        .filter((m) => m.event === 'presence')
+        .map((m) => {
+          const data = m.data as {
+            kind: string;
+            clientId: string;
+            doc: unknown;
+          };
+          return [data.kind, data.clientId, data.doc];
+        });
+    await publish(1);
+    do_.simulateHibernation();
+    // A restored peer's publish is an update.
+    await publish(2);
+    do_.simulateHibernation();
+    // A new socket receives the restored peer in its snapshot.
+    const { server: c } = await connect(ns, 'c');
+    await sendRound(do_, c, SUBSCRIBE, 'c');
+    do_.simulateHibernation();
+    // A close after a wake still leaves.
+    await do_.closeSocket(a);
+    expect(presence(b)).toEqual([
+      ['join', 'a', { v: 1, name: 'Zoë' }],
+      ['update', 'a', { v: 2, name: 'Zoë' }],
+      ['leave', 'a', null],
+    ]);
+    expect(presence(c)).toEqual([
+      ['join', 'a', { v: 2, name: 'Zoë' }],
+      ['leave', 'a', null],
+    ]);
+  });
+
+  test('the host refuses a presence cap the attachment cannot hold (§8.6.1)', async () => {
+    const db = await makeDb();
+    const hubFor = (maxPresenceBytes: number) => {
+      const ns = new FakeDurableObjectNamespace(db, {
+        syncConfig: (storage) => ({
+          schema: SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+          maxPresenceBytes,
+        }),
+      });
+      return ns
+        .get(ns.idFromName(PARTITION))
+        .host.serialized(async (contextFor) =>
+          contextFor({ partition: PARTITION, actorId: ACTOR_ID }),
+        );
+    };
+    // 9,785 + floor(2 × 9,785 / 3) + 64 framing + 11 empty identity = 16,383.
+    await hubFor(9785);
+    const refused = hubFor(9786);
+    await expect(refused).rejects.toBeInstanceOf(PresenceAttachmentError);
+    await expect(refused).rejects.toMatchObject({
+      code: 'realtime.presence_exceeds_attachment',
+      details: { maxPresenceBytes: 9786, attachmentLimitBytes: 16_384 },
+    });
+  });
+
+  test('the upgrade refuses an identity that does not fit beside the presence budget', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const do_ = ns.get(ns.idFromName(PARTITION));
+    const upgrade = (clientId: string) => {
+      const request = new Request(
+        new URL(REALTIME_DO_UPGRADE_PATH, 'https://do'),
+        { headers: { upgrade: 'websocket' } },
+      );
+      writeIdentityHeaders(request.headers, {
+        partition: PARTITION,
+        actorId: ACTOR_ID,
+        clientId,
+      });
+      return do_.fetch(request);
+    };
+    // 16,384 − 64 − 8,192 − 5,461 = 2,667 identity bytes; the JSON array
+    // with `part-1`, `actor-1` and the newline takes 24 of them.
+    expect((await upgrade('x'.repeat(2643))).status).toBe(101);
+    const refused = await upgrade('x'.repeat(2644));
+    expect(refused.status).toBe(413);
+    expect(await refused.json()).toMatchObject({
+      code: 'sync.limit_exceeded',
+      details: { limit: 'attachmentBytes', max: 16_384 },
+    });
   });
 
   test('a close after a wake rebuilds the other sockets first', async () => {

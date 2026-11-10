@@ -49,8 +49,9 @@
  *   - **Before any entry point proceeds after a wake** (a socket frame or
  *     close, an HTTP sync round including a pull-only one, an upgrade, a
  *     command, an admin request), every accepted socket has a serialized
- *     attachment (`ws.serializeAttachment`, `{clientId, actorId, partition}`,
- *     written at accept time) but no live session. The host rebuilds the
+ *     attachment (`ws.serializeAttachment`: its identity, written at accept
+ *     time, and its presence documents, rewritten on every change) but no
+ *     live session. The host rebuilds the
  *     session of every socket in `getWebSockets()` once, through one promise
  *     every entry point awaits, so no commit fans out to a partly rebuilt hub
  *     and sockets that stayed quiet through the hibernation keep receiving
@@ -61,10 +62,22 @@
  *     truth in storage; nothing in-flight is lost because nothing in-flight
  *     can be hibernated.
  *
- * So the serialized attachment is deliberately minimal — the three identity
- * fields `restore` needs. Everything else (`cursor`, `registrations`,
- * `lastKnownSeq`) is re-derived from storage, which is authoritative.
- * Presence lives in hub memory and does not survive a hibernation.
+ * The attachment holds what storage cannot: the identity `restore` needs and
+ * the connection's §8.6 presence documents, which `restore` seeds silently so
+ * a close after a wake still sends `leave` and a new socket still receives
+ * the snapshot. Everything else (`cursor`, `registrations`, `lastKnownSeq`)
+ * is re-derived from storage, which is authoritative.
+ *
+ * The attachment is one `Uint8Array`, so its structured-clone size is its
+ * byte length plus fixed framing: the identity as UTF-8 JSON and a newline,
+ * then per presence key a varint key length, the key's UTF-8 bytes, the
+ * document's UTF-8 JSON and a newline (a JSON text holds no raw newline).
+ * Each key costs at least 3 counted bytes (a non-empty key and `{}`) and at
+ * most 2 framing bytes below 128 key bytes, so a connection within
+ * `maxPresenceBytes` needs at most `cap + floor(2 * cap / 3)` presence
+ * bytes. The hub refuses a cap whose worst case leaves no room for an empty
+ * identity, and the upgrade refuses an identity that does not fit beside the
+ * worst case, so no presence change can overflow the attachment.
  *
  * ## Heartbeats (§8.5)
  *
@@ -204,21 +217,51 @@ export type RealtimeDOConfig<S extends RealtimeHostStorage = D1ServerStorage> =
  */
 export type RealtimeHubConfigInput = Omit<RealtimeHubConfig, 'storage'>;
 
-/** The attachment persisted on each hibernatable socket (§8.1 identity). */
-interface SocketAttachment {
-  readonly partition: string;
-  readonly actorId: string;
-  readonly clientId: string;
+/**
+ * Cloudflare's cap on a socket attachment's serialized size
+ * (https://developers.cloudflare.com/durable-objects/api/websockets/,
+ * `serializeAttachment`).
+ */
+const ATTACHMENT_LIMIT_BYTES = 16_384;
+/** Room for the structured-clone framing around the attachment's one
+ * `Uint8Array`: format header, buffer and view tags, length varints. */
+const ATTACHMENT_FRAMING_BYTES = 64;
+
+/** `maxPresenceBytes` leaves no room in a socket attachment for an empty
+ * identity beside a full presence budget (§8.6.1). */
+export class PresenceAttachmentError extends Error {
+  readonly code = 'realtime.presence_exceeds_attachment';
+
+  constructor(
+    readonly details: {
+      readonly maxPresenceBytes: number;
+      readonly attachmentLimitBytes: number;
+    },
+  ) {
+    super('maxPresenceBytes does not fit a socket attachment (§8.6.1)');
+    this.name = 'PresenceAttachmentError';
+  }
 }
 
-function isAttachment(value: unknown): value is SocketAttachment {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as SocketAttachment).partition === 'string' &&
-    typeof (value as SocketAttachment).actorId === 'string' &&
-    typeof (value as SocketAttachment).clientId === 'string'
-  );
+/** A hibernatable socket's attachment bytes (layout: see the module doc). */
+function encodeAttachment(
+  identity: RealtimeUpgradeIdentity,
+  presence: ReadonlyMap<string, string>,
+): Uint8Array {
+  const utf8 = new TextEncoder();
+  const bytes = [
+    ...utf8.encode(
+      JSON.stringify([identity.partition, identity.actorId, identity.clientId]),
+    ),
+    0x0a,
+  ];
+  for (const [scopeKey, json] of presence) {
+    const key = utf8.encode(scopeKey);
+    let length = key.length;
+    for (; length >= 0x80; length >>>= 7) bytes.push((length & 0x7f) | 0x80);
+    bytes.push(length, ...key, ...utf8.encode(json), 0x0a);
+  }
+  return Uint8Array.from(bytes);
 }
 
 /** The identity the upgrade request must carry (resolved by the Worker). */
@@ -283,6 +326,8 @@ export class SyncularRealtimeHost<
   readonly #storage: RealtimeHostStorage;
   readonly #config: RealtimeDOConfig<RealtimeHostStorage>;
   #hub: RealtimeHub | undefined;
+  /** Attachment bytes held back for framing and a full presence budget. */
+  #presenceReserve = 0;
   #admin: SyncularAdmin | undefined;
   /** Live sessions, keyed by their socket. Empty after a hibernation wake;
    * rehydrated for every socket before any entry point proceeds (see the
@@ -354,6 +399,22 @@ export class SyncularRealtimeHost<
             : ring,
       };
       const hub = createRealtimeHub(withRing);
+      const cap = hub.maxPresenceBytes;
+      this.#presenceReserve =
+        ATTACHMENT_FRAMING_BYTES + cap + Math.floor((2 * cap) / 3);
+      if (
+        this.#presenceReserve +
+          encodeAttachment(
+            { partition: '', actorId: '', clientId: '' },
+            new Map(),
+          ).byteLength >
+        ATTACHMENT_LIMIT_BYTES
+      ) {
+        throw new PresenceAttachmentError({
+          maxPresenceBytes: cap,
+          attachmentLimitBytes: ATTACHMENT_LIMIT_BYTES,
+        });
+      }
       this.#hub = hub;
       this.#admin = SyncularAdmin.fromConfig(
         { ...withRing, realtime: hub },
@@ -481,14 +542,35 @@ export class SyncularRealtimeHost<
   #rehydrateSockets(): Promise<void> {
     this.#rehydration ??= (async () => {
       const sockets = this.#state.getWebSockets().flatMap((ws) => {
-        const attachment = ws.deserializeAttachment();
-        return isAttachment(attachment) ? [{ ws, attachment }] : [];
+        const bytes = ws.deserializeAttachment();
+        if (!(bytes instanceof Uint8Array)) return [];
+        const utf8 = new TextDecoder();
+        let end = bytes.indexOf(0x0a);
+        const [partition, actorId, clientId] = JSON.parse(
+          utf8.decode(bytes.subarray(0, end)),
+        ) as [string, string, string];
+        const presence = new Map<string, string>();
+        for (let at = end + 1; at < bytes.length; at = end + 1) {
+          let length = 0;
+          for (let shift = 0; ; shift += 7) {
+            const byte = bytes[at++]!;
+            length |= (byte & 0x7f) << shift;
+            if (byte < 0x80) break;
+          }
+          end = bytes.indexOf(0x0a, at + length);
+          presence.set(
+            utf8.decode(bytes.subarray(at, at + length)),
+            utf8.decode(bytes.subarray(at + length, end)),
+          );
+        }
+        return [{ ws, identity: { partition, actorId, clientId }, presence }];
       });
       if (sockets.length === 0) return;
       const results = await this.#getHub().restore(
-        sockets.map(({ ws, attachment }) =>
-          this.#connectOptions(ws, attachment),
-        ),
+        sockets.map(({ ws, identity, presence }) => ({
+          ...this.#connectOptions(ws, identity),
+          presence,
+        })),
       );
       for (const [i, result] of results.entries()) {
         const ws = sockets[i]!.ws;
@@ -648,21 +730,31 @@ export class SyncularRealtimeHost<
     const pair = newWebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    // Hand the server socket to the runtime for hibernation. The attachment
-    // is the minimal §8.1 identity `connect` needs to rehydrate.
-    const attachment: SocketAttachment = {
-      partition: identity.partition,
-      actorId: identity.actorId,
-      clientId: identity.clientId,
-    };
+    // Hand the server socket to the runtime for hibernation with the §8.1
+    // identity `restore` needs to rehydrate.
+    const attachment = encodeAttachment(identity, new Map());
     server.serializeAttachment(attachment);
     this.#state.acceptWebSocket(server);
     // Build the session now (first connect: hello IS delivered). Any failure
     // closes the socket loudly — never a half-open realtime connection.
     try {
-      const session = await this.#getHub().connect(
-        this.#connectOptions(server, attachment),
-      );
+      const hub = this.#getHub();
+      // §8.6.1: the identity must fit the attachment beside a full presence
+      // budget, so no later presence change can overflow it.
+      if (
+        this.#presenceReserve + attachment.byteLength >
+        ATTACHMENT_LIMIT_BYTES
+      ) {
+        throw new SyncError(
+          'sync.limit_exceeded',
+          'realtime identity does not fit the socket attachment (§8.6.1)',
+          JSON.stringify({
+            limit: 'attachmentBytes',
+            max: ATTACHMENT_LIMIT_BYTES,
+          }),
+        );
+      }
+      const session = await hub.connect(this.#connectOptions(server, identity));
       this.#sessions.set(server, session);
       if ((await this.#state.storage.getAlarm()) === null) {
         await this.#state.storage.setAlarm(
@@ -685,14 +777,17 @@ export class SyncularRealtimeHost<
   /** The hub connect options of a hibernatable socket (§8.1). */
   #connectOptions(
     ws: WebSocketLike,
-    attachment: SocketAttachment,
+    identity: RealtimeUpgradeIdentity,
   ): RealtimeConnectOptions {
     return {
-      partition: attachment.partition,
-      actorId: attachment.actorId,
-      clientId: attachment.clientId,
+      partition: identity.partition,
+      actorId: identity.actorId,
+      clientId: identity.clientId,
       send: (data) => sendOverSocket(ws, data),
       closeSocket: () => ws.close(1008, 'protocol violation (§8.7)'),
+      // §8.6.1: presence survives a hibernation in the socket's attachment.
+      onPresence: (presence) =>
+        ws.serializeAttachment(encodeAttachment(identity, presence)),
     };
   }
 

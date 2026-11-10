@@ -85,9 +85,10 @@ export interface RealtimeHubConfig extends Omit<SyncServerConfig, 'realtime'> {
    * 4 MiB. */
   readonly maxUnackedDeltaBytes?: number;
   /**
-   * §8.6 presence: cap on the serialized size (bytes) of a published
-   * presence document. An over-cap publish is rejected loudly to the
-   * publisher with `presence.too_large` and fans out nothing. Default 16 KiB.
+   * §8.6.2 presence cap per connection: the UTF-8 bytes of each held scope
+   * key plus its serialized document, summed over the connection's keys. A
+   * publish that would exceed it is answered with `presence.too_large` and
+   * changes nothing. Default 8,192.
    */
   readonly maxPresenceBytes?: number;
   /**
@@ -117,6 +118,13 @@ export interface RealtimeConnectOptions {
    * `session.close()` from its socket-close handler as usual.
    */
   readonly closeSocket?: () => void;
+  /**
+   * §8.6.1: called after every change to this connection's own presence
+   * documents with all of them, scope key → serialized document, so a host
+   * whose memory can be evicted keeps them with the connection and hands
+   * them back to `restore`. Not called once the connection closed.
+   */
+  readonly onPresence?: (presence: ReadonlyMap<string, string>) => void;
 }
 
 interface Registration {
@@ -128,30 +136,30 @@ interface Registration {
 }
 
 const DEFAULT_MAX_DELTA_BYTES = 1024 * 1024;
-const DEFAULT_MAX_PRESENCE_BYTES = 16 * 1024;
+const DEFAULT_MAX_PRESENCE_BYTES = 8192;
 const DEFAULT_MAX_UNACKED_DELTAS = 256;
 const DEFAULT_MAX_UNACKED_DELTA_BYTES = 4 * 1024 * 1024;
 
 type PresenceDoc = Record<string, unknown>;
 
+/** A held presence document, its JSON text, and its charge against the
+ * per-connection cap (§8.6.2). */
+interface PresenceEntry {
+  readonly doc: PresenceDoc;
+  readonly json: string;
+  readonly bytes: number;
+}
+
 /**
- * §8.6 presence registry — pure in-memory ephemeral state, keyed per
- * `(partition, scopeKey)` → the set of present sessions and their
- * documents. It never touches `ServerStorage`; a server restart loses all
- * presence (§8.6.1). Fanout is scoped to registered peers only — the
- * privacy floor (§8.6.3).
+ * §8.6 presence index: per `(partition, scopeKey)`, the sessions holding a
+ * document there. The documents live with their session (§8.6.1). Pure
+ * in-memory state that never touches `ServerStorage`.
  */
 class PresenceRegistry {
-  /** partition → scopeKey → session → document. */
-  readonly #byKey = new Map<
-    string,
-    Map<string, Map<RealtimeSession, PresenceDoc>>
-  >();
+  /** partition → scopeKey → sessions with a document on the key. */
+  readonly #byKey = new Map<string, Map<string, Set<RealtimeSession>>>();
 
-  #keyMap(
-    partition: string,
-    scopeKey: string,
-  ): Map<RealtimeSession, PresenceDoc> {
+  add(partition: string, scopeKey: string, session: RealtimeSession): void {
     let byScope = this.#byKey.get(partition);
     if (byScope === undefined) {
       byScope = new Map();
@@ -159,72 +167,22 @@ class PresenceRegistry {
     }
     let sessions = byScope.get(scopeKey);
     if (sessions === undefined) {
-      sessions = new Map();
+      sessions = new Set();
       byScope.set(scopeKey, sessions);
     }
-    return sessions;
+    sessions.add(session);
   }
 
-  /** Current documents on a key, excluding one session (the snapshot,
-   * §8.6.4). */
-  snapshot(
-    partition: string,
-    scopeKey: string,
-    exclude: RealtimeSession,
-  ): Array<{ session: RealtimeSession; doc: PresenceDoc }> {
+  delete(partition: string, scopeKey: string, session: RealtimeSession): void {
     const sessions = this.#byKey.get(partition)?.get(scopeKey);
-    if (sessions === undefined) return [];
-    const out: Array<{ session: RealtimeSession; doc: PresenceDoc }> = [];
-    for (const [session, doc] of sessions) {
-      if (session !== exclude) out.push({ session, doc });
-    }
-    return out;
-  }
-
-  /** Store/replace a session's document for a key. Returns whether this is
-   * the session's FIRST document on the key (join) or a replacement
-   * (update). */
-  set(
-    partition: string,
-    scopeKey: string,
-    session: RealtimeSession,
-    doc: PresenceDoc,
-  ): 'join' | 'update' {
-    const sessions = this.#keyMap(partition, scopeKey);
-    const kind = sessions.has(session) ? 'update' : 'join';
-    sessions.set(session, doc);
-    return kind;
-  }
-
-  /** Remove a session's document for a key. Returns true if one existed. */
-  clear(
-    partition: string,
-    scopeKey: string,
-    session: RealtimeSession,
-  ): boolean {
-    const sessions = this.#byKey.get(partition)?.get(scopeKey);
-    if (sessions === undefined) return false;
-    const existed = sessions.delete(session);
+    if (sessions === undefined) return;
+    sessions.delete(session);
     if (sessions.size === 0) this.#byKey.get(partition)?.delete(scopeKey);
-    return existed;
   }
 
-  /** Every key a session currently holds a document on (for leave-on-drop
-   * and registration-change re-derivation). */
-  keysOf(partition: string, session: RealtimeSession): string[] {
-    const byScope = this.#byKey.get(partition);
-    if (byScope === undefined) return [];
-    const keys: string[] = [];
-    for (const [scopeKey, sessions] of byScope) {
-      if (sessions.has(session)) keys.push(scopeKey);
-    }
-    return keys;
-  }
-
-  /** Sessions currently registered as peers on a key (for fanout). */
+  /** Sessions holding a document on a key. */
   peers(partition: string, scopeKey: string): RealtimeSession[] {
-    const sessions = this.#byKey.get(partition)?.get(scopeKey);
-    return sessions === undefined ? [] : [...sessions.keys()];
+    return [...(this.#byKey.get(partition)?.get(scopeKey) ?? [])];
   }
 }
 
@@ -291,6 +249,11 @@ export class RealtimeSession {
   #deferredBytes = 0;
   #deferredRegistrations: string | undefined;
   #closed = false;
+  /** §8.6.1: this connection's presence documents by scope key, and their
+   * summed charge against `maxPresenceBytes` (§8.6.2). */
+  readonly #presence = new Map<string, PresenceEntry>();
+  #presenceBytes = 0;
+  #onPresence: ((presence: ReadonlyMap<string, string>) => void) | undefined;
   /** §8.6.4 rate cap: per-scope-key last-fanout time + a pending latest
    * document coalesced while over the cap. */
   #presenceRate = new Map<
@@ -340,6 +303,7 @@ export class RealtimeSession {
     this.openedAtMs = clock();
     this.#send = options.send;
     this.#closeSocket = options.closeSocket;
+    this.#onPresence = options.onPresence;
     this.#hub = hub;
     this.#clock = clock;
     this.#maxDeltaBytes = maxDeltaBytes;
@@ -427,26 +391,40 @@ export class RealtimeSession {
       this.#leavePresence(scopeKey);
       return;
     }
-    // §8.6.2 size cap on the serialized document's UTF-8 bytes: fail loud
-    // to the publisher, fan out nothing. A string never has fewer UTF-8
-    // bytes than UTF-16 code units, so the unit count rejects first.
-    const serialized = JSON.stringify(doc);
-    const cap = this.#hub.maxPresenceBytes;
-    if (
-      serialized.length > cap ||
-      new TextEncoder().encode(serialized).length > cap
-    ) {
-      this.#sendSafe(
-        encodePresenceError(scopeKey, 'presence.too_large', this.#clock()),
-      );
-      return;
+    const entry = this.#presenceEntry(scopeKey, doc as PresenceDoc);
+    if (entry !== undefined) this.#publishPresence(scopeKey, entry);
+  }
+
+  /**
+   * §8.6.2 size cap per connection: the key's and document's UTF-8 bytes,
+   * added to the connection's documents on its other keys, stay within
+   * `maxPresenceBytes`. Over the cap the publisher alone hears
+   * `presence.too_large` and nothing changes.
+   */
+  #presenceEntry(
+    scopeKey: string,
+    doc: PresenceDoc,
+  ): PresenceEntry | undefined {
+    const json = JSON.stringify(doc);
+    const budget =
+      this.#hub.maxPresenceBytes -
+      this.#presenceBytes +
+      (this.#presence.get(scopeKey)?.bytes ?? 0);
+    // A string never has fewer UTF-8 bytes than UTF-16 code units, so the
+    // unit count rejects first.
+    if (scopeKey.length + json.length <= budget) {
+      const bytes = new TextEncoder().encode(scopeKey + json).byteLength;
+      if (bytes <= budget) return { doc, json, bytes };
     }
-    this.#publishPresence(scopeKey, doc as PresenceDoc);
+    this.#sendSafe(
+      encodePresenceError(scopeKey, 'presence.too_large', this.#clock()),
+    );
+    return undefined;
   }
 
   /** §8.6.4: store + fan out a publish, honoring the rate cap (latest-wins
    * coalesce). */
-  #publishPresence(scopeKey: string, doc: PresenceDoc): void {
+  #publishPresence(scopeKey: string, entry: PresenceEntry): void {
     const minInterval = this.#hub.presenceMinIntervalMs;
     if (minInterval > 0) {
       const now = this.#clock();
@@ -454,23 +432,29 @@ export class RealtimeSession {
       if (rate !== undefined && now - rate.lastFanoutMs < minInterval) {
         // Over the cap: keep only the latest document, fan it out at the
         // window edge (never an error, never a stale/lost latest, §8.6.4).
-        rate.pending = doc;
+        rate.pending = entry.doc;
         if (rate.timer === undefined) {
           const delay = minInterval - (now - rate.lastFanoutMs);
           rate.timer = setTimeout(() => {
             delete rate.timer;
             const pending = rate.pending;
             delete rate.pending;
-            if (pending !== undefined) this.#fanoutPublish(scopeKey, pending);
+            // The connection's other keys may have grown since: the cap
+            // holds when the document is stored.
+            const latest =
+              pending === undefined
+                ? undefined
+                : this.#presenceEntry(scopeKey, pending);
+            if (latest !== undefined) this.#fanoutPublish(scopeKey, latest);
           }, delay);
         }
         return;
       }
     }
-    this.#fanoutPublish(scopeKey, doc);
+    this.#fanoutPublish(scopeKey, entry);
   }
 
-  #fanoutPublish(scopeKey: string, doc: PresenceDoc): void {
+  #fanoutPublish(scopeKey: string, entry: PresenceEntry): void {
     // §8.6.1: the peer identity is (actorId, clientId). Another session of
     // this identity (a stale socket of a reconnected client) loses its
     // document silently, so its later close announces nothing.
@@ -484,8 +468,12 @@ export class RealtimeSession {
         replaced = peer.forgetPresence(scopeKey) || replaced;
       }
     }
-    const set = this.#hub.presence.set(this.partition, scopeKey, this, doc);
-    const kind = replaced ? 'update' : set;
+    const held = this.#presence.get(scopeKey);
+    const kind = replaced || held !== undefined ? 'update' : 'join';
+    this.#presenceBytes += entry.bytes - (held?.bytes ?? 0);
+    this.#presence.set(scopeKey, entry);
+    this.#hub.presence.add(this.partition, scopeKey, this);
+    this.#reportPresence();
     let rate = this.#presenceRate.get(scopeKey);
     if (rate === undefined) {
       rate = { lastFanoutMs: this.#clock() };
@@ -493,7 +481,30 @@ export class RealtimeSession {
     } else {
       rate.lastFanoutMs = this.#clock();
     }
-    this.#hub.fanoutPresence(this, scopeKey, kind, doc);
+    this.#hub.fanoutPresence(this, scopeKey, kind, entry.doc);
+  }
+
+  /** §8.6.1: hand the host this connection's documents after a change. */
+  #reportPresence(): void {
+    if (this.#closed || this.#onPresence === undefined) return;
+    this.#onPresence(
+      new Map([...this.#presence].map(([key, entry]) => [key, entry.json])),
+    );
+  }
+
+  /** §8.6.1: hold the documents a host kept for this connection across an
+   * eviction, without fanout: peers already saw them. */
+  seedPresence(presence: ReadonlyMap<string, string>): void {
+    for (const [scopeKey, json] of presence) {
+      const bytes = new TextEncoder().encode(scopeKey + json).byteLength;
+      this.#presence.set(scopeKey, {
+        doc: JSON.parse(json) as PresenceDoc,
+        json,
+        bytes,
+      });
+      this.#presenceBytes += bytes;
+      this.#hub.presence.add(this.partition, scopeKey, this);
+    }
   }
 
   /** §8.6.1/§8.6.3: clear this session's document for a key and fan a
@@ -509,7 +520,13 @@ export class RealtimeSession {
     const rate = this.#presenceRate.get(scopeKey);
     if (rate?.timer !== undefined) clearTimeout(rate.timer);
     this.#presenceRate.delete(scopeKey);
-    return this.#hub.presence.clear(this.partition, scopeKey, this);
+    const held = this.#presence.get(scopeKey);
+    if (held === undefined) return false;
+    this.#presence.delete(scopeKey);
+    this.#presenceBytes -= held.bytes;
+    this.#hub.presence.delete(this.partition, scopeKey, this);
+    this.#reportPresence();
+    return true;
   }
 
   /** Deliver a fanout event to this session (called by the hub for peers,
@@ -553,17 +570,15 @@ export class RealtimeSession {
   /** §8.6.4 snapshot: a burst of `join`s for peers already present on a
    * key, delivered to this session only. */
   #deliverSnapshot(scopeKey: string): void {
-    for (const peer of this.#hub.presence.snapshot(
-      this.partition,
-      scopeKey,
-      this,
-    )) {
+    for (const peer of this.#hub.presence.peers(this.partition, scopeKey)) {
+      const held = peer.#presence.get(scopeKey);
+      if (peer === this || held === undefined) continue;
       this.receivePresence(
         scopeKey,
         'join',
-        peer.session.actorId,
-        peer.session.clientId,
-        peer.doc,
+        peer.actorId,
+        peer.clientId,
+        held.doc,
       );
     }
   }
@@ -574,9 +589,7 @@ export class RealtimeSession {
     this.#deferredDeltas = [];
     this.#deferredBytes = 0;
     this.#deferredRegistrations = undefined;
-    for (const key of this.#hub.presence.keysOf(this.partition, this)) {
-      this.#leavePresence(key);
-    }
+    for (const key of [...this.#presence.keys()]) this.#leavePresence(key);
     for (const rate of this.#presenceRate.values()) {
       if (rate.timer !== undefined) clearTimeout(rate.timer);
     }
@@ -1172,7 +1185,7 @@ export class RealtimeHub {
    * The publisher does not receive its own fanout.
    */
   fanoutPresence(
-    origin: RealtimeSession,
+    origin: Pick<RealtimeSession, 'partition' | 'actorId' | 'clientId'>,
     scopeKey: string,
     kind: PresenceKind,
     doc: PresenceDoc | null,
@@ -1324,9 +1337,16 @@ export class RealtimeHub {
    * partition is touched and its latest sequence read once per partition, and
    * each client record once. The caller holds back commits until this
    * resolves, so the shared latest sequence stays current.
+   *
+   * `presence` is the connection's last `onPresence` report; the session
+   * holds it again without fanout (§8.6.1). Once every session is back, a
+   * key the reloaded registrations no longer cover leaves, and so does every
+   * key of a socket whose session could not be rebuilt.
    */
   async restore(
-    sockets: readonly RealtimeConnectOptions[],
+    sockets: readonly (RealtimeConnectOptions & {
+      readonly presence?: ReadonlyMap<string, string>;
+    })[],
   ): Promise<PromiseSettledResult<RealtimeSession>[]> {
     const partitions = new Map<
       string,
@@ -1351,9 +1371,22 @@ export class RealtimeHub {
           partitions.set(options.partition, shared);
         }
         const value = await this.#open(options, shared);
+        if (options.presence !== undefined)
+          value.seedPresence(options.presence);
         results.push({ status: 'fulfilled', value });
       } catch (reason) {
         results.push({ status: 'rejected', reason });
+      }
+    }
+    for (const [i, result] of results.entries()) {
+      const held = [...(sockets[i]!.presence?.keys() ?? [])];
+      if (result.status === 'fulfilled') {
+        const session = result.value;
+        session.reconcilePresence(new Set([...session.scopeKeys, ...held]));
+      } else {
+        for (const key of held) {
+          this.fanoutPresence(sockets[i]!, key, 'leave', null);
+        }
       }
     }
     return results;

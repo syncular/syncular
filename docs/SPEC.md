@@ -6185,11 +6185,19 @@ presence encoding; wire version 1 carries presence as text only.
 #### 8.6.1 Model — the invariants
 
 - **Ephemeral.** A presence document lives only for the life of the
-  publishing connection. It is **never persisted**, **never written to the
-  commit log**, and **never delivered on a pull or delta** (§4/§8.2). It is
-  not part of any cursor, horizon, or segment. A server restart loses all
-  presence; a client learns the new truth by re-publishing and by the
-  snapshot it receives when it re-registers (§8.6.4).
+  publishing connection. It is **never persisted to durable storage**,
+  **never written to the commit log**, and **never delivered on a pull or
+  delta** (§4/§8.2). It is not part of any cursor, horizon, or segment. A
+  server restart loses all presence; a client learns the new truth by
+  re-publishing and by the snapshot it receives when it re-registers
+  (§8.6.4). A host whose process can be evicted while its connections stay
+  open (a hibernating Durable Object) MUST keep each connection's documents
+  in state bound to that connection and restore them with it, so the leave
+  and snapshot rules hold across the eviction. The restore fans nothing
+  out, because peers already saw those documents; a restored key the
+  reloaded registrations no longer cover leaves (§8.6.3). Such a host
+  refuses a connection whose identity does not fit that state beside a
+  full presence budget (§8.6.2) with `sync.limit_exceeded`.
 - **Scope-addressed.** Every presence document is tagged to exactly one
   **scope key** — a `prefix:value` string (§3.1), the same addressing unit
   the fanout index uses. A connection may hold presence on several scope
@@ -6258,8 +6266,15 @@ so a newly-registered connection sees who is already there without waiting
 for the next change. There is no distinct `snapshot` kind: the snapshot IS
 a burst of `join`s (fewer shapes to specify and conformance-test).
 
-**Size cap → fail loud, in-band.** A host caps the serialized size of a
-published `doc` (default 16 KiB, host-tunable). An over-cap publish is
+**Size cap → fail loud, in-band.** A host caps the presence a connection
+holds: the sum over its scope keys of the UTF-8 bytes of the scope key plus
+the UTF-8 bytes of the serialized `doc` stays at or under the cap (default
+8,192, host-tunable). A publish counts against the cap as if stored, so a
+republish on a key replaces that key's charge and a leave frees it; a
+document the rate cap holds back (§8.6.4) is checked again when it is
+stored. A
+connection may hold thousands of scope keys, so the cap bounds presence
+memory per connection. An over-cap publish is
 **rejected loudly on the same channel** — the server answers the publisher
 (only) with:
 
@@ -6373,8 +6388,10 @@ group), both pairings:
 - **A reconnect replaces the stale socket.** Two connections of one
   `(actorId, clientId)` publish in turn on a key; the peer observes a `join`
   then an `update`, and the first connection's close sends no `leave`.
-
-### 8.7 Sync rounds over the socket
+- **The size cap is per connection.** A connection holding two keys
+  publishes a document on each that fits the cap alone; the second publish
+  is answered with `presence.too_large` and fans out nothing. After a leave
+  on the first key, the same document on the second key fans out a `join`.
 
 ### 8.7 Sync rounds over the socket
 
@@ -7373,8 +7390,12 @@ Each is a driver-interface script, not a prose test.
     connections share `client-a`; the first publishes (B observes a
     `join`), the second publishes (B observes an `update`), the first
     disconnects, and the second publishes again; B observes no `leave` and
-    holds one peer with the latest document (§8.6.1). Both pairings
-    (TS×TS, Rust×TS).
+    holds one peer with the latest document (§8.6.1). (f) The size cap is
+    per connection: with a 64-byte cap, A holds `project:p1` and
+    `project:p2` and publishes a 28-byte document on each; the second
+    publish is answered with `presence.too_large` and B observes nothing,
+    and after A leaves `p1` the same publish on `p2` reaches B as a `join`
+    (§8.6.2). Both pairings (TS×TS, Rust×TS).
 
 17. **Reconnect storm (§8.4).** ~20 sessions on the same scope connect,
     a burst of commits fans out, and all sessions churn (disconnect +

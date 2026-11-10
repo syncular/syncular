@@ -88,15 +88,12 @@ export class FakeWebSocket implements WebSocketLike {
   }
 
   serializeAttachment(value: unknown): void {
-    // Real DO serializes to a structured clone; JSON round-trip is a faithful
-    // stand-in for the plain identity object the host stores.
-    this.#attachment = JSON.parse(JSON.stringify(value));
+    // The platform stores a structured clone, as this double does.
+    this.#attachment = structuredClone(value);
   }
 
   deserializeAttachment(): unknown {
-    return this.#attachment === null
-      ? null
-      : JSON.parse(JSON.stringify(this.#attachment));
+    return structuredClone(this.#attachment);
   }
 
   /** Test helper: the frames the CLIENT would receive = the server's sends.
