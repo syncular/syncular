@@ -13,11 +13,11 @@ The FFM `SymbolLookup` resolves `libsyncular` in a fixed order. There is no fall
 | 1 | The `syncular.library.path` system property, an absolute file path | Tests and desktop apps that ship the library at a known path |
 | 2 | `System.loadLibrary("syncular")` through `java.library.path` | Packaged apps; resolves `libsyncular.dylib`, `libsyncular.so`, or `syncular.dll` |
 
-On a plain JVM, build the host library with `build-native.sh desktop` and point one mechanism at it.
+On a plain JVM, build the host library with `build-native.sh` and point one mechanism at it.
 
 ## Android
 
-The wrapper compiles JVM-neutral with no Android SDK dependency, so it drops into an Android library module unchanged. `build-native.sh android` builds `arm64-v8a` and `x86_64` `.so` files through `cargo-ndk`; place them under `jniLibs/`. The `.so` then loads by name from the APK, so `syncular.library.path` is unnecessary. The script skips the Android slice when `cargo-ndk` or the NDK is absent. An AAR needs the Android Gradle Plugin and `cargo-ndk`; the repository gate does not build one. FFM on Android requires a recent runtime.
+The wrapper compiles JVM-neutral with no Android SDK dependency, so it drops into an Android library module unchanged. `build-native.sh` builds `arm64-v8a` and `x86_64` `.so` files through `cargo-ndk`; place them under `jniLibs/`. The `.so` then loads by name from the APK, so `syncular.library.path` is unnecessary. The script skips the Android slice when `cargo-ndk` or the NDK is absent. An AAR needs the Android Gradle Plugin and `cargo-ndk`; the repository gate does not build one. FFM on Android requires a recent runtime.
 
 ## JVM flags
 
@@ -48,7 +48,8 @@ The core is thread-affine, which the lock satisfies. Never call the FFM function
 | `roundDeadlineMs` | `Long?` | One deadline for the total time of a sync round, which also fails a slow transfer that is still progressing; expiry returns `transport.timeout` |
 | `maxRequestBytes` | `Long?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `Long?` | Larger decoded responses fail with `transport.response_too_large` |
-| `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |
+| `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to an HTTP request with no headers, and the realtime socket then fails to connect with `transport.redirect` |
+| `realtimeHeartbeatMs` | `Long?` | Heartbeat interval of the realtime server in milliseconds (default 30000); after the first heartbeat, twice that interval of silence closes the socket as lost |
 
 The wrapper serializes each bound as an exact integer token and throws `IllegalArgumentException` for a `Long` above 2^53 that has no exact `Double` representation. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) gives the full semantics.
 

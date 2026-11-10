@@ -1354,6 +1354,20 @@ export const offlineScenarios: readonly Scenario[] = [
         ['bytes, bare number', { ...seedValues, payload: 7 }],
         ['crdt, malformed envelope', { ...seedValues, doc: { $bytes: 'zz' } }],
         ['nullable bytes, bare number', { ...seedValues, payload: 7 }],
+        // §2.4/§7.1 (D2): the push admission values the server rejects.
+        ['string column, U+0000', { ...seedValues, title: 'a\u0000b' }],
+        ['json, number beyond binary64', { ...seedValues, meta: '[1e999]' }],
+        [
+          'json, nested 65 deep',
+          { ...seedValues, meta: `${'['.repeat(65)}${']'.repeat(65)}` },
+        ],
+        [
+          'blob_ref, reordered keys',
+          {
+            ...seedValues,
+            ref: `{"byteLength":3,"blobId":"sha256:${'0'.repeat(64)}"}`,
+          },
+        ],
       ];
       for (const [label, values] of cases) {
         let code: unknown;
@@ -1379,18 +1393,37 @@ export const offlineScenarios: readonly Scenario[] = [
         );
       }
 
-      // The sparse route classifies the same caller value failure identically.
-      let patchCode: unknown;
-      try {
-        await client.api.patch('tasks', 'kept', { nope: 1 });
-      } catch (error) {
-        if (error instanceof Error && 'code' in error) patchCode = error.code;
+      // The sparse route classifies the same caller value failures
+      // identically, and a delete refuses a rowId holding U+0000.
+      for (const [label, attempt] of [
+        [
+          'patch, unknown column',
+          () => client.api.patch('tasks', 'kept', { nope: 1 }),
+        ],
+        [
+          'patch, U+0000',
+          () => client.api.patch('tasks', 'kept', { title: '\u0000' }),
+        ],
+        [
+          'delete, U+0000 rowId',
+          () =>
+            client.api.mutate([
+              { op: 'delete', table: 'tasks', rowId: 'k\u0000' },
+            ]),
+        ],
+      ] as const) {
+        let patchCode: unknown;
+        try {
+          await attempt();
+        } catch (error) {
+          if (error instanceof Error && 'code' in error) patchCode = error.code;
+        }
+        checkEqual(
+          patchCode,
+          'sync.invalid_request',
+          `${label} reports the identity`,
+        );
       }
-      checkEqual(
-        patchCode,
-        'sync.invalid_request',
-        'patch reports the identity',
-      );
       checkEqual(
         await client.api.pendingCommitIds(),
         [seed],

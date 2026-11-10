@@ -1,14 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import type { MigrationInput } from '../src/generate';
+import type { ManifestSchemaVersion } from '../src/manifest';
 import {
   buildMigrationLock,
-  LEGACY_MIGRATION_LOCK_FORMAT_VERSION,
+  type LegacyMigrationLock,
   type MigrationLock,
-  type MigrationLockV2,
   parseMigrationLock,
   serializeMigrationLock,
-  validateMigrationLock,
+  updateMigrationLock,
+  upgradeMigrationLock,
 } from '../src/migration-lock';
 
 function sha256(sql: string): string {
@@ -31,43 +32,69 @@ function cumulativeMigrations(count: number): MigrationInput[] {
   return migrations;
 }
 
-describe('compact immutable migration lock', () => {
+/** One schema version per migration, numbered from 1. */
+function versionPerMigration(
+  migrations: readonly MigrationInput[],
+): ManifestSchemaVersion[] {
+  return migrations.map((migration, index) => ({
+    version: index + 1,
+    through: migration.name,
+  }));
+}
+
+const INITIAL: MigrationInput = {
+  name: '0001_initial',
+  sql: 'CREATE TABLE items (id TEXT PRIMARY KEY);\n',
+};
+const ADD_KIND: MigrationInput = {
+  name: '0002_add_kind',
+  sql: 'ALTER TABLE items ADD COLUMN kind TEXT;\n',
+};
+
+function thrown(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected a throw');
+}
+
+describe('immutable migration lock', () => {
   test('100 cumulative migrations grow linearly instead of repeating every schema snapshot', () => {
     const fifty = cumulativeMigrations(50);
     const hundred = cumulativeMigrations(100);
-    const compactFifty = serializeMigrationLock(buildMigrationLock(fifty));
-    const compactHundred = serializeMigrationLock(buildMigrationLock(hundred));
-    const legacyHundred = serializeMigrationLock(
-      buildMigrationLock(hundred, LEGACY_MIGRATION_LOCK_FORMAT_VERSION),
+    const compactFifty = serializeMigrationLock(
+      buildMigrationLock(fifty, versionPerMigration(fifty)),
+    );
+    const compactHundred = serializeMigrationLock(
+      buildMigrationLock(hundred, versionPerMigration(hundred)),
     );
 
     expect(JSON.parse(compactHundred).migrations).toHaveLength(100);
     expect(JSON.parse(compactHundred).head.tables[0].columns).toHaveLength(101);
     expect(compactHundred.length).toBeLessThan(compactFifty.length * 2.5);
-    expect(compactHundred.length).toBeLessThan(legacyHundred.length / 10);
-    expect(serializeMigrationLock(parseMigrationLock(compactHundred))).toBe(
-      compactHundred,
-    );
+    const parsed = parseMigrationLock(compactHundred);
+    if (parsed.formatVersion !== 3) throw new Error('expected format 3');
+    expect(serializeMigrationLock(parsed)).toBe(compactHundred);
   });
 
   test('locked history replays checks adopted after it deployed; appended migrations enforce them', () => {
     // This history locked before the nullable-ADD-COLUMN and ASCII rules
     // existed, so replaying it must keep succeeding forever.
     const migrations: MigrationInput[] = [
-      {
-        name: '0001_initial',
-        sql: 'CREATE TABLE items (id TEXT PRIMARY KEY);\n',
-      },
+      INITIAL,
       {
         name: '0002_required_kind',
         sql: 'ALTER TABLE items ADD COLUMN kind TEXT NOT NULL;\n',
       },
     ];
     const locked: MigrationLock = {
-      formatVersion: 2,
+      formatVersion: 3,
       migrations: migrations.map((migration) => ({
         name: migration.name,
         sha256: sha256(migration.sql),
+        schemaVersion: 1,
       })),
       head: {
         tables: [
@@ -82,7 +109,8 @@ describe('compact immutable migration lock', () => {
         ],
       },
     };
-    expect(() => validateMigrationLock(locked, migrations)).not.toThrow();
+    const v1 = { version: 1, through: '0002_required_kind' };
+    expect(() => updateMigrationLock(locked, migrations, [v1])).not.toThrow();
 
     const appended: MigrationInput[] = [
       ...migrations,
@@ -91,18 +119,24 @@ describe('compact immutable migration lock', () => {
         sql: 'ALTER TABLE items ADD COLUMN extra TEXT NOT NULL;\n',
       },
     ];
-    expect(() => validateMigrationLock(locked, appended)).toThrow(
-      'added column "extra" must be nullable',
-    );
+    expect(() =>
+      updateMigrationLock(locked, appended, [
+        v1,
+        { version: 2, through: '0003_more' },
+      ]),
+    ).toThrow('added column "extra" must be nullable');
   });
 
   test('head snapshots sort tables by code point for byte-determinism', () => {
-    const lock = buildMigrationLock([
-      {
-        name: '0001_initial',
-        sql: 'CREATE TABLE Zebra (id TEXT PRIMARY KEY);\nCREATE TABLE apple (id TEXT PRIMARY KEY);\n',
-      },
-    ]) as MigrationLockV2;
+    const lock = buildMigrationLock(
+      [
+        {
+          name: '0001_initial',
+          sql: 'CREATE TABLE Zebra (id TEXT PRIMARY KEY);\nCREATE TABLE apple (id TEXT PRIMARY KEY);\n',
+        },
+      ],
+      [{ version: 1, through: '0001_initial' }],
+    );
     // Code-point order puts ASCII uppercase ahead of lowercase.
     expect(lock.head.tables.map((table) => table.name)).toEqual([
       'Zebra',
@@ -110,19 +144,130 @@ describe('compact immutable migration lock', () => {
     ]);
   });
 
-  test('format 2 fails structurally when its canonical head is absent', () => {
+  test('format 3 fails structurally when its canonical head is absent', () => {
     expect(() =>
       parseMigrationLock(
         JSON.stringify({
-          formatVersion: 2,
+          formatVersion: 3,
           migrations: [
             {
               name: '0001_initial',
               sha256: 'a'.repeat(64),
+              schemaVersion: 1,
             },
           ],
         }),
       ),
     ).toThrow('head must be an object');
+  });
+
+  test('format 3 records the schema version of every migration', () => {
+    const lock = buildMigrationLock(
+      [INITIAL, ADD_KIND],
+      [
+        { version: 1, through: '0001_initial' },
+        { version: 4, through: '0002_add_kind' },
+      ],
+    );
+    expect(
+      lock.migrations.map(({ name, schemaVersion }) => [name, schemaVersion]),
+    ).toEqual([
+      ['0001_initial', 1],
+      ['0002_add_kind', 4],
+    ]);
+  });
+});
+
+describe('locked schema versions (§7.4)', () => {
+  const locked = buildMigrationLock(
+    [INITIAL],
+    [{ version: 1, through: '0001_initial' }],
+  );
+
+  test('an appended migration cannot join a locked schema version', () => {
+    const error = thrown(() =>
+      updateMigrationLock(
+        locked,
+        [INITIAL, ADD_KIND],
+        [{ version: 1, through: '0002_add_kind' }],
+      ),
+    );
+    expect(error).toMatchObject({
+      code: 'typegen.schema_version_locked',
+      details: {
+        migration: '0002_add_kind',
+        schemaVersion: 1,
+        highestLockedVersion: 1,
+      },
+    });
+  });
+
+  test('an appended migration in a new schema version is locked with it', () => {
+    const next = updateMigrationLock(
+      locked,
+      [INITIAL, ADD_KIND],
+      [
+        { version: 1, through: '0001_initial' },
+        { version: 2, through: '0002_add_kind' },
+      ],
+    );
+    expect(next.migrations.map((m) => m.schemaVersion)).toEqual([1, 2]);
+  });
+
+  test('a locked migration cannot move to another schema version', () => {
+    const error = thrown(() =>
+      updateMigrationLock(
+        locked,
+        [INITIAL],
+        [{ version: 2, through: '0001_initial' }],
+      ),
+    );
+    expect(error).toMatchObject({
+      code: 'typegen.migration_version_changed',
+      details: {
+        migration: '0001_initial',
+        lockedVersion: 1,
+        schemaVersion: 2,
+      },
+    });
+  });
+
+  test('generation refuses a lock without schema versions', () => {
+    const legacy: LegacyMigrationLock = {
+      formatVersion: 2,
+      migrations: [{ name: INITIAL.name, sha256: sha256(INITIAL.sql) }],
+    };
+    const error = thrown(() =>
+      updateMigrationLock(
+        legacy,
+        [INITIAL],
+        [{ version: 1, through: '0001_initial' }],
+      ),
+    );
+    expect(error).toMatchObject({
+      code: 'typegen.migration_lock_outdated',
+      details: { formatVersion: 2 },
+    });
+  });
+
+  test('upgrading a legacy lock records versions for the locked prefix only', () => {
+    const legacy = parseMigrationLock(
+      JSON.stringify({
+        formatVersion: 1,
+        migrations: [
+          { name: INITIAL.name, sha256: sha256(INITIAL.sql), tables: [] },
+        ],
+      }),
+    );
+    if (legacy.formatVersion === 3) throw new Error('expected a legacy lock');
+    const upgraded = upgradeMigrationLock(
+      legacy,
+      [INITIAL, ADD_KIND],
+      [
+        { version: 1, through: '0001_initial' },
+        { version: 2, through: '0002_add_kind' },
+      ],
+    );
+    expect(upgraded).toEqual(locked);
   });
 });

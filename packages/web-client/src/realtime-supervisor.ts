@@ -48,7 +48,12 @@ export interface RealtimeSupervisorSnapshot {
 }
 
 export interface RealtimeSupervisorOptions {
-  /** Host online/offline evidence. Unknown remains connectable and observable. */
+  /**
+   * Host online/offline evidence, the only connectivity the supervisor
+   * trusts: a failed round does not suspend it. Unknown remains connectable
+   * and observable. Each `online` report drives `syncUntilIdle`, so work a
+   * failed round left behind resumes without realtime.
+   */
   readonly connectivity?: RealtimeSupervisorSignal<ClientDiagnosticsConnectivity>;
   /** Browser/native foreground evidence. Background suspends a tab-owned
    * socket; with `sharedTransport` it only serves as a resume nudge. */
@@ -209,7 +214,9 @@ export function documentLifecycleSignal(
  * Supported host policy for Syncular's explicit realtime transport. It owns
  * exactly one connect attempt, runs an explicit catch-up round before claiming
  * connected, retries transient loss with bounded exponential jitter, and
- * suspends across offline, background, or protected-preflight state.
+ * suspends across offline, background, or protected-preflight state. A host
+ * `online` report also drives `syncUntilIdle` when realtime is unsupported
+ * or disabled.
  */
 export class RealtimeSupervisor {
   readonly #client: RealtimeSupervisorClient;
@@ -230,7 +237,8 @@ export class RealtimeSupervisor {
   #transportConnected = false;
   #connecting = false;
   #realtimeSupported = true;
-  #diagnosticConnectivity: ClientDiagnosticsConnectivity = 'unknown';
+  /** The client refused a connect with `sync.offline`: its transport gate is closed. */
+  #gateClosed = false;
   #diagnosticSecurity: RealtimeSupervisorProtectionState = 'unknown';
   #attempt = 0;
   #generation = 0;
@@ -277,9 +285,17 @@ export class RealtimeSupervisor {
     this.#unsubscribeDiagnostics = this.#client.onDiagnostics((snapshot) =>
       this.#observeDiagnostics(snapshot),
     );
-    this.#unsubscribeConnectivity = this.#connectivity?.subscribe(() =>
-      this.#reconcileHostState(),
-    );
+    this.#unsubscribeConnectivity = this.#connectivity?.subscribe(() => {
+      // §1.8: the host's connectivity signal re-arms the drive a failed
+      // round left behind. The drive does not wait for the socket, so a
+      // socket that cannot connect does not hold back an HTTP round.
+      if (this.#connectivity?.current() === 'online' && !this.#hostBlock()) {
+        void Promise.resolve()
+          .then(() => this.#client.syncUntilIdle())
+          .catch(() => undefined);
+      }
+      this.#reconcileHostState();
+    });
     this.#unsubscribeLifecycle = this.#lifecycle?.subscribe(() =>
       this.#reconcileHostState(),
     );
@@ -334,10 +350,9 @@ export class RealtimeSupervisor {
     ) {
       return 'protected';
     }
-    if (
-      this.#diagnosticConnectivity === 'offline' ||
-      this.#connectivity?.current() === 'offline'
-    ) {
+    // Host evidence only: a failed round is not connectivity evidence, and
+    // treating it as such would hold the supervisor offline after recovery.
+    if (this.#gateClosed || this.#connectivity?.current() === 'offline') {
       return 'offline';
     }
     if (!this.#sharedTransport && this.#lifecycle?.current() === 'background') {
@@ -464,11 +479,15 @@ export class RealtimeSupervisor {
         return;
       }
       await this.#catchUpConnectedTransport(generation);
-    } catch {
+    } catch (error) {
       if (generation !== this.#generation) {
         this.#releaseSupersededSocket();
         return;
       }
+      this.#gateClosed =
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'sync.offline';
       failed = true;
       this.#connected = false;
       this.#transportConnected = false;
@@ -527,7 +546,6 @@ export class RealtimeSupervisor {
     initial = false,
   ): void {
     if (this.#stopped) return;
-    this.#diagnosticConnectivity = snapshot.host.connectivity;
     this.#diagnosticSecurity = snapshot.securityLifecycle;
     if (
       snapshot.host.realtime === 'unsupported' ||
@@ -551,6 +569,13 @@ export class RealtimeSupervisor {
       // recovers the supervisor. Every other report keeps the latch closed.
       if (snapshot.host.realtime !== 'connected') return;
       this.#realtimeSupported = true;
+    }
+    if (this.#gateClosed && snapshot.host.connectivity !== 'offline') {
+      // A closed transport gate always reports offline, so any other report
+      // means the app reopened it.
+      this.#gateClosed = false;
+      this.#reconcileHostState();
+      return;
     }
     const block = this.#hostBlock();
     if (block) {

@@ -32,33 +32,32 @@ export class SqliteBlobStore implements BlobStore {
     nowMs: number,
     mediaType?: string,
   ): Promise<BlobRecord> {
-    const existing = await this.get(partition, blobId);
-    if (existing !== undefined) {
-      if (existing.record.mediaType !== undefined || mediaType === undefined)
-        return existing.record;
-      // A re-upload names the media type an earlier upload left out.
-      this.db
-        .query(
-          'UPDATE sync_blobs SET media_type=? WHERE partition=? AND blob_id=? AND media_type IS NULL',
-        )
-        .run(mediaType, partition, blobId);
-      return { ...existing.record, mediaType };
+    // A re-upload refreshes the sweep grace clock and names the media type an
+    // earlier upload left out; it never replaces a recorded one.
+    const row = this.db
+      .query<
+        { media_type: string | null; created_at_ms: number },
+        [string, string, number, string | null, number, Uint8Array]
+      >(
+        `INSERT INTO sync_blobs(
+          partition, blob_id, byte_length, media_type, created_at_ms, bytes
+        ) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(partition, blob_id) DO UPDATE SET
+          media_type = coalesce(media_type, excluded.media_type),
+          created_at_ms = max(created_at_ms, excluded.created_at_ms)
+        RETURNING media_type, created_at_ms`,
+      )
+      .get(partition, blobId, bytes.length, mediaType ?? null, nowMs, bytes);
+    if (row === null) {
+      throw new Error('SqliteBlobStore: blob upsert returned no row');
     }
-    const record: BlobRecord = {
+    return {
       blobId,
       partition,
       byteLength: bytes.length,
-      ...(mediaType !== undefined ? { mediaType } : {}),
-      createdAtMs: nowMs,
+      ...(row.media_type !== null ? { mediaType: row.media_type } : {}),
+      createdAtMs: row.created_at_ms,
     };
-    this.db
-      .query(
-        `INSERT OR IGNORE INTO sync_blobs(
-          partition, blob_id, byte_length, media_type, created_at_ms, bytes
-        ) VALUES (?,?,?,?,?,?)`,
-      )
-      .run(partition, blobId, bytes.length, mediaType ?? null, nowMs, bytes);
-    return record;
   }
 
   async delete(partition: string, blobId: string): Promise<void> {
@@ -110,7 +109,7 @@ export class SqliteBlobStore implements BlobStore {
   async sweepOrphans(
     partition: string,
     olderThanMs: number,
-    referencedBlobIds: ReadonlySet<string>,
+    isReferenced: (blobId: string) => Promise<boolean>,
   ): Promise<string[]> {
     const candidates = this.db
       .query<{ blob_id: string }, [string, number]>(
@@ -119,12 +118,14 @@ export class SqliteBlobStore implements BlobStore {
       )
       .all(partition, olderThanMs);
     const swept: string[] = [];
+    // The age condition repeats in the DELETE: a re-upload during the
+    // reference lookup refreshed the grace clock and keeps the blob.
     const del = this.db.query(
-      'DELETE FROM sync_blobs WHERE partition=? AND blob_id=?',
+      'DELETE FROM sync_blobs WHERE partition=? AND blob_id=? AND created_at_ms < ?',
     );
     for (const { blob_id } of candidates) {
-      if (!referencedBlobIds.has(blob_id)) {
-        del.run(partition, blob_id);
+      if (await isReferenced(blob_id)) continue;
+      if (del.run(partition, blob_id, olderThanMs).changes > 0) {
         swept.push(blob_id);
       }
     }

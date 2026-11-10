@@ -80,7 +80,7 @@ describe('FTS5 typegen surface', () => {
     try {
       const query = analyzeQuery(
         'search-catalogue.sql',
-        `SELECT c.id, c.code, c.title, bm25(catalogue_codes_fts) AS rank
+        `SELECT c.id, c.code, c.title, CAST(bm25(catalogue_codes_fts) AS REAL) AS rank
          FROM catalogue_codes_fts
          JOIN catalogue_codes c ON c.id = catalogue_codes_fts._syncular_source_id
          WHERE catalogue_codes_fts MATCH :query
@@ -124,7 +124,7 @@ describe('FTS5 typegen surface', () => {
   });
 
   const SEARCH = `SELECT catalogue_codes_fts._syncular_source_id, c.id, c.code,
-      bm25(catalogue_codes_fts) AS rank
+      CAST(bm25(catalogue_codes_fts) AS REAL) AS rank
     FROM catalogue_codes_fts
     JOIN catalogue_codes c ON c.id = catalogue_codes_fts._syncular_source_id
     WHERE catalogue_codes_fts MATCH :query AND c.release_id = :releaseId

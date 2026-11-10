@@ -33,6 +33,8 @@ final sub = client.events.listen((e) {
 
 `syncUntilIdle()` is a synchronous FFI call; it blocks the isolate until the rounds finish. Create the client in a background isolate for sync-heavy apps, and keep every call on that isolate.
 
+When the socket reader buffers a delta or a socket loss, the core queues one `realtime-wake` event. The next poll answers it with `drainRealtime` through `command`, so an idle app applies realtime traffic without a command from you. `events` never carries the wake.
+
 ## Realtime
 
 With a `baseUrl` the core can hold a WebSocket to `{baseUrl}/realtime` (or `wsUrl`). `connectRealtime()` opens it and `disconnectRealtime()` closes it. While the socket is up, the core sends sync rounds over it, and presence changes arrive as `presence` events; read the peers with `presence(scopeKey)` and publish yours with `setPresence(scopeKey, doc)`. [Realtime & the WS loop](/concepts-realtime/) explains the protocol.

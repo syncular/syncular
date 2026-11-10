@@ -3,29 +3,63 @@
 // irHash: sha256:111865cdb8b7c0175196b6397d3b78f2972877e2600ac8d335dd563a55901213
 // ignore_for_file: type=lint
 
+import 'dart:convert';
+
 /// ServerSchema-compatible schema (SPEC §2.4, §3.1) —
 /// pass to `SyncularClient.create(schema: …)`.
-const Map<String, Object?> syncularSchema = <String, Object?>{
-  'version': 1,
-  'tables': [
+final Map<String, Object?> syncularSchema = jsonDecode('''
+{
+  "version": 1,
+  "tables": [
     {
-      'name': 'todos',
-      'primaryKey': 'id',
-      'columns': [
-        {'name': 'id', 'type': 'string', 'nullable': false},
-        {'name': 'list_id', 'type': 'string', 'nullable': false},
-        {'name': 'title', 'type': 'string', 'nullable': false},
-        {'name': 'done', 'type': 'boolean', 'nullable': false},
-        {'name': 'position', 'type': 'integer', 'nullable': false},
-        {'name': 'updated_at_ms', 'type': 'integer', 'nullable': false},
-        {'name': 'attachment', 'type': 'blob_ref', 'nullable': true},
+      "name": "todos",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "list_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "position",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "updated_at_ms",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "attachment",
+          "type": "blob_ref",
+          "nullable": true
+        }
       ],
-      'scopes': [
-        {'pattern': 'list:{list_id}', 'column': 'list_id'},
-      ],
-    },
-  ],
-};
+      "scopes": [
+        {
+          "pattern": "list:{list_id}",
+          "column": "list_id"
+        }
+      ]
+    }
+  ]
+}''') as Map<String, Object?>;
 
 /// Lift a SQLite boolean: a real bool, or 0/1 as a number.
 bool? _rowBool(Object? value) {

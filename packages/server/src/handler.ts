@@ -225,18 +225,13 @@ async function planRequest(
     else if (frame.type === 'SUBSCRIPTION') subFrames.push(frame);
   }
 
-  if (
-    request.wireVersion >= 2 &&
-    header.logEpoch === undefined &&
-    pushes.length > 0
-  ) {
+  if (header.logEpoch === undefined && pushes.length > 0) {
     throw syncError(
       'sync.invalid_request',
       'epoch acquisition requests must not carry push commits (§2.1)',
     );
   }
-  const epochReset =
-    request.wireVersion >= 2 && header.logEpoch !== registry.logEpoch;
+  const epochReset = header.logEpoch !== registry.logEpoch;
 
   if (header.schemaVersion !== schema.version) {
     // §2.4: no degraded encoding — answer with the schema floor (§1.6).
@@ -300,6 +295,34 @@ async function planRequest(
       `request carries ${totalOperations} operations (cap ${limits.maxOperationsPerRequest}, §6.1)`,
     );
   }
+  // §1.7: subscription caps, checked before any subscription is planned.
+  if (subFrames.length > limits.maxSubscriptionsPerRequest) {
+    throw syncError(
+      'sync.limit_exceeded',
+      'request carries more subscriptions than the server accepts (§1.7)',
+      JSON.stringify({
+        limit: 'maxSubscriptionsPerRequest',
+        max: limits.maxSubscriptionsPerRequest,
+        actual: subFrames.length,
+      }),
+    );
+  }
+  for (const frame of subFrames) {
+    let values = 0;
+    for (const list of Object.values(frame.scopes)) values += list.length;
+    if (values > limits.maxScopeValuesPerSubscription) {
+      throw syncError(
+        'sync.limit_exceeded',
+        'subscription requests more scope values than the server accepts (§1.7)',
+        JSON.stringify({
+          limit: 'maxScopeValuesPerSubscription',
+          max: limits.maxScopeValuesPerSubscription,
+          actual: values,
+          subscriptionId: frame.id,
+        }),
+      );
+    }
+  }
 
   if (pull !== undefined) {
     // §4.2: rows support is mandatory (bits 0 and 1) — reject its absence
@@ -357,7 +380,11 @@ async function planRequest(
   const subscriptions: SubscriptionPlan[] = validated.map(({ frame }) => {
     const table = schema.tables.get(frame.table);
     if (table === undefined) throw new Error('unreachable: validated table');
-    const outcome = computeEffective(frame.scopes, resolved);
+    const outcome = computeEffective(
+      table.declaredVariables,
+      frame.scopes,
+      resolved,
+    );
     if (outcome.status === 'active') {
       return { frame, table, status: 'active', effective: outcome.effective };
     }
@@ -383,6 +410,12 @@ async function planRequest(
 interface RequestReport {
   outcome: 'ok' | 'schema_floor' | 'epoch_acquired' | 'reset' | 'error';
   errorCode?: string;
+  /**
+   * The completed round's client-record write (§4.5, §8.1). Set only by a
+   * round that streamed without an in-band error; runs after the serve-gate
+   * verification.
+   */
+  persist?: () => Promise<void>;
 }
 
 function pushResultDetailsFrame(
@@ -470,12 +503,12 @@ async function* streamResponse(
   plan: RequestPlan,
   ctx: SyncRequestContext,
   schema: CompiledSchema,
-  report?: RequestReport,
+  report: RequestReport,
 ): AsyncGenerator<Uint8Array> {
   const events = ctx.events;
   yield responseEnvelopeHeader(plan.wireVersion);
   if (plan.schemaFloor) {
-    if (report !== undefined) report.outcome = 'schema_floor';
+    report.outcome = 'schema_floor';
     yield encodeResponseFrame(
       {
         type: 'RESP_HEADER',
@@ -483,9 +516,8 @@ async function* streamResponse(
           -1,
         )!.version,
         latestSchemaVersion: ctx.schema.version,
-        ...(plan.wireVersion >= 2
-          ? { logEpoch: plan.logEpoch, resetRequired: plan.epochReset }
-          : {}),
+        logEpoch: plan.logEpoch,
+        resetRequired: plan.epochReset,
       },
       plan.wireVersion,
     );
@@ -496,17 +528,14 @@ async function* streamResponse(
     {
       type: 'RESP_HEADER',
       latestSchemaVersion: ctx.schema.version,
-      ...(plan.wireVersion >= 2
-        ? { logEpoch: plan.logEpoch, resetRequired: plan.epochReset }
-        : {}),
+      logEpoch: plan.logEpoch,
+      resetRequired: plan.epochReset,
     },
     plan.wireVersion,
   );
   if (plan.epochReset) {
-    if (report !== undefined) {
-      report.outcome =
-        plan.header.logEpoch === undefined ? 'epoch_acquired' : 'reset';
-    }
+    report.outcome =
+      plan.header.logEpoch === undefined ? 'epoch_acquired' : 'reset';
     yield END_FRAME_BYTES;
     return;
   }
@@ -612,78 +641,95 @@ async function* streamResponse(
           JSON.stringify({ acceptedThrough, storageMaxCommitSeq: maxSeq }),
         );
       const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
-      const prepared = await prepareSections(
-        ctx,
-        schema,
-        limits,
-        plan.subscriptions,
-        maxSeq,
-        horizonSeq,
-        plan.logEpoch,
+      // A window of sections runs its pre-frame reads together, so a batching
+      // storage answers them in one statement per table. The window holds at
+      // most 100,000 first-page or window rows (two maximal §4.2 pages): a
+      // request's read memory follows the configured limits, never its
+      // subscription count.
+      const window = Math.max(
+        1,
+        Math.floor(
+          100_000 /
+            (Math.max(limits.limitSnapshotRows, limits.limitCommits) + 1),
+        ),
       );
-      for (const [index, subscription] of plan.subscriptions.entries()) {
-        const trace: PullSectionTrace | undefined =
-          summaries !== undefined ? { segments: [] } : undefined;
-        const reads = prepared[index];
-        if (reads === undefined) throw new Error('prepareSections lost a plan');
-        const section = preparedSection(
+      for (let start = 0; start < plan.subscriptions.length; start += window) {
+        const batch = plan.subscriptions.slice(start, start + window);
+        const prepared = await prepareSections(
           ctx,
           schema,
           limits,
-          subscription,
+          batch,
           maxSeq,
-          reads,
-          trace,
+          horizonSeq,
           plan.logEpoch,
         );
-        let status: 'active' | 'revoked' | 'reset' = 'active';
-        let bootstrap = false;
-        let commits = 0;
-        let changes = 0;
-        let effectiveScopes: ScopeMap = {};
-        let firstCommitSeq: number | undefined;
-        let lastCommitSeq: number | undefined;
-        let step = await section.next();
-        while (!step.done) {
-          const frame = step.value as ResponseFrame;
-          if (summaries !== undefined) {
-            if (frame.type === 'SUB_START') {
-              status = frame.status;
-              bootstrap = frame.bootstrap;
-              effectiveScopes = frame.effectiveScopes;
-            } else if (frame.type === 'COMMIT') {
-              commits += 1;
-              changes += frame.changes.length;
-              firstCommitSeq ??= frame.commitSeq;
-              lastCommitSeq = frame.commitSeq;
-            }
+        for (const [index, subscription] of batch.entries()) {
+          const trace: PullSectionTrace | undefined =
+            summaries !== undefined ? { segments: [] } : undefined;
+          const reads = prepared[index];
+          if (reads === undefined) {
+            throw new Error('prepareSections lost a plan');
           }
-          yield encodeResponseFrame(frame, plan.wireVersion);
-          step = await section.next();
-        }
-        if (step.value.active) cursors.push(step.value.nextCursor);
-        if (summaries !== undefined && trace !== undefined) {
-          summaries.push({
-            id: subscription.frame.id,
-            table: subscription.frame.table,
-            status,
-            mode:
-              status !== 'active'
-                ? 'none'
-                : bootstrap
-                  ? 'bootstrap'
-                  : 'incremental',
-            requestedScopes: subscription.frame.scopes,
-            effectiveScopes,
-            ...(firstCommitSeq !== undefined && lastCommitSeq !== undefined
-              ? { firstCommitSeq, lastCommitSeq }
-              : {}),
-            fromCursor: subscription.frame.cursor,
-            nextCursor: step.value.nextCursor,
-            commits,
-            changes,
-            segments: trace.segments,
-          });
+          const section = preparedSection(
+            ctx,
+            schema,
+            limits,
+            subscription,
+            maxSeq,
+            reads,
+            trace,
+            plan.logEpoch,
+          );
+          let status: 'active' | 'revoked' | 'reset' = 'active';
+          let bootstrap = false;
+          let commits = 0;
+          let changes = 0;
+          let effectiveScopes: ScopeMap = {};
+          let firstCommitSeq: number | undefined;
+          let lastCommitSeq: number | undefined;
+          let step = await section.next();
+          while (!step.done) {
+            const frame = step.value as ResponseFrame;
+            if (summaries !== undefined) {
+              if (frame.type === 'SUB_START') {
+                status = frame.status;
+                bootstrap = frame.bootstrap;
+                effectiveScopes = frame.effectiveScopes;
+              } else if (frame.type === 'COMMIT') {
+                commits += 1;
+                changes += frame.changes.length;
+                firstCommitSeq ??= frame.commitSeq;
+                lastCommitSeq = frame.commitSeq;
+              }
+            }
+            yield encodeResponseFrame(frame, plan.wireVersion);
+            step = await section.next();
+          }
+          if (step.value.active) cursors.push(step.value.nextCursor);
+          if (summaries !== undefined && trace !== undefined) {
+            summaries.push({
+              id: subscription.frame.id,
+              table: subscription.frame.table,
+              status,
+              mode:
+                status !== 'active'
+                  ? 'none'
+                  : bootstrap
+                    ? 'bootstrap'
+                    : 'incremental',
+              requestedScopes: subscription.frame.scopes,
+              effectiveScopes,
+              ...(firstCommitSeq !== undefined && lastCommitSeq !== undefined
+                ? { firstCommitSeq, lastCommitSeq }
+                : {}),
+              fromCursor: subscription.frame.cursor,
+              nextCursor: step.value.nextCursor,
+              commits,
+              changes,
+              segments: trace.segments,
+            });
+          }
         }
       }
       if (events !== undefined && summaries !== undefined) {
@@ -700,55 +746,59 @@ async function* streamResponse(
       }
     }
 
-    // §4.5/§8.1: persist the cursor watermark and the request's
-    // subscription list per (partition, clientId).
-    const previous = await ctx.storage.getClientRecord(
-      ctx.partition,
-      plan.header.clientId,
-    );
-    const subscriptions: ClientSubscription[] =
-      plan.pull !== undefined
-        ? plan.subscriptions.map((s) => ({
-            id: s.frame.id,
-            table: s.frame.table,
-            scopes: s.frame.scopes,
-            schemaVersion: schema.version,
-          }))
-        : [...(previous?.subscriptions ?? [])];
-    const cursor =
-      cursors.length > 0 ? Math.min(...cursors) : (previous?.cursor ?? -1);
-    await ctx.storage.putClientRecord(
-      ctx.partition,
-      {
-        clientId: plan.header.clientId,
-        actorId: ctx.actorId,
-        wireVersion: plan.wireVersion,
-        cursor,
-        updatedAtMs: clockOf(ctx)(),
-        subscriptions,
-      },
-      // §4.5: a round that carried a `ROUND_FAILURE` report completes without
-      // clearing the reported code and streak; the next request without the
-      // frame clears them as a plain completed round does.
-      plan.roundFailure !== undefined ? { keepRoundOutcome: true } : undefined,
-    );
-    if (
-      ctx.realtime?.notifySubscriptions !== undefined &&
-      JSON.stringify(
-        (previous?.subscriptions ?? []).map((s) => [s.id, s.table, s.scopes]),
-      ) !== JSON.stringify(subscriptions.map((s) => [s.id, s.table, s.scopes]))
-    ) {
-      await ctx.realtime.notifySubscriptions(
+    // §4.5/§8.1: the cursor watermark and the request's subscription list
+    // per (partition, clientId), persisted only after the serve gate
+    // verified the round (§4.5: a failed round leaves the cursor alone).
+    report.persist = async () => {
+      const previous = await ctx.storage.getClientRecord(
         ctx.partition,
         plan.header.clientId,
       );
-    }
+      const subscriptions: ClientSubscription[] =
+        plan.pull !== undefined
+          ? plan.subscriptions.map((s) => ({
+              id: s.frame.id,
+              table: s.frame.table,
+              scopes: s.frame.scopes,
+              schemaVersion: schema.version,
+            }))
+          : [...(previous?.subscriptions ?? [])];
+      let cursor = cursors[0] ?? previous?.cursor ?? -1;
+      for (const next of cursors) cursor = Math.min(cursor, next);
+      await ctx.storage.putClientRecord(
+        ctx.partition,
+        {
+          clientId: plan.header.clientId,
+          actorId: ctx.actorId,
+          wireVersion: plan.wireVersion,
+          cursor,
+          updatedAtMs: clockOf(ctx)(),
+          subscriptions,
+        },
+        // §4.5: a round that carried a `ROUND_FAILURE` report completes
+        // without clearing the reported code and streak; the next request
+        // without the frame clears them as a plain completed round does.
+        plan.roundFailure !== undefined
+          ? { keepRoundOutcome: true }
+          : undefined,
+      );
+      if (
+        ctx.realtime?.notifySubscriptions !== undefined &&
+        JSON.stringify(
+          (previous?.subscriptions ?? []).map((s) => [s.id, s.table, s.scopes]),
+        ) !==
+          JSON.stringify(subscriptions.map((s) => [s.id, s.table, s.scopes]))
+      ) {
+        await ctx.realtime.notifySubscriptions(
+          ctx.partition,
+          plan.header.clientId,
+        );
+      }
+    };
   } catch (error) {
     if (error instanceof SyncError) {
-      if (report !== undefined) {
-        report.outcome = 'error';
-        report.errorCode = error.code;
-      }
+      report.outcome = 'error';
+      report.errorCode = error.code;
       await recordRoundFailure(ctx, plan.header.clientId, error);
       // §1.6: in-band ERROR, then END, nothing else.
       yield encodeResponseFrame(
@@ -982,6 +1032,7 @@ async function createStreamCore(
     );
     if (afterRefusal !== undefined) throw serveNotReadyError(afterRefusal);
     if (changed !== undefined) throw serveNotReadyError(changed);
+    await report.persist?.();
     for (const chunk of buffered) yield chunk;
   };
   if (events === undefined) {

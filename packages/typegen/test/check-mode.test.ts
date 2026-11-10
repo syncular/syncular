@@ -109,6 +109,31 @@ function appendOverlongIndexMigration(dir: string): string {
   return indexName;
 }
 
+/** Rewrite the committed format-3 lock in a pre-version format: format 1
+ * carried a schema snapshot per migration, format 2 one head snapshot. */
+function writeLegacyLock(lockPath: string, formatVersion: 1 | 2): void {
+  const lock = JSON.parse(readFileSync(lockPath, 'utf8')) as {
+    migrations: Array<{ name: string; sha256: string }>;
+    head: { tables: unknown[] };
+  };
+  const migrations = lock.migrations.map(({ name, sha256 }) =>
+    formatVersion === 1
+      ? { name, sha256, tables: lock.head.tables }
+      : { name, sha256 },
+  );
+  writeFileSync(
+    lockPath,
+    `${JSON.stringify(
+      formatVersion === 1
+        ? { formatVersion, migrations }
+        : { formatVersion, migrations, head: lock.head },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+}
+
 interface CliRun {
   exitCode: number;
   stdout: string;
@@ -340,10 +365,6 @@ describe('immutable migration history', () => {
 
   test('a new nullable migration extends the lock and matches a fresh baseline', () => {
     const upgradeDir = freshDir();
-    expect(
-      runCli(['migrations', 'upgrade-lock', '--manifest-dir', upgradeDir])
-        .exitCode,
-    ).toBe(0);
     appendNullableMigration(upgradeDir);
     const generated = runCli(['generate', '--manifest-dir', upgradeDir]);
     expect(generated.exitCode).toBe(0);
@@ -400,90 +421,90 @@ describe('immutable migration history', () => {
     expect(baseline.stderr).not.toContain(baselineDir);
   });
 
-  test('a format-1 lock stays valid and upgrades only through the explicit command', () => {
+  test('an appended migration cannot join a locked schema version', () => {
     const dir = freshDir();
-    const lockPath = join(dir, 'syncular.migrations.lock.json');
-    const before = readFileSync(lockPath, 'utf8');
-    expect(JSON.parse(before).formatVersion).toBe(1);
-    expect(
-      runCli(['migrations', 'check', '--manifest-dir', dir]).exitCode,
-    ).toBe(0);
-
-    // Ordinary generation preserves the committed representation.
-    expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
-    expect(readFileSync(lockPath, 'utf8')).toBe(before);
-
-    const upgrade = runCli([
-      'migrations',
-      'upgrade-lock',
-      '--manifest-dir',
-      dir,
-    ]);
-    expect(upgrade.exitCode).toBe(0);
-    expect(upgrade.stdout).toContain('compact format 2');
-    const compact = readFileSync(lockPath, 'utf8');
-    expect(JSON.parse(compact).formatVersion).toBe(2);
-    expect(compact.length).toBeLessThan(before.length);
-    expect(
-      runCli(['migrations', 'check', '--manifest-dir', dir]).exitCode,
-    ).toBe(0);
-
-    const repeated = runCli([
-      'migrations',
-      'upgrade-lock',
-      '--manifest-dir',
-      dir,
-    ]);
-    expect(repeated.exitCode).toBe(1);
-    expect(repeated.stderr).toContain('already uses the current compact');
-
-    replaceInFile(
-      join(dir, 'migrations', '0001_initial', 'up.sql'),
-      '  project_id TEXT NOT NULL,\n  title TEXT NOT NULL,',
-      '  project_id TEXT NOT NULL,\n  device_id TEXT NOT NULL,\n  title TEXT NOT NULL,',
-    );
-    const drift = runCli(['migrations', 'check', '--manifest-dir', dir]);
-    expect(drift.exitCode).toBe(1);
-    expect(drift.stderr).toContain('migration "0001_initial"');
-    expect(drift.stderr).toContain('table "tasks", column 3');
-    expect(drift.stderr).toContain('"device_id" was inserted');
-    expect(drift.stderr).not.toContain(dir);
+    appendNullableMigration(dir);
+    // Fold the new migration into the locked version 5 instead of adding 6.
+    const manifestPath = join(dir, 'syncular.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      schemaVersions: Array<{ version: number; through: string }>;
+    };
+    manifest.schemaVersions.pop();
+    const last = manifest.schemaVersions.at(-1);
+    if (last === undefined) throw new Error('fixture has no schema version');
+    last.through = '0006_add_task_reviewer';
+    writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
+    for (const action of [['generate'], ['migrations', 'check']]) {
+      const run = runCli([...action, '--manifest-dir', dir]);
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain('typegen.schema_version_locked');
+      expect(run.stderr).toContain('"migration":"0006_add_task_reviewer"');
+    }
   });
 
-  test('upgrade-lock refuses while unlocked appended migrations exist', () => {
+  test('a format-1 or format-2 lock upgrades only through the explicit command', () => {
+    for (const formatVersion of [1, 2] as const) {
+      const dir = freshDir();
+      const lockPath = join(dir, 'syncular.migrations.lock.json');
+      const current = readFileSync(lockPath, 'utf8');
+      writeLegacyLock(lockPath, formatVersion);
+      const legacy = readFileSync(lockPath, 'utf8');
+      for (const action of [['generate'], ['migrations', 'check']]) {
+        const run = runCli([...action, '--manifest-dir', dir]);
+        expect(run.exitCode).toBe(1);
+        expect(run.stderr).toContain('typegen.migration_lock_outdated');
+        expect(run.stderr).toContain('migrations upgrade-lock');
+      }
+      expect(readFileSync(lockPath, 'utf8')).toBe(legacy);
+
+      const upgrade = runCli([
+        'migrations',
+        'upgrade-lock',
+        '--manifest-dir',
+        dir,
+      ]);
+      expect(upgrade.exitCode).toBe(0);
+      expect(upgrade.stdout).toContain('format 3');
+      expect(readFileSync(lockPath, 'utf8')).toBe(current);
+
+      const repeated = runCli([
+        'migrations',
+        'upgrade-lock',
+        '--manifest-dir',
+        dir,
+      ]);
+      expect(repeated.exitCode).toBe(1);
+      expect(repeated.stderr).toContain('already uses the current');
+    }
+  });
+
+  test('upgrade-lock locks the legacy prefix; generate then locks appended migrations', () => {
     const dir = freshDir();
     const lockPath = join(dir, 'syncular.migrations.lock.json');
-    const before = readFileSync(lockPath, 'utf8');
+    writeLegacyLock(lockPath, 1);
     appendNullableMigration(dir);
 
-    const refused = runCli([
-      'migrations',
-      'upgrade-lock',
-      '--manifest-dir',
-      dir,
-    ]);
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toContain('0006_add_task_reviewer');
-    expect(refused.stderr).toContain('appended beyond the locked history');
-    expect(refused.stderr).toContain('run generate to extend the lock');
-    expect(readFileSync(lockPath, 'utf8')).toBe(before);
-
-    // After generate extends (and here preserves the format-1) lock, the
-    // conversion is a separate explicit act that succeeds.
+    expect(
+      runCli(['migrations', 'upgrade-lock', '--manifest-dir', dir]).exitCode,
+    ).toBe(0);
+    expect(JSON.parse(readFileSync(lockPath, 'utf8')).migrations).toHaveLength(
+      5,
+    );
     expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
-    const upgraded = runCli([
-      'migrations',
-      'upgrade-lock',
-      '--manifest-dir',
-      dir,
-    ]);
-    expect(upgraded.exitCode).toBe(0);
-    expect(JSON.parse(readFileSync(lockPath, 'utf8')).formatVersion).toBe(2);
+    expect(
+      JSON.parse(readFileSync(lockPath, 'utf8')).migrations.at(-1),
+    ).toEqual(
+      expect.objectContaining({
+        name: '0006_add_task_reviewer',
+        schemaVersion: 6,
+      }),
+    );
   });
 
-  test('format upgrade refuses drift and leaves the version-1 lock byte-exact', () => {
+  test('format upgrade refuses drift and leaves the legacy lock byte-exact', () => {
     const dir = freshDir();
     const lockPath = join(dir, 'syncular.migrations.lock.json');
+    writeLegacyLock(lockPath, 1);
     const before = readFileSync(lockPath, 'utf8');
     appendFileSync(
       join(dir, 'migrations', '0002_add_task_estimate', 'up.sql'),

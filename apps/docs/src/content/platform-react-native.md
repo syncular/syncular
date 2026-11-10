@@ -56,7 +56,18 @@ await client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groce
 
 // 3. Write: visible to local reads at once, queued in the outbox.
 await client.mutate([
-  { table: 'todos', op: 'upsert', values: { id: 't1', list_id: 'groceries', title: 'Hello', done: false } },
+  {
+    table: 'todos',
+    op: 'upsert',
+    values: {
+      id: 't1',
+      list_id: 'groceries',
+      title: 'Hello',
+      done: false,
+      position: 1,
+      updated_at_ms: Date.now(),
+    },
+  },
 ]);
 
 // 4. Sync: push the outbox, pull new rows.

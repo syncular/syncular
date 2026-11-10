@@ -6,7 +6,7 @@
 import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { ScenarioSkip } from '../scenario';
-import type { DriverSchema, DriverTable } from '../driver';
+import type { DriverRow, DriverSchema, DriverTable } from '../driver';
 import { ALL_SCOPES, doc, FIXTURE_SCHEMA, task } from '../fixture';
 import {
   rawDelete,
@@ -41,6 +41,23 @@ const ALTERNATIVE_WRITE_SCHEMA: DriverSchema = {
         writeScopeVariables: ['org_id'],
       }),
     ),
+  ],
+};
+
+/** A table whose scope column is an INTEGER (§2.4); scope values are text. */
+const INTEGER_SCOPE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'buckets',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'bucket', type: 'integer', nullable: false },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'bucket:{bucket}' }],
+    },
   ],
 };
 
@@ -544,6 +561,58 @@ export const scopeScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'scopes/wildcard-fence-adds-omitted-variables',
+    specRefs: ['§3.2'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      await seedRows(ctx, 'docs', [
+        doc('inside', 'o1', 'p1', 'inside parent'),
+        doc('outside-same-child', 'o2', 'p1', 'outside parent'),
+        doc('inside-other-child', 'o1', 'p2', 'other child'),
+      ]);
+      const fenced = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1'], projectId: ['*'] },
+      });
+      const open = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        allowed: { org_id: ['*'], projectId: ['*'] },
+      });
+      for (const client of [fenced, open]) {
+        // The request names only the wildcard-granted child variable.
+        await client.api.subscribe({
+          id: 'docs',
+          table: 'docs',
+          scopes: { projectId: ['p1', 'p2'] },
+        });
+        await syncIdle(client);
+      }
+      checkEqual(
+        (await fenced.api.readRows('docs')).map((row) => row.rowId).sort(),
+        ['inside', 'inside-other-child'],
+        "the actor's org list fences a subscription that omits org_id (§3.2 rule 4)",
+      );
+      checkEqual(
+        (await fenced.api.subscriptionState('docs'))?.effectiveScopes,
+        { org_id: ['o1'], projectId: ['p1', 'p2'] },
+        'the effective scopes echo the variable the fence added',
+      );
+      checkEqual(
+        (await open.api.readRows('docs')).map((row) => row.rowId).sort(),
+        ['inside', 'inside-other-child', 'outside-same-child'],
+        'an all-wildcard actor is not fenced',
+      );
+      checkEqual(
+        (await open.api.subscriptionState('docs'))?.effectiveScopes,
+        { projectId: ['p1', 'p2'] },
+        'an all-wildcard actor keeps the requested scopes',
+      );
+    },
+  },
+
+  {
     name: 'scopes/revocation-purges-exactly-the-grant',
     specRefs: ['§3.3', '§3.4', 'B.4'],
     requires: ['scope-authorization'],
@@ -609,6 +678,162 @@ export const scopeScenarios: readonly Scenario[] = [
         (await a.api.readRows('tasks')).map((row) => row.rowId),
         ['t3', 't4'],
         'p2 stays live after the p1 revocation',
+      );
+    },
+  },
+
+  {
+    name: 'scopes/revocation-keeps-rows-another-subscription-covers',
+    specRefs: ['§3.3', '§4.8'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      await seedRows(ctx, 'docs', [
+        doc('shared', 'o1', 'p1'),
+        doc('lone', 'o2', 'p1'),
+      ]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1', 'o2'], projectId: ['p1'] },
+      });
+      await a.api.subscribe({
+        id: 'org',
+        table: 'docs',
+        scopes: { org_id: ['o1'] },
+      });
+      await a.api.subscribe({
+        id: 'project',
+        table: 'docs',
+        scopes: { projectId: ['p1'] },
+      });
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId).sort(),
+        ['lone', 'shared'],
+        'both subscriptions synced',
+      );
+
+      await ctx.server.setAllowedScopes('actor-a', {
+        org_id: ['o1', 'o2'],
+        projectId: ['p9'],
+      });
+      const report = await syncOk(a);
+      checkEqual(report.revoked, ['project'], 'only the project grant ended');
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['shared'],
+        'the purge keeps the row the org subscription still covers',
+      );
+      await seedRows(ctx, 'docs', [doc('shared', 'o1', 'p1', 'edited')]);
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs'))[0]?.values.body,
+        'edited',
+        'the surviving subscription keeps syncing the shared row',
+      );
+    },
+  },
+
+  {
+    name: 'scopes/revocation-keeps-pending-commits-another-subscription-covers',
+    specRefs: ['§3.3'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      // One commit per request keeps the doc writes pending through the
+      // revoking round.
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1', 'o2'], projectId: ['p1', 'p9'] },
+        limits: { maxPushCommitsPerRequest: 1 },
+      });
+      await a.api.subscribe({
+        id: 'org',
+        table: 'docs',
+        scopes: { org_id: ['o1'] },
+      });
+      await a.api.subscribe({
+        id: 'project',
+        table: 'docs',
+        scopes: { projectId: ['p1'] },
+      });
+      await syncIdle(a);
+
+      await ctx.server.setAllowedScopes('actor-a', {
+        org_id: ['o1', 'o2'],
+        projectId: ['p9'],
+      });
+      const upsert = (row: DriverRow) =>
+        a.api.mutate([{ op: 'upsert', table: 'docs', values: row }]);
+      await upsert(doc('filler', 'o1', 'p9'));
+      const shared = await upsert(doc('shared', 'o1', 'p1'));
+      const lone = await upsert(doc('lone', 'o2', 'p1'));
+      const report = await syncOk(a);
+
+      checkEqual(report.revoked, ['project'], 'only the project grant ended');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [shared],
+        'the commit the org subscription still covers stays pending',
+      );
+      checkEqual(
+        (await a.api.rejections())
+          .filter((rejection) => rejection.code === 'sync.scope_revoked')
+          .map((rejection) => rejection.clientCommitId),
+        [lone],
+        'the commit only the revoked grant covered is dropped',
+      );
+    },
+  },
+
+  {
+    name: 'scopes/revocation-purges-an-integer-scope-column',
+    specRefs: ['§3.3', '§2.4'],
+    requires: ['scope-authorization'],
+    server: { schema: INTEGER_SCOPE_SCHEMA },
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('bucket-seed', { bucket: ['*'] });
+      const seeded = await ctx.rawSync(
+        'bucket-seed',
+        [
+          rawPushCommit(
+            'seed-buckets',
+            [
+              { id: 'b7', bucket: 7, body: 'seven' },
+              { id: 'b8', bucket: 8, body: 'eight' },
+            ].map((row) => rawUpsert(ctx.serverSchema, 'buckets', row)),
+          ),
+        ],
+        { clientId: 'bucket-seed' },
+      );
+      check(seeded.ok, 'the rows are seeded');
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: INTEGER_SCOPE_SCHEMA,
+        allowed: { bucket: ['7', '8'] },
+      });
+      for (const bucket of ['7', '8']) {
+        await a.api.subscribe({
+          id: `bucket-${bucket}`,
+          table: 'buckets',
+          scopes: { bucket: [bucket] },
+        });
+      }
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('buckets')).map((row) => row.rowId),
+        ['b7', 'b8'],
+        'both buckets synced',
+      );
+
+      await ctx.server.setAllowedScopes('actor-a', { bucket: ['8'] });
+      const report = await syncOk(a);
+      checkEqual(report.revoked, ['bucket-7'], 'bucket 7 was revoked');
+      checkEqual(
+        (await a.api.readRows('buckets')).map((row) => row.rowId),
+        ['b8'],
+        'the purge matches the integer scope column by value',
       );
     },
   },

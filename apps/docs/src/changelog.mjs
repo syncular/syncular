@@ -16,6 +16,419 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-10',
+    title: 'Computed query columns take their type from CAST or count()',
+    body: 'A result column that is an expression is typed by a whole-expression `CAST(... AS <type>)` to `INTEGER`, `REAL`, `TEXT`, `BLOB`, or `BOOLEAN`, or is a whole-expression `count(...)`, which is an integer. Any other expression fails generation with `typegen.computed_column_type`. Before, typegen guessed: `length(x)` came out as a string and `count(*)` as a float, and on a wrong guess the TypeScript row passed the value through, Rust returned a decode error, Dart threw, and Kotlin and Swift returned nil. Wrap each computed column in a `CAST` before upgrading; `count(*)` columns change from a float to an integer type in Rust, Kotlin, Swift, and Dart.',
+    links: [
+      {
+        href: '/tooling-queries/',
+        label: 'Named queries',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Tauri: sync events and commands belong to the webview that created the client',
+    body: "The bridge passes a Tauri IPC `Channel` in the `create` params and the plugin sends `change`, `presence`, and lifecycle events to that webview only. Before, every webview of the app received them. A command from a webview that did not create the client is refused with `sync.client_owned_by_another_webview`; before, it ran against the other webview's client. `TauriApi.listen` is replaced by `channel`, which affects code that injects its own Tauri API double.",
+    links: [
+      {
+        href: '/platform-tauri-specifics/',
+        label: 'Tauri specifics',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'A refused presence publish reaches the app; a disabled query reports disabled',
+    body: "Presence listeners receive the server's refusal of a publish: `onPresence(scopeKey, error)` gets `presence.too_large` or `presence.forbidden` in the TypeScript client, the worker host, and the native bridge, and the native `presence` event carries the same code in `error`. `useRawSql` and `useQuery` with `enabled: false` report phase `disabled`; before, they reported `ready` with no rows, the same as a query that ran and found nothing.",
+    links: [
+      {
+        href: '/concepts-realtime/#presence',
+        label: 'Presence',
+      },
+      {
+        href: '/platform-react-reads-writes/',
+        label: 'React reads and writes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Presence survives Durable Object hibernation; the presence cap is per connection',
+    body: "On Cloudflare Workers the host keeps each socket's presence documents in that socket's attachment and restores them after a hibernation. Peers receive `leave` when a socket closes after a wake, and a newly registered socket receives the snapshot of the peers already present. `maxPresenceBytes` now caps the presence one connection holds across all its scope keys (scope key plus document, UTF-8 bytes, default 8,192; previously 16 KiB per document). The Workers host refuses a `maxPresenceBytes` above 9,785 with `realtime.presence_exceeds_attachment`, because the attachment holds 16,384 bytes.",
+    links: [
+      {
+        href: '/concepts-realtime/#presence',
+        label: 'Presence',
+      },
+      {
+        href: '/server-workers/',
+        label: 'Workers host',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'A scope column must be a string or an integer',
+    body: 'Generation refuses a scope column of type `float`, `boolean`, `json`, `bytes`, `blob_ref`, or `crdt` with `typegen.scope_column_type`, and the server schema compile refuses the same types with `schema.scope_column_type`. The Rust authority and both clients refuse them when they load a schema. A `float` scope value rendered differently per implementation (`1e21` is `1e+21` on the TS server and `1000000000000000000000` in the Rust authority), so one row could sit in two different scopes. A `bytes` or `crdt` scope column made every write fail with `sync.forbidden`, and a `boolean` scope column never matched in the client purge and eviction predicates, so revoked rows stayed readable. Change a `float` scope column to `integer` or `string` before upgrading. A row with a NULL scope value is still unwritable.',
+    links: [
+      {
+        href: '/guide-schema/',
+        label: 'Schema guide',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Native schemas carry indexes and references; the migration lock records schema versions',
+    body: 'The Swift, Kotlin, and Dart schema constants parse the same schema JSON the TS module embeds, so native clients now create local indexes, enforce local `UNIQUE`, and pass declared references to the local authority. The Dart constant is now `final` (decoded with `dart:convert`) instead of `const`. Migration lock format 3 records the schema version of every locked migration: generation refuses a migration that joins a locked version (`typegen.schema_version_locked`) or a locked migration moved to another version (`typegen.migration_version_changed`). A format 1 or 2 lock fails with `typegen.migration_lock_outdated` until `syncular migrations upgrade-lock` converts it once. Generation also refuses an encrypted column in any index, a declared reference whose single-column index a migration dropped, table or column names that differ only in letter case, two names that map to one generated type or field name, and reserved words on every emitted target in both naming modes. `DEFAULT -1` is accepted, and `DEFAULT NOT NULL` is a parse error.',
+    links: [
+      {
+        href: '/guide-schema/#schema-bumps',
+        label: 'Schema bumps',
+      },
+      {
+        href: '/tooling-cli/',
+        label: 'CLI',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Typegen emits the SQL it checked, and scope proofs are whole WHERE conjuncts',
+    body: 'Typegen derives the emitted positional SQL from the SYQL lexer and prepares that exact statement at generation, so whitespace inside a string literal survives and a quote inside a quoted identifier no longer turns a following line comment into a dropped `WHERE` clause. `.sql` and `.syql` queries share one scope-proof rule: a scope column compared to a bind proves its scope only as a whole top-level `WHERE` conjunct. `not (project_id = :projectId)`, `(project_id = :projectId) = 0`, `collate`, `iif`, `case`, a literal in an `in` list, and a predicate in a subquery now yield a table-wide dependency and no coverage, and `sync query` rejects them. A plain column beside an aggregate without `GROUP BY`, and a compound-SELECT column that a branch can leave `NULL`, generate as nullable. A query name, result column, or input that a target cannot emit fails with `typegen.invalid_query_identifier`. The Swift runner for a nullable optional `when` control compiles again.',
+    links: [
+      {
+        href: '/tooling-queries/',
+        label: 'Named queries',
+      },
+      {
+        href: '/syql/#query-and-sync-query',
+        label: 'query and sync query',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Direct client realtime URL placeholder, handle blobRefString, native syncUntilIdle timeoutMs',
+    body: '`webSocketRealtimeConnector` replaces `{clientId}` in its URL with the percent-encoded client id on the direct client too; before, only the worker path substituted it and the direct client opened the literal URL. `RealtimeConnector` receives the client id as an optional second argument, and the worker path no longer substitutes separately. `SyncClientHandle` gains `blobRefString(ref)`, which serializes a `BlobRef` locally with no worker call. `syncUntilIdle` accepts `timeoutMs` on the Swift, Kotlin and Flutter clients and on the shared Tauri and React Native bridge (`syncUntilIdle(maxRounds, timeoutMs)`), passed through to the command. The Swift `readRows`, `query`, `pendingCommitIds`, `conflicts` and `presence` throw `client.invalid_host_response` when the host reply lacks the expected field; before, they returned an empty list. The React Native iOS and Android modules join the event pump before they free the native handle on `create`, so a re-create no longer frees a handle that the pump thread is polling.',
+    links: [
+      {
+        href: '/concepts-realtime/',
+        label: 'Realtime',
+      },
+      {
+        href: '/concepts-blobs/',
+        label: 'Blobs',
+      },
+      {
+        href: '/native-client-api/',
+        label: 'Native client API',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Tauri and React Native share one native bridge; Tauri snapshotRead passes the plugin ACL',
+    body: '`@syncular/tauri` and the React Native binding now run one command bridge, `@syncular/client/native-bridge`, so both hosts decode, gate and fail the same way. In a real Tauri app `snapshotRead` failed with "not allowed by ACL", because the plugin registered `syncular_snapshot_read` without a permission; the bridge now sends it as the `snapshotRead` method of `syncular_command`, and the plugin no longer registers the dedicated command. `conflicts()` decodes `serverRow` like `commitOutcome()`: binary and `crdt` cells arrive as `Uint8Array`, and `_sync_*` columns are dropped. A failed `create` releases the event listener and rejects with a typed error: a rejected host call carries `client.failed` with the host text in `details.cause`. The Tauri plugin answers `create` with its startup failure, for example `sync.invalid_request` for an invalid transport field, instead of emitting an event no listener receives. `SyncularConfig` gains `realtime_heartbeat_ms`, forwarded as `realtimeHeartbeatMs`. React Native now refuses a malformed `$bytes` envelope with `sync.invalid_request` instead of padding it, and a closed React Native client rejects queries and listener registration with `client.closed`, as Tauri did.',
+    links: [
+      {
+        href: '/platform-tauri-specifics/#the-command-and-event-surface',
+        label: 'Tauri command surface',
+      },
+      {
+        href: '/platform-tauri-install/',
+        label: 'Tauri install',
+      },
+      {
+        href: '/platform-react-native-reads-writes/#direct-client-calls',
+        label: 'React Native direct client calls',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Authenticated realtime upgrades in the templates, useRawSql requires dependencies, testkit offline is a dead network',
+    body: "The `create-syncular` web and Tauri templates and both demo servers run the same `authenticate(request)` on the `/realtime` upgrade as on `POST /sync`, answer 401 when it returns `null`, and connect the socket as the authenticated actor and partition. They send `hub.heartbeat()` every 30 000 ms. The Tauri template's window ships a CSP of `default-src 'self'` with `connect-src` limited to the IPC scheme and the template's sync origin. `useRawSql` no longer guesses its tables from the SQL text: a call without `dependencies` or `tables` throws `client.raw_sql_dependencies_required` when it mounts, and `inferTables` is removed from `@syncular/react`. Toggling `claimCoverage` now changes the observed query. The testkit's `goOffline()` rejects with `sync.transport_failed` and `causeKind: 'network'`, so the client reports connectivity `offline` and schedules no retry, as with a dead network in production. The testkit loopback honors `refuseNextRealtimeConnect`; `deferNextPulls`, `dropNextUrlFetches` and `corruptNextUrlFetch` leave the testkit's `TransportFaults`, because its loopback never honored them.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/#raw-sql',
+        label: 'Raw SQL',
+      },
+      {
+        href: '/tooling-testing/',
+        label: 'Testing',
+      },
+      {
+        href: '/guide-auth/#browser-authenticate-the-realtime-socket',
+        label: 'Authenticate the realtime socket',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Tombstones record the deleted version and scopes: recreates conflict with stale versions, deletes stay hidden',
+    body: "A delete's tombstone now records the deleted row's last `server_version` and its scopes, in SQLite, PostgreSQL, D1 and the Rust local authority. A row recreated with `baseVersion = 0` inside the tombstone horizon starts one above the deleted version, so a patch carrying a `baseVersion` from the deleted row conflicts with `sync.version_conflict`; before, the row restarted at 1 and that patch was refused with `sync.invalid_request` or applied over a row its client never saw. A patch that omits its scope columns is authorized against the tombstone's scopes before the server answers `sync.row_deleted`; an actor outside them gets `sync.row_missing`, the answer for a row id that never existed. Storages add the two nullable columns to an existing `sync_tombstones` table on open or in `migrate()`; a tombstone written before them keeps the earlier rules. Custom `StorageTransaction` implementations replace `getTombstoneSeq` with `getTombstone`, which returns `{ commitSeq, serverVersion?, scopes? }`, and record a delete change's `deletedVersion` and `scopes` on its tombstone.",
+    links: [
+      {
+        href: '/concepts-conflicts/#delete-precedence',
+        label: 'Delete precedence',
+      },
+      {
+        href: '/server-storage-reference/',
+        label: 'Server storage reference',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Heartbeat silence detection in both clients, byteLength caps on Rust downloads',
+    body: "Both clients take the server's heartbeat interval from `realtimeHeartbeatMs` (default 30 000 ms) and arm silence detection on a connection's first `heartbeat` event. Once armed, twice the interval without an inbound frame loses the socket with `transport.timeout` and `causeKind` `heartbeat`. A server that sends no heartbeats never arms it, so a host that has not added the `hub.heartbeat()` interval keeps its idle sockets open. The Rust client caps every segment and blob download by its declared `byteLength`: the native transport stops reading past it, and the client fails with `segment exceeds its byteLength` or `blob exceeds its byteLength` before the content-address check. The TypeScript client downloads at most four segments of one response at a time and drops each body once applied.",
+    links: [
+      {
+        href: '/concepts-realtime/#heartbeats',
+        label: 'Heartbeats',
+      },
+      {
+        href: '/platform-rust-specifics/#native-transport-policy',
+        label: 'Native transport policy',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Rust and TypeScript clients: refused blob uploads, authoring refusals, revocation drops',
+    body: "The Rust client settles a staged blob the server refuses with a non-retryable code, such as `blob.too_large`, as the TypeScript client does: it deletes the upload, rejects every pending commit that references the blob with the server's code, and continues the round, so unrelated commits push and the pull runs. Both clients refuse at `mutate` and `patch`, with `sync.invalid_request`, the values the server rejects at push admission: a string or delete `rowId` containing U+0000, a `json` value outside the JSON validity rule, and a non-canonical `blob_ref`. A revoked subscription no longer drops a pending commit whose row another active subscription still covers. The Rust client raises sync-needed after a round that failed as unreachable and while a subscription holds a bootstrap resume token.",
+    links: [
+      {
+        href: '/concepts-blobs/',
+        label: 'Blobs',
+      },
+      {
+        href: '/platform-web-reads-writes/#authoring-value-validation',
+        label: 'Authoring value validation',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Blobs and segments: bound presigned uploads, a sweep that re-checks references, streamed blob downloads',
+    body: "A presigned blob upload grant from `s3PresignedBlobUploads` signs `content-length` and `x-amz-checksum-sha256`, and the TypeScript and Rust clients send the checksum header, so S3, R2 and MinIO refuse a PUT of another size or other bytes; before, anyone holding a grant could store other bytes under a file's `blobId`. `presignBlobPut` takes the byte length as its third argument. `sweepOrphanBlobs` reads the reference index again before each delete, ages an object a presigned PUT wrote by its last-modified time instead of deleting it on the first pass, and skips an object with neither metadata nor last-modified time. An idempotent re-upload restarts the grace period. `BlobStore.sweepOrphans` takes an `isReferenced(blobId)` callback in place of a keep-set. The blob download route checks existence and authorization before it reads any byte and streams the body through the new optional `BlobStore.open`; `handleBlobDownload` returns `{ body, byteLength }` or `{ url, urlExpiresAtMs }`. `handleBlobUpload(ctx, blobId, request)` takes the `Request` and answers 413 `blob.too_large` from `Content-Length` before it reads the body and from the counted bytes while it reads. Blob downloads are streamed as stored with identity encoding. A segment republish sends a HEAD instead of uploading and downloading the stored bytes. S3 object keys percent-encode each segment, so a partition id holding `#`, `?` or `:` keeps its own key, and a key with a `.` or `..` segment is refused. A malformed native segment token answers `sync.forbidden`. The presigned blob download answer keeps `Cache-Control: private` and `Vary`. A segment body longer than the descriptor's `byteLength` fails the round with `sync.invalid_request` before the content-address check; the TypeScript client stops reading at that cap, and applies the same cap to a blob fetched by its `blob_ref`.",
+    links: [
+      {
+        href: '/concepts-blobs/',
+        label: 'Blobs',
+      },
+      {
+        href: '/server-operations/#blob-gc',
+        label: 'Operations: blob GC',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Swift, Kotlin, Flutter, and React Native apps apply realtime traffic while idle',
+    body: "Each wrapper now answers the core's `realtime-wake` event with the `drainRealtime` command through its own command path, so an idle app applies realtime deltas, presence fanouts, and a lost socket without waiting for the next command. The wake event is not delivered to `onEvent`, `listener`, `events`, or the React Native bridge. `SyncularConfig` (and `createNativeSyncClient`) takes `realtimeHeartbeatMs`, the heartbeat interval of the realtime server in milliseconds (default 30 000); the native transport treats twice that interval of silence as a lost socket.",
+    links: [
+      {
+        href: '/native-client-api/#events',
+        label: 'Native client API: events',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Realtime: heartbeats, delta flow control, presence identity',
+    body: "`RealtimeHub.heartbeat()` sends the §8.5 `heartbeat` to every socket; call it on your interval, for example `setInterval(() => hub.heartbeat(), 30_000)`. The Workers Durable Object sends it from its alarm while sockets are connected (`heartbeatIntervalMs`, default 30 000); forward `alarm()` from your Durable Object class. The native Rust transport treats a connected socket that delivers no frame for twice `realtimeHeartbeatMs` (default 30 000) as lost, with `transport.timeout` and `causeKind` `heartbeat`, so a host that sends no heartbeats sees idle native sockets reconnect every minute. The hub stops sending deltas to a socket that leaves more than `maxUnackedDeltas` (default 256) or `maxUnackedDeltaBytes` (default 4 MiB) unacknowledged and sends `catchup-required`; the ack after its catch-up round resumes delivery. A presence publish replaces the document another socket of the same `(actorId, clientId)` held, so a reconnected client's stale socket sends no `leave` when it closes. The Durable Object rebuilds hibernated sessions once, and every event, pull-only rounds, upgrades and closes included, waits for that rebuild; it reads the partition once and each client record once. Admin action routes refuse cross-site requests (`Sec-Fetch-Site`, `Origin`) with `sync.forbidden`, and the Workers `realtime` option takes `allowedOrigins` for browser upgrades. A cookie session needs `SameSite=Lax` and an origin check on the upgrade.",
+    links: [
+      {
+        href: '/guide-server/#advanced-wire-the-realtime-hub',
+        label: 'Server setup: wire the realtime hub',
+      },
+      {
+        href: '/server-workers/',
+        label: 'Cloudflare Workers',
+      },
+      {
+        href: '/guide-auth/#cookie-sessions',
+        label: 'Authentication: cookie sessions',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'SQLite and D1 storage: scope scans seek the index, D1 pushes batch their reads',
+    body: "A SQLite or D1 scope scan with two or more values now seeks the `sync_row_scopes` primary key once per value; with `sync_row_scopes_by_row` present the planner walked that index in row order and filtered. The storage drops `sync_row_scopes_by_row` when its DDL runs: on every `SqliteServerStorage` construction, and on D1 in `migrate()` and the core phase of a schema migration. `scanRows` and `readCommitWindow` bind the scope values as one JSON array, so a subscription with 150 values no longer exceeds D1's 100-parameter cap. A D1 push reads the rows and tombstones of all its operations in one `db.batch`: 8 operations issue 6 `db.batch` calls, where they issued 21. Pruning deletes `sync_change_scopes` entries by the keys of the changes it removes, on SQLite, D1 and Postgres, instead of scanning the partition's scope index. `listCommitMetadata`, `scopeActivity` and `listRowsReferencingBlob` issue one grouped statement per page on all three backends. `scanRowPageSql` and `commitWindowPageSql` take a JSON array in place of the value list for the `sqlite` dialect, `selectRowsSql` takes a dialect, and `selectRowScopesSql` is removed.",
+    links: [
+      {
+        href: '/server-storage-reference/#cloudflare-d1',
+        label: 'Server storage reference: D1',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Clients: SQLite decides read-only, and encrypted columns need a config',
+    body: "`query`, `querySnapshot` and `snapshotRead` now run only a statement SQLite reports read-only and refuse `PRAGMA`, in the TypeScript and the Rust client. Before, `WITH x$select AS (SELECT 1) DELETE FROM tasks` passed the lexical check and deleted rows, and `PRAGMA query_only = ON` passed and changed the connection. Read a pragma through its table-valued function, such as `SELECT * FROM pragma_table_info('tasks')`. A web client whose schema has encrypted columns and that has no `encryption` config now rejects the commit with `client.encrypt_failed` and fails the apply with `client.decrypt_failed`; before, it pushed plaintext and stored the ciphertext it received. Both clients reject a `sqlite` image segment for a table with encrypted columns with `sync.invalid_request`. A realtime supervisor on a client the app took offline with `setTransportEnabled(false)` or the worker's `setOffline(true)` reports phase `offline` and stops reconnecting until the gate opens; before, it reported `retrying` and retried with backoff.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/#raw-sql',
+        label: 'React: reads & writes, raw SQL',
+      },
+      {
+        href: '/platform-web-realtime/#transport-gate',
+        label: 'Transport gate',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Local authority: an interrupted abandon blocks attach',
+    body: 'Once `abandonAttach` has sent its first rollback delete, `attach` rejects with `sync.attach_rejected` and `details.reason` `undo_pending` until a retried `abandonAttach` completes. Before, a rollback whose response was lost left the authority attaching, and the next `attach` received `cached` for the deleted rows, retired the authority and dropped its tables, so the rows were gone on both sides. Each abandon attempt now sends its deletes under new commit IDs, so a rollback the remote server refused once, for example over a `RESTRICT` child another client added, applies on a retry after the child is gone. In the Rust authority an unreadable idempotency record answers that commit with the retryable `sync.idempotency_cache_miss` result and lets the rest of the round run; before, it failed the whole round with `sync.internal_error`.',
+    links: [
+      {
+        href: '/guide-local-authority/#when-attach-stops',
+        label: 'Start without a server: when attach stops',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'C ABI: realtime traffic wakes an idle host',
+    body: 'When the socket reader buffers a delta, a presence fanout, or a socket loss, `syncular_client_poll_event` now returns one `{"type": "realtime-wake"}` event; answer it with the new `drainRealtime` command. Before, an idle host applied deltas and noticed a dropped socket only on its next command. The reader holds at most 16 MiB of undrained traffic, then closes the socket with `transport.failed` and `causeKind` `inbound_overflow`, and the drain reconnects and pulls. The event queue no longer shares the client\'s mutable state, so a pump thread may block in `poll_event` while another thread issues commands. In the Rust core, native CRDT text offsets count UTF-16 code units as Yjs does (an insert at 2 after `éa` appends), and the `crdt-yjs` feature also gives a local authority its merger. A `SELECT *` from `query` no longer returns the physical `_syncular_version` column; alias `_sync_version` to read the version. Commands refuse a present field of the wrong type, such as `baseVersion: "7"` or a non-string window unit, with `sync.invalid_request` instead of ignoring it. A round deadline that expires during a socket send fails with `transport.timeout` (`causeKind` `round_deadline`), and remote operations take `retryable` from the server\'s error.',
+    links: [
+      {
+        href: '/platform-ffi/#events',
+        label: 'Embedding via C FFI: events',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Web client: sync resumes after an outage, a silent fetch, or a refused blob',
+    body: "The realtime supervisor no longer treats a failed round as offline evidence; only its `connectivity` signal suspends it, and each `online` report runs `syncUntilIdle()`, also when realtime is unsupported or disabled. Before, a round that failed while the server was unreachable held the supervisor `offline` after the network returned, and a pending edit waited for the next local write. Such a round now leaves `syncNeeded` raised. The `syncUntilIdle` deadline aborts the round in flight through an `AbortSignal` that the `http*` transports pass to `fetch`; custom transports receive it as the second argument of `SyncTransport`, `signal` on a segment request, and the last argument of the `BlobTransport` upload calls. The direct-client scheduler and the worker auto-sync loop retry a drive that rejected with `sync.idle_timeout`, with the 250 ms to 30 s backoff, and a subscription that still holds a bootstrap resume token keeps `syncNeeded` raised. A blob upload the server refuses with a non-retryable code such as `blob.too_large` now rejects the commits that reference that blob with the server's code and lets the round push everything else; before, it failed every round.",
+    links: [
+      {
+        href: '/platform-web-realtime/#offline-replay',
+        label: 'Offline replay',
+      },
+      {
+        href: '/concepts-bootstrap/#running-rounds-until-idle',
+        label: 'Running rounds until idle',
+      },
+      {
+        href: '/concepts-blobs/#the-local-blob-cache',
+        label: 'The local blob cache',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Rust client: storage failures surface as errors',
+    body: "In the Rust client, `subscribe`, `subscribeMany` and `unsubscribe` now raise `syncNeeded` and queue an interactive sync intent as the web client does; `unsubscribe` returns a `Result`. A failed write of the security-preflight marker now fails `beginSecurityPreflight`, and a failed read of the log epoch fails the round; before, the first was ignored and the second adopted the server's epoch without a wipe. `beginSecurityPreflight`, `resetClientId`, `previousVersionAudit`, `previousVersionDiscard`, `pendingPayloads` and `local_revision` now return storage errors instead of an empty answer, and a corrupt page no longer aborts the host from `finish_sync_round`. A failed read of the key-id selector fails the round; only an absent stored key yields `client.encrypt_failed`. A `COMMIT` frame whose envelope cannot be decrypted reports `client.decrypt_failed`. With `retainFailedCommits`, an operation on a table the current schema removed no longer makes the outcome unreadable. A sqlite image is staged in a file created with owner-only permissions beside the replica database (the system temp directory for an in-memory replica), removed on every exit, and rejected with `sync.invalid_request` when the rows it yields differ from the declared count.",
+    links: [
+      {
+        href: '/concepts-subscriptions/',
+        label: 'Subscriptions',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Storage correctness: Postgres write counts, erasure of conflict results',
+    body: "`PgQueryable.query` now returns `{ rows }`; remove `rowCount` from your adapter. Postgres storage counts `RETURNING` rows for every write whose outcome matters. Before, a Bun.sql adapter reported 0 for a bare `UPDATE`, so reaction completion, lease extension, failure and retry never took effect, and `eraseScopeValue` reported `done` after one history step. `eraseScopeValue` now also removes `serverRow` from stored conflict results whose conflicting row carried the erased binding; idempotency results still survive pruning. On SQLite, a request no longer reads rows of another request's open push transaction, and its writes no longer join that transaction. `PostgresServerStorage.begin()` rejects when the executor cannot open a transaction, where the push hung. A client at cursor -1 no longer holds the pruning horizon. A SQLite lease whose id is in the revocation table reads as revoked.",
+    links: [
+      {
+        href: '/server-storage-reference/#driver-wiring',
+        label: 'Postgres driver wiring',
+      },
+      {
+        href: '/server-operations/#erasing-a-scope-value',
+        label: 'Erasing a scope value',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Overlapping subscriptions keep their shared rows',
+    body: 'A window shrink, a revocation purge and the first-page clear of a fresh bootstrap now keep every row that another active subscription on the same table still covers; before, they deleted it and the surviving subscription kept claiming those rows were complete. A realtime delta no longer applies to a subscription at cursor -1 after a reset or a local rebootstrap; the client skips the section and asks for a pull, where before the delta marked the subscription bootstrapped with only its own rows. `unsubscribe()` during a sync round now holds; the round no longer re-creates the subscription. A scoped delete whose scope map leaves one of the table’s scope variables unnamed now invalidates the whole table, so a live query keyed by that variable re-runs. In the Rust client, a revocation purge, an eviction and the first-page clear now match `integer` scope columns, where they deleted nothing, an eviction keeps outbox-pinned rows with integer primary keys, and a window shrink cancels a prepared round as `unsubscribe` does.',
+    links: [
+      {
+        href: '/concepts-windowing/#eviction-is-a-local-storage-decision',
+        label: 'Eviction rules',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Push answers stay inside the writer’s scopes',
+    body: 'A child insert that names a parent in a scope the writer cannot write now rejects with `missing_parent`, the same answer as for an absent parent; before, the writer could attach a child to that parent and block its deletion. An unversioned upsert whose payload carries every scope column is authorized before the tombstone read, so `sync.row_deleted` no longer tells an unauthorized actor that a row was deleted. A conflict record carries the row as stored before the commit; before, it could carry values an earlier operation of the same rejected commit wrote. A conflict with a row only that commit inserted answers `sync.row_missing`. A patch that leaves a reference column out is no longer checked against the parent. An operation whose `rowId` holds U+0000 rejects with `sync.invalid_request`; on PostgreSQL it failed with a retryable `sync.internal_error`. Reference enforcement reads one child for `RESTRICT` and at most the remaining cascade cap plus one for `CASCADE` and `SET NULL`, a commit checks each distinct blob once and concurrently, and `compileSchema` refuses a reference whose child table sets `materialize: false`. The Rust local authority applies the same `rowId`, tombstone, conflict and reference rules.',
+    links: [
+      {
+        href: '/guide-schema/#declared-references',
+        label: 'Declared references',
+      },
+      {
+        href: '/reference-outbox-outcomes/#reference-violations',
+        label: 'Reference violations',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Wildcard grants keep the other scope fences; request limits',
+    body: "When a requested scope variable passes through an allowed `'*'`, the server now adds the actor's lists for the table's other declared variables to the effective scopes. Before, an actor allowed `clinic_id: ['clinic-a']` and `appointment_id: ['*']` who subscribed by `appointment_id` alone received other clinics' rows. `SUB_START` echoes the widened scopes. The sync config gains `maxRequestBytes` (16 MiB, counted after gzip decoding), `maxSubscriptionsPerRequest` (500), `maxScopeValuesPerSubscription` (1,000) and `maxWatchesPerSession` (100), each answered with `sync.limit_exceeded`; an invalid limit throws at startup. `decodeRequestBody` takes the byte cap as a second argument.",
+    links: [
+      {
+        href: '/concepts-scopes/#variables-are-independent-dimensions',
+        label: 'Variables are independent dimensions',
+      },
+      {
+        href: '/guide-server/#request-limits',
+        label: 'Request limits',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'A rejected edit rolls back to the latest server row',
+    body: 'The web client restored a rejected or conflicted row to its value at `mutate` time, even when a newer server write to that row had arrived since; the local row then stayed stale while the cursor had moved past that write. Rollback now returns the row to the last server-delivered row and replays the remaining pending commits over it. Applying a server change finds the pending commits for its row through an index: 500 incoming commits with 4,000 pending commits apply in 15 ms, down from 3.2 s.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#rejection-rollback',
+        label: 'Rejection rollback',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Follower replies reach only the tab that asked',
+    body: "Multi-tab protocol 3 addresses each leader reply to the follower that sent the request. Before, two followers whose requests shared an id could settle each other's calls. Tabs of an older build block with `leader-incompatible` until they reload. A follower whose core fails to start after it wins the lock reports `leader-start-failed` and contests the lock again, at most three times, and a newer tab deposes every older tab that promotes ahead of it.",
+    links: [
+      {
+        href: '/platform-web-specifics/#build-compatibility',
+        label: 'Build compatibility',
+      },
+    ],
+  },
+  {
     date: '2026-11-09',
     title: 'Rust crates bundle SQLite 3.54.1',
     body: 'The Rust crates and native bindings move to rusqlite 0.41, which bundles SQLite 3.54.1 and closes CVE-2026-119375 (RUSTSEC-2026-0459). An app that passes its own `rusqlite::Connection` to `SyncClient::with_connection` upgrades to rusqlite 0.41 and Rust 1.89.',

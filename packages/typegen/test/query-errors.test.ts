@@ -16,6 +16,8 @@ import {
   queryNameFromPath,
   scanTableRefs,
   synthesizeDdl,
+  toPositionalSql,
+  TypegenError,
 } from '../src';
 
 const IR: IrDocument = {
@@ -213,7 +215,7 @@ describe('reactive table discovery', () => {
   test('accepts non-relation commas in projections and functions', () => {
     const query = analyze(
       'q.sql',
-      `SELECT id, title, coalesce(note, title) AS display_title
+      `SELECT id, title, CAST(coalesce(note, title) AS TEXT) AS display_title
        FROM todos`,
     );
     expect(query.tables).toEqual(['todos']);
@@ -258,14 +260,14 @@ describe('parameter typing', () => {
     ]);
   });
   test('an un-inferable param demands a comment (loud, names the fix)', () => {
-    expect(() => analyze('q.sql', 'SELECT id, :label AS l FROM todos')).toThrow(
-      /cannot infer a type for param :label/,
-    );
+    expect(() =>
+      analyze('q.sql', 'SELECT id, CAST(:label AS TEXT) AS l FROM todos'),
+    ).toThrow(/cannot infer a type for param :label/);
   });
   test('a comment resolves an un-inferable param', () => {
     const q = analyze(
       'q.sql',
-      '-- param :label string\nSELECT id, :label AS l FROM todos',
+      '-- param :label string\nSELECT id, CAST(:label AS TEXT) AS l FROM todos',
     );
     expect(q.params).toEqual([
       { name: 'label', langName: 'label', type: 'string', source: 'comment' },
@@ -554,7 +556,10 @@ describe('multi-statement files', () => {
   });
 
   test('a `;` inside a string literal does NOT split statements', () => {
-    const qs = analyzeFile('greet.sql', "SELECT id, 'a;b' AS sep FROM todos");
+    const qs = analyzeFile(
+      'greet.sql',
+      "SELECT id, CAST('a;b' AS TEXT) AS sep FROM todos",
+    );
     expect(qs).toHaveLength(1);
   });
 });
@@ -615,7 +620,7 @@ describe('select aliases in ORDER BY (.sql queries)', () => {
   test('a snake_case alias is renamed in ORDER BY with the projection', () => {
     const [query] = analyzeFile(
       'by-length.sql',
-      'SELECT id, length(title) AS title_len FROM todos ORDER BY title_len DESC, id',
+      'SELECT id, CAST(length(title) AS INTEGER) AS title_len FROM todos ORDER BY title_len DESC, id',
     );
     expect(query?.sql).toContain('ORDER BY "titleLen" DESC, id');
   });
@@ -624,8 +629,269 @@ describe('select aliases in ORDER BY (.sql queries)', () => {
     expect(() =>
       analyzeFile(
         'by-missing.sql',
-        'SELECT id, length(title) AS title_len FROM todos ORDER BY missing_len',
+        'SELECT id, CAST(length(title) AS INTEGER) AS title_len FROM todos ORDER BY missing_len',
       ),
     ).toThrow('no such column: missing_len');
+  });
+});
+
+describe('emitted SQL is the SQL SQLite checked', () => {
+  test('whitespace inside a string literal survives emission', () => {
+    const query = analyze(
+      'q.sql',
+      "SELECT id, CAST(replace(title, '  ', ' ') AS TEXT) AS spaced FROM todos",
+    );
+    expect(query.positionalSql).toBe(
+      "SELECT id, CAST(replace(title, '  ', ' ') AS TEXT) AS spaced FROM todos",
+    );
+  });
+
+  test('a quote inside a quoted identifier never starts a string literal', () => {
+    expect(
+      toPositionalSql(
+        `SELECT id, title AS "it's" FROM tasks -- it's\nWHERE done = 0`,
+      ),
+    ).toBe(`SELECT id, title AS "it's" FROM tasks WHERE done = 0`);
+    const query = analyze(
+      'q.sql',
+      `SELECT id FROM todos AS "it's" -- it's\nWHERE done = 0`,
+    );
+    expect(query.positionalSql).toBe(
+      `SELECT id FROM todos AS "it's" WHERE done = 0`,
+    );
+  });
+
+  test('the emitted statement takes one value per param', () => {
+    const query = analyze(
+      'q.sql',
+      `SELECT id FROM todos AS "it's" WHERE list_id = :listId AND title = ':x'`,
+    );
+    expect(query.params.map((param) => param.name)).toEqual(['listId']);
+    expect(query.positionalSql).toBe(
+      `SELECT id FROM todos AS "it's" WHERE list_id = ? AND title = ':x'`,
+    );
+    expect(db.analyze(query.positionalSql).paramsCount).toBe(1);
+  });
+
+  test('generation prepares the exact emitted positional statement', () => {
+    const prepared: string[] = [];
+    const spy: QueryDb = {
+      analyze(sql) {
+        prepared.push(sql);
+        return db.analyze(sql);
+      },
+    };
+    const query = analyzeQuery(
+      'q.sql',
+      'SELECT id, title AS todo_title FROM todos WHERE list_id = :listId',
+      IR,
+      spy,
+    );
+    expect(prepared).toContain(query.positionalSql);
+  });
+});
+
+describe('scope proofs are whole WHERE conjuncts', () => {
+  const tableWide = (sql: string) => {
+    const query = analyze('q.sql', sql);
+    return {
+      dependencies: query.reactive.dependencies.filter(
+        (dependency) => dependency.scopes.length > 0,
+      ),
+      coverage: query.reactive.coverage,
+    };
+  };
+
+  test('a wrapped, compared, or mixed comparison proves no scope', () => {
+    for (const where of [
+      'NOT (list_id = :listId)',
+      '(list_id = :listId) = 0',
+      "list_id IN (:listId, 'fixed')",
+      'list_id = :listId COLLATE nocase',
+      'list_id = :listId IS FALSE',
+      'iif(list_id = :listId, 0, 1)',
+      'CASE WHEN list_id = :listId THEN 1 ELSE 0 END',
+    ]) {
+      expect(tableWide(`SELECT id FROM todos WHERE ${where}`)).toEqual({
+        dependencies: [],
+        coverage: [],
+      });
+    }
+  });
+
+  test('a subquery on another table proves nothing for either table', () => {
+    expect(
+      tableWide(
+        'SELECT id FROM todos WHERE EXISTS (SELECT 1 FROM projects WHERE list_id = :listId)',
+      ),
+    ).toEqual({ dependencies: [], coverage: [] });
+  });
+
+  test('a plain conjunct still proves scope dependencies and coverage', () => {
+    for (const where of [
+      'list_id = :listId',
+      ':listId = list_id',
+      'todos.list_id IN (:listId)',
+      "(done = 0 AND list_id = :listId) AND title BETWEEN 'a' AND 'z'",
+    ]) {
+      const query = analyze('q.sql', `SELECT id FROM todos WHERE ${where}`);
+      expect(query.reactive.dependencies[0]?.scopes[0]?.params).toEqual([
+        'listId',
+      ]);
+      expect(query.reactive.coverage).toEqual([
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['listId'],
+          fixedScopes: [],
+        },
+      ]);
+    }
+  });
+});
+
+describe('computed column types (SYQL §14.1)', () => {
+  const types = (select: string) =>
+    analyze('q.sql', `SELECT ${select} FROM todos`).columns.map(
+      (column) => column.type,
+    );
+  const refused = (select: string) => {
+    try {
+      analyze('computed-types.sql', `SELECT ${select} FROM todos`);
+    } catch (error) {
+      if (error instanceof TypegenError) return error;
+      throw error;
+    }
+    throw new Error('expected the computed column to be refused');
+  };
+
+  test('a whole-expression CAST takes the mapped type of its target', () => {
+    expect(
+      types(
+        `CAST(done AS INTEGER) AS a, cast(title AS text) AS b,
+         CAST(length(title) AS REAL) AS c, CAST(done AS BOOLEAN) AS d`,
+      ),
+    ).toEqual(['integer', 'string', 'float', 'boolean']);
+  });
+
+  test('a whole-expression count() is an integer, DISTINCT included', () => {
+    expect(
+      types('count(*) AS a, count(DISTINCT title) AS b, count(note) AS c'),
+    ).toEqual(['integer', 'integer', 'integer']);
+  });
+
+  test('a column SQLite reports a decltype for keeps its declared type', () => {
+    expect(types('done AS a, (SELECT title FROM todos LIMIT 1) AS b')).toEqual([
+      'boolean',
+      'string',
+    ]);
+  });
+
+  test('anything else is refused with a static code and structured details', () => {
+    for (const select of [
+      'done = 1 AS x',
+      'length(title) AS x',
+      "date('2024-01-01', '-1 day') AS x",
+      'sum(length(title)) AS x',
+      '1 + 1 AS x',
+    ]) {
+      const error = refused(select);
+      expect(error.code).toBe('typegen.computed_column_type');
+      expect(error.message).toContain('wrap the expression in CAST(');
+      expect(error.details).toEqual({ query: 'computedTypes', column: 'x' });
+    }
+  });
+
+  test('CAST that is not the whole expression is refused', () => {
+    for (const select of [
+      'CAST(length(title) AS INTEGER) + 1 AS x',
+      'abs(CAST(length(title) AS INTEGER)) AS x',
+      'coalesce(CAST(done AS INTEGER), 0) AS x',
+      'count(*) + 1 AS x',
+      'count(*) OVER () AS x',
+      "CAST(title AS TEXT) || ')' AS x",
+    ]) {
+      expect(refused(select).code).toBe('typegen.computed_column_type');
+    }
+  });
+
+  test('a CAST target whose affinity can change the value is refused', () => {
+    // DATETIME is no column type; JSON, BYTEA, BLOB_REF and CRDT are, but
+    // SQLite casts them with NUMERIC or BLOB affinity.
+    for (const target of [
+      'DATETIME',
+      'JSON',
+      'JSONB',
+      'BYTEA',
+      'BLOB_REF',
+      'CRDT',
+    ]) {
+      expect(refused(`CAST(title AS ${target}) AS x`).code).toBe(
+        'typegen.computed_column_type',
+      );
+    }
+  });
+});
+
+describe('result nullability', () => {
+  test('a bare column beside an aggregate without GROUP BY is nullable', () => {
+    const query = analyze('q.sql', 'SELECT count(*) AS n, title FROM todos');
+    expect(query.columns.map((column) => column.nullable)).toEqual([
+      true,
+      true,
+    ]);
+    const grouped = analyze(
+      'q.sql',
+      'SELECT count(*) AS n, title FROM todos GROUP BY title',
+    );
+    expect(grouped.columns[1]?.nullable).toBe(false);
+    const windowed = analyze(
+      'q.sql',
+      'SELECT CAST(count(*) OVER () AS INTEGER) AS n, title FROM todos',
+    );
+    expect(windowed.columns[1]?.nullable).toBe(false);
+  });
+
+  test('a compound branch that yields NULL makes the column nullable', () => {
+    const query = analyze(
+      'q.sql',
+      'SELECT title FROM todos UNION ALL SELECT NULL',
+    );
+    expect(query.columns[0]?.nullable).toBe(true);
+    const required = analyze(
+      'q.sql',
+      'SELECT title FROM todos UNION ALL SELECT tag FROM projects',
+    );
+    expect(required.columns[0]?.nullable).toBe(false);
+  });
+});
+
+describe('generated identifiers', () => {
+  const refused = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      expect(error).toBeInstanceOf(TypegenError);
+      return error as TypegenError;
+    }
+    throw new Error('expected a TypegenError');
+  };
+
+  test('a query name or alias no target can emit is refused', () => {
+    for (const [sql, targets, name] of [
+      ['-- name: delete\nSELECT id FROM todos', ['ts'], 'delete'],
+      ['SELECT id AS "default" FROM todos', ['swift'], 'default'],
+      ['SELECT id AS "doc id" FROM todos', ['ts'], 'doc id'],
+    ] as const) {
+      // camelCase naming already refuses a mapped keyword alias.
+      refused(() =>
+        analyzeQuery('q.sql', sql, IR, db, { naming: 'camel', targets }),
+      );
+      const error = refused(() =>
+        analyzeQuery('q.sql', sql, IR, db, { naming: 'preserve', targets }),
+      );
+      expect(error.code).toBe('typegen.invalid_query_identifier');
+      expect(error.details).toMatchObject({ name, target: targets[0] });
+    }
   });
 });

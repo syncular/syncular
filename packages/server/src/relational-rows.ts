@@ -518,7 +518,7 @@ export function toSqlValue(
   column: RowColumn,
   value: RowValue,
   dialect: RelationalDialect,
-): unknown {
+): RowValue {
   if (value === null) return null;
   if (column.type === 'boolean' && dialect === 'sqlite') {
     return value === true ? 1 : 0;
@@ -545,7 +545,7 @@ export function upsertValues(
   partition: string,
   row: StoredRow,
   dialect: RelationalDialect,
-): unknown[] {
+): RowValue[] {
   // A non-materialized table skips the decode entirely — the upsert is a
   // six-column meta write (the old blob-store cost).
   const projection = table.materialize
@@ -609,17 +609,25 @@ export function selectRowSql(
 
 /**
  * SELECT many stored rows of one table by primary key in one statement.
- * Postgres binds the ids as one `text[]` (`row_id = ANY($2)`), so the
- * statement count does not grow with the id count. Params: [partition,
- * rowIds]; absent ids contribute no row.
+ * The ids bind as one parameter (Postgres `text[]` with `= ANY($2)`, SQLite
+ * a JSON array through `json_each`), so the statement count does not grow
+ * with the id count. Params: [partition, rowIds]; absent ids contribute no
+ * row.
  */
-export function selectRowsSql(table: CompiledTable): string {
-  return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=ANY($2::text[])`;
+export function selectRowsSql(
+  table: CompiledTable,
+  dialect: RelationalDialect,
+): string {
+  const [partition, rowIds] =
+    dialect === 'sqlite'
+      ? ['?', 'IN (SELECT value FROM json_each(?))']
+      : ['$1', '=ANY($2::text[])'];
+  return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${partition} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}${rowIds}`;
 }
 
 export interface IndexRowPageStatement {
   readonly sql: string;
-  readonly params: readonly unknown[];
+  readonly params: readonly RowValue[];
 }
 
 /**
@@ -636,7 +644,7 @@ export function indexRowPageStatement(
   limit: number,
   dialect: RelationalDialect,
 ): IndexRowPageStatement {
-  const params: unknown[] = [partition];
+  const params: RowValue[] = [partition];
   const placeholder = (): string =>
     dialect === 'sqlite' ? '?' : `$${params.length}`;
   const predicates = index.columns.map((columnName, valueIndex) => {
@@ -678,8 +686,11 @@ export function indexRowPageStatement(
  * Bind order:
  *   - postgres: [partition, tbl, var, ...values, afterRowId, limit]
  *     (the join reuses `$1` for the partition);
- *   - sqlite:   [partition, tbl, var, ...values, afterRowId, limit,
- *     partition] (positional `?` — the partition binds again for the join).
+ *   - sqlite:   [partition, tbl, var, values as JSON array text, afterRowId,
+ *     limit, partition] (positional `?`; the partition binds again for the
+ *     join). The values expand through `json_each`, so the statement text and
+ *     parameter count do not depend on `valueCount` and D1's 100-parameter
+ *     cap is unreachable through scope values.
  */
 export function scanRowPageSql(
   table: CompiledTable,
@@ -687,14 +698,16 @@ export function scanRowPageSql(
   dialect: RelationalDialect,
 ): string {
   const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
-  const values: string[] = [];
-  for (let i = 0; i < valueCount; i++) values.push(p(4 + i));
+  const values =
+    dialect === 'sqlite'
+      ? 'SELECT value FROM json_each(?)'
+      : Array.from({ length: valueCount }, (_, i) => p(4 + i)).join(',');
   const after = p(4 + valueCount);
   const limit = p(5 + valueCount);
   const joinPartition = dialect === 'sqlite' ? '?' : '$1';
   return `SELECT c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
      FROM (SELECT DISTINCT row_id FROM sync_row_scopes
-       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values.join(',')})
+       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values})
          AND row_id>${after}
        ORDER BY row_id LIMIT ${limit}) c
      LEFT JOIN ${quoteIdent(table.name)} r
@@ -726,17 +739,20 @@ export function scanRowPageSql(
  * Bind order:
  *   - postgres: [partition, tbl, var, ...values, afterSeq, throughSeq,
  *     limit] (the joins reuse `$1`/`$2`);
- *   - sqlite:   [partition, tbl, var, ...values, afterSeq, throughSeq,
- *     limit, partition, partition, tbl] (positional `?` — partition/tbl bind
- *     again for the joins).
+ *   - sqlite:   [partition, tbl, var, values as JSON array text, afterSeq,
+ *     throughSeq, limit, partition, partition, tbl] (positional `?`;
+ *     partition/tbl bind again for the joins). The values expand through
+ *     `json_each` like `scanRowPageSql`.
  */
 export function commitWindowPageSql(
   valueCount: number,
   dialect: RelationalDialect,
 ): string {
   const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
-  const values: string[] = [];
-  for (let i = 0; i < valueCount; i++) values.push(p(4 + i));
+  const values =
+    dialect === 'sqlite'
+      ? 'SELECT value FROM json_each(?)'
+      : Array.from({ length: valueCount }, (_, i) => p(4 + i)).join(',');
   const after = p(4 + valueCount);
   const through = p(5 + valueCount);
   const limit = p(6 + valueCount);
@@ -745,7 +761,7 @@ export function commitWindowPageSql(
   return `SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
        ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
      FROM (SELECT DISTINCT commit_seq FROM sync_change_scopes
-       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values.join(',')})
+       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values})
          AND commit_seq>${after} AND commit_seq<=${through}
        ORDER BY commit_seq LIMIT ${limit}) c
      LEFT JOIN sync_commits m
@@ -834,7 +850,7 @@ export function prefetchRowsBatchSql(
   const projection = tables
     .map((table) => {
       const quoted = quoteIdent(table.name);
-      return `SELECT ids.tbl AS tbl, ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq
+      return `SELECT ids.tbl AS tbl, ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq, t.server_version AS tombstone_version, t.scopes AS tombstone_scopes
        FROM ids
        LEFT JOIN ${quoted} r
          ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${params.partition} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=ids.id
@@ -877,13 +893,24 @@ export const LATEST_SCOPED_CHANGE_BATCH_SQL = `SELECT s.i AS sub,
      FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals jsonb)
     ORDER BY s.i`;
 
-/** SELECT a row's version + scope map (admin/blob authz). Params: [partition, rowId]. */
-export function selectRowScopesSql(
-  table: CompiledTable,
+/**
+ * SELECT the rows that reference one blob with their stored scope maps, in
+ * one statement for any number of references: the by-blob index range
+ * (§5.9.4) supplies the candidates and a `CASE` on the candidate's table
+ * name looks each scope map up by primary key in that table's own relation.
+ * A reference whose table left the schema or whose row is gone has NULL
+ * `scopes`. Needs at least one table. Params: [partition, blobId].
+ */
+export function rowsReferencingBlobSql(
+  tables: Iterable<CompiledTable>,
   dialect: RelationalDialect,
 ): string {
   const p = dialect === 'sqlite' ? ['?', '?'] : ['$1', '$2'];
-  return `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${p[0]} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${p[1]}`;
+  const branches = [...tables].map(
+    (table) =>
+      `WHEN '${table.name.replaceAll("'", "''")}' THEN (SELECT t.${quoteIdent(SYNC_SCOPES_COLUMN)} FROM ${quoteIdent(table.name)} t WHERE t.${quoteIdent(SYNC_PARTITION_COLUMN)}=r.partition AND t.${quoteIdent(SYNC_ROW_ID_COLUMN)}=r.row_id)`,
+  );
+  return `SELECT r.tbl AS tbl, r.row_id AS row_id, CASE r.tbl ${branches.join(' ')} END AS scopes FROM sync_blob_refs r WHERE r.partition=${p[0]} AND r.blob_id=${p[1]}`;
 }
 
 /** DELETE one stored row. Params: [partition, rowId]. */
@@ -1124,8 +1151,8 @@ export function rewriteValues(
   rowId: string,
   payload: Uint8Array,
   dialect: RelationalDialect,
-): unknown[] {
-  const out: unknown[] = [];
+): RowValue[] {
+  const out: RowValue[] = [];
   if (table.materialize) {
     const values = decodeRow(table.columns, payload);
     for (let i = 0; i < table.columns.length; i++) {

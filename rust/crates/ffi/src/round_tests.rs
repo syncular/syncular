@@ -48,8 +48,8 @@ fn response_bytes() -> Vec<u8> {
         frames: vec![Frame::RespHeader {
             required_schema_version: None,
             latest_schema_version: None,
-            log_epoch: Some("epoch-1".to_owned()),
-            reset_required: Some(false),
+            log_epoch: "epoch-1".to_owned(),
+            reset_required: false,
         }],
     })
 }
@@ -224,8 +224,8 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
         frames: vec![Frame::RespHeader {
             required_schema_version: Some(7),
             latest_schema_version: Some(7),
-            log_epoch: Some("epoch-1".to_owned()),
-            reset_required: Some(false),
+            log_epoch: "epoch-1".to_owned(),
+            reset_required: false,
         }],
     });
     let server_response = response.clone();
@@ -371,4 +371,209 @@ fn native_shutdown_wakes_idle_socket_and_rejects_later_send() {
         "transport.failed"
     );
     server.join().expect("idle socket closed");
+}
+
+/// Wait for the next event of `kind` through the C ABI, skipping others. The
+/// timeout only bounds a failing test.
+fn next_event(handle: *mut crate::Handle, kind: &str) -> serde_json::Value {
+    loop {
+        let ptr = crate::syncular_client_poll_event(handle, 10_000);
+        assert!(!ptr.is_null(), "no {kind} event arrived");
+        let text = unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        crate::syncular_free_string(ptr);
+        let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if event["type"] == kind {
+            return event;
+        }
+    }
+}
+
+/// Discard every queued event without waiting.
+fn drain_events(handle: *mut crate::Handle) {
+    loop {
+        let ptr = crate::syncular_client_poll_event(handle, 0);
+        if ptr.is_null() {
+            return;
+        }
+        crate::syncular_free_string(ptr);
+    }
+}
+
+/// An FFI client with realtime connected to the scripted server on `port`.
+fn ffi_realtime_client(port: u16) -> *mut crate::Handle {
+    use crate::tests::{command, simple_schema};
+    let config = std::ffi::CString::new(
+        json!({
+            "baseUrl": format!("http://127.0.0.1:{port}"),
+            "wsUrl": format!("ws://127.0.0.1:{port}?transport=round&clientId=stale"),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let handle = crate::syncular_client_new(config.as_ptr());
+    assert!(!handle.is_null());
+    let created = command(
+        handle,
+        "create",
+        json!({ "schema": simple_schema(), "clientId": "c1" }),
+    );
+    assert_eq!(created["result"], json!({}), "{created}");
+    let subscribed = command(
+        handle,
+        "subscribe",
+        json!({ "id": "s1", "table": "todo", "scopes": {} }),
+    );
+    assert_eq!(subscribed["result"], json!({}), "{subscribed}");
+    let connected = command(handle, "connectRealtime", json!({}));
+    assert_eq!(connected["result"], json!({}), "{connected}");
+    handle
+}
+
+fn section_response(frames: Vec<Frame>) -> Vec<u8> {
+    let mut all = vec![Frame::RespHeader {
+        required_schema_version: None,
+        latest_schema_version: None,
+        log_epoch: "epoch-1".to_owned(),
+        reset_required: false,
+    }];
+    all.extend(frames);
+    encode_message(&Message {
+        wire_version: ssp2::decode::WIRE_VERSION,
+        msg_kind: MsgKind::Response,
+        frames: all,
+    })
+}
+
+#[test]
+fn an_idle_ffi_host_is_woken_for_a_delta_and_applies_it_on_drain_realtime() {
+    use crate::tests::{command, simple_schema};
+    use ssp2::model::{Change, Op, SubStatus};
+    let schema = syncular_client::parse_schema_json(&simple_schema()).unwrap();
+    let row = syncular_client::values::encode_row_json(
+        schema.table("todo").unwrap(),
+        "t1",
+        &serde_json::Map::from_iter([
+            ("id".to_owned(), json!("t1")),
+            ("title".to_owned(), json!("from a delta")),
+            ("done".to_owned(), json!(false)),
+        ]),
+        &Default::default(),
+    )
+    .unwrap();
+    let sub_start = || Frame::SubStart {
+        id: "s1".to_owned(),
+        status: SubStatus::Active,
+        reason_code: String::new(),
+        effective_scopes: vec![],
+        bootstrap: false,
+    };
+    let synced = section_response(vec![
+        sub_start(),
+        Frame::SubEnd {
+            next_cursor: 0,
+            bootstrap_state: None,
+        },
+    ]);
+    let delta = section_response(vec![
+        sub_start(),
+        Frame::Commit {
+            commit_seq: 1,
+            actor_id: "writer".to_owned(),
+            created_at_ms: 1,
+            tables: vec!["todo".to_owned()],
+            changes: vec![Change {
+                table_index: 0,
+                row_id: "t1".to_owned(),
+                op: Op::Upsert,
+                row_version: Some(1),
+                scopes: vec![],
+                row: Some(row),
+            }],
+        },
+        Frame::SubEnd {
+            next_cursor: 1,
+            bootstrap_state: None,
+        },
+    ]);
+    let (send_delta, delta_requested) = mpsc::channel::<()>();
+    let reset = encode_message(&Message {
+        wire_version: ssp2::decode::WIRE_VERSION,
+        msg_kind: MsgKind::Response,
+        frames: vec![Frame::RespHeader {
+            required_schema_version: None,
+            latest_schema_version: None,
+            log_epoch: "epoch-1".to_owned(),
+            reset_required: true,
+        }],
+    });
+    let (port, server) = spawn_ws_server(move |ws| {
+        // The first round adopts the log epoch; the second activates s1.
+        for response in [reset, synced] {
+            let _request = read_round_request(ws);
+            let mut framed = vec![REALTIME_TAG_ROUND];
+            framed.extend_from_slice(&response);
+            ws.send(WsMessage::Binary(framed.into())).unwrap();
+        }
+        delta_requested.recv().unwrap();
+        let mut framed = vec![REALTIME_TAG_DELTA];
+        framed.extend_from_slice(&delta);
+        ws.send(WsMessage::Binary(framed.into())).unwrap();
+    });
+    let handle = ffi_realtime_client(port);
+    let synced = command(handle, "syncUntilIdle", json!({}));
+    assert_eq!(synced["result"]["ok"], true, "{synced}");
+    drain_events(handle);
+
+    // No command runs: the reader's buffered delta reaches the host as one
+    // wake event.
+    send_delta.send(()).unwrap();
+    assert_eq!(
+        next_event(handle, "realtime-wake"),
+        json!({ "type": "realtime-wake" })
+    );
+    let drained = command(handle, "drainRealtime", json!({}));
+    assert_eq!(drained["result"], json!({}), "{drained}");
+    let change = next_event(handle, "change");
+    assert_eq!(
+        change["batch"]["appliedCommits"][0]["source"], "delta",
+        "{change}"
+    );
+    let rows = command(handle, "readRows", json!({ "table": "todo" }));
+    assert_eq!(
+        rows["result"]["rows"][0]["values"]["title"], "from a delta",
+        "{rows}"
+    );
+
+    crate::syncular_client_close(handle);
+    server.join().expect("server script completed");
+}
+
+#[test]
+fn an_idle_ffi_host_is_woken_for_a_socket_loss() {
+    use crate::tests::command;
+    let (close_socket, close_requested) = mpsc::channel::<()>();
+    let (port, server) = spawn_ws_server(move |ws| {
+        close_requested.recv().unwrap();
+        let _ = ws.close(None);
+        let _ = ws.flush();
+    });
+    let handle = ffi_realtime_client(port);
+    drain_events(handle);
+
+    close_socket.send(()).unwrap();
+    assert_eq!(
+        next_event(handle, "realtime-wake"),
+        json!({ "type": "realtime-wake" })
+    );
+    let drained = command(handle, "drainRealtime", json!({}));
+    assert_eq!(drained["result"], json!({}), "{drained}");
+    // §8.8: the reported loss asks the host to reconnect and catch up.
+    let intent = next_event(handle, "sync-intent");
+    assert_eq!(intent["intent"]["kind"], "background", "{intent}");
+
+    crate::syncular_client_close(handle);
+    server.join().expect("server script completed");
 }

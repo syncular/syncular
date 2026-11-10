@@ -333,8 +333,9 @@ test('a same-value commit leaves the scope index untouched and still advances', 
     );
     expect(pushResult(first.frames)?.status).toBe('applied');
     // Pinned for this explicit schema and warmed client. D1 counts index
-    // rows, so the totals include the scope-index work.
-    expect(measure.rowsWritten).toBe(18);
+    // rows, so the totals include the scope-index work. The dropped
+    // `sync_row_scopes_by_row` index is one index row fewer than before.
+    expect(measure.rowsWritten).toBe(17);
     expect(
       measure.writes.some((write) => write.sql.includes('sync_row_scopes')),
     ).toBe(true);

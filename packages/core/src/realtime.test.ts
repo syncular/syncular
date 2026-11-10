@@ -53,6 +53,14 @@ describe('realtime control messages (SPEC.md §8)', () => {
     ).toThrow(DecodeError);
   });
 
+  it('applies the JSON validity rule to the whole text', () => {
+    expect(() =>
+      parseRealtimeServerEvent(
+        '{"event":"x","data":{"a":1e999,"a":1},"event":"heartbeat"}',
+      ),
+    ).toThrow(DecodeError);
+  });
+
   it('tolerates unknown control events (§8.1 forward compat)', () => {
     const parsed = parseRealtimeServerEvent(
       JSON.stringify({ event: 'typing-indicator', data: { anything: true } }),

@@ -21,6 +21,7 @@ import {
   type SigV4Credentials,
   sha256Hex,
   signRequest,
+  uriEncode,
 } from './sigv4';
 
 export interface S3ObjectBucketConfig {
@@ -113,10 +114,23 @@ export class S3ObjectBucket implements ObjectBucket {
     };
   }
 
-  /** The object URL the presign helpers sign (`{endpoint}/{bucket}/{key}`). */
+  /**
+   * The object URL the presign helpers sign (`{endpoint}/{bucket}/{key}`).
+   * Every `/`-separated key segment is URI-encoded the way SigV4
+   * canonicalizes an S3 path (RFC 3986 unreserved characters stay raw), so a
+   * partition id holding `#`, `?`, `%` or `:` stays inside its own key and the
+   * pathname is already the canonical path. A `.` or `..` segment has no URL
+   * form (the URL parser and S3 clients collapse it), so it is refused.
+   */
   urlFor(key: string): URL {
     const endpoint = this.#config.endpoint.replace(/\/+$/, '');
-    return new URL(`${endpoint}/${this.#config.bucket}/${key}`);
+    const segments = key.split('/');
+    if (segments.some((segment) => segment === '.' || segment === '..')) {
+      throw new Error('S3ObjectBucket: object key has a dot segment');
+    }
+    return new URL(
+      `${endpoint}/${this.#config.bucket}/${segments.map((segment) => uriEncode(segment, true)).join('/')}`,
+    );
   }
 
   async #request(
@@ -183,9 +197,13 @@ export class S3ObjectBucket implements ObjectBucket {
     const response = await this.#request('HEAD', key);
     if (response === undefined) return undefined;
     await response.arrayBuffer();
+    const lastModified = Date.parse(
+      response.headers.get('last-modified') ?? '',
+    );
     return {
       etag: response.headers.get('etag') ?? undefined,
       size: sizeOf(response.headers),
+      lastModifiedMs: Number.isNaN(lastModified) ? undefined : lastModified,
       metadata: metadataOf(response.headers),
     };
   }

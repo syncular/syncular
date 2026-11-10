@@ -8,8 +8,9 @@ cursor advances at SUB_END; retry re-delivers the unadvanced window.
 
 The POC client crate (`syncular-client`), packaged for shipping. This crate
 turns the clean-room Rust client into a native library with a small, stable
-**C ABI** — the shape that binds to iOS (Swift), Android (Kotlin/JNI), the JVM,
-and desktop hosts, and the substrate a React Native TurboModule wraps.
+**C ABI**: the shape that binds to iOS (Swift), Android and the JVM (Kotlin
+over FFM), Flutter (`dart:ffi`), and desktop hosts, and the substrate a React
+Native TurboModule wraps.
 
 ## The FFI surface (five functions)
 
@@ -30,22 +31,40 @@ void   syncular_free_string(char* ptr);
   `{"result": ...}` or `{"error": {"code", "message"}}`. The method set is the
   **entire conformance command surface** — `create`, `subscribe`, `mutate`,
   `sync`, `syncUntilIdle`, `readRows`, `uploadBlob`/`fetchBlob`, `conflicts`,
-  `subscriptionState`, `schemaFloor`, `leaseState`, `setPresence`/`presence`,
+  `subscriptionState`, `statusSnapshot`, `setPresence`/`presence`,
   `connectRealtime`, `recreateWithSchema`, … Bytes ride as
   `{"$bytes": "<hex>"}`, so a JSI/TurboModule bridge marshals plain JSON with
   zero custom serialization.
 - **`poll_event`** drains exact revisioned `change` batches, explicit
   `sync-intent` effects, and ephemeral `presence` events with a timeout (`<0`
-  blocks, `0` non-blocking, `>0` waits N ms). The client core has no callbacks;
+  blocks, `0` non-blocking, `>0` waits N ms). A `presence` event carries the
+  server's `error` code (`presence.too_large`, `presence.forbidden`) when the
+  server refused this client's own publish on `scopeKey` (SPEC §8.6.2). The
+  client core has no callbacks;
   the FFI forwards committed core output after each command and after draining
   inbound realtime traffic. It never reconstructs changes from counters.
+
+Every command applies the inbound realtime traffic (deltas, presence fanouts,
+a socket loss) that the socket reader buffered since the previous command.
+When the reader buffers traffic, the transport's wake callback queues one
+`{"type": "realtime-wake"}` event; further traffic adds none until a command
+drains the buffer. A binding answers the event with
+`{"method": "drainRealtime", "params": {}}`, which does nothing beyond that
+drain. The reader holds at most 16 MiB of undrained text and delta payload
+(`INBOUND_BUFFER_LIMIT_BYTES`); past it the reader closes the socket and
+buffers a `transport.failed` loss with `causeKind: "inbound_overflow"`, and the
+drain schedules the reconnect and catch-up pull of SPEC §8.8.
+
+The event queue sits outside the mutex that guards the client, so one pump
+thread may block in `poll_event` while another thread issues commands. The
+host serializes commands.
 
 ### One command surface, conformance-locked
 
 The dispatch is **not** duplicated here. It lives in the shared
 `syncular-command` crate, consumed by BOTH the stdio conformance shim and this
-FFI crate. Whatever the shim exercises against the conformance catalog (68/68,
-Rust client × TS server), the FFI core inherits — there is exactly one command
+FFI crate. Whatever the shim exercises against the conformance catalog (Rust
+client × TS server), the FFI core inherits; there is exactly one command
 router, and it is the one under test.
 
 Command dispatch borrows the parsed input parameters until dispatch returns.
@@ -157,9 +176,9 @@ end-to-end on this machine.
 it depends on `syncular-client` (or a thin `tauri-plugin-syncular` crate) as a
 normal crate and calls `SyncClient` in-process, with the app owning the
 transport exactly as the FFI's native lane does. There is no ABI boundary to
-cross, so the FFI surface is unnecessary there. A dedicated Tauri plugin crate
-(command handlers + a JS `@tauri-apps/api` shim) is a **post-done nicety**, not
-a blocker — the command-JSON shape already maps onto Tauri's `invoke`.
+cross, so the FFI surface is unnecessary there. The plugin crate
+`tauri-plugin-syncular` (`bindings/tauri/plugin`) routes Tauri's `invoke`
+through `syncular-command`, and `@syncular/tauri` is its JS bridge.
 
 **React Native uses the FFI surface via a JSI/TurboModule, over the NATIVE
 core — not the TS core.** RN's JavaScript runtime (Hermes) lacks OPFS and
@@ -172,10 +191,9 @@ JSON-command-shaped: `command_json` in, `{result|error}` JSON out, bytes as
 / JSI wrapper (zero-copy strings, a direct `poll_event` → JS event loop) is the
 **follow-up** for latency; the C ABI here is the stable substrate underneath it.
 
-**Kotlin/Swift idiomatic wrappers are post-done.** The command surface was
-designed for them (one dispatch entry, JSON in/out); Swift `Codable` /
-Kotlin `@Serializable` wrappers over the five functions are mechanical and can
-land after the core ships.
+**Swift, Kotlin and Flutter wrappers** (`bindings/swift`, `bindings/kotlin`,
+`bindings/flutter`) bind the five functions and add typed conveniences over the
+command set.
 
 ## Repository read measurements
 
@@ -208,4 +226,4 @@ queue forwards `{ "type": "progress", "progress": { ... } }` during a running
 sync command; poll it from the host's event thread. Queued progress coalesces to
 the latest snapshot so a slow consumer does not retain every byte or row update.
 The ABI is unchanged. The fields and completion boundary match
-[the Rust progress API](https://syncular.dev/platform-rust/#live-sync-progress).
+[the Rust progress API](https://syncular.dev/platform-rust-specifics/#live-progress).

@@ -6,7 +6,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::{DecodeError, Result};
-use crate::primitives::I64_SAFE_MAX;
+use crate::primitives::{parse_json_document, I64_SAFE_MAX};
 
 /// §8.3 wake-up reason codes — the closed three-value set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,9 +140,7 @@ fn as_bool(data: &Map<String, Value>, key: &str) -> Result<bool> {
 
 /// Parse a JSON control message text frame.
 pub fn parse_control(text: &str) -> Result<ControlMessage> {
-    let value: Value = serde_json::from_str(text)
-        .map_err(|e| DecodeError::invalid(format!("control message is not JSON: {e}")))?;
-    parse_control_value(&value)
+    parse_control_value(&parse_json_document(text, "control message")?)
 }
 
 pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {

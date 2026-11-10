@@ -37,7 +37,8 @@ The core is thread-affine, which the serial queue satisfies. Never call the C fu
 | `roundDeadlineMs` | `UInt64?` | One deadline for the total time of a sync round, which also fails a slow transfer that is still progressing; expiry returns `transport.timeout` |
 | `maxRequestBytes` | `UInt64?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `UInt64?` | Larger decoded responses fail with `transport.response_too_large` |
-| `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |
+| `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to an HTTP request with no headers, and the realtime socket then fails to connect with `transport.redirect` |
+| `realtimeHeartbeatMs` | `UInt64?` | Heartbeat interval of the realtime server in milliseconds (default 30000); after the first heartbeat, twice that interval of silence closes the socket as lost |
 
 The wrapper sends each bound as an exact `UInt64` (`JSONValue.unsigned`). An invalid policy fails construction. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) gives the full semantics, including the WebSocket handshake rule.
 

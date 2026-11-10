@@ -4,7 +4,13 @@
  * loopback `Bun.serve`. Every request's signature is re-derived from what
  * actually arrived on the wire — method, path, query, headers, body hash —
  * so a signing bug on either side fails loudly instead of round-tripping.
- * Presigned-URL expiry is enforced against an injectable clock.
+ * The canonical path is rebuilt from the decoded key the way S3 does it
+ * (each segment URI-encoded once, RFC 3986 unreserved characters raw), not
+ * copied from the request line, so a client that leaves `:` or `+` raw in
+ * its path fails here as it would on AWS. A PUT carrying
+ * `x-amz-checksum-sha256` is rejected with `BadDigest` when the body does
+ * not match it, and every object reports a `Last-Modified` from the stub
+ * clock. Presigned-URL expiry is enforced against the same clock.
  */
 import {
   canonicalRequest,
@@ -12,6 +18,7 @@ import {
   sigV4Signature,
   stringToSign,
   UNSIGNED_PAYLOAD,
+  uriEncode,
 } from '../src/sigv4';
 
 export interface S3StubConfig {
@@ -63,6 +70,14 @@ function parseAmzDate(amzDate: string): number | undefined {
   );
 }
 
+/** S3's canonical URI: the decoded path, each segment URI-encoded once. */
+function canonicalPathOf(url: URL): string {
+  return url.pathname
+    .split('/')
+    .map((segment) => uriEncode(decodeURIComponent(segment), true))
+    .join('/');
+}
+
 /** Verify either auth scheme; returns an error Response or undefined (ok). */
 async function authorize(
   req: Request,
@@ -109,7 +124,7 @@ async function authorize(
     }
     const { text } = canonicalRequest({
       method: req.method,
-      canonicalPath: url.pathname,
+      canonicalPath: canonicalPathOf(url),
       query: url.searchParams,
       headers,
       payloadHash,
@@ -170,7 +185,7 @@ async function authorize(
     );
     const { text } = canonicalRequest({
       method: req.method,
-      canonicalPath: url.pathname,
+      canonicalPath: canonicalPathOf(url),
       query,
       headers,
       payloadHash: UNSIGNED_PAYLOAD,
@@ -305,7 +320,24 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
               'etag mismatch (If-Match)',
             );
           }
-          const headers: Record<string, string> = { etag };
+          const checksum = req.headers.get('x-amz-checksum-sha256');
+          if (
+            checksum !== null &&
+            checksum !==
+              btoa(
+                String.fromCharCode(
+                  ...new Uint8Array(
+                    await crypto.subtle.digest('SHA-256', body.slice()),
+                  ),
+                ),
+              )
+          ) {
+            return xmlError(400, 'BadDigest', 'checksum mismatch');
+          }
+          const headers: Record<string, string> = {
+            etag,
+            'last-modified': new Date(config.now()).toUTCString(),
+          };
           for (const [name, value] of req.headers) {
             const lower = name.toLowerCase();
             if (lower === 'content-type' || lower.startsWith('x-amz-meta-')) {

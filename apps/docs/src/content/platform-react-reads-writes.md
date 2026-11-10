@@ -7,12 +7,12 @@ of a result means and how to render all of them.
 ::meta{for="React developers building screens over synced rows" time="8 minutes" first="platform-react-install" spec="4"}
 
 :::terms
-- **Phase**: `loading`, `partial`, `ready`, or `error`: the completeness of a query result.
+- **Phase**: `loading`, `partial`, `ready`, `blocked`, or `error`: the completeness of a query result.
 - **Coverage**: The window of rows a query needs to be complete.
 - **Dependency**: A table and optional scope keys a query reads.
 :::
 
-:::figure{title="The four phases of a query result" note="Render from phase" ticks}
+:::figure{title="The five phases of a query result" note="Render from phase" ticks}
 <div class="d-row">
 <div class="node"><span class="t">loading</span>No complete answer, no rows yet</div>
 <span class="d-arrow"></span>
@@ -21,6 +21,7 @@ of a result means and how to render all of them.
 <div class="node ok"><span class="t">ready</span>Complete snapshot, including a true empty result</div>
 </div>
 <div class="d-row">
+<div class="node bad"><span class="t">blocked</span>The browser leader cannot serve reads; the rows of the last read stay</div>
 <div class="node bad"><span class="t">error</span>The latest read, or the latest sync attempt while coverage was incomplete, failed</div>
 </div>
 
@@ -40,13 +41,14 @@ import { listTodosQuery } from './syncular.queries';
 const todos = useQuery(listTodosQuery, { listId });
 
 if (todos.phase === 'loading') return <Skeleton />;
+if (todos.phase === 'blocked') return <Unavailable availability={todos.availability} />;
 if (todos.phase === 'error') return <ErrorView error={todos.error} />;
 if (todos.phase === 'ready' && todos.rows.length === 0) return <Empty />;
 return <Rows rows={todos.rows} partial={todos.phase === 'partial'} />;
 ```
 
 The result is `{ rows, phase, revision, isLoading, isRefreshing, error,
-refresh }`. Observing the query claims its coverage; unobserving releases only
+availability, refresh }`. Observing the query claims its coverage; unobserving releases only
 that consumer's claim. No separate `useWindow` effect or completeness read is
 needed.
 
@@ -118,9 +120,18 @@ It returns the same phase and revision result. The options are `dependencies`,
 `coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. Set `id` to a
 stable value without protected data for support diagnostics; the default id is
 `raw` and never contains SQL. The table-list shorthand `tables` with `scopeKeys`
-still works. Without dependencies, the hook infers tables with a conservative
-`FROM` and `JOIN` scanner.
+still works. While `enabled` is `false`, the hook reads nothing and reports
+phase `disabled` with no rows. Pass `dependencies` or `tables` naming every table the statement
+reads: the query re-runs only when one of them changes. Without either, the
+hook throws a `ClientSyncError` with code
+`client.raw_sql_dependencies_required` when it mounts.
 
-The core accepts exactly one read-only statement: `SELECT`, `WITH`, `EXPLAIN`,
-`PRAGMA`, or `VALUES`. Writes always go through mutations and the outbox. For
-typed `.sql` reads, see [Named queries](/tooling-queries/).
+The core runs exactly one statement, and only one that SQLite reports read-only
+(`sqlite3_stmt_readonly`) and that returns columns. `node:sqlite` does not
+expose that answer, so its adapter accepts `SELECT`, `VALUES`, `EXPLAIN`, and a
+`WITH` clause whose statement is a `SELECT` or `VALUES`. The core refuses
+`PRAGMA` before SQLite compiles it, because SQLite applies a pragma such as
+`query_only` during compilation. Read a pragma through its table-valued
+function: `SELECT * FROM pragma_table_info('todos')`. Writes always go through
+mutations and the outbox. For typed `.sql` reads, see
+[Named queries](/tooling-queries/).

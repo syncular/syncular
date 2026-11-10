@@ -33,6 +33,12 @@
       "covers": "Request carrying the client partition log epoch (§2.1)"
     },
     {
+      "name": "json-boundaries",
+      "bin": "json-boundaries.bin",
+      "json": "json-boundaries.json",
+      "covers": "JSON validity rule (Conventions) at its accepting edge: params nested exactly 64 containers deep, bootstrapState with whitespace, a duplicate key, the largest finite binary64 and escapes"
+    },
+    {
       "name": "round-failure-report",
       "bin": "round-failure-report.bin",
       "json": "round-failure-report.json",
@@ -99,6 +105,18 @@
       "bin": "invalid/round-failure-bad-code.bin",
       "error": "sync.invalid_request",
       "covers": "ROUND_FAILURE code outside the §1.5 grammar (hyphen instead of a dotted segment)"
+    },
+    {
+      "name": "params-json-number-overflow",
+      "bin": "invalid/params-json-number-overflow.bin",
+      "error": "sync.invalid_request",
+      "covers": "SUBSCRIPTION.params holds 1e999, outside finite binary64 (Conventions JSON validity rule)"
+    },
+    {
+      "name": "bootstrap-state-json-depth-65",
+      "bin": "invalid/bootstrap-state-json-depth-65.bin",
+      "error": "sync.invalid_request",
+      "covers": "SUBSCRIPTION.bootstrapState nests 65 containers (Conventions JSON validity rule)"
     }
   ]
 }

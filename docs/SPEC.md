@@ -35,7 +35,38 @@ transport compression, §1.3).
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
 | `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). "Code unit" means **UTF-16 code units** — the order JavaScript string comparison yields; it diverges from UTF-8 byte order exactly when keys mix U+E000–U+FFFF characters with supplementary-plane characters, so implementations in byte-oriented languages MUST compare by UTF-16 code units, not encoded bytes. A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
-| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string parses as a JSON document (a value that does not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string is a valid JSON document under the JSON validity rule below (a value that is not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+
+**JSON validity rule.** The rule is defined on the raw text. A JSON document
+is valid when the text parses per RFC 8259 and meets three limits, each
+applying to every token in the text, including a value that a later
+duplicate key shadows (`{"a":1e999,"a":1}` is invalid):
+
+- container nesting is at most 64 levels: every array or object adds one
+  level, so `[]` has depth 1 and a top-level scalar has depth 0;
+- every number token, rounded to nearest binary64, is finite: `1e999` and
+  `-1e999` are invalid, `1e-999` is valid and reads as 0,
+  `1.7976931348623157e308` is valid and `1.7976931348623159e308` is not;
+- no string token, object keys included, contains U+0000 or an unpaired
+  surrogate, written literally or as a `\u` escape (the escape `\ud800`
+  without a following low-surrogate escape).
+
+A decoder cannot satisfy the rule on the parsed value alone, because
+ECMAScript `JSON.parse` drops a shadowed value and `serde_json` parses it
+first. Each reference core runs its parser and one lexical pass over the
+text for what the parser does not see.
+
+Duplicate object keys and insignificant whitespace are valid; the parsed
+value of a duplicated key is the last one. Every reference codec decodes
+the envelope `json` fields (`params`, `bootstrapState`, `ERROR.details`,
+`PUSH_RESULT_DETAILS.details`), push-payload `json` columns (§2.4),
+`blob_ref` values (§5.9.1), decrypted `json` and `blob_ref` plaintext
+(§5.11) and realtime control messages (§8) against this rule. The rule
+exists because the reference cores disagree outside it: ECMAScript
+`JSON.parse` accepts `1e999` as `Infinity`, lone surrogates and any depth,
+while `serde_json` rejects the first two and any depth beyond 127, and a
+PostgreSQL store rejects U+0000 that SQLite stores. Full-row `json`
+columns (`COMMIT` payloads, segments, conflict `serverRow`) are outside the rule (§2.4).
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
@@ -523,15 +554,14 @@ contrast, is cross-message state and stays a producer conformance rule.
 
 | Field | Type | Versions | Semantics |
 |---|---|---|---|
-| `requiredSchemaVersion` | `opt(i32)` | 1, 2 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
-| `latestSchemaVersion` | `opt(i32)` | 1, 2 | Informational: newest schema version the server knows. MUST NOT block syncing |
-| `logEpoch` | `str` | 2 | The current partition log identity (§2.1), non-empty |
-| `resetRequired` | `bool` | 2 | True when the request omitted `logEpoch` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
+| `requiredSchemaVersion` | `opt(i32)` | 3 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
+| `latestSchemaVersion` | `opt(i32)` | 3 | Informational: newest schema version the server knows. MUST NOT block syncing |
+| `logEpoch` | `str` | 3 | The current partition log identity (§2.1), non-empty |
+| `resetRequired` | `bool` | 3 | True when the request omitted `logEpoch` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
 
-Wire version 1 ends after `latestSchemaVersion`. Wire version 2 adds
-`logEpoch` and `resetRequired`. A version 2 schema-floor response still
-carries both version fields, `logEpoch`, and `resetRequired`; schema upgrade
-takes precedence in the client surface.
+`logEpoch` and `resetRequired` are present in every response. A
+schema-floor response carries both schema-version fields next to them;
+schema upgrade takes precedence in the client surface.
 
 **Schema-floor response.** When the request's `schemaVersion` is not
 served — below the floor *or* newer than anything the server knows —
@@ -592,7 +622,8 @@ independent codecs agree byte-for-byte on which messages are
   (`sync.invalid_subscription`, §3.2, §4.1), unknown tables
   (`sync.unknown_table`), `clientId` actor binding
   (`sync.invalid_client_id`), operation caps
-  (`sync.too_many_operations`), and row-payload decode against the
+  (`sync.too_many_operations`), server limits (`sync.limit_exceeded`),
+  and row-payload decode against the
   generated row codec (§6.1 — still reported as `sync.invalid_request`,
   but by the server: the envelope codec carries payloads as opaque
   `bytes` and cannot know the schema). These MUST NOT be decode errors
@@ -604,13 +635,24 @@ Request validation has **two failure surfaces**, split by request half:
   §1.1, or an in-band `ERROR` frame if streaming already began):
   duplicate subscription ids, requested `'*'` values, undeclared scope
   keys (requested *or* resolved, §3.2), a **subscription** naming an
-  unknown table (§4.3), `clientId` actor binding (§1.5), and the
-  operation cap (§6.1).
+  unknown table (§4.3), `clientId` actor binding (§1.5), the
+  operation cap (§6.1), and the server limits below.
 - **Commit-level** — rejects only the enclosing `PUSH_COMMIT`: its
   `PUSH_RESULT` is `rejected` with one `error` result record (§6.3)
   and the batch continues (§6.4). This is the surface for a push
   **operation** naming an unknown table (`sync.unknown_table`) and for
   a `payload` that fails row-codec decode (`sync.invalid_request`).
+
+**Server limits.** A server enforces configured caps on the decoded bytes
+of a request (an HTTP body after content decoding, §1.3, and a socket
+round's assembled request, §8.7), on `SUBSCRIPTION` frames per request,
+and on requested scope values summed over one subscription's keys. A
+request past a cap fails request-level with `sync.limit_exceeded`;
+`details.limit` names the cap and `details.max` holds its value. The
+server reads a compressed body only up to the cap, so a small gzip body
+never inflates past it. A socket round assembled past the byte cap has no
+acceptable end, so the server drops the connection (§8.7). The reference
+server's defaults are 16 MiB, 500 subscriptions and 1,000 scope values.
 
 Response-side semantic expectations that are not `opt()` ties (e.g.
 `reasonCode` emptiness for `active`, `effectiveScopes` emptiness when
@@ -661,10 +703,9 @@ observable behavior is contractual:
   carries no configured headers, no base-URL userinfo, and no signed
   capability URL; a credential-bearing request is still refused, because
   the configured headers or URL userinfo would replay to the redirect
-  target. The WebSocket handshake obeys the same policy: it may follow a
-  redirect only when it carries no configured headers and its realtime URL
-  has neither userinfo nor a query. A refusal surfaces
-  `transport.redirect`.
+  target. The WebSocket handshake never follows a redirect, whatever the
+  policy (§8.8); a 3xx upgrade response surfaces `transport.redirect`. A
+  refused HTTP redirect surfaces the same code.
 - **Request byte limit.** An HTTP request body larger than the
   configured limit is refused before any network I/O, with
   `transport.request_too_large`.
@@ -676,13 +717,14 @@ observable behavior is contractual:
 
 The byte limits apply to HTTP requests and responses. They do not cap
 realtime socket buffers; the socket round silence bound and the
-whole-round deadline bound a realtime round's send and wait.
+whole-round deadline bound a realtime round's send and wait, and §8.8
+fixes the bound on undrained inbound realtime traffic.
 
 The defaults are unbounded deadlines and unbounded body sizes, matching
 the reference HTTP binding; a host chooses its own application policy.
 The JSON config keys are `requestTimeoutMs`, `roundDeadlineMs`,
-`maxRequestBytes`, `maxResponseBytes`, and `redirects` (`"deny"` or
-`"follow"`). A programmatic policy carries the same fields, and a
+`maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs` (§8.5), and
+`redirects` (`"deny"` or `"follow"`). A programmatic policy carries the same fields, and a
 non-positive or unrepresentable bound is rejected before it reaches the
 transport. A numeric bound is a `u64` integer token in the config JSON; a
 float-formatted value is refused, so a host binding serializes a
@@ -708,7 +750,8 @@ same rule to their JSON error bodies.
 hosts; a transport failure message is never one. The native transport
 raises `transport.failed` with `connect` (DNS resolution failed, or the
 connection was refused, reset, or aborted), `tls`, `io`, `request`,
-`protocol`, `body`, `status` (with `httpStatus`), or `unknown`;
+`protocol`, `body`, `status` (with `httpStatus`), `inbound_overflow` (with
+`limit`, §8.8), or `unknown`;
 `transport.timeout` with `timeout` or `round_deadline`; and
 `transport.redirect` with `redirect`. The browser `fetch` transports raise
 retryable `sync.transport_failed` with `network` (the fetch rejected; a
@@ -726,7 +769,12 @@ a failure whose `causeKind` is `connect` (native: DNS resolution failed, or the
 connection was refused, reset, or aborted) or `network` (browser fetch: the
 fetch rejected). A refused or unreachable endpoint does not become reachable
 by repeating the request, so the client schedules no intent and does not grow
-the backoff; the host re-arms the drive on its own connectivity signal.
+the backoff; the host re-arms the drive on its own connectivity signal. The
+client keeps sync-needed raised after such a failure, so the re-armed drive has
+work. A failed round is not connectivity evidence for a host loop: the
+TypeScript realtime supervisor takes its `offline` state from the host's
+connectivity signal alone, and each `online` report from that signal drives
+`syncUntilIdle`, with or without realtime.
 `transport.redirect`, `transport.request_too_large`, and
 `transport.response_too_large` describe a configuration the client cannot
 repair by repeating the request, so they schedule no intent. A silence timeout of a segment fetch is retryable like any
@@ -763,7 +811,7 @@ MUST NOT write the registry row when the stored timestamp is less than
 the row and returns it unchanged, so a request that only reads takes no write
 lock. A missing row is always created.
 
-A version 2 client persists the accepted `logEpoch` in the same durable
+A client persists the accepted `logEpoch` in the same durable
 database as its cursors and outbox. It sends that value in every later
 `REQ_HEADER`. The server compares it before scope resolution, lease issuance,
 push application, pull reads, or client-record updates:
@@ -818,14 +866,16 @@ A commit contains one or more **changes**:
 | `scopes` | The stored scope values extracted from the row (§3.1) |
 
 Every synced row carries a **`server_version`** (`i64`, ≥ 1): starts at 1
-on insert, increments by exactly 1 on every applied upsert. A §2.2 scope
+on insert, or one above its tombstone's `server_version` when the insert
+recreates a deleted row (§6.2), and increments by exactly 1 on every
+applied upsert. A §2.2 scope
 move keeps the stored `server_version` unchanged: it re-homes the row, it
 does not write a new row version. `server_version` is the
 optimistic-concurrency token for `baseVersion` conflict detection (§6.2).
 
 Every stored column carries a **`column_version`**: the row's
 `server_version` at the column's last write. An insert sets every column to
-1; an applied upsert sets each present column except the immutable primary
+the row's starting `server_version`; an applied upsert sets each present column except the immutable primary
 key to the new `server_version` and leaves absent columns unchanged (§6.2).
 `column_version` is server-internal: it never appears in `COMMIT` frames,
 segments, SQLite images, or conflict records. Relational storage keeps one
@@ -835,8 +885,11 @@ column versions existed carries no blob, which reads as every column at the
 row's current `server_version`.
 
 Every applied delete — including a §6.11 cascaded delete — records a
-**tombstone** `(partition, tbl, row_id, commit_seq)` in a server-side
-tombstone table. The delete half of a §2.2 scope move records no tombstone:
+**tombstone** `(partition, tbl, row_id, commit_seq, server_version,
+scopes)` in a server-side tombstone table: `server_version` and `scopes`
+are the deleted row's last `server_version` and stored scopes. A tombstone
+written before servers recorded them carries neither and keeps the rules
+that predate them (§6.2). The delete half of a §2.2 scope move records no tombstone:
 the same commit keeps the row live. An upsert consults the table only when
 its stored row is absent (§6.2 delete precedence); pruning removes
 tombstones with `commit_seq ≤ horizonSeq` in the same pass as the commit
@@ -891,9 +944,9 @@ the persisted result byte-equivalent. It does not replace the stored result,
 so a later authorized replay still returns the original conflict. Changed
 operations under a reused key are never built, validated, or applied. A client
 MUST NOT reuse a
-`clientCommitId` for changed intent, including after the persisted result
-has been pruned: the ID identifies one logical commit permanently, and a
-later edit is a later commit with a new ID.
+`clientCommitId` for changed intent, including when the server holds no result
+for it (for example after a `logEpoch` rotation, §2.1): the ID identifies one
+logical commit permanently, and a later edit is a later commit with a new ID.
 
 A server MUST NOT derive the idempotency key from the request payload
 bytes. A §5.11 client re-encrypts an encrypted column at every send with
@@ -917,9 +970,9 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `2` | `integer` | `i64` |
 | `3` | `float` | `f64` |
 | `4` | `boolean` | `bool` |
-| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The Conventions `json` MUST applies at **row-codec decode**: a value that does not parse as a JSON document is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list) — decode validates exactly what the §11 rendering would later parse, so the two can never disagree. The raw string is still preserved verbatim for re-encoding |
+| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The full-row codec checks at **row-codec decode** that the value parses as a JSON document; a value that does not is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list), so decode validates what the §11 rendering would later parse. A full-row decoder MUST accept every document the Conventions JSON validity rule accepts and MAY reject a document outside it: rows stored before the rule keep decoding wherever they decoded before. The sparse row codec applies the JSON validity rule itself (push admission values, below). The raw string is preserved verbatim for re-encoding |
 | `6` | `bytes` | `bytes` |
-| `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST parse as JSON **and** satisfy the BlobRef shape (§5.9.1) at row-codec decode, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
+| `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST be a valid JSON document (Conventions), satisfy the BlobRef shape **and** equal its canonical serialization (§5.9.1) at every row-codec decode, full row and sparse row alike, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
 | `8` | `crdt` | `bytes` containing an **opaque CRDT update/state** (§5.10). On the wire and in the codec a `crdt` value is byte-for-byte a `bytes` (tag 6): a `u32` length prefix plus raw bytes, with **no structural validation at decode** — the bytes are host/merger-opaque (a Yjs update, a state vector, an RGA log; the codec neither parses nor trusts them). The distinct tag exists so schema, apply, and query surfaces recognize a column as *collaborative state the server merges rather than overwrites* (§5.10, §6.2 crdt interaction) — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `bytes` machinery. Beyond the tag, the schema IR marks a `crdt` column with a `crdtType` name (§5.10.1) that selects the server merger; `crdtType` is IR metadata, **never on the wire** (unlike `nullable`, which is), so it does not appear in the SSG2 column table |
 
 **Encrypted columns (§5.11).** A column marked for client-side encryption
@@ -998,6 +1051,23 @@ for an absent column); a null bit for a non-nullable column. A full row is
 the special case with every presence bit set; it still carries the
 presence bitmap and a null bitmap over all columns, so its bytes differ
 from the full-row codec's.
+
+**Push admission values.** Sparse-row decode also rejects, each a decode
+error (`sync.invalid_request`), a present non-NULL value that a reference
+store or core would treat differently:
+
+- a `string` value containing U+0000;
+- a `json` value that is not a valid JSON document under the Conventions
+  JSON validity rule;
+- a `float` value that is NaN, `Infinity` or `-Infinity`;
+- a `blob_ref` value that is not canonical (§5.9.1).
+
+The full-row codec does not apply the first three: `COMMIT` payloads,
+segments and conflict `serverRow` keep decoding rows stored before the
+rule. A server therefore admits one value set on every storage backend: a
+U+0000 string applies on SQLite and fails on PostgreSQL, and a NaN `float`
+applies on PostgreSQL and fails a SQLite `NOT NULL` column, so neither
+reaches storage.
 
 The sparse row is the `payload` format of push operations (§6.1) at wire
 version 3 (§9's window is `[3]`). Every other surface keeps the full-row
@@ -1168,6 +1238,14 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   `{ pattern: 'prefix:{variable}', column: 'column_name' }`. Exactly one
   `{variable}` per pattern; a variable MUST NOT map to two different
   columns.
+- A scope column's type MUST be `string` or `integer`; typegen, the
+  server's schema compile, the Rust authority and both clients' schema
+  load reject `float`, `boolean`, `json`, `bytes`, `blob_ref` and `crdt`
+  (`typegen.scope_column_type`, `schema.scope_column_type`). A scope value
+  is an authorization key, and a `float` renders differently per
+  implementation (`1e21` is `1e+21` in ECMAScript and `1000000000000000000000`
+  in Rust's `f64::to_string`). A row whose scope column is NULL has no
+  stored scope for that variable, so the server rejects every write of it.
 - Every synced table MUST declare **at least one** scope pattern — a
   schema-compile-time requirement (configuring a table without one is a
   server bug, rejected before serving). Rationale: a zero-scope table
@@ -1219,22 +1297,34 @@ On every pull (and on realtime connect), per subscription:
    do not participate in this table's intersection (rule 4).
 4. **Effective = requested ∩ allowed**, computed per requested key —
    the intersection therefore runs over this table's declared variables
-   only, since requested keys were validated in rule 2 (keys present
-   only in allowed never enter effective):
+   only, since requested keys were validated in rule 2 (a key present
+   only in allowed enters effective only through the wildcard fence
+   below, and only when this table declares it):
    - key absent from allowed → key excluded entirely;
    - allowed contains `'*'` → the requested values pass through;
    - otherwise set intersection of the value lists; an **empty
      intersection excludes the key entirely** — a requested key never
      survives with an empty list (it then revokes via rule 5).
+   - **Wildcard fence**: when at least one requested key passed through
+     an allowed `'*'`, every variable the table declares, the request
+     omits, and allowed holds a list without `'*'` for joins effective
+     with the allowed list. A wildcard grant on one variable therefore
+     never lifts the actor's lists on the table's other variables. A
+     request that names every declared variable, and an allowed map whose
+     lists for the omitted variables all hold `'*'`, are unaffected. The
+     fence applies wherever effective scopes are computed: pull, segment
+     download (§5.5), realtime registration (§8.1, §8.7).
 5. The subscription is **revoked** when any of:
    - `resolveScopes` threw (fail-loud: no data on errors — an
      authorization bug must fence, not leak);
    - a requested key is missing from effective (partial scope loss must
      not silently deliver a subset the client didn't ask to trust);
+   - the wildcard fence (rule 4) adds a variable whose allowed list is
+     empty;
    - effective is empty.
 6. Otherwise the subscription is **active** with the effective scopes,
    which are echoed in `SUB_START` so the client knows exactly what it is
-   receiving.
+   receiving, including variables the wildcard fence added.
 
 A pull for an active subscription returns exactly the changes whose
 stored scopes match the effective scopes: for every effective key, the
@@ -1244,15 +1334,21 @@ change's stored value for that key is in the effective value list.
 An allowed map such as `{ workspace_id: ['w1', 'w2'], surgery_id: ['s1',
 's2'] }` authorizes every row whose `workspace_id` is in the first list
 and whose `surgery_id` is in the second. It does not encode only the pairs
-`(w1, s1)` and `(w2, s2)`. A host that needs parent/child authorization
-MUST therefore do one of the following: declare and request the parent
-scope on every child table as well as the child scope, while validating
-the parent reference server-side; enumerate the exact authorized child
-values; or perform the operation behind a server-authoritative command.
-Granting `'*'` for a child variable is safe only while another declared
-scope independently fences every read and write path for that child. A
-later table that declares only the child variable does not inherit the
-parent fence and MUST be treated as a new authorization decision.
+`(w1, s1)` and `(w2, s2)`. A subscription that omits a variable is
+fenced on it only by the wildcard fence of rule 4. An actor allowed
+`{ workspace_id: ['w1'], surgery_id: ['s1'] }` who subscribes by
+`workspace_id` alone receives a row stored as `(w1, s9)`; an actor
+allowed `{ workspace_id: ['w1'], surgery_id: ['*'] }` who subscribes by
+`surgery_id` alone receives only rows stored under `w1`. A host that
+needs parent/child authorization MUST therefore do one of the following:
+declare and request the parent scope on every child table as well as the
+child scope, while validating the parent reference server-side;
+enumerate the exact authorized child values; or perform the operation
+behind a server-authoritative command. The wildcard fence covers reads
+on a table that declares both variables; writes are authorized by the
+table's write variables alone (§3.4). A later table that declares only
+the child variable does not inherit the parent fence and MUST be treated
+as a new authorization decision.
 
 ### 3.3 Revocation and the purge contract
 
@@ -1268,7 +1364,8 @@ When `SUB_START.status = revoked`:
   subscription for exactly this purpose. Requested
   values that never became effective are not purged: the grant being
   revoked is the effective one, and local-only rows outside it are not
-  the server's to destroy.
+  the server's to destroy. The purge keeps every row another subscription
+  owns (row ownership, below).
 - **Fail closed**: if the client's generated schema has no local
   scope-column mapping for the table, the client MUST NOT clear the whole
   table as an approximation; it MUST surface `sync.scope_revoked` as a
@@ -1279,14 +1376,38 @@ When `SUB_START.status = revoked`:
   drop them locally on revocation instead of replaying them into
   guaranteed rejections. The drop is **whole-commit**: when any upsert
   in a pending commit provably lands in the revoked effective scopes
-  (its scope-column values match them under the purge rule above), the
-  entire commit is dropped — commits are atomic (§6.4) and their content
+  (its scope-column values match them under the purge rule above and no
+  owner covers the row), the entire commit is dropped — commits are atomic (§6.4) and their content
   is pinned by the idempotency key (§2.3), so operations are never
   removed individually. Delete operations carry no row values to test,
   so delete-only commits are not provably in scope: they replay and rely
   on server-side rejection (§3.4) or the idempotent absent-row `applied`
   of §6.2. Both outcomes surface to the app — a local drop and a
   `rejected` result are each visible, never silent.
+
+**Row ownership.** Every scoped local delete (this purge, the §4.8
+eviction, the §5.6 first-page clear) removes a row only when it matches
+the departing or bootstrapping subscription's effective scopes and no
+**owner** matches it. An owner is any other subscription on the same
+table that is `active`, holds a cursor (`cursor >= 0`, so it has processed
+a `SUB_END`), and has a persisted effective-scope echo; it owns the rows
+that echo matches. A subscription at cursor `-1` (never synced, reset, or
+rebootstrapped) owns nothing: it fresh-bootstraps and runs its own
+first-page clear. Without this rule a revoked or evicted subscription
+deletes rows a surviving subscription still claims to hold, and the
+survivor's cursor over-asserts possession (§4.5 C1).
+
+**Matching.** Scope values are text on the wire. A client matches them
+against a local scope column by the column's declared type: a `string`
+column compares the text; an `integer` column matches a stored value whose
+canonical decimal text equals the scope value, so `7` matches `"7"` and never
+`"07"`. The same rule binds row ids it keeps out of a delete (the §4.8 outbox
+pin).
+
+**Invalidation.** A scoped delete records the scope keys of its map
+(§7.5). When the map leaves a scope variable of the table unnamed, the
+deleted rows' keys for that variable are unknown, and the change is
+table-wide.
 
 While the subscription stays `active`, each pull's `effectiveScopes`
 echo **replaces** the persisted copy. A narrowing echo (fewer values
@@ -1305,6 +1426,13 @@ subscribes before a grant exists, gets revoked, and subscribes again
 once the grant arrives receives its rows. A registration whose status
 is `failed` is a configuration error: the client leaves it in place,
 and the app fixes the schema before subscribing again.
+
+**Registration raises sync-needed.** A `subscribe` or `subscribeMany` call
+that registers or re-arms at least one subscription, and an `unsubscribe`
+that removes a registered id, raise sync-needed and expose one interactive
+sync intent. Registering an identical active registration and unsubscribing
+an unknown id change nothing. `setWindow` (§4.8) registers its units
+without raising either and batches its own intent.
 
 **Eviction is not purge.** A client MAY *voluntarily* delete local rows
 it still holds authorization for — the windowed-sync retention policy of
@@ -1484,7 +1612,10 @@ snapshot.
 | `bootstrapState` | `opt(json)` | Present iff the bootstrap is incomplete; round-trip in the next request. Absent = bootstrap complete (or not bootstrapping) |
 
 The client persists `nextCursor` / `bootstrapState` only on processing
-`SUB_END` (§1.4).
+`SUB_END` (§1.4), and only into a registration that still exists. A
+section whose subscription the app removed while the round was in flight
+(`unsubscribe`, a window shrink) is skipped: its `SUB_END` never
+re-creates the registration.
 
 ### 4.5 Incremental pull and `COMMIT` frames
 
@@ -1565,7 +1696,8 @@ Servers prune the commit log. The contract:
 - A server MUST NOT advance `horizonSeq` past
   `min(active-client cursors) `, where "active" means clients whose
   cursor record was updated within the **active window** (default 14
-  days), except that it MAY force-advance past commits older than the
+  days); a record at cursor < 0 (a client that has not finished a
+  bootstrap) holds no cursor and does not count, except that it MAY force-advance past commits older than the
   **age force limit** (default 30 days) regardless of laggard cursors.
   A server MUST always retain at least the newest **1000** commits.
   (Hosts may raise any of the defaults.)
@@ -1582,7 +1714,13 @@ Servers prune the commit log. The contract:
   tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
   precedence rule of §6.2 no longer sees the delete, and the ordinary insert
   rule applies. Retention defaults therefore bound how long a delete beats a
-  concurrent unversioned upsert.
+  concurrent unversioned upsert. A row recreated after its tombstone is
+  pruned starts at `server_version = 1`, so a `baseVersion` from the previous
+  incarnation can again match it. Such a `baseVersion` comes from an outbox
+  entry that stayed unpushed for the whole retention window, the same window
+  that bounds delete precedence; the client's cursor is then below
+  `horizonSeq`, so its next pull answers `sync.cursor_expired` and the client
+  re-bootstraps.
 - Compaction (dropping superseded intermediate changes for the same
   (table, rowId, scope) older than a host-configured full-history window)
   is allowed and invisible to correct clients: any client whose cursor is
@@ -1644,16 +1782,22 @@ Erasure runs in budgeted steps; the host repeats the step until it reports
    the partition write lock, up to `maxRows` upsert change records per table
    at or below the current `maxCommitSeq` whose scopes bind `variable` to
    `value`, and then the change scope index entries (§3.1) of the binding
-   whose commit holds no change of the binding any more. Delete change
-   records stay: a client whose cursor precedes the erasure needs them to
-   drop its rows. The step reports `done` when it removed nothing.
+   whose commit holds no change of the binding any more. It then removes
+   the conflicting row's payload (`serverRow`) from up to `maxRows` stored
+   conflict results (§6.3) of the table whose conflict authorization scopes
+   bind `variable` to `value`; a replay of such a result carries an empty
+   `serverRow`. Delete change records stay: a client whose cursor precedes
+   the erasure needs them to drop its rows. The step reports `done` when it
+   removed nothing.
 
 An incremental pull from any cursor at or above the horizon after a finished
 erasure returns no upsert payload of the binding, and a bootstrap of the
-binding returns no rows. Delete change records, tombstones, commit metadata
-(actor id, client id, timestamps), and idempotency results carry row ids and
-actor ids, no row payload; they leave with the §4.6 pruning horizon. On D1,
-erasure runs on the partition's coordinator, like pruning.
+binding returns no rows. Delete change records, tombstones, and commit
+metadata (actor id, client id, timestamps) carry row ids and actor ids, no row
+payload; they leave with the §4.6 pruning horizon. Idempotency results
+survive pruning (§4.6) and keep row ids, actor ids and conflict versions
+after the history step. On D1, erasure runs on the partition's coordinator,
+like pruning.
 
 ### 4.7 Bootstrap state machine
 
@@ -1679,7 +1823,9 @@ Bootstrap is **resumable, pinned, and paged**:
   subscription would receive lies in `(scope pin, maxCommitSeq]`: the
   snapshot at the scope pin is the snapshot at `maxCommitSeq`, and the next
   incremental pull replays an empty window. The scope pin keeps a stored
-  image's reuse key (§5.3) stable across commits outside the scope.
+  image's reuse key (§5.3) stable across commits outside the scope. The
+  server computes the scope pin at every sqlite-lane start; a resume
+  token's `asOfCommitSeq` never becomes an image reuse key.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
   shape `{ "asOfCommitSeq": i, "tables": [..], "tableIndex": i,
   "rowCursor": string|null }`. **Clients MUST treat it as opaque** and
@@ -1695,9 +1841,13 @@ Bootstrap is **resumable, pinned, and paged**:
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
-- A `bootstrapState` that does not parse as the shape above, or whose
-  `tables` do not correspond to the subscription, MUST be handled the
-  same way: silently restart the bootstrap with a fresh pin. An
+- A `bootstrapState` that does not parse as the shape above, whose
+  `asOfCommitSeq` is not an integer in `[0, maxCommitSeq]`, whose
+  `tableIndex` is not an index into `tables`, or whose `tables` do not
+  correspond to the subscription, MUST be handled the same way: silently
+  restart the bootstrap with a fresh pin. A present token keeps the
+  subscription bootstrapping even when its cursor lies in
+  `[horizonSeq, maxCommitSeq]`. An
   unusable resume token is never a request error — clients round-trip
   the token opaquely, so a bad token means corrupt client state, and
   bootstrap is self-healing by construction (a fresh bootstrap always
@@ -1789,13 +1939,17 @@ local transaction** (E3):
 - delete at most 1,024 local rows matching the departing unit's effective scopes,
   by the §5.6 local-scope-column rule **including its fail-closed
   clause** (no local mapping ⇒ do not clear, surface a configuration
-  error), **except** rows pinned by E1;
+  error), **except** rows pinned by E1 and rows another subscription
+  owns (§3.3 row ownership);
 - discard that subscription's cursor, `bootstrapState`, and persisted
   effective-scope echo, and remove it from the local registration list
   (so it is omitted from the next pull, §4.1);
 - emit the deleted rows' invalidation keys through the client's single
   apply-path choke point, exactly like a purge (a live query over evicted
-  rows MUST re-run).
+  rows MUST re-run; §3.3 invalidation);
+- discard any sync round prepared before the shrink, as an unsubscribe
+  does: its `SUB_END` would otherwise mark a re-added unit complete
+  without the rows this eviction removed.
 
 If matching rows remain, that same transaction MUST persist their effective
 scopes in the pending-eviction registry. Later chunks delete at most 1,024 rows
@@ -2139,7 +2293,7 @@ lock across processes.
 | `segmentId` | `str` | §5.1 |
 | `mediaType` | `u8` | `1` = rows, `2` = sqlite |
 | `table` | `str` | |
-| `byteLength` | `i64` | Uncompressed size (progress UI, sanity cap) |
+| `byteLength` | `i64` | Uncompressed size: progress UI and the client's read cap (below) |
 | `rowCount` | `i64` | |
 | `asOfCommitSeq` | `i64` | MUST equal the bootstrap pin |
 | `scopeDigest` | `str` | §3.5 |
@@ -2168,8 +2322,9 @@ bit 3. Three MUSTs pin the url path:
   `sync.segment_expired` semantics (§10.2): re-pulling mints fresh
   descriptors.
 - **Failure invalidates the descriptor.** A failed url fetch — expired
-  before fetch, transport error, non-success status, or a §5.1
-  content-address mismatch — invalidates the whole descriptor. The
+  before fetch, transport error, non-success status, a body longer than
+  `byteLength`, or a §5.1 content-address mismatch — invalidates the
+  whole descriptor. The
   client MUST NOT fall through to the direct endpoint (a second
   delivery attempt under a different auth story is exactly the fallback
   class SSP2 removes) and MUST abort the subscription per §1.4 rule 5;
@@ -2185,6 +2340,13 @@ value, debug value, or source chain. This rule applies to direct endpoints and
 signed URLs. Authenticated server catalog responses are distinct from
 client-generated transport exceptions. This privacy rule does not require a
 transport adapter to decode the server's HTTP JSON error body.
+
+**Read cap.** On both delivery paths the client enforces `byteLength`:
+it MUST stop reading the body once more decoded bytes than `byteLength`
+arrived and fail the descriptor with `sync.invalid_request` and the static
+message `segment exceeds its byteLength`, before the §5.1 content-address
+check. The cap bounds client memory without a host-configured response
+limit.
 
 A `url` on a descriptor when the client did not advertise bit 3 is a
 broken server: reject as `sync.invalid_request`, aborting per §1.4
@@ -2282,7 +2444,10 @@ for clients without signed-URL support.
   a table in a **fresh** bootstrap, the client MUST first delete local
   rows for the subscription's scope (same matching rule as the purge
   contract, §3.3, against the `SUB_START` effective-scope echo) so
-  removed rows don't survive re-bootstrap.
+  removed rows don't survive re-bootstrap. The clear keeps rows another
+  subscription owns (§3.3 row ownership): that owner holds a cursor, so
+  its own pulls deliver every change to those rows, and a row it owns is
+  current whether or not this bootstrap delivers it.
 - **First-page detection.** A bootstrap is *fresh* iff the request
   carried `cursor < 0` and no `bootstrapState` (a resumed bootstrap
   never re-clears — its earlier pages already applied). For a
@@ -2405,14 +2570,28 @@ cross-implementation rendering all agree):
   parses or trusts it (content addressing is over bytes, not type).
 - `name` (**optional**): an advisory display filename.
 
-**Canonical key order is exactly `blobId`, `byteLength`, `mediaType`,
-`name`**, absent optional keys omitted; the JSON has no insignificant
-whitespace. A `blob_ref` value that parses as JSON but violates this shape
-(missing/malformed `blobId`, missing/negative/non-integer `byteLength`,
-non-string optional fields, unknown keys, or non-canonical key order) is a
-**row-codec decode error** (`sync.invalid_request`, in §5.2's closed
-list) — validated at the same decode point as the `json` tag-5 parse, so
-codec and rendering never disagree. The BlobRef is host-opaque beyond this
+A `blob_ref` value is valid when three checks pass, in this order:
+
+1. the text is a valid JSON document under the Conventions JSON validity
+   rule;
+2. the parsed value is an object with the shape above: no unknown keys,
+   `blobId` well-formed, `byteLength` an integer in `[0, 2^53−1]`,
+   `mediaType` and `name` strings when present;
+3. the text is byte-identical to the **canonical serialization** of the
+   parsed fields.
+
+The canonical serialization writes the keys in the order `blobId`,
+`byteLength`, `mediaType`, `name`, omits absent optional keys, has no
+insignificant whitespace, writes `byteLength` as the shortest decimal
+integer (no sign, fraction, exponent or leading zero), and escapes strings
+as ECMAScript `JSON.stringify` does: `"` and `\` as `\"` and `\\`,
+U+0008, U+0009, U+000A, U+000C and U+000D as `\b`, `\t`, `\n`, `\f` and
+`\r`, every other code point below U+0020 as `\u00` plus two lowercase
+hex digits, and nothing else. Reordered keys, duplicate keys, whitespace
+and a `byteLength` written `1e2`, `3.0` or `-0` all fail check 3. A
+failure is a **row-codec decode error** (`sync.invalid_request`, in §5.2's
+closed list) on every decode path: `COMMIT` payloads, segments, conflict
+`serverRow` and push payloads. The BlobRef is host-opaque beyond this
 shape check: the codec preserves the raw string byte-for-byte for
 re-encoding exactly as it does a `json` value.
 
@@ -2451,6 +2630,14 @@ Existence model for this rung (kept minimal and honest):
   expiry. The sweep consults the reference index (§5.9.4): a blob with
   zero index entries and an upload age past the grace period is deleted.
   Deleting a still-referenced blob is a host bug; the sweep never does it.
+  The sweep MUST read the reference index for a candidate again right
+  before deleting it, so a reference that lands while the sweep runs keeps
+  its blob. A blob's upload age runs from its latest upload: the store's
+  recorded upload time, or, for an object a presigned PUT wrote without
+  Syncular metadata, the object store's last-modified time. An object with
+  neither is never swept. An idempotent re-upload of an existing blob
+  (§5.9.3) sets the recorded upload time to the re-upload time, which
+  restarts its grace period.
 
 #### 5.9.3 Upload — `PUT <mount>/blobs/{blobId}`
 
@@ -2474,9 +2661,10 @@ the *decoded* bytes).
   media type for a blob stored without one records it. A recorded media
   type never changes.
 - The server MAY enforce a **maximum blob size** (host-configured); an
-  over-limit body is HTTP 413 `blob.too_large` (non-retryable). Enforced
-  by declared `Content-Length` where present and again on the streamed
-  byte count.
+  over-limit body is HTTP 413 `blob.too_large` (non-retryable). The
+  server enforces it on the declared `Content-Length` before reading the
+  body and again on the decoded byte count while reading, so it never
+  buffers an over-limit body.
 - On success the response is HTTP 200 with an empty body; the blob is now
   present for reference by a subsequent push. Upload authorization is
   **host authentication only** — uploading bytes is not a scope-bearing
@@ -2502,8 +2690,8 @@ The grant flow, three hops, no new trust model:
    knows the id before any round-trip, §5.9.2).
 2. **Authorize + presign.** Upload authorization is **host authentication
    only**, identical to the direct PUT — uploading bytes is not a
-   scope-bearing act, because the id discloses nothing and the content
-   address is verified at *reference* time, not upload time. *Any
+   scope-bearing act, because the id discloses nothing and the object
+   store verifies the signed content address on the PUT. *Any
    authenticated actor may obtain a grant within the host size cap.* The
    server enforces the §5.9.3 size cap **here, up front**, against the
    declared `byteLength`: an over-cap request is HTTP 413 `blob.too_large`
@@ -2515,14 +2703,20 @@ The grant flow, three hops, no new trust model:
    an explicit non-goal, this rung and the next; resumable upload, when it
    comes, is provider multipart behind this same grant, never our own chunk
    framing) whose signed object key embeds exactly the `{blobId}` and whose
-   expiry obeys the §5.4 TTL guidance (≤ 15 min). The presign SHOULD bind
-   `Content-Length` (S3 conditional) to the declared `byteLength` so the
-   object cannot exceed the granted size. Response:
+   expiry obeys the §5.4 TTL guidance (≤ 15 min). The presign MUST bind
+   the PUT to the declared `byteLength` and to the content address: an
+   S3-compatible grant signs `content-length` (the declared `byteLength`)
+   and `x-amz-checksum-sha256` (the `{blobId}` digest, re-encoded from 64
+   lowercase hex digits to the base64 of its 32 raw bytes) beside `host`,
+   so the object store rejects a PUT of any other size (signature mismatch)
+   or any other bytes (checksum mismatch). Response:
    `{"url":"<presigned PUT>","urlExpiresAtMs":<i64>}` (the JSON envelope;
    `urlExpiresAtMs` present iff `url` is, the §5.4 pairing), or
    `{"present":true}` for the idempotent-skip case.
 3. **PUT direct.** The client `PUT`s the raw bytes to `url` with **no host
-   authentication attached** — the presigned URL is the entire grant, the
+   authentication attached** and with the `x-amz-checksum-sha256` header
+   (the base64 SHA-256 of the body; `Content-Length` comes from the body)
+   — the presigned URL is the entire grant, the
    §5.4 rule verbatim: a signed URL points at an object host that must never
    see host auth. All §5.4 client URL MUSTs apply: no `PUT` at or past
    `urlExpiresAtMs`; a failed `PUT` (expired, transport error, non-success
@@ -2535,19 +2729,16 @@ The grant flow, three hops, no new trust model:
    **different, host-authenticated capability**, not a fall-through of the
    grant (the direct endpoint was always the client's other path, §5.9.7 B4).
 
-**The content address is still the whole trust model.** The object store
-does not recompute the SHA-256 (it is not the sync server); the presign
-merely places bytes at the content-addressed key. Integrity is enforced
-**at reference time**: the §5.9.6 push existence check verifies the
-`{blobId}` object *exists* (a HEAD/`has`), and the §5.9.1 download check on
-every consumer re-verifies the content address over the received bytes
-(§5.9.5 inherits §5.1). A client that PUTs bytes not matching `{blobId}`
-poisons only its own upload — the object lands at the wrong key or a
-`Content-Length`-conditioned PUT rejects it, and no honest reference ever
-resolves to it. So presigned upload adds **no new integrity surface**: the
-address check that made the direct PUT safe still runs, just at the two
-points that already run it (push existence, download verify). This mirrors
-§5.4's stance — presign is an equivalence, not a new contract.
+**The content address is still the whole trust model.** On the direct PUT
+the sync server recomputes it; on a presigned PUT the object store
+recomputes it from the signed checksum. Without that binding, an actor who
+knows a file's `blobId` could PUT other bytes under it: the object would sit
+at the honest key, the §5.9.6 push existence check (a HEAD/`has`) would
+pass for every client referencing that file, those clients would skip their
+own upload, and every download would fail the §5.1 check. Signing the size
+and the checksum closes that: a mismatching PUT is refused by the object
+store and leaves no object behind. The §5.9.5 download check still
+re-verifies the content address over the received bytes on every consumer.
 
 #### 5.9.4 The reference index
 
@@ -2600,8 +2791,11 @@ lookup (candidate rows for the blob) followed by the existing per-row scope
 test — the same machinery write authorization already runs. `'*'` in the
 actor's allowed values passes as everywhere else.
 
-- **Inline delivery.** Without signed URLs the server answers the bytes
-  with the media type the blob store recorded for the blob (§5.9.3), so a
+- **Inline delivery.** Without signed URLs the server checks that the blob
+  exists, runs the authorization rule above, and only then reads the
+  bytes; it streams them as stored with identity encoding and
+  `Content-Length`. It answers them with the media type the blob store
+  recorded for the blob (§5.9.3), so a
   browser element that points at the route (`<img src>`) renders them.
   The response always carries `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: sandbox; default-src 'none'`: the media type
@@ -2654,6 +2848,10 @@ descriptor with exactly one delivery attempt. A client that received
 - MUST fetch the bytes from `url` with **no host authentication** attached
   (§5.4: the URL points at a CDN/object host that must never see host auth).
 - MUST NOT start a fetch at or past `urlExpiresAtMs` (client clock).
+- MUST stop reading once more bytes than the BlobRef's `byteLength`
+  arrived, when the caller supplied the BlobRef, and fail the fetch with
+  `sync.invalid_request` before the content-address check (the §5.4 read
+  cap; inline and url paths alike).
 - MUST verify the §5.1 content address over the received bytes before
   caching — a mismatch is a failed fetch, exactly as on the inline path.
 - On any failure (expired before fetch, transport error, non-success status,
@@ -2668,12 +2866,12 @@ descriptor with exactly one delivery attempt. A client that received
   never fall-through.
 - Response headers on the direct path: `Content-Type` per the inline
   delivery rule above; `ETag: "<blobId>"`;
-  `Cache-Control: private, max-age=0`;
-  `Vary: Authorization, Accept-Encoding`. `If-None-Match` with a matching
-  ETag returns 304. Blobs are opaque bytes; the server MUST NOT
-  re-compress at rest (content address = stored bytes, §5.8 rule), though
-  the serving hop MAY apply transport compression (`Content-Encoding`)
-  over the wire like any other body.
+  `Cache-Control: private, max-age=0`; `Vary: Authorization`. The
+  signed-URL envelope carries the same `ETag`, `Cache-Control` and `Vary`.
+  `If-None-Match` with a matching ETag returns 304. Blobs are opaque
+  bytes; the server MUST NOT re-compress at rest (content address =
+  stored bytes, §5.8 rule). Transport compression is optional; the
+  reference server serves identity.
 
 #### 5.9.6 Push-time existence check
 
@@ -2752,6 +2950,16 @@ upload-state update failure MUST also fail the round. The client MUST NOT push
 or drop the referencing commit, delete its dependency, or clear failed upload
 state. Successfully uploaded earlier bodies may have no upload row; their
 pending commit dependencies continue to retain them.
+
+A server that refuses a staged body with a non-retryable error code (for
+example `blob.too_large`) gives that body its final outcome. The client deletes
+the body's upload row, drops every outbox commit that names the body in
+`_syncular_blob_commit_refs` through the incompatible-commit path of §7.4.4
+with the server's code as the rejection code, and continues the round without
+those commits. A retryable refusal, or a failure that carries no server code
+(the TypeScript `sync.transport_failed`, a Rust transport error whose details
+lack the server's `retryable: false`), fails the round and keeps the upload
+row and the commits.
 
 Client download resolution: a query/read that surfaces a `blob_ref` value
 gives the app the `blobId` + metadata; the app requests bytes through the
@@ -2940,7 +3148,10 @@ free — and expose the bytes to the app. A native app integrating a CRDT
 library (the `yrs` crate is the Rust Yjs port) applies and produces updates
 in app code exactly as the TS client's helper does; the Rust core also ships
 `yrs`-backed helpers behind the `crdt-yjs` feature of `syncular-client`
-(`crdtApplyUpdate` and the related commands). What this rung pins for the
+(`crdtApplyUpdate` and the related commands). The text helpers
+(`crdtInsertText`, `crdtDeleteText`) count `index` and `len` in UTF-16 code
+units, as `Y.Text` does in the TS helper; an offset outside `u32` is
+`sync.invalid_request`. What this rung pins for the
 native side is the **wire contract**: `crdt` = tag 8 = `bytes`, merged
 server-side, exposed as opaque bytes. The conformance pairing (Appendix
 B.14) proves this by having the Rust client push **fixture Yjs updates**
@@ -3008,7 +3219,10 @@ server storage.
    plaintext (§5.10.3), which is impossible over ciphertext;
 3. an **encrypted primary key** — the pk renders the `rowId` (§2.2), a
    plaintext server-side identity;
-4. an `encryptedColumns` entry naming a column the table does not declare.
+4. an `encryptedColumns` entry naming a column the table does not declare;
+5. an **encrypted index column**, unique or not: the server indexes
+   ciphertext under a random nonce, so a `UNIQUE` index there never fires
+   while clients enforce uniqueness on plaintext.
 
 **Optional protected values in shared rows — the sidecar shape.** When a row
 mixes shared operational columns with an optional **non-NULL** protected value
@@ -3296,10 +3510,10 @@ Operation record:
 | Field | Type | Semantics |
 |---|---|---|
 | `table` | `str` | |
-| `rowId` | `str` | |
+| `rowId` | `str` | MUST NOT contain U+0000. The server rejects an operation whose `rowId` does with `sync.invalid_request` for that operation, before it reads the row. A `delete` carries no payload, so the sparse row codec (§2.4) never sees its `rowId` |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins. Presence is deliberately **not** tied to `op`: a `delete` operation MAY carry a `baseVersion`, which the codec accepts and preserves and the server ignores (deletes perform no version check, §6.2) |
-| `payload` | `opt(bytes)` | One **sparse row** (§2.4) encoded for the request's `schemaVersion`: the columns the operation writes — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail sparse-row decode are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
+| `payload` | `opt(bytes)` | One **sparse row** (§2.4) encoded for the request's `schemaVersion`: the columns the operation writes — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail sparse-row decode, including a push admission value (§2.4), are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
 
 Servers MUST enforce an operation-count cap per request, counted as the
 **total operations across all `PUSH_COMMIT` frames in the request**
@@ -3347,18 +3561,38 @@ For an upsert against an **absent** row, the tombstone table decides
 
 | `baseVersion` | Tombstone within horizon | Outcome |
 |---|---|---|
-| `0` | any | insert with `server_version = 1` — explicit intent recreates |
+| `0` | any | insert — explicit intent recreates, with `server_version` one above the tombstone's (below) |
 | `> 0` | any | error `sync.row_missing` (after payload authorization, so absence is not disclosed to an actor without the scope) |
-| absent | yes | reject `sync.row_deleted` — a delete beats a concurrent unversioned upsert |
+| absent | yes | reject `sync.row_deleted` — a delete beats a concurrent unversioned upsert (after payload authorization when the payload presents every scope column, below) |
 | absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
 
 An insert requires every column present: a partial payload names an
 update, and there is nothing to update. The server cannot tell a stale
 upsert from a deliberate recreate, so the `sync.row_deleted` row applies to
 every unversioned upsert, including one from the client that issued the
-delete; recreating takes `baseVersion = 0`. A recreated row clears its
-tombstone. Beyond the pruning horizon the tombstone is gone and the
-insert rule applies (§4.6).
+delete; recreating takes `baseVersion = 0`.
+
+An unversioned upsert whose payload presents every scope column is
+authorized on the payload (§3.4 steps 2 and 3) before the server reads the
+tombstone table: a missing or empty scope value, or a denial, is
+`sync.forbidden` whether or not a tombstone exists, so the answer never
+discloses a deletion to an actor who could not write the row. The server
+then authorizes the actor against the tombstone's stored scopes (§3.4 step
+3). A tombstone the actor fails is treated as absent: the operation takes
+the "absent, no tombstone" row, so a payload that omits a scope column gets
+the same `sync.row_missing` as for a row id that never existed, and a full
+payload inserts at `server_version = 1`. A tombstone without stored scopes
+(written before servers recorded them) answers `sync.row_deleted` to any
+actor, and a partial upsert against it tells any actor that the row id was
+deleted within the horizon.
+
+An insert over a tombstone the actor passes starts at the tombstone's
+`server_version + 1`, and every column's `column_version` starts there too,
+so a `baseVersion` held from the previous incarnation is below every column
+of the new one and yields the ordinary conflict. A tombstone without a
+stored `server_version` recreates at 1. A recreated row clears its
+tombstone. Beyond the pruning horizon the tombstone is gone, the insert
+rule applies, and a recreate starts at 1 again (§4.6).
 
 A registered command's `upsert` mutation is unversioned unless it sets
 `insert`, which sends `baseVersion = 0` ([REMOTE.md](./REMOTE.md) §3).
@@ -3397,8 +3631,8 @@ Result record — tagged union:
 | `status` | `u8` | `1` = applied (no further fields), `2` = conflict, `3` = error |
 | conflict: `code` | `str` | e.g. `sync.version_conflict` |
 | conflict: `message` | `str` | |
-| conflict: `serverVersion` | `i64` | Current server row version |
-| conflict: `serverRow` | `bytes` | Current server row encoded with the generated **full-row** codec (§2.4) for the request's `schemaVersion` — the client resolves against this without another round-trip |
+| conflict: `serverVersion` | `i64` | Current server row version: the row as stored once the commit rolls back (§6.4) |
+| conflict: `serverRow` | `bytes` | Current server row (the same rolled-back row) encoded with the generated **full-row** codec (§2.4) for the request's `schemaVersion` — the client resolves against this without another round-trip |
 | conflict: `conflictColumns` | `bytes` | §6.2 evidence: a bitmap in the sparse-row presence-bitmap layout (§2.4) marking the present columns whose `column_version` exceeded `baseVersion`. A `baseVersion = 0` lost-insert conflict marks every present non-crdt column except the primary key |
 | error: `code` | `str` | |
 | error: `message` | `str` | |
@@ -3501,6 +3735,14 @@ users.
   write of that commit (savepoint or equivalent). Partially applied
   commits MUST be impossible, including their emitted changes and
   idempotency record content.
+- A conflict record's `serverVersion` and `serverRow`, and the scopes of its
+  persisted authorization snapshot (§2.3), come from the row as stored once
+  the commit rolls back, never from candidate state an earlier operation of
+  the same commit wrote. `conflictColumns` keeps the §6.2 evidence the
+  operation was judged on. When the conflicting row exists only because an
+  earlier operation of the same commit inserted it, the rolled-back state
+  holds no row, and the server rejects the operation with `sync.row_missing`
+  in place of the conflict.
 - The idempotency record and result payload MUST be persisted in the same
   transaction as the commit's writes.
 - Applied commits emit changes (§2.2) that become visible to pulls and
@@ -3533,8 +3775,10 @@ An upsert operation whose row carries a non-NULL `blob_ref` value
 blob store *before* the commit is applied. An absent blob rejects the
 operation with `blob.not_found` (a `rejected` commit result, §6.3),
 rolling the whole commit back per §6.4. The check runs alongside the
-§3.4 write-path scope check, on the same authorization row; it adds one
-existence lookup per referenced blob. A delete carries no payload and
+§3.4 write-path scope check, on the same authorization row. The server
+collects the distinct `blobId`s a commit's upserts reference, checks them
+concurrently once per commit, and reuses the answers for every operation
+of the commit. A delete carries no payload and
 references no blob, so it never triggers the check. The client's recovery
 is automatic: the rejected commit stays in the outbox only if the client
 chooses to re-push after uploading the blob — but because upload precedes
@@ -4063,7 +4307,12 @@ scope patterns differ, `ON UPDATE`, `SET DEFAULT`, `NO ACTION`, and `SET NULL`
 on a non-nullable child column. An absent `ON DELETE` clause means `RESTRICT`.
 The generator records `{ column, parentTable, onDelete }` in the schema IR and
 emits a non-unique index over the child column so the server reaches children
-through `scanRowsByIndex` (§6.8).
+through `scanRowsByIndex` (§6.8). A reference whose child column has no
+single-column index after every migration, for example after a `DROP INDEX`
+of the generated one, is a generation error; the server schema compiler
+refuses it too. The server schema compiler refuses a reference whose child
+table is not materialized, because `scanRowsByIndex` reads the materialized
+columns.
 
 **The local replica DDL omits the clause.** Windowing (§4.8) evicts a parent
 independently of its children, so local SQLite never enforces a reference and
@@ -4080,9 +4329,24 @@ re-inserted in one commit, or inserted and deleted in one commit, triggers no
 `RESTRICT`, `CASCADE`, or `SET NULL` action. A `SET NULL` child stays in
 place, so enforcement does not visit the references of that child.
 
+A reference column is present on a row when any staged upsert of that row in
+the commit presents it; its value is the row's final value. A staged upsert
+that leaves a reference column absent is not checked for a missing parent
+through that column.
+
+A parent row the writing actor cannot authorize under §3.4, judged on the
+parent's stored scopes, counts as an absent parent. The rejection is
+byte-identical to the one for a parent that does not exist, so
+`missing_parent` discloses no row in a scope the actor does not hold, and an
+actor cannot attach a child to such a parent and block its deletion.
+
+Enforcement reads at most one child of a `RESTRICT` reference. For `CASCADE`
+and `SET NULL` it reads children in pages no larger than the remaining cascade
+cap plus one and stops as soon as the cap is exceeded.
+
 | Situation | Outcome |
 |---|---|
-| Staged upsert whose present, non-null reference column names an absent parent | reject `sync.reference_violation` with `reason = missing_parent`, `fieldPaths = [column]`, and `references = { parent: <parentTable>, row: <parentRowId> }` |
+| Staged upsert whose present, non-null reference column names an absent parent, or a parent the actor cannot authorize | reject `sync.reference_violation` with `reason = missing_parent`, `fieldPaths = [column]`, and `references = { parent: <parentTable>, row: <parentRowId> }` |
 | Staged delete of a parent with remaining children, `RESTRICT` | reject `sync.reference_violation` with `reason = restricted_delete` and `references = { child: <childTable> }` |
 | Staged delete of a parent, `CASCADE` | the server authorizes each child under §3.4 and appends one `delete` operation per child to the same commit, recursively through further `CASCADE` references with a visited set |
 | Staged delete of a parent, `SET NULL` | the server authorizes each child under §3.4 and appends one sparse upsert per child that presents only the reference column, set to `NULL` (§6.2: only that column's version moves) |
@@ -4141,9 +4405,12 @@ value the generated row codec cannot encode is refused with
 no local row, publishes no revision, and emits no observation event.
 
 The schema-agnostic outbox form (§0) serializes values as JSON, so an
-unrepresentable value is refused. A `float` column accepts a finite number: `NaN`, `Infinity` and `-Infinity` are
-refused at authoring, while the §2.4 `f64` wire encoding stays IEEE-754
-binary64 and is unchanged. A `bytes` or `crdt` column accepts the canonical
+unrepresentable value is refused. Authoring refuses every push admission
+value of §2.4, because the server would reject it: a `string` containing
+U+0000, a `json` value outside the Conventions JSON validity rule, a
+`float` that is `NaN`, `Infinity` or `-Infinity`, and a non-canonical
+`blob_ref` (§5.9.1). The §2.4 `f64` wire encoding stays IEEE-754 binary64
+and is unchanged. A `bytes` or `crdt` column accepts the canonical
 envelope `{"$bytes": "<hex>"}`: exactly one `$bytes` key holding a string of
 hexadecimal digit pairs, with uppercase digits accepted and lowercase digits
 emitted. Any other envelope, including an odd digit count, a non-hexadecimal
@@ -4676,6 +4943,13 @@ The server keeps N-version codec support for transition windows if it
 chooses (§9); the reference server serves its configured window and
 answers the floor (§1.6) for any other, which is sufficient for both
 triggers below.
+
+A schema version's migration set is fixed once its migrations are locked.
+The generator (`typegen`) records each migration's version in the migration
+lock and refuses a migration appended to a locked version, and a locked
+migration moved to another version. A client resets only when the version
+increases, so a change folded into a deployed version never reaches the local
+tables of a client already at that version.
 
 #### 7.4.1 The persisted schema-version marker
 
@@ -5617,7 +5891,18 @@ One drive also has a total deadline across every round, because the round
 budget does not bound elapsed time. `syncUntilIdle` takes an optional
 `timeoutMs` (default 60,000 ms; `Infinity` disables the bound). When the
 deadline elapses the drive rejects with the client-local `sync.idle_timeout`,
-aborts a socket round in flight, and schedules no further rounds. A
+aborts the round in flight, and schedules no further rounds. The TypeScript
+client hands every transport call of the drive's rounds one abort signal (the
+`signal` argument of `SyncTransport`, `SegmentDownloader` and the
+`BlobTransport` upload calls); the deadline aborts it and a socket round, and
+the aborted round fails with the same retryable `sync.idle_timeout`. A
+transport that ignores the signal keeps its round outstanding until it
+answers. The TypeScript host loops (`installSyncScheduler` and the worker core)
+answer a retryable drive rejection that left no background intent pending with
+one background intent of their own: 250 ms, doubling per further rejection up
+to 30,000 ms, and back to 250 ms after a drive resolves. A rejection whose
+`causeKind` is `network` or `connect` is excluded (§1.8). A round after which a
+subscription still holds a resume token keeps sync-needed raised. A
 caller-supplied deadline MUST be a positive finite number or `Infinity`;
 anything else is `sync.invalid_request`. The Rust client exposes the same
 bound as `sync_until_idle_with_deadline` (`sync_until_idle` defaults to 60 s)
@@ -5740,15 +6025,19 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   registered client. HTTP registration retains its existing cursor rules.
 - **Client-side application.** A delta applies exactly like a pull
   response (§4.5), per section: only subscriptions that are locally
-  `active` and not mid-bootstrap (no resume token pending, §4.7) apply;
-  skipped sections advance nothing and are repaired by the
-  subscription's own next pull (a bootstrapping subscription's post-pin
-  replay already covers the window). A client that does not apply a
-  received delta message at all — a pull in flight over the same
-  database, a decode or apply failure — MUST treat the drop as a
-  wake-up (§8.3: run a pull soon): a server without a replay buffer
-  never resends, and later deltas would otherwise apply over the gap
-  silently.
+  `active`, hold a cursor (`cursor >= 0`), and are not mid-bootstrap (no
+  resume token pending, §4.7) apply. A subscription at cursor `-1`
+  (never synced, a §4.6 reset, a local rebootstrap) skips the section:
+  applying it would let its `SUB_END` mark the subscription bootstrapped
+  with only the delta's rows. Skipped sections advance nothing and are
+  repaired by the subscription's own next pull (a bootstrapping
+  subscription's post-pin replay already covers the window). A skipped
+  section is a drop, as is a received delta message the client does not
+  apply at all (a pull in flight over the same database, a decode or
+  apply failure). The client MUST treat every drop as a wake-up (§8.3:
+  run a pull soon), also when other sections of the same message
+  applied. A server without a replay buffer never resends, and later
+  deltas would otherwise apply over the gap silently.
 - **Ack points.** After applying a delta, the client acks the highest
   applied `SUB_END.nextCursor` in it. After a pull round — a socket
   round (§8.7) or an HTTP pull — while the
@@ -5764,7 +6053,13 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   observed.)
 - Flow control: the server bounds in-flight unacked deltas and per-window
   message counts (host-configured); when exceeded, or when a delta would
-  exceed the host's max message size, it drops to a wake-up.
+  exceed the host's max message size, it drops to a wake-up. The reference
+  server counts the deltas it sent to a connection above the connection's
+  highest ack, and their bytes. When another delta would take the count past
+  `maxUnackedDeltas` (default 256) or, with at least one delta outstanding,
+  the bytes past `maxUnackedDeltaBytes` (default 4 MiB), it sends
+  `catchup-required` instead and suppresses deltas as for a dropped delta.
+  The client's ack after its catch-up round lifts the suppression.
 
 ### 8.3 Wake-ups
 
@@ -5856,6 +6151,21 @@ Server sends `{"event":"heartbeat","data":{"timestamp":<ms>}}` on a host
 interval (suggested 30 s). A client that hears nothing (any frame counts)
 for 2× the interval SHOULD reconnect. No client→server ping is specified.
 
+The reference hub sends the event to every connection when the host calls
+`RealtimeHub.heartbeat()`; the host owns the interval. The Workers Durable
+Object host sends it from the object's alarm while sockets are connected
+(`heartbeatIntervalMs`, default 30 000). Both reference clients take the
+interval from the config key `realtimeHeartbeatMs` (default 30 000; the native
+Rust transport reads it from its transport config). Silence detection arms
+when a connection receives its first `heartbeat` event; before that no silence
+bound applies, so a server that sends no heartbeats keeps idle sockets open.
+Once armed, a connection that receives no inbound frame (text, delta or round
+chunk) for twice the interval is lost with `transport.timeout` and `causeKind`
+`heartbeat`: the native Rust transport ends it with `Inbound::Disconnected`
+(§8.8 unsolicited termination), and the TypeScript client closes the socket,
+marks the state `lost` with that code, and fails an in-flight socket round with
+the same error. Every new connection starts unarmed.
+
 ### 8.6 Presence
 
 Scope-keyed **ephemeral** presence: a connected client publishes a small
@@ -5875,11 +6185,19 @@ presence encoding; wire version 1 carries presence as text only.
 #### 8.6.1 Model — the invariants
 
 - **Ephemeral.** A presence document lives only for the life of the
-  publishing connection. It is **never persisted**, **never written to the
-  commit log**, and **never delivered on a pull or delta** (§4/§8.2). It is
-  not part of any cursor, horizon, or segment. A server restart loses all
-  presence; a client learns the new truth by re-publishing and by the
-  snapshot it receives when it re-registers (§8.6.4).
+  publishing connection. It is **never persisted to durable storage**,
+  **never written to the commit log**, and **never delivered on a pull or
+  delta** (§4/§8.2). It is not part of any cursor, horizon, or segment. A
+  server restart loses all presence; a client learns the new truth by
+  re-publishing and by the snapshot it receives when it re-registers
+  (§8.6.4). A host whose process can be evicted while its connections stay
+  open (a hibernating Durable Object) MUST keep each connection's documents
+  in state bound to that connection and restore them with it, so the leave
+  and snapshot rules hold across the eviction. The restore fans nothing
+  out, because peers already saw those documents; a restored key the
+  reloaded registrations no longer cover leaves (§8.6.3). Such a host
+  refuses a connection whose identity does not fit that state beside a
+  full presence budget (§8.6.2) with `sync.limit_exceeded`.
 - **Scope-addressed.** Every presence document is tagged to exactly one
   **scope key** — a `prefix:value` string (§3.1), the same addressing unit
   the fanout index uses. A connection may hold presence on several scope
@@ -5895,7 +6213,10 @@ presence encoding; wire version 1 carries presence as text only.
   (§8.6.3). Two connections of the same actor (two devices, two tabs behind
   distinct `clientId`s) are two distinct peers, each with its own document;
   the same `clientId` reconnecting **replaces** its own prior document for
-  the key (last publish wins per `(scopeKey, actorId, clientId)`).
+  the key (last publish wins per `(scopeKey, actorId, clientId)`). A publish
+  removes the document another connection of the same identity holds on the
+  key without a `leave`, so a stale connection of a reconnected client
+  announces nothing when it closes.
 
 #### 8.6.2 Wire
 
@@ -5945,8 +6266,15 @@ so a newly-registered connection sees who is already there without waiting
 for the next change. There is no distinct `snapshot` kind: the snapshot IS
 a burst of `join`s (fewer shapes to specify and conformance-test).
 
-**Size cap → fail loud, in-band.** A host caps the serialized size of a
-published `doc` (default 16 KiB, host-tunable). An over-cap publish is
+**Size cap → fail loud, in-band.** A host caps the presence a connection
+holds: the sum over its scope keys of the UTF-8 bytes of the scope key plus
+the UTF-8 bytes of the serialized `doc` stays at or under the cap (default
+8,192, host-tunable). A publish counts against the cap as if stored, so a
+republish on a key replaces that key's charge and a leave frees it; a
+document the rate cap holds back (§8.6.4) is checked again when it is
+stored. A
+connection may hold thousands of scope keys, so the cap bounds presence
+memory per connection. An over-cap publish is
 **rejected loudly on the same channel** — the server answers the publisher
 (only) with:
 
@@ -5963,6 +6291,9 @@ carried in the `error` field of a server→client `presence` event, a known
 shape a feature-off peer still ignores by event name. The closed set is
 two: `presence.too_large` (over the size cap) and `presence.forbidden`
 (publish/subscribe to a key the connection does not hold — §8.6.3).
+A client MUST hand the rejection to the application on the same channel
+that reports presence changes, carrying the server's code and the
+`scopeKey`, and MUST leave its peer map unchanged.
 
 #### 8.6.3 Authorization and identity
 
@@ -6005,8 +6336,9 @@ is no separate presence grant, token, or resolver call.
   in-memory ephemeral state alongside the session set; it MUST NOT touch
   `ServerStorage`.
 - On publish (authorized, within cap): store/replace the connection's
-  document for the key and fan a `join` (first document from this connection
-  on this key) or `update` (replacement) to every **other** connection
+  document for the key and fan a `join` (first document from this peer
+  identity on this key) or `update` (replacement, also of a document another
+  connection of the same identity held) to every **other** connection
   registered on the key. A publisher does not receive its own fanout.
 - On leave (`doc: null`, or disconnect, or losing the key's registration):
   remove the connection's document for the key and fan a `leave` to the
@@ -6056,8 +6388,13 @@ group), both pairings:
   its presence — and the presence it observes — survives the round intact
   (presence state is independent of round state; the round's registration
   replace re-derives the same grant, §8.6.3).
-
-### 8.7 Sync rounds over the socket
+- **A reconnect replaces the stale socket.** Two connections of one
+  `(actorId, clientId)` publish in turn on a key; the peer observes a `join`
+  then an `update`, and the first connection's close sends no `leave`.
+- **The size cap is per connection.** A connection holding two keys
+  publishes a document on each that fits the cap alone; the second publish
+  is answered with `presence.too_large` and fans out nothing. After a leave
+  on the first key, the same document on the second key fans out a `join`.
 
 ### 8.7 Sync rounds over the socket
 
@@ -6294,6 +6631,16 @@ one `background(delayMs)` intent (§7.5) asks the host to reconnect and run a
 catch-up round. The call is a no-op in any other state, so a second report of
 the same loss schedules nothing.
 
+**Inbound bound.** The native transport holds at most 16 MiB of undrained
+inbound text and delta payload. A frame that takes the buffer past the bound
+stays buffered; the reader then closes the socket and buffers
+`Inbound::Disconnected` with `transport.failed`, `causeKind`
+`inbound_overflow`, and `limit`. The host reports that loss like any other, so
+a host that drains late reconnects and pulls what the closed socket would have
+delivered. The C ABI host queues one `realtime-wake` event while undrained
+inbound traffic exists and applies it on the next command; `drainRealtime` is
+the command that does nothing else.
+
 **Establishment bounds.** The native transport establishes the socket under one
 absolute ten-second deadline that spans DNS resolution, TCP connect, TLS and
 the upgrade response; bytes arriving slowly do not renew it. A failure is
@@ -6429,6 +6776,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.authority_unavailable` | internal | no | inspectServer | A local authority is attaching or attached (§12.3) and serves no sync or segment request; `details.state` is `attaching` or `attached` |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
+| `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes, subscriptions per request, or scope values per subscription (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
 | `sync.cursor_expired` | reset-required | no | rebootstrap | Cursor behind the pruning horizon (§4.6) — *new in SSP2*; delivered as `SUB_START` reason code |
@@ -6479,7 +6827,8 @@ Outside the wire catalog: all client-local codes
 [§7.4.4 — a pending commit cannot re-encode under the new schema after a
 bump], `sync.attach_rejected` [§12.3 — the remote server did not apply an
 attach commit, answered with a schema floor, an `ERROR` frame or a log reset,
-or a reference cycle exceeds one commit; non-retryable, with the structured
+or a reference cycle exceeds one commit, or attach found an unfinished
+abandon rollback (`reason = undo_pending`); non-retryable, with the structured
 `reason` in details], `client.encrypt_failed` [§5.11 — an encrypted column failed to
 encode at the push seam: the key id resolved to no usable value or the
 selected key is unknown; category `crypto`, non-retryable, raised at the
@@ -6699,7 +7048,8 @@ is `local`, `attaching` or `attached`, persisted in the authority database.
    `sent = n`, and after an `applied` or `cached` result it persists
    `applied = n`.
 5. A transport failure stops attach with the transport's error; the state
-   stays `attaching`, and the next attach resumes. A schema-floor response, an
+   stays `attaching`, and the next attach resumes unless the undo marker of
+   step 6 is set. A schema-floor response, an
    `ERROR` frame, a `resetRequired` response, or a commit result other than
    `applied` or `cached` stops attach with `sync.attach_rejected`. A rejected
    commit is terminal for its `attachId`: the remote retains the rejection
@@ -6707,12 +7057,26 @@ is `local`, `attaching` or `attached`, persisted in the authority database.
 6. Abandon returns an attaching authority to `local`. When `sent` is
    persisted, abandon needs the remote transport and first rolls back: it
    resends commit `sent` when `sent > applied` to learn that commit's
-   outcome, then deletes every row of commits `0` through `applied` in
-   reverse plan order, children before parents, in commits of at most 500
-   operations with `clientCommitId = attachId + ":undo:" + k`. A rollback
-   commit other than `applied` or `cached` stops abandon with
-   `sync.attach_rejected`, and the state stays `attaching`. The remote keeps a
-   tombstone per deleted row; the next attach uses a new `attachId`, and its
+   outcome. Before the first rollback commit it persists the undo marker
+   `undo = u`, where `u` is 0 on the first rollback attempt of the `attachId`
+   and the stored value plus one on every later attempt. The rollback deletes
+   every row of commits `0` through `applied` in reverse plan order, children
+   before parents, in commits of at most 500 operations with
+   `clientCommitId = attachId + ":undo:" + u + ":" + k`. A retried abandon
+   therefore never receives a result the remote stored for an earlier
+   attempt (§2.3), and deleting a row an earlier attempt already deleted is
+   `applied` (§6.2). A transport failure stops abandon with the transport's
+   error, and a rollback commit other than `applied` or `cached` stops it
+   with `sync.attach_rejected`, `reason = commit_rejected`; the state stays
+   `attaching`, and a persisted marker stays set. While the marker is set, attach
+   refuses before any request with `sync.attach_rejected`,
+   `reason = undo_pending`: a resumed upload would receive `cached` for
+   commits whose rows the rollback deleted, and retiring on those results
+   loses the rows on both sides. When every rollback commit of one attempt is
+   `applied` or `cached`, the authority persists `local` and removes
+   `attachId`, `sent`, `applied` and the marker in one transaction. The
+   remote keeps a tombstone per deleted row; the next attach uses a new
+   `attachId`, so no result stored under the abandoned one replays, and its
    `baseVersion = 0` inserts recreate those rows (§6.2).
 7. When every commit is `applied` or `cached`, the authority persists
    `attached`, drops every table except its state, and serves no further
@@ -6783,15 +7147,18 @@ byte-identical output):
 | 21 | `realtime/presence-publish` + `realtime/presence-fanout` | JSON control vectors (`.json` only — no binary form): a client→server publish (§8.6.2 `{scopeKey, doc}`) and a server→client `join` fanout (`{scopeKey, kind, actorId, clientId, doc, timestamp}`). Pins the new `presence` event shape in both directions; a feature-off peer ignores it by event name (§8.6), so no binary vector or wire-version bump |
 | 22 | `crypto/aes-gcm-*` | §5.11 ciphertext envelope, byte-pinned per `declaredType` with a **fixed** key and nonce (test-only injection): one case per value type (`string`, `json`, `integer`, `float`, `boolean`, `bytes`) — plaintext value, key, nonce, and expected envelope bytes. Both cores reproduce the envelope byte-for-byte and round-trip decrypt. A separate `crypto/` kind (not a wire message; the envelope is a codec-level value, exercised directly, not inside an SSP2 frame) |
 | 23 | `crypto/x25519-wrap` | §5.11 X25519 sealed-box key wrap: a fixed recipient keypair, a fixed ephemeral secret and nonce, a fixed 32-byte symmetric key, and the expected wrap envelope; both cores wrap to the same bytes and unwrap back to the key. Proves the async-encryption utilities are cross-core byte-compatible |
-| 24 | `request/epoch-bound` | Wire version 2 request header with the client's stored partition `logEpoch` |
-| 25 | `response/epoch-reset` | Wire version 2 header-only response with a new `logEpoch` and `resetRequired = true` |
+| 24 | `request/epoch-bound` | Request header with the client's stored partition `logEpoch` |
+| 25 | `response/epoch-reset` | Header-only response with a new `logEpoch` and `resetRequired = true` |
 | 26 | `push/sparse-row` + `push/sparse-row-full` | Sparse row push payloads (RFC §6.1), exercised at the codec level (not inside an SSP2 frame): a partial row with a present-NULL column, and the full-row case with every presence bit set. Nine columns covering every §2.4 type, so the presence bitmap spans two bytes and both bitmaps carry padding bits |
 | 27 | `request/round-failure-report` | A request with the optional `ROUND_FAILURE` frame (§1.5) directly after `REQ_HEADER`, followed by a pull: pins the `0x05` frame and its grammar position |
-| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar |
-| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
-| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
+| 28 | `request/json-boundaries` | The Conventions JSON validity rule at its accepting edge: `params` nested exactly 64 containers deep, `bootstrapState` with whitespace, a duplicate key, the largest finite binary64 and escapes |
+| 29 | `push/admission-*` | Push admission values (§2.4) over a five-column table the manifest carries per case: `json` nested 64 deep, `json` with whitespace and a duplicate key, a `float` holding the largest finite binary64, and a canonical `blob_ref` whose `name` exercises every escape class of §5.9.1 |
+| 30 | `segment/full-row-admission-values` | A full row keeps decoding a `string` holding U+0000 (the push admission values apply to sparse rows only) next to the canonical `blob_ref` of case 29 |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `SUBSCRIPTION.params` holding `1e999`, `SUBSCRIPTION.bootstrapState` nested 65 deep |
+| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape |
+| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
-| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column |
+| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key, and `1e999`, an unpaired surrogate, a `\u0000` escape, nesting 65 deep or nesting 128 deep inside a value that a later duplicate key shadows; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |
 
 ---
 
@@ -7022,7 +7389,16 @@ Each is a driver-interface script, not a prose test.
     (push + pull), and both its published presence and the presence it
     observes survive the round intact (presence state is independent of
     round state; the round's registration replace re-derives the same
-    grant, §8.6.3). Both pairings (TS×TS, Rust×TS).
+    grant, §8.6.3). (e) A reconnect replaces the stale socket: two
+    connections share `client-a`; the first publishes (B observes a
+    `join`), the second publishes (B observes an `update`), the first
+    disconnects, and the second publishes again; B observes no `leave` and
+    holds one peer with the latest document (§8.6.1). (f) The size cap is
+    per connection: with a 64-byte cap, A holds `project:p1` and
+    `project:p2` and publishes a 28-byte document on each; the second
+    publish is answered with `presence.too_large` and B observes nothing,
+    and after A leaves `p1` the same publish on `p2` reaches B as a `join`
+    (§8.6.2). Both pairings (TS×TS, Rust×TS).
 
 17. **Reconnect storm (§8.4).** ~20 sessions on the same scope connect,
     a burst of commits fans out, and all sessions churn (disconnect +
@@ -7096,14 +7472,20 @@ Each is a driver-interface script, not a prose test.
 20. **Delete precedence (§6.2).** (a) A delete followed by a stale
     unversioned patch rejects `sync.row_deleted`, and the row stays absent
     on the server and on both clients. (b) An explicit insert
-    (`baseVersion = 0`) over a fresh tombstone recreates the row at
-    `server_version = 1`. (b2) A client's own delete followed by one commit
+    (`baseVersion = 0`) over a fresh tombstone recreates the row one above
+    the deleted `server_version`, and a patch carrying a `baseVersion` from
+    the deleted incarnation conflicts with `sync.version_conflict`.
+    (b2) A client's own delete followed by one commit
     that upserts the row unversioned and an unrelated row rejects the whole
     commit: the report lists it as `rejected`, the round removes both rows
     locally, and the server stores neither; the same commit with
     `baseVersion = 0` applies. (c) After pruning advances the horizon past the
     delete (§4.6), an unversioned full-row upsert inserts again — the
     ordinary insert rule is restored. Both pairings (TS×TS, Rust×TS).
+    (d) A patch that omits its scope column, from an actor outside the
+    deleted row's scope, gets the same result record as for a row id that
+    never existed (`sync.row_missing`), while an actor inside the scope gets
+    `sync.row_deleted`. Servers with scope authorization only.
 
 21. **Column-granular writes (§2.4, §6.1–§6.3).** (a) Disjoint unversioned
     patches to different columns both land. (b) Disjoint patches carrying

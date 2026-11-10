@@ -1,5 +1,5 @@
 import type { SiblingDatabase } from './database';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import type { SyncTransport } from './transport';
 import type {
   WorkerLocalAuthority,
@@ -91,10 +91,7 @@ export const createWorkerLocalAuthority: WorkerLocalAuthorityFactory = (
         segments: (request) => {
           if (active()) return local.downloadSegment(request);
           if (segments === undefined) {
-            throw new ClientSyncError(
-              'sync.invalid_request',
-              'no segment endpoint configured',
-            );
+            throw invalidRequest('no segment endpoint configured');
           }
           return segments(request);
         },

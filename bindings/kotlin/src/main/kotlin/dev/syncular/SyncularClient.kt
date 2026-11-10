@@ -50,6 +50,8 @@ data class SyncularConfig(
     val redirects: String? = null,
     /** Path to the local authority's own SQLite file (SPEC §12), never [dbPath]. Rounds run against the in-process authority until [SyncularClient.attachLocalAuthority] completes, then against [baseUrl]. Null leaves the client server-attached from the start. */
     val localAuthorityPath: String? = null,
+    /** Interval the server sends realtime heartbeats at, in milliseconds (default 30000). The transport treats twice this interval of silence as a lost socket. */
+    val realtimeHeartbeatMs: Long? = null,
 ) {
     /** The `syncular_client_new` config JSON (transport fields only). */
     internal fun newConfigJson(): JsonValue {
@@ -65,6 +67,7 @@ data class SyncularConfig(
         maxResponseBytes?.let { fields["maxResponseBytes"] = exactPolicyBound("maxResponseBytes", it) }
         redirects?.let { fields["redirects"] = JsonValue.of(it) }
         localAuthorityPath?.let { fields["localAuthorityPath"] = JsonValue.of(it) }
+        realtimeHeartbeatMs?.let { fields["realtimeHeartbeatMs"] = exactPolicyBound("realtimeHeartbeatMs", it) }
         return JsonValue.Obj(fields)
     }
 
@@ -324,9 +327,10 @@ class SyncularClient private constructor(
 
     /** Drive sync to quiescence (needs native-transport). */
     @JvmOverloads
-    fun syncUntilIdle(maxRounds: Int? = null): JsonValue {
+    fun syncUntilIdle(maxRounds: Int? = null, timeoutMs: Long? = null): JsonValue {
         val p = LinkedHashMap<String, JsonValue>()
         maxRounds?.let { p["maxRounds"] = JsonValue.of(it) }
+        timeoutMs?.let { p["timeoutMs"] = JsonValue.of(it.toDouble()) }
         return command("syncUntilIdle", JsonValue.Obj(p))
     }
 
@@ -475,8 +479,17 @@ class SyncularClient private constructor(
             // The handle is only freed by close(), which first stops+joins THIS
             // loop — so it stays valid across the poll_event call below.
             val eventJson = SyncularFfi.clientPollEvent(handle, 25) ?: continue
-            val value = runCatching { JsonValue.parse(eventJson) }.getOrNull() ?: continue
-            val type = value["type"]?.string ?: continue
+            handleEvent(eventJson)
+        }
+    }
+
+    /** Answer a `realtime-wake` with `drainRealtime` through [command]; deliver any other event to the listener. */
+    internal fun handleEvent(eventJson: String) {
+        val value = runCatching { JsonValue.parse(eventJson) }.getOrNull() ?: return
+        val type = value["type"]?.string ?: return
+        if (type == "realtime-wake") {
+            command("drainRealtime", JsonValue.Obj(emptyMap()))
+        } else {
             listener?.onEvent(SyncularEvent(type, value))
         }
     }

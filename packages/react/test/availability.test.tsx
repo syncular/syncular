@@ -258,7 +258,9 @@ describe('query availability', () => {
 });
 
 function QueryState() {
-  const query = useRawSql('SELECT * FROM tasks');
+  const query = useRawSql('SELECT * FROM tasks', undefined, {
+    tables: ['tasks'],
+  });
   return (
     <span>
       {query.phase}:{String(query.isLoading)}:

@@ -23,8 +23,8 @@ FFI/Tauri already consume.
 
 **The stdio conformance shim locks the CORE.** The shared `syncular-command`
 router is exercised against the full conformance catalog (Rust client × TS
-server, 68/68) through the shim. Every binding consumes that SAME router — the
-FFI crate, the Tauri plugin, and (transitively) the Swift/Kotlin/RN wrappers —
+server) through the shim. Every binding consumes that SAME router (the
+FFI crate, the Tauri plugin, and transitively the Swift/Kotlin/RN wrappers),
 so none of them re-implements protocol logic. There is exactly one command
 router, and it is the one under test.
 
@@ -43,6 +43,13 @@ times and the marshaling zero more times. So each wrapper ships:
   accepted by the React `SyncClientLike` contract and drives every `SyncClientLike`
   member (a `SyncClientLike` drift breaks the suite). The Tauri JS bridge carries
   the same proof.
+
+**Event pumps answer `realtime-wake`.** Each wrapper's pump issues `drainRealtime`
+through the wrapper's serialized command path when `syncular_client_poll_event`
+returns `{"type":"realtime-wake"}`, and does not deliver the wake to app code. The
+lean test core has no socket, so each suite feeds the pump's per-event dispatch
+a wake and asserts that a command ran (the React Native suite asserts it on the
+NativeModule double).
 
 **Anything that grows logic graduates to a pairing lane.** If a binding ever
 adds behavior beyond marshaling (e.g. native CRDT editing, a windowing registry

@@ -1,8 +1,9 @@
 /**
  * Dart emitter: neutral IR → one standalone `.dart` file exporting
  *
- * - `const syncularSchema` — the ServerSchema-compatible `Map<String,
- *   Object?>` built from the IR (fed straight into `SyncularClient.create(
+ * - `final syncularSchema` — the ServerSchema-compatible `Map<String,
+ *   Object?>`: the exact `serializeSchema` JSON the TS module embeds,
+ *   decoded from a string literal (fed straight into `SyncularClient.create(
  *   schema: …)`),
  * - one class per table with typed fields (per the six §2.4 column types +
  *   blob_ref/crdt) and a `fromRow(Map<String, Object?>)` factory,
@@ -13,8 +14,15 @@
  * `query`/`readRows` return. The header carries the IR hash so `--check`
  * verifies freshness byte-exactly.
  */
-import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
-import { snakeToCamel } from './naming';
+import {
+  appColumnType,
+  type IrColumnType,
+  type IrDocument,
+  type IrSubscription,
+  type IrTable,
+  serializeSchema,
+} from './ir';
+import { pascalCase, snakeToCamel, stringLiteral } from './naming';
 
 /** §2.4 column type → honest Dart type. `json`/`blob_ref` are the raw
  * canonical JSON string; `bytes`/`crdt` are opaque `List<int>`. */
@@ -29,90 +37,9 @@ const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'List<int>',
 };
 
-function appColumnType(column: IrTable['columns'][number]): IrColumnType {
-  return column.encrypted === true && column.declaredType !== undefined
-    ? column.declaredType
-    : column.type;
-}
-
-/** §5.11: app-side Dart type — declaredType for an encrypted column. */
-function appDartType(column: IrTable['columns'][number]): string {
-  return DART_TYPE[appColumnType(column)];
-}
-
-function pascalCase(name: string): string {
-  return name
-    .split(/[_-]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('');
-}
-
-/** Language-facing field name — the pinned §12 naming map. */
-function camelCase(name: string): string {
-  return snakeToCamel(name);
-}
-
-function quote(value: string): string {
-  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\$/g, '\\$')}'`;
-}
-
-function emitSchemaValue(ir: IrDocument, indent: string): string[] {
-  const lines: string[] = [];
-  const i = indent;
-  lines.push(`${i}<String, Object?>{`);
-  lines.push(`${i}  'version': ${ir.schemaVersion},`);
-  lines.push(`${i}  'tables': [`);
-  for (const table of ir.tables) {
-    lines.push(`${i}    {`);
-    lines.push(`${i}      'name': ${quote(table.name)},`);
-    lines.push(`${i}      'primaryKey': ${quote(table.primaryKey)},`);
-    lines.push(`${i}      'columns': [`);
-    for (const column of table.columns) {
-      const parts = [
-        `'name': ${quote(column.name)}`,
-        `'type': ${quote(column.type)}`,
-        `'nullable': ${column.nullable}`,
-      ];
-      if (column.crdtType !== undefined) {
-        parts.push(`'crdtType': ${quote(column.crdtType)}`);
-      }
-      if (column.encrypted === true) {
-        parts.push("'encrypted': true");
-        parts.push(
-          `'declaredType': ${quote(column.declaredType ?? column.type)}`,
-        );
-      }
-      lines.push(`${i}        {${parts.join(', ')}},`);
-    }
-    lines.push(`${i}      ],`);
-    lines.push(`${i}      'scopes': [`);
-    for (const scope of table.scopes) {
-      lines.push(
-        `${i}        {'pattern': ${quote(scope.pattern)}, 'column': ${quote(scope.column)}},`,
-      );
-    }
-    lines.push(`${i}      ],`);
-    if (table.ftsIndexes.length > 0) {
-      lines.push(`${i}      'ftsIndexes': [`);
-      for (const index of table.ftsIndexes) {
-        const columns = index.columns.map((column) => quote(column)).join(', ');
-        lines.push(
-          `${i}        {'name': ${quote(index.name)}, 'columns': [${columns}], 'tokenize': ${quote(index.tokenize)}},`,
-        );
-      }
-      lines.push(`${i}      ],`);
-    }
-    lines.push(`${i}    },`);
-  }
-  lines.push(`${i}  ],`);
-  lines.push(`${i}}`);
-  return lines;
-}
-
 /** The accessor lifting a §2.4 value out of a `Map<String, Object?>` row. */
 function rowAccessor(column: IrTable['columns'][number]): string {
-  const key = `row[${quote(column.name)}]`;
+  const key = `row[${stringLiteral(column.name, 'dart')}]`;
   switch (appColumnType(column)) {
     case 'string':
     case 'json':
@@ -136,13 +63,13 @@ function emitClass(table: IrTable): string[] {
   lines.push(`/// One ${table.name} row (§2.4 column order).`);
   lines.push(`class ${type} {`);
   for (const column of table.columns) {
-    const dart = appDartType(column);
+    const dart = DART_TYPE[appColumnType(column)];
     const opt = column.nullable ? '?' : '';
-    lines.push(`  final ${dart}${opt} ${camelCase(column.name)};`);
+    lines.push(`  final ${dart}${opt} ${snakeToCamel(column.name)};`);
   }
   lines.push('');
   const ctorParams = table.columns
-    .map((c) => `${c.nullable ? '' : 'required '}this.${camelCase(c.name)}`)
+    .map((c) => `${c.nullable ? '' : 'required '}this.${snakeToCamel(c.name)}`)
     .join(', ');
   lines.push(`  const ${type}({${ctorParams}});`);
   lines.push('');
@@ -153,14 +80,14 @@ function emitClass(table: IrTable): string[] {
   lines.push(`  static ${type}? fromRow(Map<String, Object?> row) {`);
   for (const column of table.columns) {
     if (!column.nullable) {
-      const name = camelCase(column.name);
+      const name = snakeToCamel(column.name);
       lines.push(`    final ${name} = ${rowAccessor(column)};`);
       lines.push(`    if (${name} == null) return null;`);
     }
   }
   const args = table.columns
     .map((c) => {
-      const name = camelCase(c.name);
+      const name = snakeToCamel(c.name);
       return c.nullable ? `${name}: ${rowAccessor(c)}` : `${name}: ${name}`;
     })
     .join(', ');
@@ -181,21 +108,31 @@ function emitSubscription(sub: IrSubscription): string[] {
   }
   const lines: string[] = [];
   lines.push(
-    `/// Requested-scope template for the ${quote(sub.name)} subscription.`,
+    `/// Requested-scope template for the ${stringLiteral(sub.name, 'dart')} subscription.`,
   );
   lines.push(`class Syncular${pascalCase(sub.name)}Subscription {`);
-  lines.push(`  static const String name = ${quote(sub.name)};`);
-  lines.push(`  static const String table = ${quote(sub.table)};`);
-  const args = params.map((p) => `required String ${camelCase(p)}`).join(', ');
+  lines.push(
+    `  static const String name = ${stringLiteral(sub.name, 'dart')};`,
+  );
+  lines.push(
+    `  static const String table = ${stringLiteral(sub.table, 'dart')};`,
+  );
+  const args = params
+    .map((p) => `required String ${snakeToCamel(p)}`)
+    .join(', ');
   const argsClause = args.length > 0 ? `{${args}}` : '';
   lines.push(`  static Map<String, List<String>> scopes(${argsClause}) => {`);
   for (const scope of sub.scopes) {
     const values = scope.values
       .map((value) =>
-        value.kind === 'literal' ? quote(value.value) : camelCase(value.name),
+        value.kind === 'literal'
+          ? stringLiteral(value.value, 'dart')
+          : snakeToCamel(value.name),
       )
       .join(', ');
-    lines.push(`        ${quote(scope.variable)}: [${values}],`);
+    lines.push(
+      `        ${stringLiteral(scope.variable, 'dart')}: [${values}],`,
+    );
   }
   lines.push('      };');
   lines.push('}');
@@ -210,6 +147,8 @@ export function emitDartModule(ir: IrDocument, hash: string): string {
       `// irVersion: ${ir.irVersion}`,
       `// irHash: ${hash}`,
       '// ignore_for_file: type=lint',
+      '',
+      "import 'dart:convert';",
     ].join('\n'),
   );
 
@@ -217,11 +156,11 @@ export function emitDartModule(ir: IrDocument, hash: string): string {
   const schemaLines: string[] = [];
   schemaLines.push('/// ServerSchema-compatible schema (SPEC §2.4, §3.1) —');
   schemaLines.push('/// pass to `SyncularClient.create(schema: …)`.');
-  const schemaValue = emitSchemaValue(ir, '');
-  schemaValue[0] = `const Map<String, Object?> syncularSchema = ${schemaValue[0]}`;
-  schemaValue[schemaValue.length - 1] =
-    `${schemaValue[schemaValue.length - 1]};`;
-  for (const line of schemaValue) schemaLines.push(line);
+  // A multi-line literal drops the line break after its opening quotes, so
+  // the decoded string is the serializeSchema bytes.
+  schemaLines.push(
+    `final Map<String, Object?> syncularSchema = jsonDecode('''\n${stringLiteral(serializeSchema(ir), 'dart').slice(1, -1)}''') as Map<String, Object?>;`,
+  );
   parts.push(schemaLines.join('\n'));
 
   // Shared row-decode helpers — emitted only when a column type references

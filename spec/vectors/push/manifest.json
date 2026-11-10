@@ -61,6 +61,142 @@
       "bin": "sparse-row-full.bin",
       "json": "sparse-row-full.json",
       "covers": "The full-row special case: every presence bit set (incl. the second presence byte), a present-NULL title, and all nine §2.4 column types"
+    },
+    {
+      "name": "admission-json-depth-64",
+      "bin": "admission-json-depth-64.bin",
+      "json": "admission-json-depth-64.json",
+      "covers": "json value nested exactly 64 containers deep (accepted)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-host-opaque",
+      "bin": "admission-json-host-opaque.bin",
+      "json": "admission-json-host-opaque.json",
+      "covers": "json value with whitespace, a duplicate key, the largest finite binary64 and escapes (accepted, raw text preserved)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-float-max",
+      "bin": "admission-float-max.bin",
+      "json": "admission-float-max.json",
+      "covers": "float holding the largest finite binary64 (accepted)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-canonical",
+      "bin": "admission-blob-ref-canonical.bin",
+      "json": "admission-blob-ref-canonical.json",
+      "covers": "canonical blob_ref whose name exercises every escape class (accepted, §5.9.1)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
     }
   ],
   "invalid": [
@@ -87,6 +223,822 @@
       "bin": "invalid/absent-primary-key.bin",
       "error": "sync.invalid_request",
       "covers": "Sparse row whose presence bitmap omits the primary-key column (RFC §6.1)"
+    },
+    {
+      "name": "admission-string-nul",
+      "bin": "invalid/admission-string-nul.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): string value holding U+0000",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-depth-65",
+      "bin": "invalid/admission-json-depth-65.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json value nested 65 containers deep",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-number-overflow",
+      "bin": "invalid/admission-json-number-overflow.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json number 1e999, outside finite binary64",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-number-above-max",
+      "bin": "invalid/admission-json-number-above-max.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json number 1.7976931348623159e308, which rounds to infinity (the largest finite binary64 is accepted)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-lone-surrogate",
+      "bin": "invalid/admission-json-lone-surrogate.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json string that is an unpaired high-surrogate escape",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-lone-surrogate-key",
+      "bin": "invalid/admission-json-lone-surrogate-key.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json object key that is an unpaired low-surrogate escape",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-nul-escape",
+      "bin": "invalid/admission-json-nul-escape.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json string holding U+0000",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-nul-key",
+      "bin": "invalid/admission-json-nul-key.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json object key holding U+0000",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-shadowed-number-overflow",
+      "bin": "invalid/admission-json-shadowed-number-overflow.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json number 1e999 under a key that a later duplicate key shadows",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-shadowed-lone-surrogate",
+      "bin": "invalid/admission-json-shadowed-lone-surrogate.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json unpaired high-surrogate escape under a key that a later duplicate key shadows",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-shadowed-nul-escape",
+      "bin": "invalid/admission-json-shadowed-nul-escape.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json U+0000 escape under a key that a later duplicate key shadows",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-shadowed-depth-65",
+      "bin": "invalid/admission-json-shadowed-depth-65.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json nested 65 containers deep inside a value that a later duplicate key shadows",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-json-shadowed-depth-128",
+      "bin": "invalid/admission-json-shadowed-depth-128.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): json nested 128 containers deep inside a value that a later duplicate key shadows",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-float-nan",
+      "bin": "invalid/admission-float-nan.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): float value NaN",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-float-infinity",
+      "bin": "invalid/admission-float-infinity.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): float value Infinity",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-float-negative-infinity",
+      "bin": "invalid/admission-float-negative-infinity.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): float value -Infinity",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-reordered-keys",
+      "bin": "invalid/admission-blob-ref-reordered-keys.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): byteLength before blobId",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-byte-length-exponent",
+      "bin": "invalid/admission-blob-ref-byte-length-exponent.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): byteLength written 1e2",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-byte-length-fraction",
+      "bin": "invalid/admission-blob-ref-byte-length-fraction.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): byteLength written 3.0",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-byte-length-negative-zero",
+      "bin": "invalid/admission-blob-ref-byte-length-negative-zero.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): byteLength written -0",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-whitespace",
+      "bin": "invalid/admission-blob-ref-whitespace.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): insignificant whitespace after the colons and comma",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-duplicate-key",
+      "bin": "invalid/admission-blob-ref-duplicate-key.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): byteLength twice; the parsed value serializes without the first",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-lone-surrogate-name",
+      "bin": "invalid/admission-blob-ref-lone-surrogate-name.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): name holds an unpaired surrogate escape, the text JSON.stringify would write for it (JSON validity rule)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
+    },
+    {
+      "name": "admission-blob-ref-nul-name",
+      "bin": "invalid/admission-blob-ref-nul-name.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push admission value (SPEC.md §2.4): blob_ref that is not canonical (§5.9.1): name holds U+0000 (JSON validity rule)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "file",
+          "type": "blob_ref",
+          "nullable": true
+        }
+      ],
+      "primaryKey": "id"
     }
   ]
 }

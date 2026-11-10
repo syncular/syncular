@@ -263,15 +263,36 @@ async function authorizePublication(
     }
     resolved = { ok: false };
   }
-  const outcome = computeEffective(requested, resolved);
-  if (outcome.status !== 'active') {
+  // §3.2: the effective scopes, and so the digest, depend on the declared
+  // variables of the publication's table (the wildcard fence).
+  const digests = new Map<string, string | undefined>();
+  for (const publication of inContext) {
+    const key = `${publication.schemaVersion}\u0000${publication.table}`;
+    if (digests.has(key)) continue;
+    const table = schemaWindowOf(ctx.schema, ctx.schemaWindow)
+      .find((candidate) => candidate.version === publication.schemaVersion)
+      ?.tables.get(publication.table);
+    const outcome = computeEffective(
+      table?.declaredVariables ?? new Set(),
+      requested,
+      resolved,
+    );
+    digests.set(
+      key,
+      outcome.status === 'active'
+        ? await scopeDigest(outcome.effective)
+        : undefined,
+    );
+  }
+  if ([...digests.values()].every((digest) => digest === undefined)) {
     throw syncError('sync.forbidden', 'segment scopes not held (§5.5)');
   }
-  const digest = await scopeDigest(outcome.effective);
   // The digest is the grant, but only inside the caller's partition and live
   // epoch: identical bytes published elsewhere never authorize this caller.
   const forDigest = inContext.filter(
-    (publication) => publication.scopeDigest === digest,
+    (publication) =>
+      digests.get(`${publication.schemaVersion}\u0000${publication.table}`) ===
+      publication.scopeDigest,
   );
   if (forDigest.length === 0) {
     throw syncError('sync.forbidden', 'scope digest mismatch (§3.5, §5.5)');

@@ -746,8 +746,8 @@ export class ScenarioContext {
       );
       if (!acquisition.ok) return acquisition;
       const header = acquisition.message.frames[0];
-      if (header?.type !== 'RESP_HEADER' || header.logEpoch === undefined) {
-        throw new Error('v2 epoch acquisition returned no log epoch');
+      if (header?.type !== 'RESP_HEADER') {
+        throw new Error('epoch acquisition returned no RESP_HEADER');
       }
       logEpoch = header.logEpoch;
       this.#rawLogEpochs.set(clientId, logEpoch);

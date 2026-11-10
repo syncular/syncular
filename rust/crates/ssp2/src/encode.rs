@@ -22,7 +22,7 @@ pub fn encode_message(msg: &Message) -> Vec<u8> {
     });
     w.u8(0x00); // flags
     for frame in &msg.frames {
-        let (ty, payload) = encode_frame(frame, msg.wire_version);
+        let (ty, payload) = encode_frame(frame);
         w.u8(ty);
         w.u32(payload.len() as u32);
         w.raw(&payload);
@@ -45,7 +45,7 @@ fn is_registered_frame_type(ty: u8) -> bool {
     ty == ft::END || ft::REQUEST_TYPES.contains(&ty) || ft::RESPONSE_TYPES.contains(&ty)
 }
 
-fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
+fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
     let mut w = Writer::new();
     let ty = match frame {
         Frame::ReqHeader {
@@ -55,15 +55,11 @@ fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
         } => {
             w.str(client_id);
             w.i32(*schema_version);
-            if wire_version >= 2 {
-                assert!(log_epoch.as_ref().is_none_or(|value| !value.is_empty()));
-                w.opt(log_epoch, |w, value| w.str(value));
-            } else {
-                assert!(
-                    log_epoch.is_none(),
-                    "REQ_HEADER.logEpoch requires wireVersion 2"
-                );
-            }
+            assert!(
+                log_epoch.as_ref().is_none_or(|value| !value.is_empty()),
+                "REQ_HEADER.logEpoch must be non-empty"
+            );
+            w.opt(log_epoch, |w, value| w.str(value));
             ft::REQ_HEADER
         }
         Frame::PushCommit {
@@ -125,19 +121,12 @@ fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
         } => {
             w.opt(required_schema_version, |w, v| w.i32(*v));
             w.opt(latest_schema_version, |w, v| w.i32(*v));
-            if wire_version >= 2 {
-                let value = log_epoch
-                    .as_ref()
-                    .filter(|value| !value.is_empty())
-                    .expect("RESP_HEADER.logEpoch is required and non-empty");
-                w.str(value);
-                w.bool(reset_required.expect("RESP_HEADER.resetRequired is required"));
-            } else {
-                assert!(
-                    log_epoch.is_none() && reset_required.is_none(),
-                    "RESP_HEADER epoch fields require wireVersion 2"
-                );
-            }
+            assert!(
+                !log_epoch.is_empty(),
+                "RESP_HEADER.logEpoch must be non-empty"
+            );
+            w.str(log_epoch);
+            w.bool(*reset_required);
             ft::RESP_HEADER
         }
         Frame::Lease {

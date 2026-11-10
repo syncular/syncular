@@ -1391,11 +1391,11 @@ test('barrier cleanup between processes on one database re-enables declaration-f
   }
 });
 
-test('activation and the checkpoint CAS do not depend on driver rowCount', async () => {
-  // A Bun.sql-style adapter reports rowCount as the count of RETURNED rows,
-  // which is 0 for a statement with no RETURNING. RFC 0007's CAS and
-  // activation must therefore use RETURNING and inspect rows, or they
-  // silently never advance on a real Bun.sql host.
+test('activation and the checkpoint CAS count returned rows', async () => {
+  // A Bun.sql-style adapter returns only the RETURNED rows, none for a
+  // statement without RETURNING. RFC 0007's CAS and activation must
+  // therefore use RETURNING and inspect rows, or they silently never advance
+  // on a real Bun.sql host.
   const pg = await PGlite.create();
   try {
     const base = pgliteExecutor(pg);
@@ -1405,7 +1405,7 @@ test('activation and the checkpoint CAS do not depend on driver rowCount', async
         params?: readonly unknown[],
       ) {
         const result = await client.query<Row>(text, params);
-        return { rows: result.rows, rowCount: result.rows.length };
+        return { rows: result.rows };
       },
     });
     const executor: PgExecutor = {

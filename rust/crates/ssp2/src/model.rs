@@ -222,8 +222,10 @@ pub enum Frame {
     RespHeader {
         required_schema_version: Option<i32>,
         latest_schema_version: Option<i32>,
-        log_epoch: Option<String>,
-        reset_required: Option<bool>,
+        /// Partition log identity, non-empty.
+        log_epoch: String,
+        /// True produces a header-only reset response.
+        reset_required: bool,
     },
     /// §7.3.2: a server-issued auth lease delivered to the client (opaque).
     Lease {

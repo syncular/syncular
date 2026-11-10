@@ -27,7 +27,7 @@ function Tasks({ projectId }: { projectId: string }) {
   const mutation = useMutation(tasksTable);
 
   if (tasks.phase === 'loading') return <p>Loading…</p>;
-  if (tasks.phase === 'blocked') {
+  if (tasks.phase === 'blocked' && tasks.availability.state === 'blocked') {
     return <p>Sync unavailable: {tasks.availability.reason}</p>;
   }
   if (tasks.phase === 'error') return <p>{tasks.error?.message}</p>;
@@ -62,12 +62,16 @@ availability, refresh }`. `availability` is the typed `ready`, `migrating`, or
 - `partial`: rows exist, but some required window coverage is incomplete;
 - `ready`: the atomic snapshot says the answer is complete, including an
   honestly empty result;
-- `blocked`: sync cannot safely serve a fresh result because the generated
-  schema is incompatible or the browser leader is unreachable. `isLoading`
-  is `false`; previously read rows remain available for deliberate read-only
-  UI, and `availability.reason` identifies the boundary;
+- `blocked`: the tab cannot read through the browser leader, and
+  `availability.reason` is `leader-unreachable`, `leader-incompatible`, or
+  `leadership-taken`. `isLoading` is `false`; previously read rows remain
+  available for deliberate read-only UI. A schema block stops network transfer
+  and leaves local reads running, so it appears in `availability` and leaves
+  `phase` unchanged;
 - `error`: the latest read failed. A refresh error keeps the rows and revision
   from the last successful read while setting `isRefreshing` to `false`.
+- `disabled`: the hook was given `enabled: false` and reads nothing; `rows`
+  is empty and `isLoading` is `false`.
 
 ## Provider and async initialization
 
@@ -219,9 +223,11 @@ Options:
 | `id` | Stable cache identity for a raw query. |
 | `tables`, `scopeKeys` | Compatibility shorthand; prefer `dependencies`. |
 
-Without explicit dependencies, raw SQL uses a conservative `FROM`/`JOIN`
-scan. Generated queries are preferred whenever the statement is known at
-build time because typegen can prove more.
+`useRawSql` reads no table names from the SQL text. Pass `dependencies` or
+`tables` naming every table the statement reads; without either, the hook
+throws a `ClientSyncError` with code `client.raw_sql_dependencies_required`
+when it mounts. Generated queries are preferred whenever the statement is
+known at build time because typegen derives the dependencies from the schema.
 
 ## Exact changes and windows
 

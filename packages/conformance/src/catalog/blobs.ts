@@ -1490,6 +1490,72 @@ export const blobScenarios: readonly Scenario[] = [
   },
 
   {
+    // §5.9.7: a non-retryable server refusal of a staged body is its final
+    // outcome. The commit naming it is rejected with the server's code and
+    // the round pushes the unrelated commit.
+    name: 'blobs/refused-upload-rejects-its-commit-and-the-round-continues',
+    specRefs: ['§5.9.3', '§5.9.7', '§7.4.4'],
+    requires: ['blobs'],
+    server: { schema: BLOB_SCHEMA, limits: { maxBlobBytes: 16 } },
+    async run(ctx: ScenarioContext) {
+      const author = await ctx.newClient({
+        actorId: 'author',
+        clientId: 'client-author',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      await requireBlobs(author);
+      await author.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await syncIdle(author);
+
+      const big = await author.api.uploadBlob?.(bytesOf('x'.repeat(32)));
+      const small = await author.api.uploadBlob?.(bytesOf('small'));
+      check(big !== undefined && small !== undefined, 'both bodies staged');
+      const refused = await author.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('big', 'p1', big ?? null),
+        },
+      ]);
+      await author.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('small', 'p1', small ?? null),
+        },
+      ]);
+
+      await syncIdle(author);
+
+      checkEqual(
+        await author.api.pendingCommitIds(),
+        [],
+        'the refused commit left the outbox and the other one pushed',
+      );
+      checkEqual(
+        (await author.api.rejections()).map((rejection) => [
+          rejection.clientCommitId,
+          rejection.code,
+          rejection.retryable,
+        ]),
+        [[refused, 'blob.too_large', false]],
+        "the refusal is the commit's outcome, with the server's code",
+      );
+      checkEqual(
+        (await ctx.server.readRows('attachments')).map((row) => row.rowId),
+        ['small'],
+        'only the unrelated commit applied',
+      );
+      checkEqual(
+        (await author.api.readRows('attachments')).map((row) => row.rowId),
+        ['small'],
+        'the refused optimistic row is undone',
+      );
+    },
+  },
+
+  {
     // B.13(c): the cross-scope probe — an actor holding a different scope
     // that learns the blobId (e.g. from a leaked ref) is denied, because no
     // row it may see references the blob. A blobId is never a capability.

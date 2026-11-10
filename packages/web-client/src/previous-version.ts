@@ -202,6 +202,10 @@ export interface PreviousVersionSnapshot {
   readonly truncated: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -225,10 +229,7 @@ function isSqlValue(value: unknown): value is SqlValue {
 }
 
 function isSqlRow(value: unknown): value is SqlRow {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-  return Object.values(value as Record<string, unknown>).every(isSqlValue);
+  return isRecord(value) && Object.values(value).every(isSqlValue);
 }
 
 const PREVIOUS_VERSION_REASONS: readonly PreviousVersionReason[] = [
@@ -266,14 +267,20 @@ const AUDIT_ENTRY_KEYS = ['column', 'commitId', 'reason', 'table'] as const;
 function parseJsonObject(raw: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(raw);
-    return parsed !== null &&
-      typeof parsed === 'object' &&
-      !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
+}
+
+function hasExactKeys(
+  record: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  return (
+    Object.keys(record).length === expected.length &&
+    expected.every((key) => Object.hasOwn(record, key))
+  );
 }
 
 function localCorrupt(what: string): never {
@@ -301,45 +308,36 @@ const COLUMN_TYPES = new Set<RowColumn['type']>([
 function decodeColumns(value: unknown): LocalSchemaDescriptorColumn[] {
   if (!Array.isArray(value)) return localCorrupt('schema descriptor');
   return value.map((entry) => {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    if (!isRecord(entry)) {
       return localCorrupt('schema descriptor');
     }
-    const column = entry as Record<string, unknown>;
-    const keys = Object.keys(column).sort();
     if (
-      keys.length !== 2 ||
-      keys[0] !== 'name' ||
-      keys[1] !== 'type' ||
-      typeof column.name !== 'string' ||
-      typeof column.type !== 'string' ||
-      !COLUMN_TYPES.has(column.type as RowColumn['type'])
+      !hasExactKeys(entry, ['name', 'type']) ||
+      typeof entry.name !== 'string' ||
+      typeof entry.type !== 'string' ||
+      !COLUMN_TYPES.has(entry.type as RowColumn['type'])
     ) {
       return localCorrupt('schema descriptor');
     }
-    return { name: column.name, type: column.type as RowColumn['type'] };
+    return { name: entry.name, type: entry.type as RowColumn['type'] };
   });
 }
 
 function decodeTable(value: unknown): LocalSchemaDescriptorTable {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return localCorrupt('schema descriptor');
   }
-  const table = value as Record<string, unknown>;
-  const keys = Object.keys(table).sort();
   if (
-    keys.length !== 3 ||
-    keys[0] !== 'columns' ||
-    keys[1] !== 'name' ||
-    keys[2] !== 'primaryKey' ||
-    typeof table.name !== 'string' ||
-    typeof table.primaryKey !== 'string'
+    !hasExactKeys(value, ['columns', 'name', 'primaryKey']) ||
+    typeof value.name !== 'string' ||
+    typeof value.primaryKey !== 'string'
   ) {
     return localCorrupt('schema descriptor');
   }
   return {
-    name: table.name,
-    primaryKey: table.primaryKey,
-    columns: decodeColumns(table.columns),
+    name: value.name,
+    primaryKey: value.primaryKey,
+    columns: decodeColumns(value.columns),
   };
 }
 
@@ -368,12 +366,8 @@ function buildLocalSchemaDescriptor(
 function decodeLocalSchemaDescriptor(value: string): LocalSchemaDescriptor {
   const record = parseJsonObject(value);
   if (record === undefined) return localCorrupt('schema descriptor');
-  const keys = Object.keys(record).sort();
   if (
-    keys.length !== 3 ||
-    keys[0] !== 'tables' ||
-    keys[1] !== 'v' ||
-    keys[2] !== 'version' ||
+    !hasExactKeys(record, ['tables', 'v', 'version']) ||
     record.v !== DESCRIPTOR_VERSION ||
     !isCount(record.version) ||
     !Array.isArray(record.tables)
@@ -474,16 +468,16 @@ export function readPreviousVersionContainer(
 function decodeRecord(value: string): PreviousVersionRecord {
   const record = parseJsonObject(value);
   if (record === undefined) return localCorrupt('previous-version context');
-  const keys = Object.keys(record).sort();
   if (
-    keys.length !== 7 ||
-    keys[0] !== 'bytes' ||
-    keys[1] !== 'createdAtMs' ||
-    keys[2] !== 'currentVersion' ||
-    keys[3] !== 'previousVersion' ||
-    keys[4] !== 'rows' ||
-    keys[5] !== 'tables' ||
-    keys[6] !== 'v' ||
+    !hasExactKeys(record, [
+      'bytes',
+      'createdAtMs',
+      'currentVersion',
+      'previousVersion',
+      'rows',
+      'tables',
+      'v',
+    ]) ||
     record.v !== 1 ||
     !isCount(record.bytes) ||
     !isCount(record.createdAtMs) ||
@@ -606,7 +600,7 @@ export function capturePreviousVersion(
       const selectColumns = table.columns
         .map((column) => quoteIdent(column.name))
         .join(', ');
-      let lastRowId = -1;
+      let lastRowId = -(2 ** 63);
       for (;;) {
         const rows = replica.query(
           `SELECT rowid AS _rid,${selectColumns} FROM ${quoteIdent(table.name)} WHERE rowid>? ORDER BY rowid ASC LIMIT ?`,
@@ -875,25 +869,24 @@ export function storedPreviousVersionAudit(
   }
   const incompatible: PreviousVersionAuditEntry[] = [];
   for (const entry of record.incompatible) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    if (!isRecord(entry)) {
       return undefined;
     }
-    const item = entry as Record<string, unknown>;
     if (
-      typeof item.commitId !== 'string' ||
-      typeof item.table !== 'string' ||
-      (item.reason !== 'unknown-table' &&
-        item.reason !== 'unknown-column' &&
-        item.reason !== 'missing-required-column') ||
-      (item.column !== undefined && typeof item.column !== 'string')
+      typeof entry.commitId !== 'string' ||
+      typeof entry.table !== 'string' ||
+      (entry.reason !== 'unknown-table' &&
+        entry.reason !== 'unknown-column' &&
+        entry.reason !== 'missing-required-column') ||
+      (entry.column !== undefined && typeof entry.column !== 'string')
     ) {
       return undefined;
     }
     incompatible.push({
-      commitId: item.commitId,
-      table: item.table,
-      reason: item.reason,
-      ...(typeof item.column === 'string' ? { column: item.column } : {}),
+      commitId: entry.commitId,
+      table: entry.table,
+      reason: entry.reason,
+      ...(typeof entry.column === 'string' ? { column: entry.column } : {}),
     });
   }
   return {
@@ -936,31 +929,30 @@ export function decodePreviousVersionSnapshot(
   value: unknown,
 ): PreviousVersionSnapshot {
   const method = 'previousVersionSnapshot';
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return invalidHostResponse(method);
   }
-  const source = value as Record<string, unknown>;
   const allowed = new Set<string>([
     ...SNAPSHOT_REQUIRED_KEYS,
     ...SNAPSHOT_OPTIONAL_KEYS,
   ]);
-  const keys = Object.keys(source);
+  const keys = Object.keys(value);
   if (
     !keys.every((key) => allowed.has(key)) ||
-    SNAPSHOT_REQUIRED_KEYS.some((key) => !(key in source)) ||
-    source.state !== 'previousVersion' ||
-    typeof source.available !== 'boolean' ||
-    !isCount(source.currentVersion) ||
-    typeof source.truncated !== 'boolean' ||
-    !Array.isArray(source.rows) ||
-    !source.rows.every(isSqlRow)
+    SNAPSHOT_REQUIRED_KEYS.some((key) => !(key in value)) ||
+    value.state !== 'previousVersion' ||
+    typeof value.available !== 'boolean' ||
+    !isCount(value.currentVersion) ||
+    typeof value.truncated !== 'boolean' ||
+    !Array.isArray(value.rows) ||
+    !value.rows.every(isSqlRow)
   ) {
     return invalidHostResponse(method);
   }
-  const reason = source.reason;
-  const previousVersion = source.previousVersion;
-  const rows = source.rows as SqlRow[];
-  if (source.available) {
+  const reason = value.reason;
+  const previousVersion = value.previousVersion;
+  const rows = value.rows as SqlRow[];
+  if (value.available) {
     // An available read names the previous version and never a refusal.
     if (!isCount(previousVersion) || reason !== undefined) {
       return invalidHostResponse(method);
@@ -969,9 +961,9 @@ export function decodePreviousVersionSnapshot(
       state: 'previousVersion',
       available: true,
       previousVersion,
-      currentVersion: source.currentVersion,
+      currentVersion: value.currentVersion,
       rows,
-      truncated: source.truncated,
+      truncated: value.truncated,
     };
   }
   if (
@@ -984,10 +976,10 @@ export function decodePreviousVersionSnapshot(
   return {
     state: 'previousVersion',
     available: false,
-    currentVersion: source.currentVersion,
+    currentVersion: value.currentVersion,
     reason: reason as PreviousVersionReason,
     rows,
-    truncated: source.truncated,
+    truncated: value.truncated,
   };
 }
 
@@ -1000,62 +992,60 @@ export function decodePreviousVersionAuditResult(
 ): PreviousVersionAudit | undefined {
   const method = 'previousVersionAudit';
   if (value === undefined) return undefined;
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return invalidHostResponse(method);
   }
-  const source = value as Record<string, unknown>;
-  const keys = Object.keys(source).sort();
+  const keys = Object.keys(value).sort();
   if (keys.length !== AUDIT_KEYS.length) return invalidHostResponse(method);
   if (keys.some((key, index) => key !== AUDIT_KEYS[index])) {
     return invalidHostResponse(method);
   }
   if (
-    source.v !== AUDIT_VERSION ||
-    !isCount(source.atMs) ||
-    !isCount(source.fromVersion) ||
-    !isCount(source.toVersion) ||
-    !isCount(source.pending) ||
-    !isCount(source.encodable) ||
-    typeof source.truncated !== 'boolean' ||
-    !Array.isArray(source.incompatible) ||
-    source.incompatible.length > MAX_AUDIT_INCOMPATIBLE
+    value.v !== AUDIT_VERSION ||
+    !isCount(value.atMs) ||
+    !isCount(value.fromVersion) ||
+    !isCount(value.toVersion) ||
+    !isCount(value.pending) ||
+    !isCount(value.encodable) ||
+    typeof value.truncated !== 'boolean' ||
+    !Array.isArray(value.incompatible) ||
+    value.incompatible.length > MAX_AUDIT_INCOMPATIBLE
   ) {
     return invalidHostResponse(method);
   }
   const incompatible: PreviousVersionAuditEntry[] = [];
-  for (const entry of source.incompatible) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+  for (const entry of value.incompatible) {
+    if (!isRecord(entry)) {
       return invalidHostResponse(method);
     }
-    const item = entry as Record<string, unknown>;
     if (
-      !Object.keys(item).every((key) =>
+      !Object.keys(entry).every((key) =>
         (AUDIT_ENTRY_KEYS as readonly string[]).includes(key),
       ) ||
-      typeof item.commitId !== 'string' ||
-      typeof item.table !== 'string' ||
-      (item.reason !== 'unknown-table' &&
-        item.reason !== 'unknown-column' &&
-        item.reason !== 'missing-required-column') ||
-      (item.column !== undefined && typeof item.column !== 'string')
+      typeof entry.commitId !== 'string' ||
+      typeof entry.table !== 'string' ||
+      (entry.reason !== 'unknown-table' &&
+        entry.reason !== 'unknown-column' &&
+        entry.reason !== 'missing-required-column') ||
+      (entry.column !== undefined && typeof entry.column !== 'string')
     ) {
       return invalidHostResponse(method);
     }
     incompatible.push({
-      commitId: item.commitId,
-      table: item.table,
-      reason: item.reason,
-      ...(typeof item.column === 'string' ? { column: item.column } : {}),
+      commitId: entry.commitId,
+      table: entry.table,
+      reason: entry.reason,
+      ...(typeof entry.column === 'string' ? { column: entry.column } : {}),
     });
   }
   return {
     v: 1,
-    atMs: source.atMs,
-    fromVersion: source.fromVersion,
-    toVersion: source.toVersion,
-    pending: source.pending,
-    encodable: source.encodable,
-    truncated: source.truncated,
+    atMs: value.atMs,
+    fromVersion: value.fromVersion,
+    toVersion: value.toVersion,
+    pending: value.pending,
+    encodable: value.encodable,
+    truncated: value.truncated,
     incompatible,
   };
 }
@@ -1066,18 +1056,17 @@ export function decodePreviousVersionDiscardResult(value: unknown): {
   readonly discarded: boolean;
 } {
   const method = 'previousVersionDiscard';
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return invalidHostResponse(method);
   }
-  const source = value as Record<string, unknown>;
-  const keys = Object.keys(source).sort();
+  const keys = Object.keys(value).sort();
   if (
     keys.length !== DISCARD_KEYS.length ||
     keys.some((key, index) => key !== DISCARD_KEYS[index]) ||
-    typeof source.present !== 'boolean' ||
-    typeof source.discarded !== 'boolean'
+    typeof value.present !== 'boolean' ||
+    typeof value.discarded !== 'boolean'
   ) {
     return invalidHostResponse(method);
   }
-  return { present: source.present, discarded: source.discarded };
+  return { present: value.present, discarded: value.discarded };
 }

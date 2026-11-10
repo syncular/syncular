@@ -42,15 +42,26 @@ await handle.subscribe({ id: 'todos', table: 'todos', scopes });
 installRealtimeSupervisor(handle, {
   connectivity: browserConnectivitySignal(),
   lifecycle: documentLifecycleSignal(),
+  sharedTransport: true,
 });
 ```
 
 The supervisor owns the initial connect, reconnect after a socket close,
-bounded retry with jitter, suspension while the page is hidden or offline,
+bounded retry with jitter, suspension while the browser is offline,
 cancellation on close, and an explicit catch-up before it publishes
 `connected`. `browserConnectivitySignal()` observes online and offline;
-`documentLifecycleSignal()` observes visibility and page lifecycle. Unknown
-browser connectivity stays connectable.
+`documentLifecycleSignal()` observes visibility and page lifecycle. Every tab
+of a multi-tab handle shares the leader's socket, so `sharedTransport: true`
+keeps that socket open while this tab is hidden; without it, a hidden tab
+suspends the supervisor and disconnects realtime for every tab. Unknown
+browser connectivity stays connectable. Only host evidence suspends the
+supervisor: the connectivity signal, a closed
+[transport gate](#transport-gate), the protection signal, and a hidden page
+without `sharedTransport`. A sync round that failed because the server was
+unreachable leaves it running. Each `online` report runs `syncUntilIdle()`
+while nothing else suspends the supervisor, also when realtime is unsupported
+or disabled, so a commit written while the network was down pushes when it
+returns.
 
 For an encrypted or locked app, also pass the host's protection signal. An
 explicit protection signal keeps the supervisor suspended until it reports
@@ -76,7 +87,7 @@ const state = realtimeSupervisorSnapshot(handle);
 The snapshot holds only the phase, the attempt count, and the library-owned
 retry delay. Transport errors, URLs, identities, and headers never reach it.
 
-::checkpoint[`renderConnectionState` fires once on subscribe and again on each phase change.]
+::checkpoint[`renderConnectionState` fires on each change of the phase, the attempt count, or the retry delay; `realtimeSupervisorSnapshot(handle)` reads the current state.]
 ::::
 
 ::::step{title="Authenticate and rotate" time="2 min"}
@@ -128,7 +139,9 @@ scheduling. Resuming emits one interactive wake. An already-started round
 finishes its atomic apply; the client closes realtime afterwards and starts no
 follow-up round while the gate is closed. The gate is independent of security
 preflight and defaults open on each new client instance. Install fresh
-transport headers before you resume.
+transport headers before you resume. A realtime supervisor whose connect the
+closed gate refused with `sync.offline` reports phase `offline` and makes no
+further attempt until the client reports the gate open again.
 
 ## Sync progress
 
@@ -165,7 +178,10 @@ React Native handles expose the same listener and snapshot methods.
 
 Keep calling `mutate` with the network gone: the outbox accumulates and local
 reads stay live. On reconnect, the next sync drains the outbox with
-[idempotent retry](/concepts-commits/). Applied commits leave the outbox;
+[idempotent retry](/concepts-commits/). A round that fails because the server
+is unreachable schedules no retry; the supervisor's `online` report or a socket
+reconnect starts the next drive. A host without the supervisor calls
+`syncUntilIdle()` from its own connectivity handler. Applied commits leave the outbox;
 conflicts and rejections surface. The outbox is schema-agnostic and re-encodes
 at send time, so a schema upgrade loses nothing. Whole-origin deletion or
 eviction is outside that guarantee: use the

@@ -23,8 +23,7 @@ export {
   type TestClientOverrides,
   type TestSync,
 } from './create-test-sync';
-// The transport-fault controller, re-exported from the conformance harness
-// (never duplicated) — the SAME vocabulary the reference pairing arms.
+// The transport-fault controller the conformance harness extends.
 export {
   seededRandom,
   seedFromName,

@@ -364,6 +364,9 @@ test('a follower takes over from an unresponsive leader tab, which wakes up fenc
         // A busy main thread, as in a hung tab.
       }
     });
+    // A failure below closes the browser while this is pending; the step
+    // that failed is the error to report.
+    hung.catch(() => {});
     await taker.waitForFunction(() => {
       const started = window.localAuthorityTest.unreachable[0];
       return started?.phase === 'started' && Date.now() >= started.takeOverAt;

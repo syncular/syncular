@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type {
   ClientDiagnosticsListener,
   ClientDiagnosticsSnapshot,
+  RealtimeSupervisorClient,
   RealtimeSupervisorLifecycleState,
   RealtimeSupervisorProtectionState,
   RealtimeSupervisorSignal,
@@ -16,6 +17,7 @@ import {
 import {
   makeClient,
   makeServer,
+  PARTITION,
   tableRows,
   taskValues,
   waitFor,
@@ -275,7 +277,7 @@ describe('supported realtime host supervisor', () => {
     supervisor.stop();
   });
 
-  test('diagnostic offline and preflight remain fail-closed beside explicit signals', async () => {
+  test('a failed round is not connectivity evidence; preflight stays fail-closed', async () => {
     const network = signal<'online' | 'offline' | 'unknown'>('online');
     const protection = signal<RealtimeSupervisorProtectionState>('active');
     const timers = scheduler();
@@ -290,22 +292,46 @@ describe('supported realtime host supervisor', () => {
     timers.runNext();
     await settle();
 
+    // A round that failed with `network`/`connect` reports `offline` in the
+    // client diagnostics. The host signal still says online, so the
+    // supervisor keeps the socket and stays connectable (§1.8).
     const connected = diagnostics('connected');
     realtime.emitSnapshot({
       ...connected,
       host: { ...connected.host, connectivity: 'offline' },
     });
-    expect(supervisor.snapshot()).toEqual({ phase: 'offline', attempt: 0 });
-    expect(timers.pending()).toBe(0);
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(realtime.calls.disconnect).toBe(0);
 
-    realtime.emitSnapshot(diagnostics('disconnected'));
-    timers.runNext();
-    await settle();
     realtime.emitSnapshot({
       ...diagnostics('connected'),
       securityLifecycle: 'preflight',
     });
     expect(supervisor.snapshot()).toEqual({ phase: 'protected', attempt: 0 });
+    expect(timers.pending()).toBe(0);
+    supervisor.stop();
+  });
+
+  test('a host online report drives syncUntilIdle while realtime is unsupported', async () => {
+    const network = signal<'online' | 'offline' | 'unknown'>('online');
+    const timers = scheduler();
+    const realtime = fixture();
+    realtime.emit('unsupported');
+    const supervisor = new RealtimeSupervisor(realtime.client, {
+      connectivity: network.port,
+      schedule: timers.schedule,
+    });
+    supervisor.start();
+    await settle();
+    expect(supervisor.snapshot()).toEqual({ phase: 'unsupported', attempt: 0 });
+
+    network.emit('offline');
+    await settle();
+    expect(realtime.calls.catchUp).toBe(0);
+    network.emit('online');
+    await settle();
+    expect(realtime.calls.catchUp).toBe(1);
+    expect(realtime.calls.connect).toBe(0);
     expect(timers.pending()).toBe(0);
     supervisor.stop();
   });
@@ -649,5 +675,114 @@ describe('supported realtime host supervisor', () => {
     supervisor.stop();
     await a.client.close();
     await b.client.close();
+  });
+
+  test('an app-closed transport gate holds the supervisor offline without reconnecting', async () => {
+    const server = makeServer();
+    const { client } = await makeClient(server, {
+      clientId: 'supervisor-gate',
+    });
+    let connects = 0;
+    const counted: RealtimeSupervisorClient = {
+      connectRealtime: () => {
+        connects += 1;
+        return client.connectRealtime();
+      },
+      disconnectRealtime: () => client.disconnectRealtime(),
+      syncUntilIdle: () => client.syncUntilIdle(),
+      diagnosticsSnapshot: () => client.diagnosticsSnapshot(),
+      onDiagnostics: (listener) => client.onDiagnostics(listener),
+      close: () => client.close(),
+    };
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(counted, {
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await waitFor(
+      () => supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
+      'initial connect',
+    );
+
+    client.setTransportEnabled(false);
+    // The first attempt after the close meets the gate; its `sync.offline`
+    // refusal is the evidence that holds the supervisor offline.
+    const before = connects;
+    timers.runNext();
+    await settle();
+    const refused = connects;
+    expect(refused).toBe(before + 1);
+    expect(supervisor.snapshot()).toEqual({ phase: 'offline', attempt: 0 });
+    expect(timers.pending()).toBe(0);
+    client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await settle();
+    expect(supervisor.snapshot().phase).toBe('offline');
+    expect(timers.pending()).toBe(0);
+    expect(connects).toBe(refused);
+
+    client.setTransportEnabled(true);
+    timers.runNext();
+    await waitFor(
+      () => supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
+      'reconnect after the gate reopens',
+    );
+    expect(connects).toBe(refused + 1);
+    supervisor.stop();
+    await client.close();
+  });
+
+  test('an unreachable round resumes on the host online report without a local write', async () => {
+    const server = makeServer();
+    const writer = await makeClient(server, {
+      clientId: 'supervisor-unreachable',
+      realtimePolicy: 'off',
+    });
+    const network = signal<'online' | 'offline' | 'unknown'>('online');
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(writer.client, {
+      connectivity: network.port,
+      schedule: timers.schedule,
+    });
+    supervisor.start();
+    await settle();
+    expect(supervisor.snapshot().phase).toBe('unsupported');
+
+    writer.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('pending-edit', 'p1', 'written offline'),
+      },
+    ]);
+    const intents = writer.intents.length;
+    writer.faults.refuseConnectionOnce = true;
+    await expect(writer.client.syncUntilIdle()).rejects.toMatchObject({
+      code: 'sync.transport_failed',
+      details: { causeKind: 'connect' },
+    });
+    // §1.8: no retry intent; the round's work stays owed for the resume.
+    expect(writer.intents.length).toBe(intents);
+    expect(writer.client.statusSnapshot().syncNeeded).toBe(true);
+    expect(writer.client.pendingCommits()).toHaveLength(1);
+
+    network.emit('offline');
+    network.emit('online');
+    await waitFor(
+      () => writer.client.pendingCommits().length === 0,
+      (notify) => writer.client.onProgress(notify),
+      'the online report pushes the pending edit',
+    );
+    expect(
+      await server.storage.getRow(PARTITION, 'tasks', 'pending-edit'),
+    ).toBeDefined();
+    supervisor.stop();
+    await writer.client.close();
   });
 });

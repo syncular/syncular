@@ -352,8 +352,8 @@ fn respond(
     let header = |required_schema_version: Option<i32>| Frame::RespHeader {
         required_schema_version,
         latest_schema_version: Some(schema.version),
-        log_epoch: Some(log.log_epoch.clone()),
-        reset_required: Some(epoch_reset),
+        log_epoch: log.log_epoch.clone(),
+        reset_required: epoch_reset,
     };
     // §1.5/§4.5: the reported failure lands on the existing record before
     // the round runs; a failed outcome write never replaces the round's own.

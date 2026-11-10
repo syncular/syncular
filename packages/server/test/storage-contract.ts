@@ -327,7 +327,7 @@ export function runStorageContract(
       });
       await move.commit();
       const moved = await storage.begin(PARTITION);
-      expect(await moved.getTombstoneSeq('tasks', 'r1')).toBeUndefined();
+      expect(await moved.getTombstone('tasks', 'r1')).toBeUndefined();
       await moved.rollback();
       expect((await storage.getRow(PARTITION, 'tasks', 'r1'))?.scopes).toEqual({
         project_id: 'p2',
@@ -340,18 +340,32 @@ export function runStorageContract(
         clientCommitId: 'delete',
         actorId: 'a1',
         createdAtMs: NOW + 2,
+        // A commit that deletes one row twice keeps its last delete.
         changes: [
           {
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            deletedVersion: 1,
+            scopes: { project_id: 'p1' },
+          },
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'delete',
+            deletedVersion: 3,
             scopes: { project_id: 'p2' },
           },
         ],
       });
       await del.commit();
       const after = await storage.begin(PARTITION);
-      expect(await after.getTombstoneSeq('tasks', 'r1')).toBe(seq);
+      // §2.2: the tombstone carries the deleted row's version and scopes.
+      expect(await after.getTombstone('tasks', 'r1')).toEqual({
+        commitSeq: seq,
+        serverVersion: 3,
+        scopes: { project_id: 'p2' },
+      });
       await after.rollback();
     });
 
@@ -1196,24 +1210,31 @@ export function runStorageContract(
           code: 'sync.storage.invalid_limit',
         },
       ] as const;
+      const expectRejection = async (
+        run: () => Promise<unknown>,
+        code: (typeof cases)[number]['code'],
+      ) => {
+        try {
+          await run();
+          throw new Error('expected scanRowsByIndex to reject');
+        } catch (error) {
+          expect(error).toBeInstanceOf(StorageQueryError);
+          expect((error as StorageQueryError).code).toBe(code);
+          expect((error as Error).message).not.toContain('tasks');
+          expect((error as Error).message).not.toContain('p1');
+        }
+      };
+      for (const { query, code } of cases) {
+        await expectRejection(
+          async () => storage.scanRowsByIndex?.(PARTITION, query),
+          code,
+        );
+      }
       // The same contract holds on a push transaction, where the commit
       // readers call it.
       const tx = await storage.begin(PARTITION);
       for (const { query, code } of cases) {
-        for (const run of [
-          () => storage.scanRowsByIndex?.(PARTITION, query),
-          () => tx.scanRowsByIndex?.(query),
-        ]) {
-          try {
-            await run();
-            throw new Error('expected scanRowsByIndex to reject');
-          } catch (error) {
-            expect(error).toBeInstanceOf(StorageQueryError);
-            expect((error as StorageQueryError).code).toBe(code);
-            expect((error as Error).message).not.toContain('tasks');
-            expect((error as Error).message).not.toContain('p1');
-          }
-        }
+        await expectRejection(async () => tx.scanRowsByIndex?.(query), code);
       }
       await tx.rollback();
     });
@@ -1257,6 +1278,34 @@ export function runStorageContract(
       });
       expect(p1.length).toBe(0);
       expect(p2.map((r) => r.rowId)).toEqual(['r1']);
+    });
+
+    test('re-scoping one variable keeps the unchanged scope-index key', async () => {
+      const storage = await make();
+      const doc = (project: string, serverVersion: number): StoredRow => ({
+        ...docRow('d1', project, serverVersion),
+        scopes: { org_id: 'o1', project_id: project },
+      });
+      const tx = await storage.begin(PARTITION);
+      await tx.upsertRow('docs', doc('p1', 1));
+      await tx.commit();
+      const move = await storage.begin(PARTITION);
+      await move.upsertRow('docs', doc('p2', 2));
+      await move.commit();
+      // `scanRows` takes its candidates from the scope index, so a dropped
+      // `org_id` key would hide the row from the first scan.
+      const rows = async (variable: string, value: string) =>
+        (
+          await storage.scanRows(PARTITION, {
+            table: 'docs',
+            scopeFilter: { [variable]: [value] },
+            afterRowId: null,
+            limit: 10,
+          })
+        ).map((row) => row.rowId);
+      expect(await rows('org_id', 'o1')).toEqual(['d1']);
+      expect(await rows('project_id', 'p1')).toEqual([]);
+      expect(await rows('project_id', 'p2')).toEqual(['d1']);
     });
 
     // --- Horizon / pruning (§4.6) ---
@@ -1399,7 +1448,7 @@ export function runStorageContract(
 
     // --- Client records (§4.5, §8.1) ---
 
-    test('active cursor floor is partition-bound, includes cutoff equality, and preserves bootstrap cursors', async () => {
+    test('active cursor floor is partition-bound, includes cutoff equality, and ignores bootstrap cursors', async () => {
       const storage = await make();
       expect(
         await storage.getActiveClientCursorFloor(PARTITION, NOW),
@@ -1434,9 +1483,10 @@ export function runStorageContract(
         cursor: -1,
         updatedAtMs: NOW + 1,
       });
-      expect(await storage.getActiveClientCursorFloor(PARTITION, NOW)).toBe(-1);
+      // §4.6: a bootstrapping client (cursor -1) does not hold the floor.
+      expect(await storage.getActiveClientCursorFloor(PARTITION, NOW)).toBe(7);
       expect(
-        await storage.getActiveClientCursorFloor(PARTITION, NOW + 2),
+        await storage.getActiveClientCursorFloor(PARTITION, NOW + 1),
       ).toBeNull();
     });
 

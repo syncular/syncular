@@ -63,8 +63,8 @@ Use a normal `.sql` or `.syql` [named query](/tooling-queries/). Join the projec
 SELECT patient_notes_fts._syncular_source_id AS fts_source_id,
        n.id,
        n.title,
-       bm25(patient_notes_fts) AS rank,
-       snippet(patient_notes_fts, 1, '<mark>', '</mark>', ' … ', 16) AS excerpt
+       CAST(bm25(patient_notes_fts) AS REAL) AS rank,
+       CAST(snippet(patient_notes_fts, 1, '<mark>', '</mark>', ' … ', 16) AS TEXT) AS excerpt
 FROM patient_notes_fts
 JOIN patient_notes n
   ON CAST(n.id AS TEXT) = patient_notes_fts._syncular_source_id
@@ -76,7 +76,7 @@ ORDER BY rank,
 LIMIT 50;
 ```
 
-`MATCH` gives `query` a generated string type. The portable SQL profile admits `bm25`, `highlight`, and `snippet` only in a statement that references a schema-declared FTS projection. Typegen treats the projected `_syncular_source_id` as exact non-null text and uses it with the owner key to prove stable identity for a bounded query.
+The `CAST` wrappers give the computed `rank` and `excerpt` columns a generated type ([Named queries](/tooling-queries/)). `MATCH` gives `query` a generated string type. The portable SQL profile admits `bm25`, `highlight`, and `snippet` only in a statement that references a schema-declared FTS projection. Typegen treats the projected `_syncular_source_id` as exact non-null text and uses it with the owner key to prove stable identity for a bounded query.
 
 The `n.clinic_id = :clinicId` predicate carries the synchronization coverage. The projection maps back to its owner table for reactive dependencies, so a content change invalidates generated React queries normally, but the projection never claims independent scopes or completeness.
 

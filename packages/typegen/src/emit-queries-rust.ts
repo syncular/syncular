@@ -6,12 +6,13 @@
  */
 import type { IrColumnType } from './ir';
 import { buildRustNamingMap, rustPascalCase, rustSnakeCase } from './naming';
-import type {
-  AnalyzedQuery,
-  QueryColumn,
-  QueryParam,
-  QuerySyqlPlanBind,
-  QuerySyqlPublicInput,
+import {
+  type AnalyzedQuery,
+  type QueryColumn,
+  type QueryParam,
+  type QuerySyqlPlanBind,
+  type QuerySyqlPublicInput,
+  syqlInput,
 } from './query';
 
 const RUST_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -56,12 +57,6 @@ function queryId(query: AnalyzedQuery, hash: string): string {
 function rustType(type: IrColumnType, nullable = false): string {
   const base = RUST_TYPE[type];
   return nullable ? `Option<${base}>` : base;
-}
-
-function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
-  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
-  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
-  return input;
 }
 
 function validateQueryNames(query: AnalyzedQuery): void {

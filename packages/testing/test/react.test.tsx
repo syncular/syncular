@@ -49,7 +49,10 @@ describe('syncWrapper', () => {
     await client.sync();
 
     const { result } = renderHook(
-      () => useRawSql('SELECT id, body FROM notes ORDER BY id'),
+      () =>
+        useRawSql('SELECT id, body FROM notes ORDER BY id', undefined, {
+          tables: ['notes'],
+        }),
       { wrapper: syncWrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));

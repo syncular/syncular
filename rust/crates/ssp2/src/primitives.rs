@@ -8,6 +8,60 @@ use crate::util::utf16_lt;
 /// JS safe-integer contract: `i64` values must be within ±(2^53 − 1).
 pub const I64_SAFE_MAX: i64 = 9_007_199_254_740_991;
 
+const JSON_MAX_DEPTH: usize = 64;
+
+/// Parse `raw` under the JSON validity rule (SPEC.md Conventions), which is
+/// defined on the raw text: RFC 8259, at most 64 nested containers anywhere in
+/// the text, every number token a finite binary64, no U+0000 and no unpaired
+/// surrogate in any string token (key or value). The one definition for
+/// envelope `json` fields, push-payload `json` columns and `blob_ref` values;
+/// the TS core's `parseJsonDocument` accepts exactly the same documents.
+///
+/// `serde_json` parses every value, shadowed ones included, and rejects
+/// numbers that overflow binary64 (correctly rounded through the
+/// `float_roundtrip` feature, so `f64::MAX` written in full parses) and
+/// unpaired surrogate escapes. One lexical pass adds depth and the `\u0000`
+/// escape; a literal U+0000 is a control character that RFC 8259 rejects.
+pub fn parse_json_document(raw: &str, what: &str) -> Result<serde_json::Value> {
+    let value = serde_json::from_str(raw).map_err(|_| {
+        DecodeError::invalid(format!(
+            "{what} is not a JSON document under the validity rule"
+        ))
+    })?;
+    let text = raw.as_bytes();
+    let (mut depth, mut at) = (0usize, 0usize);
+    while at < text.len() {
+        match text[at] {
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > JSON_MAX_DEPTH {
+                    return Err(DecodeError::invalid(format!(
+                        "{what} nests deeper than {JSON_MAX_DEPTH} containers"
+                    )));
+                }
+            }
+            b']' | b'}' => depth -= 1,
+            b'"' => {
+                at += 1;
+                while text[at] != b'"' {
+                    if text[at] == b'\\' {
+                        if text[at + 1..].starts_with(b"u0000") {
+                            return Err(DecodeError::invalid(format!(
+                                "{what} holds a string with U+0000"
+                            )));
+                        }
+                        at += 1;
+                    }
+                    at += 1;
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    Ok(value)
+}
+
 /// A raw `json`-typed value: validated to parse as a JSON document at decode
 /// time, but preserved byte-for-byte (host-opaque; round-trip fidelity, never
 /// re-canonicalization — Conventions `json` row).
@@ -126,15 +180,12 @@ impl<'a> Reader<'a> {
         Ok(self.take(len, what)?.to_vec())
     }
 
-    /// `json`: a `str` that must parse as a JSON document; the raw string is
-    /// preserved verbatim for round-trip fidelity.
+    /// `json`: a `str` that must be a valid JSON document (Conventions JSON
+    /// validity rule); the raw string is preserved verbatim for round-trip
+    /// fidelity.
     pub fn json(&mut self, what: &str) -> Result<RawJson> {
         let s = self.str(what)?;
-        if serde_json::from_str::<serde_json::Value>(&s).is_err() {
-            return Err(DecodeError::invalid(format!(
-                "json field {what} does not parse as a JSON document"
-            )));
-        }
+        parse_json_document(&s, what)?;
         Ok(RawJson(s))
     }
 
@@ -272,5 +323,128 @@ impl Writer {
             self.str(k);
             self.str(v);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_json_document;
+
+    fn nested(open: &str, close: &str, depth: usize) -> String {
+        format!("{}{}", open.repeat(depth), close.repeat(depth))
+    }
+
+    /// The same probe table as the TS core's `json-document.test.ts`.
+    #[test]
+    fn the_json_validity_rule_matches_the_ts_core() {
+        let probes: Vec<(&str, String, bool)> = vec![
+            ("arrays nested 64 deep", nested("[", "]", 64), true),
+            ("arrays nested 65 deep", nested("[", "]", 65), false),
+            (
+                "objects nested 64 deep",
+                format!("{}{{}}{}", "{\"a\":".repeat(63), "}".repeat(63)),
+                true,
+            ),
+            (
+                "objects nested 65 deep",
+                format!("{}{{}}{}", "{\"a\":".repeat(64), "}".repeat(64)),
+                false,
+            ),
+            ("1e999", "1e999".into(), false),
+            ("-1e999 inside an array", "[-1e999]".into(), false),
+            ("1e-999 underflows to zero", "1e-999".into(), true),
+            ("negative zero", "-0".into(), true),
+            (
+                "largest finite binary64",
+                "1.7976931348623157e308".into(),
+                true,
+            ),
+            ("rounds to infinity", "1.7976931348623159e308".into(), false),
+            (
+                "integer beyond 2^64",
+                "123456789012345678901234567890".into(),
+                true,
+            ),
+            ("unpaired high surrogate", r#""\ud800""#.into(), false),
+            ("unpaired low surrogate", r#""\udc00""#.into(), false),
+            (
+                "high surrogate before a letter",
+                r#""\ud800x""#.into(),
+                false,
+            ),
+            ("escaped surrogate pair", r#""😀""#.into(), true),
+            ("unpaired surrogate key", r#"{"\ud800":1}"#.into(), false),
+            ("U+0000 escape", r#""\u0000""#.into(), false),
+            ("U+0000 key", r#"{"\u0000":1}"#.into(), false),
+            ("U+0000 deep inside", r#"[{"a":["x\u0000"]}]"#.into(), false),
+            ("U+0001 escape", r#""\u0001""#.into(), true),
+            ("raw U+0000 in a string", "\"a\0b\"".into(), false),
+            ("duplicate keys", r#"{"a":1,"a":2}"#.into(), true),
+            ("shadowed 1e999", r#"{"a":1e999,"a":1}"#.into(), false),
+            (
+                "shadowed unpaired surrogate",
+                r#"{"a":"\ud800","a":1}"#.into(),
+                false,
+            ),
+            (
+                "shadowed U+0000 escape",
+                r#"{"a":"\u0000","a":1}"#.into(),
+                false,
+            ),
+            (
+                "shadowed depth 64",
+                format!("{{\"a\":{},\"a\":1}}", nested("[", "]", 63)),
+                true,
+            ),
+            (
+                "shadowed depth 65",
+                format!("{{\"a\":{},\"a\":1}}", nested("[", "]", 64)),
+                false,
+            ),
+            (
+                "shadowed depth 128",
+                format!("{{\"a\":{},\"a\":1}}", nested("[", "]", 127)),
+                false,
+            ),
+            (
+                "escaped backslash before u0000",
+                r#""\\u0000""#.into(),
+                true,
+            ),
+            (
+                "brackets inside strings",
+                r#"["[[[[", "}}}}"]"#.into(),
+                true,
+            ),
+            (
+                "insignificant whitespace",
+                r#" { "a" : [ 1 , 2 ] } "#.into(),
+                true,
+            ),
+            ("top-level true", "true".into(), true),
+            ("top-level null", "null".into(), true),
+            ("top-level string", r#""x""#.into(), true),
+            ("top-level number", "7".into(), true),
+            ("not JSON", "{not json".into(), false),
+            ("trailing comma", "[1,]".into(), false),
+            ("leading zero", "01".into(), false),
+            ("NaN literal", "NaN".into(), false),
+            ("byte order mark", "\u{feff}1".into(), false),
+        ];
+        for (name, raw, valid) in probes {
+            match parse_json_document(&raw, "probe") {
+                Ok(_) => assert!(valid, "{name}: accepted, expected a rejection"),
+                Err(error) => {
+                    assert!(!valid, "{name}: rejected: {}", error.detail);
+                    assert_eq!(error.code.as_str(), "sync.invalid_request", "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_last_duplicate_key_wins() {
+        let value = parse_json_document(r#"{"a":1,"a":[true]}"#, "probe").unwrap();
+        assert_eq!(value, serde_json::json!({"a": [true]}));
     }
 }

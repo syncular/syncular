@@ -85,13 +85,12 @@ const config: SyncServerConfig = {
 ```ts title="src/server.ts"
 import { createSyncularHono } from '@syncular/server-hono';
 
-const app = createSyncularHono({
-  config,
-  authenticate: async (request) => {
-    const actor = await verify(request); // your auth
-    return actor ? { actorId: actor.id, partition: actor.tenant } : null;
-  },
-});
+async function authenticate(request: Request) {
+  const actor = await verify(request); // your auth
+  return actor ? { actorId: actor.id, partition: actor.tenant } : null;
+}
+
+const app = createSyncularHono({ config, authenticate });
 ```
 
 [Authentication](/guide-auth/) shows a bearer-token and a cookie `authenticate`.
@@ -132,23 +131,46 @@ Give a client `httpSyncTransport('http://localhost:8787/sync')` and a subscripti
 | `/sync` | POST | Combined push and pull; the whole protocol runs through here. Accepts a gzip request body and compresses its response per `Accept-Encoding` |
 | `/operations` | POST | Registered queries and commands ([Remote server operations](/guide-remote-operations/)); answers `operation.unknown` unless the `operations` option is set. Compresses its response per `Accept-Encoding` |
 | `/segments/:segmentId` | GET | Bootstrap segment download, compressed per `Accept-Encoding` |
-| `/blobs/:blobId` | PUT | Blob upload, content-address verified |
-| `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows, compressed per `Accept-Encoding` |
+| `/blobs/:blobId` | PUT | Blob upload, content-address verified; refused with 413 `blob.too_large` from `Content-Length` before the body is read |
+| `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows before any byte is read, streamed with identity encoding |
 | `/blobs/:blobId/upload-grant` | POST | Presigned direct-to-storage upload grant, only when configured |
 
 `GET /realtime` is a WebSocket upgrade that depends on the runtime, so your host owns it ([below](#advanced-wire-the-realtime-hub)). `GET /admin` is the optional operator console, which the `admin` option mounts behind your guard ([Admin console](/server-admin-console/)).
 
 ## Transport compression
 
-Every buffered response the adapter serves is encoded per the request's `Accept-Encoding`: zstd first when the codec exists, gzip otherwise, identity when the client offers neither or the body is under 1 KiB (SPEC §1.3). On Bun the codecs are `Bun.zstdCompressSync` and `Bun.gzipSync`; on workerd, Node, and Deno the adapter uses `CompressionStream('gzip')`. An encoded response carries `Content-Encoding` and `Vary: Accept-Encoding`, and it is marked `encodeBody: 'manual'` so workerd never encodes it a second time.
+The `/sync`, `/operations` and segment responses are encoded per the request's `Accept-Encoding`: zstd first when the codec exists, gzip otherwise, identity when the client offers neither or the body is under 1 KiB (SPEC §1.3). On Bun the codecs are `Bun.zstdCompressSync` and `Bun.gzipSync`; on workerd, Node, and Deno the adapter uses `CompressionStream('gzip')`. An encoded response carries `Content-Encoding` and `Vary: Accept-Encoding`, and it is marked `encodeBody: 'manual'` so workerd never encodes it a second time. Blob downloads are streamed as stored with `Content-Length` and identity encoding (SPEC §5.9.5).
 
 `POST /sync` and `POST /operations` accept a gzip request body (`Content-Encoding: gzip`) and decode it before parsing SSP2. Any other request `Content-Encoding` is answered with HTTP 415 and an error body (`sync.invalid_request`, or `operation.invalid_request` on the operations route) instead of being parsed as protocol bytes. A gzip body that does not decompress is HTTP 400 `sync.invalid_request`.
 
 A deployment without the realtime socket conforms to the protocol. Clients that never open it sync over `POST /sync` with identical semantics.
 
+## Request limits
+
+The `limits` field of the sync config caps what one request or watch session may ask of the server. Each value must be a positive safe integer; `createSyncularHono`, `createRealtimeHub` and every request throw on `NaN`, `0`, a fraction or `Infinity`. `inlineSegmentMaxBytes` is a size threshold and also accepts `0`.
+
+| Limit | Default | Applies to |
+|---|---|---|
+| `maxRequestBytes` | 16 MiB | Decoded bytes of a `POST /sync` or `POST /operations` body after gzip decoding, and of a socket round's assembled request |
+| `maxSubscriptionsPerRequest` | 500 | `SUBSCRIPTION` frames in one request |
+| `maxScopeValuesPerSubscription` | 1,000 | Requested scope values, summed over one subscription's keys |
+| `maxWatchesPerSession` | 100 | Registered-query watches open on one `RemoteOperationWatchHub` session |
+| `maxOperationsPerRequest` | 500 | Push operations in one request (`sync.too_many_operations`) |
+
+A request past one of the first three limits fails with HTTP 413 `sync.limit_exceeded`; `details.limit` names the limit and `details.max` holds its value. The adapter stops decoding a gzip body when it reaches `maxRequestBytes`, so a small compressed body never inflates past the cap. A socket round that grows past `maxRequestBytes` closes the connection. A watch past `maxWatchesPerSession` receives a `watch_error` with `sync.limit_exceeded`; the session's other watches keep running, and each commit reruns a session's affected watches one at a time.
+
+Raise `maxSubscriptionsPerRequest` before an app holds more subscriptions than the default. A client sends its complete subscription list on every pull ([Subscriptions](/concepts-subscriptions/)), so a client above the cap cannot pull until the server accepts the list.
+
+```ts
+const config: SyncServerConfig = {
+  // schema, storage, segments, resolveScopes, ...
+  limits: { maxSubscriptionsPerRequest: 2_000, maxRequestBytes: 32 * 1024 * 1024 },
+};
+```
+
 ## Add CORS and other host headers
 
-Mount `createSyncularHono` behind the host's Hono middleware. Headers set with `c.header()` before `await next()` carry through successful sync, operations, segment, and blob responses, 304 replies, and adapter errors. This includes the CORS headers a Tauri WebView or a browser on another origin needs. The adapter keeps `encodeBody: 'manual'` for every body it compressed itself, which matters on Cloudflare Workers.
+Mount `createSyncularHono` behind the host's Hono middleware. Headers set with `c.header()` before `await next()` carry through successful sync, operations, segment, and blob responses, 304 replies, and adapter errors. This includes the CORS headers a Tauri WebView or a browser on another origin needs. The adapter keeps `encodeBody: 'manual'` for every body it compressed itself, which matters on Cloudflare Workers. The presigned-URL answer of `GET /blobs/:blobId` keeps the handler's `Cache-Control: private, max-age=0`, `ETag` and `Vary` headers.
 
 ```ts title="src/server.ts"
 import { Hono } from 'hono';
@@ -221,18 +243,25 @@ const config: SyncServerConfig = {
 };
 ```
 
-The host owns the upgrade. With `Bun.serve`, upgrade on `/realtime` and hand the socket to the hub. The `partition` and `actorId` come from your own authentication of the upgrade request; [Authentication](/guide-auth/#browser-authenticate-the-realtime-socket) shows the authenticated upgrade and [short-lived tickets](/guide-auth/#realtime-tickets) for bearer-token apps.
+The host owns the upgrade. With `Bun.serve`, run the same `authenticate` on the upgrade request, answer 401 when it returns `null`, and hand its `partition` and `actorId` to the hub. A browser WebSocket sends cookies and no custom headers; [Authentication](/guide-auth/#browser-authenticate-the-realtime-socket) adds the `Origin` check a cookie session needs, and [short-lived tickets](/guide-auth/#realtime-tickets) cover bearer-token apps.
 
 ```ts title="src/server.ts"
-const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>({
+interface SocketData {
+  actorId: string;
+  partition: string;
+  clientId: string;
+  session?: RealtimeSession;
+}
+
+const server = Bun.serve<SocketData, never>({
   port: 8787,
-  fetch(request, bunServer) {
+  async fetch(request, bunServer) {
     const url = new URL(request.url);
     if (url.pathname === '/realtime') {
+      const auth = await authenticate(request);
+      if (auth === null) return new Response(null, { status: 401 });
       const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-      if (bunServer.upgrade(request, { data: { clientId } })) {
-        return undefined as unknown as Response;
-      }
+      if (bunServer.upgrade(request, { data: { ...auth, clientId } })) return;
       return new Response('expected a websocket upgrade', { status: 400 });
     }
     return app.fetch(request);
@@ -241,10 +270,12 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
     open(ws) {
       hub
         .connect({
-          partition: 'main', // from YOUR auth on the upgrade request
-          actorId: 'user-1',
+          partition: ws.data.partition,
+          actorId: ws.data.actorId,
           clientId: ws.data.clientId,
-          send: (data) => ws.send(data),
+          send: (data) => {
+            ws.send(data);
+          },
           closeSocket: () => ws.close(1008, 'protocol violation'),
         })
         .then((session) => { ws.data.session = session; })
@@ -263,6 +294,14 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
   },
 });
 ```
+
+Send heartbeats from the host. After a connection's first heartbeat, both reference clients treat a socket that delivers no frame for twice the interval as lost. They assume 30 seconds unless their `realtimeHeartbeatMs` says otherwise. A host without this line keeps idle sockets open, and a client then detects a dead connection only when a send or a socket round fails:
+
+```ts title="src/server.ts"
+setInterval(() => hub.heartbeat(), 30_000);
+```
+
+The hub bounds what a slow client can leave unacknowledged. Past `maxUnackedDeltas` sent deltas (default 256) or `maxUnackedDeltaBytes` (default 4 MiB) above the client's last ack, it stops sending deltas to that socket and sends one `catchup-required` wake instead; the ack after the client's catch-up round resumes delivery. Both are `RealtimeHubConfig` fields.
 
 The [demo server](https://github.com/syncular/syncular/blob/main/apps/demo/src/server.ts) is the complete worked example: one Bun process serving HTTP, WebSocket realtime, the admin console, and a static frontend. On Cloudflare Workers the upgrade runs through a Durable Object ([Cloudflare Workers](/server-workers/#add-the-durable-object)).
 

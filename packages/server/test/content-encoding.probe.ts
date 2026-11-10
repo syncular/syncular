@@ -24,6 +24,7 @@ const decodedRequest = await decodeRequestBody(
     headers: { 'content-encoding': 'gzip' },
     body: new Blob([encoded.bytes.slice().buffer as ArrayBuffer]),
   }),
+  body.length,
 );
 console.log(
   JSON.stringify({

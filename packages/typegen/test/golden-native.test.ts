@@ -5,11 +5,50 @@
  * DO-NOT-EDIT header + IR hash so `--check` gates freshness per language.
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkOutputs, generate } from '../src';
+import {
+  checkOutputs,
+  emitDartModule,
+  emitKotlinModule,
+  emitModule,
+  emitSwiftModule,
+  generate,
+  type IrDocument,
+  serializeSchema,
+} from '../src';
 
-const FIXTURE = join(import.meta.dir, 'fixtures', 'basic');
+const FIXTURES = join(import.meta.dir, 'fixtures');
+const FIXTURE = join(FIXTURES, 'basic');
+
+/** The schema string each language's compiler reads from the generated
+ * literal, decoded by that language's literal rules. */
+const EMBEDDED_SCHEMA: Readonly<
+  Record<'ts' | 'swift' | 'kotlin' | 'dart', (source: string) => string>
+> = {
+  ts: (source) =>
+    /export const schema = (\{[\s\S]*?\n\}) as const;/.exec(source)?.[1] ?? '',
+  // Swift strips the closing delimiter's indentation; `\\` is a backslash.
+  swift: (source) =>
+    (/JSONValue\(decoding: """\n([\s\S]*?)\n {8}"""\)/.exec(source)?.[1] ?? '')
+      .replace(/^ {8}/gm, '')
+      .replaceAll('\\\\', '\\'),
+  // trimIndent() strips the common indentation; `${'$'}` is a dollar sign.
+  kotlin: (source) =>
+    (
+      /JsonValue\.parse\(\n {8}"""\n([\s\S]*?)\n {8}"""\.trimIndent\(\)/.exec(
+        source,
+      )?.[1] ?? ''
+    )
+      .replace(/^ {8}/gm, '')
+      .replaceAll("${'$'}", () => '$'),
+  // Dart drops the line break after `'''`; `\x` is the character x.
+  dart: (source) =>
+    (/jsonDecode\('''\n([\s\S]*?)'''\)/.exec(source)?.[1] ?? '').replace(
+      /\\(.)/g,
+      '$1',
+    ),
+};
 
 /** The native outputs the fixture manifest opts into, by basename. */
 const NATIVE_FILES = {
@@ -50,6 +89,75 @@ describe('native emitter goldens', () => {
     });
   }
 
+  test('every fixture embeds byte-identical schema JSON in TS, Swift, Kotlin, and Dart', () => {
+    for (const fixture of readdirSync(FIXTURES)) {
+      const result = generate(join(FIXTURES, fixture));
+      const schemas = result.outputs.flatMap(({ path, content }) => {
+        const language = path.endsWith('.generated.ts')
+          ? 'ts'
+          : path.endsWith('.generated.swift')
+            ? 'swift'
+            : path.endsWith('.generated.kt')
+              ? 'kotlin'
+              : path.endsWith('.generated.dart')
+                ? 'dart'
+                : undefined;
+        return language === undefined
+          ? []
+          : [{ language, schema: EMBEDDED_SCHEMA[language](content) }];
+      });
+      expect(schemas.map(({ language }) => language)).toEqual([
+        'ts',
+        'swift',
+        'kotlin',
+        'dart',
+      ]);
+      for (const { schema } of schemas) {
+        expect(schema).toBe(serializeSchema(result.ir));
+      }
+    }
+    // The native constants now carry what the TS one always carried.
+    const basic = serializeSchema(generate(FIXTURE).ir);
+    expect(basic).toContain('"indexes"');
+    expect(basic).toContain('"references"');
+  });
+
+  test('schema literals survive quotes, backslashes, dollars, and interpolation syntax', () => {
+    const { ir, hash } = generate(FIXTURE);
+    const [first, ...rest] = ir.tables;
+    const scope = first?.scopes[0];
+    if (first === undefined || scope === undefined) {
+      throw new Error('fixture has no scoped table');
+    }
+    const hostile: IrDocument = {
+      ...ir,
+      tables: [
+        {
+          ...first,
+          scopes: [
+            {
+              ...scope,
+              pattern: `a"b'''c$d\\(e)\${f}\\\\n"""\\:{${scope.variable}}`,
+            },
+          ],
+        },
+        ...rest,
+      ],
+    };
+    const expected = serializeSchema(hostile);
+    expect(expected).toContain('\\\\(e)');
+    expect(EMBEDDED_SCHEMA.ts(emitModule(hostile, hash))).toBe(expected);
+    expect(
+      EMBEDDED_SCHEMA.swift(emitSwiftModule(hostile, hash, 'BasicSchema')),
+    ).toBe(expected);
+    expect(
+      EMBEDDED_SCHEMA.kotlin(
+        emitKotlinModule(hostile, hash, 'dev.syncular.basic', 'BasicSchema'),
+      ),
+    ).toBe(expected);
+    expect(EMBEDDED_SCHEMA.dart(emitDartModule(hostile, hash))).toBe(expected);
+  });
+
   test('generate emits IR + TS + all three native outputs (+ query files)', () => {
     const result = generate(FIXTURE);
     const names = result.outputs.map((o) => o.path.split('/').pop());
@@ -78,7 +186,9 @@ describe('native emitter goldens', () => {
   test('Swift schema namespace + typed structs are present', () => {
     const swift = outputFor(NATIVE_FILES.swift);
     expect(swift).toContain('public enum BasicSchema {');
-    expect(swift).toContain('public static let schema: JSONValue =');
+    expect(swift).toContain(
+      'public static let schema: JSONValue = try! JSONValue(decoding:',
+    );
     expect(swift).toContain('public struct Tasks: Sendable, Equatable {');
     expect(swift).toContain('public init?(row: [String: JSONValue]) {');
     // blob-ref/crdt honest shapes: crdt → [UInt8]; bytes → [UInt8].
@@ -95,10 +205,10 @@ describe('native emitter goldens', () => {
     expect(kotlin).toContain('val priority: Long?');
   });
 
-  test('Dart const schema + classes + subscriptions are present', () => {
+  test('Dart schema + classes + subscriptions are present', () => {
     const dart = outputFor(NATIVE_FILES.dart);
     expect(dart).toContain(
-      'const Map<String, Object?> syncularSchema = <String, Object?>{',
+      "final Map<String, Object?> syncularSchema = jsonDecode('''",
     );
     expect(dart).toContain('class Tasks {');
     expect(dart).toContain('static Tasks? fromRow(Map<String, Object?> row) {');

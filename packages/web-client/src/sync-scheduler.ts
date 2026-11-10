@@ -45,6 +45,8 @@ export function installSyncScheduler(
   let backgroundReady = false;
   let backgroundDue = Number.POSITIVE_INFINITY;
   let cancelBackground: (() => void) | undefined;
+  // §7.6 backoff for drives that end without a client retry intent.
+  let retryDelayMs = 250;
 
   const report = (error: unknown): void => {
     if (options.onError !== undefined) {
@@ -88,6 +90,7 @@ export function installSyncScheduler(
     void client
       .syncUntilIdle(options.maxRounds)
       .then((result) => {
+        retryDelayMs = 250;
         if (
           result !== null &&
           typeof result === 'object' &&
@@ -98,7 +101,34 @@ export function installSyncScheduler(
         }
       })
       .catch((error: unknown) => {
-        if (!stopped) report(error);
+        if (stopped) return;
+        report(error);
+        // §7.7: a retryable drive rejection owes another drive. A retryable
+        // round failure already handed this loop its background intent; the
+        // drive deadline did not. An unreachable endpoint waits for the
+        // host's connectivity resume (§1.8).
+        const details =
+          error instanceof Error && 'details' in error
+            ? error.details
+            : undefined;
+        const causeKind =
+          typeof details === 'object' &&
+          details !== null &&
+          'causeKind' in details
+            ? details.causeKind
+            : undefined;
+        if (
+          error instanceof Error &&
+          'retryable' in error &&
+          error.retryable === true &&
+          causeKind !== 'network' &&
+          causeKind !== 'connect' &&
+          cancelBackground === undefined &&
+          !immediatePending
+        ) {
+          consume({ kind: 'background', delayMs: retryDelayMs });
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+        }
       })
       .finally(() => {
         running = false;

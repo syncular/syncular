@@ -13,11 +13,11 @@
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
-import type {
-  AnalyzedQuery,
-  QueryColumn,
-  QuerySyqlPlanBind,
-  QuerySyqlPublicInput,
+import {
+  type AnalyzedQuery,
+  type QueryColumn,
+  type QuerySyqlPlanBind,
+  syqlInput,
 } from './query';
 
 const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -30,11 +30,6 @@ const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   blob_ref: 'String',
   crdt: 'ByteArray',
 };
-
-/** Language-facing field name — the pinned §12 naming map. */
-function camelCase(name: string): string {
-  return snakeToCamel(name);
-}
 
 function typeName(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
@@ -94,19 +89,13 @@ function optionalParamValue(type: IrColumnType, name: string): string {
   }
 }
 
-function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
-  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
-  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
-  return input;
-}
-
 function syqlKotlinType(type: IrColumnType, nullable: boolean): string {
   return `${KOTLIN_TYPE[type]}${nullable ? '?' : ''}`;
 }
 
 function syqlControlActive(query: AnalyzedQuery, name: string): string {
   const input = syqlInput(query, name);
-  const access = camelCase(input.langName);
+  const access = snakeToCamel(input.langName);
   if (input.kind === 'value' && input.default === false) return access;
   if (input.kind === 'value' && input.nullable) {
     return `${access} is SyncularQueryPresence.Present`;
@@ -129,7 +118,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     return `JsonValue.of(${active})`;
   }
   const input = syqlInput(query, bind.input);
-  const access = camelCase(input.langName);
+  const access = snakeToCamel(input.langName);
   if (bind.kind === 'limit')
     return `JsonValue.of(effective${typeName(access)}.toDouble())`;
   if (bind.kind === 'group-member') {
@@ -139,7 +128,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     );
     if (member === undefined)
       throw new Error(`unknown group member ${bind.member}`);
-    const memberName = camelCase(member.langName);
+    const memberName = snakeToCamel(member.langName);
     const present = member.nullable
       ? optionalParamValue(member.type, `value.${memberName}`)
       : paramValue(member.type, `value.${memberName}`);
@@ -165,7 +154,7 @@ function emitSyqlKotlinTypes(query: AnalyzedQuery): string[] {
       lines.push(`data class ${name}(`);
       for (const member of input.members) {
         lines.push(
-          `    val ${camelCase(member.langName)}: ${syqlKotlinType(member.type, member.nullable)},`,
+          `    val ${snakeToCamel(member.langName)}: ${syqlKotlinType(member.type, member.nullable)},`,
         );
       }
       lines.push(')', '');
@@ -175,7 +164,8 @@ function emitSyqlKotlinTypes(query: AnalyzedQuery): string[] {
       lines.push(
         `${input.profiles
           .map(
-            (profile, index) => `    ${camelCase(profile.langName)}(${index})`,
+            (profile, index) =>
+              `    ${snakeToCamel(profile.langName)}(${index})`,
           )
           .join(',\n')};`,
       );
@@ -198,7 +188,7 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
   );
   const args = ['client: SyncularClient'];
   for (const input of metadata.inputs) {
-    const name = camelCase(input.langName);
+    const name = snakeToCamel(input.langName);
     if (input.kind === 'value') {
       const type = syqlKotlinType(input.type, input.nullable);
       if (input.required) args.push(`${name}: ${type}`);
@@ -217,7 +207,7 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
         input.profiles.find((profile) => profile.name === input.defaultProfile)
           ?.langName ?? input.defaultProfile;
       const type = `${typeName(query.name)}${typeName(input.langName)}`;
-      args.push(`${name}: ${type} = ${type}.${camelCase(defaultCase)}`);
+      args.push(`${name}: ${type} = ${type}.${snakeToCamel(defaultCase)}`);
     } else {
       args.push(`${name}: Long? = null`);
     }
@@ -225,7 +215,7 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
   lines.push(`        fun ${query.name}(${args.join(', ')}): List<${Row}> {`);
   const page = metadata.inputs.find((input) => input.kind === 'limit');
   if (page?.kind === 'limit') {
-    const name = camelCase(page.langName);
+    const name = snakeToCamel(page.langName);
     lines.push(
       `            val effective${typeName(name)} = ${name} ?: ${page.defaultSize}L`,
       `            if (effective${typeName(name)} < 1L || effective${typeName(name)} > ${page.maxSize}L) {`,
@@ -244,7 +234,7 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
   const sort = metadata.inputs.find((input) => input.kind === 'sort');
   const profileCount = sort?.kind === 'sort' ? sort.profiles.length : 1;
   const sortIndex =
-    sort?.kind === 'sort' ? `${camelCase(sort.langName)}.index` : '0';
+    sort?.kind === 'sort' ? `${snakeToCamel(sort.langName)}.index` : '0';
   const index =
     metadata.plan.backend === 'variants'
       ? `activationMask * ${profileCount} + ${sortIndex}`
@@ -278,14 +268,14 @@ function emitDataClass(query: AnalyzedQuery): string[] {
   for (const column of query.columns) {
     const opt = column.nullable ? '?' : '';
     lines.push(
-      `    val ${camelCase(column.langName)}: ${KOTLIN_TYPE[column.type]}${opt},`,
+      `    val ${snakeToCamel(column.langName)}: ${KOTLIN_TYPE[column.type]}${opt},`,
     );
   }
   lines.push(') {');
   lines.push('    companion object {');
   lines.push(`        fun fromRow(row: JsonValue): ${Row}? {`);
   for (const column of query.columns) {
-    const name = camelCase(column.langName);
+    const name = snakeToCamel(column.langName);
     const accessor = rowAccessor(column);
     if (column.nullable) {
       lines.push(`            val ${name} = ${accessor}`);
@@ -293,7 +283,7 @@ function emitDataClass(query: AnalyzedQuery): string[] {
       lines.push(`            val ${name} = ${accessor} ?: return null`);
     }
   }
-  const args = query.columns.map((c) => camelCase(c.langName)).join(', ');
+  const args = query.columns.map((c) => snakeToCamel(c.langName)).join(', ');
   lines.push(`            return ${Row}(${args})`);
   lines.push('        }');
   lines.push('    }');
@@ -315,7 +305,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(`        /** Run the ${query.name} named query (SELECT-only). */`);
   const args: string[] = [];
   for (const p of query.params) {
-    const name = camelCase(p.langName);
+    const name = snakeToCamel(p.langName);
     args.push(`${name}: ${KOTLIN_TYPE[p.type]}`);
   }
   const signature =
@@ -327,7 +317,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   if (query.params.length > 0) {
     const binds = query.params
       .map((p) => {
-        const name = camelCase(p.langName);
+        const name = snakeToCamel(p.langName);
         return paramValue(p.type, name);
       })
       .join(', ');

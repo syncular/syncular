@@ -42,22 +42,33 @@ export type BlobUploadGrant =
   | { readonly kind: 'present' }
   | { readonly kind: 'none' };
 
-/** The transport seam for blob upload/download (§5.9.3/§5.9.5). */
+/**
+ * The transport seam for blob upload/download (§5.9.3/§5.9.5). The upload
+ * calls receive the round's `signal`, which aborts when the `syncUntilIdle`
+ * deadline elapses (§7.7).
+ */
 export interface BlobTransport {
   /** `PUT <mount>/blobs/{blobId}` — host-authenticated direct upload (§5.9.3). */
-  upload(blobId: string, bytes: Uint8Array, mediaType?: string): Promise<void>;
+  upload(
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /**
    * `GET <mount>/blobs/{blobId}` — re-authorized (§5.9.5). Returns inline
    * bytes, or a presigned `url` the client core fetches via `fetchUrl`.
+   * `byteLength` is the BlobRef's declared size when the caller passed one;
+   * reading inline bytes stops once the body exceeds it.
    */
-  download(blobId: string): Promise<BlobDownloadResponse>;
+  download(blobId: string, byteLength?: number): Promise<BlobDownloadResponse>;
   /**
    * §5.9.5 presigned-download fetch: a bare GET of the signed `url`. Present
    * iff the transport can consume URLs. MUST attach NO host authentication —
    * the URL is the entire grant (§5.4). Only called when `download` returned
-   * a `url` arm.
+   * a `url` arm. Reading stops once the body exceeds `byteLength`.
    */
-  fetchUrl?(url: string): Promise<Uint8Array>;
+  fetchUrl?(url: string, byteLength?: number): Promise<Uint8Array>;
   /**
    * §5.9.3 presigned-upload grant: `POST /blobs/{blobId}/upload-grant` with
    * the declared size. Present iff the transport supports the grant flow;
@@ -68,16 +79,20 @@ export interface BlobTransport {
     blobId: string,
     byteLength: number,
     mediaType?: string,
+    signal?: AbortSignal,
   ): Promise<BlobUploadGrant>;
   /**
    * §5.9.3 direct-to-storage PUT of the granted `url`. MUST attach NO host
-   * authentication — the presigned URL is the entire grant (§5.4). Only
-   * called when `uploadGrant` returned a `url` arm.
+   * authentication — the presigned URL is the entire grant (§5.4) — and MUST
+   * send `x-amz-checksum-sha256` (base64 of the body's SHA-256), which the
+   * grant signs beside `content-length`. Only called when `uploadGrant`
+   * returned a `url` arm.
    */
   uploadToUrl?(
     url: string,
     bytes: Uint8Array,
     mediaType?: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 }
 
@@ -188,7 +203,7 @@ export function enforceBlobCacheCap(
   if (total <= maxBytes) return [];
   // Oldest eligible body first, with blob ID as a stable tie.
   const candidates = db.query(
-    `SELECT blob_id,byte_length FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${visibleBlobIdsSql(schema)})ORDER BY created_at_ms ASC,blob_id ASC`,
+    `SELECT blob_id,byte_length ${unreferencedBlobsSql(schema)}ORDER BY created_at_ms ASC,blob_id ASC`,
   );
   const evicted: string[] = [];
   db.transaction(() => {
@@ -266,7 +281,8 @@ export function schemaHasBlobs(schema: CompiledClientSchema): boolean {
   return false;
 }
 
-function visibleBlobIdsSql(schema: CompiledClientSchema): string {
+/** The cached bodies no upload, pending commit, or visible row references. */
+function unreferencedBlobsSql(schema: CompiledClientSchema): string {
   const selects: string[] = [];
   for (const [tableName, columns] of blobRefColumnsBySchema(schema)) {
     for (const column of columns) {
@@ -276,18 +292,14 @@ function visibleBlobIdsSql(schema: CompiledClientSchema): string {
       );
     }
   }
-  return selects.length === 0
-    ? 'SELECT NULL AS blob_id WHERE 0'
-    : selects.join(' UNION ');
+  return `FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${selects.length === 0 ? 'SELECT NULL AS blob_id WHERE 0' : selects.join(' UNION ')})`;
 }
 
 export function deleteUnreferencedCachedBlobs(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
-  db.exec(
-    `DELETE FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${visibleBlobIdsSql(schema)})`,
-  );
+  db.exec(`DELETE ${unreferencedBlobsSql(schema)}`);
 }
 
 export type { BlobRef };

@@ -139,7 +139,7 @@ await remote.syncUntilIdle();
 
 The remote server's log epoch differs from the authority's, so the first round resets the replica: the client discards its synced rows, keeps its client ID and outbox, and bootstraps from the remote server. After attach the authority file keeps only its state; delete `./data/authority.sqlite` once the client runs against the remote server.
 
-Writes made while attaching wait in the outbox and push after the reset. A write that carries `baseVersion` names an authority version, and every attached row starts at version 1 on the remote server, so a `baseVersion` above 1 is refused with `sync.invalid_request`. Queue only unversioned writes while attaching.
+Writes made while attaching wait in the outbox and push after the reset. A write that carries `baseVersion` names an authority version, and the remote server numbers attached rows itself: from 1, or one above the tombstone a previously abandoned attach left. The remote server refuses a `baseVersion` above the row's remote version with `sync.invalid_request`. Queue only unversioned writes while attaching.
 
 ## When attach stops
 
@@ -152,7 +152,8 @@ Writes made while attaching wait in the outbox and push after the reset. A write
 | `schema_floor` | The remote server does not serve this schema version | Deploy the matching server version, then call `attach` again |
 | `request_failed` | The remote server answered with an error frame; `details.code` names it | Fix the cause, then call `attach` again |
 | `log_epoch_changed` | The remote partition's log was reset during the upload | Abandon with the transport, attach again |
+| `undo_pending` | An `abandonAttach` started deleting uploaded rows and did not finish | Call `abandonAttach(transport)` again |
 
 A transport failure rejects with the transport's own error and leaves the attach resumable. A refused commit is final for that attach: the remote server stores the rejection under the commit's idempotency key and returns it again on every retry.
 
-`authority.abandonAttach(transport)` ends a stopped attach. Pass the same remote transport: the authority deletes every row the remote server applied from this attach, children before parents, and then serves the client again. The remote server keeps a tombstone per deleted row, and the next `attach` recreates the rows under new commit IDs. When no upload request reached the remote server, `abandonAttach()` needs no transport. A rollback delete the remote server refuses, for example a `RESTRICT` reference from a row another client added, stops `abandonAttach` with `sync.attach_rejected` and leaves the attach in place.
+`authority.abandonAttach(transport)` ends a stopped attach. Pass the same remote transport: the authority deletes every row the remote server applied from this attach, children before parents, and then serves the client again. The remote server keeps a tombstone per deleted row, and the next `attach` recreates the rows under new commit IDs. When no upload request reached the remote server, `abandonAttach()` needs no transport. A rollback delete the remote server refuses, for example a `RESTRICT` reference from a row another client added, stops `abandonAttach` with `sync.attach_rejected`; a transport failure stops it with the transport's error. Either way the attach stays in place, and once the rollback has sent its first delete, `attach` rejects with `reason` `undo_pending` until `abandonAttach` completes: a resumed upload would count commits whose rows the rollback deleted as applied. Each `abandonAttach` call sends its deletes under new commit IDs, so after the blocking row is gone a retry applies instead of returning the earlier refusal.

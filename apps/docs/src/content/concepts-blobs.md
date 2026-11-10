@@ -110,9 +110,11 @@ The Tauri and React Native JavaScript wrappers have no typed blob methods; their
 
 A push that references a blob the server has never received fails with `blob.not_found`, and an upload whose bytes do not match the claimed address fails with `blob.hash_mismatch`.
 
+The server refuses an upload larger than `maxBlobBytes` with HTTP 413 `blob.too_large`, from the declared `Content-Length` before it reads the body and from the counted bytes while it reads. A presigned upload grant signs `content-length` and `x-amz-checksum-sha256` into the URL, and both clients send the checksum header with the PUT. The object store then refuses a body of another size or other bytes, so a grant can only store the bytes its `blobId` names ([SPEC §5.9.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#593-upload--put-mountblobsblobid)).
+
 ## Download authorization
 
-Every blob download re-authorizes against the rows that reference the blob, on every request. The server keeps a commit-to-blob reference index, and it denies a download with `blob.forbidden` when the actor holds no referencing row ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)).
+Every blob download re-authorizes against the rows that reference the blob, on every request. The server keeps a commit-to-blob reference index, and it denies a download with `blob.forbidden` when the actor holds no referencing row ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)). The server reads no blob byte before that check passes. An inline download streams the stored bytes with identity encoding. When `fetchBlob` receives a `blob_ref` string, the client stops reading once the body exceeds the reference's `byteLength` and fails with `sync.invalid_request`; a bare `blobId` declares no size.
 
 ### Media type
 
@@ -137,6 +139,8 @@ The client caches bodies in its SQLite database, keyed by `blobId`. A body row i
 `uploadBlob` writes the cached bytes and a small upload row in one atomic SQLite transaction. A storage failure rejects the call and preserves the previous body, metadata, and upload state; retry staging after repairing the failure. The same bytes keep their content address and create no duplicate cache entry. The call snapshots the supplied byte view before it yields, so the caller can reuse its buffer after receiving the promise.
 
 Before the client uploads a queued body, it checks the stored length and SHA-256, including when the server already has the object. Missing or corrupt pending bytes or upload metadata fail the round with `sync.local_corrupt`. A storage read failure or an upload-row deletion failure also stops the round. The upload state and the original pending commit stay available for retry after storage is repaired. This verification adds one full-body hash per queued upload.
+
+A server that refuses an upload with a non-retryable code, such as `blob.too_large`, decides that body's outcome. The TypeScript and Rust clients delete its upload row, reject every pending commit that references the body with the server's code (the rejection appears in `rejections()` and `commitOutcome()`, and the optimistic rows roll back), and continue the round, so unrelated commits still push. A retryable refusal, or a failure without a server code (`sync.transport_failed`, for example a 404 without a JSON error body), fails the round and keeps the upload and the commits for the next round.
 
 The client writes a durable body pin for each pending commit that references a locally cached body, in the same transaction as the outbox commit. Upload completion deletes the upload row and leaves the pin. Acknowledgement, rejection, revocation, and an [authorized purge](/concepts-local-data-purge/) remove the pin together with the outbox entry. Restart preserves the pins. A reference to a body that exists only on the server creates no pin and needs no local upload.
 

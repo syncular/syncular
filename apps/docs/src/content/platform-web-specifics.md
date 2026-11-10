@@ -118,6 +118,15 @@ not: leadership moves when the leader tab closes and its Web Lock passes to a
 follower, or when the user takes over from an
 [unresponsive leader](#take-over-from-an-unresponsive-leader).
 
+A follower whose core fails to start after it won the lock releases the lock
+and reports `handle.leadership` as `waiting` with reason
+`leader-start-failed`, the start `error`, the `attempt` count, and `retrying`.
+While `retrying` is true it asks for the lock again behind every other waiting
+tab. The third failed start sets `retrying` to false: a core that fails the
+same way each time, such as one whose worker bundle changed, would otherwise
+take and drop the lock in a loop. The tab then follows whichever tab leads
+next.
+
 A follower call that the departing leader has not answered rejects with
 `client.leader_handover` (retryable): the follower cannot tell whether the old
 core applied it. `connectRealtime()` and `disconnectRealtime()` are the
@@ -180,12 +189,19 @@ with `durationMs` and an `outcome`: `rebound` (the leader answered),
 
 ### Build compatibility
 
-Every message carries the tab's `MULTI_TAB_PROTOCOL_VERSION` and schema version.
+Every `hello`, request and `announce` message carries the tab's `MULTI_TAB_PROTOCOL_VERSION` and schema version; replies and events carry neither.
 A follower whose leader differs becomes `blocked` with reason
 `leader-incompatible`, code `client.leader_incompatible`, and `leader: 'older'`
 or `'newer'`. A leader that hears from a newer tab closes its core and releases
 the lock, so the newer tab promotes and the older one stays blocked until it
-reloads.
+reloads. The newer tab asks each older leader it hears once: with several older
+tabs open, every older tab that wins the lock before the newer one steps down
+in turn.
+
+Protocol 3 addresses every reply to the follower that sent the request. Tabs
+of a build before it run protocol 2: during a deploy, the first tab of the new
+build takes the lock from them, and they stay `blocked` with
+`leader: 'newer'` until they reload.
 
 ### Single-tab and isolated replicas
 

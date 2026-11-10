@@ -106,6 +106,11 @@ client.subscribeMany([
 
 A subscription and its cursor survive an app restart.
 
+`subscribe`, `subscribeMany` and `unsubscribe` raise `syncNeeded` and queue one
+interactive sync intent when they change the registry, in the web and the Rust
+clients alike. Declaring an identical active registration again and
+unsubscribing an unknown id change nothing.
+
 :::rule{title="Omission unsubscribes"}
 Each pull sends the client's complete subscription list, and that list
 replaces the stored one. A subscription missing from the list stops receiving

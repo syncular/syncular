@@ -1,6 +1,6 @@
 import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
-import { OUTBOX_TABLE } from './outbox';
+import { OUTBOX_IMAGES } from './outbox';
 export const RETAINED_ROWS = '_syncular_failed_rows';
 import { ClientSyncError } from './errors';
 import type { ClientDatabase } from './database';
@@ -171,17 +171,13 @@ export function uniqueConflicts(
 /** Exact row keys are JSON [table,id]; table scopes include unique-key peers. */
 export type OverlayScope = readonly string[];
 
-export function overlayScopePredicate(table: string, id: string): string {
-  return `?1 IS NULL OR json_array(${table},${id}) IN(SELECT value FROM json_each(?1)) OR json_array(${table}) IN(SELECT value FROM json_each(?1))`;
-}
-
 function retainedRows(
   db: ClientDatabase,
   scope?: OverlayScope,
   acknowledged?: boolean,
 ) {
   return db.query(
-    `SELECT * FROM ${RETAINED_ROWS} WHERE (${overlayScopePredicate('tbl', 'id')})${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
+    `SELECT * FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1)) OR json_array(tbl) IN(SELECT value FROM json_each(?1)))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
     [scope ? JSON.stringify(scope) : null],
   );
 }
@@ -266,7 +262,7 @@ export function failedOverlayCommits(
           (conflict) =>
             conflict.serverVersion >= 0 &&
             !db.query(
-              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM ${OUTBOX_TABLE},json_each(operations)WHERE json_extract(json_each.value,'$.table')=? AND json_extract(json_each.value,'$.rowId')=? LIMIT 1`,
+              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM ${OUTBOX_IMAGES} WHERE tbl=? AND row_id=? LIMIT 1`,
               [table.name, conflict.rowId, table.name, conflict.rowId],
             ).length,
         );

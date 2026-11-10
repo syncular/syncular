@@ -20,7 +20,7 @@ import {
   type RowColumn,
   type RowValue,
 } from '@syncular/core';
-import { ClientSyncError } from './errors';
+import { invalidRequest } from './errors';
 import type { CompiledClientTable } from './schema';
 
 /**
@@ -73,8 +73,7 @@ export function encryptionConfigFromKeyring(
 ): EncryptionConfig {
   for (const [keyId, key] of Object.entries(keyring.keys)) {
     if (key.length !== KEY_LENGTH) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `encryption key ${JSON.stringify(keyId)} must be ${KEY_LENGTH} bytes (AES-256), got ${key.length}`,
       );
     }
@@ -144,7 +143,7 @@ function declaredTypeOf(column: RowColumn): DeclaredType {
  * unencrypted (§5.11).
  */
 export async function encryptRowValues<T extends RowValue | undefined>(
-  config: EncryptionConfig,
+  config: EncryptionConfig | undefined,
   table: CompiledClientTable,
   rowId: string,
   values: readonly T[],
@@ -164,6 +163,9 @@ export async function encryptRowValues<T extends RowValue | undefined>(
     }
   }
   if (!hasPresentEncrypted) return out;
+  if (config === undefined) {
+    throw new EncryptError('encrypted columns need an encryption config');
+  }
   // Key selection reads the presence set first, then the stored local row.
   // Absent slots densify to null for selection only; the loop below still
   // leaves them untouched. Absent ≠ NULL (§6.1): only an ABSENT selector
@@ -213,7 +215,7 @@ export async function encryptRowValues<T extends RowValue | undefined>(
  * {@link DecryptError} (`client.decrypt_failed`, §5.11).
  */
 export async function decryptRowValues(
-  config: EncryptionConfig,
+  config: EncryptionConfig | undefined,
   table: CompiledClientTable,
   values: readonly RowValue[],
 ): Promise<RowValue[]> {
@@ -228,6 +230,9 @@ export async function decryptRowValues(
       throw new DecryptError(
         `encrypted column ${column.name} decoded to a non-bytes value`,
       );
+    }
+    if (config === undefined) {
+      throw new DecryptError('encrypted columns need an encryption config');
     }
     out[i] = deserializeGuard(
       await decryptValue(declaredTypeOf(column), value, config.keyProvider),

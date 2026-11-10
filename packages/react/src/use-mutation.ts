@@ -1,5 +1,5 @@
 import type { MutationInput } from '@syncular/client';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSyncClient } from './use-client';
 
 export interface SyncTableDescriptor<Row, Insert, Update, Id> {
@@ -99,55 +99,40 @@ export function useMutation<Row, Insert, Update, Id>(
     error,
     resetError,
   };
-  const upsert = useCallback(
-    (values: Insert, baseVersion?: number): Promise<string> => {
-      if (table === undefined)
-        throw new Error('table mutation descriptor missing');
-      return mutate([
-        {
-          table: table.name,
-          op: 'upsert',
-          values: values as Readonly<Record<string, unknown>>,
-          ...(baseVersion !== undefined ? { baseVersion } : {}),
-        },
-      ]);
-    },
-    [mutate, table],
+  const helpers = useMemo(
+    () =>
+      table === undefined
+        ? undefined
+        : {
+            upsert: (values: Insert, baseVersion?: number) =>
+              mutate([
+                {
+                  table: table.name,
+                  op: 'upsert',
+                  values: values as Readonly<Record<string, unknown>>,
+                  ...(baseVersion !== undefined ? { baseVersion } : {}),
+                },
+              ]),
+            patch: (id: Id, partial: Partial<Update>, baseVersion?: number) =>
+              run(() =>
+                client.patch(
+                  table.name,
+                  String(id),
+                  partial as Readonly<Record<string, unknown>>,
+                  baseVersion !== undefined ? { baseVersion } : undefined,
+                ),
+              ),
+            remove: (id: Id, baseVersion?: number) =>
+              mutate([
+                {
+                  table: table.name,
+                  op: 'delete',
+                  rowId: String(id),
+                  ...(baseVersion !== undefined ? { baseVersion } : {}),
+                },
+              ]),
+          },
+    [client, mutate, run, table],
   );
-  const patch = useCallback(
-    (
-      id: Id,
-      partial: Partial<Update>,
-      baseVersion?: number,
-    ): Promise<string> => {
-      if (table === undefined)
-        throw new Error('table mutation descriptor missing');
-      return run(() =>
-        client.patch(
-          table.name,
-          String(id),
-          partial as Readonly<Record<string, unknown>>,
-          baseVersion !== undefined ? { baseVersion } : undefined,
-        ),
-      );
-    },
-    [client, run, table],
-  );
-  const remove = useCallback(
-    (id: Id, baseVersion?: number): Promise<string> => {
-      if (table === undefined)
-        throw new Error('table mutation descriptor missing');
-      return mutate([
-        {
-          table: table.name,
-          op: 'delete',
-          rowId: String(id),
-          ...(baseVersion !== undefined ? { baseVersion } : {}),
-        },
-      ]);
-    },
-    [mutate, table],
-  );
-  if (table === undefined) return base;
-  return { ...base, upsert, patch, remove };
+  return helpers === undefined ? base : { ...base, ...helpers };
 }

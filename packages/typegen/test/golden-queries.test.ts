@@ -9,7 +9,8 @@
  * comment-typed param, and an aggregate fallback column.
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   analyzeQueries,
@@ -337,4 +338,59 @@ describe('named-query analysis fidelity', () => {
       { name: 'orgId', langName: 'orgId', type: 'string', source: 'inferred' },
     ]);
   });
+});
+
+// Each native golden must be accepted by its own toolchain. The binding gates
+// (`bindings/{swift,kotlin,flutter}/check.sh`) pin those toolchains and name
+// theirs in SYNCULAR_NATIVE_GOLDENS; whatever happens to be on PATH elsewhere
+// is not the toolchain the bindings support.
+describe('native toolchains accept the committed goldens', () => {
+  const toolchains = (process.env.SYNCULAR_NATIVE_GOLDENS ?? '').split(',');
+  const goldens = (extension: string) =>
+    readdirSync(FIXTURE)
+      .filter((name) => name.endsWith(extension))
+      .map((name) => join(FIXTURE, name));
+  const accepts = (command: readonly string[]) => {
+    const result = Bun.spawnSync([...command]);
+    expect(result.exitCode === 0 ? '' : result.stderr.toString()).toBe('');
+  };
+
+  test.skipIf(!toolchains.includes('swift'))(
+    'swiftc parses every Swift golden',
+    () => {
+      for (const file of goldens('.swift')) accepts(['swiftc', '-parse', file]);
+    },
+  );
+
+  test.skipIf(!toolchains.includes('kotlin'))(
+    'kotlinc compiles the Kotlin goldens with the binding',
+    () => {
+      const binding = join(
+        import.meta.dir,
+        '../../../bindings/kotlin/src/main/kotlin/dev/syncular',
+      );
+      const out = mkdtempSync(join(tmpdir(), 'syncular-kotlin-golden-'));
+      try {
+        accepts([
+          'kotlinc',
+          // The binding uses the JDK 21 preview FFM API, as its Gradle build does.
+          '-Xjvm-enable-preview',
+          ...goldens('.kt'),
+          ...readdirSync(binding).map((name) => join(binding, name)),
+          '-d',
+          out,
+        ]);
+      } finally {
+        rmSync(out, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(!toolchains.includes('dart'))(
+    'dart parses every Dart golden',
+    () => {
+      for (const file of goldens('.dart'))
+        accepts(['dart', 'format', '--output=none', file]);
+    },
+  );
 });

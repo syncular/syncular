@@ -83,9 +83,14 @@ On desktop, the plugin owns the database path and the transport — see
    table before using a child wildcard. See
    [Scopes & authorization](https://syncular.dev/concepts-scopes/).
 2. **`src/server.ts` → `authenticate`** — plug in your real session/token
-   check; return `{ actorId, partition }` or `null` for a 401.
+   check; return `{ actorId, partition }` or `null` for a 401. `POST /sync`
+   and the `/realtime` upgrade both run it. A browser WebSocket sends cookies
+   but no custom headers, so authenticate the upgrade from a cookie or a
+   [short-lived ticket](https://syncular.dev/guide-auth/#realtime-tickets).
 3. **`src-tauri/src/lib.rs` → `base_url`** — point the native core at your
    deployed sync endpoint (rotating auth goes through `client.setHeaders`).
+   Replace `localhost:8787` in the `connect-src` of the window's CSP
+   (`src-tauri/tauri.conf.json`) with the same origin.
 4. **`src/frontend/main.tsx`** — the UI. Everything under `<SyncProvider>` is
    shared code; grow it into your app.
 5. **`migrations/` + `syncular.json`** — append migrations and add tables or

@@ -17,7 +17,7 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://localhost:8787 ws://localhost:8787",
       "capabilities": ["syncular"]
     }
   },

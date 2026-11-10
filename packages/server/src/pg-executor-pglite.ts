@@ -9,21 +9,18 @@ import { retainRollbackFailure } from './storage-errors';
  * `PgExecutor` interface (see the server README).
  *
  * pglite is single-connection, so `transaction` runs `BEGIN`/`COMMIT`/
- * `ROLLBACK` on the one connection. Overlapping `transaction` calls are
- * serialized through a promise chain (mirroring `SqliteServerStorage`'s
- * begin() FIFO): a nested BEGIN on Postgres is a warning-level no-op, so
- * interleaved scopes would silently collapse into one SQL transaction and
- * break the push layer's serialization guarantee on this dev driver.
+ * `ROLLBACK` on the one connection. Transactions and pool-level `query` calls
+ * share one promise chain (mirroring `SqliteServerStorage`): a nested BEGIN
+ * on Postgres is a warning-level no-op, so interleaved scopes would silently
+ * collapse into one SQL transaction, and a pool-level statement issued while
+ * a transaction is open would read its uncommitted rows or join it (§6.4).
  */
 import type { PGlite } from '@electric-sql/pglite';
 import type { PgExecutor, PgQueryable, PgRow } from './pg-executor';
 
 /** Minimal structural type for a pglite instance (avoids a hard type dep). */
 interface PgliteLike {
-  query<Row>(
-    query: string,
-    params?: unknown[],
-  ): Promise<{ rows: Row[]; affectedRows?: number }>;
+  query<Row>(query: string, params?: unknown[]): Promise<{ rows: Row[] }>;
   exec(query: string): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -35,10 +32,7 @@ function queryable(db: PgliteLike): PgQueryable {
         text,
         params ? [...params] : undefined,
       );
-      return {
-        rows: result.rows,
-        rowCount: result.affectedRows ?? result.rows.length,
-      };
+      return { rows: result.rows };
     },
   };
 }
@@ -46,18 +40,28 @@ function queryable(db: PgliteLike): PgQueryable {
 export function pgliteExecutor(db: PGlite | PgliteLike): PgExecutor {
   const like = db as PgliteLike;
   const q = queryable(like);
-  // One BEGIN…COMMIT/ROLLBACK scope at a time on the single connection (see
-  // the file header).
-  let transactionTail: Promise<void> = Promise.resolve();
+  // One caller at a time on the single connection (see the file header).
+  let tail: Promise<void> = Promise.resolve();
+  const acquire = async (): Promise<() => void> => {
+    const previous = tail;
+    let release!: () => void;
+    tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    return release;
+  };
   return {
-    query: q.query,
+    async query<Row = PgRow>(text: string, params?: readonly unknown[]) {
+      const release = await acquire();
+      try {
+        return await q.query<Row>(text, params);
+      } finally {
+        release();
+      }
+    },
     async transaction<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T> {
-      const previous = transactionTail;
-      let release!: () => void;
-      transactionTail = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      await previous;
+      const release = await acquire();
       try {
         await like.exec('BEGIN');
         try {

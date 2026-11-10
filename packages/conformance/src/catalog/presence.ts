@@ -116,6 +116,42 @@ export const presenceScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'presence/reconnect-replaces-the-stale-socket',
+    specRefs: ['§8.6.1', 'B.16'],
+    requires: ['realtime'],
+    async run(ctx) {
+      // Two handles share one clientId: the first one's socket stands in for
+      // the stale socket of a client that reconnected.
+      const stale = await connectedOn(ctx, 'actor-a', 'client-a', P1);
+      const b = await connectedOn(ctx, 'actor-b', 'client-b', P1);
+      await stale.api.setPresence?.(KEY_P1, { v: 1 });
+      await b.realtime.waitForPresence(1);
+      const fresh = await connectedOn(ctx, 'actor-a', 'client-a', P1);
+      await fresh.api.setPresence?.(KEY_P1, { v: 2 });
+      await b.realtime.waitForPresence(2);
+      // The stale socket's close announces nothing: the identity
+      // (actor-a, client-a) is still present through the fresh socket.
+      await stale.api.disconnectRealtime();
+      await fresh.api.setPresence?.(KEY_P1, { v: 3 });
+      await b.realtime.waitForPresence(3);
+      checkEqual(
+        b.realtime.presenceEvents.map((e) => [e.kind, e.clientId, e.doc]),
+        [
+          ['join', 'client-a', { v: 1 }],
+          ['update', 'client-a', { v: 2 }],
+          ['update', 'client-a', { v: 3 }],
+        ],
+        'the same (actorId, clientId) replaces its document; the stale close sends no leave',
+      );
+      checkEqual(
+        peerDocs((await b.api.presence?.(KEY_P1)) ?? []),
+        [{ v: 3 }],
+        'B holds one peer with the latest document',
+      );
+    },
+  },
+
+  {
     name: 'presence/cross-scope-isolation-privacy-probe',
     specRefs: ['§8.6.3', 'B.16'],
     requires: ['realtime'],
@@ -192,6 +228,50 @@ export const presenceScenarios: readonly Scenario[] = [
       check(
         b.realtime.wakeReasons.length === 0,
         'no spurious wake-up from presence',
+      );
+    },
+  },
+
+  {
+    name: 'presence/size-cap-per-connection',
+    specRefs: ['§8.6.2', 'B.16'],
+    requires: ['realtime', 'server-limits'],
+    // 'project:pN' is 10 bytes and `{"s":"…20…"}` 28: one key fits, two
+    // do not.
+    server: { limits: { maxPresenceBytes: 64 } },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'seed')]);
+      const both = { project_id: ['p1', 'p2'] };
+      const a = await connectedOn(ctx, 'actor-a', 'client-a', both);
+      const b = await connectedOn(ctx, 'actor-b', 'client-b', both);
+
+      await a.api.setPresence?.(KEY_P1, { s: 'x'.repeat(20) });
+      await b.realtime.waitForPresence(1);
+      // Within the cap alone, over it beside A's p1 document.
+      await a.api.setPresence?.(KEY_P2, { s: 'y'.repeat(20) });
+      await a.realtime.waitForPresence(1);
+      checkEqual(
+        [
+          a.realtime.presenceEvents[0]?.scopeKey,
+          a.realtime.presenceEvents[0]?.error,
+        ],
+        [KEY_P2, 'presence.too_large'],
+        'the cap counts every key the connection holds (§8.6.2)',
+      );
+
+      // Leaving p1 frees its budget for p2.
+      await a.api.setPresence?.(KEY_P1, null);
+      await b.realtime.waitForPresence(2);
+      await a.api.setPresence?.(KEY_P2, { s: 'y'.repeat(20) });
+      await b.realtime.waitForPresence(3);
+      checkEqual(
+        b.realtime.presenceEvents.map((e) => [e.kind, e.scopeKey]),
+        [
+          ['join', KEY_P1],
+          ['leave', KEY_P1],
+          ['join', KEY_P2],
+        ],
+        'the rejected publish fanned out nothing and changed nothing',
       );
     },
   },

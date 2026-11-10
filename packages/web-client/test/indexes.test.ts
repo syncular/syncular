@@ -213,7 +213,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
             asOfCommitSeq: 7,
             scopeDigest: 'digest',
           },
-          { clearFirst: true, effective: { project_id: ['p1'] } },
+          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
         ),
       ).toBe(rows.length);
       expect(db.decoded).toBe(0);
@@ -266,7 +266,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
           table,
           image.db.serialize(),
           descriptor,
-          { clearFirst: true, effective: { project_id: ['p1'] } },
+          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
         ),
       ).rejects.toThrow();
       expect(db.query('SELECT count(*) AS n FROM tasks')).toEqual([
@@ -286,7 +286,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
           table,
           image.db.serialize(),
           descriptor,
-          { clearFirst: true, effective: { project_id: ['p1'] } },
+          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
         ),
       ).resolves.toBe(2050);
       expect(
@@ -330,7 +330,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
             asOfCommitSeq: 7,
             scopeDigest: 'digest',
           },
-          { clearFirst: true, effective: { project_id: ['p1'] } },
+          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
         ),
       ).rejects.toThrow();
     } finally {
@@ -367,7 +367,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
           },
         ]),
         descriptor,
-        { clearFirst: false, effective: { project_id: ['p1'] } },
+        { clearFirst: false, effective: { project_id: ['p1'] }, owners: [] },
       ),
     ).toBe(1);
     upsertLocalRow(db, table, ['t2', 'p1', 'original'], 1);
@@ -386,7 +386,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
           },
         ]),
         descriptor,
-        { clearFirst: false, effective: { project_id: ['p1'] } },
+        { clearFirst: false, effective: { project_id: ['p1'] }, owners: [] },
       ),
     ).rejects.toThrow();
     expect(
@@ -434,6 +434,51 @@ describe('CREATE INDEX subset — client local DDL', () => {
         /primary key "id" has an ineligible type/,
       );
     }
+  });
+
+  test('a scope column that is not a string or integer fails at compile', () => {
+    // §3.1: a scope value is an authorization key, so its column type must
+    // render identically in every implementation. An unknown column fails
+    // the same check.
+    for (const type of [
+      'float',
+      'boolean',
+      'json',
+      'bytes',
+      'blob_ref',
+      'crdt',
+    ] as const) {
+      const bad: ClientSchema = {
+        version: 1,
+        tables: [
+          {
+            name: 'tasks',
+            columns: [
+              { name: 'id', type: 'string', nullable: false },
+              { name: 'bucket', type, nullable: false },
+            ],
+            primaryKey: 'id',
+            scopes: ['bucket:{bucket}'],
+          },
+        ],
+      };
+      expect(() => compileClientSchema(bad)).toThrow(
+        /scope column "bucket" must be string or integer/,
+      );
+    }
+    expect(() =>
+      compileClientSchema({
+        version: 1,
+        tables: [
+          {
+            name: 'tasks',
+            columns: [{ name: 'id', type: 'string', nullable: false }],
+            primaryKey: 'id',
+            scopes: ['bucket:{nope}'],
+          },
+        ],
+      }),
+    ).toThrow(/scope column "nope" must be string or integer/);
   });
 
   test('an index naming an unknown column fails at compile', () => {

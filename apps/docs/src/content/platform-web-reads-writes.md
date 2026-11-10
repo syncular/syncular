@@ -78,8 +78,13 @@ they invalidate through their synced owner table.
 `mutate` and `patch` validate every supplied value against the declared column
 type before the call records anything. A wrong type, an absent required column,
 a non-finite float, or a malformed byte envelope rejects with
-`sync.invalid_request`. A rejected call appends no outbox commit, writes no
-optimistic row, publishes no revision, and emits no event.
+`sync.invalid_request`. So does every value the server refuses at push
+admission: a string or delete `rowId` containing U+0000, a `json` value outside
+the [JSON validity rule](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#conventions-and-primitive-encodings)
+(nested deeper than 64 containers, a number beyond binary64 such as `1e999`, a
+string with U+0000 or an unpaired surrogate), and a `blob_ref` whose text is
+not the canonical serialization. A rejected call appends no outbox commit,
+writes no optimistic row, publishes no revision, and emits no event.
 
 Two normalizations let a row read from the local mirror feed back into
 `mutate`:

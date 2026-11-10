@@ -55,6 +55,15 @@ else
   exit 0
 fi
 
+# -- typegen goldens parse ----------------------------------------------------
+if command -v dart >/dev/null 2>&1; then
+  echo "== dart parses the typegen goldens =="
+  ( cd "${V2_DIR}" && SYNCULAR_NATIVE_GOLDENS=dart bun test --timeout 120000 \
+      packages/typegen/test/golden-queries.test.ts -t 'native toolchains' )
+else
+  echo "SKIP: no standalone dart; the typegen Dart goldens are not parsed."
+fi
+
 # -- build + vendor the native core ------------------------------------------
 echo "== build libsyncular (lean, this machine) =="
 ( cd "${RUST_DIR}" && cargo build -p syncular-ffi )

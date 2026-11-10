@@ -360,6 +360,7 @@ describe('createNativeSyncClient', () => {
       maxRequestBytes: 1024,
       maxResponseBytes: 2048,
       redirects: 'follow',
+      realtimeHeartbeatMs: 5000,
       nativeModule,
       eventEmitter,
     });
@@ -374,7 +375,33 @@ describe('createNativeSyncClient', () => {
       maxRequestBytes: 1024,
       maxResponseBytes: 2048,
       redirects: 'follow',
+      realtimeHeartbeatMs: 5000,
     });
+  });
+
+  test('answers a realtime-wake event with drainRealtime, in preflight too', async () => {
+    const { nativeModule, eventEmitter, calls, emit } =
+      makeNative(defaultResponder);
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      nativeModule,
+      eventEmitter,
+    });
+    const drains = () =>
+      calls.filter(
+        (call) =>
+          call.fn === 'command' &&
+          (call.arg as { method?: string }).method === 'drainRealtime',
+      );
+    expect(drains()).toHaveLength(0);
+    emit({ type: 'realtime-wake' });
+    await settle();
+    expect(drains()).toHaveLength(1);
+    await client.close();
+    emit({ type: 'realtime-wake' });
+    await settle();
+    expect(drains()).toHaveLength(1);
   });
 
   test('preflight blocks protected work and installs the portable keyring on activation', async () => {
@@ -1161,12 +1188,20 @@ describe('createNativeSyncClient', () => {
     expect(seen[0]?.scopeKeys).toEqual(['project:1']);
   });
 
-  test('presence events fan out to onPresence listeners', async () => {
+  test('presence events fan out to onPresence listeners with the publish rejection code', async () => {
     const { client, emit } = await build();
-    const scopeKeys: string[] = [];
-    client.onPresence((key) => scopeKeys.push(key));
+    const heard: Array<[string, string | undefined]> = [];
+    client.onPresence((key, error) => heard.push([key, error]));
     emit({ type: 'presence', scopeKey: 'room:42' });
-    expect(scopeKeys).toEqual(['room:42']);
+    emit({
+      type: 'presence',
+      scopeKey: 'room:42',
+      error: 'presence.too_large',
+    });
+    expect(heard).toEqual([
+      ['room:42', undefined],
+      ['room:42', 'presence.too_large'],
+    ]);
   });
 
   test('native modules deliver events as JSON strings', async () => {
@@ -1500,4 +1535,79 @@ test('progress arrives as an event and listener removal does not issue a command
   expect(received).toEqual([1024]);
   expect(calls.length).toBe(before);
   await client.close();
+});
+
+test('conflicts decode server row bytes and drop reserved columns', async () => {
+  const conflict = {
+    clientCommitId: 'c1',
+    opIndex: 0,
+    table: 'todo',
+    rowId: 't1',
+    code: 'sync.version_conflict',
+    message: 'stale',
+    serverVersion: 2,
+    conflictColumns: ['payload'],
+  };
+  const { nativeModule, eventEmitter } = makeNative((method, params) =>
+    method === 'conflicts'
+      ? OK({
+          conflicts: [
+            {
+              ...conflict,
+              serverRow: {
+                id: 't1',
+                payload: { $bytes: '0102' },
+                _sync_version: 2,
+              },
+            },
+          ],
+        })
+      : defaultResponder(method, params),
+  );
+  const client = await createNativeSyncClient({
+    schema: {},
+    nativeModule,
+    eventEmitter,
+  });
+  expect(await client.conflicts()).toEqual([
+    {
+      ...conflict,
+      serverRow: { id: 't1', payload: new Uint8Array([1, 2]) },
+    },
+  ]);
+  await client.close();
+});
+
+test('a rejected native create releases the event listener and rejects with a typed error', async () => {
+  const { nativeModule, eventEmitter, pump } = makeNative(defaultResponder);
+  let listening = 0;
+  const failure = await createNativeSyncClient({
+    schema: {},
+    nativeModule: {
+      ...nativeModule,
+      create: () => Promise.reject(new Error('native module unavailable')),
+    },
+    eventEmitter: {
+      addListener: (event, handler) => {
+        listening += 1;
+        const subscription = eventEmitter.addListener(event, handler);
+        return {
+          remove: () => {
+            listening -= 1;
+            subscription.remove();
+          },
+        };
+      },
+    },
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(failure).toBeInstanceOf(NativeSyncError);
+  expect(failure).toMatchObject({
+    code: 'client.failed',
+    details: { cause: 'Error: native module unavailable' },
+  });
+  expect(listening).toBe(0);
+  expect(pump.started).toBe(0);
 });

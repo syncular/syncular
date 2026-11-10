@@ -62,6 +62,7 @@ function TodoList(): React.ReactElement {
   const { rows, isLoading } = useRawSql<TodosRow>(
     'SELECT id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs FROM todos WHERE list_id = ? ORDER BY position, id',
     [LIST_ID],
+    { tables: ['todos'] },
   );
 
   const add = (): void => {

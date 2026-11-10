@@ -46,7 +46,7 @@ fn a_commit_violating_a_secondary_unique_index_fails_and_enqueues_nothing() {
     assert_eq!(error.message, "local write violates a unique constraint");
     assert!(task_ids(&client).is_empty());
     assert!(client.pending_commit_ids().is_empty());
-    assert_eq!(client.local_revision(), 0);
+    assert_eq!(client.local_revision().unwrap(), 0);
 
     let first = client
         .mutate(vec![task("t1", "p1", "same")])
@@ -57,7 +57,7 @@ fn a_commit_violating_a_secondary_unique_index_fails_and_enqueues_nothing() {
     assert_eq!(error.code.as_str(), "sync.constraint_violation", "{error}");
     assert_eq!(task_ids(&client), vec!["t1".to_owned()]);
     assert_eq!(client.pending_commit_ids(), vec![first]);
-    assert_eq!(client.local_revision(), 1);
+    assert_eq!(client.local_revision().unwrap(), 1);
 
     // Same values in another project, and a rename that frees the value
     // before a sibling takes it within one commit, both apply.

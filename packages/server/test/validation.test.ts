@@ -11,8 +11,11 @@ import {
 } from '@syncular/core';
 import {
   compileSchema,
+  createRealtimeHub,
+  DEFAULT_LIMITS,
   ERROR_CATALOG,
   handleSyncRequest,
+  limitsOf,
 } from '@syncular/server';
 import {
   expectSyncError,
@@ -313,7 +316,14 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'inspectServer',
       httpStatus: 503,
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(42);
+    // §1.7: every configured request and watch-session cap answers one code.
+    expect(ERROR_CATALOG['sync.limit_exceeded']).toEqual({
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+      httpStatus: 413,
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(43);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {
@@ -332,5 +342,71 @@ describe('error catalog (§10.2)', () => {
         }),
       ).toThrow(/primary key "id" has an ineligible column type/);
     }
+  });
+});
+
+describe('request limits (§1.7)', () => {
+  test('more subscriptions than maxSubscriptionsPerRequest fail the request', async () => {
+    const t = makeContext({ limits: { maxSubscriptionsPerRequest: 2 } });
+    const subs = ['s1', 's2', 's3'].map((id) =>
+      subFrame(id, 'tasks', { project_id: ['p1'] }, -1),
+    );
+    const error = await expectSyncError(
+      handleSyncRequest(requestBytes([pullHeader(), ...subs]), t.ctx),
+      'sync.limit_exceeded',
+    );
+    expect(error.httpStatus).toBe(413);
+    expect(JSON.parse(error.details ?? '{}')).toEqual({
+      limit: 'maxSubscriptionsPerRequest',
+      max: 2,
+      actual: 3,
+    });
+    const served = await sync(
+      makeContext({ limits: { maxSubscriptionsPerRequest: 2 } }),
+      [pullHeader(), ...subs.slice(0, 2)],
+    );
+    expect(served.frames.filter((f) => f.type === 'SUB_START')).toHaveLength(2);
+  });
+
+  test('more requested scope values than maxScopeValuesPerSubscription fail the request', async () => {
+    const t = makeContext({ limits: { maxScopeValuesPerSubscription: 2 } });
+    const error = await expectSyncError(
+      handleSyncRequest(
+        requestBytes([
+          pullHeader(),
+          subFrame('ok', 'docs', { org_id: ['o1'], projectId: ['p1'] }, -1),
+          subFrame(
+            'wide',
+            'docs',
+            { org_id: ['o1'], projectId: ['p1', 'p2'] },
+            -1,
+          ),
+        ]),
+        t.ctx,
+      ),
+      'sync.limit_exceeded',
+    );
+    expect(JSON.parse(error.details ?? '{}')).toEqual({
+      limit: 'maxScopeValuesPerSubscription',
+      max: 2,
+      actual: 3,
+      subscriptionId: 'wide',
+    });
+  });
+
+  test('a limit that is not a positive safe integer throws at creation', () => {
+    const config = makeContext().ctx;
+    for (const bad of [Number.NaN, 0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        limitsOf({ ...config, limits: { maxRequestBytes: bad } }),
+      ).toThrow('ServerLimits.maxRequestBytes is out of range');
+      expect(() =>
+        createRealtimeHub({ ...config, limits: { maxWatchesPerSession: bad } }),
+      ).toThrow('ServerLimits.maxWatchesPerSession is out of range');
+    }
+    // `inlineSegmentMaxBytes` is a threshold: 0 inlines nothing.
+    expect(
+      limitsOf({ ...config, limits: { inlineSegmentMaxBytes: 0 } }),
+    ).toEqual({ ...DEFAULT_LIMITS, inlineSegmentMaxBytes: 0 });
   });
 });

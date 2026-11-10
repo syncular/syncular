@@ -37,9 +37,12 @@ describe('hooks against the handle (all-async) surface', () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <SyncProvider client={handle}>{children}</SyncProvider>
     );
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper,
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper,
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     // Wrap the mutate so the invalidation→re-query→setState it drives flushes
@@ -72,9 +75,12 @@ describe('hooks against the handle (all-async) surface', () => {
         <SyncProvider client={handle}>{children}</SyncProvider>
       </StrictMode>
     );
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper,
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper,
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     await act(async () => {

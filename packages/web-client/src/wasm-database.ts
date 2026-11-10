@@ -39,6 +39,7 @@ import {
   STORAGE_FENCED_CODE,
   STORAGE_UNAVAILABLE_CODE,
 } from './errors';
+import { prepareReadOnly } from './query-guard';
 
 /** Structural view of the sqlite3 oo1 surface this binding uses. */
 interface Oo1Database {
@@ -50,8 +51,23 @@ interface Oo1Database {
     rowMode: 'object';
     resultRows: unknown[];
   }): unknown;
+  prepare(sql: string): Oo1Statement;
   close(): void;
 }
+
+interface Oo1Statement {
+  readonly pointer?: number;
+  readonly columnCount: number;
+  isReadOnly(): boolean;
+  finalize(): unknown;
+  bind(values: readonly unknown[]): unknown;
+  step(): boolean;
+  get(target: Record<string, unknown>): Record<string, unknown>;
+  reset(clearBindings: boolean): unknown;
+}
+
+/** Compiled statements one database keeps; a full cache is finalized and cleared. */
+const STATEMENT_CACHE_LIMIT = 128;
 
 interface SahPoolUtil {
   OpfsSAHPoolDb: new (filename: string) => Oo1Database;
@@ -77,6 +93,7 @@ interface Sqlite3Static {
     SQLITE_DESERIALIZE_FREEONCLOSE: number;
     SQLITE_DESERIALIZE_READONLY: number;
     SQLITE_FCNTL_FILE_POINTER: number;
+    sqlite3_sql(statement: number | undefined): string;
     sqlite3_file_control(
       db: number,
       schema: string,
@@ -128,7 +145,7 @@ function coerceParams(params: readonly SqlValue[]): unknown[] {
  */
 interface StorageFence {
   fenced: boolean;
-  readonly siblings: Set<Oo1Database>;
+  readonly siblings: Set<WasmClientDatabase>;
 }
 
 class WasmClientDatabase implements ClientDatabase {
@@ -139,6 +156,7 @@ class WasmClientDatabase implements ClientDatabase {
     | { readonly util: SahPoolUtil; readonly lease: LeaderLease }
     | undefined;
   readonly #fence: StorageFence | undefined;
+  readonly #statements = new Map<string, Oo1Statement>();
   #closed = false;
   #tx = { depth: 0 };
 
@@ -159,7 +177,6 @@ class WasmClientDatabase implements ClientDatabase {
       if (fence === undefined || this.#closed) return;
       fence.fenced = true;
       for (const sibling of fence.siblings) sibling.close();
-      fence.siblings.clear();
       this.close();
     });
   }
@@ -174,25 +191,55 @@ class WasmClientDatabase implements ClientDatabase {
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
-    this.#assertOwned();
-    this.#db.exec({
-      sql,
-      ...(params.length > 0 ? { bind: coerceParams(params) } : {}),
-      rowMode: 'object',
-      resultRows: [],
-    });
+    this.query(sql, params);
   }
 
+  /**
+   * Parameterized SQL (one statement per call, the `ClientDatabase` contract)
+   * runs through a compiled statement cached by its SQL text. SQL without
+   * parameters may hold several statements and compiles through `exec`.
+   */
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     this.#assertOwned();
-    const resultRows: unknown[] = [];
-    this.#db.exec({
-      sql,
-      ...(params.length > 0 ? { bind: coerceParams(params) } : {}),
-      rowMode: 'object',
-      resultRows,
+    if (params.length === 0) {
+      const resultRows: unknown[] = [];
+      this.#db.exec({ sql, rowMode: 'object', resultRows });
+      return resultRows as SqlRow[];
+    }
+    let statement = this.#statements.get(sql);
+    if (statement === undefined) {
+      statement = this.#db.prepare(sql);
+      if (this.#statements.size === STATEMENT_CACHE_LIMIT) {
+        this.#statements.forEach((evicted) => evicted.finalize());
+        this.#statements.clear();
+      }
+      this.#statements.set(sql, statement);
+    }
+    const rows: SqlRow[] = [];
+    try {
+      statement.bind(coerceParams(params));
+      while (statement.step()) rows.push(statement.get({}) as SqlRow);
+    } finally {
+      statement.reset(true);
+    }
+    return rows;
+  }
+
+  queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    this.#assertOwned();
+    prepareReadOnly(sql, () => {
+      const statement = this.#db.prepare(sql);
+      try {
+        return [
+          undefined,
+          this.#sqlite3.capi.sqlite3_sql(statement.pointer),
+          statement.isReadOnly() && statement.columnCount > 0,
+        ] as const;
+      } finally {
+        statement.finalize();
+      }
     });
-    return resultRows as SqlRow[];
+    return this.query(sql, params);
   }
 
   transaction<T>(fn: () => T): T {
@@ -218,18 +265,16 @@ class WasmClientDatabase implements ClientDatabase {
       db.close();
       throw error;
     }
-    this.#fence?.siblings.add(db);
+    const database = new WasmClientDatabase(
+      db,
+      this.#sqlite3,
+      undefined,
+      this.#fence,
+    );
+    this.#fence?.siblings.add(database);
     return {
-      database: new WasmClientDatabase(
-        db,
-        this.#sqlite3,
-        undefined,
-        this.#fence,
-      ),
-      close: () => {
-        this.#fence?.siblings.delete(db);
-        db.close();
-      },
+      database,
+      close: () => database.close(),
       removeFile: () => {
         sah.util.unlink(fileName);
       },
@@ -287,6 +332,10 @@ class WasmClientDatabase implements ClientDatabase {
 
   close(): void {
     if (this.#closed) return;
+    this.#fence?.siblings.delete(this);
+    // oo1 DB.close() does not finalize prepared statements, and an open one
+    // keeps the database file open, so pauseVfs() below would throw.
+    this.#statements.forEach((statement) => statement.finalize());
     this.#db.close();
     // DB.close() leaves the SAH pool live. Close siblings first, then pause the
     // VFS without deleting files, before releasing this worker's physical lock.

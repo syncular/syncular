@@ -15,15 +15,20 @@
 //! re-encodes the whole state as the update to push.
 
 use yrs::updates::decoder::Decode;
-use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
+use yrs::{Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, Text, Transact, Update};
 
 /// Load a `Y.Doc` from stored `crdt` column bytes (a Yjs-v1 update, or a full
 /// state — a state is a legal update). Empty/`None` bytes yield a fresh empty
 /// doc, matching `new YjsColumn(initial)` where a NULL column is the empty
 /// document (§5.10.1). A malformed update is a loud error — the bytes are a
 /// crdt column value the codec accepted as `bytes` but that is not valid Yjs.
+/// Text offsets and lengths count UTF-16 code units, as `Y.Text` does in the
+/// TS helper.
 fn load_doc(bytes: &[u8]) -> Result<Doc, String> {
-    let doc = Doc::new();
+    let doc = Doc::with_options(Options {
+        offset_kind: OffsetKind::Utf16,
+        ..Options::default()
+    });
     if !bytes.is_empty() {
         let update = Update::decode_v1(bytes)
             .map_err(|e| format!("crdt column is not a Yjs update: {e}"))?;
@@ -141,6 +146,20 @@ mod tests {
         // Re-applying the same update is a no-op (idempotent, §5.10.3).
         let merged2 = apply_update(&merged, &a).unwrap();
         assert_eq!(text(&merged2, "text").unwrap(), "A");
+    }
+
+    #[test]
+    fn offsets_count_utf16_code_units() {
+        // "é" is one UTF-16 unit (two UTF-8 bytes); "😀" is two UTF-16 units.
+        let update = insert_text(&[], "text", 0, "éa").unwrap();
+        let update = insert_text(&update, "text", 2, "x").unwrap();
+        assert_eq!(text(&update, "text").unwrap(), "éax");
+        let update = insert_text(&update, "text", 3, "😀").unwrap();
+        let update = insert_text(&update, "text", 5, "!").unwrap();
+        assert_eq!(text(&update, "text").unwrap(), "éax😀!");
+        let update = delete_text(&update, "text", 3, 2).unwrap();
+        assert_eq!(text(&update, "text").unwrap(), "éax!");
+        assert!(insert_text(&update, "text", 5, "?").is_err());
     }
 
     #[test]

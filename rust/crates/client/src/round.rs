@@ -349,7 +349,7 @@ impl PreparedSyncRound {
                 let mut planned: Vec<PlannedFetch> = Vec::new();
                 // A reset/floor/invalid header cannot authorize any segment
                 // fetch.
-                if matches!(response.frames.first(), Some(Frame::RespHeader { required_schema_version: None, reset_required: Some(false), log_epoch: Some(epoch), .. }) if self.message.frames.first().is_some_and(|f| matches!(f, Frame::ReqHeader { log_epoch: Some(request_epoch), .. } if request_epoch == epoch)))
+                if matches!(response.frames.first(), Some(Frame::RespHeader { required_schema_version: None, reset_required: false, log_epoch: epoch, .. }) if self.message.frames.first().is_some_and(|f| matches!(f, Frame::ReqHeader { log_epoch: Some(request_epoch), .. } if request_epoch == epoch)))
                 {
                     let mut scope: Option<(&str, &str)> = None;
                     // §5.4 / §5.5: collect every eligible descriptor first so
@@ -388,6 +388,8 @@ impl PreparedSyncRound {
                                 if !advertised || (url.is_some() && self.meta.accept & 8 == 0) {
                                     break;
                                 }
+                                // A negative byteLength admits no body (§5.4).
+                                let cap = u64::try_from(*byte_length).unwrap_or(0);
                                 let expired = url.is_some()
                                     && url_expires_at_ms
                                         .is_some_and(|expiry| expiry <= batch_started_at);
@@ -397,7 +399,10 @@ impl PreparedSyncRound {
                                         if expired {
                                             None
                                         } else {
-                                            Some(SegmentFetch::Url(url.clone()))
+                                            Some(SegmentFetch::Url {
+                                                url: url.clone(),
+                                                byte_length: cap,
+                                            })
                                         },
                                     ),
                                     None => (
@@ -410,6 +415,7 @@ impl PreparedSyncRound {
                                             segment_id: segment_id.clone(),
                                             table: table.clone(),
                                             requested_scopes_json: scopes.to_owned(),
+                                            byte_length: cap,
                                         })),
                                     ),
                                 };
@@ -765,7 +771,12 @@ impl Transport for DownloadResults {
             request.requested_scopes_json.clone(),
         ))
     }
-    fn fetch_url(&mut self, url: &str, _: &mut dyn FnMut(u64)) -> Result<Vec<u8>, TransportError> {
+    fn fetch_url(
+        &mut self,
+        url: &str,
+        _: u64,
+        _: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         self.take(DownloadKey::Url(url.to_owned()))
     }
     fn segment_fetch_started_at(&self, url: &str) -> Option<i64> {
@@ -911,7 +922,9 @@ mod tests {
             {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
         let mut client =
             SyncClient::new("spent-deadline".into(), &schema, Default::default()).unwrap();
-        client.set_meta(crate::client::LOG_EPOCH_KEY, "epoch");
+        client
+            .set_meta(crate::client::LOG_EPOCH_KEY, "epoch")
+            .unwrap();
         client
             .upload_blob(b"body", Some("text/plain".into()), None)
             .unwrap();
@@ -965,6 +978,109 @@ mod tests {
         }
     }
 
+    /// Answers one response that references one segment and serves a body
+    /// longer than the descriptor declares.
+    struct OversizedSegment {
+        segment_id: String,
+        body: Vec<u8>,
+    }
+
+    impl Transport for OversizedSegment {
+        fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Ok(encode_message(&Message {
+                wire_version: ssp2::decode::WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames: vec![
+                    Frame::RespHeader {
+                        required_schema_version: None,
+                        latest_schema_version: None,
+                        log_epoch: "epoch".into(),
+                        reset_required: false,
+                    },
+                    Frame::SubStart {
+                        id: "tasks".into(),
+                        status: SubStatus::Active,
+                        reason_code: String::new(),
+                        effective_scopes: Vec::new(),
+                        bootstrap: true,
+                    },
+                    Frame::SegmentRef {
+                        segment_id: self.segment_id.clone(),
+                        media_type: MediaType::Rows,
+                        table: "tasks".into(),
+                        byte_length: 4,
+                        row_count: 1,
+                        as_of_commit_seq: 1,
+                        scope_digest: "digest".into(),
+                        row_cursor: None,
+                        next_row_cursor: None,
+                        url: None,
+                        url_expires_at_ms: None,
+                    },
+                    Frame::SubEnd {
+                        next_cursor: 1,
+                        bootstrap_state: None,
+                    },
+                ],
+            }))
+        }
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+        fn download_segment(
+            &mut self,
+            _: &SegmentRequest,
+            _: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Ok(self.body.clone())
+        }
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_segment_body_longer_than_its_byte_length_fails_before_the_content_check() {
+        use sha2::Digest;
+        let schema = serde_json::json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false}],"scopes":[]}]});
+        let mut client = SyncClient::new("oversized".into(), &schema, Default::default()).unwrap();
+        client
+            .set_meta(crate::client::LOG_EPOCH_KEY, "epoch")
+            .unwrap();
+        client
+            .subscribe("tasks".into(), "tasks".into(), Vec::new(), None)
+            .unwrap();
+        // The body hashes to its content address, so only the §5.4 cap can
+        // refuse it.
+        let body = b"twelve bytes".to_vec();
+        let segment_id = format!(
+            "sha256:{}",
+            sha2::Sha256::digest(&body)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let mut transport = OversizedSegment { segment_id, body };
+        match client.sync(&mut transport) {
+            SyncOutcome::Failed {
+                error_code,
+                message,
+                ..
+            } => {
+                assert_eq!(error_code, "sync.invalid_request");
+                assert_eq!(message, "segment exceeds its byteLength");
+            }
+            other => panic!("expected the byteLength cap to fail the round, got {other:?}"),
+        }
+    }
+
     /// Records each single fetch the default batch runs and fails the second.
     #[derive(Default)]
     struct CountingFetches {
@@ -1015,6 +1131,7 @@ mod tests {
                     segment_id: format!("sha256:{id}"),
                     table: "tasks".to_owned(),
                     requested_scopes_json: "{}".to_owned(),
+                    byte_length: 4,
                 })
             })
             .collect();

@@ -2,8 +2,8 @@
  * Swift emitter: neutral IR → one standalone `.swift` file exporting
  *
  * - `enum <EnumName> { static let schema: JSONValue }` — the ServerSchema
- *   object, built from the IR with byte-stable ordering (fed straight into
- *   `SyncularClient(schema:)`),
+ *   object: the exact `serializeSchema` JSON the TS module embeds, parsed
+ *   from a string literal (fed straight into `SyncularClient(schema:)`),
  * - one `struct` per table with typed properties (per the six §2.4 column
  *   types, plus blob_ref/crdt in their honest Swift shapes) and a
  *   `init?(row:)` from a `[String: JSONValue]` (the shape `query`/`readRows`
@@ -14,8 +14,15 @@
  * IR hash so `--check` verifies freshness byte-exactly, exactly like the TS
  * emitter.
  */
-import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
-import { snakeToCamel } from './naming';
+import {
+  appColumnType,
+  type IrColumnType,
+  type IrDocument,
+  type IrSubscription,
+  type IrTable,
+  serializeSchema,
+} from './ir';
+import { pascalCase, snakeToCamel, stringLiteral } from './naming';
 
 /**
  * §2.4 column type → honest Swift type. `json`/`blob_ref` are the raw
@@ -33,93 +40,9 @@ const SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: '[UInt8]',
 };
 
-function appColumnType(column: IrTable['columns'][number]): IrColumnType {
-  return column.encrypted === true && column.declaredType !== undefined
-    ? column.declaredType
-    : column.type;
-}
-
-/** §5.11: app-side Swift type — declaredType for an encrypted column. */
-function appSwiftType(column: IrTable['columns'][number]): string {
-  return SWIFT_TYPE[appColumnType(column)];
-}
-
-function pascalCase(name: string): string {
-  return name
-    .split(/[_-]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('');
-}
-
-/** Language-facing field name — the pinned §12 naming map. */
-function camelCase(name: string): string {
-  return snakeToCamel(name);
-}
-
-function quote(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-/** Emit a `JSONValue` literal for the schema object (built from the IR). */
-function emitSchemaValue(ir: IrDocument, indent: string): string[] {
-  const lines: string[] = [];
-  const i = indent;
-  lines.push(`${i}.object([`);
-  lines.push(`${i}  "version": .number(${ir.schemaVersion}),`);
-  lines.push(`${i}  "tables": .array([`);
-  for (const table of ir.tables) {
-    lines.push(`${i}    .object([`);
-    lines.push(`${i}      "name": .string(${quote(table.name)}),`);
-    lines.push(`${i}      "primaryKey": .string(${quote(table.primaryKey)}),`);
-    lines.push(`${i}      "columns": .array([`);
-    for (const column of table.columns) {
-      const parts = [
-        `"name": .string(${quote(column.name)})`,
-        `"type": .string(${quote(column.type)})`,
-        `"nullable": .bool(${column.nullable})`,
-      ];
-      if (column.crdtType !== undefined) {
-        parts.push(`"crdtType": .string(${quote(column.crdtType)})`);
-      }
-      if (column.encrypted === true) {
-        parts.push('"encrypted": .bool(true)');
-        parts.push(
-          `"declaredType": .string(${quote(column.declaredType ?? column.type)})`,
-        );
-      }
-      lines.push(`${i}        .object([${parts.join(', ')}]),`);
-    }
-    lines.push(`${i}      ]),`);
-    lines.push(`${i}      "scopes": .array([`);
-    for (const scope of table.scopes) {
-      lines.push(
-        `${i}        .object(["pattern": .string(${quote(scope.pattern)}), "column": .string(${quote(scope.column)})]),`,
-      );
-    }
-    lines.push(`${i}      ]),`);
-    if (table.ftsIndexes.length > 0) {
-      lines.push(`${i}      "ftsIndexes": .array([`);
-      for (const index of table.ftsIndexes) {
-        const columns = index.columns
-          .map((column) => `.string(${quote(column)})`)
-          .join(', ');
-        lines.push(
-          `${i}        .object(["name": .string(${quote(index.name)}), "columns": .array([${columns}]), "tokenize": .string(${quote(index.tokenize)})]),`,
-        );
-      }
-      lines.push(`${i}      ]),`);
-    }
-    lines.push(`${i}    ]),`);
-  }
-  lines.push(`${i}  ]),`);
-  lines.push(`${i}])`);
-  return lines;
-}
-
 /** The accessor that lifts a §2.4 value out of a `[String: JSONValue]` row. */
 function rowAccessor(column: IrTable['columns'][number]): string {
-  const key = `row[${quote(column.name)}]`;
+  const key = `row[${stringLiteral(column.name, 'swift')}]`;
   switch (appColumnType(column)) {
     case 'string':
     case 'json':
@@ -147,22 +70,22 @@ function emitStruct(table: IrTable): string[] {
   lines.push(`/// One ${table.name} row (§2.4 column order).`);
   lines.push(`public struct ${type}: Sendable, Equatable {`);
   for (const column of table.columns) {
-    const swift = appSwiftType(column);
+    const swift = SWIFT_TYPE[appColumnType(column)];
     const opt = column.nullable ? '?' : '';
-    lines.push(`    public let ${camelCase(column.name)}: ${swift}${opt}`);
+    lines.push(`    public let ${snakeToCamel(column.name)}: ${swift}${opt}`);
   }
   lines.push('');
   // Memberwise init (public, so app code can build rows too).
   const params = table.columns
     .map((c) => {
-      const swift = appSwiftType(c);
+      const swift = SWIFT_TYPE[appColumnType(c)];
       const opt = c.nullable ? '? = nil' : '';
-      return `${camelCase(c.name)}: ${swift}${opt}`;
+      return `${snakeToCamel(c.name)}: ${swift}${opt}`;
     })
     .join(', ');
   lines.push(`    public init(${params}) {`);
   for (const column of table.columns) {
-    const name = camelCase(column.name);
+    const name = snakeToCamel(column.name);
     lines.push(`        self.${name} = ${name}`);
   }
   lines.push('    }');
@@ -175,7 +98,7 @@ function emitStruct(table: IrTable): string[] {
   );
   lines.push('    public init?(row: [String: JSONValue]) {');
   for (const column of table.columns) {
-    const name = camelCase(column.name);
+    const name = snakeToCamel(column.name);
     const accessor = rowAccessor(column);
     if (column.nullable) {
       lines.push(`        self.${name} = ${accessor}`);
@@ -200,12 +123,16 @@ function emitSubscription(sub: IrSubscription): string[] {
   }
   const lines: string[] = [];
   lines.push(
-    `        /// Requested-scope template for the ${quote(sub.name)} subscription.`,
+    `        /// Requested-scope template for the ${stringLiteral(sub.name, 'swift')} subscription.`,
   );
   lines.push(`        public enum ${pascalCase(sub.name)} {`);
-  lines.push(`            public static let name = ${quote(sub.name)}`);
-  lines.push(`            public static let table = ${quote(sub.table)}`);
-  const args = params.map((p) => `${camelCase(p)}: String`).join(', ');
+  lines.push(
+    `            public static let name = ${stringLiteral(sub.name, 'swift')}`,
+  );
+  lines.push(
+    `            public static let table = ${stringLiteral(sub.table, 'swift')}`,
+  );
+  const args = params.map((p) => `${snakeToCamel(p)}: String`).join(', ');
   lines.push(
     `            public static func scopes(${args}) -> [String: [String]] {`,
   );
@@ -213,10 +140,14 @@ function emitSubscription(sub: IrSubscription): string[] {
   for (const scope of sub.scopes) {
     const values = scope.values
       .map((value) =>
-        value.kind === 'literal' ? quote(value.value) : camelCase(value.name),
+        value.kind === 'literal'
+          ? stringLiteral(value.value, 'swift')
+          : snakeToCamel(value.name),
       )
       .join(', ');
-    lines.push(`                    ${quote(scope.variable)}: [${values}],`);
+    lines.push(
+      `                    ${stringLiteral(scope.variable, 'swift')}: [${values}],`,
+    );
   }
   lines.push('                ]');
   lines.push('            }');
@@ -250,10 +181,17 @@ export function emitSwiftModule(
   schemaLines.push(
     `    /// ServerSchema-compatible schema — pass to \`SyncularClient(schema:)\`.`,
   );
-  schemaLines.push('    public static let schema: JSONValue =');
-  for (const line of emitSchemaValue(ir, '        ')) {
-    schemaLines.push(line);
+  // A multi-line literal strips the closing delimiter's indentation from
+  // every line, so the parsed string is the serializeSchema bytes. JSON
+  // escapes every quote inside a string, so it never holds the closing
+  // delimiter; doubling backslashes also disarms `\(` interpolation.
+  schemaLines.push(
+    '    public static let schema: JSONValue = try! JSONValue(decoding: """',
+  );
+  for (const line of serializeSchema(ir).split('\n')) {
+    schemaLines.push(`        ${line.replaceAll('\\', '\\\\')}`);
   }
+  schemaLines.push('        """)');
   schemaLines.push('');
   // Subscriptions namespace nested in the schema enum.
   schemaLines.push('    /// Typed requested-scope builders per subscription.');

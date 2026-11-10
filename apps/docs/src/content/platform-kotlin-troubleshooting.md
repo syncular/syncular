@@ -16,6 +16,6 @@ Match a symptom to its cause and fix.
 | UI updates crash with a wrong-thread error | The listener runs on `syncular-poll` | Post to the main thread inside the listener |
 | `IllegalArgumentException` from `SyncularConfig` | A byte or millisecond bound above 2^53 cannot be sent exactly | Configure a smaller bound |
 | Commands throw `client.closed` | The client was closed, possibly by `use { }` | Keep one client for the app's lifetime |
-| Android: library not found at runtime | The `.so` is missing for the device ABI | Build `arm64-v8a` and `x86_64` with `build-native.sh android` into `jniLibs/` |
+| Android: library not found at runtime | The `.so` is missing for the device ABI | Build `arm64-v8a` and `x86_64` with `build-native.sh` (it needs `cargo-ndk`) into `jniLibs/` |
 
 For protocol-level failures (`sync.*` codes, revoked subscriptions, conflicts) see [Troubleshooting](/troubleshooting/).

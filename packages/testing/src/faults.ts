@@ -2,9 +2,9 @@
  * Fault injection at the transport seam.
  *
  * Canonical home: the PUBLIC app test kit. The private conformance harness
- * re-exports from here so both arm the SAME fault vocabulary — one
- * implementation, publishable dependency direction (testkit ships to npm;
- * conformance stays private).
+ * extends `TransportFaults` with the faults only its loopback honors, so both
+ * arm the same base vocabulary (testkit ships to npm; conformance stays
+ * private). The kit's loopback honors every flag declared here.
  *
  * The harness owns the loopback between a ClientInstance and a
  * ServerInstance; scenarios arm faults on this controller and the next
@@ -54,8 +54,6 @@ export class TransportFaults {
   dropNextRequests = 0;
   /** Deliver the next N sync requests, then lose their responses. */
   dropNextResponses = 0;
-  /** Return ACKs while withholding pull sections without advancing their cursors. */
-  deferNextPulls = 0;
   /** Deliver the next sync request twice; return the second response. */
   duplicateNextRequest = false;
   /** Truncate the next sync response at a seeded offset. */
@@ -64,10 +62,6 @@ export class TransportFaults {
   dropNextSegmentRequests = 0;
   /** Truncate the next segment download at a seeded offset. */
   truncateNextSegmentDownload = false;
-  /** Fail the next N signed-URL fetches (the CDN hop, §5.4). */
-  dropNextUrlFetches = 0;
-  /** Corrupt the next signed-URL fetch's bytes (§5.1 tamper). */
-  corruptNextUrlFetch = false;
   /** Refuse the next realtime connect (a refused §8.8 handshake). */
   refuseNextRealtimeConnect = false;
 

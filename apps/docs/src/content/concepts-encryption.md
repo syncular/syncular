@@ -77,11 +77,12 @@ The column stays an ordinary SQL column in your migration. List it in `syncular.
 }
 ```
 
-Three kinds of column cannot be encrypted, and codegen refuses to build if you list one:
+Four kinds of column cannot be encrypted, and codegen refuses to build if you list one:
 
 - a scope column, because the server extracts scopes from it;
 - a `crdt` column, because the server merges its bytes ([CRDT columns](/concepts-crdt/));
-- the primary key, because it renders the row's server-side id.
+- the primary key, because it renders the row's server-side id;
+- a column of any `CREATE INDEX`, unique or not, because the server would index ciphertext under a random nonce: a `UNIQUE` index there never fires while clients enforce it on plaintext (`typegen.encrypted_index_column`).
 
 An unknown column name also fails generation.
 

@@ -52,6 +52,8 @@ client.query('SELECT * FROM todos WHERE done = 0');`,
 function Todos() {
   const { rows } = useRawSql(
     'SELECT * FROM todos WHERE done = 0 ORDER BY position',
+    [],
+    { tables: ['todos'] },
   );
   const { mutate } = useMutation();
 

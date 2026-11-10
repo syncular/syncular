@@ -105,7 +105,13 @@ describe('createTestSync — offline queue / drain', () => {
         { body: 'offline' },
       ]);
       expect(a.api.pendingCommits()).toHaveLength(1);
-      await expect(a.api.sync()).rejects.toThrow();
+      // The dead-network failure a real transport raises: no retry intent,
+      // connectivity offline.
+      await expect(a.api.sync()).rejects.toMatchObject({
+        code: 'sync.transport_failed',
+        details: { causeKind: 'network' },
+      });
+      expect(a.api.diagnosticsSnapshot().host.connectivity).toBe('offline');
 
       // B has not seen it — nothing left A.
       await b.sync();
@@ -164,6 +170,19 @@ describe('createTestSync — fault injection', () => {
 
       // Exactly one row despite the double delivery.
       expect(b.api.query('SELECT id FROM notes')).toHaveLength(1);
+    } finally {
+      await sync.dispose();
+    }
+  });
+
+  test('a refused realtime connect rejects once, then the next connects', async () => {
+    const sync = await createTestSync({ schema: SCHEMA });
+    try {
+      const a = await sync.client('a');
+      a.faults.refuseNextRealtimeConnect = true;
+      await expect(a.connectRealtime()).rejects.toThrow(TransportFault);
+      expect(a.faults.refuseNextRealtimeConnect).toBe(false);
+      await a.connectRealtime();
     } finally {
       await sync.dispose();
     }

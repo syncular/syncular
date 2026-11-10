@@ -1,5 +1,5 @@
 /**
- * Bridge unit tests with injected invoke/listen doubles: assert the
+ * Bridge unit tests with injected invoke/channel doubles: assert the
  * `SyncClientLike` contract — method → command mapping, the query fast path,
  * exact change fanout, presence, and lossless parameter envelopes.
  * Plus a shape-parity test against the React `SyncClientLike` contract, so a drift in
@@ -7,6 +7,8 @@
  * one interface).
  */
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   INVALID_HOST_RESPONSE_CODE,
   installRealtimeSupervisor,
@@ -15,10 +17,14 @@ import {
 } from '@syncular/client';
 import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
-import { createTauriSyncClient, type TauriApi } from '../src/index';
+import {
+  createTauriSyncClient,
+  type TauriApi,
+  TauriSyncError,
+} from '../src/index';
 import { createTauriSyncClient as createRemoteTauriSyncClient } from '../src/remote';
 
-/** A recording invoke/listen double. Commands answer from a scripted table. */
+/** A recording invoke/channel double. Commands answer from a scripted table. */
 function makeTauri(
   responder: (cmd: string, args: Record<string, unknown>) => unknown,
 ): {
@@ -27,28 +33,38 @@ function makeTauri(
   emit: (payload: unknown) => void;
 } {
   const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
-  const handlers = new Set<(event: { payload: unknown }) => void>();
+  const handlers = new Set<(message: unknown) => void>();
   const tauri: TauriApi = {
     invoke: async <T>(cmd: string, args?: Record<string, unknown>) => {
       calls.push({ cmd, args: args ?? {} });
       return responder(cmd, args ?? {}) as T;
     },
-    listen: async <T>(
-      _event: string,
-      handler: (event: { payload: T }) => void,
-    ) => {
-      handlers.add(handler as (event: { payload: unknown }) => void);
-      return () =>
-        handlers.delete(handler as (event: { payload: unknown }) => void);
+    channel: <T>(onMessage: (message: T) => void) => {
+      handlers.add(onMessage as (message: unknown) => void);
+      return { toJSON: () => '__CHANNEL__:1' };
     },
   };
   const emit = (payload: unknown) => {
-    for (const h of handlers) h({ payload });
+    for (const h of handlers) h(payload);
   };
   return { tauri, calls, emit };
 }
 
 const OK = (result: unknown) => ({ result });
+
+/** The params of a `snapshotRead` sent through `syncular_command`, if any. */
+function snapshotReadParams(
+  cmd: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const command = args.command as
+    | { method: string; params: Record<string, unknown> }
+    | undefined;
+  return cmd === 'plugin:syncular|syncular_command' &&
+    command?.method === 'snapshotRead'
+    ? command.params
+    : undefined;
+}
 
 async function settle(): Promise<void> {
   for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
@@ -230,6 +246,20 @@ describe('createTauriSyncClient', () => {
       if (previousRegistry === undefined) delete host.__SYNCULAR__;
       else host.__SYNCULAR__ = previousRegistry;
     }
+  });
+
+  test('create carries the webview event channel, and close ends dispatch', async () => {
+    const { client, calls, emit } = await build();
+    const create = calls[0]?.args.command as {
+      params: { events?: { toJSON(): string } };
+    };
+    expect(create.params.events?.toJSON()).toBe('__CHANNEL__:1');
+    const seen: string[] = [];
+    client.onPresence((scopeKey) => seen.push(scopeKey));
+    emit({ type: 'presence', scopeKey: 'room:1' });
+    await client.close();
+    emit({ type: 'presence', scopeKey: 'room:2' });
+    expect(seen).toEqual(['room:1']);
   });
 
   test('forwards retained failure policy and mixed sparse aggregate unchanged', async () => {
@@ -448,7 +478,7 @@ describe('createTauriSyncClient', () => {
         () => client.onPresence(() => {}),
         () => client.progressSnapshot(),
       ])
-        expect(call).toThrow('the Tauri sync client is closed');
+        expect(call).toThrow('the native sync client is closed');
       await client.close(); // Disposal remains idempotent.
       expect(calls.length).toBe(before);
     });
@@ -536,6 +566,32 @@ describe('createTauriSyncClient', () => {
       code: SECURITY_PREFLIGHT_REQUIRED_CODE,
     });
     await barrier;
+    await client.close();
+  });
+
+  test('a failed beginSecurityPreflight stays gated and activation reopens it', async () => {
+    // The native core seals the gate in memory before it persists the
+    // pending marker, so a failed begin leaves native in preflight too.
+    const { tauri } = makeTauri((cmd, args) =>
+      (args.command as { method?: string } | undefined)?.method ===
+      'beginSecurityPreflight'
+        ? { error: { code: 'sync.storage', message: 'disk full' } }
+        : defaultResponder(cmd, args),
+    );
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    await expect(client.beginSecurityPreflight()).rejects.toMatchObject({
+      code: 'sync.storage',
+    });
+    expect(await client.securityLifecycle()).toBe('preflight');
+    await expect(client.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await client.activateSecurity();
+    expect(await client.securityLifecycle()).toBe('active');
+    expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
     await client.close();
   });
 
@@ -694,7 +750,7 @@ describe('createTauriSyncClient', () => {
   test('snapshotRead decodes every row and revision and preserves storage-busy retryability', async () => {
     let mode: 'ok' | 'busy' = 'ok';
     const { tauri, calls } = makeTauri((cmd, args) => {
-      if (cmd === 'plugin:syncular|syncular_snapshot_read') {
+      if (snapshotReadParams(cmd, args) !== undefined) {
         if (mode === 'busy') {
           return {
             error: {
@@ -753,14 +809,14 @@ describe('createTauriSyncClient', () => {
     expect(read.deliveries).toEqual([
       { status: 'pending', clientCommitId: 'c1' },
     ]);
-    const call = calls.find(
-      (candidate) => candidate.cmd === 'plugin:syncular|syncular_snapshot_read',
-    );
-    expect(call?.args.owner).toEqual({
+    const params = calls
+      .map((candidate) => snapshotReadParams(candidate.cmd, candidate.args))
+      .find((candidate) => candidate !== undefined);
+    expect(params?.owner).toEqual({
       id: 'queries:tasks',
       tables: ['tasks'],
     });
-    expect(call?.args.commitIds).toEqual(['c1']);
+    expect(params?.commitIds).toEqual(['c1']);
 
     mode = 'busy';
     let failure:
@@ -781,7 +837,7 @@ describe('createTauriSyncClient', () => {
 
   test('snapshotRead decodes binary conflict rows and leaves operation JSON', async () => {
     const { tauri } = makeTauri((cmd, args) => {
-      if (cmd === 'plugin:syncular|syncular_snapshot_read') {
+      if (snapshotReadParams(cmd, args) !== undefined) {
         return OK({
           revision: '3',
           queries: [],
@@ -843,6 +899,17 @@ describe('createTauriSyncClient', () => {
     expect(delivery.outcome.operations?.[0]?.values?.payload).toEqual({
       $bytes: '0102',
     });
+  });
+
+  test('syncUntilIdle forwards maxRounds and timeoutMs unchanged', async () => {
+    const { client, calls } = await build();
+    await client.syncUntilIdle(3, 5000);
+    await client.syncUntilIdle();
+    const params = calls
+      .map((c) => c.args.command as { method: string; params: unknown })
+      .filter((command) => command?.method === 'syncUntilIdle')
+      .map((command) => command.params);
+    expect(params).toEqual([{ maxRounds: 3, timeoutMs: 5000 }, {}]);
   });
 
   test('mutate returns the clientCommitId', async () => {
@@ -1885,4 +1952,112 @@ test('authority-enabled Tauri bridge still exposes its state during preflight', 
     code: SECURITY_PREFLIGHT_REQUIRED_CODE,
   });
   await client.close();
+});
+
+test('every command the bridge invokes is registered and permitted by the plugin', async () => {
+  const plugin = join(import.meta.dir, '../../../bindings/tauri/plugin');
+  const permittedCommands =
+    readFileSync(join(plugin, 'build.rs'), 'utf8')
+      .match(/const COMMANDS: &\[&str\] = &\[([^\]]*)\]/)?.[1]
+      ?.match(/(?<=")\w+(?=")/g) ?? [];
+  const registered =
+    readFileSync(join(plugin, 'src/lib.rs'), 'utf8')
+      .match(/generate_handler!\[([^\]]*)\]/)?.[1]
+      ?.match(/\w+/g) ?? [];
+  // A registered command without a generated permission is unreachable from
+  // a real webview ("not allowed by ACL").
+  expect(registered.length).toBeGreaterThan(0);
+  expect(registered.toSorted()).toEqual(permittedCommands.toSorted());
+
+  const { tauri, calls } = makeTauri((cmd, args) =>
+    snapshotReadParams(cmd, args) !== undefined
+      ? OK({
+          revision: '1',
+          queries: [],
+          coverage: { complete: true, pending: [], missing: [] },
+          subscriptions: [],
+          deliveries: [],
+        })
+      : defaultResponder(cmd, args),
+  );
+  const client = await createTauriSyncClient({ schema: {}, tauri });
+  await client.query('SELECT 1');
+  await client.querySnapshot({ sql: 'SELECT 1' });
+  await client.snapshotRead({ statements: [{ sql: 'SELECT 1' }] });
+  await client.setHeaders({ authorization: 'Bearer x' });
+  client.onDiagnostics(() => {});
+  await client.sync();
+  await client.close();
+  const invoked = new Set(calls.map((call) => call.cmd));
+  expect(invoked.size).toBe(4);
+  for (const cmd of invoked) {
+    expect(permittedCommands).toContain(cmd.replace('plugin:syncular|', ''));
+  }
+});
+
+test('conflicts decode server row bytes and drop reserved columns', async () => {
+  const conflict = {
+    clientCommitId: 'c1',
+    opIndex: 0,
+    table: 'todo',
+    rowId: 't1',
+    code: 'sync.version_conflict',
+    message: 'stale',
+    serverVersion: 2,
+    conflictColumns: ['payload'],
+  };
+  const { tauri } = makeTauri((cmd, args) =>
+    (args.command as { method?: string } | undefined)?.method === 'conflicts'
+      ? OK({
+          conflicts: [
+            {
+              ...conflict,
+              serverRow: {
+                id: 't1',
+                payload: { $bytes: '0102' },
+                _sync_version: 2,
+              },
+            },
+          ],
+        })
+      : defaultResponder(cmd, args),
+  );
+  const client = await createTauriSyncClient({ schema: {}, tauri });
+  expect(await client.conflicts()).toEqual([
+    {
+      ...conflict,
+      serverRow: { id: 't1', payload: new Uint8Array([1, 2]) },
+    },
+  ]);
+  await client.close();
+});
+
+test('a rejected create rejects with a typed error', async () => {
+  for (const [create, expected] of [
+    [
+      () => Promise.reject('the syncular core thread has stopped'),
+      {
+        code: 'client.failed',
+        details: { cause: 'the syncular core thread has stopped' },
+      },
+    ],
+    [
+      () =>
+        Promise.resolve({
+          error: { code: 'sync.invalid_request', message: 'invalid request' },
+        }),
+      { code: 'sync.invalid_request' },
+    ],
+  ] as const) {
+    const tauri: TauriApi = {
+      invoke: <T>() => create() as Promise<T>,
+      channel: () => ({ toJSON: () => '__CHANNEL__:1' }),
+    };
+    const failure = await createTauriSyncClient({ schema: {}, tauri }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(TauriSyncError);
+    expect(failure).toMatchObject(expected);
+  }
 });

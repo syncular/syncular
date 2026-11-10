@@ -433,6 +433,24 @@ pub fn encode_sparse_row_json(
         if let Some(error) = author_bytes_envelope_error(column, raw) {
             return Err(error);
         }
+        // §2.4/§7.1: the push admission values the server rejects. A float
+        // read from JSON is always finite.
+        let refused = match (column.ty, raw) {
+            (ColumnType::String, Value::String(text)) => text.contains('\0'),
+            (ColumnType::Json, Value::String(text)) => {
+                ssp2::primitives::parse_json_document(text, "json value").is_err()
+            }
+            (ColumnType::BlobRef, Value::String(text)) => {
+                ssp2::blob_ref::validate_blob_ref(text).is_err()
+            }
+            _ => false,
+        };
+        if refused {
+            return Err(format!(
+                "sync.invalid_request: column {:?}: the value is not a push admission value (§2.4)",
+                column.name
+            ));
+        }
         let value = json_to_column_value(column, Some(raw))
             .map_err(|error| format!("sync.invalid_request: {error}"))?;
         if value.is_none() && !column.nullable {
@@ -464,7 +482,13 @@ pub fn decode_row_bytes(
         return Err("row payload has trailing bytes".to_owned());
     }
     if table.has_encrypted_columns() {
-        decrypt_row(table, &mut row, encryption)?;
+        decrypt_row(table, &mut row, encryption).map_err(|message| {
+            if message.starts_with("client.decrypt_failed") {
+                message
+            } else {
+                format!("client.decrypt_failed: {message}")
+            }
+        })?;
     }
     Ok(row)
 }

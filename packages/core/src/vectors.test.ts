@@ -26,14 +26,22 @@ import {
 
 const vectorsDir = join(import.meta.dir, '../../../spec/vectors');
 
-interface ManifestCase {
+interface ManifestColumns {
+  /** Codec-level kinds (push) carry the column table the payload decodes
+   * against; a case's own table overrides the kind's. Envelope kinds carry
+   * it inside the bytes. */
+  columns?: Array<{ name: string; type: string; nullable: boolean }>;
+  primaryKey?: string;
+}
+
+interface ManifestCase extends ManifestColumns {
   name: string;
   bin?: string;
   json: string;
   covers: string;
 }
 
-interface ManifestInvalid {
+interface ManifestInvalid extends ManifestColumns {
   name: string;
   /** Binary kinds: bytes that must fail decoding. */
   bin?: string;
@@ -43,12 +51,8 @@ interface ManifestInvalid {
   covers: string;
 }
 
-interface Manifest {
+interface Manifest extends ManifestColumns {
   kind: string;
-  /** Codec-level kinds (push) carry the column table the payload decodes
-   * against; envelope kinds carry it inside the bytes. */
-  columns?: Array<{ name: string; type: string; nullable: boolean }>;
-  primaryKey?: string;
   cases: ManifestCase[];
   invalid: ManifestInvalid[];
 }
@@ -125,20 +129,27 @@ describe('vectors/segment', () => {
 
 describe('vectors/push', () => {
   const manifest = loadManifest('push');
-  const columns: readonly RowColumn[] = (manifest.columns ?? []).map(
-    (column) => ({
+  const table = (c: ManifestColumns) => {
+    const columns: readonly RowColumn[] = (
+      c.columns ??
+      manifest.columns ??
+      []
+    ).map((column) => ({
       name: column.name,
       type: column.type as ColumnType,
       nullable: column.nullable,
-    }),
-  );
-  const primaryKeyIndex = columns.findIndex(
-    (column) => column.name === manifest.primaryKey,
-  );
-  expect(columns.length).toBeGreaterThan(0);
-  expect(primaryKeyIndex).toBeGreaterThanOrEqual(0);
+    }));
+    const primaryKey = c.columns ? c.primaryKey : manifest.primaryKey;
+    const primaryKeyIndex = columns.findIndex(
+      (column) => column.name === primaryKey,
+    );
+    expect(columns.length).toBeGreaterThan(0);
+    expect(primaryKeyIndex).toBeGreaterThanOrEqual(0);
+    return { columns, primaryKeyIndex };
+  };
   for (const c of manifest.cases) {
     it(`${c.name}: decode, render, byte-exact re-encode`, () => {
+      const { columns, primaryKeyIndex } = table(c);
       const bin = loadBin('push', c.bin ?? `${c.name}.bin`);
       const values = decodeSparseRow(columns, primaryKeyIndex, bin);
       expect(renderSparseRowValue(columns, values)).toEqual(
@@ -149,6 +160,7 @@ describe('vectors/push', () => {
   }
   for (const c of manifest.invalid) {
     it(`invalid/${c.name}: fails with ${c.error}`, () => {
+      const { columns, primaryKeyIndex } = table(c);
       const bin = loadBin('push', c.bin ?? `invalid/${c.name}.bin`);
       expectNamedDecodeError(
         () => decodeSparseRow(columns, primaryKeyIndex, bin),

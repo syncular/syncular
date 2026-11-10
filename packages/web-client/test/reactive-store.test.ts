@@ -6,6 +6,7 @@ import {
   canonicalValue,
   ClientSyncError,
   FOLLOWER_TIMEOUT_CODE,
+  LEADER_HANDOVER_CODE,
   type LeadershipState,
   type QueryReadSpec,
   type QuerySnapshot,
@@ -85,6 +86,7 @@ class FakeReactiveClient implements ReactiveQueryClient {
   statusCalls = 0;
   conflictCalls = 0;
   rejectionCalls = 0;
+  outcomeCalls = 0;
   currentStatus = STATUS;
   setWindowFailure: Error | undefined;
   setWindowSyncFailure: Error | undefined;
@@ -130,6 +132,7 @@ class FakeReactiveClient implements ReactiveQueryClient {
   commitOutcomes():
     | readonly CommitOutcome[]
     | Promise<readonly CommitOutcome[]> {
+    this.outcomeCalls += 1;
     return [];
   }
 
@@ -308,6 +311,91 @@ describe('leader link recovery', () => {
     off();
     store.dispose();
   });
+
+  for (const next of [
+    { state: 'follower', leaderClientId: 'next', epoch: 2 },
+    { state: 'leader', clientId: 'own' },
+  ] as const) {
+    test(`every active query and value store reads again when this tab becomes ${next.state}`, async () => {
+      const client = new FakeFollowerClient();
+      const store = new ReactiveClientStore(client);
+      const inFlight = deferred<QuerySnapshot<object>>();
+      // Each query reads its own queue: the two entries read in either order.
+      const byParam = new Map<
+        unknown,
+        Array<QuerySnapshot<object> | Promise<QuerySnapshot<object>>>
+      >([
+        ['p1', [inFlight.promise]],
+        [
+          'p2',
+          [
+            {
+              revision: 1n,
+              rows: [{ id: 'other', title: 'from the departed leader' }],
+              coverage: COMPLETE,
+            },
+          ],
+        ],
+      ]);
+      client.querySnapshot = <Result>(spec: QueryReadSpec) => {
+        client.reads.push(spec);
+        const next = byParam.get(spec.params?.[0])?.shift();
+        if (next === undefined) throw new Error('missing fake query snapshot');
+        return next as QuerySnapshot<Result> | Promise<QuerySnapshot<Result>>;
+      };
+      const handedOver = store.query<Row>(querySpec());
+      const settled = store.query<Row>(
+        querySpec({ id: 'queries:other:hash', params: ['p2'] }),
+      );
+      const offHandedOver = handedOver.subscribe(() => {});
+      const offSettled = settled.subscribe(() => {});
+      await drainMicrotasks();
+      expect(settled.getSnapshot().phase).toBe('ready');
+
+      const calls = {
+        status: client.statusCalls,
+        conflicts: client.conflictCalls,
+        outcomes: client.outcomeCalls,
+      };
+      // The link rejects the call in flight, then reports the new leader.
+      inFlight.reject(
+        new ClientSyncError(
+          LEADER_HANDOVER_CODE,
+          'the leader changed before it answered the call',
+          true,
+        ),
+      );
+      client.setLeadership(next);
+      byParam.get('p1')?.push({
+        revision: 2n,
+        rows: [{ id: 't1', title: 'first' }],
+        coverage: COMPLETE,
+      });
+      byParam.get('p2')?.push({
+        revision: 2n,
+        rows: [{ id: 'other', title: 'from the next leader' }],
+        coverage: COMPLETE,
+      });
+      await drainMicrotasks(24);
+
+      expect(handedOver.getSnapshot()).toMatchObject({
+        phase: 'ready',
+        error: undefined,
+        rows: [{ id: 't1', title: 'first' }],
+      });
+      expect(settled.getSnapshot()).toMatchObject({
+        phase: 'ready',
+        rows: [{ id: 'other', title: 'from the next leader' }],
+      });
+      expect(client.reads).toHaveLength(4);
+      expect(client.statusCalls).toBe(calls.status + 1);
+      expect(client.conflictCalls).toBe(calls.conflicts + 1);
+      expect(client.outcomeCalls).toBe(calls.outcomes + 1);
+      offHandedOver();
+      offSettled();
+      store.dispose();
+    });
+  }
 
   test('a follower of another build reports leader-incompatible availability', async () => {
     const client = new FakeFollowerClient();
@@ -1048,7 +1136,7 @@ describe('composable windows and domain routing', () => {
 
   for (const source of ['conflicts', 'outcomes'] as const) {
     for (const fails of [false, true]) {
-      test(`${source} ignores an older result after a newer ${fails ? 'failure' : 'result'}`, async () => {
+      test(`${source} publishes only the read that follows a refresh during a read, ${fails ? 'failing' : 'succeeding'}`, async () => {
         const client = new FakeReactiveClient();
         const first = deferred<readonly CommitOutcome[]>();
         const second = deferred<readonly CommitOutcome[]>();
@@ -1058,12 +1146,12 @@ describe('composable windows and domain routing', () => {
         else client.commitOutcomes = read;
         const store = new ReactiveClientStore(client);
         const entry = store[source];
+        const published: unknown[] = [];
+        const off = entry.subscribe(() => published.push(entry.getSnapshot()));
         entry.refresh();
-        const failure = new Error('latest read failed');
-        if (fails) second.reject(failure);
-        else second.resolve([]);
+        entry.refresh();
         await drainMicrotasks();
-        const latest = entry.getSnapshot();
+        expect(reads).toBe(1);
         first.resolve([
           {
             sequence: 1,
@@ -1075,12 +1163,40 @@ describe('composable windows and domain routing', () => {
           },
         ]);
         await drainMicrotasks();
-        expect(entry.getSnapshot()).toBe(latest);
-        expect(latest.error).toBe(fails ? failure : undefined);
+        expect(reads).toBe(2);
+        expect(published).toEqual([]);
+        const failure = new Error('latest read failed');
+        if (fails) second.reject(failure);
+        else second.resolve([]);
+        await drainMicrotasks();
+        expect(published).toEqual([entry.getSnapshot()]);
+        expect(entry.getSnapshot().error).toBe(fails ? failure : undefined);
+        expect(entry.getSnapshot().isLoading).toBe(false);
+        off();
         store.dispose();
       });
     }
   }
+
+  test('outcome changes during a journal read cost one more read, not one each', async () => {
+    const client = new FakeReactiveClient();
+    const pending = deferred<readonly CommitOutcome[]>();
+    client.commitOutcomes = () => {
+      client.outcomeCalls += 1;
+      return client.outcomeCalls === 1 ? pending.promise : [];
+    };
+    const store = new ReactiveClientStore(client);
+    for (let revision = 1n; revision <= 5n; revision += 1n) {
+      client.emit(batch(revision, { outcomesChanged: true }));
+    }
+    await drainMicrotasks();
+    expect(client.outcomeCalls).toBe(1);
+    pending.resolve([]);
+    await drainMicrotasks();
+    expect(client.outcomeCalls).toBe(2);
+    expect(store.outcomes.getSnapshot().isLoading).toBe(false);
+    store.dispose();
+  });
 
   test('disposing a store invalidates pending value reads and restart refreshes them', async () => {
     const client = new FakeReactiveClient();

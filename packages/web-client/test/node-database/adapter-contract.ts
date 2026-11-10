@@ -78,6 +78,75 @@ export async function runAdapterContract(
   const one = db.query('SELECT id FROM t WHERE id = ?', ['a']);
   eq(one.length, 1, 'parameterized filter');
 
+  // --- queryReadOnly: one statement SQLite reports read-only, no PRAGMA ---
+  eq(
+    db.queryReadOnly('SELECT id FROM t WHERE id = ?', ['a']),
+    [{ id: 'a' }],
+    'read-only query returns rows',
+  );
+  for (const sql of [
+    '  select id from t',
+    'WITH x AS (SELECT 1 AS v) SELECT v FROM x',
+    'WITH RECURSIVE c(n) AS (VALUES (1)) SELECT n FROM c',
+    'WITH "x$delete" AS (SELECT 1 AS v) SELECT v FROM "x$delete"',
+    'EXPLAIN QUERY PLAN SELECT 1',
+    "SELECT * FROM pragma_table_info('t')",
+    'VALUES (1), (2)',
+    '-- leading comment\nSELECT 1',
+    '/* block */ SELECT 1',
+    "SELECT ';' AS s",
+    "SELECT 'it''s; fine' AS s",
+    'SELECT "id" FROM t WHERE \';\' <> 1 -- trailing; comment',
+    'SELECT /* ; */ 1',
+    'SELECT [id] FROM t',
+    'SELECT 1;',
+    'SELECT 1;  -- done',
+    'SELECT 1;;',
+  ]) {
+    db.queryReadOnly(sql);
+  }
+  for (const sql of [
+    "INSERT INTO t (id) VALUES ('w')",
+    "UPDATE t SET n = 1 WHERE id = 'a'",
+    "DELETE FROM t WHERE id = 'a'",
+    "REPLACE INTO t (id) VALUES ('w')",
+    'DROP TABLE t',
+    'CREATE TABLE evil (id)',
+    'ALTER TABLE t ADD COLUMN evil TEXT',
+    'BEGIN',
+    'VACUUM',
+    "ATTACH ':memory:' AS evil",
+    'WITH x AS (SELECT 1) DELETE FROM t',
+    'WITH x$select AS (SELECT 1) DELETE FROM t',
+    "WITH x AS (SELECT 1), y AS (SELECT 2) INSERT INTO t (id) VALUES ('w')",
+    'PRAGMA query_only = ON',
+    'EXPLAIN PRAGMA query_only = ON',
+    'explain /* c */ query plan pragma query_only = ON',
+    '; -- c\nPRAGMA query_only = ON',
+    'SELECT 1; PRAGMA query_only = ON',
+    'PRAGMA table_info(t)',
+    '/* c */ pragma table_info(t)',
+    'SELECT 1; SELECT 2',
+    "SELECT 1; DELETE FROM t WHERE id = 'a'",
+  ]) {
+    let refused: unknown;
+    try {
+      db.queryReadOnly(sql);
+    } catch (error) {
+      refused = error;
+    }
+    assert(
+      refused instanceof Error && refused.name === 'RawSqlError',
+      `queryReadOnly refuses ${sql}`,
+    );
+  }
+  eq(
+    db.query('SELECT count(*) AS n FROM t')[0]?.n,
+    2,
+    'refusals wrote nothing',
+  );
+  eq(db.query('PRAGMA query_only')[0]?.query_only, 0, 'query_only untouched');
+
   // --- transaction: commit path ---
   db.transaction(() => {
     db.exec('INSERT INTO t (id) VALUES (?)', ['tx1']);

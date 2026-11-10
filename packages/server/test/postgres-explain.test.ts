@@ -22,6 +22,7 @@ import {
   compileSchema,
   indexRowPageStatement,
   PostgresServerStorage,
+  rowsReferencingBlobSql,
   type ServerSchema,
   scanRowBatchSql,
   scanRowPageSql,
@@ -264,10 +265,10 @@ test('listRowsReferencingBlob candidate scan is index-driven (no Seq Scan)', asy
   // scan of every reference in the partition.
   const plan = await explain(
     db,
-    `SELECT tbl, row_id FROM sync_blob_refs WHERE partition=$1 AND blob_id=$2`,
+    rowsReferencingBlobSql(compileSchema(SCHEMA).tables.values(), 'postgres'),
     [PARTITION, `sha256:${String(3).padStart(64, '0')}`],
   );
-  expect(plan).toContain('Index');
+  expect(plan).toContain('sync_blob_refs_by_blob');
   expect(plan).not.toContain('Seq Scan on sync_blob_refs');
   await db.close();
 });

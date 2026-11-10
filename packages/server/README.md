@@ -357,7 +357,7 @@ revision (`catalog-v1` to `catalog-v2`) and rerun it; do not delete the database
 or unrelated rows. This does not apply to application commands. After an
 unknown command outcome, reuse the original idempotency key because changing it
 can execute the operation twice. The full inspection and recovery recipe is in
-the public [server guide](https://syncular.dev/guide-server/#seeding-data).
+the public [server guide](https://syncular.dev/server-operations/#seeding-data).
 
 One extra rule applies when the seed actor changes. A Syncular `clientId` is
 bound to its first actor inside a partition. Keep the client ID stable for seed
@@ -412,7 +412,7 @@ scope variable, named-query obligation, subscription descriptor, or client
 authority. Never expose table/index/value selection through a client-controlled
 route. Custom adapters may omit the additive method; authoritative commands
 must check for it and fail closed. See the public
-[storage lookup guide](https://syncular.dev/server-storage/#choosing-the-right-row-lookup)
+[storage lookup guide](https://syncular.dev/server-storage-reference/#advanced-row-lookups-for-trusted-server-code)
 for a user-scoped key-grant table revoked through a Workspace index and for the
 atomic reverse-index/queue fallback required by ordered or derived lookups.
 
@@ -583,7 +583,7 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 | `reaction.prune_completed` | One bounded terminal-reaction retention pass finished | `completedBeforeMs`, `deadLetterBeforeMs`, `limit`, `removedCompleted`, `removedDeadLetter`, `mayHaveMore` |
 | `pull.served` | Once per served pull half, after all sections streamed | `clientId`, `subscriptions[]`: `{id, table, status, mode` (`bootstrap` \| `incremental` \| `none`)`, fromCursor, nextCursor, commits, changes, segments[]}`; each segment: `{mediaType` (`rows` \| `sqlite`)`, delivery` (`inline` \| `ref`)`, origin` (`built` \| `reused`)`, bytes, rows}` |
 | `segment.downloaded` | Every direct segment download (§5.5), success or failure | `segmentId`, `outcome` (`ok` \| `error`), `errorCode?`, `mediaType?`, `bytes?`, `durationMs` |
-| `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (keep-set size), `graceMs` |
+| `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (old candidates still referenced), `graceMs` |
 | `realtime.opened` | A socket registered with the hub and got `hello` (§8.1) | `sessionId`, `clientId`, `registrations`, `cursor`, `latestSeq` |
 | `realtime.closed` | A session left the hub (once per session) | `sessionId`, `durationMs` |
 | `realtime.delta` | A delta message pushed over the socket (§8.2) | `sessionId`, `commitSeq`, `bytes`, `changes` |
@@ -959,12 +959,12 @@ and mints a fresh URL) — never a fall-through.
 `{ byteLength, mediaType? }`) mints a single presigned PUT; the client PUTs
 bytes straight to the object store. **Upload authz is host-authentication only**
 (any authenticated actor may obtain a grant within the size cap) — uploading
-bytes is not a scope-bearing act, because the content address discloses nothing
-and integrity is enforced at *reference time* (the §5.9.6 push existence check
-+ every download's content-address verify), never by a store-side hash
-recompute. The **size cap is enforced up front** against the declared
-`byteLength`, before any URL is minted (the object-store hop cannot re-check the
-streamed byte count). An already-present blob returns `{ present: true }` (skip
+bytes is not a scope-bearing act, because the content address discloses
+nothing. The grant signs `content-length` (the declared `byteLength`) and
+`x-amz-checksum-sha256` (the `blobId` digest as base64), and the client sends
+that checksum header, so the object store refuses a PUT of another size or
+other bytes. The **size cap is enforced up front** against the declared
+`byteLength`, before any URL is minted. An already-present blob returns `{ present: true }` (skip
 the PUT, idempotent §5.9.3). A **single PUT only** — never a multipart or chunk
 protocol; resumable upload, when it lands, is provider multipart behind this
 same grant. Absent config ⇒ the client streams through the direct
@@ -1006,8 +1006,11 @@ Nothing reclaims blobs automatically — the host schedules the sweep, the blob
 analogue of `pruneCommitLog`. `sweepOrphanBlobs(storage, blobStore, partition,
 { graceMs })` reads the live keep-set from the §5.9.4 reference index
 (`storage.listReferencedBlobIds`) and deletes every blob that is **both**
-unreferenced **and** older than the grace period. It emits one `blob.swept`
-ops event (`{ swept, referenced, graceMs }`) and returns the deleted ids.
+unreferenced **and** older than the grace period. Before each delete it reads
+the index again, so a reference that lands during the sweep keeps its blob. It
+emits one `blob.swept` ops event (`{ swept, referenced, graceMs }`, where
+`referenced` counts old candidates a row still references) and returns the
+deleted ids.
 
 ```ts
 import { sweepOrphanBlobs } from '@syncular/server';
@@ -1028,8 +1031,10 @@ arrived. So the grace period must comfortably exceed any sane upload→push
 latency — the **default is 24 h**, deliberately far above any push window.
 Lower it only if you fully understand your clients' outbox latency; there is
 no upside to a tight grace and a real data-loss risk. The sweep compares
-against the blob's **upload time** (`createdAtMs` from object metadata), and an
-idempotent re-upload does **not** reset that clock.
+against the blob's **latest upload time**: `createdAtMs` from object metadata,
+or the object's last-modified time for an object a presigned PUT wrote. An
+object with neither is skipped, and an idempotent re-upload rewrites the
+object with the re-upload time, which restarts its grace period.
 
 `sweepOrphanBlobs` **requires** `storage.listReferencedBlobIds` (the §5.9.4
 reference index — SQLite, D1, and Postgres all implement it). Against a
@@ -1058,11 +1063,10 @@ row-derived authorization check passes** (`handleBlobDownload` resolves the
 actor's scopes and tests the referencing rows first; a `blobId` is never a
 bearer capability minted from the id alone). The signed object key embeds the
 `blobId`, TTL SHOULD be ≤ 15 min (default 900 s), and the URL is a short-lived
-grant to exactly those immutable bytes. The issued `url`/`urlExpiresAtMs` ride
-additively on `BlobDownloadResult` alongside the bytes; the mounted §5.9.5
-direct-download endpoint stays the default serving path. Client consumption of
-the presigned URL (following it instead of streaming bytes through the sync
-server) is a later rung — the server-side issuance ships now.
+grant to exactly those immutable bytes. When `blobSignedUrls` is set, the
+download answers `{ url, urlExpiresAtMs }` and no bytes, and the reference
+clients fetch the URL and verify the content address (see "Presigned blobs,
+end to end" above).
 
 ### Native HMAC vs delegated presign (§5.4)
 
@@ -1235,7 +1239,7 @@ function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
   const over = (h: any): PgQueryable => ({
     async query(text, params) {
       const rows = await h.unsafe(text, params ? [...params] : []);
-      return { rows, rowCount: rows.length };
+      return { rows };
     },
   });
   return {
@@ -1282,6 +1286,11 @@ function pgPoolExecutor(pool: Pool): PgExecutor {
   };
 }
 ```
+
+**Result shape.** `query` returns `{ rows }`. The storage never reads an
+affected-row count: every write whose outcome matters ends in `RETURNING`
+and counts the returned rows, because drivers disagree on the count of a
+statement without result rows.
 
 **Type-parser note.** `commit_seq`/`server_version` are `int8`. Drivers
 decode `int8` differently (node-postgres → `string`, Bun.sql → `bigint`,
@@ -1367,9 +1376,9 @@ SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db bun run bench
 ```
 
 Custom storage adapters must implement
-`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum cursor
-whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve
-negative bootstrap cursors. Pruning and admin horizon status use this scalar
+`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum
+non-negative cursor whose `updatedAtMs >= cutoffMs`, or `null` when no client
+qualifies. A bootstrapping client at cursor -1 holds no cursor. Pruning and admin horizon status use this scalar
 aggregate; `listClientCursors` remains the explicit listing interface.
 
 SQLite image builders now return `Promise<Uint8Array>` and receive

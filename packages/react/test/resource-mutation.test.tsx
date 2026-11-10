@@ -93,7 +93,9 @@ describe('client resources', () => {
     });
 
     function Child() {
-      const query = useRawSql('SELECT * FROM tasks');
+      const query = useRawSql('SELECT * FROM tasks', undefined, {
+        tables: ['tasks'],
+      });
       return <span>rows={query.rows.length}</span>;
     }
     const view = render(
@@ -222,7 +224,9 @@ describe('client resources', () => {
     });
 
     function Child() {
-      const query = useRawSql('SELECT * FROM tasks');
+      const query = useRawSql('SELECT * FROM tasks', undefined, {
+        tables: ['tasks'],
+      });
       return <span>rows={query.rows.length}</span>;
     }
     const view = render(

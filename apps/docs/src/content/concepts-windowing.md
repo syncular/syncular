@@ -57,8 +57,9 @@ Choose the unit to trade subscription count against re-entry granularity. One un
 
 ## Eviction is a local storage decision
 
-Eviction is a voluntary local delete driven by your retention policy. The server retains the evicted rows and creates no tombstones; re-entering the window re-delivers them. A [scope revocation](/concepts-scopes/) purge differs because lost authorization forces it. Three rules make eviction correct:
+Eviction is a voluntary local delete driven by your retention policy. The server retains the evicted rows and creates no tombstones; re-entering the window re-delivers them. A [scope revocation](/concepts-scopes/) purge differs because lost authorization forces it. Four rules make eviction correct:
 
+- **Shared rows stay**: a row that another active subscription on the same table still covers stays local, so that subscription's cursor keeps describing the rows it holds. The revocation purge and the first-page clear of a fresh bootstrap apply the same rule. A subscription at cursor -1 (never synced, or reset) covers nothing.
 - **Outbox pin**: a row with a pending offline write stays local until the write drains, since replaying the write would otherwise resurrect an orphan.
 - **Version state dies with the row**: a re-entered row's optimistic-write version comes only from its re-delivery, so no stale version cache exists.
 - **Re-entry is a fresh bootstrap**: it snapshots current server state and works at any distance, however much log the server pruned since the eviction. A re-entered row is writable immediately.

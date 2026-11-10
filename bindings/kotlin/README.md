@@ -124,13 +124,13 @@ core command through `rust/crates/command`.
 ## Consumption modes
 
 **Plain JVM host / desktop.** Ship the host cdylib
-(`build-native.sh desktop` → `.dylib`/`.so`/`.dll`) and put it where the loader
+(`build-native.sh` → `.dylib`/`.so`/`.dll`) and put it where the loader
 finds it: pass `-Dsyncular.library.path=/abs/path/libsyncular.dylib`, or place it
 on `java.library.path` (the FFM lookup falls back to `System.loadLibrary("syncular")`).
 
 **Android (AAR + jniLibs).** The wrapper compiles **JVM-neutral** — no Android
 SDK dependency — so it drops into an Android library module unchanged. The
-native `.so`s come from `build-native.sh android` (arm64-v8a + x86_64 via
+native `.so`s come from `build-native.sh` (arm64-v8a + x86_64 via
 `cargo-ndk`), which lands them under `jniLibs/`. The build script **detects and
 skips** the Android slice when `cargo-ndk` / the NDK are absent (never fails the
 run); building a real AAR needs the Android Gradle Plugin + `cargo-ndk`, so it

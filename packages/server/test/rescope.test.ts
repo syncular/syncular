@@ -76,7 +76,7 @@ async function rescope(
 async function rowState(t: TestContext) {
   const tx = await t.storage.begin('part-1');
   const row = await tx.getRow('tasks', 't1');
-  const tombstone = await tx.getTombstoneSeq('tasks', 't1');
+  const tombstone = (await tx.getTombstone('tasks', 't1'))?.commitSeq;
   await tx.rollback();
   return { row, tombstone };
 }
@@ -355,8 +355,9 @@ describe('command upsert insert (§6.2)', () => {
     expect((await run(t, 'w4', { op: 'insert', title: 'c' })).status).toBe(
       'applied',
     );
+    // §6.2: the recreate starts above the deleted version 1.
     const state = await rowState(t);
-    expect(state.row?.serverVersion).toBe(1);
+    expect(state.row?.serverVersion).toBe(2);
     expect(state.tombstone).toBeUndefined();
 
     const existing = await run(t, 'w5', { op: 'insert', title: 'd' });

@@ -15,9 +15,11 @@
  *
  * There are no `presign*` methods here. A binding cannot mint a provider URL,
  * so segments and blobs are served inline through `GET /segments/:id` and
- * `GET /blobs/:id` (the `open` path streams them without buffering the object
- * in the isolate). Configure no `signedUrls` / `blobSignedUrls` for a binding
- * deployment; the core falls back to inline delivery.
+ * `GET /blobs/:id`. Both routes stream the R2 object body through `open`
+ * without buffering it in the isolate; the blob route checks existence and
+ * authorizes the referencing rows before it opens the object. Configure no
+ * `signedUrls` / `blobSignedUrls` for a binding deployment, so the core
+ * serves inline.
  *
  * The binding surface is declared structurally below, so this package keeps
  * taking no `@cloudflare/workers-types` dependency. Cloudflare's `R2Bucket`
@@ -47,6 +49,8 @@ export interface R2ObjectLike {
   /** Unquoted object ETag (the CAS token; R2 also reports `httpEtag`). */
   readonly etag: string;
   readonly size: number;
+  /** Upload time; the blob sweep's age for an object without metadata. */
+  readonly uploaded: Date;
   readonly customMetadata?: Readonly<Record<string, string>>;
 }
 
@@ -130,6 +134,7 @@ function r2ObjectBucket(bucket: R2BucketLike): ObjectBucket {
       return {
         etag: object.etag,
         size: object.size,
+        lastModifiedMs: object.uploaded.getTime(),
         metadata: metadataOf(object),
       };
     },

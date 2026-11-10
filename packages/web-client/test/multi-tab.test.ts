@@ -21,6 +21,7 @@ import {
   type LeaderLease,
   type LeaderLock,
   type LeaderUnreachableEvent,
+  type LeadershipState,
   MULTI_TAB_PROTOCOL_VERSION,
   type MultiTabMessage,
   NOT_LEADER_CODE,
@@ -805,7 +806,26 @@ test('stale-epoch replies from a dead leader are discarded', async () => {
 
   // A late reply from epoch 4 (the dead leader) must be discarded.
   listener?.({
-    data: { t: 'res', epoch: 4, reqId: req.reqId, ok: true, value: 'stale' },
+    data: {
+      t: 'res',
+      epoch: 4,
+      to: 'f',
+      reqId: req.reqId,
+      ok: true,
+      value: 'stale',
+    },
+  });
+  // A reply on the live epoch for another follower's request of the same id
+  // is discarded.
+  listener?.({
+    data: {
+      t: 'res',
+      epoch: 5,
+      to: 'g',
+      reqId: req.reqId,
+      ok: true,
+      value: 'for g',
+    },
   });
   // A stale-epoch event is discarded too.
   listener?.({
@@ -815,7 +835,14 @@ test('stale-epoch replies from a dead leader are discarded', async () => {
 
   // The correct-epoch reply settles it.
   listener?.({
-    data: { t: 'res', epoch: 5, reqId: req.reqId, ok: true, value: 'fresh' },
+    data: {
+      t: 'res',
+      epoch: 5,
+      to: 'f',
+      reqId: req.reqId,
+      ok: true,
+      value: 'fresh',
+    },
   });
   expect(await call).toBe('fresh');
   link.close();
@@ -1142,6 +1169,7 @@ test('realtime calls in flight to a previous leader settle on the next leader', 
       data: {
         t: 'res',
         epoch: 2,
+        to: 'f',
         reqId: message.reqId,
         ok: true,
         value: message.method,
@@ -1289,6 +1317,44 @@ test('a follower never sends calls to a leader of another build', async () => {
   link.close();
 });
 
+test('a newer follower sends one hello to each older leader it hears', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const posted: MultiTabMessage[] = [];
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: (message) => posted.push(message),
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'newer',
+    identity: { ...ID, schemaVersion: ID.schemaVersion + 1 },
+    onEvent: noop,
+    onLeaderChange: noop,
+    schedule: manualClock().schedule,
+  });
+  const hellos = () => posted.filter((message) => message.t === 'hello');
+  expect(hellos()).toHaveLength(1);
+  const announce = (epoch: number, clientId: string): void =>
+    deliver?.({ data: { t: 'announce', epoch, clientId, ...ID } });
+  announce(0, 'first');
+  // The same leader answering another tab's hello is not asked again.
+  announce(0, 'first');
+  expect(hellos()).toHaveLength(2);
+  announce(1, 'second');
+  announce(1, 'second');
+  expect(hellos()).toHaveLength(3);
+  expect(link.leadershipState).toMatchObject({
+    state: 'blocked',
+    reason: 'leader-incompatible',
+    leader: 'older',
+  });
+  link.close();
+});
+
 test('a leader yields to a newer tab and refuses calls from another build', async () => {
   const { LeaderBridge } = await import('../src/multi-tab');
   const channels = channelPair();
@@ -1316,6 +1382,7 @@ test('a leader yields to a newer tab and refuses calls from another build', asyn
   expect(channels.fromLeader.at(-1)).toEqual({
     t: 'res',
     epoch: 1,
+    to: 'legacy',
     reqId: 7,
     ok: false,
     error: {
@@ -1690,6 +1757,27 @@ test('single-tab opt-out: multiTab false keeps the not-leader contract', async (
   await loser.close();
 });
 
+test('a single-tab leader whose worker factory throws releases the lock', async () => {
+  const { lock, lockName } = makeGroup();
+  const failure = new Error('worker bundle missing');
+  await expect(
+    createSyncClientHandle({
+      worker: () => {
+        throw failure;
+      },
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl },
+      leaderLock: lock,
+      lockName,
+      multiTab: false,
+    }),
+  ).rejects.toBe(failure);
+  const lease = await lock.tryAcquire?.(lockName);
+  expect(lease).toBeDefined();
+  await lease?.release();
+});
+
 test('a closed follower never promotes itself, and frees the lock for the next tab', async () => {
   // A follower keeps a blocking `acquire` outstanding so it can take over when
   // the leader departs. Closing the handle has to cancel that intent. It did
@@ -1837,6 +1925,8 @@ function coordinatorGroup(): {
   ): Promise<TabCoordinator>;
   readonly tabs: TabCoordinator[];
   readonly lock: ReturnType<typeof makeSharedLock>;
+  /** Every message posted on the group's channels, in order. */
+  readonly sent: ChannelPartition<string>['sent'];
   /** Freeze a tab: its channel messages and lost lease wait for `thaw`. */
   freeze(tab: TabCoordinator): void;
   thaw(tab: TabCoordinator): void;
@@ -1852,6 +1942,7 @@ function coordinatorGroup(): {
     log,
     tabs,
     lock,
+    sent: channels.sent,
     freeze: (tab) => {
       for (const channel of opened.get(tab) ?? []) channels.freeze(channel);
       lock.holdLost();
@@ -2032,6 +2123,168 @@ test('a tab coordinator that fails to start its core releases the lock', async (
   try {
     expect(attempts).toBe(1);
     expect(next.state.state).toBe('leader');
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('two followers whose request ids collide each settle with their own reply', async () => {
+  const group = coordinatorGroup();
+  const answers = new Map<string, (value: unknown) => void>();
+  // The core answers only when the test says so, per calling tab and method.
+  const lead: TabCoordinatorConfig<string>['lead'] = async (context) => ({
+    clientId: `core-${context.tabId}`,
+    call: (tabId, method) =>
+      new Promise((resolve) => answers.set(`${method}@${tabId}`, resolve)),
+    close: async () => {},
+  });
+  await group.open([], { lead });
+  const reader = await group.open([], { lead });
+  const writer = await group.open([], { lead });
+  try {
+    const read = reader.call('querySnapshot', []);
+    const write = writer.call('mutate', []);
+    await drain();
+    // Both followers count from 1, so their requests share one id.
+    expect(
+      group.sent.flatMap(({ message }) =>
+        message.t === 'req' ? [[message.fromId, message.reqId]] : [],
+      ),
+    ).toEqual([
+      [reader.tabId, 1],
+      [writer.tabId, 1],
+    ]);
+    answers.get(`mutate@${writer.tabId}`)?.('commit-1');
+    await drain();
+    answers.get(`querySnapshot@${reader.tabId}`)?.('rows');
+    expect(await write).toBe('commit-1');
+    expect(await read).toBe('rows');
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a newer tab deposes every older tab that promotes before it leads', async () => {
+  const group = coordinatorGroup();
+  const first = await group.open([]);
+  const second = await group.open([]);
+  // The second older tab waits for the lock ahead of the newer one.
+  const newer = await group.open([], { version: 2 });
+  try {
+    await drain();
+    expect(group.log.contexts.map((context) => context.tabId)).toEqual([
+      first.tabId,
+      second.tabId,
+      newer.tabId,
+    ]);
+    expect(group.log.closes).toBe(2);
+    for (const older of [first, second]) {
+      expect(older.state).toEqual({
+        state: 'blocked',
+        reason: 'leader-incompatible',
+        code: LEADER_INCOMPATIBLE_CODE,
+        leader: 'newer',
+        retryable: true,
+      });
+    }
+    expect(newer.state).toEqual({
+      state: 'leader',
+      clientId: `core-${newer.tabId}`,
+    });
+    // The join probe deposes the first tab; the second tab's announce gets
+    // one hello; the newer tab's own promotion probes once more.
+    expect(
+      group.sent.flatMap(({ message }) =>
+        message.t === 'hello' && message.fromId === newer.tabId
+          ? [message.epoch]
+          : [],
+      ),
+    ).toEqual([-1, 1, 1]);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a promoted tab whose core fails to start reports it and contests the lock again', async () => {
+  const group = coordinatorGroup();
+  const failure = new ClientSyncError('client.worker_failed', 'start failed');
+  const states: LeadershipState[] = [];
+  let starts = 0;
+  const leader = await group.open([]);
+  const follower = await group.open([], {
+    onStateChange: (state) => states.push(state),
+    lead: async (context) => {
+      starts += 1;
+      if (starts < 3) throw failure;
+      return {
+        clientId: `core-${context.tabId}`,
+        call: async (_tabId, method) => `${method}@${context.tabId}`,
+        close: async () => {},
+      };
+    },
+  });
+  try {
+    await leader.close();
+    await drain();
+    expect(starts).toBe(3);
+    const failed = states.filter((state) => state.state === 'waiting');
+    expect(failed).toMatchObject([
+      { state: 'waiting', reason: 'handover' },
+      { reason: 'leader-start-failed', attempt: 1, retrying: true },
+      { reason: 'leader-start-failed', attempt: 2, retrying: true },
+    ]);
+    for (const state of failed.slice(1)) {
+      expect(
+        state.reason === 'leader-start-failed' ? state.error : undefined,
+      ).toBe(failure);
+    }
+    expect(follower.state).toEqual({
+      state: 'leader',
+      clientId: `core-${follower.tabId}`,
+    });
+    expect(await follower.call('open', [])).toBe(`open@${follower.tabId}`);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a tab whose core fails three starts stops contesting and follows the next leader', async () => {
+  const group = coordinatorGroup();
+  let starts = 0;
+  const leader = await group.open([]);
+  const follower = await group.open([], {
+    lead: async () => {
+      starts += 1;
+      throw new Error('worker bundle missing');
+    },
+  });
+  try {
+    await leader.close();
+    await drain();
+    expect(starts).toBe(3);
+    expect(follower.state).toMatchObject({
+      state: 'waiting',
+      reason: 'leader-start-failed',
+      attempt: 3,
+      retrying: false,
+    });
+    const error =
+      follower.state.state === 'waiting' &&
+      follower.state.reason === 'leader-start-failed'
+        ? follower.state.error
+        : undefined;
+    expect(error?.code).toBe('client.worker_failed');
+    expect(error?.message).toBe('the core failed to start');
+    // The lock is free: the next tab leads and the failed tab follows it.
+    const next = await group.open([]);
+    await drain();
+    expect(starts).toBe(3);
+    expect(next.state.state).toBe('leader');
+    expect(follower.state).toMatchObject({
+      state: 'follower',
+      leaderClientId: `core-${next.tabId}`,
+    });
+    expect(await follower.call('open', [])).toBe(`open@${next.tabId}`);
   } finally {
     for (const tab of group.tabs) await tab.close();
   }

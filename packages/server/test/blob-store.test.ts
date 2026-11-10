@@ -135,6 +135,27 @@ describe('sweepOrphanBlobs helper (§5.9.2)', () => {
     expect(await store.has(PARTITION, referencedId)).toBe(true);
   });
 
+  test('a reference that lands after the sweep starts keeps its blob', async () => {
+    const store = new MemoryBlobStore();
+    const bytes = new Uint8Array([9]);
+    const blobId = await blobIdFor(bytes);
+    await store.put(PARTITION, blobId, bytes, NOW - GRACE_MS - 1);
+    // The keep-set read when the sweep starts is empty; the push that
+    // references the blob lands before the sweep reaches it, so only the
+    // re-read at delete time sees the reference.
+    let reads = 0;
+    const storage = {
+      listReferencedBlobIds: async () => (reads++ === 0 ? [] : [blobId]),
+    } as never;
+    const result = await sweepOrphanBlobs(storage, store, PARTITION, {
+      graceMs: GRACE_MS,
+      nowMs: NOW,
+    });
+    expect(result.swept).toEqual([]);
+    expect(result.referencedCount).toBe(1);
+    expect(await store.has(PARTITION, blobId)).toBe(true);
+  });
+
   test('throws when storage has no reference index (refuses unsafe sweep)', async () => {
     const store = new MemoryBlobStore();
     // A storage object missing listReferencedBlobIds.

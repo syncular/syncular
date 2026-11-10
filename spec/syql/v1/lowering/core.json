@@ -120,6 +120,16 @@
       "name": "compile-option-function",
       "source": "query extensionFunction() { select id, sqrt(created_at) as value from todos; }",
       "code": "SYQL6002_INVALID_SQL"
+    },
+    {
+      "name": "compared-scope-comparison-is-no-proof",
+      "source": "sync query negated(listId: string) { select id from todos where (todos.list_id = :listId) = 0; }",
+      "code": "SYQL6005_INVALID_SYNC_QUERY"
+    },
+    {
+      "name": "collated-scope-comparison-is-no-proof",
+      "source": "sync query collated(listId: string) { select id from todos where todos.list_id = :listId collate nocase; }",
+      "code": "SYQL6005_INVALID_SYNC_QUERY"
     }
   ]
 }

@@ -58,8 +58,9 @@ tauri-plugin-syncular = { git = "https://github.com/syncular/syncular", features
 
 `native-transport` compiles the plugin's blocking HTTP and WebSocket stack
 (`ureq` and `tungstenite`, with no async runtime). Without it the plugin builds
-a client-local core: network commands return errors while local reads and
-writes keep working.
+a client-local core: with `base_url` unset, network commands return errors while
+local reads and writes keep working. With `base_url` set, that build fails
+`create` and every later call with the core's startup error.
 
 ::checkpoint[`cargo check` in `src-tauri/` resolves the plugin, and `bun install` resolves the bridge.]
 ::::
@@ -102,10 +103,17 @@ tauri::Builder::default()
 | `max_request_bytes` | Largest request body the transport sends. Absent: unbounded. |
 | `max_response_bytes` | Largest decoded (post-decompression) response body. Absent: unbounded. |
 | `redirects` | `"deny"` (default) refuses every redirect, so credentials, URL userinfo, and signed capabilities never replay to another origin. `"follow"` follows a redirect only for a request with none of those. |
+| `realtime_heartbeat_ms` | Interval the server sends realtime heartbeats at, in milliseconds. Absent: 30000. After the first heartbeat, twice that interval of silence closes the socket as lost. |
 | `db_path` | On-disk SQLite path a `create` opens when it names no database. Absent: in-memory, and nothing survives a restart. |
 | `database_dir` | Directory of named databases. A `create` with `database: 'name'` opens `<database_dir>/name.db`; the plugin creates the directory. Without `db_path`, every `create` must name a database. |
 | `auto_sync` | Run the background host loop. Default `true`. |
 | `authority_columns` | The native ceiling for authority reads; see [Platform specifics](/platform-tauri-specifics/#authority-evidence-before-activation). |
+
+The native core validates the transport fields when the plugin starts. An
+invalid value, such as `request_timeout_ms: Some(0)`, is the error reply to the
+webview's `create`: `createTauriSyncClient` rejects with a `TauriSyncError`
+whose `code` is `sync.invalid_request` and whose `details.legacyCause` names the
+field.
 
 ::checkpoint[The app starts and the plugin registers without an error in the Rust log.]
 ::::
@@ -148,7 +156,7 @@ client id and stores it in that database; later opens restore it. An explicit
 `clientId` can initialize a new database. A different id for an existing
 database fails with `client.identity_mismatch`. The bridge resolves
 `@tauri-apps/api` automatically, or the ambient `window.__TAURI__` when
-`withGlobalTauri` is enabled; tests inject `invoke` and `listen` doubles.
+`withGlobalTauri` is enabled; tests inject `invoke` and `channel` doubles.
 
 ::checkpoint[The console prints the server's rows for `groceries`. Restart the app: the rows appear again without a round trip.]
 ::::

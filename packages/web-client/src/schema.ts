@@ -166,18 +166,19 @@ export function compileClientSchema(
     const scopePrefixByVariable = new Map<string, string>();
     for (const spec of table.scopes) {
       const pattern = typeof spec === 'string' ? spec : spec.pattern;
-      const match = PATTERN_RE.exec(pattern);
-      if (match === null || match[1] === undefined || match[2] === undefined) {
+      const [, prefix, variable] = PATTERN_RE.exec(pattern) ?? [];
+      if (!prefix || !variable) {
         invalidSchema(
           `${tableLabel}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}'`,
         );
       }
-      const prefix = match[1];
-      const variable = match[2];
       const column = typeof spec === 'string' ? variable : spec.column;
-      if (!columnIndex.has(column)) {
+      // §3.1: a scope value is an authorization key; only these two types
+      // render identically in every implementation.
+      const type = table.columns[columnIndex.get(column) ?? -1]?.type;
+      if (type !== 'string' && type !== 'integer') {
         invalidSchema(
-          `${tableLabel}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
+          `${tableLabel}: scope column ${JSON.stringify(column)} must be string or integer (§3.1)`,
         );
       }
       const existing = scopeColumnByVariable.get(variable);
@@ -599,12 +600,18 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       OUTBOX_IMAGES,
       'client_commit_id TEXT NOT NULL,op_index INTEGER NOT NULL,existed INTEGER NOT NULL CHECK(existed IN (0,1)),sync_version INTEGER,values_json TEXT,PRIMARY KEY(client_commit_id,op_index)',
     );
-    if (
-      !db
-        .query(`PRAGMA table_info(${OUTBOX_IMAGES})`)
-        .some((row) => row.name === 'delivery_seq')
-    )
-      db.exec(`ALTER TABLE ${OUTBOX_IMAGES} ADD COLUMN delivery_seq INTEGER`);
+    const imageColumns = db.query(`PRAGMA table_info(${OUTBOX_IMAGES})`);
+    for (const column of ['delivery_seq INTEGER', 'tbl TEXT', 'row_id TEXT'])
+      if (!imageColumns.some((row) => row.name === column.split(' ')[0]))
+        db.exec(`ALTER TABLE ${OUTBOX_IMAGES} ADD COLUMN ${column}`);
+    // Images written before the row key existed take it from their operation.
+    if (!imageColumns.some((row) => row.name === 'row_id'))
+      db.exec(
+        `UPDATE ${OUTBOX_IMAGES} SET (tbl,row_id)=(SELECT json_extract(operations,'$['||op_index||'].table'),json_extract(operations,'$['||op_index||'].rowId') FROM ${OUTBOX_TABLE} WHERE client_commit_id=${OUTBOX_IMAGES}.client_commit_id)`,
+      );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS ${OUTBOX_IMAGES}_row ON ${OUTBOX_IMAGES}(tbl,row_id)`,
+    );
     createTable(
       OUTCOMES_TABLE,
       "seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL CHECK(status IN ('applied','cached','conflict','rejected')),recorded_at_ms INTEGER NOT NULL,results TEXT NOT NULL,operations TEXT,resolution TEXT NOT NULL DEFAULT 'active' CHECK(resolution IN ('active','resolved_keep_server','superseded','dismissed')),resolved_at_ms INTEGER,replacement_client_commit_id TEXT",

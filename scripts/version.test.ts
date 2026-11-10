@@ -68,9 +68,9 @@ describe('root-authoritative release versioning', () => {
     );
   });
 
-  test('extracts exactly one version section of the release runbook', () => {
-    const runbook = [
-      '# Runbook',
+  test('extracts exactly one version section of the release notes file', () => {
+    const notesFile = [
+      '# Release notes',
       '',
       '## 1.2.3 release notes',
       '',
@@ -80,9 +80,9 @@ describe('root-authoritative release versioning', () => {
       '',
       'Older notes.',
     ].join('\n');
-    expect(releaseNotes(runbook, '1.2.3')).toBe('Current notes.');
-    expect(releaseNotes(runbook, '1.2.2')).toBe('Older notes.');
-    expect(() => releaseNotes(runbook, '1.2.4')).toThrow(
+    expect(releaseNotes(notesFile, '1.2.3')).toBe('Current notes.');
+    expect(releaseNotes(notesFile, '1.2.2')).toBe('Older notes.');
+    expect(() => releaseNotes(notesFile, '1.2.4')).toThrow(
       'no "## 1.2.4 release notes" section',
     );
     expect(() =>

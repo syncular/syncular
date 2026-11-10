@@ -30,6 +30,7 @@ import {
   TASK_COLUMNS,
   pullHeader,
   section,
+  sections,
   seedTask,
   subFrame,
   sync,
@@ -355,6 +356,19 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
         nowMs: t.now.ms + 700_000,
       }),
     ).rejects.toMatchObject({ code: 'sync.forbidden' });
+  });
+
+  test('a malformed token is sync.forbidden, never a decode exception', async () => {
+    for (const token of ['%%%.@@@', 'a.b!', '.', 'no-dot']) {
+      await expect(
+        verifySegmentToken('key', token, {
+          segmentId: `sha256:${'a'.repeat(64)}`,
+          scopeDigest: 'digest-a',
+          audience: 'aud-part-1',
+          nowMs: 1_750_000_000_000,
+        }),
+      ).rejects.toMatchObject({ code: 'sync.forbidden' });
+    }
   });
 
   test('a token verifies against any digest in the record set (§5.4)', async () => {
@@ -987,4 +1001,168 @@ test('a stored image survives commits outside its scope (§4.7 scope pin)', asyn
   expect(refSegments(third.body)[0]?.asOfCommitSeq).toBe(moved);
   expect(builds).toBe(2);
   t.storage.db.close();
+});
+
+describe('the bootstrap decision (§4.7)', () => {
+  /** t1, t2 in p1 (seq 1, 2) and t3 in p2 (seq 3). */
+  async function seeded() {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 't1', 'p1');
+    await seedTask(t, 'c2', 't2', 'p1');
+    await seedTask(t, 'c3', 't3', 'p2');
+    return t;
+  }
+
+  function inlineRowIds(body: { type: string }[]): unknown[] {
+    return inlineSegments(body)
+      .flatMap((f) => decodeRowsSegment(f.payload).blocks.flat())
+      .map((row) => row.values[0]);
+  }
+
+  test('a resume token outside the log or with a bad position restarts from a fresh pin', async () => {
+    const t = await seeded();
+    const token = (fields: Record<string, unknown>) =>
+      JSON.stringify({
+        asOfCommitSeq: 2,
+        tables: ['tasks'],
+        tableIndex: 0,
+        rowCursor: 't1',
+        ...fields,
+      });
+    for (const forged of [
+      token({ asOfCommitSeq: 999 }),
+      token({ asOfCommitSeq: 1.5 }),
+      token({ asOfCommitSeq: -1 }),
+      token({ tableIndex: 0.5 }),
+      token({ tableIndex: 1 }),
+    ]) {
+      const s = section(
+        await sync(t, [
+          pullHeader(),
+          subFrame('s1', 'tasks', { project_id: ['p1'] }, 2, {
+            bootstrapState: forged,
+          }),
+        ]),
+        's1',
+      );
+      expect(s.start.bootstrap).toBe(true);
+      expect(s.end.nextCursor).toBe(3);
+      expect(inlineRowIds(s.body)).toEqual(['t1', 't2']);
+    }
+    // A usable token still resumes after its row cursor at its pin.
+    const resumed = section(
+      await sync(t, [
+        pullHeader(),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, 2, {
+          bootstrapState: token({}),
+        }),
+      ]),
+      's1',
+    );
+    expect(resumed.end.nextCursor).toBe(2);
+    expect(inlineRowIds(resumed.body)).toEqual(['t2']);
+  });
+
+  test('the sqlite image reuse key is the server pin, never a client token', async () => {
+    const t = await seeded();
+    const s = section(
+      await sync(t, [
+        pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1, {
+          bootstrapState: JSON.stringify({
+            asOfCommitSeq: 1,
+            tables: ['tasks'],
+            tableIndex: 0,
+            rowCursor: null,
+          }),
+        }),
+      ]),
+      's1',
+    );
+    // The scope pin of p1 is its newest change, seq 2.
+    const image = refSegments(s.body)[0];
+    expect(image?.mediaType).toBe('sqlite');
+    expect(image?.asOfCommitSeq).toBe(2);
+    expect(s.end.nextCursor).toBe(2);
+  });
+
+  test('a present token of the wrong shape bootstraps even with an in-range cursor', async () => {
+    const t = await seeded();
+    const s = section(
+      await sync(t, [
+        pullHeader(),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1, {
+          bootstrapState: JSON.stringify({ resume: 'elsewhere' }),
+        }),
+      ]),
+      's1',
+    );
+    expect(s.start.bootstrap).toBe(true);
+    expect(inlineRowIds(s.body)).toEqual(['t1', 't2']);
+    expect(s.end.nextCursor).toBe(3);
+    expect(s.end.bootstrapState).toBeUndefined();
+  });
+
+  test('a rejecting first-page read fails the request once, with no unhandled rejection', async () => {
+    // bun:test fails a test in which any promise rejects unhandled.
+    const t = await seeded();
+    const failing = new Proxy(t.storage, {
+      get(target, property) {
+        if (property === 'scanRows') {
+          return () => Promise.reject(new Error('scan failed'));
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, { storage: failing });
+    await expect(
+      sync(t, [
+        pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+        subFrame('s2', 'tasks', { project_id: ['p2'] }, -1),
+      ]),
+    ).rejects.toThrow('scan failed');
+  });
+
+  test('first pages are read in windows bounded by rows, not by subscription count', async () => {
+    const t = await seeded();
+    let inFlight = 0;
+    let peak = 0;
+    const counting = new Proxy(t.storage, {
+      get(target, property) {
+        if (property === 'scanRows') {
+          return async (
+            ...args: Parameters<typeof target.scanRows>
+          ): ReturnType<typeof target.scanRows> => {
+            inFlight += 1;
+            peak = Math.max(peak, inFlight);
+            try {
+              return await target.scanRows(...args);
+            } finally {
+              inFlight -= 1;
+            }
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, { storage: counting });
+    const subs = Array.from({ length: 6 }, (_, i) =>
+      subFrame(`s${i}`, 'tasks', { project_id: ['p1'] }, -1),
+    );
+    // Default 1,000-row pages: all six first pages share one window.
+    await sync(t, [pullHeader(), ...subs]);
+    expect(peak).toBe(6);
+    // Maximal 50,000-row pages: one first page at a time.
+    peak = 0;
+    const message = await sync(t, [
+      pullHeader({ limitSnapshotRows: 50_000 }),
+      ...subs,
+    ]);
+    expect(peak).toBe(1);
+    expect(sections(message).size).toBe(6);
+  });
 });

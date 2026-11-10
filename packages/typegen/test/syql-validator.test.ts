@@ -736,6 +736,58 @@ describe('SYQL schema/SQL validation', () => {
     ]);
   });
 
+  test('a scope proof is a whole WHERE conjunct with nothing around the bind', () => {
+    for (const predicate of [
+      '(todos.list_id = :listId) = 0',
+      'todos.list_id = :listId is false',
+      'iif(todos.list_id = :listId, 0, 1)',
+      'case when todos.list_id = :listId then 1 else 0 end',
+      'todos.list_id = :listId collate nocase',
+      'not todos.list_id = :listId',
+    ]) {
+      const error = frontendError(() =>
+        validate(`sync query q(listId) {
+          select id from todos where ${predicate};
+        }`),
+      );
+      expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+      const query = validate(`query q(listId) {
+        select id from todos where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.dependencies).toEqual([
+        { table: 'todos', scopes: [] },
+      ]);
+    }
+    for (const predicate of [
+      'todos.list_id = :listId',
+      '(todos.list_id = :listId)',
+      "title = 'a' and (todos.list_id = :listId and position between 1 and 9)",
+    ]) {
+      const query = validate(`sync query q(listId) {
+        select id from todos where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.coverage).toEqual([
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['listId'],
+          fixedScopes: [],
+        },
+      ]);
+    }
+  });
+
+  test('refuses a query name that a target cannot emit', () => {
+    const error = frontendError(() =>
+      validate(`query delete(listId) {
+        select id from todos where todos.list_id = :listId;
+      }`),
+    );
+    expect(error.detail).toContain(
+      'not a valid identifier on an emitter target',
+    );
+  });
+
   test('does not allow one side of a self-join to claim sync coverage', () => {
     const error = frontendError(() =>
       validate(`sync query q(listId) by a.list_id {
@@ -863,7 +915,7 @@ describe('SYQL schema/SQL validation', () => {
     ]) {
       const error = frontendError(() =>
         validate(
-          `query q() {  select id, ${expression} as value from todos ; }`,
+          `query q() {  select id, cast(${expression} as text) as value from todos ; }`,
         ),
       );
       expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
@@ -874,9 +926,9 @@ describe('SYQL schema/SQL validation', () => {
     const accepted = validate(`query q() {
 
         select id,
-          lower(title) as folded,
-          json_extract('{"value": 1}', '$.value') as extracted,
-          iif(status is null, 'none', status) as normalized
+          cast(lower(title) as text) as folded,
+          cast(json_extract('{"value": 1}', '$.value') as integer) as extracted,
+          cast(iif(status is null, 'none', status) as text) as normalized
         from todos
         order by title collate nocase, id
       ;
@@ -896,7 +948,7 @@ describe('SYQL schema/SQL validation', () => {
     ]) {
       const error = frontendError(() =>
         validate(
-          `query q() {  select id, ${expression} as value from todos ; }`,
+          `query q() {  select id, cast(${expression} as text) as value from todos ; }`,
         ),
       );
       expect(error.code).toBe('SYQL6002_INVALID_SQL');
@@ -906,7 +958,7 @@ describe('SYQL schema/SQL validation', () => {
     for (const expression of ['date()', "strftime('%Y')"]) {
       const error = frontendError(() =>
         validate(
-          `query q() {  select id, ${expression} as value from todos ; }`,
+          `query q() {  select id, cast(${expression} as text) as value from todos ; }`,
         ),
       );
       expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
@@ -923,9 +975,9 @@ describe('SYQL schema/SQL validation', () => {
   test('allows FTS5 auxiliary functions only with a declared FTS projection', () => {
     const accepted = validate(`query searchTodos() {
       select todos_fts._syncular_source_id as source_id, t.id,
-        bm25(todos_fts) as rank,
-        highlight(todos_fts, 0, '<mark>', '</mark>') as highlighted,
-        snippet(todos_fts, 0, '<mark>', '</mark>', ' … ', 12) as excerpt
+        cast(bm25(todos_fts) as real) as rank,
+        cast(highlight(todos_fts, 0, '<mark>', '</mark>') as text) as highlighted,
+        cast(snippet(todos_fts, 0, '<mark>', '</mark>', ' … ', 12) as text) as excerpt
       from todos_fts
       join todos t on t.id = todos_fts._syncular_source_id
       where 0
@@ -946,7 +998,7 @@ describe('SYQL schema/SQL validation', () => {
 
     const missingFtsIdentity = frontendError(() =>
       validate(`query searchTodos() {
-        select t.id, bm25(todos_fts) as rank
+        select t.id, cast(bm25(todos_fts) as real) as rank
         from todos_fts
         join todos t on t.id = todos_fts._syncular_source_id
         where 0
@@ -977,7 +1029,7 @@ describe('SYQL schema/SQL validation', () => {
     expect(conflict.code).toBe('SYQL6004_TYPE_CONFLICT');
 
     const explicit = validate(`query q(label: string) {
-       select :label as label, id from todos ;
+       select cast(:label as text) as label, id from todos ;
     }`).queries[0];
     expect(explicit?.bindTypes.get('label')?.base).toBe('string');
   });
@@ -1362,7 +1414,7 @@ describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () =>
 
   test('ORDER BY resolves a snake_case alias to the lowered alias', () => {
     const analysis = run(
-      'id, position + 1 as next_est',
+      'id, cast(position + 1 as integer) as next_est',
       'order by next_est desc, id',
     );
     expect(analysis?.sql).toContain('order by "nextEst" desc, id');
@@ -1371,14 +1423,20 @@ describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () =>
 
   test('ORDER BY keeps camelCase aliases, qualified names, and expressions', () => {
     expect(
-      run('id, position + 1 as nextEst', 'order by nextEst, id')?.sql,
+      run(
+        'id, cast(position + 1 as integer) as nextEst',
+        'order by nextEst, id',
+      )?.sql,
     ).toContain('order by nextEst, id');
     expect(
-      run('id, position + 1 as next_est', 'order by todos.position, id')?.sql,
+      run(
+        'id, cast(position + 1 as integer) as next_est',
+        'order by todos.position, id',
+      )?.sql,
     ).toContain('order by todos.position, id');
     expect(
       run(
-        'id, position + 1 as next_est',
+        'id, cast(position + 1 as integer) as next_est',
         'order by next_est * 2 desc, abs(todos.position), id',
       )?.sql,
     ).toContain('order by "nextEst" * 2 desc, abs(todos.position), id');
@@ -1386,7 +1444,7 @@ describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () =>
 
   test('GROUP BY resolves a snake_case alias', () => {
     const analysis = run(
-      'position + 1 as next_est, count(*) as total_rows',
+      'cast(position + 1 as integer) as next_est, count(*) as total_rows',
       'group by next_est order by next_est',
     );
     expect(analysis?.sql).toContain('group by "nextEst" order by "nextEst"');
@@ -1394,7 +1452,10 @@ describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () =>
 
   test('a genuinely unknown ORDER BY name keeps the stable error code', () => {
     const error = frontendError(() =>
-      run('id, position + 1 as next_est', 'order by missing_est, id'),
+      run(
+        'id, cast(position + 1 as integer) as next_est',
+        'order by missing_est, id',
+      ),
     );
     expect(error.code).toBe('SYQL6002_INVALID_SQL');
     expect(error.detail).toBe('unknown column `missing_est`');
@@ -1402,7 +1463,10 @@ describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () =>
 
   test('the camelCase spelling of a snake_case alias is not an authored name', () => {
     const error = frontendError(() =>
-      run('id, position + 1 as next_est', 'order by nextEst, id'),
+      run(
+        'id, cast(position + 1 as integer) as next_est',
+        'order by nextEst, id',
+      ),
     );
     expect(error.code).toBe('SYQL6002_INVALID_SQL');
   });

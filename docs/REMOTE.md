@@ -133,7 +133,8 @@ the stored row; the server authorizes both the old and the new values.
 An `upsert` mutation is unversioned by default, so SPEC.md §6.2 refuses it
 with `sync.row_deleted` when the row was deleted inside the tombstone horizon.
 `insert: true` makes it an explicit insert (`baseVersion = 0`): it recreates
-the deleted row at `server_version = 1` and clears the tombstone, and an
+the deleted row one above the tombstone's `server_version` and clears the
+tombstone, and an
 existing row answers `sync.version_conflict`. A command that reads the row
 first with `getRow` sets `insert: true` when the row is absent.
 
@@ -277,9 +278,14 @@ type ClientMessage =
 
 A watch runs the same query and authorization path as HTTP. It receives a full
 replacement `snapshot` containing `rows` and `maxCommitSeq`. A commit touching
-one of the descriptor's tables reruns the query. Commits arriving during a run
-set one dirty flag, producing at most one pending rerun at a time. Commits for
-other tables do not rerun it.
+one of the descriptor's tables queues the watch for a rerun; commits for other
+tables do not. A session runs one query at a time: it reruns its queued watches
+in arrival order, and a watch queued again while it runs reruns once more after
+the queue reaches it, so one watch holds at most one pending rerun.
+
+A session holds at most `limits.maxWatchesPerSession` watches (default 100,
+SPEC.md §1.7). A `watch` past the cap receives a `watch_error` with
+`sync.limit_exceeded`, and the session's other watches keep running.
 
 `watchId` is unique within one connection. Reusing an active ID fails with
 `operation.invalid_request`. An `unwatch` removes the registration and
@@ -300,6 +306,7 @@ fresh snapshot.
 | `operation.storage_unsupported` | no | Storage lacks authoritative query support |
 | `operation.query_failed` | no | Registered SQL execution fails |
 | `operation.execution_failed` | no | Registered operation code or infrastructure fails unexpectedly |
+| `sync.limit_exceeded` | no | A `watch` arrives while the session holds `maxWatchesPerSession` watches |
 
 A `ValidationRejection` from host code produces its own host code
 (SPEC.md §6.7 prefix rules), non-retryable.

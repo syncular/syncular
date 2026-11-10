@@ -9,10 +9,8 @@ import {
   type ClientSchema,
   ClientSyncError,
   compileClientSchema,
-  dropOutboxCommitsInScope,
   encodeOutboxCommit,
   ensureLocalSchema,
-  type JsonRowValue,
   jsonToRowValue,
   listOutbox,
   iterateOutbox,
@@ -60,6 +58,8 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
       'sync_version',
       'values_json',
       'delivery_seq',
+      'tbl',
+      'row_id',
     ]);
     db.close();
   });
@@ -369,77 +369,6 @@ describe('mutation validation', () => {
     ).toThrow('unknown table');
     // Failed mutations leave no partial state behind.
     expect(a.client.pendingCommits()).toHaveLength(0);
-  });
-});
-
-describe('revoked-scope drop (§3.3)', () => {
-  test('drops whole commits with an upsert in the revoked scope, keeps the rest', () => {
-    const db = new BunClientDatabase();
-    ensureLocalSchema(db, compiled);
-    const table = compiled.tables.get('tasks');
-    if (table === undefined) throw new Error('missing table');
-    const values = (id: string, project: string) =>
-      taskValues(id, project) as Record<string, JsonRowValue>;
-    appendOutboxCommit(
-      db,
-      'in-scope',
-      [
-        {
-          table: 'tasks',
-          rowId: 't1',
-          op: 'upsert',
-          values: values('t1', 'p1'),
-        },
-      ],
-      0,
-    );
-    appendOutboxCommit(
-      db,
-      'other-scope',
-      [
-        {
-          table: 'tasks',
-          rowId: 't2',
-          op: 'upsert',
-          values: values('t2', 'p2'),
-        },
-      ],
-      1,
-    );
-    appendOutboxCommit(
-      db,
-      'delete-only',
-      [{ table: 'tasks', rowId: 't3', op: 'delete' }],
-      2,
-    );
-    appendOutboxCommit(
-      db,
-      'mixed',
-      [
-        {
-          table: 'tasks',
-          rowId: 't4',
-          op: 'upsert',
-          values: values('t4', 'p2'),
-        },
-        {
-          table: 'tasks',
-          rowId: 't5',
-          op: 'upsert',
-          values: values('t5', 'p1'),
-        },
-      ],
-      3,
-    );
-    const dropped = dropOutboxCommitsInScope(db, table, {
-      project_id: ['p1'],
-    });
-    // Commits are atomic and content-pinned (§2.3): 'mixed' goes as a whole.
-    expect(dropped.sort()).toEqual(['in-scope', 'mixed']);
-    expect(listOutbox(db).map((c) => c.clientCommitId)).toEqual([
-      'other-scope',
-      'delete-only',
-    ]);
   });
 });
 

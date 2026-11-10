@@ -14,6 +14,7 @@ import {
   type SqlRow,
   type SqlValue,
 } from './database';
+import { prepareReadOnly, SQL_BLANK } from './query-guard';
 
 function coerceParams(params: readonly SqlValue[]): SQLInputValue[] {
   return params.map((value): SQLInputValue => {
@@ -59,6 +60,37 @@ export class NodeClientDatabase implements ClientDatabase {
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     const rows = this.db.prepare(sql).all(...coerceParams(params));
     return rows.map(normalizeRow);
+  }
+
+  queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    const statement = prepareReadOnly(sql, () => {
+      const prepared = this.db.prepare(sql);
+      // node:sqlite exposes no `sqlite3_stmt_readonly` (and no column count
+      // before Node 22.16), so the verb decides: SELECT, VALUES, EXPLAIN, or
+      // a WITH clause whose first keyword outside parentheses is SELECT or
+      // VALUES.
+      const body = prepared.sourceSQL.replace(SQL_BLANK, '');
+      const verb = /^[a-z]+/i.exec(body)?.[0].toLowerCase();
+      let reads = verb === 'select' || verb === 'values' || verb === 'explain';
+      if (verb === 'with') {
+        let depth = 0;
+        for (const [token] of body.matchAll(
+          /'[^']*'|"[^"]*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$)|[\w$\u0080-\uffff]+|[\s\S]/g,
+        )) {
+          if (token === '(') depth += 1;
+          else if (token === ')') depth -= 1;
+          else if (
+            depth === 0 &&
+            /^(?:select|values|insert|update|delete|replace)$/i.test(token)
+          ) {
+            reads = /^(?:select|values)$/i.test(token);
+            break;
+          }
+        }
+      }
+      return [prepared, prepared.sourceSQL, reads] as const;
+    });
+    return statement.all(...coerceParams(params)).map(normalizeRow);
   }
 
   /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */

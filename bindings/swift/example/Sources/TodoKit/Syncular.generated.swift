@@ -8,25 +8,45 @@ import Syncular
 /// The generated syncular schema (SPEC §2.4, §3.1) + typed rows.
 public enum SyncularSchema {
     /// ServerSchema-compatible schema — pass to `SyncularClient(schema:)`.
-    public static let schema: JSONValue =
-        .object([
-          "version": .number(1),
-          "tables": .array([
-            .object([
-              "name": .string("notes"),
-              "primaryKey": .string("id"),
-              "columns": .array([
-                .object(["name": .string("id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("list_id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("body"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("updated_at_ms"), "type": .string("integer"), "nullable": .bool(false)]),
-              ]),
-              "scopes": .array([
-                .object(["pattern": .string("list:{list_id}"), "column": .string("list_id")]),
-              ]),
-            ]),
-          ]),
-        ])
+    public static let schema: JSONValue = try! JSONValue(decoding: """
+        {
+          "version": 1,
+          "tables": [
+            {
+              "name": "notes",
+              "primaryKey": "id",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "list_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "body",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "updated_at_ms",
+                  "type": "integer",
+                  "nullable": false
+                }
+              ],
+              "scopes": [
+                {
+                  "pattern": "list:{list_id}",
+                  "column": "list_id"
+                }
+              ]
+            }
+          ]
+        }
+        """)
 
     /// Typed requested-scope builders per subscription.
     public enum subscriptions {

@@ -18,6 +18,11 @@
  * poll functions are heap-owned by the library and MUST be released with
  * syncular_free_string (never free()). Bytes inside JSON ride as
  * {"$bytes":"<lowercase-hex>"}.
+ *
+ * Threading: the host serializes syncular_client_command calls; commands on
+ * one handle never run concurrently. One pump thread may block in
+ * syncular_client_poll_event while another thread issues commands. No thread
+ * may be inside either function when syncular_client_close runs.
  */
 
 #ifndef SYNCULAR_FFI_H
@@ -36,26 +41,39 @@ extern "C" {
  *                                   -> native HTTP+WS transport
  *                                      (requires the `native-transport` build)
  * Returns an opaque handle, or NULL on a malformed config / unsupported
- * transport. Thread-affine: drive one handle from one thread.
+ * transport.
  */
 void *syncular_client_new(const char *config_json);
 
 /*
  * Run one JSON command against the client. `command_json` is
  * {"method":"...","params":{...}} — create/subscribe/mutate/sync/
- * syncUntilIdle/readRows/conflicts/subscriptionState/setPresence/... (the
- * full conformance command surface). Returns a heap-owned JSON string,
+ * syncUntilIdle/readRows/conflicts/subscriptionState/setPresence/
+ * drainRealtime/... (the full conformance command surface). Every command
+ * applies the inbound realtime traffic buffered since the previous one.
+ * Returns a heap-owned JSON string,
  * {"result":...} or {"error":{"code":...,"message":...}}, to free with
  * syncular_free_string. Returns NULL only on a NULL handle.
  */
 char *syncular_client_command(void *handle, const char *command_json);
 
 /*
- * Poll the next client-observable event (sync-needed / conflict / rejection /
- * presence / schema-floor / lease). `timeout_ms`: <0 blocks until an event
- * arrives, 0 returns immediately, >0 waits up to that many milliseconds.
- * Returns a heap-owned event JSON string to free with syncular_free_string,
- * or NULL if none arrived in time.
+ * Poll the next client-observable event, a JSON object with a "type":
+ *   change          an exact revisioned observer batch
+ *   sync-intent     a sync round the host should schedule
+ *   presence        a presence fanout for one scope key; "error" carries
+ *                   the server's code when it refused this client's publish
+ *   progress        the latest sync progress (only the newest is queued)
+ *   diagnostics     a changed diagnostics snapshot
+ *   realtime-wake   {"type":"realtime-wake"}: the socket reader buffered a
+ *                   delta, a control frame, or a socket loss. Issue
+ *                   {"method":"drainRealtime","params":{}} to apply it. One
+ *                   wake stays outstanding until a command drains the buffer.
+ * The queue is unbounded; while the host issues no command it gains at most
+ * one realtime-wake. `timeout_ms`: <0 blocks until an event arrives, 0
+ * returns immediately, >0 waits up to that many milliseconds. Returns a
+ * heap-owned event JSON string to free with syncular_free_string, or NULL if
+ * none arrived in time.
  */
 char *syncular_client_poll_event(void *handle, int64_t timeout_ms);
 

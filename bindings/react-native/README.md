@@ -19,7 +19,7 @@ JSON-command-shaped: `command_json` in, `{result|error}` out, bytes as
 ┌── JS (Hermes) ─────────────┐         ┌── native (per platform) ───────────┐
 │ @syncular/react hooks   │         │ TurboModule shim (ObjC++ / Kotlin)  │
 │   │ SyncClientLike         │ Turbo-  │   syncular_client_command  ─┐       │
-│ @syncular/react-native ─┼─Module─▶│   syncular_client_query     ├─ FFI  │
+│ @syncular/react-native ─┼─Module─▶│                             ├─ FFI  │
 │   createNativeSyncClient   │◀────────┤   syncular_client_poll_event┘  core │
 └────────────────────────────┘ events  │   SyncClient (rusqlite FILE db)     │
                                         └─────────────────────────────────────┘
@@ -245,7 +245,7 @@ shipping it blind risks a flaky gate. The exact recipe it would run:
 - run: rustup target add aarch64-linux-android armv7-linux-androideabi \
        x86_64-linux-android i686-linux-android
 - run: cargo install cargo-ndk
-- run: rust/scripts/build-native.sh --android   # cdylib → jniLibs/<abi>/
+- run: rust/scripts/build-native.sh             # cdylib → jniLibs/<abi>/
 - run: cd bindings/react-native/example && npm_config_workspace=false <install> \
        && npx react-native init overlay … && ./android/gradlew assembleDebug
 ```

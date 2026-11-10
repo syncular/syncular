@@ -102,6 +102,7 @@ export type LocalAuthorityAttachDetails =
       readonly retryable: boolean;
     }
   | { readonly reason: 'log_epoch_changed' }
+  | { readonly reason: 'undo_pending' }
   | {
       readonly reason: 'schema_floor';
       readonly requiredSchemaVersion: number;
@@ -431,7 +432,13 @@ export async function openLocalAuthority(
           uploading = false;
         }
       }
-      writeMeta({ state: 'local', attach_id: null, sent: null, applied: null });
+      writeMeta({
+        state: 'local',
+        attach_id: null,
+        sent: null,
+        applied: null,
+        undo: null,
+      });
       state = 'local';
     },
   };
@@ -451,6 +458,10 @@ export async function openLocalAuthority(
         state = 'local';
         throw error;
       }
+    } else if (readMeta('undo') !== undefined) {
+      // §12.3: resuming after a started rollback would count `cached`
+      // uploads whose rows the rollback deleted.
+      throw new LocalAuthorityAttachError({ reason: 'undo_pending' });
     }
     const attachId = attachIdOf();
     const commits = planAttach(database, compiled, attachId);
@@ -479,7 +490,8 @@ export async function openLocalAuthority(
 
   /**
    * §12.3 abandon: settle the one commit whose outcome may be unknown, then
-   * delete the rows of every applied commit, children before parents.
+   * delete the rows of every applied commit, children before parents, under
+   * commit ids fresh to this attempt (the persisted `undo` marker).
    */
   async function rollback(
     transport: (request: Uint8Array) => Promise<Uint8Array>,
@@ -505,6 +517,8 @@ export async function openLocalAuthority(
           op: 'delete',
         }),
       );
+    const attempt = ordinal('undo') + 1;
+    writeMeta({ undo: String(attempt) });
     for (
       let start = 0;
       start < deletes.length;
@@ -512,7 +526,7 @@ export async function openLocalAuthority(
     ) {
       const commit: PushCommitFrame = {
         type: 'PUSH_COMMIT',
-        clientCommitId: `${attachId}:undo:${start / ATTACH_OPERATION_BUDGET}`,
+        clientCommitId: `${attachId}:undo:${attempt}:${start / ATTACH_OPERATION_BUDGET}`,
         operations: deletes.slice(start, start + ATTACH_OPERATION_BUDGET),
       };
       const result = await send(commit);

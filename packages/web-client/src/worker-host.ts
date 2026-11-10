@@ -27,7 +27,11 @@ import type { PromiseMethods } from './client';
  * With `multiTab: false`, the loser is an `isLeader === false` handle whose
  * calls reject with `client.not_leader` (the single-tab contract).
  */
-import type { WakeReason } from '@syncular/core';
+import {
+  type PresenceErrorCode,
+  serializeBlobRef,
+  type WakeReason,
+} from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
@@ -59,7 +63,7 @@ import {
   withClientDiagnosticsHost,
 } from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import {
   ChangeEmitter,
   type ClientChangeListener,
@@ -161,8 +165,7 @@ export function isolatedReplicaNames(options: {
   readonly replicaId: string;
 }): IsolatedReplicaNames {
   if (!/^[A-Za-z0-9._-]+$/.test(options.replicaId)) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'an isolated replica id must contain only letters, numbers, dot, underscore, or dash',
     );
   }
@@ -213,6 +216,8 @@ export interface SyncClientHandleConfig {
    * `WorkerInitConfig`. Absent ⇒ `optional`.
    */
   readonly realtimePolicy?: RealtimePolicy;
+  /** SPEC §8.5 heartbeat interval, forwarded into `WorkerInitConfig`. */
+  readonly realtimeHeartbeatMs?: number;
   /**
    * RFC 0005 previous-version context, forwarded into the worker's
    * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
@@ -263,8 +268,9 @@ export interface SyncClientHandleConfig {
   }) => void;
   /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
   readonly onUpgrading?: (upgrading: boolean) => void;
-  /** §8.6: presence on a scope key changed. */
-  readonly onPresence?: (scopeKey: string) => void;
+  /** §8.6: presence on a scope key changed, or the server refused this
+   * client's publish on it (`error`, §8.6.2). */
+  readonly onPresence?: (scopeKey: string, error?: PresenceErrorCode) => void;
   /** Atomic privacy-safe diagnostics changed. */
   readonly onDiagnostics?: (snapshot: ClientDiagnosticsSnapshot) => void;
 }
@@ -334,7 +340,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   readonly #invalidation: InvalidationEmitter;
   readonly #progress = new ProgressEmitter();
   readonly #changes: ChangeEmitter;
-  readonly #presence: Set<(scopeKey: string) => void>;
+  readonly #presence: Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >;
   readonly #diagnostics: ClientDiagnosticsEmitter;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
@@ -352,7 +360,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     tabs?: TabCoordinator;
     invalidation: InvalidationEmitter;
     changes: ChangeEmitter;
-    presence: Set<(scopeKey: string) => void>;
+    presence: Set<(scopeKey: string, error?: PresenceErrorCode) => void>;
     diagnostics: ClientDiagnosticsEmitter;
     roleListeners?: Set<(role: HandleRole) => void>;
     leadershipListeners?: Set<(state: LeadershipState) => void>;
@@ -407,6 +415,13 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     this.#leadership = state;
     if (state.state === 'leader') this.#clientId = state.clientId;
     if (state.state === 'follower') this.#clientId = state.leaderClientId;
+    // A new leader starts a fresh core that no tab has pulled from yet.
+    if (
+      this.#diagnostics.observed &&
+      (state.state === 'leader' || state.state === 'follower')
+    ) {
+      this.#pullDiagnostics();
+    }
     for (const listener of this.#leadershipListeners) {
       try {
         listener(state);
@@ -433,7 +448,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     } else if (event.kind === 'presence') {
       for (const listener of this.#presence) {
         try {
-          listener(event.scopeKey);
+          listener(event.scopeKey, event.error);
         } catch {
           /* a UI listener must never break event dispatch */
         }
@@ -475,14 +490,27 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   onDiagnostics(listener: ClientDiagnosticsListener): () => void {
-    return this.#diagnostics.on(listener);
+    const off = this.#diagnostics.on(listener);
+    this.#pullDiagnostics();
+    return off;
+  }
+
+  /**
+   * The worker pushes diagnostics only after a consumer pulled once. A handle
+   * that cannot reach a core has nothing to observe, so a failed pull is
+   * dropped.
+   */
+  #pullDiagnostics(): void {
+    void this.diagnosticsSnapshot().catch(() => undefined);
   }
 
   /**
    * §8.6: subscribe to presence changes — the identical surface as
    * `SyncClient.onPresence`. Returns an unsubscribe function.
    */
-  onPresence(listener: (scopeKey: string) => void): () => void {
+  onPresence(
+    listener: (scopeKey: string, error?: PresenceErrorCode) => void,
+  ): () => void {
     this.#presence.add(listener);
     return () => {
       this.#presence.delete(listener);
@@ -790,6 +818,11 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('uploadBlob', [bytes, options]);
   }
 
+  /** Serialize a BlobRef to the canonical string a `blob_ref` column holds. */
+  blobRefString(ref: BlobRef): string {
+    return serializeBlobRef(ref);
+  }
+
   fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
     return this.#call('fetchBlob', [blobIdOrRef]);
   }
@@ -862,7 +895,14 @@ async function startWorkerCore(options: {
   dispatchEvent: (event: SyncWorkerEvent) => void;
 }): Promise<LeaderCore> {
   const { config, initConfig, lease } = options;
-  const worker = config.worker();
+  let worker: Worker;
+  try {
+    worker = config.worker();
+  } catch (error) {
+    // No worker exists to terminate; the lease is the only thing held.
+    await lease.release();
+    throw error;
+  }
   const pending = new Map<number, Pending>();
   const nextId = { value: 1 };
   let terminated = false;
@@ -961,6 +1001,9 @@ async function startWorkerCore(options: {
         } as MainToWorkerMessage);
       },
     );
+    // A config callback is a consumer from the first round.
+    if (config.onDiagnostics !== undefined)
+      await invoke('diagnosticsSnapshot', []);
     return {
       clientId: initResult.clientId,
       invoke,
@@ -1012,6 +1055,9 @@ function buildInitConfig(
     ...(config.realtimePolicy !== undefined
       ? { realtimePolicy: config.realtimePolicy }
       : {}),
+    ...(config.realtimeHeartbeatMs !== undefined
+      ? { realtimeHeartbeatMs: config.realtimeHeartbeatMs }
+      : {}),
     ...(config.previousVersionContext !== undefined
       ? { previousVersionContext: config.previousVersionContext }
       : {}),
@@ -1031,7 +1077,7 @@ function fireConfigCallbacks(
   } else if (event.kind === 'upgrading') {
     config.onUpgrading?.(event.upgrading);
   } else if (event.kind === 'presence') {
-    config.onPresence?.(event.scopeKey);
+    config.onPresence?.(event.scopeKey, event.error);
   } else if (event.kind === 'synced') {
     config.onSynced?.({
       ...(event.summary !== undefined ? { summary: event.summary } : {}),
@@ -1057,7 +1103,9 @@ export async function createSyncClientHandle(
   const lockName = resolvedConfig.lockName ?? 'syncular-leader';
   const invalidation = new InvalidationEmitter();
   const changes = new ChangeEmitter();
-  const presence = new Set<(scopeKey: string) => void>();
+  const presence = new Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >();
   const diagnostics = new ClientDiagnosticsEmitter();
   const roleListeners = new Set<(role: HandleRole) => void>();
   if (resolvedConfig.onRoleChange !== undefined)
@@ -1213,8 +1261,7 @@ function resolveReplicaConfig(
 ): SyncClientHandleConfig {
   if (config.replica?.mode !== 'isolated') return config;
   if (config.database.mode !== 'persistent') {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'isolated browser replicas require a named persistent database',
     );
   }

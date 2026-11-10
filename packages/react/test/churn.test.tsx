@@ -45,7 +45,7 @@ describe('lever 1a — result stability (zero re-render on unchanged data)', () 
     let renders = 0;
     function Probe(): ReactNode {
       renders += 1;
-      useRawSql('SELECT * FROM tasks');
+      useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] });
       return null;
     }
     render(<Probe />, { wrapper: wrapper(client) });
@@ -85,6 +85,8 @@ describe('lever 1b — row identity reuse (only the changed row re-renders)', ()
     function List(): ReactNode {
       const { rows } = useRawSql<{ id: string; title: string }>(
         'SELECT * FROM tasks',
+        undefined,
+        { tables: ['tasks'] },
       );
       return (
         <ul>
@@ -115,9 +117,12 @@ describe('lever 2 — frame-coalesced re-query', () => {
   test('a burst of N invalidations triggers exactly ONE re-query', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: wrapper(client),
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: wrapper(client),
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     const before = client.queryCount;
 
@@ -133,7 +138,7 @@ describe('lever 2 — frame-coalesced re-query', () => {
 });
 
 describe('lever 3 — scope-key filtering', () => {
-  const opts = { scopeKeys: ['project:p1'] } as const;
+  const opts = { tables: ['tasks'], scopeKeys: ['project:p1'] } as const;
 
   test('disjoint scope keys → no re-query', async () => {
     const client = new FakeClient();

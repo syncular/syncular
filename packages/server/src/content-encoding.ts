@@ -1,7 +1,7 @@
 /**
- * §1.3 transport compression for every buffered HTTP body the adapters
- * serve — `<mount>/sync`, `<mount>/operations`, blob GETs and segment
- * downloads: negotiate `Content-Encoding` from the request's
+ * §1.3 transport compression for the HTTP bodies the adapters serve —
+ * `<mount>/sync`, `<mount>/operations` and segment downloads (blob downloads
+ * stream identity, §5.9.5): negotiate `Content-Encoding` from the request's
  * `Accept-Encoding` (zstd preferred, gzip fallback, identity when the client
  * offers neither), feature-detecting the runtime's codecs, zero
  * dependencies. Bun supplies zstd + gzip natively; every other runtime
@@ -167,31 +167,63 @@ export function encodeStream(
  * `Content-Encoding: gzip` (§1.3: clients MAY compress a request body and
  * servers MUST accept it). Returns `undefined` for any other declared
  * encoding — the adapter answers 415 rather than parse bytes it cannot read.
- * A gzip body that does not decompress is a `sync.invalid_request`.
+ * A gzip body that does not decompress is a `sync.invalid_request`. One read
+ * loop counts the decoded bytes of identity and gzip bodies alike and stops
+ * with `sync.limit_exceeded` past `maxBytes` (§1.7 `maxRequestBytes`), so a
+ * small compressed body never inflates past the cap.
  */
 export async function decodeRequestBody(
   request: Request,
+  maxBytes: number,
 ): Promise<Uint8Array | undefined> {
   const encoding = request.headers
     .get('content-encoding')
     ?.trim()
     .toLowerCase();
-  if (encoding === undefined || encoding === '' || encoding === 'identity') {
-    return new Uint8Array(await request.arrayBuffer());
-  }
-  if (encoding !== 'gzip' || typeof DecompressionStream !== 'function') {
+  const identity =
+    encoding === undefined || encoding === '' || encoding === 'identity';
+  if (
+    !identity &&
+    (encoding !== 'gzip' || typeof DecompressionStream !== 'function')
+  ) {
     return undefined;
   }
   if (request.body === null) {
+    if (identity) return new Uint8Array(0);
     throw syncError('sync.invalid_request', 'malformed gzip request body');
   }
-  try {
-    return new Uint8Array(
-      await new Response(
-        request.body.pipeThrough(new DecompressionStream('gzip')),
-      ).arrayBuffer(),
-    );
-  } catch {
-    throw syncError('sync.invalid_request', 'malformed gzip request body');
+  const reader = (
+    identity
+      ? request.body
+      : request.body.pipeThrough(new DecompressionStream('gzip'))
+  ).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    let step: Awaited<ReturnType<typeof reader.read>>;
+    try {
+      step = await reader.read();
+    } catch (error) {
+      if (identity) throw error;
+      throw syncError('sync.invalid_request', 'malformed gzip request body');
+    }
+    if (step.done) break;
+    total += step.value.length;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw syncError(
+        'sync.limit_exceeded',
+        'request body exceeds the server limit (§1.7)',
+        JSON.stringify({ limit: 'maxRequestBytes', max: maxBytes }),
+      );
+    }
+    chunks.push(step.value);
   }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }

@@ -1,7 +1,7 @@
 //! Crate tests: the §12.2 profile through `sync` bytes, and §12.3 attach and
 //! abandon against a second `LocalAuthority` serving as the remote server.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
@@ -176,8 +176,8 @@ impl Session {
                 .expect("acquire"),
         );
         let Some(Frame::RespHeader {
-            log_epoch: Some(epoch),
-            reset_required: Some(true),
+            log_epoch: epoch,
+            reset_required: true,
             ..
         }) = frames.first()
         else {
@@ -373,6 +373,40 @@ fn count(authority: &LocalAuthority, table: &str) -> i64 {
 }
 
 #[test]
+fn scope_columns_must_be_string_or_integer() {
+    for (ty, accepted) in [
+        ("string", true),
+        ("integer", true),
+        ("float", false),
+        ("boolean", false),
+        ("json", false),
+        ("bytes", false),
+        ("blob_ref", false),
+        ("crdt", false),
+    ] {
+        let mut scope = column("org", ty, false);
+        scope["crdtType"] = json!("yjs-doc");
+        let schema = json!({ "version": 1, "tables": [table(
+            "tasks",
+            vec![column("id", "string", false), scope],
+            json!({}),
+        )] });
+        let opened = LocalAuthority::open(":memory:", &schema);
+        if accepted {
+            opened.unwrap_or_else(|error| panic!("{ty}: {}", error.message));
+        } else {
+            let error = opened
+                .err()
+                .unwrap_or_else(|| panic!("{ty} must be refused"));
+            assert!(
+                error.details.unwrap().to_string().contains("(§3.1)"),
+                "{ty}"
+            );
+        }
+    }
+}
+
+#[test]
 fn push_pull_round_trip() {
     let mut authority = memory();
     let s = authority.schema.clone();
@@ -554,11 +588,32 @@ fn a_tombstone_beats_an_unversioned_upsert_and_an_insert_recreates() {
         client.push(&mut authority, "d", vec![recreate]).0,
         PushStatus::Applied
     );
+    // §6.2: the recreate starts above the deleted version, so a baseVersion
+    // held from the previous incarnation conflicts.
     assert_eq!(
         stored(&authority, "tasks", "t1").map(|(version, _)| version),
-        Some(1)
+        Some(2)
     );
-    assert!(!store::has_tombstone(&authority.conn, "tasks", "t1").unwrap());
+    assert!(store::tombstone(&authority.conn, "tasks", "t1")
+        .unwrap()
+        .is_none());
+    let stale = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some("o1"), None, Some("stale"), None],
+        Some(1),
+    );
+    let (_, results, _) = client.push(&mut authority, "stale", vec![stale]);
+    assert!(
+        matches!(
+            &results[0],
+            OpResult::Conflict {
+                server_version: 2,
+                ..
+            }
+        ),
+        "{results:?}"
+    );
     // Deleting an absent row is applied with no change.
     assert_eq!(
         client
@@ -566,6 +621,91 @@ fn a_tombstone_beats_an_unversioned_upsert_and_an_insert_recreates() {
             .0,
         PushStatus::Applied
     );
+}
+
+#[test]
+fn an_unreadable_idempotency_record_answers_a_retryable_cache_miss_for_its_commit_only() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    authority
+        .conn
+        .execute(
+            "UPDATE sync_push_results SET result='{' WHERE client_commit_id='a'",
+            [],
+        )
+        .unwrap();
+    let frames = client.round(
+        &mut authority,
+        vec![
+            Frame::PushCommit {
+                client_commit_id: "a".to_owned(),
+                operations: vec![task(&s, "t1", None, None)],
+            },
+            Frame::PushCommit {
+                client_commit_id: "b".to_owned(),
+                operations: vec![task(&s, "t2", None, None)],
+            },
+            Frame::PullHeader {
+                limit_commits: 0,
+                limit_snapshot_rows: 0,
+                max_snapshot_pages: 0,
+                accept: 0b0011,
+            },
+            subscription("tasks", -1, None),
+        ],
+    );
+    let results: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            Frame::PushResult {
+                client_commit_id,
+                status,
+                commit_seq,
+                results,
+            } => Some((
+                client_commit_id.as_str(),
+                *status,
+                commit_seq.is_some(),
+                results.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            (
+                "a",
+                PushStatus::Rejected,
+                false,
+                vec![OpResult::Error {
+                    op_index: 0,
+                    code: "sync.idempotency_cache_miss".to_owned(),
+                    message: "persisted push result unreadable (§6.3)".to_owned(),
+                    retryable: true,
+                }]
+            ),
+            (
+                "b",
+                PushStatus::Applied,
+                true,
+                vec![OpResult::Applied { op_index: 0 }]
+            ),
+        ]
+    );
+    assert_eq!(
+        segment_rows(&frames),
+        vec![("t1".to_owned(), 1), ("t2".to_owned(), 1)],
+        "the pull proceeds"
+    );
+    assert_eq!(
+        store::push_result(&authority.conn, "c1", "a").unwrap(),
+        Some("{".to_owned()),
+        "the cache miss is not persisted"
+    );
+    assert_eq!(store::log_state(&authority.conn).unwrap().max_seq, 2);
 }
 
 #[test]
@@ -630,7 +770,53 @@ fn declared_references_cascade_set_null_and_restrict() {
         (changes[0].op, changes[0].row_version),
         (Op::Upsert, Some(2))
     );
-    assert!(store::has_tombstone(&authority.conn, "tasks", "t1").unwrap());
+    assert!(store::tombstone(&authority.conn, "tasks", "t1")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn a_tombstone_from_before_recorded_versions_recreates_at_one() {
+    let path = temp_path();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sync_tombstones(tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+               commit_seq INTEGER NOT NULL, PRIMARY KEY (tbl, row_id));
+             INSERT INTO sync_tombstones VALUES ('tasks', 't1', 1);",
+        )
+        .unwrap();
+    }
+    let mut authority = LocalAuthority::open(&path, &schema_json(1)).expect("open");
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    assert_eq!(
+        store::tombstone(&authority.conn, "tasks", "t1").unwrap(),
+        Some(None)
+    );
+    let (_, results, _) = client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    assert_eq!(error_code(&results), (0, "sync.row_deleted".to_owned()));
+    let recreate = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some("o1"), None, Some("again"), None],
+        Some(0),
+    );
+    assert_eq!(
+        client.push(&mut authority, "b", vec![recreate]).0,
+        PushStatus::Applied
+    );
+    assert_eq!(
+        stored(&authority, "tasks", "t1").map(|(version, _)| version),
+        Some(1)
+    );
+    client.push(&mut authority, "c", vec![delete("tasks", "t1")]);
+    assert_eq!(
+        store::tombstone(&authority.conn, "tasks", "t1").unwrap(),
+        Some(Some(1))
+    );
+    drop(authority);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -673,6 +859,153 @@ fn the_cascade_cap_rejects_the_originating_delete() {
         json!({ "reason": "cascade_limit" })
     );
     assert_eq!(count(&authority, "tasks"), 1001);
+}
+
+#[test]
+fn a_conflict_reports_the_row_as_stored_once_the_commit_rolls_back() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    let titled = |title: &str, base| {
+        upsert(
+            &s,
+            "tasks",
+            &[Some("t1"), Some("o1"), None, Some(title), None],
+            base,
+        )
+    };
+    let (status, results, _) = client.push(
+        &mut authority,
+        "b",
+        vec![titled("candidate", None), titled("mine", Some(1))],
+    );
+    assert_eq!(status, PushStatus::Rejected);
+    let OpResult::Conflict {
+        op_index,
+        server_version,
+        server_row,
+        ..
+    } = &results[0]
+    else {
+        panic!("a conflict record: {results:?}");
+    };
+    let row = store::decode_payload(&s.table("tasks").unwrap().columns, server_row).unwrap();
+    assert_eq!(
+        (*op_index, *server_version, row[3].clone()),
+        (1, 1, text("title"))
+    );
+    // A row only an earlier operation of the commit inserted is gone once the
+    // commit rolls back: there is no row to report.
+    let insert = || {
+        upsert(
+            &s,
+            "tasks",
+            &[Some("t9"), Some("o1"), None, Some("x"), None],
+            Some(0),
+        )
+    };
+    let (_, results, _) = client.push(&mut authority, "c", vec![insert(), insert()]);
+    assert_eq!(error_code(&results), (1, "sync.row_missing".to_owned()));
+    assert!(stored(&authority, "tasks", "t9").is_none());
+}
+
+#[test]
+fn a_patch_that_leaves_the_reference_absent_is_not_checked_for_its_parent() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(
+        &mut authority,
+        "a",
+        vec![
+            task(&s, "t1", None, None),
+            upsert(&s, "notes", &[Some("n1"), Some("o1"), Some("t1")], None),
+        ],
+    );
+    let notes = s.table("notes").unwrap();
+    let patch = Operation {
+        table: "notes".to_owned(),
+        row_id: "n1".to_owned(),
+        op: Op::Upsert,
+        base_version: None,
+        payload: Some(encode_sparse_row(
+            &notes.columns,
+            notes.pk,
+            &vec![
+                SparseSlot::Value(ColumnValue::String("n1".to_owned())),
+                SparseSlot::Value(ColumnValue::String("o1".to_owned())),
+                SparseSlot::Absent,
+            ],
+        )),
+    };
+    // The merged row names the parent the same commit deletes until SET NULL
+    // clears the column.
+    let (status, results, _) = client.push(&mut authority, "b", vec![patch, delete("tasks", "t1")]);
+    assert_eq!(status, PushStatus::Applied, "{results:?}");
+    let (version, values) = stored(&authority, "notes", "n1").expect("the child stays");
+    assert_eq!((version, values[2].clone()), (3, None));
+}
+
+#[test]
+fn an_unauthorized_payload_is_denied_before_the_tombstone_read() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    client.push(&mut authority, "b", vec![delete("tasks", "t1")]);
+    // An empty scope value is a missing one (§3.4 step 2).
+    let unscoped = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some(""), None, Some("x"), None],
+        None,
+    );
+    let (_, results, _) = client.push(&mut authority, "c", vec![unscoped]);
+    assert!(
+        matches!(&results[0], OpResult::Error { code, message, .. }
+            if code == "sync.forbidden" && message == "insert missing scope column value (§3.4)"),
+        "{results:?}"
+    );
+}
+
+#[test]
+fn a_row_id_holding_nul_is_an_invalid_request() {
+    let mut authority = memory();
+    let client = Session::new(&mut authority, "c1");
+    let (status, results, _) = client.push(&mut authority, "a", vec![delete("tasks", "a\0b")]);
+    assert_eq!(status, PushStatus::Rejected);
+    assert_eq!(error_code(&results), (0, "sync.invalid_request".to_owned()));
+}
+
+#[test]
+fn the_child_probe_reads_one_page_at_a_time() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let mut operations = vec![task(&s, "t1", None, None)];
+    operations.extend((1..=3).map(|i| {
+        upsert(
+            &s,
+            "pins",
+            &[Some(&format!("x{i}")), Some("o1"), Some("t1")],
+            None,
+        )
+    }));
+    assert_eq!(
+        client.push(&mut authority, "a", operations).0,
+        PushStatus::Applied
+    );
+    let pins = s.table("pins").unwrap();
+    let page = |after: Option<&str>, limit| {
+        store::children(&authority.conn, pins, 2, "t1", after, limit)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.row_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(page(None, 1), ["x1"]);
+    assert_eq!(page(Some("x1"), 5), ["x2", "x3"]);
 }
 
 #[test]
@@ -770,7 +1103,9 @@ fn a_cursor_behind_the_horizon_resets() {
     .unwrap();
     assert_eq!(horizon, 3);
     assert!(
-        store::has_tombstone(&authority.conn, "tasks", "t1").unwrap(),
+        store::tombstone(&authority.conn, "tasks", "t1")
+            .unwrap()
+            .is_some(),
         "seq 4 survives"
     );
     let frames = client.pull(&mut authority, vec![subscription("tasks", 1, None)], 0, 0);
@@ -1014,7 +1349,7 @@ fn request_validation_fails_before_any_byte() {
     assert!(matches!(
         &frames[..],
         [Frame::RespHeader {
-            reset_required: Some(true),
+            reset_required: true,
             ..
         }]
     ));
@@ -1353,7 +1688,7 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
     }
     let undo = undo.into_inner();
     assert_eq!(undo.len(), 1);
-    assert!(undo[0].0.ends_with(":undo:0"));
+    assert!(undo[0].0.ends_with(":undo:0:0"));
     assert_eq!(undo[0].1.len(), 500);
     assert_eq!(
         (undo[0].1[0].row_id.as_str(), undo[0].1[499].row_id.as_str()),
@@ -1365,9 +1700,171 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
         1,
         "only the remote's own row remains"
     );
-    assert!(store::has_tombstone(&remote.conn, "tasks", "t0000").unwrap());
+    assert!(store::tombstone(&remote.conn, "tasks", "t0000")
+        .unwrap()
+        .is_some());
     assert_eq!(local.state(), AuthorityState::Local);
     assert_eq!(count(&local, "tasks"), 501);
+}
+
+/// A transport to `remote` that records every pushed `clientCommitId` and
+/// drops the response of push request `lose` (0-based) after the remote
+/// processed it.
+fn remote_transport<'a>(
+    remote: &'a mut LocalAuthority,
+    pushed: &'a RefCell<Vec<String>>,
+    lose: Option<usize>,
+) -> impl FnMut(&[u8]) -> Result<Vec<u8>, AuthorityError> + 'a {
+    let mut pushes = 0;
+    move |bytes: &[u8]| {
+        let commit =
+            decode_message(bytes)
+                .unwrap()
+                .frames
+                .into_iter()
+                .find_map(|frame| match frame {
+                    Frame::PushCommit {
+                        client_commit_id, ..
+                    } => Some(client_commit_id),
+                    _ => None,
+                });
+        let response = remote.sync(bytes)?;
+        if let Some(id) = commit {
+            pushed.borrow_mut().push(id);
+            pushes += 1;
+            if Some(pushes - 1) == lose {
+                return Err(AuthorityError::new(
+                    "sync.transport_failed",
+                    "the response was lost",
+                ));
+            }
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_lost_undo_response_blocks_attach_until_a_retried_abandon_completes() {
+    let mut local = memory();
+    let s = local.schema.clone();
+    let client = Session::new(&mut local, "c1");
+    client.push(&mut local, "a", vec![task(&s, "t1", None, None)]);
+    let mut remote = memory();
+    let pushed = RefCell::new(Vec::new());
+    let lost = local
+        .attach(&mut remote_transport(&mut remote, &pushed, Some(0)))
+        .unwrap_err();
+    assert_eq!(lost.code, "sync.transport_failed");
+    let first = local.attach_id().unwrap();
+    // Push 0 settles upload commit 0 (`cached`); push 1 is the undo commit
+    // whose response is lost after the remote applied it.
+    let lost = local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, Some(1))))
+        .unwrap_err();
+    assert_eq!(lost.code, "sync.transport_failed");
+    assert_eq!(local.state(), AuthorityState::Attaching);
+    assert_eq!(count(&remote, "tasks"), 0, "the undo applied remotely");
+
+    let refused = local
+        .attach(&mut remote_transport(&mut remote, &pushed, None))
+        .unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.details),
+        (
+            "sync.attach_rejected",
+            Some(json!({ "reason": "undo_pending" }))
+        ),
+        "a resumed upload would replay `cached` for deleted rows"
+    );
+    assert_eq!(pushed.borrow().len(), 3, "the refusal sends nothing");
+
+    local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, None)))
+        .unwrap();
+    assert_eq!(local.state(), AuthorityState::Local);
+    assert!(local.read_meta("undo").unwrap().is_none());
+    local
+        .attach(&mut remote_transport(&mut remote, &pushed, None))
+        .unwrap();
+    let second = local.attach_id().unwrap();
+    assert_ne!(first, second, "a completed abandon retires the attach id");
+    assert_eq!(
+        pushed.into_inner(),
+        vec![
+            format!("{first}:0"),
+            format!("{first}:0"),
+            format!("{first}:undo:0:0"),
+            format!("{first}:undo:1:0"),
+            format!("{second}:0"),
+        ]
+    );
+    assert_eq!(local.state(), AuthorityState::Attached);
+    assert_eq!(
+        stored(&remote, "tasks", "t1").map(|(version, _)| version),
+        Some(2),
+        "the fresh attach recreates the row above the undo's tombstone"
+    );
+}
+
+#[test]
+fn a_rejected_undo_applies_on_a_retried_abandon_once_the_blocker_is_gone() {
+    let mut local = memory();
+    let s = local.schema.clone();
+    let client = Session::new(&mut local, "c1");
+    client.push(&mut local, "a", vec![task(&s, "t1", None, None)]);
+    let mut remote = memory();
+    let other = Session::new(&mut remote, "other");
+    let pushed = RefCell::new(Vec::new());
+    local
+        .attach(&mut remote_transport(&mut remote, &pushed, Some(0)))
+        .unwrap_err();
+    let attach_id = local.attach_id().unwrap();
+    let pin = upsert(&s, "pins", &[Some("x1"), Some("o1"), Some("t1")], None);
+    assert_eq!(
+        other.push(&mut remote, "pin", vec![pin]).0,
+        PushStatus::Applied
+    );
+
+    let rejected = local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, None)))
+        .unwrap_err();
+    assert_eq!(
+        (rejected.code.as_str(), rejected.details),
+        (
+            "sync.attach_rejected",
+            Some(json!({
+                "reason": "commit_rejected",
+                "clientCommitId": format!("{attach_id}:undo:0:0"),
+                "opIndex": 0,
+                "code": "sync.reference_violation",
+            }))
+        )
+    );
+    assert_eq!(
+        local
+            .attach(&mut remote_transport(&mut remote, &pushed, None))
+            .unwrap_err()
+            .details,
+        Some(json!({ "reason": "undo_pending" }))
+    );
+
+    assert_eq!(
+        other
+            .push(&mut remote, "unpin", vec![delete("pins", "x1")])
+            .0,
+        PushStatus::Applied
+    );
+    local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, None)))
+        .unwrap();
+    assert_eq!(
+        pushed.borrow().last(),
+        Some(&format!("{attach_id}:undo:1:0")),
+        "the retry never replays the stored rejection"
+    );
+    assert_eq!(local.state(), AuthorityState::Local);
+    assert_eq!(count(&remote, "tasks"), 0);
+    assert_eq!(count(&local, "tasks"), 1);
 }
 
 #[test]

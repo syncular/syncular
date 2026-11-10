@@ -13,6 +13,7 @@ export * from './constants';
 export * from './crypto';
 export * from './errors';
 export * from './frames';
+export * from './json-document';
 export * from './message';
 export * from './realtime';
 export * from './rejection-details';

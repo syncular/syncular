@@ -433,16 +433,17 @@ export async function checkVersionState(mode: VersionMode): Promise<string> {
   return rootVersion;
 }
 
-export function releaseNotes(runbook: string, version: string): string {
+export function releaseNotes(notesFile: string, version: string): string {
   const heading = `## ${version} release notes`;
-  const start = runbook.split('\n').indexOf(heading);
+  const start = notesFile.split('\n').indexOf(heading);
   if (start === -1) {
-    throw new Error(`docs/RELEASE.md has no "${heading}" section`);
+    throw new Error(`docs/RELEASE-NOTES.md has no "${heading}" section`);
   }
-  const lines = runbook.split('\n').slice(start + 1);
+  const lines = notesFile.split('\n').slice(start + 1);
   const end = lines.findIndex((line) => line.startsWith('## '));
   const notes = (end === -1 ? lines : lines.slice(0, end)).join('\n').trim();
-  if (notes === '') throw new Error(`docs/RELEASE.md "${heading}" is empty`);
+  if (notes === '')
+    throw new Error(`docs/RELEASE-NOTES.md "${heading}" is empty`);
   return notes;
 }
 
@@ -518,7 +519,7 @@ export async function materializeVersion(): Promise<string> {
 }
 
 function usage(): string {
-  return `usage: bun scripts/version.ts <command>\n\ncommands:\n  print                    print the root release version\n  check                    require committed 0.0.0 placeholders\n  check --materialized     require root versions in release metadata\n  assert-tag <vX.Y.Z>      require the tag to match root package.json\n  materialize              reflect root version in this ephemeral checkout\n  release-notes            print the root version's docs/RELEASE.md section`;
+  return `usage: bun scripts/version.ts <command>\n\ncommands:\n  print                    print the root release version\n  check                    require committed 0.0.0 placeholders\n  check --materialized     require root versions in release metadata\n  assert-tag <vX.Y.Z>      require the tag to match root package.json\n  materialize              reflect root version in this ephemeral checkout\n  release-notes            print the root version's docs/RELEASE-NOTES.md section`;
 }
 
 async function main(): Promise<void> {
@@ -554,7 +555,10 @@ async function main(): Promise<void> {
   }
   if (command === 'release-notes' && args.length === 0) {
     console.log(
-      releaseNotes(await readText('docs/RELEASE.md'), await readRootVersion()),
+      releaseNotes(
+        await readText('docs/RELEASE-NOTES.md'),
+        await readRootVersion(),
+      ),
     );
     return;
   }

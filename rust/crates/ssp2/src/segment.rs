@@ -5,7 +5,7 @@
 //! (`sync.schema_mismatch`) is the receiver's job, not the codec's.
 
 use crate::error::{DecodeError, Result};
-use crate::primitives::{RawJson, Reader, Writer};
+use crate::primitives::{parse_json_document, RawJson, Reader, Writer};
 
 pub const SSG2_MAGIC: &[u8; 4] = b"SSG2";
 pub const SSG2_FORMAT_VERSION: u16 = 1;
@@ -149,7 +149,18 @@ fn read_column_value(r: &mut Reader<'_>, col: &Column) -> Result<ColumnValue> {
         ColumnType::Integer => ColumnValue::Integer(r.i64(&col.name)?),
         ColumnType::Float => ColumnValue::Float(r.f64(&col.name)?),
         ColumnType::Boolean => ColumnValue::Boolean(r.bool(&col.name)?),
-        ColumnType::Json => ColumnValue::Json(r.json(&col.name)?),
+        // §2.4 tag 5: full rows keep the plain parse check so stored rows keep
+        // decoding; `decode_sparse_row` applies the JSON validity rule on top.
+        ColumnType::Json => {
+            let raw = r.str(&col.name)?;
+            if serde_json::from_str::<serde_json::Value>(&raw).is_err() {
+                return Err(DecodeError::invalid(format!(
+                    "json column {} does not parse as a JSON document",
+                    col.name
+                )));
+            }
+            ColumnValue::Json(RawJson(raw))
+        }
         ColumnType::Bytes => ColumnValue::Bytes(r.bytes(&col.name)?),
         ColumnType::BlobRef => ColumnValue::BlobRef(r.blob_ref(&col.name)?),
         // §5.10 tag 8: opaque bytes, decoded exactly like tag 6.
@@ -233,7 +244,9 @@ pub fn encode_row(w: &mut Writer, columns: &[Column], row: &Row) {
 /// Decode validates in this order, each a `sync.invalid_request` decode error:
 /// a set presence padding bit, an absent primary key, a set null-bitmap
 /// padding bit (a null for an absent column), a null bit for a non-nullable
-/// column.
+/// column. Each present value must also be a push admission value (SPEC.md
+/// §2.4): no U+0000 in a `string`, a `json` value under the JSON validity
+/// rule, a finite `float`, a canonical `blob_ref`.
 pub fn decode_sparse_row(
     columns: &[Column],
     primary_key_index: usize,
@@ -276,7 +289,29 @@ pub fn decode_sparse_row(
         let is_null = bitmap_bit(&nulls, present_index);
         present_index += 1;
         if !is_null {
-            row.push(SparseSlot::Value(read_column_value(&mut r, col)?));
+            let value = read_column_value(&mut r, col)?;
+            // Push admission values (SPEC.md §2.4): one value set every
+            // storage backend and core accepts. `blob_ref` canonicality is
+            // already checked by `read_column_value` on every path.
+            match &value {
+                ColumnValue::String(s) if s.contains('\0') => {
+                    return Err(DecodeError::invalid(format!(
+                        "string column {} holds U+0000",
+                        col.name
+                    )));
+                }
+                ColumnValue::Json(raw) => {
+                    parse_json_document(&raw.0, &format!("json column {}", col.name))?;
+                }
+                ColumnValue::Float(v) if !v.is_finite() => {
+                    return Err(DecodeError::invalid(format!(
+                        "float column {} holds NaN or an infinity",
+                        col.name
+                    )));
+                }
+                _ => {}
+            }
+            row.push(SparseSlot::Value(value));
             continue;
         }
         if !col.nullable {
@@ -688,5 +723,161 @@ mod tests {
         let mut row = partial_row();
         row[0] = SparseSlot::Null;
         encode_sparse_row(&columns, 0, &row);
+    }
+
+    /// Push admission values (SPEC.md §2.4); mirrors the TS core's
+    /// `row-codec.test.ts` block of the same name.
+    fn admission_columns() -> Vec<Column> {
+        [
+            ("id", ColumnType::String, false),
+            ("text", ColumnType::String, true),
+            ("score", ColumnType::Float, true),
+            ("meta", ColumnType::Json, true),
+            ("file", ColumnType::BlobRef, true),
+        ]
+        .into_iter()
+        .map(|(name, ty, nullable)| Column {
+            name: name.to_owned(),
+            ty,
+            nullable,
+        })
+        .collect()
+    }
+
+    fn admission_row(index: usize, value: ColumnValue) -> Row {
+        (0..5)
+            .map(|i| match i {
+                0 => Some(ColumnValue::String("r-1".to_owned())),
+                _ if i == index => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sparse(row: &Row) -> SparseRow {
+        row.iter()
+            .map(|value| match value {
+                Some(value) => SparseSlot::Value(value.clone()),
+                None => SparseSlot::Null,
+            })
+            .collect()
+    }
+
+    fn full_row_bytes(columns: &[Column], row: &Row) -> Vec<u8> {
+        let mut w = Writer::new();
+        encode_row(&mut w, columns, row);
+        w.into_bytes()
+    }
+
+    fn blob_id() -> String {
+        format!("sha256:{}", "ab".repeat(32))
+    }
+
+    #[test]
+    fn sparse_decode_rejects_values_outside_the_admission_set() {
+        let columns = admission_columns();
+        let json = |raw: &str| ColumnValue::Json(RawJson(raw.to_owned()));
+        let rejected = [
+            (
+                "a string with U+0000",
+                admission_row(1, ColumnValue::String("a\0b".to_owned())),
+            ),
+            (
+                "a NaN float",
+                admission_row(2, ColumnValue::Float(f64::NAN)),
+            ),
+            (
+                "an infinite float",
+                admission_row(2, ColumnValue::Float(f64::INFINITY)),
+            ),
+            (
+                "a negative infinite float",
+                admission_row(2, ColumnValue::Float(f64::NEG_INFINITY)),
+            ),
+            (
+                "json outside finite binary64",
+                admission_row(3, json("1e999")),
+            ),
+            (
+                "json nested 65 deep",
+                admission_row(3, json(&format!("{}{}", "[".repeat(65), "]".repeat(65)))),
+            ),
+            (
+                "json with an unpaired surrogate",
+                admission_row(3, json(r#""\ud800""#)),
+            ),
+            (
+                "json with U+0000",
+                admission_row(3, json(r#"{"\u0000":1}"#)),
+            ),
+            (
+                "a reordered blob_ref",
+                admission_row(
+                    4,
+                    ColumnValue::BlobRef(RawJson(format!(
+                        r#"{{"byteLength":1,"blobId":"{}"}}"#,
+                        blob_id()
+                    ))),
+                ),
+            ),
+        ];
+        for (name, row) in rejected {
+            let bytes = encode_sparse_row(&columns, 0, &sparse(&row));
+            let error = decode_sparse_row(&columns, 0, &bytes)
+                .err()
+                .unwrap_or_else(|| panic!("{name}: accepted"));
+            assert_eq!(error.code.as_str(), "sync.invalid_request", "{name}");
+        }
+    }
+
+    #[test]
+    fn sparse_decode_accepts_the_edge_values_the_rule_admits() {
+        let columns = admission_columns();
+        let row = sparse(&vec![
+            Some(ColumnValue::String("r-1".to_owned())),
+            Some(ColumnValue::String("a\u{1}b".to_owned())),
+            Some(ColumnValue::Float(f64::MAX)),
+            Some(ColumnValue::Json(RawJson(format!(
+                "{}{}",
+                "[".repeat(64),
+                "]".repeat(64)
+            )))),
+            Some(ColumnValue::BlobRef(RawJson(format!(
+                r#"{{"blobId":"{}","byteLength":1}}"#,
+                blob_id()
+            )))),
+        ]);
+        let bytes = encode_sparse_row(&columns, 0, &row);
+        assert_eq!(decode_sparse_row(&columns, 0, &bytes).unwrap(), row);
+    }
+
+    #[test]
+    fn full_rows_keep_decoding_strings_and_floats_stored_before_the_rule() {
+        let columns = admission_columns();
+        for row in [
+            admission_row(1, ColumnValue::String("a\0b".to_owned())),
+            admission_row(2, ColumnValue::Float(f64::INFINITY)),
+        ] {
+            let bytes = full_row_bytes(&columns, &row);
+            assert_eq!(decode_row(&mut Reader::new(&bytes), &columns).unwrap(), row);
+        }
+        // NaN is not equal to itself, so compare the decoded bits instead.
+        let bytes = full_row_bytes(&columns, &admission_row(2, ColumnValue::Float(f64::NAN)));
+        let decoded = decode_row(&mut Reader::new(&bytes), &columns).unwrap();
+        assert!(matches!(decoded[2], Some(ColumnValue::Float(v)) if v.is_nan()));
+    }
+
+    #[test]
+    fn full_rows_reject_a_non_canonical_blob_ref() {
+        let columns = admission_columns();
+        let row = admission_row(
+            4,
+            ColumnValue::BlobRef(RawJson(format!(
+                r#"{{"blobId":"{}", "byteLength":1}}"#,
+                blob_id()
+            ))),
+        );
+        let bytes = full_row_bytes(&columns, &row);
+        assert!(decode_row(&mut Reader::new(&bytes), &columns).is_err());
     }
 }

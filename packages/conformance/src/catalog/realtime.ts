@@ -90,6 +90,62 @@ export const realtimeScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'realtime/delta-skips-a-reset-subscription',
+    specRefs: ['§8.2', '§4.6', '§4.7'],
+    requires: ['realtime'],
+    async run(ctx) {
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      await seedTasks(ctx, [task('old', 'p2', 'before')]);
+      for (const project of ['p1', 'p2']) {
+        await b.api.subscribe({
+          id: project,
+          table: 'tasks',
+          scopes: { project_id: [project] },
+        });
+      }
+      await syncIdle(b);
+      await b.api.connectRealtime();
+      // p1 commits advance only p1's cursor; p2's falls behind the horizon.
+      for (let i = 0; i < 3; i++) {
+        await seedTasks(ctx, [task(`p1-${i}`, 'p1')]);
+        await b.realtime.waitForAck(await ctx.server.getMaxCommitSeq());
+      }
+      await ctx.server.prune({ minRetainedCommits: 1 });
+      const reset = await syncOk(b);
+      checkEqual(reset.resets, ['p2'], 'p2 fell behind the pruned horizon');
+      checkEqual(
+        (await b.api.subscriptionState('p2'))?.cursor,
+        -1,
+        'the reset discards the cursor (§4.6)',
+      );
+
+      // One commit in both scopes: p1's section applies and acks; p2's
+      // section would mark a fraction of p2 bootstrapped.
+      await seedTasks(ctx, [task('both-1', 'p1'), task('both-2', 'p2')]);
+      await b.realtime.waitForAck(await ctx.server.getMaxCommitSeq());
+      checkEqual(
+        (await b.api.subscriptionState('p2'))?.cursor,
+        -1,
+        'a delta never advances a subscription at cursor -1 (§8.2)',
+      );
+      check(await b.api.syncNeeded(), 'the skipped section asks for a pull');
+      await syncIdle(b);
+      check(
+        ((await b.api.subscriptionState('p2'))?.cursor ?? -1) >= 0,
+        'the pull bootstraps p2',
+      );
+      await expectConverged(ctx, 'tasks', [b], {
+        variable: 'project_id',
+        values: ['p1', 'p2'],
+      });
+    },
+  },
+
+  {
     name: 'realtime/scope-filtered-fanout',
     specRefs: ['§8.1', '§8.2'],
     requires: ['realtime'],

@@ -19,7 +19,7 @@ Most Rust hosts use `HostTransport` and never touch this page. Read it when you 
 | `download_segment(&mut self, request, on_progress)` | yes | Bootstrap segment fetch (SPEC §5.5) |
 | `download_segments(&mut self, fetches, on_progress)` | no | Every eligible segment body of one response, in wire order; the default calls the single fetches in order and stops after the first error |
 | `realtime_connect`, `realtime_send`, `realtime_close` | yes | Socket lifecycle and client-to-server control messages |
-| `supports_url_fetch`, `fetch_url(url, on_progress)` | no | Signed-URL fetches; the default returns an error |
+| `supports_url_fetch`, `fetch_url(url, byte_length, on_progress)` | no | Signed-URL fetches; reading stops once the body exceeds `byte_length`; the default returns an error |
 | `blob_upload`, `blob_download`, `blob_upload_grant`, `blob_put_url`, `fetch_blob_url` | no | Blob endpoints; the defaults return an error |
 | `remote_operation` | no | The remote operation endpoint; the default returns `client.remote_operations_unconfigured` |
 | `realtime_connect_for_client`, `round_deadline`, `set_round_deadline` | no | Per-client connect and the round deadline hooks |
@@ -54,6 +54,7 @@ let policy = HostTransportPolicy {
     max_request_bytes: Some(32 * 1024 * 1024),
     max_response_bytes: Some(32 * 1024 * 1024),
     redirects: RedirectPolicy::Deny,
+    realtime_heartbeat: Some(Duration::from_secs(30)),
 };
 ```
 
@@ -61,7 +62,8 @@ let policy = HostTransportPolicy {
 - `round_deadline`: the only bound on total transfer time. The client anchors it on the round's first network call and keeps the anchor across continuations. A bound that elapses returns `transport.timeout`, including when the transfer was still progressing. Leave it unset for hosts on slow links, or set it to the longest transfer you will wait for. It covers network work only; local SQLite and CPU time are not interrupted. Local work before the first network call does not consume the budget, and local work between continuations runs against the remaining budget.
 - `max_request_bytes`: a larger HTTP request body is refused before any network I/O with `transport.request_too_large`. It does not cap a realtime socket buffer.
 - `max_response_bytes`: a larger decoded response body is refused with `transport.response_too_large`, counted after decompression. It does not cap a realtime socket buffer.
-- `redirects`: `Deny` or `Follow`. `Follow` follows a redirect only for a request with no configured headers, no base-URL userinfo, and no signed capability URL. A credential-bearing request is refused with `transport.redirect` under both policies. The WebSocket handshake obeys the same rule and additionally refuses a realtime URL with userinfo or a query.
+- `realtime_heartbeat`: the server's heartbeat interval (SPEC §8.5); `None` means 30 seconds. A connection's first `heartbeat` event arms silence detection. Once armed, a realtime socket that delivers no frame for twice the interval closes and queues `Inbound::Disconnected` with `transport.timeout` and `causeKind` `heartbeat`, so an idle replica notices a dead connection. Set it to the interval your server sends heartbeats on. A server that sends none never arms it, and every new connection starts unarmed.
+- `redirects`: `Deny` or `Follow`. `Follow` follows a redirect only for a request with no configured headers, no base-URL userinfo, and no signed capability URL. A credential-bearing request is refused with `transport.redirect` under both policies. The WebSocket handshake follows no redirect: under `Follow`, `realtime_connect` fails with `transport.redirect` before it connects, so a transport that follows redirects has no realtime.
 
 A realtime socket round has its own fixed silence bound of 30 seconds, which `request_timeout` does not change. The transport sends a request in `0x01` chunks of at most 64 KiB and restarts the bound on every flushed request chunk and every received response chunk. A round that ends without its response `END` (a silence timeout, a malformed response stream, or the whole-round deadline) closes the socket and queues `Inbound::Disconnected` with the round's code, so the unread tail of that response cannot reach the next round. `SyncClient::realtime_lost` handles it like any other lost socket.
 
@@ -73,7 +75,7 @@ The reader uses `try_send` and never waits for the observer. `take_dropped_realt
 
 A request that follows a round that failed without a complete response carries a `ROUND_FAILURE` frame with that round's code (SPEC §1.5). The server records it on the client's `sync_clients` row as `lastErrorCode` and `consecutiveFailures`, so a client that stalls on a slow link is visible to an operator. The next request without the frame clears it.
 
-Build the transport with `HostTransport::from_config_with_policy`, or replace the policy with `HostTransport::set_policy`. A JSON config (the `new` command) sets the same fields with `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`. Each numeric bound is a `u64` token of at least 1, so a binding that derives the JSON from a floating-point value must serialize the bound losslessly. An invalid policy fails with `sync.invalid_request` and leaves the current policy in force.
+Build the transport with `HostTransport::from_config_with_policy`, or replace the policy with `HostTransport::set_policy`. A JSON config (the `new` command) sets the same fields with `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, and `redirects`. Each numeric bound is a `u64` token of at least 1, so a binding that derives the JSON from a floating-point value must serialize the bound losslessly. An invalid policy fails with `sync.invalid_request` and leaves the current policy in force.
 
 ## Local authority
 
@@ -86,10 +88,12 @@ use syncular_client::{native_transport::HostTransport, Transport};
 let mut transport = HostTransport::from_config(&json!({
     "localAuthorityPath": "./data/authority.sqlite",
     "baseUrl": "https://api.example.com/sync-mount",
-}))?;
-transport.open_local_authority(&schema, Some("./data/replica.sqlite"))?;
+}))?; // a config error is a `String`
+transport
+    .open_local_authority(&schema, Some("./data/replica.sqlite"))
+    .map_err(|error| error.code)?; // a `TransportError`
 // ... sync rounds reach the authority ...
-transport.attach_local_authority()?;
+transport.attach_local_authority().map_err(|error| error.code)?;
 assert_eq!(transport.local_authority_state(), Some("attached"));
 ```
 
@@ -128,7 +132,8 @@ Both validate the caller's values before recording anything. These report `sync.
 - an unknown column or an internal `_sync_` column;
 - a value whose JSON form does not match the column type;
 - an absent required column in a full-row upsert;
-- a primary key the wire cannot render.
+- a primary key the wire cannot render;
+- a value the server refuses at push admission: a string or delete `rowId` containing U+0000, a `json` value outside the JSON validity rule, or a non-canonical `blob_ref`.
 
 A rejected call preserves the outbox, the optimistic rows, and the local revision. `SyncRemoteClient::prepare_commit` classifies the same failures with the same code.
 
@@ -164,4 +169,4 @@ A subscription catch-up state is `unknown` when the client does not hold the sub
 
 A commit delivery is `pending` while the id has an outbox entry, otherwise the persisted retained outcome, otherwise `unknown`. The sidecar reports the persisted outcome fields (status, every result with its conflict or rejection code, the retained operation envelope, and the resolution) and omits the owner-derived `retainedRows` images. Invalid SQLite metadata types (including BLOB where text is required), invalid stored field types, fractional indexes or versions, unsafe integer metadata, malformed conflict columns, invalid rejection details, contradictory outcome statuses, and malformed stored operations fail with `sync.local_corrupt`. Stored upserts require row values and stored deletes omit them. Security purges clear results and retained operations while keeping the outcome status readable. Subscription effective scopes must be absent or map scope names to arrays of strings.
 
-`local_revision` reads the durable revision without a dummy query; a non-canonical marker fails with `sync.local_corrupt` instead of reading as zero, and the `localRevision` command fails the same way. The TypeScript core exposes `SyncClient.snapshotRead`, `subscriptionCatchup`, and `commitDelivery` over the same one-transaction contract. Tauri exposes the read as `syncular_snapshot_read` and the bridge method `snapshotRead`.
+`local_revision` reads the durable revision without a dummy query; a non-canonical marker fails with `sync.local_corrupt` instead of reading as zero, and the `localRevision` command fails the same way. The TypeScript core exposes `SyncClient.snapshotRead`, `subscriptionCatchup`, and `commitDelivery` over the same one-transaction contract. Tauri exposes the read as the `snapshotRead` method of `syncular_command`, which the bridge method `snapshotRead` calls.

@@ -17,6 +17,7 @@
  */
 import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { TypegenError } from './errors';
 import { formatSyql } from './fmt';
 import {
   baselineMigrationHistory,
@@ -60,7 +61,7 @@ fmt options:
 migrations options:
   baseline               create the first immutable history lock; refuses overwrite
   check                  validate the committed history without generating outputs
-  upgrade-lock           explicitly compact a validated format-1 lock to format 2
+  upgrade-lock           convert a validated format-1 or format-2 lock to format 3
   --manifest-dir <dir>   directory holding syncular.json (default: .)
 
 init options:
@@ -207,7 +208,12 @@ function parseManifestDir(argv: readonly string[]): string {
 
 /** Add a docs pointer to the fail-loud missing-input errors. */
 function friendlyGenerateError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const message =
+    error instanceof TypegenError && error.code !== undefined
+      ? `${error.message}\n${error.code} ${JSON.stringify(error.details ?? {})}`
+      : error instanceof Error
+        ? error.message
+        : String(error);
   if (
     message.includes('manifest not found') ||
     message.includes('migrations directory does not exist') ||
@@ -370,7 +376,7 @@ function runMigrations(argv: readonly string[]): void {
       fail(friendlyGenerateError(error));
     }
     writeFileSync(output.path, output.content, 'utf8');
-    console.log(`upgraded ${output.path} to compact format 2`);
+    console.log(`upgraded ${output.path} to format 3`);
     console.log('review and commit the migration-lock format upgrade');
     return;
   }

@@ -74,7 +74,7 @@ When the stored schema version equals the running one, `ensureSchema` still chec
 
 `reason` is one of `missing_table`, `missing_column`, `type`, `nullability`, or `primary_key`. Neither refusal writes DDL. A table from before `_sync_column_versions` existed gains the column only through a schema-version bump ([version-only bumps](/guide-schema/#a-version-only-bump-server-internal-storage-changes)).
 
-D1 also refuses a missing core table that its request path reads or writes (`sync_tombstones`, `sync_commits`, `sync_clients`, and the rest of the `sync_*` tables except `sync_backfill_checkpoints` and `sync_writer_fence`), because D1 creates those tables only in `migrate()` or during a schema upgrade. On D1 the check costs one `sqlite_master` read plus one `PRAGMA table_info` statement per synced table the first time a storage instance opens.
+D1 also refuses a missing core table that its request path reads or writes (`sync_tombstones`, `sync_commits`, `sync_clients`, and the rest of the `sync_*` tables except `sync_backfill_checkpoints` and `sync_writer_fence`), because D1 creates those tables only in `migrate()` or during a schema upgrade. On D1 the check costs one `sqlite_master` read plus one `PRAGMA table_info` statement per synced table the first time a storage instance opens. A database from an earlier release gains the core-table columns it lacks, such as the `server_version` and `scopes` columns of `sync_tombstones`: D1 adds them in `migrate()`, in the core phase of a schema migration, and on that first open, after one statement that reads the columns of `sync_clients` and `sync_tombstones`; `SqliteServerStorage` adds them on construction and `PostgresServerStorage` in `migrate()`. The tombstone columns are nullable, and a tombstone written before them keeps the [delete precedence](/concepts-conflicts/#delete-precedence) rules that predate them: it answers `sync.row_deleted` to any actor, and a recreate over it starts at version 1.
 
 On PostgreSQL, `migrate()` records a fingerprint of the core DDL as the comment of `sync_schema_meta`. A new storage instance on a database that carries the current fingerprint and every core table skips the DDL, and `ensureSchema` reads the schema marker, the incomplete checkpoints, and the catalog columns of every synced table in one statement. Opening a ready database therefore costs two statements for any number of tables, which matters behind Hyperdrive, where every Worker isolate and Durable Object wake builds a new instance. A database without the fingerprint, or with a core table dropped, gets the full DDL again.
 
@@ -121,7 +121,7 @@ function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
   const over = (h: any): PgQueryable => ({
     async query(text, params) {
       const rows = await h.unsafe(text, params ? [...params] : []);
-      return { rows, rowCount: rows.length };
+      return { rows };
     },
   });
   return {
@@ -136,6 +136,8 @@ const storage = new PostgresServerStorage(
 );
 await storage.migrate();
 ```
+
+`query` returns `{ rows }`. The storage reads no affected-row count: every write whose outcome matters ends in `RETURNING` and counts the returned rows, because Bun.sql reports no count for a statement without result rows.
 
 Drivers decode `int8` differently (node-postgres returns `string`, Bun.sql returns `bigint`). The storage layer coerces every sequence read through `Number(...)`, so no type-parser configuration is needed. The node-postgres adapter and the full wiring notes are in the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
 
@@ -184,7 +186,7 @@ A Neon compute with scale-to-zero suspends after 5 minutes without queries and c
 
 ## Cloudflare D1
 
-D1 is SQLite behind an async, batch-at-a-time API. `D1ServerStorage` shares the schema and value codecs with `SqliteServerStorage` and differs only in execution shape: the concurrent page reads of a pull leave as one `db.batch` round trip. It ships in `@syncular/server`. Per-partition write serialization, the migration workflow, and the Durable Object are on [Cloudflare Workers](/server-workers/#advanced-d1-storage).
+D1 is SQLite behind an async, batch-at-a-time API. `D1ServerStorage` shares the schema and value codecs with `SqliteServerStorage` and differs only in execution shape: the concurrent page reads of a pull leave as one `db.batch` round trip. It ships in `@syncular/server`. A push reads the stored row and the delete tombstone of every row its operations name in one `db.batch` of two statements per table, and the operations read that snapshot; a push of 8 operations issues 6 `db.batch` calls, where it issued 21 when each operation read its own row. A scope scan binds its values as one JSON array expanded with `json_each`, so a subscription with 150 scope values stays under D1's 100-parameter cap. `SqliteServerStorage` and `D1ServerStorage` no longer create `sync_row_scopes_by_row`, because it made the planner walk the index in row order for a scan of two or more scope values instead of seeking the primary key per value. The DDL drops it from an existing database: `SqliteServerStorage` on every construction, `D1ServerStorage` in `migrate()` and in the core phase of a schema migration, so a D1 database that stays on one schema version keeps the index until one of those runs. Per-partition write serialization, the migration workflow, and the Durable Object are on [Cloudflare Workers](/server-workers/#advanced-d1-storage).
 
 ## Segment stores
 
@@ -212,7 +214,7 @@ Blobs are durable and never expire. A blob referenced by a live row must stay do
 An S3 or R2 lifecycle-expiration rule on the `blob/` prefix deletes attachments that live rows still reference. Reclamation is reference-driven: the scheduled `sweepOrphanBlobs` pass deletes only blobs that no live row references ([Blob GC](/server-operations/#blob-gc)).
 :::
 
-Two independent presign switches take the server out of the blob byte path. `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned download URLs after the row-derived authorization check. `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage upload grants. Without them, clients stream through the direct `PUT /blobs/:blobId` endpoint, which is fully supported.
+Two independent presign switches take the server out of the blob byte path. `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned download URLs after the row-derived authorization check. `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage upload grants that sign `content-length` and `x-amz-checksum-sha256`, so S3, R2 and MinIO refuse a PUT of another size or other bytes. Without them, clients stream through the direct `PUT /blobs/:blobId` endpoint.
 
 ## Upgrading a server database
 
@@ -318,7 +320,7 @@ A custom `ServerStorage` implements these atomic operations on top of the shared
 | `updateClientCursor(partition, clientId, cursor, updatedAtMs)` | Update only the existing record's cursor and timestamp, each to its maximum, atomically. Keep missing records absent. Preserve actor, wire version, and subscriptions. |
 | `advanceClientCursor(partition, clientId, actorId, logEpoch, cursor, updatedAtMs)` | The realtime acknowledgment path. The same atomic update, plus checks of the actor and the current partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1 perform one update without reading or serializing the subscription list. |
 | `putClientRecord` | A full replacement. Changing subscriptions can lower the retention cursor floor. HTTP registration keeps its cursor and subscription replacement rules. |
-| `getActiveClientCursorFloor(partition, cutoffMs)` | Return the minimum cursor whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve negative bootstrap cursors. Pruning and admin horizon status use this scalar aggregate; `listClientCursors` remains the explicit listing interface. |
+| `getActiveClientCursorFloor(partition, cutoffMs)` | Return the minimum non-negative cursor whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. A bootstrapping client at cursor -1 holds no cursor. Pruning and admin horizon status use this scalar aggregate; `listClientCursors` remains the explicit listing interface. |
 | `getPartitionLogEpoch(partition)` | A point read that leaves the last-authenticated timestamp unchanged. `pruneCommitLog` reads it before computing retention inputs. |
 | `pruneCommitsThrough(partition, { logEpoch, throughSeq })` | In one transaction: verify the epoch, compute `max(currentHorizon, throughSeq)`, advance the horizon, and delete commit, change, and scope records through it. Return `{ previousHorizonSeq, horizonSeq, removedCommits }`. Serialize it with restore rotation. An epoch mismatch rejects before deleting. A retry cleans up even when the horizon already covers the requested sequence. |
 | `setHorizonSeq` | A monotonic update. |

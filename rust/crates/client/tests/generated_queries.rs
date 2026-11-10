@@ -151,6 +151,9 @@ fn generated_self_join_sync_query_runs_with_one_coalesced_coverage_entry() {
     assert_eq!(snapshot.coverage.missing.len(), 1);
 }
 
+/// A canonical `blob_ref` (§5.9.1); authoring refuses any other text (§7.1).
+const REMOTE_BLOB: &str = r#"{"blobId":"sha256:0000000000000000000000000000000000000000000000000000000000000000","byteLength":3}"#;
+
 #[test]
 fn generated_rows_cover_every_query_ir_value_type() {
     let mut client = SyncClient::new(
@@ -170,7 +173,7 @@ fn generated_rows_cover_every_query_ir_value_type() {
                 ("score".to_owned(), json!(2.5)),
                 ("attachment".to_owned(), json!({ "$bytes": "00ff10" })),
                 ("body_doc".to_owned(), json!({ "$bytes": "0102" })),
-                ("remote_blob".to_owned(), json!("blob-1")),
+                ("remote_blob".to_owned(), json!(REMOTE_BLOB)),
             ]),
             base_version: None,
         }])
@@ -181,7 +184,7 @@ fn generated_rows_cover_every_query_ir_value_type() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].attachment, Some(vec![0x00, 0xff, 0x10]));
     assert_eq!(rows[0].body_doc, Some(vec![0x01, 0x02]));
-    assert_eq!(rows[0].remote_blob.as_deref(), Some("blob-1"));
+    assert_eq!(rows[0].remote_blob.as_deref(), Some(REMOTE_BLOB));
 
     let task_params = generated::task_value_types::Params::new("missing".to_owned());
     assert!(generated::task_value_types::run(&client, &task_params)

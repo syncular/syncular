@@ -21,7 +21,7 @@ export function queryableOver(handle: any): PgQueryable {
         text,
         params ? [...params] : [],
       )) as Row[];
-      return { rows, rowCount: rows.length };
+      return { rows };
     },
   };
 }

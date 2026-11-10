@@ -30,6 +30,9 @@ pub struct SegmentRequest {
     pub table: String,
     /// Canonical JSON (§11.2) of the requested scope map (§5.5).
     pub requested_scopes_json: String,
+    /// The descriptor's `byteLength` (§5.4): the transport stops reading once
+    /// the body exceeds it, and the client rejects the longer body.
+    pub byte_length: u64,
 }
 
 /// One segment body fetch of a response's batch: the direct endpoint (§5.5) or
@@ -40,7 +43,8 @@ pub enum SegmentFetch {
     /// Direct-endpoint request (§5.5).
     Direct(SegmentRequest),
     /// Plain GET of a signed URL; the URL is the entire grant (§5.4).
-    Url(String),
+    /// `byte_length` caps the read as on [`SegmentRequest`].
+    Url { url: String, byte_length: u64 },
 }
 
 /// A §5.9.5 blob download result: inline bytes, or a presigned url the client
@@ -114,7 +118,9 @@ pub trait Transport {
             let mut report = |bytes| on_progress(index, bytes);
             let result = match fetch {
                 SegmentFetch::Direct(request) => self.download_segment(request, &mut report),
-                SegmentFetch::Url(url) => self.fetch_url(url, &mut report),
+                SegmentFetch::Url { url, byte_length } => {
+                    self.fetch_url(url, *byte_length, &mut report)
+                }
             };
             let failed = result.is_err();
             results.push(result);
@@ -133,13 +139,14 @@ pub trait Transport {
     /// Plain GET of a signed URL (§5.4). The URL is the entire grant —
     /// implementations MUST NOT attach sync-server authentication or the
     /// `X-Syncular-Scopes` header. Only called when `supports_url_fetch`
-    /// returned `true`.
+    /// returned `true`. Reading stops once the body exceeds `byte_length`.
     fn fetch_url(
         &mut self,
         url: &str,
+        byte_length: u64,
         _on_progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<u8>, TransportError> {
-        let _ = url;
+        let _ = (url, byte_length);
         Err(TransportError::new(
             "sync.invalid_request",
             "this transport has no direct URL fetch (§5.4)",
@@ -167,9 +174,15 @@ pub trait Transport {
     /// §5.9.5 blob download: host-authenticated `GET <mount>/blobs/{blobId}`,
     /// re-authorized server-side against referencing rows. Returns inline
     /// bytes OR (always-issue, presign configured) a signed url the client
-    /// fetches directly. Default: none.
-    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
-        let _ = blob_id;
+    /// fetches directly. `byte_length` is the BlobRef's declared size when the
+    /// caller has one; reading inline bytes stops once the body exceeds it.
+    /// Default: none.
+    fn blob_download(
+        &mut self,
+        blob_id: &str,
+        byte_length: Option<u64>,
+    ) -> Result<BlobDownload, TransportError> {
+        let _ = (blob_id, byte_length);
         Err(TransportError::new(
             "blob.not_found",
             "this transport has no blob download (§5.9)",
@@ -177,9 +190,14 @@ pub trait Transport {
     }
     /// §5.9.5 presigned-download fetch: a bare GET of the signed url. MUST
     /// attach NO host authentication — the url is the entire grant (§5.4).
-    /// Only called when `blob_download` returned a `Url` arm.
-    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
-        let _ = url;
+    /// Only called when `blob_download` returned a `Url` arm. Reading stops
+    /// once the body exceeds `byte_length`.
+    fn fetch_blob_url(
+        &mut self,
+        url: &str,
+        byte_length: Option<u64>,
+    ) -> Result<Vec<u8>, TransportError> {
+        let _ = (url, byte_length);
         Err(TransportError::new(
             "sync.invalid_request",
             "this transport has no blob url fetch (§5.9.5)",

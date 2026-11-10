@@ -24,6 +24,7 @@ import { encryptionConfigFromKeyring } from './encryption';
 import {
   classifySqliteFailure,
   ClientSyncError,
+  invalidRequest,
   STORAGE_BUSY_CODE,
 } from './errors';
 import {
@@ -64,6 +65,14 @@ export interface SyncWorkerOverrides {
   ) => Promise<ClientDatabase> | ClientDatabase;
   /** Retry deadline indirection for deterministic worker-host tests. */
   readonly waitForStorageRetry?: (delayMs: number) => Promise<void>;
+  /**
+   * Timer indirection for deterministic worker-host tests: background-intent
+   * deadlines and the client's §8.5 heartbeat watchdog.
+   */
+  readonly scheduleBackground?: (
+    callback: () => void,
+    delayMs: number,
+  ) => () => void;
   readonly createTransport?: (config: WorkerInitConfig) => SyncTransport;
   readonly createSegments?: (
     config: WorkerInitConfig,
@@ -201,6 +210,7 @@ export function startSyncWorkerCore(
   let offline = false;
   let headers: Readonly<Record<string, string>> = {};
   let closed = false;
+  let pushingDiagnostics = false;
 
   // -- one sync loop: RPC-driven and auto-driven rounds serialize ----------
   let syncChain: Promise<unknown> = Promise.resolve();
@@ -216,8 +226,32 @@ export function startSyncWorkerCore(
   // -- SPEC §7.5 host loop: event-driven intents, no interactive polling --
   let autoSync = true;
   let autoSyncScheduled = false;
-  let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelBackground: (() => void) | undefined;
   let backgroundDue = Number.POSITIVE_INFINITY;
+  // §7.6 backoff for drives that end without a client retry intent.
+  let retryDelayMs = 250;
+  const scheduleBackground =
+    overrides.scheduleBackground ??
+    ((callback: () => void, delayMs: number): (() => void) => {
+      const timer = setTimeout(callback, delayMs);
+      return () => clearTimeout(timer);
+    });
+
+  const workerDiagnostics = (snapshot: ClientDiagnosticsSnapshot) =>
+    withClientDiagnosticsHost(snapshot, {
+      kind: 'worker',
+      role: 'leader',
+      connectivity: offline ? 'offline' : snapshot.host.connectivity,
+      realtime: snapshot.host.realtime,
+    });
+  const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void => {
+    if (!closed) {
+      post({
+        t: 'event',
+        event: { kind: 'diagnostics', snapshot: workerDiagnostics(snapshot) },
+      });
+    }
+  };
 
   function runAutoSync(): void {
     if (
@@ -238,17 +272,42 @@ export function startSyncWorkerCore(
       return running.syncUntilIdle();
     })
       .then((summary) => {
+        retryDelayMs = 250;
         if (!closed) post({ t: 'event', event: { kind: 'synced', summary } });
         if (summary.budgetExhausted) consumeSyncIntent({ kind: 'interactive' });
       })
       .catch((error: unknown) => {
-        if (!closed) {
-          post({
-            t: 'event',
-            event: { kind: 'synced', error: toErrorShape(error) },
-          });
+        if (closed) return;
+        post({
+          t: 'event',
+          event: { kind: 'synced', error: toErrorShape(error) },
+        });
+        // §7.7: a retryable drive rejection owes another drive. A retryable
+        // round failure already handed this loop its background intent; the
+        // drive deadline did not. An unreachable endpoint waits for the
+        // host's connectivity resume (§1.8).
+        const causeKind =
+          error instanceof ClientSyncError
+            ? error.details?.['causeKind']
+            : undefined;
+        if (
+          error instanceof ClientSyncError &&
+          error.retryable &&
+          causeKind !== 'network' &&
+          causeKind !== 'connect' &&
+          cancelBackground === undefined &&
+          !autoSyncScheduled
+        ) {
+          consumeSyncIntent({ kind: 'background', delayMs: retryDelayMs });
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
         }
       });
+  }
+
+  function stopBackground(): void {
+    cancelBackground?.();
+    cancelBackground = undefined;
+    backgroundDue = Number.POSITIVE_INFINITY;
   }
 
   function consumeSyncIntent(intent: SyncIntent): void {
@@ -265,12 +324,12 @@ export function startSyncWorkerCore(
     if (intent.kind === 'background') {
       if (autoSyncScheduled) return;
       const due = Date.now() + Math.max(0, intent.delayMs);
-      if (backgroundTimer !== undefined && due >= backgroundDue) return;
-      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+      if (cancelBackground !== undefined && due >= backgroundDue) return;
+      cancelBackground?.();
       backgroundDue = due;
-      backgroundTimer = setTimeout(
+      cancelBackground = scheduleBackground(
         () => {
-          backgroundTimer = undefined;
+          cancelBackground = undefined;
           backgroundDue = Number.POSITIVE_INFINITY;
           if (!autoSyncScheduled) {
             autoSyncScheduled = true;
@@ -281,11 +340,7 @@ export function startSyncWorkerCore(
       );
       return;
     }
-    if (backgroundTimer !== undefined) {
-      clearTimeout(backgroundTimer);
-      backgroundTimer = undefined;
-      backgroundDue = Number.POSITIVE_INFINITY;
-    }
+    stopBackground();
     if (!autoSync || autoSyncScheduled || closed || client === undefined) {
       return;
     }
@@ -393,15 +448,12 @@ export function startSyncWorkerCore(
         ? { segments: bindings.segments }
         : {}),
       ...(blobs !== undefined ? { blobs } : {}),
-      realtime: (handlers) => {
+      realtime: (handlers, clientId) => {
         // §12.2: a local authority has no realtime channel.
         if (realtimeConnector === undefined || local?.active()) {
-          throw new ClientSyncError(
-            'sync.invalid_request',
-            'no realtime connector configured',
-          );
+          throw invalidRequest('no realtime connector configured');
         }
-        return realtimeConnector(handlers);
+        return realtimeConnector(handlers, clientId);
       },
       ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
       ...(config.limits !== undefined ? { limits: config.limits } : {}),
@@ -411,6 +463,10 @@ export function startSyncWorkerCore(
       ...(config.realtimePolicy !== undefined
         ? { realtimePolicy: config.realtimePolicy }
         : {}),
+      ...(config.realtimeHeartbeatMs !== undefined
+        ? { realtimeHeartbeatMs: config.realtimeHeartbeatMs }
+        : {}),
+      schedule: scheduleBackground,
       ...(config.encryption !== undefined
         ? { encryption: encryptionConfigFromKeyring(config.encryption) }
         : {}),
@@ -439,9 +495,9 @@ export function startSyncWorkerCore(
         // §7.4.5: surface the schema-bump reset + completion to the UI thread.
         post({ t: 'event', event: { kind: 'upgrading', upgrading } });
       },
-      onPresence: (scopeKey) => {
-        // §8.6: surface a presence change to the UI thread.
-        post({ t: 'event', event: { kind: 'presence', scopeKey } });
+      onPresence: (scopeKey, error) => {
+        // §8.6: surface a presence change or rejection to the UI thread.
+        post({ t: 'event', event: { kind: 'presence', scopeKey, error } });
       },
     });
     started.onProgress((progress) => {
@@ -450,33 +506,12 @@ export function startSyncWorkerCore(
     started.onChange((batch) => {
       if (!closed) post({ t: 'event', event: { kind: 'change', batch } });
     });
-    const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void => {
-      if (closed) return;
-      post({
-        t: 'event',
-        event: {
-          kind: 'diagnostics',
-          snapshot: withClientDiagnosticsHost(snapshot, {
-            kind: 'worker',
-            role: 'leader',
-            connectivity: offline ? 'offline' : snapshot.host.connectivity,
-            realtime: snapshot.host.realtime,
-          }),
-        },
-      });
-    };
-    started.onDiagnostics(postDiagnostics);
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined
         ? overrides.createRealtime(config, started.clientId, http.headers)
         : config.endpoints.realtimeUrl !== undefined
-          ? webSocketRealtimeConnector(
-              config.endpoints.realtimeUrl.replace(
-                '{clientId}',
-                encodeURIComponent(started.clientId),
-              ),
-            )
+          ? webSocketRealtimeConnector(config.endpoints.realtimeUrl)
           : undefined;
     client = started;
     // `start()` may discover persisted subscriptions/outbox work. Its callback
@@ -530,9 +565,7 @@ export function startSyncWorkerCore(
       ]),
     ) as Pick<WorkerApi, (typeof coreMethods)[number]>),
     beginSecurityPreflight: async () => {
-      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
-      backgroundTimer = undefined;
-      backgroundDue = Number.POSITIVE_INFINITY;
+      stopBackground();
       autoSyncScheduled = false;
       await requireClient().beginSecurityPreflight();
     },
@@ -575,13 +608,14 @@ export function startSyncWorkerCore(
     resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,
     diagnosticsSnapshot: (request) => {
-      const snapshot = requireClient().diagnosticsSnapshot(request);
-      return withClientDiagnosticsHost(snapshot, {
-        kind: 'worker',
-        role: 'leader',
-        connectivity: offline ? 'offline' : snapshot.host.connectivity,
-        realtime: snapshot.host.realtime,
-      });
+      const running = requireClient();
+      // The first pull makes the worker a push source: no tab has asked for
+      // diagnostics before it, so no snapshot is built per revision until then.
+      if (!pushingDiagnostics) {
+        pushingDiagnostics = true;
+        running.onDiagnostics(postDiagnostics);
+      }
+      return workerDiagnostics(running.diagnosticsSnapshot(request));
     },
     setHeaders: (next) => {
       headers = next;
@@ -590,29 +624,15 @@ export function startSyncWorkerCore(
       offline = value;
       requireClient().setTransportEnabled(!value);
       if (offline) {
-        if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
-        backgroundTimer = undefined;
-        backgroundDue = Number.POSITIVE_INFINITY;
-      } else if (client !== undefined) {
-        const snapshot = client.diagnosticsSnapshot();
-        post({
-          t: 'event',
-          event: {
-            kind: 'diagnostics',
-            snapshot: withClientDiagnosticsHost(snapshot, {
-              kind: 'worker',
-              role: 'leader',
-              connectivity: snapshot.host.connectivity,
-              realtime: snapshot.host.realtime,
-            }),
-          },
-        });
+        stopBackground();
+      } else if (client !== undefined && pushingDiagnostics) {
+        postDiagnostics(client.diagnosticsSnapshot());
       }
     },
     ...local?.methods,
     close: async () => {
       closed = true;
-      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+      cancelBackground?.();
       await client?.close();
       local?.close();
       database?.close();

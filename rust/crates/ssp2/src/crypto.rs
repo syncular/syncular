@@ -13,6 +13,8 @@
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 
+use crate::primitives::parse_json_document;
+
 /// Envelope version byte (§5.11).
 pub const ENVELOPE_VERSION: u8 = 0x01;
 /// AES-GCM nonce length (96-bit).
@@ -101,11 +103,11 @@ pub fn deserialize_plain(declared: DeclaredType, bytes: &[u8]) -> Result<PlainVa
                 .map_err(|_| DecryptError("decrypted value is not valid UTF-8".to_owned()))?
                 .to_owned();
             if declared == DeclaredType::Json {
-                serde_json::from_str::<serde_json::Value>(&text)
+                parse_json_document(&text, "decrypted json")
                     .map_err(|_| DecryptError("decrypted json does not parse".to_owned()))?;
                 Ok(PlainValue::Json(text))
             } else if declared == DeclaredType::BlobRef {
-                serde_json::from_str::<serde_json::Value>(&text)
+                parse_json_document(&text, "decrypted blob_ref")
                     .map_err(|_| DecryptError("decrypted blob_ref does not parse".to_owned()))?;
                 Ok(PlainValue::BlobRef(text))
             } else {
@@ -281,6 +283,13 @@ mod tests {
         assert!(serialize_plain(&PlainValue::Integer(unsafe_value)).is_err());
         assert!(deserialize_plain(DeclaredType::Integer, &unsafe_value.to_le_bytes()).is_err());
         assert!(deserialize_plain(DeclaredType::BlobRef, b"not json").is_err());
+    }
+
+    #[test]
+    fn a_decrypted_json_value_outside_the_validity_rule_fails() {
+        for raw in [r#"{"a":1e999,"a":1}"#, r#"{"a":"\u0000"}"#] {
+            assert!(deserialize_plain(DeclaredType::Json, raw.as_bytes()).is_err());
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 /**
  * Minimal AWS Signature Version 4 — exactly the subset the S3 segment
- * store needs (header-signed requests and presigned GET URLs), hand-rolled
+ * and blob stores need (header-signed requests and presigned URLs), hand-rolled
  * per the dependency-light doctrine: SigV4 is small and
  * well-specified, so no SDK.
  *
@@ -226,9 +226,15 @@ export interface PresignArgs {
   readonly credentials: SigV4Credentials;
   readonly nowMs: number;
   readonly expiresSeconds: number;
+  /**
+   * Headers the request must carry with exactly these values, signed beside
+   * `host` (a presigned PUT binds `content-length` and
+   * `x-amz-checksum-sha256`, so the store rejects other bytes).
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
-/** Query-authenticated (presigned) URL; only the `host` header is signed. */
+/** Query-authenticated (presigned) URL over `host` plus `headers`. */
 export async function presignUrl(args: PresignArgs): Promise<URL> {
   const service = args.service ?? 's3';
   const method = args.method ?? 'GET';
@@ -242,7 +248,14 @@ export async function presignUrl(args: PresignArgs): Promise<URL> {
   );
   url.searchParams.set('X-Amz-Date', amzDate);
   url.searchParams.set('X-Amz-Expires', String(args.expiresSeconds));
-  url.searchParams.set('X-Amz-SignedHeaders', 'host');
+  const headers = { ...args.headers, host: url.host };
+  url.searchParams.set(
+    'X-Amz-SignedHeaders',
+    Object.keys(headers)
+      .map((name) => name.toLowerCase())
+      .sort()
+      .join(';'),
+  );
   if (args.credentials.sessionToken !== undefined) {
     url.searchParams.set('X-Amz-Security-Token', args.credentials.sessionToken);
   }
@@ -250,7 +263,7 @@ export async function presignUrl(args: PresignArgs): Promise<URL> {
     method,
     canonicalPath: url.pathname,
     query: url.searchParams,
-    headers: { host: url.host },
+    headers,
     payloadHash: UNSIGNED_PAYLOAD,
   });
   const signature = await sigV4Signature({

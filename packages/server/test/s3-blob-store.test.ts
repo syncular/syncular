@@ -43,6 +43,12 @@ function makeStore(): S3BlobStore {
 
 const PARTITION = 'p';
 
+/** The `x-amz-checksum-sha256` value of a body: base64 of its raw SHA-256. */
+async function checksumOf(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes.slice());
+  return btoa(String.fromCharCode(...new Uint8Array(digest)));
+}
+
 runBlobStoreContract('s3', () => makeStore());
 
 describe('S3BlobStore specifics', () => {
@@ -109,7 +115,7 @@ describe('S3BlobStore specifics', () => {
     const blobId = await blobIdFor(bytes);
     await store.put(PARTITION, blobId, bytes, NOW - 10_000);
     expect((await store.stats(PARTITION)).count).toBe(1);
-    await store.sweepOrphans(PARTITION, NOW, new Set());
+    await store.sweepOrphans(PARTITION, NOW, async () => false);
     expect(await store.stats(PARTITION)).toEqual({
       count: 0,
       bytes: 0,
@@ -127,8 +133,11 @@ describe('S3BlobStore specifics', () => {
       await store.put(PARTITION, blobId, bytes, NOW - 10_000);
     }
     // Reference the third one; the other four are orphans across >2 pages.
-    const keep = new Set([ids[2] as string]);
-    const swept = await store.sweepOrphans(PARTITION, NOW, keep);
+    const swept = await store.sweepOrphans(
+      PARTITION,
+      NOW,
+      async (id) => id === ids[2],
+    );
     expect(swept.sort()).toEqual(ids.filter((id) => id !== ids[2]).sort());
     expect(await store.has(PARTITION, ids[2] as string)).toBe(true);
     for (const id of swept) {
@@ -217,12 +226,17 @@ describe('presigned GET (§5.9.5 delegated presign)', () => {
     const { url: putUrl, urlExpiresAtMs } = await store.presignBlobPut(
       PARTITION,
       blobId,
+      bytes.length,
       { ttlSeconds: 600, nowMs: clock.ms },
     );
     expect(urlExpiresAtMs).toBe((Math.floor(clock.ms / 1000) + 600) * 1000);
     // §5.9.3 equivalence: the signed object key embeds the blobId.
     expect(new URL(putUrl).pathname).toContain(blobId.replace(':', '/'));
-    const put = await fetch(putUrl, { method: 'PUT', body: bytes });
+    const put = await fetch(putUrl, {
+      method: 'PUT',
+      body: bytes,
+      headers: { 'x-amz-checksum-sha256': await checksumOf(bytes) },
+    });
     expect(put.ok).toBe(true);
 
     // The push existence check (§5.9.6) sees the object via `has`.
@@ -250,8 +264,126 @@ describe('presigned GET (§5.9.5 delegated presign)', () => {
     expect(issue.urlExpiresAtMs).toBe(
       (Math.floor(clock.ms / 1000) + 900) * 1000,
     );
-    const put = await fetch(issue.url, { method: 'PUT', body: bytes });
+    const put = await fetch(issue.url, {
+      method: 'PUT',
+      body: bytes,
+      headers: { 'x-amz-checksum-sha256': await checksumOf(bytes) },
+    });
     expect(put.ok).toBe(true);
     expect(await store.has(PARTITION, blobId)).toBe(true);
+  });
+
+  test('the presigned PUT binds size and content (§5.9.3)', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const blobId = await blobIdFor(bytes);
+    const { url } = await store.presignBlobPut(
+      PARTITION,
+      blobId,
+      bytes.length,
+      { nowMs: clock.ms },
+    );
+    expect(new URL(url).searchParams.get('X-Amz-SignedHeaders')).toBe(
+      'content-length;host;x-amz-checksum-sha256',
+    );
+    const checksum = await checksumOf(bytes);
+    // Same length, other bytes: the store recomputes the digest.
+    const garbage = await fetch(url, {
+      method: 'PUT',
+      body: new Uint8Array([9, 9, 9, 9]),
+      headers: { 'x-amz-checksum-sha256': checksum },
+    });
+    expect(garbage.status).toBe(400);
+    // A longer body: content-length is signed.
+    const oversized = await fetch(url, {
+      method: 'PUT',
+      body: new Uint8Array(1024),
+      headers: { 'x-amz-checksum-sha256': checksum },
+    });
+    expect(oversized.status).toBe(403);
+    // Without the checksum header the signature does not match.
+    const unsigned = await fetch(url, { method: 'PUT', body: bytes });
+    expect(unsigned.status).toBe(403);
+    expect(await store.has(PARTITION, blobId)).toBe(false);
+  });
+});
+
+describe('orphan sweep age (§5.9.2)', () => {
+  test('a presign-uploaded object ages from its last-modified time', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([4, 4, 4]);
+    const blobId = await blobIdFor(bytes);
+    const { url } = await store.presignBlobPut(
+      PARTITION,
+      blobId,
+      bytes.length,
+      { nowMs: clock.ms },
+    );
+    const put = await fetch(url, {
+      method: 'PUT',
+      body: bytes,
+      headers: { 'x-amz-checksum-sha256': await checksumOf(bytes) },
+    });
+    expect(put.ok).toBe(true);
+    // The object carries no Syncular metadata. Uploaded a second ago, it is
+    // inside any grace period.
+    expect(
+      await store.sweepOrphans(PARTITION, clock.ms - 1_000, async () => false),
+    ).toEqual([]);
+    expect(await store.has(PARTITION, blobId)).toBe(true);
+    expect(
+      await store.sweepOrphans(PARTITION, clock.ms + 2_000, async () => false),
+    ).toEqual([blobId]);
+  });
+
+  test('an object with neither metadata nor last-modified is skipped', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([5, 5]);
+    const blobId = await blobIdFor(bytes);
+    await store.put(PARTITION, blobId, bytes, NOW - 10_000);
+    const key = store.objectKeyFor(PARTITION, blobId);
+    const stored = stub.objects.get(key);
+    if (stored === undefined) throw new Error('expected a stored object');
+    stub.objects.set(key, {
+      bytes: stored.bytes,
+      headers: { etag: stored.headers.etag ?? '' },
+    });
+    expect(await store.sweepOrphans(PARTITION, NOW, async () => false)).toEqual(
+      [],
+    );
+    expect(await store.has(PARTITION, blobId)).toBe(true);
+  });
+});
+
+describe('object keys (§5.9.2 partition namespaces)', () => {
+  for (const partition of ['acme#eu', 'acme?x', 'p:@+=', 'a b%2F']) {
+    test(`partition ${JSON.stringify(partition)} keeps its own key`, async () => {
+      const store = makeStore();
+      const bytes = new Uint8Array([6, 6, 6]);
+      const blobId = await blobIdFor(bytes);
+      await store.put(partition, blobId, bytes, NOW);
+      expect(stub.objects.has(store.objectKeyFor(partition, blobId))).toBe(
+        true,
+      );
+      expect(await store.has('acme', blobId)).toBe(false);
+      expect((await store.get(partition, blobId))?.bytes).toEqual(bytes);
+      const { url } = await store.presignBlobGet(partition, blobId, {
+        nowMs: clock.ms,
+      });
+      expect((await fetch(url)).status).toBe(200);
+    });
+  }
+
+  test('a partition with a dot segment cannot reach another namespace', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([7, 7, 7]);
+    const blobId = await blobIdFor(bytes);
+    await expect(store.put('a/../victim', blobId, bytes, NOW)).rejects.toThrow(
+      'dot segment',
+    );
+    expect(await store.has('victim', blobId)).toBe(false);
+    expect([...stub.objects.keys()].some((key) => key.includes('victim'))).toBe(
+      false,
+    );
   });
 });

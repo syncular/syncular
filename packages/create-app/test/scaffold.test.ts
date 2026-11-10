@@ -207,6 +207,68 @@ for (const template of TEMPLATES) {
       // near bun's 5 s default; the deadline scales with workspace growth.
     }, 30_000);
 
+    test.if(template !== 'minimal')(
+      'the /realtime upgrade runs authenticate and refuses a failed one',
+      async () => {
+        const target = tmpTarget();
+        scaffoldApp({ template, targetDir: target, local: true });
+        linkWorkspaceInto(target);
+        // Let the scaffolded authenticate refuse requests that carry `deny`.
+        const serverPath = join(target, 'src', 'server.ts');
+        const source = readFileSync(serverPath, 'utf8');
+        const accept = "return { actorId: 'demo-user', partition: 'demo' };";
+        expect(source).toContain(accept);
+        writeFileSync(
+          serverPath,
+          source.replace(
+            accept,
+            `if (new URL(_request.url).searchParams.has('deny')) return null;\n  ${accept}`,
+          ),
+        );
+        const child = Bun.spawn(['bun', serverPath], {
+          cwd: target,
+          env: { ...process.env, PORT: '0' },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        try {
+          const reader = child.stdout.getReader();
+          const decoder = new TextDecoder();
+          let output = '';
+          let origin: string | undefined;
+          while (origin === undefined) {
+            const chunk = await reader.read();
+            if (chunk.done) {
+              throw new Error(await new Response(child.stderr).text());
+            }
+            output += decoder.decode(chunk.value, { stream: true });
+            origin = /http:\/\/localhost:\d+/.exec(output)?.[0];
+          }
+          reader.releaseLock();
+
+          const connect = (query: string) =>
+            new Promise<'open' | 'refused'>((resolve) => {
+              const socket = new WebSocket(
+                `${origin.replace('http', 'ws')}/realtime?${query}`,
+              );
+              socket.onopen = () => {
+                socket.close();
+                resolve('open');
+              };
+              socket.onerror = () => resolve('refused');
+            });
+          expect(await connect('clientId=a')).toBe('open');
+          expect(await connect('clientId=b&deny')).toBe('refused');
+          const plain = await fetch(`${origin}/realtime?clientId=c&deny`);
+          expect(plain.status).toBe(401);
+        } finally {
+          child.kill();
+          await child.exited;
+        }
+      },
+      30_000,
+    );
+
     test.if(RUN_INSTALL)(
       'full install + smoke (SYNCULAR_TEMPLATE_INSTALL=1)',
       () => {

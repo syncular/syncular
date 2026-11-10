@@ -46,6 +46,7 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
     fun create(configJson: String, createJson: String, promise: Promise) {
         try {
             if (handle.address() != 0L) {
+                stopPump()
                 Ffi.clientClose(handle)
                 handle = MemorySegment.NULL
             }

@@ -315,8 +315,10 @@ function reconcileRows<Row>(
 
 interface CachedObservation {
   onChange(batch: ClientChangeBatch): void;
-  /** A leader serves this tab again (it leads or follows a bound leader). */
+  /** Claim again after a rejected claim. */
   reclaim?(): void;
+  /** A leader serves this tab again (it leads or follows a bound leader). */
+  reread(): void;
   reset(): void;
   dispose(): void;
 }
@@ -360,6 +362,9 @@ class ObservationCache {
   }
   reclaim(): void {
     for (const entry of this.#active) entry.reclaim?.();
+  }
+  reread(): void {
+    for (const entry of this.#active) entry.reread();
   }
   clear(): void {
     for (const entry of this.#entries.values()) entry.dispose();
@@ -547,6 +552,13 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#claimError = undefined;
     this.#claimCoverage();
     this.#requestRead();
+  }
+
+  /** A read that ran against a departed leader, or failed with it, runs on
+   * the leader that serves this tab now. */
+  reread(): void {
+    if (this.#claimError !== undefined) this.reclaim();
+    else this.#requestRead();
   }
 
   onChange(batch: ClientChangeBatch): void {
@@ -759,8 +771,12 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 }
 
+/** A value read in full by `read`. Refreshes requested while a read runs
+ * coalesce into one more read after it, whose result alone is published. */
 class ValueEntry<T> implements ExternalStoreEntry<T> {
   #generation = 0;
+  #reading = false;
+  #stale = false;
   readonly #listeners = new Set<() => void>();
   constructor(
     private value: T,
@@ -772,13 +788,26 @@ class ValueEntry<T> implements ExternalStoreEntry<T> {
     return () => this.#listeners.delete(listener);
   };
   refresh = (): void => {
-    const generation = ++this.#generation;
-    void this.read().then((next) => {
-      if (generation === this.#generation) this.set(next);
-    });
+    this.#stale = true;
+    if (!this.#reading) void this.#readLoop();
   };
+  async #readLoop(): Promise<void> {
+    this.#reading = true;
+    try {
+      while (this.#stale) {
+        this.#stale = false;
+        const generation = this.#generation;
+        const next = await this.read();
+        if (generation === this.#generation && !this.#stale) this.set(next);
+      }
+    } finally {
+      this.#reading = false;
+    }
+  }
+  /** Discard the running read and every refresh requested before now. */
   invalidate(): void {
     this.#generation += 1;
+    this.#stale = false;
   }
   set(next: T): void {
     this.invalidate();
@@ -854,6 +883,9 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
   dispose(): void {
     this.#listeners.clear();
     this.reset();
+  }
+  reread(): void {
+    this.refresh();
   }
   onChange(batch: ClientChangeBatch): void {
     if (
@@ -1227,11 +1259,19 @@ export class ReactiveClientStore {
         ...previous,
         leadership,
       });
-      if (previous.isLoading) this.status.refresh();
-      // Window edits that failed while no leader served this tab apply now;
-      // an applied group compares equal and makes no call.
-      if (leadership.state === 'leader' || leadership.state === 'follower')
-        this.#reclaimWindows();
+      if (leadership.state !== 'leader' && leadership.state !== 'follower') {
+        if (previous.isLoading) this.status.refresh();
+        return;
+      }
+      // A leader serves this tab again. Reads that failed while none did, or
+      // that a handover rejected, run on it; window edits that failed apply
+      // now, and an applied group compares equal and makes no call.
+      this.#reclaimWindows();
+      this.#queries.reread();
+      this.#windows.reread();
+      this.status.refresh();
+      this.conflicts.refresh();
+      this.outcomes.refresh();
     });
     this.status.refresh();
     this.conflicts.refresh();

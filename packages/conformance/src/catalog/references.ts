@@ -420,4 +420,119 @@ export const referenceScenarios: readonly Scenario[] = [
       );
     },
   },
+
+  {
+    name: 'references/unauthorized-parent-reads-as-missing',
+    specRefs: ['§3.4', '§6.11'],
+    requires: ['scope-authorization'],
+    server: { schema: REFERENCE_FIXTURE_SCHEMA },
+    async run(ctx) {
+      const seed = await ctx.newClient({
+        actorId: 'seed',
+        clientId: 'seed',
+        allowed: { project_id: ['p1', 'p2'] },
+        schema: REFERENCE_FIXTURE_SCHEMA,
+      });
+      await seed.api.mutate([
+        { op: 'upsert', table: 'projects', values: project('p2', 'P2') },
+      ]);
+      await syncIdle(seed);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        schema: REFERENCE_FIXTURE_SCHEMA,
+      });
+      const outcomes = [];
+      for (const parent of ['p2', 'p3']) {
+        const commit = await a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'items',
+            values: item(`i-${parent}`, 'p1', 'item', { restrict: parent }),
+          },
+        ]);
+        checkEqual((await syncOk(a)).rejected, [commit], 'the insert rejects');
+        const rejection = (await a.api.rejections()).find(
+          (candidate) => candidate.clientCommitId === commit,
+        );
+        outcomes.push([rejection?.code, rejection?.details]);
+      }
+      checkEqual(
+        outcomes,
+        [
+          [
+            'sync.reference_violation',
+            {
+              reason: 'missing_parent',
+              fieldPaths: ['restrict_parent'],
+              references: { parent: 'projects', row: 'p2' },
+            },
+          ],
+          [
+            'sync.reference_violation',
+            {
+              reason: 'missing_parent',
+              fieldPaths: ['restrict_parent'],
+              references: { parent: 'projects', row: 'p3' },
+            },
+          ],
+        ],
+        'a parent in another scope answers like an absent one',
+      );
+      checkEqual(
+        (await ctx.server.readRows('items')).length,
+        0,
+        'no child attaches to the hidden parent',
+      );
+    },
+  },
+
+  {
+    name: 'references/patch-without-reference-skips-parent-check',
+    specRefs: ['§6.11', 'B.19'],
+    server: { schema: REFERENCE_FIXTURE_SCHEMA },
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const b = await bootstrapped(ctx, 'actor-b', 'client-b');
+      await a.api.mutate([
+        { op: 'upsert', table: 'projects', values: project('p1', 'P1') },
+      ]);
+      await syncIdle(a);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'items',
+          values: item('i1', 'p1', 'item', { nullify: 'p1' }),
+        },
+      ]);
+      await syncIdle(a);
+
+      // The patch leaves the reference column absent; the merged row names
+      // the parent this commit deletes until SET NULL clears the column.
+      const applied = await a.api.mutate([
+        { op: 'patch', table: 'items', values: { id: 'i1', label: 'renamed' } },
+        { op: 'delete', table: 'projects', rowId: 'p1' },
+      ]);
+      check(
+        (await syncOk(a)).applied.includes(applied),
+        'the patch and the parent delete apply together',
+      );
+      await syncIdle(b);
+      const rows = await ctx.server.readRows('items');
+      checkEqual(
+        rows.map((row) => [
+          row.version,
+          row.values.label,
+          row.values.nullify_parent,
+        ]),
+        [[3, 'renamed', null]],
+        'the patch applied and SET NULL cleared the column',
+      );
+      await expectConverged(ctx, 'items', [a, b], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
 ];

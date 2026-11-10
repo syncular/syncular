@@ -57,9 +57,10 @@ const client = new SyncRemoteClient({
 The schema and `/sync` transport are optional when a process only calls
 registered queries or commands; ordinary commits require both.
 
-Ordinary commits use wire version 1 when `logEpoch` is absent. Supply the
-partition `logEpoch` in the constructor after a restore rotation requires
-epoch validation. Prepared bytes bind the request to that epoch.
+Without a `logEpoch`, the first `prepareCommit` sends one empty pull over the
+`/sync` transport to learn the partition log epoch, and the client binds every
+later commit to it. Supply `logEpoch` in the constructor to skip that round.
+Prepared bytes bind the request to that epoch.
 
 ## Database-less ordinary commits
 
@@ -224,7 +225,8 @@ A command `upsert` is unversioned. Within the tombstone horizon the server
 refuses an unversioned upsert of a deleted row with `sync.row_deleted`, so a
 command that deleted a row with a stable, derived id cannot write it back the
 same way. Set `insert: true` to send an explicit insert (`baseVersion = 0`):
-the server recreates the row at `server_version = 1` and clears its tombstone.
+the server recreates the row one above the deleted row's `server_version` and
+clears its tombstone.
 An explicit insert of an existing row is refused with `sync.version_conflict`,
 so read the row first and set the flag only when it is absent.
 
@@ -359,8 +361,12 @@ registry.
 
 `RemoteOperationWatchHub` reruns affected registered queries and sends full
 replacement snapshots. A commit touching unrelated tables does not rerun the
-query. If commits arrive during a query, the session coalesces them into one
-additional run.
+query. Each session runs one query at a time: a commit queues every affected
+watch once, and the session reruns the queue in arrival order. A session holds
+at most `limits.maxWatchesPerSession` watches (default 100,
+[Request limits](/guide-server/#request-limits)); a `watch` past the cap
+receives a `watch_error` with `sync.limit_exceeded`, and the session's other
+watches keep running.
 
 ```ts
 import {

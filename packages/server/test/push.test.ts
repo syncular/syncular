@@ -3,11 +3,13 @@
  * (SPEC.md §6) plus §3.4 write-path authorization — driven through bytes.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow } from '@syncular/core';
+import { decodeRow, serializeBlobRef } from '@syncular/core';
 import {
+  type BlobStore,
   CommitValidationRejection,
   compileSchema,
   handleSyncRequest,
+  MemoryBlobStore,
   ValidationRejection,
 } from '@syncular/server';
 import {
@@ -673,5 +675,318 @@ describe('push request validation (§1.7, §6.1)', () => {
     expect(pushResults(replay)[0]?.status).toBe('rejected');
     expect(pushResults(replay)[0]?.results[0]?.status).toBe('conflict');
     expect(pushResults(replay)[0]?.results[0]?.opIndex).toBe(1);
+  });
+});
+
+describe('conflict snapshot after rollback (§6.4)', () => {
+  test('a conflict reports the row as stored before the commit, not an earlier operation of it', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1', 'stored');
+    const message = await sync(t, [
+      pushCommit('c2', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'candidate')),
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'mine'), 1),
+      ]),
+    ]);
+    const record = pushResults(message)[0]?.results[0];
+    if (record?.status !== 'conflict') throw new Error('expected conflict');
+    expect(record.opIndex).toBe(1);
+    expect(record.serverVersion).toBe(1);
+    expect(decodeRow(TASK_COLUMNS, record.serverRow)[2]).toBe('stored');
+    // The replay returns the persisted rolled-back snapshot (§2.3).
+    const replay = await sync(t, [
+      pushCommit('c2', [upsert('tasks', 't1', taskRow('t1', 'p1', 'x'))]),
+    ]);
+    expect(pushResults(replay)[0]?.results[0]).toEqual(record);
+  });
+
+  test('a conflict against a row only an earlier operation inserted is sync.row_missing', async () => {
+    const t = makeContext();
+    const message = await sync(t, [
+      pushCommit('c1', [
+        upsert('tasks', 't9', taskRow('t9', 'p1', 'first'), 0),
+        upsert('tasks', 't9', taskRow('t9', 'p1', 'second'), 0),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.results).toEqual([
+      {
+        opIndex: 1,
+        status: 'error',
+        code: 'sync.row_missing',
+        message:
+          'the conflicting row exists only through an earlier operation of the same commit (§6.4)',
+        retryable: false,
+      },
+    ]);
+    expect(await t.storage.getRow('part-1', 'tasks', 't9')).toBeUndefined();
+  });
+});
+
+describe('tombstone disclosure (§6.2)', () => {
+  test('an unauthorized unversioned upsert is forbidden whether or not the row was deleted', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 'deleted', 'p2');
+    await sync(t, [pushCommit('c2', [del('tasks', 'deleted')])]);
+    t.scopes.value = { project_id: ['p1'] };
+    const answer = async (rowId: string) => {
+      const message = await sync(t, [
+        pushCommit(`probe-${rowId}`, [
+          upsert('tasks', rowId, taskRow(rowId, 'p2')),
+        ]),
+      ]);
+      const record = pushResults(message)[0]?.results[0];
+      if (record?.status !== 'error') throw new Error('expected error record');
+      return { code: record.code, message: record.message };
+    };
+    const deleted = await answer('deleted');
+    expect(deleted.code).toBe('sync.forbidden');
+    expect(deleted).toEqual(await answer('never-existed'));
+  });
+
+  test('an authorized unversioned upsert still loses to the tombstone', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [pushCommit('c2', [del('tasks', 't1')])]);
+    const message = await sync(t, [
+      pushCommit('c3', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    const record = pushResults(message)[0]?.results[0];
+    if (record?.status !== 'error') throw new Error('expected error record');
+    expect(record.code).toBe('sync.row_deleted');
+  });
+
+  // A patch that omits its scope columns: only the tombstone's stored scopes
+  // can authorize it.
+  let patches = 0;
+  const patchAnswer = async (
+    t: ReturnType<typeof makeContext>,
+    rowId: string,
+  ) => {
+    const payload = encodeSparseRow(TASK_COLUMNS, 0, [
+      rowId,
+      undefined,
+      'patched',
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const message = await sync(t, [
+      pushCommit(`patch-${++patches}`, [upsert('tasks', rowId, payload)]),
+    ]);
+    const record = pushResults(message)[0]?.results[0];
+    if (record?.status !== 'error') throw new Error('expected error record');
+    return { code: record.code, message: record.message };
+  };
+
+  test('a partial upsert from an actor outside the tombstone scope sees a row that never existed', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 'deleted', 'p2');
+    await sync(t, [pushCommit('c2', [del('tasks', 'deleted')])]);
+    t.scopes.value = { project_id: ['p1'] };
+    const deleted = await patchAnswer(t, 'deleted');
+    expect(deleted.code).toBe('sync.row_missing');
+    expect(deleted).toEqual(await patchAnswer(t, 'never-existed'));
+    t.scopes.value = { project_id: ['p2'] };
+    expect((await patchAnswer(t, 'deleted')).code).toBe('sync.row_deleted');
+  });
+
+  test('a tombstone without stored scopes answers sync.row_deleted to any actor', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 'deleted', 'p2');
+    await sync(t, [pushCommit('c2', [del('tasks', 'deleted')])]);
+    t.storage.db.exec(
+      'UPDATE sync_tombstones SET server_version = NULL, scopes = NULL',
+    );
+    t.scopes.value = { project_id: ['p1'] };
+    expect((await patchAnswer(t, 'deleted')).code).toBe('sync.row_deleted');
+  });
+});
+
+describe('recreate over a tombstone (§6.2)', () => {
+  const version = async (t: ReturnType<typeof makeContext>, rowId: string) =>
+    (await t.storage.getRow('part-1', 'tasks', rowId))?.serverVersion;
+
+  test('starts above the deleted version, so a stale baseVersion conflicts', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    for (const title of ['v2', 'v3']) {
+      await sync(t, [
+        pushCommit(title, [upsert('tasks', 't1', taskRow('t1', 'p1', title))]),
+      ]);
+    }
+    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    const recreated = await sync(t, [
+      pushCommit('recreate', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'new'), 0),
+      ]),
+    ]);
+    expect(pushResults(recreated)[0]?.status).toBe('applied');
+    expect(await version(t, 't1')).toBe(4);
+    const stale = await sync(t, [
+      pushCommit('stale', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'stale'), 3),
+      ]),
+    ]);
+    const record = pushResults(stale)[0]?.results[0];
+    if (record?.status !== 'conflict') throw new Error('expected conflict');
+    expect(record.serverVersion).toBe(4);
+    expect(decodeRow(TASK_COLUMNS, record.serverRow)[2]).toBe('new');
+  });
+
+  test('a tombstone without a stored version recreates at 1', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [
+      pushCommit('v2', [upsert('tasks', 't1', taskRow('t1', 'p1', 'v2'))]),
+    ]);
+    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    t.storage.db.exec(
+      'UPDATE sync_tombstones SET server_version = NULL, scopes = NULL',
+    );
+    await sync(t, [
+      pushCommit('recreate', [upsert('tasks', 't1', taskRow('t1', 'p1'), 0)]),
+    ]);
+    expect(await version(t, 't1')).toBe(1);
+  });
+
+  test('an actor outside the tombstone scope inserts at 1 and clears the tombstone', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 't1', 'p2');
+    await sync(t, [
+      pushCommit('v2', [upsert('tasks', 't1', taskRow('t1', 'p2', 'v2'))]),
+    ]);
+    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    t.scopes.value = { project_id: ['p1'] };
+    const inserted = await sync(t, [
+      pushCommit('insert', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    expect(pushResults(inserted)[0]?.status).toBe('applied');
+    expect(await version(t, 't1')).toBe(1);
+    expect(
+      t.storage.db.query('SELECT count(*) AS n FROM sync_tombstones').get(),
+    ).toEqual({ n: 0 });
+  });
+});
+
+describe('rowId admission (§6.1)', () => {
+  test('a rowId holding U+0000 rejects its operation with sync.invalid_request', async () => {
+    const t = makeContext();
+    const message = await sync(t, [
+      pushCommit('c1', [del('tasks', 'a\u0000b')]),
+      pushCommit('c2', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    const [rejected, applied] = pushResults(message);
+    expect(rejected?.status).toBe('rejected');
+    expect(rejected?.results[0]).toMatchObject({
+      opIndex: 0,
+      status: 'error',
+      code: 'sync.invalid_request',
+      message: 'rowId holds U+0000',
+    });
+    expect(applied?.status).toBe('applied');
+  });
+});
+
+describe('blob existence check (§6.6)', () => {
+  const BLOB_COLUMNS = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'project_id', type: 'string', nullable: false },
+    { name: 'cover', type: 'blob_ref', nullable: true },
+    { name: 'thumb', type: 'blob_ref', nullable: true },
+  ] as const;
+  const BLOB_SCHEMA = {
+    version: 1,
+    tables: [
+      {
+        name: 'files',
+        columns: BLOB_COLUMNS,
+        primaryKey: 'id',
+        scopes: ['project:{project_id}'],
+      },
+    ],
+  };
+  const ref = (digit: string) =>
+    serializeBlobRef({ blobId: `sha256:${digit.repeat(64)}`, byteLength: 1 });
+
+  test('a commit checks each distinct blob once, concurrently', async () => {
+    const store = new MemoryBlobStore();
+    for (const digit of ['a', 'b']) {
+      await store.put(
+        'part-1',
+        `sha256:${digit.repeat(64)}`,
+        new Uint8Array([1]),
+        0,
+      );
+    }
+    const lookups: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const counting: BlobStore = new Proxy(store, {
+      get(target, property) {
+        if (property === 'has') {
+          return async (partition: string, blobId: string) => {
+            lookups.push(blobId);
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            await Promise.resolve();
+            await Promise.resolve();
+            inFlight -= 1;
+            return target.has(partition, blobId);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const t = makeContext({
+      schema: BLOB_SCHEMA,
+      blobs: counting,
+      resolveScopes: () => ({ project_id: ['p1'] }),
+    });
+    const row = (id: string, cover: string, thumb: string) =>
+      upsert(
+        'files',
+        id,
+        encodeSparseRow(BLOB_COLUMNS, 0, [id, 'p1', cover, thumb]),
+      );
+    const message = await sync(t, [
+      pushCommit('c1', [
+        row('f1', ref('a'), ref('b')),
+        row('f2', ref('a'), ref('a')),
+        row('f3', ref('b'), ref('a')),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    expect(lookups.sort()).toEqual([
+      `sha256:${'a'.repeat(64)}`,
+      `sha256:${'b'.repeat(64)}`,
+    ]);
+    expect(maxInFlight).toBe(2);
+  });
+
+  test('an absent blob still rejects the referencing operation', async () => {
+    const t = makeContext({
+      schema: BLOB_SCHEMA,
+      blobs: new MemoryBlobStore(),
+      resolveScopes: () => ({ project_id: ['p1'] }),
+    });
+    const message = await sync(t, [
+      pushCommit('c1', [
+        upsert(
+          'files',
+          'f1',
+          encodeSparseRow(BLOB_COLUMNS, 0, ['f1', 'p1', null, ref('c')]),
+        ),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.results[0]).toMatchObject({
+      opIndex: 0,
+      status: 'error',
+      code: 'blob.not_found',
+    });
   });
 });

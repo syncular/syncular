@@ -49,7 +49,7 @@ src/
   server.ts                       # the server, about 30 lines
   make-client.ts                  # builds one client
   clients.ts                      # writes on A, reads on B
-  quickstart.test.ts              # the smoke test CI runs
+  smoke.test.ts                   # the smoke test CI runs
 ```
 
 Every snippet below comes from the runnable
@@ -163,7 +163,7 @@ returns the list ids the signed-in user belongs to.
 bun run server
 ```
 
-::checkpoint[The terminal prints `syncular quickstart server: http://localhost:8787`. Leave it running.]
+::checkpoint[The terminal prints the server URL, `http://localhost:8787`. Leave it running.]
 ::::
 
 ::::step{title="Run two clients" time="1 min"}

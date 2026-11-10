@@ -59,6 +59,7 @@ RCT_EXPORT_METHOD(create
                   : (RCTPromiseResolveBlock)resolve reject
                   : (RCTPromiseRejectBlock)reject) {
   if (_handle != NULL) {
+    [self stopPump];
     syncular_client_close(_handle);
     _handle = NULL;
   }
@@ -153,10 +154,16 @@ RCT_EXPORT_METHOD(stopEvents) {
   });
 }
 
+// Clears the flag, then joins the pump: the pump block leaves its loop within
+// one 25 ms poll once `_pumping` is NO, and this empty block runs after it on
+// the serial queue. A caller frees `_handle` only after no thread is inside
+// `syncular_client_poll_event`. Never call this from `_pollQueue`.
 - (void)stopPump {
   @synchronized(self) {
     _pumping = NO;
   }
+  dispatch_sync(_pollQueue, ^{
+  });
 }
 
 - (void)invalidate {

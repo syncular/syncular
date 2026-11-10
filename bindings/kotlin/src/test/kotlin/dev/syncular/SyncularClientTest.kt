@@ -82,12 +82,43 @@ class SyncularClientTest {
             maxRequestBytes = 1024,
             maxResponseBytes = 2048,
             redirects = "deny",
+            realtimeHeartbeatMs = 5000,
         ).newConfigJson()
+        assertEquals(JsonValue.Num(5000.0), config["realtimeHeartbeatMs"])
         assertEquals(JsonValue.Num(1000.0), config["requestTimeoutMs"])
         assertEquals(JsonValue.Num(2000.0), config["roundDeadlineMs"])
         assertEquals(JsonValue.Num(1024.0), config["maxRequestBytes"])
         assertEquals(JsonValue.Num(2048.0), config["maxResponseBytes"])
         assertEquals(JsonValue.Str("deny"), config["redirects"])
+    }
+
+    @Test
+    fun aRealtimeWakeEventIsAnsweredWithDrainRealtimeAndNotDelivered() {
+        // The lean core has no socket, so the wake goes straight to the poll
+        // loop's dispatch. On a closed client a command throws `client.closed`,
+        // which shows the wake issued one while another event type issues none.
+        val delivered = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val client = makeClient()
+        client.listener = SyncularEventListener { delivered.add(it.type) }
+        client.handleEvent("""{"type":"realtime-wake"}""")
+        client.handleEvent("""{"type":"presence","scopeKey":"room:1"}""")
+        client.close()
+        // The running poll loop may also deliver the core's own events.
+        assertTrue("presence" in delivered)
+        assertTrue("realtime-wake" !in delivered)
+        val error = assertFailsWith<SyncularException> { client.handleEvent("""{"type":"realtime-wake"}""") }
+        assertEquals("client.closed", error.code)
+    }
+
+    @Test
+    fun syncUntilIdleForwardsTimeoutMsToTheCore() {
+        val client = makeClient()
+        try {
+            val error = assertFailsWith<SyncularException> { client.syncUntilIdle(timeoutMs = 0) }
+            assertEquals("sync.invalid_request", error.code)
+        } finally {
+            client.close()
+        }
     }
 
     @Test

@@ -15,7 +15,7 @@ import {
   type RowValue,
 } from '@syncular/core';
 import type { ClientDatabase } from './database';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import type { OutboxOperation } from './outbox';
 import {
   isBytesEnvelope,
@@ -453,8 +453,7 @@ export function listCommitOutcomes(
 ): CommitOutcome[] {
   const limit = query.limit;
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'commit outcome limit must be a positive safe integer',
     );
   }
@@ -494,8 +493,7 @@ export function pruneCommitOutcomes(
   maxEntries: number,
 ): number {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'outcome retention maxEntries must be a positive safe integer',
     );
   }

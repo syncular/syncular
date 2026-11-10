@@ -438,4 +438,82 @@ describe('declared references (§6.11)', () => {
       /MUST NOT cross an authorization boundary/,
     );
   });
+
+  test('a reference keeps a single-column index over its column', () => {
+    const withDrop = (replacement: string) =>
+      buildIr(parseManifest(REFERENCE_RAW), [
+        {
+          name: '0001_initial',
+          sql: `CREATE TABLE parents (project_id TEXT PRIMARY KEY);
+                CREATE TABLE children (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT REFERENCES parents(project_id));
+                DROP INDEX idx_children_parent_id_ref;
+                ${replacement}`,
+        },
+      ]);
+    expect(
+      withDrop('CREATE INDEX idx_children_parent ON children (parent_id)')
+        .tables[1]?.indexes,
+    ).toEqual([
+      { name: 'idx_children_parent', columns: ['parent_id'], unique: false },
+    ]);
+    let error: unknown;
+    try {
+      withDrop(
+        'CREATE INDEX idx_children_pair ON children (parent_id, project_id)',
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      code: 'typegen.reference_index_missing',
+      details: { table: 'children', column: 'parent_id' },
+    });
+  });
+});
+
+describe('scope column types (§3.1)', () => {
+  const scopeTypes: readonly [sqlType: string, accepted: boolean][] = [
+    ['TEXT', true],
+    ['INTEGER', true],
+    ['REAL', false],
+    ['BOOLEAN', false],
+    ['JSON', false],
+    ['BLOB', false],
+    ['BLOB_REF', false],
+    ['CRDT', false],
+  ];
+
+  test.each(scopeTypes)(
+    '%s scope column, accepted: %p',
+    (sqlType, accepted) => {
+      const build = () =>
+        buildIr(manifest(), [
+          {
+            name: '0001_initial',
+            sql: `CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id ${sqlType} NOT NULL)`,
+          },
+        ]);
+      if (accepted) {
+        expect(build().tables[0]?.scopes).toEqual([
+          {
+            pattern: 'project:{project_id}',
+            variable: 'project_id',
+            column: 'project_id',
+          },
+        ]);
+        return;
+      }
+      let error: unknown;
+      try {
+        build();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TypegenError);
+      expect(error).toMatchObject({
+        code: 'typegen.scope_column_type',
+        details: { table: 'tasks', column: 'project_id' },
+      });
+    },
+  );
 });

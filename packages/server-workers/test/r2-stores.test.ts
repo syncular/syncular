@@ -37,6 +37,7 @@ interface StoredR2Object {
   readonly contentType: string | undefined;
   readonly customMetadata: Record<string, string>;
   readonly etag: string;
+  readonly uploadedAtMs: number;
 }
 
 /** In-memory `R2Bucket` double with content-hash ETags and `onlyIf` support. */
@@ -46,12 +47,15 @@ class R2BucketDouble implements R2BucketLike {
   beforePut: ((key: string) => Promise<void> | void) | undefined;
   /** Keys per `list` page; 2 keeps the cursor path exercised. */
   pageSize = 2;
+  /** The `uploaded` time the next `put` records. */
+  nowMs = CONTRACT_NOW;
 
   #describe(key: string, stored: StoredR2Object): R2ObjectLike {
     return {
       key,
       etag: stored.etag,
       size: stored.bytes.length,
+      uploaded: new Date(stored.uploadedAtMs),
       customMetadata: stored.customMetadata,
     };
   }
@@ -111,6 +115,7 @@ class R2BucketDouble implements R2BucketLike {
       contentType: options?.httpMetadata?.contentType,
       customMetadata: { ...(options?.customMetadata ?? {}) },
       etag,
+      uploadedAtMs: this.nowMs,
     };
     this.objects.set(key, stored);
     return this.#describe(key, stored);
@@ -426,7 +431,7 @@ describe('blob sweep over a paged binding list (§5.9.2)', () => {
     const swept = await store.sweepOrphans(
       'p',
       CONTRACT_NOW,
-      new Set([referenced]),
+      async (blobId) => blobId === referenced,
     );
     expect(swept.slice().sort()).toEqual(
       blobIds.filter((blobId) => blobId !== referenced).sort(),
@@ -436,7 +441,7 @@ describe('blob sweep over a paged binding list (§5.9.2)', () => {
     expect((await store.stats('p')).bytes).toBe(1);
   });
 
-  test('an idempotent re-put is counted once and keeps the first upload age', async () => {
+  test('an idempotent re-put is counted once and refreshes the upload age', async () => {
     const bucket = new R2BucketDouble();
     const store = new R2BlobStore(bucket);
     const bytes = new Uint8Array([9, 9, 9]);
@@ -446,7 +451,25 @@ describe('blob sweep over a paged binding list (§5.9.2)', () => {
     expect((await store.stats('p')).count).toBe(1);
     expect((await store.stats('p')).bytes).toBe(3);
     expect((await store.get('p', blobId))?.record.createdAtMs).toBe(
-      CONTRACT_NOW,
+      CONTRACT_NOW + 5_000,
     );
+  });
+
+  test('an object without metadata ages from the binding upload time', async () => {
+    const bucket = new R2BucketDouble();
+    const store = new R2BlobStore(bucket);
+    const bytes = new Uint8Array([8, 8]);
+    const blobId = await blobIdFor(bytes);
+    // A presigned PUT through R2's S3 endpoint writes no Syncular metadata.
+    bucket.nowMs = CONTRACT_NOW;
+    await bucket.put(store.objectKeyFor('p', blobId), bytes);
+    const unreferenced = async () => false;
+    expect(
+      await store.sweepOrphans('p', CONTRACT_NOW - 1, unreferenced),
+    ).toEqual([]);
+    expect(await store.has('p', blobId)).toBe(true);
+    expect(
+      await store.sweepOrphans('p', CONTRACT_NOW + 1, unreferenced),
+    ).toEqual([blobId]);
   });
 });

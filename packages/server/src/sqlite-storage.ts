@@ -1,16 +1,8 @@
-import { retainRollbackFailure, rollbackAfterError } from './storage-errors';
-import { validateCommitPruneQuery } from './prune';
-import { StorageQueryError } from './storage-errors';
-import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import {
-  clientRoundState,
-  PARTITION_TOUCH_INTERVAL_MS,
-  rowsLiveAfterDelete,
-  serveGateRefusal,
-} from './storage';
-import { serveNotReadyError } from './readiness';
 /**
- * SQLite server storage over the shared synchronous driver.
+ * SQLite server storage over the shared synchronous driver. The statements
+ * it shares with D1 live in `SqliteFamilyStorage` (`sqlite-dialect.ts`);
+ * this class adds the request lock, interactive `BEGIN IMMEDIATE`
+ * transactions, in-place schema migration and backfill checkpoints.
  *
  * Scope fanout is index-first: both the commit log and the
  * current-row table carry a (table, variable, value) inverted index; reads
@@ -18,119 +10,63 @@ import { serveNotReadyError } from './readiness';
  * match against the stored scope map — never a log scan.
  */
 import {
-  bindAuthoritativePartition,
-  prepareAuthoritativeQuery,
-} from './authoritative-query';
-import type { ScopeMap } from '@syncular/core';
-import { syncError } from './errors';
+  isSqliteConstraintError,
+  retainRollbackFailure,
+  rollbackAfterError,
+  StorageConstraintError,
+  StorageQueryError,
+} from './storage-errors';
+import { serveGateRefusal } from './storage';
+import { serveNotReadyError } from './readiness';
 import {
   assertPhysicalColumns,
   assertStoredLayouts,
-  commitWindowPageSql,
-  LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
-  deleteRowSql,
-  deleteSqliteRowScopesSql,
   dropTableDdl,
-  indexRowPageStatement,
   layoutsOf,
   migratePayload,
   parseLayouts,
-  quoteIdent,
   retiredTableNames,
   rewritePlan,
   rewriteRowSql,
   rewriteValues,
   SCHEMA_META_DDL_SQLITE,
-  SYNC_COLUMN_VERSIONS_COLUMN,
-  SYNC_PARTITION_COLUMN,
-  SYNC_PAYLOAD_COLUMN,
-  SYNC_ROW_ID_COLUMN,
-  SYNC_SCOPES_COLUMN,
-  SYNC_VERSION_COLUMN,
   type StoredColumnLayout,
-  scanRowPageSql,
   schemaDdl,
   serverIndexDdl,
   SQLITE_TABLE_INDEXES_SQL,
   type SqliteTableIndexRow,
   sqliteIndexSignatures,
-  selectRowScopesSql,
-  selectRowSql,
   selectRowsForRewriteSql,
-  upsertSql,
-  upsertValues,
 } from './relational-rows';
 import type { CompiledSchema, CompiledTable } from './schema';
-import { matchesEffective } from './scopes';
 import {
-  collectCommitWindowPage,
-  deserializePushResult,
-  ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL,
-  eraseScopeValueHistoryParams,
-  LIST_SCOPE_VALUE_ROWS_SQLITE_SQL,
-  placeholders,
+  SQLITE_ADDED_COLUMNS,
   SQLITE_DDL,
-  SYNC_CLIENT_ROUND_COLUMNS,
-  type SqliteChangeRecord,
-  type SqliteCommitWindowRecord,
-  type SqliteRowRecord,
-  serializePushResult,
-  toStoredChange,
-  toStoredRow,
+  SqliteFamilyStorage,
+  SqliteFamilyTransaction,
+  type SqliteStatementSpec,
 } from './sqlite-dialect';
 import {
   SqliteAdapterRequiredError,
   type SqliteDatabase,
+  type SqliteValue,
 } from './sqlite-driver';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
   AuthoritativeQueryValue,
   CheckpointDeclaration,
-  ClientCursorInfo,
-  ClientPushResult,
-  ClientRecord,
-  ClientRecordWriteOptions,
-  ClientSubscription,
-  CommitChangeSummary,
-  CommitDetail,
-  CommitMetadata,
-  CommitMetadataQuery,
-  CommitWindowQuery,
-  DurableJsonValue,
   IndexRowScanQuery,
   NewCommit,
-  NewReaction,
   PreparedPushApply,
-  PartitionRegistryEntry,
-  PrunedReactionCounts,
-  ReactionClaimQuery,
-  ReactionFailure,
-  ReactionFailureUpdate,
-  ReactionListQuery,
-  ReactionPruneQuery,
-  RowChangeRecord,
-  RowChangesQuery,
-  RowListQuery,
   RowScanQuery,
-  ScopeActivityQuery,
-  ScopeCommitActivity,
-  ScopeValueHistoryQuery,
-  ScopeValueQuery,
   ServerStorage,
   ServeGate,
   StorageTransaction,
-  StoredCommit,
   StoredCheckpoint,
   StoredPushResult,
-  StoredReaction,
   StoredRow,
 } from './storage';
-import {
-  isSqliteConstraintError,
-  StorageConstraintError,
-} from './storage-errors';
-import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
 
 interface SqliteCheckpointRecord {
   partition: string;
@@ -156,59 +92,13 @@ function toStoredCheckpoint(record: SqliteCheckpointRecord): StoredCheckpoint {
   };
 }
 
-interface SqliteReactionRecord {
-  partition: string;
-  idempotency_key: string;
-  type: string;
-  version: number;
-  payload: string;
-  source_client_id: string;
-  source_client_commit_id: string;
-  source_commit_seq: number;
-  created_at_ms: number;
-  available_at_ms: number;
-  status: StoredReaction['status'];
-  attempts: number;
-  max_attempts: number;
-  lease_owner: string | null;
-  lease_expires_at_ms: number | null;
-  completed_at_ms: number | null;
-  last_failure: string | null;
-}
-
-function toStoredReaction(record: SqliteReactionRecord): StoredReaction {
-  return {
-    idempotencyKey: record.idempotency_key,
-    type: record.type,
-    version: record.version,
-    payload: JSON.parse(record.payload) as DurableJsonValue,
-    sourceClientId: record.source_client_id,
-    sourceClientCommitId: record.source_client_commit_id,
-    sourceCommitSeq: record.source_commit_seq,
-    createdAtMs: record.created_at_ms,
-    maxAttempts: record.max_attempts,
-    status: record.status,
-    attempts: record.attempts,
-    availableAtMs: record.available_at_ms,
-    ...(record.lease_owner !== null ? { leaseOwner: record.lease_owner } : {}),
-    ...(record.lease_expires_at_ms !== null
-      ? { leaseExpiresAtMs: record.lease_expires_at_ms }
-      : {}),
-    ...(record.completed_at_ms !== null
-      ? { completedAtMs: record.completed_at_ms }
-      : {}),
-    ...(record.last_failure !== null
-      ? { lastFailure: JSON.parse(record.last_failure) as ReactionFailure }
-      : {}),
-  };
-}
-
-class SqliteTransaction implements StorageTransaction {
+class SqliteTransaction
+  extends SqliteFamilyTransaction
+  implements StorageTransaction
+{
   #storage: SqliteServerStorage;
-  #partition: string;
   /** Schema version this transaction writes; rides every appended commit row. */
   #writerVersion: number;
-  #open = true;
   #pushApplySavepoint = false;
   readonly #release: () => void;
 
@@ -218,75 +108,50 @@ class SqliteTransaction implements StorageTransaction {
     writerVersion: number,
     release: () => void,
   ) {
+    super(partition);
     this.#storage = storage;
-    this.#partition = partition;
     this.#writerVersion = writerVersion;
     this.#release = release;
     storage.db.exec('BEGIN IMMEDIATE');
   }
 
-  #assertOpen(): void {
-    if (!this.#open) throw new Error('transaction already finished');
+  protected run(sql: string, params: readonly SqliteValue[]): void {
+    this.#storage.db.run(sql, params);
+  }
+
+  protected async all<T>(
+    sql: string,
+    params: readonly SqliteValue[],
+  ): Promise<T[]> {
+    return this.#storage.db.query<T, SqliteValue[]>(sql).all(...params);
+  }
+
+  protected table(name: string): CompiledTable {
+    return this.#storage.table(name);
   }
 
   getRow(table: string, rowId: string): Promise<StoredRow | undefined> {
-    this.#assertOpen();
-    return this.#storage.getRow(this.#partition, table, rowId);
-  }
-
-  async getRows(
-    table: string,
-    rowIds: readonly string[],
-  ): Promise<ReadonlyMap<string, StoredRow>> {
-    this.#assertOpen();
-    // SQLite is in-process: one indexed lookup per id costs no round trip.
-    const rows = new Map<string, StoredRow>();
-    for (const rowId of new Set(rowIds)) {
-      const row = await this.#storage.getRow(this.#partition, table, rowId);
-      if (row !== undefined) rows.set(rowId, row);
-    }
-    return rows;
-  }
-
-  async getTombstoneSeq(
-    table: string,
-    rowId: string,
-  ): Promise<number | undefined> {
-    this.#assertOpen();
-    const row = this.#storage.db
-      .query<{ commit_seq: number }, [string, string, string]>(
-        'SELECT commit_seq FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
-      )
-      .get(this.#partition, table, rowId);
-    return row?.commit_seq;
-  }
-
-  async clearTombstone(table: string, rowId: string): Promise<void> {
-    this.#assertOpen();
-    this.#storage.db
-      .query(
-        'DELETE FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
-      )
-      .run(this.#partition, table, rowId);
+    this.assertOpen();
+    return this.#storage.getRow(this.partition, table, rowId);
   }
 
   scanRows(query: RowScanQuery): Promise<StoredRow[]> {
-    this.#assertOpen();
-    return this.#storage.scanRows(this.#partition, query);
+    this.assertOpen();
+    return this.#storage.scanRows(this.partition, query);
   }
 
   scanRowsByIndex(query: IndexRowScanQuery): Promise<StoredRow[]> {
-    this.#assertOpen();
-    return this.#storage.scanRowsByIndex(this.#partition, query);
+    this.assertOpen();
+    return this.#storage.scanRowsByIndex(this.partition, query);
   }
 
   async queryAuthoritative(
     query: AuthoritativeQueryRequest,
   ): Promise<AuthoritativeQueryResult> {
-    this.#assertOpen();
+    this.assertOpen();
     // Same shared connection: the query runs inside this transaction's
     // BEGIN IMMEDIATE and observes every row staged so far.
-    return this.#storage.runAuthoritativeQuery(this.#partition, query);
+    return this.#storage.runAuthoritativeQuery(this.partition, query);
   }
 
   async preparePushApply(
@@ -298,17 +163,17 @@ class SqliteTransaction implements StorageTransaction {
       readonly rowIds: readonly string[];
     }[] = [],
   ): Promise<PreparedPushApply> {
-    this.#assertOpen();
+    this.assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
     this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
     return {
       gate: await this.#storage.readServeGate(
-        this.#partition,
+        this.partition,
         runningSchemaVersion,
       ),
       persisted: await this.#storage.getPushResult(
-        this.#partition,
+        this.partition,
         clientId,
         clientCommitId,
       ),
@@ -316,7 +181,7 @@ class SqliteTransaction implements StorageTransaction {
   }
 
   async lockPartition(): Promise<void> {
-    this.#assertOpen();
+    this.assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
   }
 
@@ -327,22 +192,22 @@ class SqliteTransaction implements StorageTransaction {
     observedRows: number,
     nowMs: number,
   ): Promise<boolean> {
-    this.#assertOpen();
+    this.assertOpen();
     const result = this.#storage.db
       .query(
         `UPDATE sync_backfill_checkpoints
             SET watermark=?, observed_rows=?, updated_at_ms=?
           WHERE partition=? AND name=? AND owner_epoch=?`,
       )
-      .run(watermark, observedRows, nowMs, this.#partition, name, ownerEpoch);
+      .run(watermark, observedRows, nowMs, this.partition, name, ownerEpoch);
     return Number(result.changes) === 1;
   }
 
   readServeGate(runningSchemaVersion: number): Promise<ServeGate> {
-    this.#assertOpen();
+    this.assertOpen();
     // Same shared connection: this read runs inside this transaction's
     // BEGIN IMMEDIATE, so the gate and the write share one transaction.
-    return this.#storage.readServeGate(this.#partition, runningSchemaVersion);
+    return this.#storage.readServeGate(this.partition, runningSchemaVersion);
   }
 
   async commitRejectedPushResult(
@@ -350,7 +215,7 @@ class SqliteTransaction implements StorageTransaction {
     clientCommitId: string,
     result: StoredPushResult,
   ): Promise<StoredPushResult> {
-    this.#assertOpen();
+    this.assertOpen();
     if (!this.#pushApplySavepoint) {
       throw new Error('push rejection requires its apply savepoint');
     }
@@ -369,9 +234,9 @@ class SqliteTransaction implements StorageTransaction {
     row: StoredRow,
     context?: { readonly opIndex: number },
   ): Promise<void> {
-    this.#assertOpen();
+    this.assertOpen();
     try {
-      this.#storage.writeRow(this.#partition, table, row);
+      this.writeRow(table, row);
     } catch (error) {
       if (isSqliteConstraintError(error)) {
         throw new StorageConstraintError(error, context?.opIndex);
@@ -380,151 +245,37 @@ class SqliteTransaction implements StorageTransaction {
     }
   }
 
-  async deleteRow(table: string, rowId: string): Promise<void> {
-    this.#assertOpen();
-    const db = this.#storage.db;
-    const compiled = this.#storage.table(table);
-    db.query(deleteSqliteRowScopesSql(compiled)).run(
-      this.#partition,
-      table,
-      rowId,
-      this.#partition,
-      rowId,
-    );
-    db.query(deleteRowSql(compiled, 'sqlite')).run(this.#partition, rowId);
-    // §5.9.4: a deleted row references no blobs.
-    db.query(
-      'DELETE FROM sync_blob_refs WHERE partition=? AND tbl=? AND row_id=?',
-    ).run(this.#partition, table, rowId);
-  }
-
-  async setBlobRefs(
-    table: string,
-    rowId: string,
-    blobIds: readonly string[],
-  ): Promise<void> {
-    this.#assertOpen();
-    const db = this.#storage.db;
-    // Replace the row's reference set atomically (§5.9.4).
-    db.query(
-      'DELETE FROM sync_blob_refs WHERE partition=? AND tbl=? AND row_id=?',
-    ).run(this.#partition, table, rowId);
-    for (const blobId of blobIds) {
-      db.query(
-        'INSERT OR IGNORE INTO sync_blob_refs(partition, tbl, row_id, blob_id) VALUES (?,?,?,?)',
-      ).run(this.#partition, table, rowId, blobId);
-    }
-  }
-
-  async appendCommit(commit: NewCommit): Promise<number> {
-    this.#assertOpen();
-    const db = this.#storage.db;
-    const p = this.#partition;
-    db.query('INSERT OR IGNORE INTO sync_partitions(partition) VALUES (?)').run(
+  protected async appendCommitRow(commit: NewCommit): Promise<number> {
+    const p = this.partition;
+    this.run('INSERT OR IGNORE INTO sync_partitions(partition) VALUES (?)', [
       p,
+    ]);
+    const [row] = await this.all<{ max_commit_seq: number }>(
+      'SELECT max_commit_seq FROM sync_partitions WHERE partition=?',
+      [p],
     );
-    const row = db
-      .query<{ max_commit_seq: number }, [string]>(
-        'SELECT max_commit_seq FROM sync_partitions WHERE partition=?',
-      )
-      .get(p);
     const commitSeq = (row?.max_commit_seq ?? 0) + 1;
-    db.query(
-      'UPDATE sync_partitions SET max_commit_seq=? WHERE partition=?',
-    ).run(commitSeq, p);
-    db.query(
-      'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version) VALUES (?,?,?,?,?,?,?)',
-    ).run(
-      p,
+    this.run('UPDATE sync_partitions SET max_commit_seq=? WHERE partition=?', [
       commitSeq,
-      commit.clientId,
-      commit.clientCommitId,
-      commit.actorId,
-      commit.createdAtMs,
-      this.#writerVersion,
-    );
-    const liveAfterDelete = rowsLiveAfterDelete(commit.changes);
-    commit.changes.forEach((change, idx) => {
-      db.query(
-        'INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload) VALUES (?,?,?,?,?,?,?,?,?)',
-      ).run(
+      p,
+    ]);
+    this.run(
+      'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version) VALUES (?,?,?,?,?,?,?)',
+      [
         p,
         commitSeq,
-        idx,
-        change.table,
-        change.rowId,
-        change.op === 'upsert' ? 1 : 2,
-        change.rowVersion ?? null,
-        JSON.stringify(change.scopes),
-        change.payload ?? null,
-      );
-      if (
-        change.op === 'delete' &&
-        !liveAfterDelete.has(`${change.table}\u0000${change.rowId}`)
-      ) {
-        // §5 delete precedence: every applied delete leaves a tombstone,
-        // pruned with the commit log (§4.6). A delete that the same commit
-        // follows with an upsert is a §2.2 scope move, not a deletion.
-        db.query(
-          `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq) VALUES (?,?,?,?)
-           ON CONFLICT(partition, tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq`,
-        ).run(p, change.table, change.rowId, commitSeq);
-      }
-      for (const [variable, value] of Object.entries(change.scopes)) {
-        db.query(
-          'INSERT OR IGNORE INTO sync_change_scopes(partition, tbl, var, value, commit_seq) VALUES (?,?,?,?,?)',
-        ).run(p, change.table, variable, value, commitSeq);
-      }
-    });
+        commit.clientId,
+        commit.clientCommitId,
+        commit.actorId,
+        commit.createdAtMs,
+        this.#writerVersion,
+      ],
+    );
     return commitSeq;
   }
 
-  async putPushResult(
-    clientId: string,
-    clientCommitId: string,
-    result: StoredPushResult,
-  ): Promise<void> {
-    this.#assertOpen();
-    this.#storage.db
-      .query(
-        'INSERT OR IGNORE INTO sync_push_results(partition, client_id, client_commit_id, result) VALUES (?,?,?,?)',
-      )
-      .run(
-        this.#partition,
-        clientId,
-        clientCommitId,
-        serializePushResult(result),
-      );
-  }
-
-  async enqueueReactions(reactions: readonly NewReaction[]): Promise<void> {
-    this.#assertOpen();
-    const statement = this.#storage.db.query(
-      `INSERT INTO sync_reactions(
-         partition, idempotency_key, type, version, payload,
-         source_client_id, source_client_commit_id, source_commit_seq,
-         created_at_ms, available_at_ms, status, attempts, max_attempts
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,'pending',0,?)`,
-    );
-    for (const reaction of reactions) {
-      statement.run(
-        this.#partition,
-        reaction.idempotencyKey,
-        reaction.type,
-        reaction.version,
-        JSON.stringify(reaction.payload),
-        reaction.sourceClientId,
-        reaction.sourceClientCommitId,
-        reaction.sourceCommitSeq,
-        reaction.createdAtMs,
-        reaction.createdAtMs,
-        reaction.maxAttempts,
-      );
-    }
-  }
-
   async commit(): Promise<void> {
-    this.#assertOpen();
+    this.assertOpen();
     try {
       this.#storage.db.exec('COMMIT');
     } catch (error) {
@@ -539,14 +290,14 @@ class SqliteTransaction implements StorageTransaction {
       }
       throw error;
     } finally {
-      this.#open = false;
+      this.open = false;
       this.#release();
     }
   }
 
   async rollback(): Promise<void> {
-    if (!this.#open) return;
-    this.#open = false;
+    if (!this.open) return;
+    this.open = false;
     try {
       this.#storage.db.exec('ROLLBACK');
     } finally {
@@ -555,49 +306,53 @@ class SqliteTransaction implements StorageTransaction {
   }
 }
 
-export class SqliteServerStorage implements ServerStorage {
+export class SqliteServerStorage
+  extends SqliteFamilyStorage
+  implements ServerStorage
+{
   readonly db: SqliteDatabase;
-  /** One SQLite connection can own only one transaction at a time. */
-  #transactionTail: Promise<void> = Promise.resolve();
-  /** Set by `ensureSchema`: app-table lookup for the relational row store. */
-  #tables: ReadonlyMap<string, CompiledTable> | undefined;
-  #schemaVersion: number | undefined;
+  protected readonly maxBindParams = Number.POSITIVE_INFINITY;
+  /**
+   * §6.4: one SQLite connection serves one caller at a time. A transaction
+   * holds it from `begin` until commit or rollback; every other call waits
+   * behind it in FIFO order, so no request reads another's uncommitted rows
+   * and no write joins another's open transaction. A call on an idle
+   * connection takes it synchronously and runs at call time.
+   */
+  #busy = false;
+  readonly #waiters: (() => void)[] = [];
 
-  async #serializeWrite<T>(operation: () => T): Promise<T> {
-    const previous = this.#transactionTail;
-    let release!: () => void;
-    this.#transactionTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return operation();
-    } finally {
-      release();
+  /** `undefined` when the caller owns the connection now. */
+  #acquire(): Promise<void> | undefined {
+    if (!this.#busy) {
+      this.#busy = true;
+      return undefined;
     }
+    return new Promise<void>((resolve) => {
+      this.#waiters.push(resolve);
+    });
+  }
+
+  /** Hand the connection to the next waiter, or mark it idle. */
+  #release(): void {
+    const next = this.#waiters.shift();
+    if (next === undefined) this.#busy = false;
+    else next();
   }
 
   constructor(db: SqliteDatabase | string = ':memory:') {
     if (typeof db === 'string') {
       throw new SqliteAdapterRequiredError();
     }
+    super();
     this.db = db;
     this.db.exec(SQLITE_DDL);
-    const clientColumns = this.db
-      .query<{ name: string }, []>('PRAGMA table_info("sync_clients")')
-      .all();
-    if (!clientColumns.some((column) => column.name === 'wire_version')) {
-      this.db.exec(
-        'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
-      );
-    }
-    for (const [name, definition] of Object.entries(
-      SYNC_CLIENT_ROUND_COLUMNS,
-    )) {
-      if (!clientColumns.some((column) => column.name === name)) {
-        this.db.exec(
-          `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
-        );
+    for (const [table, name, definition] of SQLITE_ADDED_COLUMNS) {
+      const columns = this.db
+        .query<{ name: string }, []>(`PRAGMA table_info("${table}")`)
+        .all();
+      if (!columns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
       }
     }
     const commitColumns = this.db
@@ -626,17 +381,69 @@ WHEN EXISTS (
 BEGIN
   SELECT RAISE(ABORT, 'sync.storage.writer_fence_rejected');
 END`);
+    // Callers receive this proxy: every method except the ones below runs
+    // under `#acquire`. Methods execute against the raw instance, so a
+    // transaction (constructed with the raw instance) and a method's own
+    // internal calls never queue behind themselves.
+    return new Proxy(this, {
+      get: (target, property) => {
+        const value: unknown = Reflect.get(target, property, target);
+        // An own property is a caller's override (a test double or host
+        // wrapper); it reaches the queue through the original it calls.
+        if (typeof value !== 'function' || Object.hasOwn(target, property)) {
+          return value;
+        }
+        if (
+          property === 'begin' ||
+          property === 'table' ||
+          property === 'runAuthoritativeQuery' ||
+          property === 'constructor'
+        ) {
+          return value.bind(target);
+        }
+        return (...args: unknown[]): Promise<unknown> => {
+          const run = async () => {
+            try {
+              return await Reflect.apply(value, target, args);
+            } finally {
+              target.#release();
+            }
+          };
+          return target.#acquire()?.then(run) ?? run();
+        };
+      },
+    });
   }
 
-  /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
-  table(name: string): CompiledTable {
-    const table = this.#tables?.get(name);
-    if (table === undefined) {
-      throw new Error(
-        `unknown table ${JSON.stringify(name)} — ensureSchema(schema) must run before row operations`,
+  protected async all<T>(
+    sql: string,
+    params: readonly SqliteValue[],
+  ): Promise<T[]> {
+    return this.db.query<T, SqliteValue[]>(sql).all(...params);
+  }
+
+  protected guardedAll<T>(
+    sql: string,
+    params: readonly SqliteValue[],
+  ): Promise<T[]> {
+    return this.all<T>(sql, params);
+  }
+
+  protected async atomic(
+    statements: readonly SqliteStatementSpec[],
+  ): Promise<unknown[][]> {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const results = statements.map(({ sql, params }) =>
+        this.db.query<unknown, SqliteValue[]>(sql).all(...params),
       );
+      this.db.exec('COMMIT');
+      return results;
+    } catch (error) {
+      rollbackAfterError(() => {
+        this.db.exec('ROLLBACK');
+      }, error);
     }
-    return table;
   }
 
   async ensureSchema(
@@ -644,7 +451,7 @@ END`);
     checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<void> {
     // Memoized fast path: same instance, same schema version.
-    if (this.#schemaVersion === schema.version) return;
+    if (this.schemaVersion === schema.version) return;
     // The barrier reads stored state: a checkpoint at this schema version that
     // is not activated and that this caller did not declare means this process
     // must not serve. An omitted or empty declaration set declares nothing and
@@ -721,17 +528,15 @@ END`);
         ),
       );
       if (reconcile.length > 0) {
-        await this.#serializeWrite(() => {
-          this.db.exec('BEGIN IMMEDIATE');
-          try {
-            for (const statement of reconcile) this.db.exec(statement);
-            this.db.exec('COMMIT');
-          } catch (error) {
-            rollbackAfterError(() => {
-              this.db.exec('ROLLBACK');
-            }, error);
-          }
-        });
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          for (const statement of reconcile) this.db.exec(statement);
+          this.db.exec('COMMIT');
+        } catch (error) {
+          rollbackAfterError(() => {
+            this.db.exec('ROLLBACK');
+          }, error);
+        }
       }
     }
     if (marker === null || marker.schema_version < schema.version) {
@@ -768,206 +573,95 @@ END`);
         }
       }
       // The migration rewrites application rows (`#rewriteRows`) with no
-      // commit log entry. Serialize it through the same writer queue as
-      // pushes and prune (`#serializeWrite`) rather than trusting the
-      // migration as privileged; `BEGIN IMMEDIATE` then owns SQLite's writer
-      // lock for the whole rewrite.
-      await this.#serializeWrite(() => {
-        this.db.exec('BEGIN IMMEDIATE');
-        try {
-          // Another process sharing the database may have bumped between the
-          // marker read above and the writer lock; the locked marker decides
-          // (SPEC "Schema upgrade writer fence").
-          const locked = this.db
-            .query<{ schema_version: number; layouts: string }, []>(
-              'SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1',
-            )
-            .get();
-          if (locked !== null && locked.schema_version > schema.version) {
-            throw new Error(
-              `stored schema version ${locked.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
-            );
-          }
-          if (locked !== null && locked.schema_version === schema.version) {
-            this.db.exec('COMMIT');
-            return;
-          }
-          const layouts = parseLayouts(locked?.layouts);
-          const retiredTables = retiredTableNames(schema, layouts);
-          for (const tableName of retiredTables) {
-            this.db
-              .query('DELETE FROM sync_row_scopes WHERE tbl=?')
-              .run(tableName);
-            this.db
-              .query('DELETE FROM sync_blob_refs WHERE tbl=?')
-              .run(tableName);
-            this.db.exec(dropTableDdl(tableName));
-          }
-          for (const statement of schemaDdl(
-            schema,
-            existing,
-            'sqlite',
-            existingIndexes,
-          )) {
-            this.db.exec(statement);
-          }
-          for (const table of schema.tables.values()) {
-            const oldLayout = layouts[table.name];
-            const plan = rewritePlan(
-              table,
-              oldLayout,
-              existing.get(table.name),
-            );
-            if (!plan.migrate && !plan.backfill) continue;
-            this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
-          }
-          this.db
-            .query(
-              'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
-            )
-            .run(schema.version, layoutsOf(schema));
-          // A writer of the previous schema would append payloads in the
-          // previous layout; the bump fences every partition at the new
-          // version (see PostgresServerStorage.ensureSchema).
-          this.db
-            .query(
-              `INSERT INTO sync_writer_fence(partition, required_writer_version)
-               SELECT partition, ? FROM sync_partitions WHERE true
-               ON CONFLICT(partition) DO UPDATE SET
-                 required_writer_version=max(
-                   sync_writer_fence.required_writer_version,
-                   excluded.required_writer_version)`,
-            )
-            .run(schema.version);
-          // The host's declared checkpoints install in the schema-bump
-          // transaction, so no observer sees the bumped marker without the
-          // fence, or the fence without its declaration row.
-          const installedAtMs = Date.now();
-          for (const declaration of checkpoints ?? []) {
-            this.#installCheckpoint(
-              declaration.partition,
-              declaration.name,
-              declaration.schemaVersion,
-              installedAtMs,
-            );
-          }
-          this.db.exec('COMMIT');
-        } catch (error) {
-          rollbackAfterError(() => {
-            this.db.exec('ROLLBACK');
-          }, error);
-        }
-      });
-    }
-    this.#tables = schema.tables;
-    this.#schemaVersion = schema.version;
-  }
-
-  async touchPartition(
-    partition: string,
-    authenticatedAtMs: number,
-    initialLogEpoch: string,
-  ): Promise<PartitionRegistryEntry> {
-    if (initialLogEpoch.length === 0) {
-      throw new Error('initial log epoch must be non-empty');
-    }
-    const select = this.db.query<
-      {
-        log_epoch: string;
-        epoch_required: number;
-        last_authenticated_at_ms: number;
-      },
-      [string]
-    >(
-      `SELECT log_epoch, epoch_required, last_authenticated_at_ms
-         FROM sync_partition_registry WHERE partition=?`,
-    );
-    let row = select.get(partition);
-    if (
-      row === null ||
-      authenticatedAtMs - row.last_authenticated_at_ms >=
-        PARTITION_TOUCH_INTERVAL_MS
-    ) {
-      this.db
-        .query(
-          `INSERT INTO sync_partition_registry(
-             partition, log_epoch, last_authenticated_at_ms
-           ) VALUES (?,?,?)
-           ON CONFLICT(partition) DO UPDATE SET
-             last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
-        )
-        .run(partition, initialLogEpoch, authenticatedAtMs);
-      row = select.get(partition);
-    }
-    if (row === null)
-      throw new Error('partition registry write did not persist');
-    return {
-      partition,
-      logEpoch: row.log_epoch,
-      epochRequired: row.epoch_required === 1,
-      lastAuthenticatedAtMs: row.last_authenticated_at_ms,
-    };
-  }
-
-  async rotatePartitionLogEpoch(
-    partition: string,
-    logEpoch: string,
-    authenticatedAtMs: number,
-  ): Promise<PartitionRegistryEntry> {
-    if (logEpoch.length === 0) throw new Error('log epoch must be non-empty');
-    return this.#serializeWrite(() => {
+      // commit log entry. It runs behind the same connection queue as pushes
+      // and prune rather than trusting the migration as privileged;
+      // `BEGIN IMMEDIATE` then owns SQLite's writer lock for the whole
+      // rewrite.
       this.db.exec('BEGIN IMMEDIATE');
       try {
+        // Another process sharing the database may have bumped between the
+        // marker read above and the writer lock; the locked marker decides
+        // (SPEC "Schema upgrade writer fence").
+        const locked = this.db
+          .query<{ schema_version: number; layouts: string }, []>(
+            'SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1',
+          )
+          .get();
+        if (locked !== null && locked.schema_version > schema.version) {
+          throw new Error(
+            `stored schema version ${locked.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+          );
+        }
+        if (locked !== null && locked.schema_version === schema.version) {
+          this.db.exec('COMMIT');
+          this.tables = schema.tables;
+          this.schemaVersion = schema.version;
+          return;
+        }
+        const layouts = parseLayouts(locked?.layouts);
+        const retiredTables = retiredTableNames(schema, layouts);
+        for (const tableName of retiredTables) {
+          this.db
+            .query('DELETE FROM sync_row_scopes WHERE tbl=?')
+            .run(tableName);
+          this.db
+            .query('DELETE FROM sync_blob_refs WHERE tbl=?')
+            .run(tableName);
+          this.db.exec(dropTableDdl(tableName));
+        }
+        for (const statement of schemaDdl(
+          schema,
+          existing,
+          'sqlite',
+          existingIndexes,
+        )) {
+          this.db.exec(statement);
+        }
+        for (const table of schema.tables.values()) {
+          const oldLayout = layouts[table.name];
+          const plan = rewritePlan(table, oldLayout, existing.get(table.name));
+          if (!plan.migrate && !plan.backfill) continue;
+          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+        }
         this.db
           .query(
-            `INSERT INTO sync_partition_registry(
-               partition, log_epoch, epoch_required, last_authenticated_at_ms
-             ) VALUES (?,?,1,?)
-             ON CONFLICT(partition) DO UPDATE SET
-               log_epoch=excluded.log_epoch,
-               epoch_required=1,
-               last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
+            'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
           )
-          .run(partition, logEpoch, authenticatedAtMs);
+          .run(schema.version, layoutsOf(schema));
+        // A writer of the previous schema would append payloads in the
+        // previous layout; the bump fences every partition at the new
+        // version (see PostgresServerStorage.ensureSchema).
         this.db
-          .query('DELETE FROM sync_clients WHERE partition=?')
-          .run(partition);
+          .query(
+            `INSERT INTO sync_writer_fence(partition, required_writer_version)
+             SELECT partition, ? FROM sync_partitions WHERE true
+             ON CONFLICT(partition) DO UPDATE SET
+               required_writer_version=max(
+                 sync_writer_fence.required_writer_version,
+                 excluded.required_writer_version)`,
+          )
+          .run(schema.version);
+        // The host's declared checkpoints install in the schema-bump
+        // transaction, so no observer sees the bumped marker without the
+        // fence, or the fence without its declaration row.
+        const installedAtMs = Date.now();
+        for (const declaration of checkpoints ?? []) {
+          this.#installCheckpoint(
+            declaration.partition,
+            declaration.name,
+            declaration.schemaVersion,
+            installedAtMs,
+          );
+        }
         this.db.exec('COMMIT');
       } catch (error) {
         rollbackAfterError(() => {
           this.db.exec('ROLLBACK');
         }, error);
       }
-      return {
-        partition,
-        logEpoch,
-        epochRequired: true,
-        lastAuthenticatedAtMs: authenticatedAtMs,
-      };
-    });
-  }
-
-  async listPartitionRegistry(): Promise<PartitionRegistryEntry[]> {
-    return this.db
-      .query<
-        {
-          partition: string;
-          log_epoch: string;
-          epoch_required: number;
-          last_authenticated_at_ms: number;
-        },
-        []
-      >(
-        `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms
-           FROM sync_partition_registry ORDER BY partition`,
-      )
-      .all()
-      .map((row) => ({
-        partition: row.partition,
-        logEpoch: row.log_epoch,
-        epochRequired: row.epoch_required === 1,
-        lastAuthenticatedAtMs: row.last_authenticated_at_ms,
-      }));
+    }
+    this.tables = schema.tables;
+    this.schemaVersion = schema.version;
   }
 
   /**
@@ -999,13 +693,7 @@ END`);
             ? migratePayload(oldLayout, table, row.payload)
             : row.payload;
         update.run(
-          ...(rewriteValues(
-            table,
-            row.partition,
-            row.row_id,
-            payload,
-            'sqlite',
-          ) as (string | number | boolean | Uint8Array | null)[]),
+          ...rewriteValues(table, row.partition, row.row_id, payload, 'sqlite'),
         );
       }
       const last = rows[rows.length - 1];
@@ -1020,58 +708,18 @@ END`);
     // database file, so one FIFO over the shared connection is the correct
     // serialization unit — a per-partition queue would still contend on the
     // same BEGIN IMMEDIATE writer lock.
-    const previous = this.#transactionTail;
-    let release!: () => void;
-    this.#transactionTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
+    await this.#acquire();
     try {
       return new SqliteTransaction(
         this,
         partition,
-        this.#schemaVersion ?? 0,
-        release,
+        this.schemaVersion ?? 0,
+        () => this.#release(),
       );
     } catch (error) {
-      release();
+      this.#release();
       throw error;
     }
-  }
-
-  /** Internal: write a row + refresh its scope-index entries. */
-  writeRow(partition: string, table: string, row: StoredRow): void {
-    const compiled = this.table(table);
-    this.db
-      .query(deleteSqliteRowScopesSql(compiled))
-      .run(partition, table, row.rowId, partition, row.rowId);
-    this.db
-      .query(upsertSql(compiled, 'sqlite'))
-      .run(
-        ...(upsertValues(compiled, partition, row, 'sqlite') as (
-          | string
-          | number
-          | boolean
-          | Uint8Array
-          | null
-        )[]),
-      );
-    for (const [variable, value] of Object.entries(row.scopes)) {
-      this.db
-        .query(
-          'INSERT OR IGNORE INTO sync_row_scopes(partition, tbl, var, value, row_id) VALUES (?,?,?,?,?)',
-        )
-        .run(partition, table, variable, value, row.rowId);
-    }
-  }
-
-  async getMaxCommitSeq(partition: string): Promise<number> {
-    const row = this.db
-      .query<{ max_commit_seq: number }, [string]>(
-        'SELECT max_commit_seq FROM sync_partitions WHERE partition=?',
-      )
-      .get(partition);
-    return row?.max_commit_seq ?? 0;
   }
 
   /**
@@ -1084,20 +732,7 @@ END`);
     partition: string,
     query: AuthoritativeQueryRequest,
   ): AuthoritativeQueryResult {
-    if (this.#tables === undefined) {
-      throw new Error(
-        'ensureSchema(schema) must run before registered queries',
-      );
-    }
-    const prepared = bindAuthoritativePartition(
-      prepareAuthoritativeQuery(
-        query.plan,
-        query.params,
-        query.tables,
-        this.#tables,
-      ),
-      partition,
-    );
+    const prepared = this.prepareAuthoritativeQuery(partition, query);
     const rows = this.db
       .query<Readonly<Record<string, unknown>>, AuthoritativeQueryValue[]>(
         prepared.sql,
@@ -1116,12 +751,6 @@ END`);
     query: AuthoritativeQueryRequest,
     checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
-    const previous = this.#transactionTail;
-    let release!: () => void;
-    this.#transactionTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
     let open = false;
     try {
       this.db.exec('BEGIN');
@@ -1129,7 +758,7 @@ END`);
       // RFC 0007: evaluate the gate on this connection after BEGIN. SQLite is
       // single-writer and the shared connection serializes writers, so the
       // gate read and the query read cannot straddle a migration.
-      const runningVersion = this.#schemaVersion ?? 0;
+      const runningVersion = this.schemaVersion ?? 0;
       const gate = await this.readServeGate(partition, runningVersion);
       const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
       if (refusal !== undefined) throw serveNotReadyError(refusal);
@@ -1141,133 +770,26 @@ END`);
       rollbackAfterError(() => {
         if (open) this.db.exec('ROLLBACK');
       }, error);
-    } finally {
-      release();
     }
-  }
-
-  async getPartitionLogEpoch(partition: string): Promise<string | undefined> {
-    return this.db
-      .query<{ log_epoch: string }, [string]>(
-        'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
-      )
-      .get(partition)?.log_epoch;
-  }
-
-  async getHorizonSeq(partition: string): Promise<number> {
-    const row = this.db
-      .query<{ horizon_seq: number }, [string]>(
-        'SELECT horizon_seq FROM sync_partitions WHERE partition=?',
-      )
-      .get(partition);
-    return row?.horizon_seq ?? 0;
-  }
-
-  async setHorizonSeq(partition: string, seq: number): Promise<void> {
-    await this.#serializeWrite(() => {
-      this.db
-        .query(`INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?)
-        ON CONFLICT(partition) DO UPDATE SET horizon_seq=max(horizon_seq,excluded.horizon_seq)`)
-        .run(partition, seq);
-    });
-  }
-
-  async pruneCommitsThrough(
-    partition: string,
-    query: CommitPruneQuery,
-  ): Promise<CommitPruneResult> {
-    validateCommitPruneQuery(query);
-    return this.#serializeWrite(() => {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        const epoch = this.db
-          .query<{ log_epoch: string }, [string]>(
-            'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
-          )
-          .get(partition)?.log_epoch;
-        if (epoch !== query.logEpoch)
-          throw new StorageQueryError('sync.storage.prune_epoch_mismatch');
-        const previousHorizonSeq =
-          this.db
-            .query<{ horizon_seq: number }, [string]>(
-              'SELECT horizon_seq FROM sync_partitions WHERE partition=?',
-            )
-            .get(partition)?.horizon_seq ?? 0;
-        const horizonSeq = Math.max(previousHorizonSeq, query.throughSeq);
-        this.db
-          .query(`INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?)
-          ON CONFLICT(partition) DO UPDATE SET horizon_seq=excluded.horizon_seq`)
-          .run(partition, horizonSeq);
-        const removed = this.db
-          .query('DELETE FROM sync_commits WHERE partition=? AND commit_seq<=?')
-          .run(partition, horizonSeq);
-        this.db
-          .query('DELETE FROM sync_changes WHERE partition=? AND commit_seq<=?')
-          .run(partition, horizonSeq);
-        this.db
-          .query(
-            'DELETE FROM sync_change_scopes WHERE partition=? AND commit_seq<=?',
-          )
-          .run(partition, horizonSeq);
-        // §4.6: tombstones prune in the same pass as the commit log.
-        this.db
-          .query(
-            'DELETE FROM sync_tombstones WHERE partition=? AND commit_seq<=?',
-          )
-          .run(partition, horizonSeq);
-        this.db.exec('COMMIT');
-        return {
-          previousHorizonSeq,
-          horizonSeq,
-          removedCommits: Number(removed.changes),
-        };
-      } catch (error) {
-        rollbackAfterError(() => {
-          this.db.exec('ROLLBACK');
-        }, error);
-      }
-    });
-  }
-
-  async getCommitSeqBefore(
-    partition: string,
-    createdBeforeMs: number,
-  ): Promise<number> {
-    const row = this.db
-      .query<{ seq: number | null }, [string, number]>(
-        'SELECT max(commit_seq) AS seq FROM sync_commits WHERE partition=? AND created_at_ms<?',
-      )
-      .get(partition, createdBeforeMs);
-    return row?.seq ?? 0;
   }
 
   async readServeGate(
     partition: string,
     runningSchemaVersion: number,
   ): Promise<ServeGate> {
-    const marker = this.db
-      .query<{ schema_version: number }, []>(
-        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
-      )
-      .get();
-    const epoch = this.db
-      .query<{ log_epoch: string }, [string]>(
-        'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
-      )
-      .get(partition);
-    const pending = this.db
-      .query<{ partition: string; name: string }, [number]>(
-        `SELECT partition, name FROM sync_backfill_checkpoints
-          WHERE schema_version=? AND state<>'activated'`,
-      )
-      .all(runningSchemaVersion);
+    const [marker] = await this.all<{ schema_version: number }>(
+      'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      [],
+    );
+    const pending = await this.all<{ partition: string; name: string }>(
+      `SELECT partition, name FROM sync_backfill_checkpoints
+        WHERE schema_version=? AND state<>'activated'`,
+      [runningSchemaVersion],
+    );
     return {
       storedSchemaVersion: marker?.schema_version ?? 0,
-      logEpoch: epoch?.log_epoch,
-      pending: pending.map((row) => ({
-        partition: row.partition,
-        name: row.name,
-      })),
+      logEpoch: await this.getPartitionLogEpoch(partition),
+      pending,
     };
   }
 
@@ -1324,27 +846,25 @@ END`);
     // One transaction: the checkpoint becomes visible and the fence that
     // protects it is raised together. The fence is raised at declaration, not
     // at activation, so old writers are rejected for the whole backfill.
-    return this.#serializeWrite(() => {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        this.#installCheckpoint(partition, name, schemaVersion, nowMs);
-        const row = this.db
-          .query<SqliteCheckpointRecord, [string, string]>(
-            `SELECT partition, name, schema_version, state, watermark,
-                    owner_epoch, observed_rows, updated_at_ms
-               FROM sync_backfill_checkpoints WHERE partition=? AND name=?`,
-          )
-          .get(partition, name);
-        if (row === null)
-          throw new StorageQueryError('sync.storage.checkpoint_not_declared');
-        this.db.exec('COMMIT');
-        return toStoredCheckpoint(row);
-      } catch (error) {
-        rollbackAfterError(() => {
-          this.db.exec('ROLLBACK');
-        }, error);
-      }
-    });
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.#installCheckpoint(partition, name, schemaVersion, nowMs);
+      const row = this.db
+        .query<SqliteCheckpointRecord, [string, string]>(
+          `SELECT partition, name, schema_version, state, watermark,
+                  owner_epoch, observed_rows, updated_at_ms
+             FROM sync_backfill_checkpoints WHERE partition=? AND name=?`,
+        )
+        .get(partition, name);
+      if (row === null)
+        throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+      this.db.exec('COMMIT');
+      return toStoredCheckpoint(row);
+    } catch (error) {
+      rollbackAfterError(() => {
+        this.db.exec('ROLLBACK');
+      }, error);
+    }
   }
 
   async activateCheckpoint(
@@ -1355,55 +875,53 @@ END`);
     sources: readonly string[],
     nowMs: number,
   ): Promise<'activated' | 'stale' | 'unverifiable'> {
-    return this.#serializeWrite(() => {
-      // `BEGIN IMMEDIATE` is SQLite's partition write lock; the same writer
-      // lock a push takes. Nothing may observe activation without the fence.
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        const fence = this.db
-          .query<{ required_writer_version: number }, [string]>(
-            'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
-          )
-          .get(partition);
-        const checkpoint = this.db
-          .query<{ schema_version: number }, [string, string]>(
-            'SELECT schema_version FROM sync_backfill_checkpoints WHERE partition=? AND name=?',
-          )
-          .get(partition, name);
-        if (
-          fence === null ||
-          checkpoint === null ||
-          fence.required_writer_version < checkpoint.schema_version
-        ) {
-          // The barrier is not installed. Activating would certify a state old
-          // writers can still decay; refuse instead of silently proceeding.
-          throw new StorageQueryError('sync.storage.checkpoint_fence_missing');
-        }
-        const coverage = this.#hasSourceChangesAbove(
-          partition,
-          sources,
-          watermark,
-        );
-        if (coverage !== 'clean') {
-          this.db.exec('ROLLBACK');
-          return coverage === 'changed' ? 'stale' : 'unverifiable';
-        }
-        const updated = this.db
-          .query(
-            `UPDATE sync_backfill_checkpoints
-                SET state='activated', watermark=?, updated_at_ms=?
-              WHERE partition=? AND name=? AND owner_epoch=?
-                AND state<>'activated'`,
-          )
-          .run(watermark, nowMs, partition, name, ownerEpoch);
-        this.db.exec('COMMIT');
-        return Number(updated.changes) === 1 ? 'activated' : 'stale';
-      } catch (error) {
-        rollbackAfterError(() => {
-          this.db.exec('ROLLBACK');
-        }, error);
+    // `BEGIN IMMEDIATE` is SQLite's partition write lock; the same writer
+    // lock a push takes. Nothing may observe activation without the fence.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const fence = this.db
+        .query<{ required_writer_version: number }, [string]>(
+          'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        )
+        .get(partition);
+      const checkpoint = this.db
+        .query<{ schema_version: number }, [string, string]>(
+          'SELECT schema_version FROM sync_backfill_checkpoints WHERE partition=? AND name=?',
+        )
+        .get(partition, name);
+      if (
+        fence === null ||
+        checkpoint === null ||
+        fence.required_writer_version < checkpoint.schema_version
+      ) {
+        // The barrier is not installed. Activating would certify a state old
+        // writers can still decay; refuse instead of silently proceeding.
+        throw new StorageQueryError('sync.storage.checkpoint_fence_missing');
       }
-    });
+      const coverage = await this.hasSourceChangesAbove(
+        partition,
+        sources,
+        watermark,
+      );
+      if (coverage !== 'clean') {
+        this.db.exec('ROLLBACK');
+        return coverage === 'changed' ? 'stale' : 'unverifiable';
+      }
+      const updated = this.db
+        .query(
+          `UPDATE sync_backfill_checkpoints
+              SET state='activated', watermark=?, updated_at_ms=?
+            WHERE partition=? AND name=? AND owner_epoch=?
+              AND state<>'activated'`,
+        )
+        .run(watermark, nowMs, partition, name, ownerEpoch);
+      this.db.exec('COMMIT');
+      return Number(updated.changes) === 1 ? 'activated' : 'stale';
+    } catch (error) {
+      rollbackAfterError(() => {
+        this.db.exec('ROLLBACK');
+      }, error);
+    }
   }
 
   async claimCheckpoint(
@@ -1412,23 +930,21 @@ END`);
     schemaVersion: number,
     nowMs: number,
   ): Promise<StoredCheckpoint> {
-    return this.#serializeWrite(() => {
-      const claimed = this.db
-        .query<SqliteCheckpointRecord, (string | number)[]>(
-          `UPDATE sync_backfill_checkpoints
-              SET owner_epoch=owner_epoch+1,
-                  state=CASE WHEN state='declared' THEN 'backfilling' ELSE state END,
-                  schema_version=?, updated_at_ms=?
-            WHERE partition=? AND name=? AND state<>'activated'
-        RETURNING partition, name, schema_version, state, watermark,
-                  owner_epoch, observed_rows, updated_at_ms`,
-        )
-        .get(schemaVersion, nowMs, partition, name);
-      if (claimed === null) {
-        throw new StorageQueryError('sync.storage.checkpoint_not_declared');
-      }
-      return toStoredCheckpoint(claimed);
-    });
+    const claimed = this.db
+      .query<SqliteCheckpointRecord, (string | number)[]>(
+        `UPDATE sync_backfill_checkpoints
+            SET owner_epoch=owner_epoch+1,
+                state=CASE WHEN state='declared' THEN 'backfilling' ELSE state END,
+                schema_version=?, updated_at_ms=?
+          WHERE partition=? AND name=? AND state<>'activated'
+      RETURNING partition, name, schema_version, state, watermark,
+                owner_epoch, observed_rows, updated_at_ms`,
+      )
+      .get(schemaVersion, nowMs, partition, name);
+    if (claimed === null) {
+      throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+    }
+    return toStoredCheckpoint(claimed);
   }
 
   async advanceCheckpoint(
@@ -1439,980 +955,13 @@ END`);
     observedRows: number,
     nowMs: number,
   ): Promise<boolean> {
-    return this.#serializeWrite(() => {
-      const result = this.db
-        .query(
-          `UPDATE sync_backfill_checkpoints
-              SET watermark=?, observed_rows=?, updated_at_ms=?
-            WHERE partition=? AND name=? AND owner_epoch=?`,
-        )
-        .run(watermark, observedRows, nowMs, partition, name, ownerEpoch);
-      return Number(result.changes) === 1;
-    });
-  }
-
-  async sourceCoverageSeq(
-    partition: string,
-    tables: readonly string[],
-  ): Promise<number> {
-    if (tables.length === 0) return 0;
-    const row = this.db
-      .query<{ seq: number | null }, (string | number)[]>(
-        `SELECT max(commit_seq) AS seq FROM sync_changes
-          WHERE partition=? AND tbl IN (${placeholders(tables.length)})`,
-      )
-      .get(partition, ...tables);
-    return row?.seq ?? 0;
-  }
-
-  #hasSourceChangesAbove(
-    partition: string,
-    tables: readonly string[],
-    seq: number,
-  ): 'clean' | 'changed' | 'unverifiable' {
-    // Read the horizon before the window scan: a horizon past `seq` means the
-    // history that would answer the question is gone, so an empty scan proves
-    // nothing and must not be reported as `clean`.
-    const horizon =
-      this.db
-        .query<{ horizon_seq: number }, [string]>(
-          'SELECT horizon_seq FROM sync_partitions WHERE partition=?',
-        )
-        .get(partition)?.horizon_seq ?? 0;
-    if (tables.length === 0) return 'clean';
-    const hit = this.db
-      .query<{ hit: number }, (string | number)[]>(
-        `SELECT 1 AS hit FROM sync_changes
-          WHERE partition=? AND tbl IN (${placeholders(tables.length)})
-            AND commit_seq>? LIMIT 1`,
-      )
-      .get(partition, ...tables, seq);
-    if (hit !== null && hit !== undefined) return 'changed';
-    return horizon > seq ? 'unverifiable' : 'clean';
-  }
-
-  async hasSourceChangesAbove(
-    partition: string,
-    tables: readonly string[],
-    seq: number,
-  ): Promise<'clean' | 'changed' | 'unverifiable'> {
-    return this.#hasSourceChangesAbove(partition, tables, seq);
-  }
-
-  async getRow(
-    partition: string,
-    table: string,
-    rowId: string,
-  ): Promise<StoredRow | undefined> {
-    const record = this.db
-      .query<SqliteRowRecord, [string, string]>(
-        selectRowSql(this.table(table), 'sqlite'),
-      )
-      .get(partition, rowId);
-    return record === null ? undefined : toStoredRow(record);
-  }
-
-  async getPushResult(
-    partition: string,
-    clientId: string,
-    clientCommitId: string,
-  ): Promise<StoredPushResult | undefined> {
-    const record = this.db
-      .query<{ result: string }, [string, string, string]>(
-        'SELECT result FROM sync_push_results WHERE partition=? AND client_id=? AND client_commit_id=?',
-      )
-      .get(partition, clientId, clientCommitId);
-    if (record === null) return undefined;
-    try {
-      return deserializePushResult(record.result);
-    } catch {
-      throw syncError(
-        'sync.idempotency_cache_miss',
-        'persisted push result unreadable (§6.3)',
-      );
-    }
-  }
-
-  async claimReactions(
-    partition: string,
-    query: ReactionClaimQuery,
-  ): Promise<StoredReaction[]> {
-    if (query.types.length === 0 || query.limit <= 0) return [];
-    return this.#serializeWrite(() => {
-      const typeParams = query.types.map(() => '?').join(',');
-      const records = this.db
-        .query<SqliteReactionRecord, (string | number)[]>(
-          `UPDATE sync_reactions
-            SET status='leased', attempts=attempts+1,
-                lease_owner=?, lease_expires_at_ms=?, completed_at_ms=NULL
-          WHERE (partition, idempotency_key) IN (
-            SELECT partition, idempotency_key
-              FROM sync_reactions
-             WHERE partition=? AND type IN (${typeParams})
-               AND ((status='pending' AND available_at_ms<=?)
-                 OR (status='leased' AND lease_expires_at_ms<=?))
-             ORDER BY CASE WHEN status='leased' THEN lease_expires_at_ms
-                           ELSE available_at_ms END,
-                      created_at_ms, idempotency_key
-             LIMIT ?
-          )
-        RETURNING *`,
-        )
-        .all(
-          query.leaseOwner,
-          Math.min(
-            Number.MAX_SAFE_INTEGER,
-            query.nowMs + query.leaseDurationMs,
-          ),
-          partition,
-          ...query.types,
-          query.nowMs,
-          query.nowMs,
-          query.limit,
-        );
-      return records
-        .map(toStoredReaction)
-        .sort(
-          (a, b) =>
-            a.createdAtMs - b.createdAtMs ||
-            a.idempotencyKey.localeCompare(b.idempotencyKey),
-        );
-    });
-  }
-
-  async completeReaction(
-    partition: string,
-    idempotencyKey: string,
-    leaseOwner: string,
-    completedAtMs: number,
-  ): Promise<boolean> {
-    return this.#serializeWrite(() => {
-      const result = this.db
-        .query(
-          `UPDATE sync_reactions
-            SET status='completed', completed_at_ms=?,
-                lease_owner=NULL, lease_expires_at_ms=NULL
-          WHERE partition=? AND idempotency_key=?
-            AND status='leased' AND lease_owner=?`,
-        )
-        .run(completedAtMs, partition, idempotencyKey, leaseOwner);
-      return Number(result.changes) === 1;
-    });
-  }
-
-  async extendReactionLease(
-    partition: string,
-    idempotencyKey: string,
-    leaseOwner: string,
-    leaseExpiresAtMs: number,
-  ): Promise<boolean> {
-    return this.#serializeWrite(() => {
-      const result = this.db
-        .query(
-          `UPDATE sync_reactions SET lease_expires_at_ms=?
-          WHERE partition=? AND idempotency_key=?
-            AND status='leased' AND lease_owner=?`,
-        )
-        .run(leaseExpiresAtMs, partition, idempotencyKey, leaseOwner);
-      return Number(result.changes) === 1;
-    });
-  }
-
-  async failReaction(
-    partition: string,
-    idempotencyKey: string,
-    update: ReactionFailureUpdate,
-  ): Promise<boolean> {
-    const retry = update.retryAtMs !== undefined;
-    return this.#serializeWrite(() => {
-      const result = this.db
-        .query(
-          `UPDATE sync_reactions
-            SET status=?, available_at_ms=?, last_failure=?,
-                lease_owner=NULL, lease_expires_at_ms=NULL
-          WHERE partition=? AND idempotency_key=?
-            AND status='leased' AND lease_owner=?`,
-        )
-        .run(
-          retry ? 'pending' : 'dead-letter',
-          update.retryAtMs ?? update.failure.atMs,
-          JSON.stringify(update.failure),
-          partition,
-          idempotencyKey,
-          update.leaseOwner,
-        );
-      return Number(result.changes) === 1;
-    });
-  }
-
-  async retryReaction(
-    partition: string,
-    idempotencyKey: string,
-    nowMs: number,
-  ): Promise<boolean> {
-    return this.#serializeWrite(() => {
-      const result = this.db
-        .query(
-          `UPDATE sync_reactions
-            SET status='pending', attempts=0, available_at_ms=?,
-                last_failure=NULL, lease_owner=NULL, lease_expires_at_ms=NULL,
-                completed_at_ms=NULL
-          WHERE partition=? AND idempotency_key=? AND status='dead-letter'`,
-        )
-        .run(nowMs, partition, idempotencyKey);
-      return Number(result.changes) === 1;
-    });
-  }
-
-  async getReaction(
-    partition: string,
-    idempotencyKey: string,
-  ): Promise<StoredReaction | undefined> {
-    const record = this.db
-      .query<SqliteReactionRecord, [string, string]>(
-        'SELECT * FROM sync_reactions WHERE partition=? AND idempotency_key=?',
-      )
-      .get(partition, idempotencyKey);
-    return record === null ? undefined : toStoredReaction(record);
-  }
-
-  async listReactions(
-    partition: string,
-    query: ReactionListQuery,
-  ): Promise<StoredReaction[]> {
-    const where = ['partition=?'];
-    const params: (string | number)[] = [partition];
-    if (query.statuses !== undefined && query.statuses.length > 0) {
-      where.push(`status IN (${query.statuses.map(() => '?').join(',')})`);
-      params.push(...query.statuses);
-    }
-    if (query.types !== undefined && query.types.length > 0) {
-      where.push(`type IN (${query.types.map(() => '?').join(',')})`);
-      params.push(...query.types);
-    }
-    params.push(query.limit);
-    const records = this.db
-      .query<SqliteReactionRecord, (string | number)[]>(
-        `SELECT * FROM sync_reactions WHERE ${where.join(' AND ')}
-          ORDER BY created_at_ms DESC, idempotency_key DESC LIMIT ?`,
-      )
-      .all(...params);
-    return records.map(toStoredReaction);
-  }
-
-  async pruneReactions(
-    partition: string,
-    query: ReactionPruneQuery,
-  ): Promise<PrunedReactionCounts> {
-    if (query.limit <= 0) return { completed: 0, deadLetter: 0 };
-    return this.#serializeWrite(() => {
-      const records = this.db
-        .query<
-          { status: 'completed' | 'dead-letter' },
-          [string, string, number, number, number, number, number]
-        >(
-          `DELETE FROM sync_reactions
-            WHERE partition=? AND idempotency_key IN (
-              SELECT idempotency_key FROM sync_reactions
-               WHERE partition=?
-                 AND ((status='completed' AND completed_at_ms IS NOT NULL
-                       AND completed_at_ms<?)
-                   OR (status='dead-letter' AND available_at_ms<?))
-               ORDER BY CASE WHEN status='completed' THEN completed_at_ms
-                             ELSE available_at_ms END,
-                        idempotency_key
-               LIMIT ?
-            )
-              AND ((status='completed' AND completed_at_ms IS NOT NULL
-                    AND completed_at_ms<?)
-                OR (status='dead-letter' AND available_at_ms<?))
-          RETURNING status`,
-        )
-        .all(
-          partition,
-          partition,
-          query.completedBeforeMs,
-          query.deadLetterBeforeMs,
-          query.limit,
-          query.completedBeforeMs,
-          query.deadLetterBeforeMs,
-        );
-      return {
-        completed: records.filter((record) => record.status === 'completed')
-          .length,
-        deadLetter: records.filter((record) => record.status === 'dead-letter')
-          .length,
-      };
-    });
-  }
-
-  async latestScopedChangeSeq(
-    partition: string,
-    query: { readonly table: string; readonly scopeFilter: ScopeMap },
-  ): Promise<number> {
-    const firstVariable = Object.keys(query.scopeFilter).sort()[0];
-    const values =
-      firstVariable === undefined
-        ? []
-        : (query.scopeFilter[firstVariable] ?? []);
-    if (firstVariable === undefined || values.length === 0) return 0;
-    const row = this.db
-      .query<{ seq: number | null }, string[]>(
-        LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
-      )
-      .get(partition, query.table, firstVariable, JSON.stringify(values));
-    return row?.seq ?? 0;
-  }
-
-  async readCommitWindow(
-    partition: string,
-    query: CommitWindowQuery,
-  ): Promise<StoredCommit[]> {
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
-    // Candidates via the inverted index (one variable) LEFT JOINed to the
-    // commit meta + the table's changes — one statement per page, never two
-    // per candidate (see `commitWindowPageSql`). Exact multi-variable
-    // verification against the stored scope map in `collectCommitWindowPage`.
-    const sql = commitWindowPageSql(firstValues.length, 'sqlite');
-    const commits: StoredCommit[] = [];
-    let deliveredChanges = 0;
-    let afterSeq = query.afterSeq;
-    const batchSize = Math.max(64, query.limitChanges);
-    while (deliveredChanges < query.limitChanges) {
-      const records = this.db
-        .query<SqliteCommitWindowRecord, (string | number)[]>(sql)
-        .all(
-          partition,
-          query.table,
-          firstVariable,
-          ...firstValues,
-          afterSeq,
-          query.throughSeq,
-          batchSize,
-          partition,
-          partition,
-          query.table,
-        );
-      if (records.length === 0) break;
-      const page = collectCommitWindowPage(
-        records,
-        query.scopeFilter,
-        query.limitChanges - deliveredChanges,
-      );
-      commits.push(...page.commits);
-      deliveredChanges += page.delivered;
-      afterSeq = page.lastSeq;
-      if (page.candidateCount < batchSize) break;
-    }
-    return commits;
-  }
-
-  async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    const firstVariable = assertScopeIndexedScan(query);
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
-    // Candidates via the inverted index LEFT JOINed to the row table — one
-    // statement per page, never one per row (see `scanRowPageSql`). Exact
-    // multi-variable verification against the stored scope map below.
-    const sql = scanRowPageSql(
-      this.table(query.table),
-      firstValues.length,
-      'sqlite',
-    );
-    const rows: StoredRow[] = [];
-    let afterRowId = query.afterRowId ?? '';
-    const batchSize = Math.max(64, query.limit);
-    while (rows.length < query.limit) {
-      const records = this.db
-        .query<
-          SqliteRowRecord & { payload: Uint8Array | null },
-          (string | number)[]
-        >(sql)
-        .all(
-          partition,
-          query.table,
-          firstVariable,
-          ...firstValues,
-          afterRowId,
-          batchSize,
-          partition,
-        );
-      if (records.length === 0) break;
-      for (const record of records) {
-        afterRowId = record.row_id;
-        // NULL payload: an index candidate whose row vanished — it still
-        // advances the keyset cursor (LEFT JOIN contract) but yields no row.
-        if (record.payload === null) continue;
-        const stored = toStoredRow(record);
-        if (!matchesEffective(stored.scopes, query.scopeFilter)) continue;
-        rows.push(stored);
-        if (rows.length >= query.limit) break;
-      }
-      if (records.length < batchSize) break;
-    }
-    return rows;
-  }
-
-  async scanRowsByIndex(
-    partition: string,
-    query: IndexRowScanQuery,
-  ): Promise<StoredRow[]> {
-    const table = this.table(query.table);
-    const index = resolveIndexRowScan(table, query);
-    const statement = indexRowPageStatement(
-      table,
-      index,
-      query.values,
-      partition,
-      query.afterRowId,
-      query.limit,
-      'sqlite',
-    );
-    const params = statement.params as readonly (
-      | string
-      | number
-      | Uint8Array
-      | null
-    )[];
-    const records = this.db
-      .query<SqliteRowRecord, (string | number | Uint8Array | null)[]>(
-        statement.sql,
-      )
-      .all(...params);
-    return records.map(toStoredRow);
-  }
-
-  async getClientRecord(
-    partition: string,
-    clientId: string,
-  ): Promise<ClientRecord | undefined> {
-    const record = this.db
-      .query<
-        {
-          client_id: string;
-          actor_id: string;
-          wire_version: number;
-          cursor: number;
-          subscriptions: string;
-          updated_at_ms: number;
-          last_round_at_ms: number | null;
-          last_error_code: string | null;
-          consecutive_failures: number;
-        },
-        [string, string]
-      >(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? AND client_id=?',
-      )
-      .get(partition, clientId);
-    if (record === null) return undefined;
-    return {
-      clientId: record.client_id,
-      actorId: record.actor_id,
-      wireVersion: record.wire_version,
-      cursor: record.cursor,
-      updatedAtMs: record.updated_at_ms,
-      subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
-      ...clientRoundState(
-        record.last_round_at_ms,
-        record.last_error_code,
-        record.consecutive_failures,
-      ),
-    };
-  }
-
-  async putClientRecord(
-    partition: string,
-    record: ClientRecord,
-    options?: ClientRecordWriteOptions,
-  ): Promise<void> {
-    this.db
+    const result = this.db
       .query(
-        `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(partition, client_id) DO UPDATE SET
-           actor_id=excluded.actor_id,
-           wire_version=excluded.wire_version,
-           cursor=excluded.cursor,
-           subscriptions=excluded.subscriptions,
-           updated_at_ms=excluded.updated_at_ms,
-           last_round_at_ms=excluded.last_round_at_ms${
-             options?.keepRoundOutcome === true
-               ? ''
-               : `,
-           last_error_code=NULL,
-           consecutive_failures=0`
-           }`,
+        `UPDATE sync_backfill_checkpoints
+            SET watermark=?, observed_rows=?, updated_at_ms=?
+          WHERE partition=? AND name=? AND owner_epoch=?`,
       )
-      .run(
-        partition,
-        record.clientId,
-        record.actorId,
-        record.wireVersion,
-        record.cursor,
-        JSON.stringify(record.subscriptions),
-        record.updatedAtMs,
-        record.updatedAtMs,
-      );
-  }
-
-  async recordClientRoundFailure(
-    partition: string,
-    clientId: string,
-    actorId: string,
-    errorCode: string,
-    atMs: number,
-  ): Promise<void> {
-    this.db
-      .query(
-        `UPDATE sync_clients
-         SET last_round_at_ms=?, last_error_code=?,
-             consecutive_failures=consecutive_failures+1
-         WHERE partition=? AND client_id=? AND actor_id=?`,
-      )
-      .run(atMs, errorCode, partition, clientId, actorId);
-  }
-
-  async advanceClientCursor(
-    partition: string,
-    clientId: string,
-    actorId: string,
-    logEpoch: string,
-    cursor: number,
-    updatedAtMs: number,
-  ): Promise<void> {
-    this.db
-      .query(`UPDATE sync_clients
-         SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
-         WHERE partition=? AND client_id=? AND actor_id=?
-           AND EXISTS (SELECT 1 FROM sync_partition_registry
-                       WHERE partition=sync_clients.partition AND log_epoch=?)`)
-      .run(cursor, updatedAtMs, partition, clientId, actorId, logEpoch);
-  }
-
-  async updateClientCursor(
-    partition: string,
-    clientId: string,
-    cursor: number,
-    updatedAtMs: number,
-  ): Promise<void> {
-    this.db
-      .query(
-        `UPDATE sync_clients
-         SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
-         WHERE partition=? AND client_id=?`,
-      )
-      .run(cursor, updatedAtMs, partition, clientId);
-  }
-
-  async getActiveClientCursorFloor(
-    partition: string,
-    cutoffMs: number,
-  ): Promise<number | null> {
-    const row = this.db
-      .query<{ cursor: number | null }, [string, number]>(
-        'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=?',
-      )
-      .get(partition, cutoffMs);
-    return row!.cursor;
-  }
-
-  async listClientCursors(partition: string): Promise<ClientCursorInfo[]> {
-    const records = this.db
-      .query<
-        { client_id: string; cursor: number; updated_at_ms: number },
-        [string]
-      >(
-        'SELECT client_id, cursor, updated_at_ms FROM sync_clients WHERE partition=?',
-      )
-      .all(partition);
-    return records.map((r) => ({
-      clientId: r.client_id,
-      cursor: r.cursor,
-      updatedAtMs: r.updated_at_ms,
-    }));
-  }
-
-  async listRowsReferencingBlob(
-    partition: string,
-    blobId: string,
-  ): Promise<
-    {
-      readonly table: string;
-      readonly rowId: string;
-      readonly scopes: Record<string, string>;
-    }[]
-  > {
-    // Candidate rows via the by-blob index (§5.9.4/§5.9.5); each row's
-    // stored scopes come from sync_rows for the §3.4 authorization test.
-    const refs = this.db
-      .query<{ tbl: string; row_id: string }, [string, string]>(
-        'SELECT tbl, row_id FROM sync_blob_refs WHERE partition=? AND blob_id=?',
-      )
-      .all(partition, blobId);
-    const out: {
-      table: string;
-      rowId: string;
-      scopes: Record<string, string>;
-    }[] = [];
-    for (const ref of refs) {
-      const compiled = this.#tables?.get(ref.tbl);
-      if (compiled === undefined) continue; // table no longer in the schema
-      const row = this.db
-        .query<{ scopes: string }, [string, string]>(
-          selectRowScopesSql(compiled, 'sqlite'),
-        )
-        .get(partition, ref.row_id);
-      if (row === null) continue;
-      out.push({
-        table: ref.tbl,
-        rowId: ref.row_id,
-        scopes: JSON.parse(row.scopes) as Record<string, string>,
-      });
-    }
-    return out;
-  }
-
-  async listReferencedBlobIds(partition: string): Promise<string[]> {
-    const rows = this.db
-      .query<{ blob_id: string }, [string]>(
-        'SELECT DISTINCT blob_id FROM sync_blob_refs WHERE partition=?',
-      )
-      .all(partition);
-    return rows.map((r) => r.blob_id);
-  }
-
-  async listScopeValueRows(
-    partition: string,
-    query: ScopeValueQuery,
-  ): Promise<string[]> {
-    return this.db
-      .query<{ row_id: string }, [string, string, string, string, number]>(
-        LIST_SCOPE_VALUE_ROWS_SQLITE_SQL,
-      )
-      .all(partition, query.table, query.variable, query.value, query.limit)
-      .map((row) => row.row_id);
-  }
-
-  async eraseScopeValueHistory(
-    partition: string,
-    query: ScopeValueHistoryQuery,
-  ): Promise<number> {
-    const params = eraseScopeValueHistoryParams(partition, query);
-    return this.#serializeWrite(() => {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        let removed = 0;
-        for (const sql of ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL) {
-          removed += this.db.query(sql).all(...params).length;
-        }
-        this.db.exec('COMMIT');
-        return removed;
-      } catch (error) {
-        rollbackAfterError(() => {
-          this.db.exec('ROLLBACK');
-        }, error);
-      }
-    });
-  }
-
-  // -- admin/console read surface --------------------------------------------
-
-  async listClientRecords(partition: string): Promise<ClientRecord[]> {
-    const records = this.db
-      .query<
-        {
-          client_id: string;
-          actor_id: string;
-          wire_version: number;
-          cursor: number;
-          subscriptions: string;
-          updated_at_ms: number;
-          last_round_at_ms: number | null;
-          last_error_code: string | null;
-          consecutive_failures: number;
-        },
-        [string]
-      >(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
-      )
-      .all(partition);
-    return records.map((record) => ({
-      clientId: record.client_id,
-      actorId: record.actor_id,
-      wireVersion: record.wire_version,
-      cursor: record.cursor,
-      updatedAtMs: record.updated_at_ms,
-      subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
-      ...clientRoundState(
-        record.last_round_at_ms,
-        record.last_error_code,
-        record.consecutive_failures,
-      ),
-    }));
-  }
-
-  async listCommitMetadata(
-    partition: string,
-    query: CommitMetadataQuery,
-  ): Promise<CommitMetadata[]> {
-    // Newest-first window, resumed by `afterSeq` (exclusive lower bound) and
-    // ended by `beforeSeq` (exclusive upper bound) when paging older. An
-    // omitted bound is the largest safe commitSeq, so one statement serves
-    // both the bounded and unbounded read.
-    const beforeSeq = query.beforeSeq ?? Number.MAX_SAFE_INTEGER;
-    const rows = query.table
-      ? this.db
-          .query<
-            {
-              commit_seq: number;
-              client_id: string;
-              client_commit_id: string;
-              actor_id: string;
-              created_at_ms: number;
-            },
-            [string, number, number, string, number]
-          >(
-            `SELECT c.commit_seq, c.client_id, c.client_commit_id, c.actor_id, c.created_at_ms
-             FROM sync_commits c
-             WHERE c.partition=? AND c.commit_seq>? AND c.commit_seq<?
-               AND EXISTS (SELECT 1 FROM sync_changes ch
-                 WHERE ch.partition=c.partition AND ch.commit_seq=c.commit_seq AND ch.tbl=?)
-             ORDER BY c.commit_seq DESC LIMIT ?`,
-          )
-          .all(partition, query.afterSeq, beforeSeq, query.table, query.limit)
-      : this.db
-          .query<
-            {
-              commit_seq: number;
-              client_id: string;
-              client_commit_id: string;
-              actor_id: string;
-              created_at_ms: number;
-            },
-            [string, number, number, number]
-          >(
-            `SELECT commit_seq, client_id, client_commit_id, actor_id, created_at_ms
-             FROM sync_commits
-             WHERE partition=? AND commit_seq>? AND commit_seq<?
-             ORDER BY commit_seq DESC LIMIT ?`,
-          )
-          .all(partition, query.afterSeq, beforeSeq, query.limit);
-    // `changeSample`: one extra statement for the whole page — the first
-    // `sample` changes (change-index order) of every listed commit.
-    const sampleCount =
-      query.changeSample !== undefined &&
-      Number.isInteger(query.changeSample) &&
-      query.changeSample > 0
-        ? query.changeSample
-        : 0;
-    const samples = new Map<number, CommitChangeSummary[]>();
-    if (sampleCount > 0 && rows.length > 0) {
-      const seqs = rows.map((row) => row.commit_seq);
-      const records = this.db
-        .query<
-          { commit_seq: number; tbl: string; row_id: string; op: number },
-          (string | number)[]
-        >(
-          `SELECT commit_seq, tbl, row_id, op FROM sync_changes
-           WHERE partition=? AND commit_seq IN (${placeholders(seqs.length)}) AND idx<?
-           ORDER BY commit_seq, idx`,
-        )
-        .all(partition, ...seqs, sampleCount);
-      for (const record of records) {
-        const sample = samples.get(record.commit_seq) ?? [];
-        sample.push({
-          table: record.tbl,
-          rowId: record.row_id,
-          op: record.op === 1 ? 'upsert' : 'delete',
-        });
-        samples.set(record.commit_seq, sample);
-      }
-    }
-    return rows.map((row) => {
-      const changes = this.db
-        .query<{ tbl: string; n: number }, [string, number]>(
-          'SELECT tbl, count(*) AS n FROM sync_changes WHERE partition=? AND commit_seq=? GROUP BY tbl',
-        )
-        .all(partition, row.commit_seq);
-      return {
-        commitSeq: row.commit_seq,
-        clientId: row.client_id,
-        clientCommitId: row.client_commit_id,
-        actorId: row.actor_id,
-        createdAtMs: row.created_at_ms,
-        changeCount: changes.reduce((sum, c) => sum + c.n, 0),
-        tables: changes.map((c) => c.tbl),
-        ...(sampleCount > 0
-          ? { sample: samples.get(row.commit_seq) ?? [] }
-          : {}),
-      };
-    });
-  }
-
-  async getCommit(
-    partition: string,
-    commitSeq: number,
-  ): Promise<CommitDetail | undefined> {
-    const meta = this.db
-      .query<
-        {
-          client_id: string;
-          client_commit_id: string;
-          actor_id: string;
-          created_at_ms: number;
-        },
-        [string, number]
-      >(
-        'SELECT client_id, client_commit_id, actor_id, created_at_ms FROM sync_commits WHERE partition=? AND commit_seq=?',
-      )
-      .get(partition, commitSeq);
-    if (meta === null) return undefined;
-    const changes = this.db
-      .query<SqliteChangeRecord, [string, number]>(
-        'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=? AND commit_seq=? ORDER BY idx',
-      )
-      .all(partition, commitSeq)
-      .map(toStoredChange);
-    return {
-      commitSeq,
-      clientId: meta.client_id,
-      clientCommitId: meta.client_commit_id,
-      actorId: meta.actor_id,
-      createdAtMs: meta.created_at_ms,
-      changeCount: changes.length,
-      tables: [...new Set(changes.map((change) => change.table))].sort(),
-      changes,
-    };
-  }
-
-  async listRowChanges(
-    partition: string,
-    query: RowChangesQuery,
-  ): Promise<RowChangeRecord[]> {
-    // Retained-log read for one row: no dedicated index (the write path pays
-    // nothing for it), bounded by retention (§4.6).
-    return this.db
-      .query<
-        {
-          commit_seq: number;
-          op: number;
-          row_version: number | null;
-          actor_id: string;
-          client_id: string;
-          created_at_ms: number;
-        },
-        [string, string, string, number]
-      >(
-        `SELECT ch.commit_seq, ch.op, ch.row_version, c.actor_id, c.client_id, c.created_at_ms
-         FROM sync_changes ch
-         JOIN sync_commits c
-           ON c.partition=ch.partition AND c.commit_seq=ch.commit_seq
-         WHERE ch.partition=? AND ch.tbl=? AND ch.row_id=?
-         ORDER BY ch.commit_seq DESC, ch.idx DESC LIMIT ?`,
-      )
-      .all(partition, query.table, query.rowId, query.limit)
-      .map((row) => ({
-        commitSeq: row.commit_seq,
-        op: row.op === 1 ? 'upsert' : 'delete',
-        ...(row.row_version !== null ? { rowVersion: row.row_version } : {}),
-        actorId: row.actor_id,
-        clientId: row.client_id,
-        createdAtMs: row.created_at_ms,
-      }));
-  }
-
-  async listRows(partition: string, query: RowListQuery): Promise<StoredRow[]> {
-    // Keyset page over the row table's (partition, rowId) primary key: an
-    // index range read, no scope filter, no per-row lookup.
-    return this.db
-      .query<SqliteRowRecord, [string, string, number]>(
-        `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
-         FROM ${quoteIdent(this.table(query.table).name)}
-         WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=? AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>?
-         ORDER BY ${quoteIdent(SYNC_ROW_ID_COLUMN)} LIMIT ?`,
-      )
-      .all(partition, query.afterRowId ?? '', query.limit)
-      .map(toStoredRow);
-  }
-
-  async countRows(partition: string, table: string): Promise<number> {
-    const record = this.db
-      .query<{ n: number }, [string]>(
-        `SELECT count(*) AS n FROM ${quoteIdent(this.table(table).name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=?`,
-      )
-      .get(partition);
-    return record?.n ?? 0;
-  }
-
-  async listPushResults(
-    partition: string,
-    clientCommitId: string,
-  ): Promise<ClientPushResult[]> {
-    // Retained outcomes for one clientCommitId: no dedicated index, ordered
-    // by client so the read is deterministic.
-    return this.db
-      .query<{ client_id: string; result: string }, [string, string]>(
-        'SELECT client_id, result FROM sync_push_results WHERE partition=? AND client_commit_id=? ORDER BY client_id',
-      )
-      .all(partition, clientCommitId)
-      .map((record) => {
-        try {
-          return {
-            clientId: record.client_id,
-            result: deserializePushResult(record.result),
-          };
-        } catch {
-          throw syncError(
-            'sync.idempotency_cache_miss',
-            'persisted push result unreadable (§6.3)',
-          );
-        }
-      });
-  }
-
-  async scopeActivity(
-    partition: string,
-    query: ScopeActivityQuery,
-  ): Promise<ScopeCommitActivity[]> {
-    // Candidate commits via the change-scope index (§3.1) — never a scan.
-    const rows = this.db
-      .query<
-        { commit_seq: number; tbl: string },
-        [string, string, string, number]
-      >(
-        `SELECT DISTINCT commit_seq, tbl FROM sync_change_scopes
-         WHERE partition=? AND var=? AND value=?
-         ORDER BY commit_seq DESC LIMIT ?`,
-      )
-      .all(partition, query.variable, query.value, query.limit);
-    const out: ScopeCommitActivity[] = [];
-    for (const row of rows) {
-      const meta = this.db
-        .query<{ actor_id: string; created_at_ms: number }, [string, number]>(
-          'SELECT actor_id, created_at_ms FROM sync_commits WHERE partition=? AND commit_seq=?',
-        )
-        .get(partition, row.commit_seq);
-      if (meta === null) continue;
-      const count = this.db
-        .query<{ n: number }, [string, number, string]>(
-          'SELECT count(*) AS n FROM sync_changes WHERE partition=? AND commit_seq=? AND tbl=?',
-        )
-        .get(partition, row.commit_seq, row.tbl);
-      out.push({
-        commitSeq: row.commit_seq,
-        table: row.tbl,
-        createdAtMs: meta.created_at_ms,
-        actorId: meta.actor_id,
-        changeCount: count?.n ?? 0,
-      });
-    }
-    return out;
-  }
-
-  async listPartitions(): Promise<string[]> {
-    return (await this.listPartitionRegistry()).map((entry) => entry.partition);
+      .run(watermark, observedRows, nowMs, partition, name, ownerEpoch);
+    return Number(result.changes) === 1;
   }
 }

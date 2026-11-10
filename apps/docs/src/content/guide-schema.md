@@ -86,8 +86,14 @@ CREATE TABLE todos (
 );
 ```
 
-Two value rules apply to every table:
+Three value rules apply to every table:
 
+- The server refuses at push admission, and both client cores refuse at
+  authoring, with `sync.invalid_request`: a string or row id containing
+  U+0000, a `json` value outside the
+  [JSON validity rule](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#conventions-and-primitive-encodings),
+  a NaN or infinite `float`, and a `blob_ref` whose text is not the canonical
+  serialization ([Authoring value validation](/platform-web-reads-writes/#authoring-value-validation)).
 - Integer row values stay within `-9007199254740991..=9007199254740991`. Both
   client cores reject larger values before they queue a mutation or patch.
 - A primary key is `TEXT`, `INTEGER`, `BOOLEAN`, or `JSON`. The wire addresses
@@ -125,6 +131,11 @@ The `tables` array order is the bootstrap order: parents before children. List
 every table present at the head of migration history; omit a table that
 `DROP TABLE` retired. Unknown manifest keys are hard errors.
 
+A scope column has type `TEXT` or `INTEGER`. `syncular generate` rejects
+`REAL`, `BOOLEAN`, `JSON`, `BLOB`, `BLOB_REF`, and `CRDT` scope columns with
+`typegen.scope_column_type`. A row whose scope column is NULL has no stored
+scope, so the server rejects every write of it.
+
 ::checkpoint[`syncular.json` names every table that `up.sql` creates.]
 ::::
 
@@ -138,8 +149,9 @@ syncular migrations baseline --manifest-dir .
 syncular migrations check --manifest-dir .
 ```
 
-Compact format 2 stores migration names, normalized SQL checksums, and one
-privacy-safe canonical head-schema snapshot for diagnostics. It never stores
+Format 3 stores migration names, normalized SQL checksums, the schema version
+of each migration, and one privacy-safe canonical head-schema snapshot for
+diagnostics. It never stores
 SQL, rows, database paths, or secrets, and it grows with migration metadata
 plus the current schema.
 
@@ -204,6 +216,22 @@ Add a migration, extend `schemaVersions` in the manifest with the new version
 and the migration it runs through, and regenerate. A deployed migration is
 immutable: restore any accidentally edited one and add a new migration for the
 repair. Do not delete and re-baseline the lock.
+
+The new migration needs a new version. The lock records the version of every
+locked migration, and generation refuses a migration that joins a locked
+version (`typegen.schema_version_locked`) or a locked migration moved to another
+version (`typegen.migration_version_changed`). A client keeps its local tables
+while its version is unchanged, so a column folded into a deployed version would
+never reach its local schema.
+
+A lock written before Syncular recorded versions (format 1 or 2) stops
+generation with `typegen.migration_lock_outdated`. Convert it once, on a
+manifest whose `schemaVersions` still describe what is deployed, and commit the
+result:
+
+```sh title="terminal"
+syncular migrations upgrade-lock --manifest-dir .
+```
 
 Changes to existing tables follow three rules:
 
@@ -310,8 +338,15 @@ state the commit produces (SPEC §6.11):
 - Each row counts by its final write in the commit. A row inserted and
   deleted in one commit is never checked, and a parent deleted and
   re-inserted in one commit keeps its children.
+- A reference column is checked only when an upsert of the row in the commit
+  writes it. A patch that leaves the column out is never checked against the
+  parent.
+- A parent in a scope the writing actor cannot write counts as absent. The
+  rejection is identical to the one for a parent that does not exist.
 
-A violation rejects the commit with `sync.reference_violation`.
+A violation rejects the commit with `sync.reference_violation`. The server
+refuses at startup a reference whose child table sets `materialize: false`,
+because it reaches children through the materialized columns.
 
 ### Constraints and where they are enforced
 

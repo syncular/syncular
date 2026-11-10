@@ -372,10 +372,11 @@ impl Transport for BenchTransport {
     fn fetch_url(
         &mut self,
         url: &str,
+        byte_length: u64,
         on_progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<u8>, TransportError> {
         self.count_request(0);
-        let response = self.inner.fetch_url(url, on_progress)?;
+        let response = self.inner.fetch_url(url, byte_length, on_progress)?;
         self.stats.response_bytes += response.len() as u64;
         Ok(response)
     }
@@ -397,13 +398,17 @@ impl Transport for BenchTransport {
         result
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+    fn blob_download(
+        &mut self,
+        blob_id: &str,
+        byte_length: Option<u64>,
+    ) -> Result<BlobDownload, TransportError> {
         if !self.blob_diagnostics {
-            return self.inner.blob_download(blob_id);
+            return self.inner.blob_download(blob_id, byte_length);
         }
         self.count_request(0);
         let started = Instant::now();
-        let result = self.inner.blob_download(blob_id);
+        let result = self.inner.blob_download(blob_id, byte_length);
         let elapsed_ns = started.elapsed().as_nanos() as u64;
         let bytes = match &result {
             Ok(BlobDownload::Bytes(bytes)) => bytes.len(),
@@ -417,13 +422,17 @@ impl Transport for BenchTransport {
         result
     }
 
-    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_blob_url(
+        &mut self,
+        url: &str,
+        byte_length: Option<u64>,
+    ) -> Result<Vec<u8>, TransportError> {
         if !self.blob_diagnostics {
-            return self.inner.fetch_blob_url(url);
+            return self.inner.fetch_blob_url(url, byte_length);
         }
         self.count_request(0);
         let started = Instant::now();
-        let result = self.inner.fetch_blob_url(url);
+        let result = self.inner.fetch_blob_url(url, byte_length);
         let elapsed_ns = started.elapsed().as_nanos() as u64;
         let bytes = result.as_ref().map_or(0, Vec::len);
         self.stats.response_bytes += bytes as u64;
@@ -863,7 +872,11 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
         .and_then(Value::as_array)
         .filter(|queries| queries.len() == 2)
         .ok_or_else(|| client_err("Read fixture requires two queries".to_owned()))?;
-    let revision = client.instance()?.local_revision().to_string();
+    let revision = client
+        .instance()?
+        .local_revision()
+        .map_err(client_err)?
+        .to_string();
     let mut results = Vec::new();
     for query in queries {
         let sql = query
@@ -1037,7 +1050,13 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
         }
         results.push(result);
     }
-    if client.instance()?.local_revision().to_string() != revision {
+    if client
+        .instance()?
+        .local_revision()
+        .map_err(client_err)?
+        .to_string()
+        != revision
+    {
         return Err(client_err(
             "Read benchmark changed local revision".to_owned(),
         ));
@@ -1967,7 +1986,7 @@ mod tests {
             assert_eq!(result["nsPerCommit"].as_array().unwrap().len(), 10);
             let instance = client.as_mut().unwrap();
             assert_eq!(instance.status_snapshot().outbox, 10);
-            assert_eq!(instance.local_revision(), 10);
+            assert_eq!(instance.local_revision().unwrap(), 10);
             snapshots.push(
                 instance
                     .query("SELECT * FROM tasks ORDER BY id", &[])

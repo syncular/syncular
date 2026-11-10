@@ -97,19 +97,19 @@ export class S3BlobStore extends BucketBlobStore {
 
   /**
    * SigV4 presigned PUT for a blob object (§5.9.3 direct-to-storage upload).
-   * The blob twin of `presignBlobGet`: the signed key embeds the `blobId`, so
-   * the grant places bytes at exactly the content-addressed key. The store
-   * does NOT recompute the SHA-256 (it is the object store, not the sync
-   * server); integrity is enforced at REFERENCE time — the §5.9.6 push
-   * existence check verifies the object exists (`has`) and every consumer
-   * re-verifies the content address over the received bytes (§5.9.5/§5.1). A
-   * client PUTting bytes that do not hash to `{blobId}` poisons only its own
-   * upload; no honest reference resolves to it. Issued by the upload-grant
-   * handler after host authentication; TTL SHOULD be ≤ 15 min (default 900).
+   * The signed key embeds the `blobId`, and the signature binds
+   * `content-length` to the granted `byteLength` and `x-amz-checksum-sha256`
+   * to the `blobId` digest (the same SHA-256, re-encoded from lowercase hex to
+   * the base64 of its 32 raw bytes). The object store therefore rejects a PUT
+   * of any other size (signature mismatch) or any other bytes (`BadDigest`),
+   * so a grant can only place the content-addressed bytes at their key.
+   * Issued by the upload-grant handler after host authentication and the
+   * size-cap check; TTL SHOULD be ≤ 15 min (default 900).
    */
   async presignBlobPut(
     partition: string,
     blobId: string,
+    byteLength: number,
     options?: { readonly ttlSeconds?: number; readonly nowMs?: number },
   ): Promise<SegmentUrlIssue> {
     if (!BLOB_ID_PATTERN.test(blobId)) {
@@ -117,6 +117,9 @@ export class S3BlobStore extends BucketBlobStore {
     }
     const ttlSeconds = options?.ttlSeconds ?? 900;
     const nowMs = options?.nowMs ?? Date.now();
+    const digest = (blobId.slice('sha256:'.length).match(/../g) ?? []).map(
+      (hex) => Number.parseInt(hex, 16),
+    );
     const url = await presignUrl({
       method: 'PUT',
       url: this.#bucket.urlFor(this.objectKeyFor(partition, blobId)),
@@ -124,6 +127,10 @@ export class S3BlobStore extends BucketBlobStore {
       credentials: this.#credentials,
       nowMs,
       expiresSeconds: ttlSeconds,
+      headers: {
+        'content-length': String(byteLength),
+        'x-amz-checksum-sha256': btoa(String.fromCharCode(...digest)),
+      },
     });
     return {
       url: url.toString(),
@@ -158,8 +165,8 @@ export function s3PresignedBlobUrls(
  * `blobUploadUrls: s3PresignedBlobUploads(blobStore, { ttlSeconds: 900 })`.
  * The upload-grant handler issues the presigned PUT only after host
  * authentication + the size-cap check; the client PUTs bytes straight to the
- * object store with no host auth (§5.9.3). Integrity stays the content-address
- * check at reference/download time — never a store-side hash recompute.
+ * object store with no host auth, and the store verifies the signed
+ * `content-length` and `x-amz-checksum-sha256` (§5.9.3).
  */
 export function s3PresignedBlobUploads(
   store: S3BlobStore,
@@ -169,7 +176,10 @@ export function s3PresignedBlobUploads(
     ...(options?.ttlSeconds !== undefined
       ? { ttlSeconds: options.ttlSeconds }
       : {}),
-    presign: ({ partition, blobId, ttlSeconds, nowMs }) =>
-      store.presignBlobPut(partition, blobId, { ttlSeconds, nowMs }),
+    presign: ({ partition, blobId, byteLength, ttlSeconds, nowMs }) =>
+      store.presignBlobPut(partition, blobId, byteLength, {
+        ttlSeconds,
+        nowMs,
+      }),
   };
 }

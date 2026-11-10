@@ -1,0 +1,33 @@
+{
+  "columns": [
+    {
+      "name": "id",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "text",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "score",
+      "type": "float",
+      "nullable": true
+    },
+    {
+      "name": "meta",
+      "type": "json",
+      "nullable": true
+    },
+    {
+      "name": "file",
+      "type": "blob_ref",
+      "nullable": true
+    }
+  ],
+  "values": {
+    "id": "a-1",
+    "score": 1.7976931348623157e+308
+  }
+}

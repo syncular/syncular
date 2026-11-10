@@ -41,7 +41,7 @@ void  syncular_free_string(char *ptr);
 | Encoding | All strings are UTF-8 and NUL-terminated. |
 | Ownership | The library owns the strings that `syncular_client_command` and `syncular_client_poll_event` return. Free each exactly once with `syncular_free_string`. Calling `free()` on one is undefined behavior. |
 | `poll_event` timeout | `timeout_ms < 0` blocks until an event arrives, `0` returns at once, `> 0` waits up to that many milliseconds. It returns NULL when nothing arrived. |
-| Threads | One handle belongs to one thread for commands. `poll_event` reads a separate queue, so a pump thread may block in it while the owner thread issues commands. |
+| Threads | The binding serializes `syncular_client_command` calls; commands on one handle never run concurrently. `poll_event` reads a queue outside the lock that guards the client, so a pump thread may block in it while another thread issues commands. |
 | NULL returns | `syncular_client_new` returns NULL on a malformed config or an unsupported transport. `syncular_client_command` returns NULL only for a NULL handle. |
 | Close | `syncular_client_close` releases the database, transport, and socket thread. The handle is invalid afterward, and no thread may be inside `poll_event` for it. |
 
@@ -53,7 +53,7 @@ void  syncular_free_string(char *ptr);
 { "baseUrl": "https://host/mount", "headers": { "authorization": "..." }, "wsUrl": "wss://..." }
 ```
 
-`baseUrl` engages the native transport (requires a `native-transport` build): blocking HTTP through `ureq` against `{baseUrl}/sync`, `{baseUrl}/segments/{id}`, the blob endpoints, and bare signed-URL fetches, plus a `tungstenite` realtime socket with a reader thread. `wsUrl` is optional and derives from `baseUrl` as `{baseUrl}/realtime`. A `baseUrl` on a lean build makes `syncular_client_new` return NULL. The config also accepts the transport policy keys `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`, documented in [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy).
+`baseUrl` engages the native transport (requires a `native-transport` build): blocking HTTP through `ureq` against `{baseUrl}/sync`, `{baseUrl}/segments/{id}`, the blob endpoints, and bare signed-URL fetches, plus a `tungstenite` realtime socket with a reader thread. `wsUrl` is optional and derives from `baseUrl` as `{baseUrl}/realtime`. A `baseUrl` on a lean build makes `syncular_client_new` return NULL. The config also accepts the transport policy keys `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, and `redirects`, documented in [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy).
 
 ### Local authority
 
@@ -103,6 +103,16 @@ The router no longer has `schemaFloor`, `leaseState`, `upgrading`, or `syncNeede
 
 The core has no callbacks. The FFI queues its exact revisioned `change` batches, explicit `sync-intent` effects, ephemeral `presence` signals, `progress` snapshots, and `diagnostics` snapshots on a blocking queue, and never derives a change from a counter. `syncular_client_poll_event` drains that queue; each event is a JSON object with a `type` field. The queue keeps only the newest `progress` event, and the FFI emits a `diagnostics` event only when its state changes.
 
+Every command applies the inbound realtime traffic that the socket reader buffered since the previous command: deltas, presence fanouts, and a socket loss. When the reader buffers traffic, the FFI queues one wake event:
+
+```json
+{ "type": "realtime-wake" }
+```
+
+Answer it with the `drainRealtime` command, `{"method": "drainRealtime", "params": {}}`. The command applies the buffered traffic and queues the resulting `change`, `presence`, and `sync-intent` events; it does nothing else, and the router accepts it during security preflight. One wake stays outstanding until a command drains the buffer, so further traffic queues no second wake, and a binding that stays idle accumulates one event.
+
+The reader holds at most 16 MiB of undrained text and delta payload. Past that bound it closes the socket and buffers a `transport.failed` loss with `causeKind` `inbound_overflow`; the next drain moves realtime to `lost` and emits a background `sync-intent` that reconnects and pulls what the dropped socket would have delivered (SPEC §8.8).
+
 A binding pumps `poll_event` on one background thread and forwards each event to the platform's event loop. Use a bounded wait such as 25 ms so the pump observes a stop flag, and stop and join the pump before `syncular_client_close`.
 
 ## Build artifacts
@@ -141,7 +151,7 @@ On macOS arm64 (release, stripped) the library measured 2.5 MB lean and 4.6 MB w
 2. Wrap the handle in a class that stringifies `{method, params}`, parses `{result}` or `{error}`, and applies the `{"$bytes": hex}` convention.
 3. Free every returned string exactly once with `syncular_free_string`.
 4. Own the handle on one thread and mailbox every request into it. Shipped wrappers serialize commands with a queue or a lock.
-5. Pump `poll_event` on a background thread, surface events on the platform loop, and implement `pause()`, `resume()`, and `close()`. `pause()` stops the pump and calls `disconnectRealtime`; `resume()` calls `connectRealtime` and restarts the pump. The core has no single stop-everything command.
+5. Pump `poll_event` on a background thread, surface events on the platform loop, and answer each `realtime-wake` event by issuing `drainRealtime` through the command mailbox. Implement `pause()`, `resume()`, and `close()`. `pause()` stops the pump and calls `disconnectRealtime`; `resume()` calls `connectRealtime` and restarts the pump. The core has no single stop-everything command.
 6. Run the binding against the [conformance catalog](/reference/#protocol--conformance).
 
 The shared behavior of the native wrappers is on [Native client API](/native-client-api/); [Swift](/platform-swift/) and [Kotlin](/platform-kotlin/) are the wrappers to copy.

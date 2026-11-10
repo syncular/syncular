@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build as viteBuild } from 'vite';
 
-// Bun 1.4.0, minified browser graphs with SQLite external. After the §12
-// local-authority seam and retained-base proof, the client measures 165940
-// bytes and the worker 185177 bytes on Bun 1.4.0. The ceilings round up from
-// the maximum observed in source and materialized builds. Independently assert
-// that ordinary imports exclude authority modules.
+// Minified browser graphs with SQLite external. On Bun 1.4.4 the client
+// measures 165019 bytes and the worker 185992 bytes. The ceilings are the
+// values at the start of the core review program; a change that grows a lane
+// removes code to stay under them. Independently assert that ordinary imports
+// exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-authority-bundle-'));
   const root = resolve(import.meta.dir, '../../..');

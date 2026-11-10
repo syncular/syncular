@@ -307,12 +307,10 @@ describe('privacy-safe client diagnostics', () => {
     const fixture = await makeClient(server, {
       clientId: 'diagnostics-query-failures',
     });
-    const database = fixture.db as unknown as {
-      query: typeof fixture.db.query;
-    };
-    const originalQuery = database.query.bind(fixture.db);
+    const database = fixture.db;
+    const originalQuery = database.queryReadOnly.bind(database);
     let sqliteCode = 266;
-    database.query = (sql, params) => {
+    database.queryReadOnly = (sql, params) => {
       if (sql === 'SELECT id FROM tasks /* fail-owned */') {
         const error = new Error('private SQLite prose');
         error.name = 'SQLiteError';
@@ -355,7 +353,7 @@ describe('privacy-safe client diagnostics', () => {
       atMs: server.now.ms,
     });
 
-    database.query = originalQuery;
+    database.queryReadOnly = originalQuery;
     fixture.client.querySnapshot({ sql: 'SELECT id FROM tasks', owner });
     expect(fixture.client.diagnosticsSnapshot().queryFailures).toEqual([]);
 

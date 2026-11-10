@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   ClientSyncError,
   SyncClient,
+  webSocketRealtimeConnector,
   type RealtimeHandlers,
   type RealtimeSocket,
 } from '@syncular/client';
@@ -22,6 +23,45 @@ import {
 } from './helpers';
 
 describe('handshake (§8.1)', () => {
+  test('the direct client substitutes the {clientId} placeholder in the realtime URL', async () => {
+    const urls: string[] = [];
+    class OpeningWebSocket {
+      binaryType = 'blob';
+      onopen: (() => void) | null = null;
+      constructor(url: string) {
+        urls.push(url);
+        queueMicrotask(() => this.onopen?.());
+      }
+      send(): void {}
+      close(): void {}
+    }
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: OpeningWebSocket,
+    });
+    const server = makeServer();
+    try {
+      const local = await makeClient(server, {
+        clientId: 'client id/1',
+        realtime: webSocketRealtimeConnector(
+          'wss://example.test/realtime?clientId={clientId}',
+        ),
+      });
+      await local.client.connectRealtime();
+      expect(urls).toEqual([
+        'wss://example.test/realtime?clientId=client%20id%2F1',
+      ]);
+      await local.client.close();
+      local.db.close();
+    } finally {
+      if (original === undefined)
+        Reflect.deleteProperty(globalThis, 'WebSocket');
+      else Object.defineProperty(globalThis, 'WebSocket', original);
+      server.storage.db.close();
+    }
+  });
+
   test('late callbacks from a disconnected socket cannot touch a replacement or closed database', async () => {
     const callbacks: RealtimeHandlers[] = [];
     const server = makeServer();
@@ -279,6 +319,54 @@ describe('deltas (§8.2)', () => {
       'scoped delta',
     );
     expect(tableRows(b.db, 'tasks')[0]?.id).toBe('mine');
+  });
+  test('a delta for a subscription at cursor -1 is skipped and raises sync-needed', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    const b = await makeClient(server, { clientId: 'client-b' });
+    for (const c of [a, b]) {
+      c.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+    }
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    await b.client.syncUntilIdle();
+    await b.client.connectRealtime();
+    b.client.rebootstrapLocalData({ rebootstrapId: 'delta-gap-1' });
+    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    b.wakes.length = 0;
+
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t2', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    await waitFor(
+      () =>
+        b.wakes.includes('catchup-required') ||
+        (b.client.subscription('s1')?.cursor ?? -1) >= 0,
+      (notify) => {
+        const offChange = b.client.onChange(notify);
+        const offNeeded = b.client.onSyncNeeded(notify);
+        return () => {
+          offChange();
+          offNeeded();
+        };
+      },
+      'delta handled',
+    );
+    // The delta carried t2 only; applying it would have completed the
+    // bootstrap without t1.
+    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    expect(tableRows(b.db, 'tasks')).toEqual([]);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(true);
+
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks').map((row) => row.id)).toEqual(['t1', 't2']);
   });
 });
 
@@ -679,3 +767,204 @@ for (const socket of [false, true]) {
     }
   });
 }
+
+describe('heartbeat watchdog (§8.5)', () => {
+  const heartbeat = JSON.stringify({
+    event: 'heartbeat',
+    data: { timestamp: 1 },
+  });
+
+  async function watchedClient(clientId: string) {
+    const timers: Array<{
+      readonly callback: () => void;
+      readonly delayMs: number;
+      cancelled: boolean;
+    }> = [];
+    const sockets: RealtimeHandlers[] = [];
+    let closes = 0;
+    let sent: () => void = () => {};
+    const db = new BunClientDatabase();
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      clientId,
+      transport: async () => {
+        throw new Error('unused transport');
+      },
+      realtimeHeartbeatMs: 1_000,
+      schedule: (callback, delayMs) => {
+        const timer = { callback, delayMs, cancelled: false };
+        timers.push(timer);
+        return () => {
+          timer.cancelled = true;
+        };
+      },
+      realtime: async (handlers) => {
+        sockets.push(handlers);
+        return {
+          send: () => {},
+          sendBytes: () => sent(),
+          close: () => {
+            closes += 1;
+          },
+        };
+      },
+    });
+    await client.start();
+    return {
+      client,
+      db,
+      timers,
+      armed: () => timers.filter((timer) => !timer.cancelled),
+      socket: () => sockets.at(-1)!,
+      closes: () => closes,
+      roundSent: () =>
+        new Promise<void>((resolve) => {
+          sent = resolve;
+        }),
+    };
+  }
+
+  test('a socket stays unarmed until its first heartbeat, then silence loses it and its round', async () => {
+    const watched = await watchedClient('heartbeat-armed');
+    const { client } = watched;
+    await client.connectRealtime();
+    // A server that sends no heartbeats never arms the watchdog.
+    watched.socket().onText('{"event":"unknown","data":{}}');
+    watched.socket().onBinary(new Uint8Array([0x7f]));
+    expect(watched.timers).toEqual([]);
+
+    watched.socket().onText(heartbeat);
+    expect(watched.armed().map((timer) => timer.delayMs)).toEqual([2_000]);
+    // Once armed, any inbound frame restarts it.
+    watched.socket().onBinary(new Uint8Array([0x7f]));
+    expect(watched.timers.map((timer) => timer.cancelled)).toEqual([
+      true,
+      false,
+    ]);
+
+    client.mutate([
+      { op: 'upsert', table: 'tasks', values: taskValues('silent', 'p1') },
+    ]);
+    const sent = watched.roundSent();
+    const round = client.sync();
+    await sent;
+    watched.armed()[0]!.callback();
+    await expect(round).rejects.toMatchObject({
+      code: 'transport.timeout',
+      message: 'realtime heartbeat missed',
+      details: { causeKind: 'heartbeat' },
+    });
+    expect(client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'lost',
+      realtimeReasonCode: 'transport.timeout',
+    });
+    expect(watched.closes()).toBe(1);
+    expect(watched.armed()).toEqual([]);
+
+    // A new connection starts unarmed.
+    await client.connectRealtime();
+    watched.socket().onBinary(new Uint8Array([0x7f]));
+    expect(watched.armed()).toEqual([]);
+    await client.close();
+    watched.db.close();
+  });
+
+  test('a deliberate disconnect and a closing transport gate cancel the watchdog', async () => {
+    const watched = await watchedClient('heartbeat-cancelled');
+    const { client } = watched;
+    await client.connectRealtime();
+    watched.socket().onText(heartbeat);
+    expect(watched.armed()).toHaveLength(1);
+    client.disconnectRealtime();
+    expect(watched.armed()).toEqual([]);
+
+    await client.connectRealtime();
+    watched.socket().onText(heartbeat);
+    expect(watched.armed()).toHaveLength(1);
+    client.setTransportEnabled(false);
+    expect(watched.armed()).toEqual([]);
+    await client.close();
+    watched.db.close();
+  });
+
+  test('the interval is an integer in 1..=2^30', () => {
+    for (const realtimeHeartbeatMs of [0, 1.5, 2 ** 30 + 1]) {
+      expect(
+        () =>
+          new SyncClient({
+            database: new BunClientDatabase(),
+            schema: CLIENT_SCHEMA,
+            clientId: 'heartbeat-invalid',
+            transport: async () => {
+              throw new Error('unused transport');
+            },
+            realtimeHeartbeatMs,
+          }),
+      ).toThrow('realtimeHeartbeatMs must be an integer in 1..=2^30');
+    }
+  });
+});
+
+describe('presence (§8.6.2)', () => {
+  test('a refused publish reaches presence listeners with the server code and leaves the peer map unchanged', async () => {
+    const callbacks: RealtimeHandlers[] = [];
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'presence-rejection',
+      realtime: async (handlers) => {
+        callbacks.push(handlers);
+        return {
+          send: () => undefined,
+          sendBytes: () => undefined,
+          close: () => undefined,
+        };
+      },
+    });
+    await local.client.connectRealtime();
+    const heard: Array<[string, string | undefined]> = [];
+    local.client.onPresence((scopeKey, error) => {
+      heard.push([scopeKey, error]);
+    });
+    const handlers = callbacks[0];
+    handlers?.onText(
+      JSON.stringify({
+        event: 'presence',
+        data: {
+          scopeKey: 'project:p1',
+          kind: 'join',
+          actorId: 'peer',
+          clientId: 'peer-client',
+          doc: { who: 'peer' },
+          timestamp: 1,
+        },
+      }),
+    );
+    for (const error of ['presence.too_large', 'presence.forbidden']) {
+      handlers?.onText(
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'project:p1', error, timestamp: 2 },
+        }),
+      );
+    }
+    // An unknown code is malformed (§8.1) and reaches nobody.
+    handlers?.onText(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', error: 'presence.other' },
+      }),
+    );
+    expect(heard).toEqual([
+      ['project:p1', undefined],
+      ['project:p1', 'presence.too_large'],
+      ['project:p1', 'presence.forbidden'],
+    ]);
+    expect(local.client.presence('project:p1')).toEqual([
+      { actorId: 'peer', clientId: 'peer-client', doc: { who: 'peer' } },
+    ]);
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+});

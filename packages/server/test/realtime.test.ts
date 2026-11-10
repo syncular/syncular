@@ -2,7 +2,7 @@
  * Realtime session (SPEC.md §8): hello, subscription registration from
  * pulls, binary deltas, wake-ups, acks — transport-agnostic callbacks.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import {
   type CommitFrame,
   decodeMessage,
@@ -128,6 +128,60 @@ describe('handshake (§8.1)', () => {
         send: wire.send,
       }),
     ).rejects.toMatchObject({ code: 'sync.invalid_client_id' });
+  });
+
+  test('restore reads the partition once and each client record once, and sends no hello', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    for (const clientId of ['client-1', 'client-2', 'client-3']) {
+      await sync(
+        t,
+        [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+        {
+          clientId,
+        },
+      );
+    }
+    const calls = { touch: 0, maxSeq: 0, record: 0 };
+    const touch = t.storage.touchPartition.bind(t.storage);
+    const maxSeq = t.storage.getMaxCommitSeq.bind(t.storage);
+    const record = t.storage.getClientRecord.bind(t.storage);
+    t.storage.touchPartition = (...args) => {
+      calls.touch += 1;
+      return touch(...args);
+    };
+    t.storage.getMaxCommitSeq = (...args) => {
+      calls.maxSeq += 1;
+      return maxSeq(...args);
+    };
+    t.storage.getClientRecord = (...args) => {
+      calls.record += 1;
+      return record(...args);
+    };
+    const wires = [makeWire(), makeWire(), makeWire()];
+    const restored = await hub.restore(
+      wires.map((wire, i) => ({
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: `client-${i + 1}`,
+        send: wire.send,
+      })),
+    );
+    expect(restored.map((result) => result.status)).toEqual([
+      'fulfilled',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(calls).toEqual({ touch: 1, maxSeq: 1, record: 3 });
+    expect(wires.flatMap((wire) => wire.texts)).toEqual([]);
+    await sync(
+      t,
+      [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])],
+      {
+        clientId: 'writer',
+      },
+    );
+    expect(wires.map((wire) => wire.binaries.length)).toEqual([1, 1, 1]);
   });
 });
 
@@ -276,6 +330,61 @@ describe('delta delivery (§8.2)', () => {
       commit?.commitSeq ?? -1,
     );
   });
+
+  test.each([
+    ['count', { maxUnackedDeltas: 2 }, 2],
+    ['bytes', { maxUnackedDeltaBytes: 1 }, 1],
+  ] as const)(
+    'unacknowledged deltas past the %s limit become catch-up wakes until the post-pull ack',
+    async (_limit, limits, delivered) => {
+      const t = makeContext();
+      const hub = createRealtimeHub({
+        schema: t.ctx.schema,
+        storage: t.ctx.storage,
+        segments: t.segments,
+        resolveScopes: t.ctx.resolveScopes,
+        ...limits,
+      });
+      Object.assign(t.ctx, { realtime: hub });
+      const { wire, session } = await connectedSession(t, hub);
+      const push = (id: string) =>
+        sync(t, [pushCommit(id, [upsert('tasks', id, taskRow(id, 'p1'))])], {
+          clientId: 'writer',
+        });
+      const ack = async () =>
+        session.handleMessage(
+          JSON.stringify({
+            type: 'ack',
+            cursor: await t.storage.getMaxCommitSeq('part-1'),
+          }),
+        );
+      // A client that acknowledges each delta never reaches the limit.
+      for (const id of ['a1', 'a2', 'a3']) {
+        await push(id);
+        await ack();
+      }
+      expect(wire.binaries).toHaveLength(3);
+      expect(wire.texts.slice(1)).toEqual([]);
+      // A client that stops acknowledging gets wakes past the limit.
+      for (const id of ['u1', 'u2', 'u3']) await push(id);
+      expect(wire.binaries).toHaveLength(3 + delivered);
+      const wakes = wire.texts
+        .slice(1)
+        .map((text) => parseRealtimeServerEvent(text))
+        .map((event) =>
+          event.known && event.event.event === 'sync'
+            ? event.event.data.reason
+            : undefined,
+        );
+      expect(wakes).toEqual(
+        Array.from({ length: 3 - delivered }, () => 'catchup-required'),
+      );
+      // The acknowledgement after the catch-up pull resumes deltas.
+      await ack();
+      await push('r1');
+      expect(wire.binaries).toHaveLength(4 + delivered);
+    },
+  );
 
   test('out-of-order commit notifications wake before sending a gap delta', async () => {
     const t = makeContext();
@@ -929,6 +1038,25 @@ describe('control plane (§8.3, §8.5)', () => {
     session.handleMessage('not json at all'); // must not throw
     session.handleMessage('{"type":"presence"}'); // unknown → ignored
   });
+
+  test('hub.heartbeat sends a §8.5 heartbeat to every session', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const wires = [makeWire(), makeWire()];
+    for (const [i, partition] of ['part-1', 'part-2'].entries()) {
+      await hub.connect({
+        partition,
+        actorId: 'actor-1',
+        clientId: `client-${i}`,
+        send: wires[i]!.send,
+      });
+    }
+    hub.heartbeat();
+    for (const wire of wires) {
+      const beat = parseRealtimeServerEvent(wire.texts.at(-1) ?? '');
+      expect(beat.known && beat.event.event).toBe('heartbeat');
+    }
+  });
 });
 
 describe('presence (§8.6)', () => {
@@ -1098,6 +1226,235 @@ describe('presence (§8.6)', () => {
     );
     expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
     expect(presenceEvents(b.wire)).toHaveLength(0); // never fanned out
+  });
+
+  test('the document cap counts UTF-8 bytes (§8.6.2)', async () => {
+    const t = makeContext();
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      maxPresenceBytes: 64,
+    });
+    Object.assign(t.ctx, { realtime: hub });
+    const a = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    // 48 UTF-16 code units, 88 UTF-8 bytes.
+    const publish = (text: string) =>
+      a.session.handleMessage(
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'project:p1', doc: { s: text } },
+        }),
+      );
+    publish('é'.repeat(40));
+    expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
+    expect(presenceEvents(b.wire)).toHaveLength(0);
+    // 28 UTF-8 bytes fit.
+    publish('é'.repeat(10));
+    expect(presenceEvents(b.wire).at(-1)?.doc).toEqual({ s: 'é'.repeat(10) });
+  });
+
+  test('a reconnected client replaces its stale socket document; the stale close announces nothing (§8.6.1)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const stale = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    const publish = (session: typeof stale.session, v: number) =>
+      session.handleMessage(
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'project:p1', doc: { v } },
+        }),
+      );
+    publish(stale.session, 1);
+    const fresh = await presentClient(t, hub, 'client-a');
+    publish(fresh.session, 2);
+    stale.session.close();
+    expect(
+      presenceEvents(b.wire).map(({ kind, clientId, doc }) => [
+        kind,
+        clientId,
+        doc,
+      ]),
+    ).toEqual([
+      ['join', 'client-a', { v: 1 }],
+      ['update', 'client-a', { v: 2 }],
+    ]);
+    fresh.session.close();
+    expect(lastPresence(b.wire)?.kind).toBe('leave');
+  });
+
+  test('the cap counts every key a connection holds (§8.6.2)', async () => {
+    const t = makeContext();
+    // 'project:pN' is 10 bytes and `{"s":"…15…"}` 23: 33 per key.
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      maxPresenceBytes: 60,
+    });
+    Object.assign(t.ctx, { realtime: hub });
+    const both = { project_id: ['p1', 'p2'] };
+    t.scopes.value = both;
+    const reports: string[][] = [];
+    await sync(t, [pullHeader(), subFrame('s1', 'tasks', both, -1)], {
+      clientId: 'client-a',
+    });
+    const aWire = makeWire();
+    const a = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-a',
+      send: aWire.send,
+      onPresence: (presence) => reports.push([...presence.keys()]),
+    });
+    const b = await presentClient(t, hub, 'client-b', both);
+    const publish = (scopeKey: string, doc: Record<string, unknown> | null) =>
+      a.handleMessage(
+        JSON.stringify({ event: 'presence', data: { scopeKey, doc } }),
+      );
+    publish('project:p1', { s: 'x'.repeat(15) });
+    // A republish on the same key replaces that key's charge.
+    publish('project:p1', { s: 'y'.repeat(15) });
+    publish('project:p2', { s: 'z'.repeat(15) });
+    expect(lastPresence(aWire)).toMatchObject({
+      scopeKey: 'project:p2',
+      error: 'presence.too_large',
+    });
+    expect(
+      presenceEvents(b.wire).map(({ kind, scopeKey }) => [kind, scopeKey]),
+    ).toEqual([
+      ['join', 'project:p1'],
+      ['update', 'project:p1'],
+    ]);
+    expect(reports).toEqual([['project:p1'], ['project:p1']]);
+    // Leaving a key frees its budget.
+    publish('project:p1', null);
+    publish('project:p2', { s: 'z'.repeat(15) });
+    expect(
+      presenceEvents(b.wire).map(({ kind, scopeKey }) => [kind, scopeKey]),
+    ).toEqual([
+      ['join', 'project:p1'],
+      ['update', 'project:p1'],
+      ['leave', 'project:p1'],
+      ['join', 'project:p2'],
+    ]);
+    expect(reports.slice(2)).toEqual([[], ['project:p2']]);
+    // A closed connection reports nothing more.
+    a.close();
+    expect(reports).toHaveLength(4);
+    expect(lastPresence(b.wire)?.kind).toBe('leave');
+  });
+
+  test('restore holds reported presence silently; an uncovered key and a failed socket leave (§8.6.1)', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    const hub = makeHub(t);
+    const b = await presentClient(t, hub, 'client-b', {
+      project_id: ['p1', 'p2'],
+    });
+    // client-a held p1 and p2 before the eviction; its record covers p1 now.
+    await sync(
+      t,
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      {
+        clientId: 'client-a',
+      },
+    );
+    const aWire = makeWire();
+    const reserved = '["remote-command","x"]';
+    const restored = await hub.restore([
+      {
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: 'client-a',
+        send: aWire.send,
+        presence: new Map([
+          ['project:p1', '{"v":1}'],
+          ['project:p2', '{"v":2}'],
+        ]),
+      },
+      {
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: reserved,
+        send: makeWire().send,
+        presence: new Map([['project:p1', '{"v":3}']]),
+      },
+    ]);
+    expect(restored.map((result) => result.status)).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expect(
+      presenceEvents(b.wire).map(({ kind, clientId, scopeKey }) => [
+        kind,
+        clientId,
+        scopeKey,
+      ]),
+    ).toEqual([
+      ['leave', 'client-a', 'project:p2'],
+      ['leave', reserved, 'project:p1'],
+    ]);
+    // No hello and no snapshot again; only the failed socket's leave.
+    expect(aWire.texts).toHaveLength(1);
+    expect(presenceEvents(aWire)).toMatchObject([
+      { kind: 'leave', clientId: reserved },
+    ]);
+    // A new registrant receives the restored document in its snapshot.
+    const c = await presentClient(t, hub, 'client-c');
+    expect(presenceEvents(c.wire)).toMatchObject([
+      { kind: 'join', clientId: 'client-a', doc: { v: 1 } },
+    ]);
+  });
+
+  test('a publish reuses the scope keys computed when registrations were assigned', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const a = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    const scopeKeysOf = spyOn(hub, 'scopeKeysOf');
+    try {
+      for (const v of [1, 2, 3]) {
+        a.session.handleMessage(
+          JSON.stringify({
+            event: 'presence',
+            data: { scopeKey: 'project:p1', doc: { v } },
+          }),
+        );
+      }
+      expect(presenceEvents(b.wire)).toHaveLength(3);
+      expect(scopeKeysOf).not.toHaveBeenCalled();
+    } finally {
+      scopeKeysOf.mockRestore();
+    }
+  });
+
+  test('a malformed presence publish drops the connection (§8.1)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    let closed = 0;
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: makeWire().send,
+      closeSocket: () => {
+        closed += 1;
+      },
+    });
+    session.handleMessage(
+      JSON.stringify({ event: 'presence', data: { scopeKey: 'project:p1' } }),
+    );
+    expect(closed).toBe(1);
+    expect(hub.sessionCount).toBe(0);
   });
 });
 
@@ -1287,5 +1644,47 @@ describe('unexpected exceptions in a socket round (SYNCULAR-ERROR-CLASS-001)', (
     expect(error?.details).toBe(JSON.stringify({ retryAfterMs: 2500 }));
     expect(JSON.stringify(message.frames)).not.toContain('secret-7f3a');
     expect(reported).toHaveLength(1);
+  });
+});
+
+describe('socket round size (§1.7, §8.7)', () => {
+  test('a round assembled past maxRequestBytes drops the connection', async () => {
+    const t = makeContext();
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      limits: { maxRequestBytes: 64 },
+    });
+    const wire = makeWire();
+    let closed = 0;
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+      closeSocket: () => {
+        closed += 1;
+      },
+    });
+    const bytes = requestBytes(
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      'client-1',
+    );
+    expect(bytes.length).toBeGreaterThan(64);
+    const chunk = (part: Uint8Array) => {
+      const tagged = new Uint8Array(part.length + 1);
+      tagged[0] = REALTIME_TAG_ROUND;
+      tagged.set(part, 1);
+      return tagged;
+    };
+    // The first chunk fits; the second takes the assembly past the cap.
+    expect(session.handleBinary(chunk(bytes.subarray(0, 40)))).toBeUndefined();
+    expect(closed).toBe(0);
+    expect(session.handleBinary(chunk(bytes.subarray(40)))).toBeUndefined();
+    expect(closed).toBe(1);
+    expect(hub.sessionCount).toBe(0);
+    expect(wire.binaries).toHaveLength(0);
   });
 });

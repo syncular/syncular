@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import {
+  ClientSyncError,
   installSyncScheduler,
   type SecurityLifecycle,
   type SyncIntent,
@@ -146,6 +147,65 @@ test('the newest background intent replaces the pending deadline', async () => {
   scheduler.stop();
   client.intent({ kind: 'interactive' });
   expect(queued).toHaveLength(0);
+});
+
+test('a drive deadline rejection schedules a background retry with backoff', async () => {
+  const client = new FakeSchedulerClient();
+  const queued: Array<() => void> = [];
+  const timers: Array<{
+    callback: () => void;
+    delayMs: number;
+    cancelled: boolean;
+  }> = [];
+  const errors: unknown[] = [];
+  const scheduler = installSyncScheduler(client, {
+    onError: (error) => errors.push(error),
+    queueMicrotask: (callback) => queued.push(callback),
+    schedule: (callback, delayMs) => {
+      const timer = { callback, delayMs, cancelled: false };
+      timers.push(timer);
+      return () => {
+        timer.cancelled = true;
+      };
+    },
+  });
+  const timeout = new ClientSyncError(
+    'sync.idle_timeout',
+    'syncUntilIdle exceeded its deadline',
+    true,
+    { timeoutMs: 60_000, rounds: 3 },
+  );
+  client.run = async () => {
+    throw timeout;
+  };
+
+  client.wake();
+  for (const delayMs of [250, 500]) {
+    queued.shift()?.();
+    await flushPromises();
+    // §7.7: the deadline left a half-finished drive and no client intent.
+    expect(timers.at(-1)).toMatchObject({ delayMs, cancelled: false });
+    timers.at(-1)?.callback();
+  }
+  client.run = async () => ({ budgetExhausted: false });
+  queued.shift()?.();
+  await flushPromises();
+  expect(client.runs).toBe(3);
+  expect(errors).toEqual([timeout, timeout]);
+
+  // §1.8: an unreachable endpoint waits for the host's connectivity signal.
+  client.run = async () => {
+    throw new ClientSyncError('sync.transport_failed', 'fetch failed', true, {
+      causeKind: 'network',
+    });
+  };
+  const scheduled = timers.length;
+  client.wake();
+  queued.shift()?.();
+  await flushPromises();
+  expect(timers).toHaveLength(scheduled);
+  expect(queued).toHaveLength(0);
+  scheduler.stop();
 });
 
 test('budget exhaustion schedules another batch without an external wake', async () => {

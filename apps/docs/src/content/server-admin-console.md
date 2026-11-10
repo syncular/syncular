@@ -28,7 +28,10 @@ On Cloudflare Workers, pass the same guards to `createWorkersFetchHandler`:
 ```ts title="src/worker.ts"
 const handler = createWorkersFetchHandler<Env>({
   config: (env) => ({ /* config and authenticate */ }),
-  realtime: (env) => ({ namespace: env.REALTIME }),
+  realtime: (env) => ({
+    namespace: env.REALTIME,
+    authenticate: (request) => authenticateRealtime(request, env),
+  }),
   admin: (env) => ({
     authorize: ({ request }) => isOperator(request, env),
     authorizeActions: ({ request }) => isOnCall(request, env),
@@ -50,7 +53,7 @@ The find box (`/`) takes the id a support ticket carries: a client id, an actor 
 
 ### A change did not sync
 
-Search the `clientCommitId` of the write, which the device's outbox holds. The write view lists each stored outcome: `applied` with the commit it became, or `rejected` with the result code and message of each operation. Below the outcomes, the events of the requests that carried the write show how each request ended. No outcome means that the server never received the write, or that its idempotency record expired.
+Search the `clientCommitId` of the write, which the device's outbox holds. The write view lists each stored outcome: `applied` with the commit it became, or `rejected` with the result code and message of each operation. Below the outcomes, the events of the requests that carried the write show how each request ended. No outcome means that the server never received the write, or that the database was restored to a point before it arrived.
 
 ### A device does not see a row
 

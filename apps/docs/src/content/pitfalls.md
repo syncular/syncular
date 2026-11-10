@@ -11,7 +11,7 @@ The page grows from integrator feedback. Add an entry once the failure is unders
 - Name the release that fixed a cause, so a reader on an older version sees why the rule exists.
 - Mark an entry **Open** while Syncular has no fix and the host carries a workaround. Remove the mark when a release closes the gap, and delete the entry when no design truth remains.
 - Anonymise examples ("an app with 40 tables and 6 campaigns"). Numbers come from a named measurement or a spec section.
-- Describe behavior of the current release (0.39.2). Link to the page or SPEC section that owns the rule instead of restating it.
+- Describe behavior of the current release. Link to the page or SPEC section that owns the rule instead of restating it.
 
 ## Transport and rounds
 
@@ -214,7 +214,7 @@ See [Blobs](/concepts-blobs/) and [SPEC §5.9.6](https://github.com/syncular/syn
 
 ### Do size the inline segment limit for your row size
 
-`inlineSegmentMaxBytes` defaults to 256 KiB. A page of 1000 rows of a log table can weigh 0.4 to 1.1 MB, and every such page becomes a `SEGMENT_REF` with its own object-store put on the server and its own download on the client: 245 to 340 ms per page, 1.4 s for four pages on staging. Since 0.39.0 the TypeScript client issues every download of a response before it applies the first page, and the Rust `HostTransport` runs four at a time; a custom `Transport` that keeps the default `download_segments` fetches them in order. An app that raised the inline limit to 2 MiB had no segments in a cold start, at the cost of larger responses, which compression offsets (an app measured 6 to 8 times on rows segments).
+`inlineSegmentMaxBytes` defaults to 256 KiB. A page of 1000 rows of a log table can weigh 0.4 to 1.1 MB, and every such page becomes a `SEGMENT_REF` with its own object-store put on the server and its own download on the client: 245 to 340 ms per page, 1.4 s for four pages on staging. The TypeScript client and the Rust `HostTransport` run four downloads of a response at a time, ahead of the page being applied; a custom `Transport` that keeps the default `download_segments` fetches them in order. An app that raised the inline limit to 2 MiB had no segments in a cold start, at the cost of larger responses, which compression offsets (an app measured 6 to 8 times on rows segments).
 
 See [Bootstrap & segments](/concepts-bootstrap/).
 
@@ -288,7 +288,7 @@ See [SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-
 
 Syncular publishes every package and crate in lockstep, and the two cores are locked against each other by conformance scenarios. Pin exact versions and move npm packages, crates, and the Tauri plugin in one change. Read the release notes for regressions: 0.39.0 made the row statement of a PostgreSQL commit grow with the square of its rows (3,000 rows took 1,588 ms, a 72,016-change commit 320 s), and 0.39.1 fixed it.
 
-See [Release process](https://github.com/syncular/syncular/blob/main/docs/RELEASE.md).
+See the [release notes](https://github.com/syncular/syncular/blob/main/docs/RELEASE-NOTES.md).
 
 ### Do remove host-side compression when you move to 0.39
 

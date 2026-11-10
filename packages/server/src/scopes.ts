@@ -22,22 +22,28 @@ export type EffectiveOutcome =
   | { readonly status: 'revoked' };
 
 /**
- * Effective = requested ∩ allowed per §3.2 rules 4–5. Inputs are assumed
+ * Effective = requested ∩ allowed per §3.2 rules 4–6. Inputs are assumed
  * key-validated (requested keys declared, no `'*'` requested values).
+ * `declared` is the table's declared variables: when a requested key passes
+ * through an allowed `'*'`, every declared variable the request omits and
+ * the actor holds a non-wildcard list for joins effective with that list
+ * (rule 4), so the wildcard never lifts the actor's other fences.
  */
 export function computeEffective(
+  declared: ReadonlySet<string>,
   requested: ScopeMap,
   resolved: ResolvedScopes,
 ): EffectiveOutcome {
   if (!resolved.ok) return { status: 'revoked' };
   const effective: ScopeMap = {};
-  const requestedKeys = Object.keys(requested);
-  for (const key of requestedKeys) {
+  let wildcard = false;
+  for (const key of Object.keys(requested)) {
     const requestedValues = requested[key] ?? [];
     const allowedValues = resolved.allowed[key];
     if (allowedValues === undefined) return { status: 'revoked' };
     let values: string[];
     if (allowedValues.includes('*')) {
+      wildcard = true;
       values = [...requestedValues];
     } else {
       values = requestedValues.filter((v) => allowedValues.includes(v));
@@ -46,6 +52,20 @@ export function computeEffective(
     effective[key] = values;
   }
   if (Object.keys(effective).length === 0) return { status: 'revoked' };
+  if (wildcard) {
+    for (const variable of declared) {
+      const allowedValues = resolved.allowed[variable];
+      if (
+        Object.hasOwn(requested, variable) ||
+        allowedValues === undefined ||
+        allowedValues.includes('*')
+      ) {
+        continue;
+      }
+      if (allowedValues.length === 0) return { status: 'revoked' };
+      effective[variable] = [...allowedValues];
+    }
+  }
   return { status: 'active', effective };
 }
 

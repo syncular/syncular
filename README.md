@@ -46,7 +46,7 @@ Syncular is pre-1.0 and currently maintained by me,
 [Benjamin Kniffler](https://github.com/bkniffler). The wire protocol is written
 down and checked across two implementations. Public APIs and protocol details
 can still change before 1.0. Changes are recorded in
-[`docs/RELEASE.md`](docs/RELEASE.md).
+[`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md).
 
 ## How behavior is checked
 

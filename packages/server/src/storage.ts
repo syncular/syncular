@@ -181,9 +181,25 @@ export interface NewChange {
   readonly op: 'upsert' | 'delete';
   /** Present for upsert (§2.2). */
   readonly rowVersion?: number;
+  /**
+   * Present for delete: the deleted row's last `server_version`, recorded on
+   * its tombstone (§2.2). Never reaches the wire.
+   */
+  readonly deletedVersion?: number;
   readonly scopes: Record<string, string>;
   /** Present for upsert. */
   readonly payload?: Uint8Array;
+}
+
+/** §2.2 delete-precedence tombstone of a row deleted within the horizon. */
+export interface Tombstone {
+  readonly commitSeq: number;
+  /**
+   * The deleted row's last `server_version` and stored scopes. Both are
+   * absent on a tombstone written before servers recorded them.
+   */
+  readonly serverVersion?: number;
+  readonly scopes?: Record<string, string>;
 }
 
 export interface NewCommit {
@@ -590,17 +606,17 @@ export interface StorageTransaction {
     }[],
   ): Promise<void>;
   /**
-   * §5 delete-precedence tombstone read: the `commit_seq` of the newest
-   * applied delete of this row still within the pruning horizon, or
-   * `undefined` when no tombstone exists. Consulted only when an upsert's
-   * stored row is absent. Required: in-tree adapters implement it on the
-   * transaction's own connection with read-your-own-writes semantics.
+   * §5 delete-precedence tombstone read: the newest applied delete of this
+   * row still within the pruning horizon, or `undefined` when no tombstone
+   * exists. Consulted only when an upsert's stored row is absent. Required:
+   * in-tree adapters implement it on the transaction's own connection with
+   * read-your-own-writes semantics.
    */
-  getTombstoneSeq(table: string, rowId: string): Promise<number | undefined>;
+  getTombstone(table: string, rowId: string): Promise<Tombstone | undefined>;
   /**
-   * Remove the row's tombstone because the row was recreated in this
-   * transaction (§5: an explicit insert recreates). Called on every insert
-   * over an absent row; a no-op when no tombstone exists.
+   * Remove the row's tombstone because the row is live again in this
+   * transaction: an insert over its tombstone (§6.2) or a §2.2 scope move.
+   * A no-op when no tombstone exists.
    */
   clearTombstone(table: string, rowId: string): Promise<void>;
   /**
@@ -1080,7 +1096,10 @@ export interface ServerStorage {
     cursor: number,
     updatedAtMs: number,
   ): Promise<void>;
-  /** Minimum cursor with updatedAtMs >= cutoff; null when none are active. */
+  /**
+   * Minimum non-negative cursor with updatedAtMs >= cutoff (§4.6); null when
+   * none are active. A bootstrapping client (cursor < 0) holds no cursor.
+   */
   getActiveClientCursorFloor(
     partition: string,
     cutoffMs: number,
@@ -1116,9 +1135,11 @@ export interface ServerStorage {
    * `eraseScopeValueHistory`: under the partition write lock, removes up to
    * `limit` upsert change records of `table` at or below `throughSeq` whose
    * scopes bind `variable` to `value`, then up to `limit` change scope index
-   * entries of that binding whose commit holds no such change any more.
+   * entries of that binding whose commit holds no such change any more,
+   * then strips `serverRow` from up to `limit` stored conflict results of
+   * `table` whose conflict authorization scopes bind `variable` to `value`.
    * Delete change records stay: clients behind the erasure still need them.
-   * Returns the number of records removed.
+   * Returns the number of records removed or stripped.
    */
   listScopeValueRows?(
     partition: string,

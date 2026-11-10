@@ -51,6 +51,7 @@ import {
   createWorkersFetchHandler,
   D1ServerStorage,
   durableObjectRealtimeNotifier,
+  PresenceAttachmentError,
   REALTIME_DO_UPGRADE_PATH,
   type RealtimeDOConfig,
   setWebSocketPair,
@@ -1361,6 +1362,46 @@ describe('Workers fetch handler realtime route', () => {
     expect(do_.host.sessionCount).toBe(1);
   });
 
+  test('allowedOrigins refuses a browser upgrade from another origin', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    let authenticated = 0;
+    const handler = createWorkersFetchHandler<unknown>({
+      config: () => ({
+        config: {
+          schema: SCHEMA,
+          storage: new D1ServerStorage(db),
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+        },
+        authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+      }),
+      realtime: () => ({
+        namespace: ns,
+        allowedOrigins: ['https://app.example'],
+        authenticate: () => {
+          authenticated += 1;
+          return { partition: PARTITION, actorId: ACTOR_ID, clientId: 'web' };
+        },
+      }),
+    });
+    const ctx = { waitUntil: () => {}, passThroughOnException: () => {} };
+    const upgrade = (headers: Record<string, string>) =>
+      handler(
+        new Request('https://worker.example/realtime', {
+          headers: { upgrade: 'websocket', ...headers },
+        }),
+        {},
+        ctx,
+      );
+    const refused = await upgrade({ origin: 'https://evil.example' });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ code: 'sync.forbidden' });
+    expect(authenticated).toBe(0);
+    expect((await upgrade({ origin: 'https://app.example' })).status).toBe(101);
+    expect((await upgrade({})).status).toBe(101);
+  });
+
   test('GET /realtime without an upgrade header is a 426', async () => {
     const db = await makeDb();
     const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
@@ -1417,5 +1458,326 @@ describe('socket close cleanup (§8.2)', () => {
       drainSpy.mockRestore();
       closeSpy.mockRestore();
     }
+  });
+});
+
+test('a forwarded gzip body past maxRequestBytes answers 413 sync.limit_exceeded (§1.7)', async () => {
+  const db = await makeDb();
+  const ns = new FakeDurableObjectNamespace(db, {
+    syncConfig: (storage) => ({
+      schema: SCHEMA,
+      storage,
+      resolveScopes: () => ({ list_id: ['*'] }),
+      segments: new MemorySegmentStore(),
+      limits: { maxRequestBytes: 1024 },
+    }),
+  });
+  const request = new Request(new URL(SYNC_DO_REQUEST_PATH, 'https://do'), {
+    method: 'POST',
+    headers: {
+      'content-type': SSP2_CONTENT_TYPE,
+      'content-encoding': 'gzip',
+    },
+    body: Bun.gzipSync(new Uint8Array(1024 * 1024)).slice().buffer,
+  });
+  writeRequestIdentityHeaders(request.headers, {
+    partition: PARTITION,
+    actorId: ACTOR_ID,
+  });
+  const response = await ns.get(ns.idFromName(PARTITION)).fetch(request);
+  expect(response.status).toBe(413);
+  expect(await response.json()).toMatchObject({
+    code: 'sync.limit_exceeded',
+    details: { limit: 'maxRequestBytes', max: 1024 },
+  });
+});
+
+describe('hibernation rehydration (§8.1)', () => {
+  const SUBSCRIBE: RequestFrame[] = [
+    {
+      type: 'PULL_HEADER',
+      limitCommits: 100,
+      limitSnapshotRows: 100,
+      maxSnapshotPages: 4,
+      accept: 0b0011,
+    },
+    {
+      type: 'SUBSCRIPTION',
+      id: 's1',
+      table: 'tasks',
+      scopes: { list_id: ['L'] },
+      cursor: -1,
+    },
+  ];
+
+  function forwardedSync(frames: RequestFrame[], clientId: string): Request {
+    const request = new Request(new URL(SYNC_DO_REQUEST_PATH, 'https://do'), {
+      method: 'POST',
+      headers: { 'content-type': SSP2_CONTENT_TYPE },
+      body: syncRequestBytes(frames, clientId).slice().buffer as ArrayBuffer,
+    });
+    writeRequestIdentityHeaders(request.headers, {
+      partition: PARTITION,
+      actorId: ACTOR_ID,
+    });
+    return request;
+  }
+
+  test('a push waits for the rehydration a pull-only round started', async () => {
+    const db = await makeDb();
+    let gate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+    const entered = Promise.withResolvers<void>();
+    const ns = new FakeDurableObjectNamespace(db, {
+      syncConfig: (storage) => ({
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: async ({ clientId }) => {
+          if (clientId === 'reader' && gate !== undefined) {
+            entered.resolve();
+            await gate.promise;
+          }
+          return { list_id: ['*'] };
+        },
+      }),
+    });
+    const { do_, server: reader } = await connect(ns, 'reader');
+    await sendRound(do_, reader, SUBSCRIBE, 'reader');
+    await do_.deliver(reader, JSON.stringify({ type: 'ack', cursor: 0 }));
+    do_.simulateHibernation();
+    reader.sent.length = 0;
+    gate = Promise.withResolvers<void>();
+    // A pull-only round begins the rebuild and blocks inside it.
+    const pull = do_.fetch(forwardedSync(SUBSCRIBE, 'puller'));
+    await entered.promise;
+    const push = do_.fetch(
+      forwardedSync(
+        [
+          {
+            type: 'PUSH_COMMIT',
+            clientCommitId: 'during-rebuild',
+            operations: [
+              {
+                table: 'tasks',
+                rowId: 't9',
+                op: 'upsert',
+                payload: taskRow('t9', 'L', 'during rebuild'),
+              },
+            ],
+          },
+        ],
+        'writer',
+      ),
+    );
+    let pushed = false;
+    void push.then(() => {
+      pushed = true;
+    });
+    // Chained microtasks: the old host finished the push inside these.
+    for (let turn = 0; turn < 500; turn += 1) {
+      await Promise.resolve();
+    }
+    expect(pushed).toBe(false);
+    gate.resolve();
+    expect((await push).status).toBe(200);
+    expect((await pull).status).toBe(200);
+    expect(
+      reader.sent.some(
+        (frame) =>
+          frame instanceof Uint8Array && frame[0] === REALTIME_TAG_DELTA,
+      ),
+    ).toBe(true);
+  });
+
+  test('a wake reads the partition once and each client record once', async () => {
+    const db = await makeDb();
+    const calls = { touch: 0, maxSeq: 0, record: 0 };
+    const ns = new FakeDurableObjectNamespace(db, {
+      syncConfig: (storage) => {
+        const touch = storage.touchPartition.bind(storage);
+        const maxSeq = storage.getMaxCommitSeq.bind(storage);
+        const record = storage.getClientRecord.bind(storage);
+        storage.touchPartition = (...args) => {
+          calls.touch += 1;
+          return touch(...args);
+        };
+        storage.getMaxCommitSeq = (...args) => {
+          calls.maxSeq += 1;
+          return maxSeq(...args);
+        };
+        storage.getClientRecord = (...args) => {
+          calls.record += 1;
+          return record(...args);
+        };
+        return {
+          schema: SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+        };
+      },
+    });
+    const sockets: FakeWebSocket[] = [];
+    let do_: FakeRealtimeDO | undefined;
+    for (const clientId of ['c1', 'c2', 'c3']) {
+      const connected = await connect(ns, clientId);
+      do_ = connected.do_;
+      await sendRound(do_, connected.server, SUBSCRIBE, clientId);
+      sockets.push(connected.server);
+    }
+    if (do_ === undefined) throw new Error('no DO');
+    do_.simulateHibernation();
+    Object.assign(calls, { touch: 0, maxSeq: 0, record: 0 });
+    await do_.deliver(sockets[0]!, JSON.stringify({ type: 'ack', cursor: 0 }));
+    expect(calls).toEqual({ touch: 1, maxSeq: 1, record: 3 });
+    expect(do_.host.sessionCount).toBe(3);
+    expect(
+      textFrames(sockets.flatMap((ws) => ws.sent)).filter(
+        (m) => m.event === 'hello',
+      ),
+    ).toHaveLength(3);
+  });
+
+  test('presence survives a hibernation in the socket attachment (§8.6.1)', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const { do_, server: a } = await connect(ns, 'a');
+    await sendRound(do_, a, SUBSCRIBE, 'a');
+    const { server: b } = await connect(ns, 'b');
+    await sendRound(do_, b, SUBSCRIBE, 'b');
+    const publish = (v: number) =>
+      do_.deliver(
+        a,
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'list:L', doc: { v, name: 'Zoë' } },
+        }),
+      );
+    const presence = (ws: FakeWebSocket) =>
+      textFrames(ws.sent)
+        .filter((m) => m.event === 'presence')
+        .map((m) => {
+          const data = m.data as {
+            kind: string;
+            clientId: string;
+            doc: unknown;
+          };
+          return [data.kind, data.clientId, data.doc];
+        });
+    await publish(1);
+    do_.simulateHibernation();
+    // A restored peer's publish is an update.
+    await publish(2);
+    do_.simulateHibernation();
+    // A new socket receives the restored peer in its snapshot.
+    const { server: c } = await connect(ns, 'c');
+    await sendRound(do_, c, SUBSCRIBE, 'c');
+    do_.simulateHibernation();
+    // A close after a wake still leaves.
+    await do_.closeSocket(a);
+    expect(presence(b)).toEqual([
+      ['join', 'a', { v: 1, name: 'Zoë' }],
+      ['update', 'a', { v: 2, name: 'Zoë' }],
+      ['leave', 'a', null],
+    ]);
+    expect(presence(c)).toEqual([
+      ['join', 'a', { v: 2, name: 'Zoë' }],
+      ['leave', 'a', null],
+    ]);
+  });
+
+  test('the host refuses a presence cap the attachment cannot hold (§8.6.1)', async () => {
+    const db = await makeDb();
+    const hubFor = (maxPresenceBytes: number) => {
+      const ns = new FakeDurableObjectNamespace(db, {
+        syncConfig: (storage) => ({
+          schema: SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+          maxPresenceBytes,
+        }),
+      });
+      return ns
+        .get(ns.idFromName(PARTITION))
+        .host.serialized(async (contextFor) =>
+          contextFor({ partition: PARTITION, actorId: ACTOR_ID }),
+        );
+    };
+    // 9,785 + floor(2 × 9,785 / 3) + 64 framing + 11 empty identity = 16,383.
+    await hubFor(9785);
+    const refused = hubFor(9786);
+    await expect(refused).rejects.toBeInstanceOf(PresenceAttachmentError);
+    await expect(refused).rejects.toMatchObject({
+      code: 'realtime.presence_exceeds_attachment',
+      details: { maxPresenceBytes: 9786, attachmentLimitBytes: 16_384 },
+    });
+  });
+
+  test('the upgrade refuses an identity that does not fit beside the presence budget', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const do_ = ns.get(ns.idFromName(PARTITION));
+    const upgrade = (clientId: string) => {
+      const request = new Request(
+        new URL(REALTIME_DO_UPGRADE_PATH, 'https://do'),
+        { headers: { upgrade: 'websocket' } },
+      );
+      writeIdentityHeaders(request.headers, {
+        partition: PARTITION,
+        actorId: ACTOR_ID,
+        clientId,
+      });
+      return do_.fetch(request);
+    };
+    // 16,384 − 64 − 8,192 − 5,461 = 2,667 identity bytes; the JSON array
+    // with `part-1`, `actor-1` and the newline takes 24 of them.
+    expect((await upgrade('x'.repeat(2643))).status).toBe(101);
+    const refused = await upgrade('x'.repeat(2644));
+    expect(refused.status).toBe(413);
+    expect(await refused.json()).toMatchObject({
+      code: 'sync.limit_exceeded',
+      details: { limit: 'attachmentBytes', max: 16_384 },
+    });
+  });
+
+  test('a close after a wake rebuilds the other sockets first', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const { do_, server: a } = await connect(ns, 'a');
+    await connect(ns, 'b');
+    do_.simulateHibernation();
+    await do_.closeSocket(a);
+    expect(do_.host.sessionCount).toBe(1);
+  });
+});
+
+describe('heartbeat alarm (§8.5)', () => {
+  test('the alarm beats every socket without a rebuild and stops with the last socket', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, {
+      ...realtimeConfig(),
+      heartbeatIntervalMs: 1000,
+    });
+    const { do_, server: a } = await connect(ns, 'a');
+    const { server: b } = await connect(ns, 'b');
+    const armedAt = do_.state.alarmAt;
+    expect(armedAt).not.toBeNull();
+    do_.simulateHibernation();
+    a.sent.length = 0;
+    b.sent.length = 0;
+    await do_.host.alarm();
+    for (const ws of [a, b]) {
+      expect(textFrames(ws.sent).map((m) => m.event)).toEqual(['heartbeat']);
+    }
+    expect(do_.host.sessionCount).toBe(0);
+    expect(do_.state.alarmAt).not.toBeNull();
+    for (const ws of [a, b]) {
+      ws.close();
+      await do_.closeSocket(ws);
+    }
+    do_.state.alarmAt = null;
+    await do_.host.alarm();
+    expect(do_.state.alarmAt).toBeNull();
   });
 });

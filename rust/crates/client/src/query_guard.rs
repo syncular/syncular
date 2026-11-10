@@ -1,16 +1,23 @@
-//! The raw-query guard, mirrored from the TS core's
-//! `query-guard.ts` — the two cores enforce the same rule so `query` behaves
-//! identically through every binding:
+//! The raw-query guard, mirrored from the TS core's `query-guard.ts`; both
+//! cores refuse the same SQL through `query` and the snapshot reads:
 //!
-//! 1. READ-ONLY: only `select / with / explain / pragma / values` may run.
-//!    A write against the local mirror bypasses the outbox (SPEC §7.1) and
-//!    silently diverges from the server — writes go through `mutate`.
-//! 2. ONE STATEMENT: `sqlite3_prepare` parses only the first statement and
-//!    silently ignores the tail; instead of ignoring, reject loudly.
+//! 1. READ-ONLY: SQLite decides (`sqlite3_stmt_readonly`) and the statement
+//!    returns columns, which refuses `BEGIN`, `ATTACH` and the other read-only
+//!    statements that change the connection. A write against the local
+//!    mirror bypasses the outbox (SPEC §7.1); writes go through `mutate`.
+//! 2. NO PRAGMA, refused before SQLite compiles anything: SQLite applies a
+//!    flag pragma such as `query_only` while it compiles the statement, even
+//!    under `EXPLAIN`. `pragma_table_info('tasks')` reads a pragma instead.
+//! 3. ONE STATEMENT: anything but whitespace, comments and semicolons after
+//!    the first statement is refused. Only the first statement is compiled
+//!    (`Batch`), because `Connection::prepare` compiles the tail as well.
 //!
 //! Engine-internal reads use the connection directly and never route here.
 
-const READ_ONLY_VERBS: [&str; 5] = ["select", "with", "explain", "pragma", "values"];
+use crate::api::QueryReadFailure;
+use rusqlite::fallible_iterator::FallibleIterator;
+use rusqlite::{Batch, Connection, Statement};
+
 const PUBLIC_SYNC_VERSION: &str = "_sync_version";
 const NATIVE_SYNC_VERSION: &str = "_syncular_version";
 
@@ -101,169 +108,70 @@ pub(crate) fn lower_public_query_sql(sql: &str) -> String {
     output
 }
 
-/// Assert `sql` is one read-only statement; `Err(message)` otherwise.
-pub fn assert_read_only_query(sql: &str) -> Result<(), String> {
-    let statements = split_statements(sql);
-    if statements.is_empty() {
-        return Err("query() was given an empty statement".to_owned());
-    }
-    if statements.len() > 1 {
-        return Err(format!(
-            "query() runs a single statement, but {} were given — split them \
-             into separate query() calls",
-            statements.len()
-        ));
-    }
-    let head = strip_leading(statements[0]);
-    let verb: String = head
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let reject = || {
-        Err(format!(
-            "query() is read-only — this statement writes the local database \
-             directly, which bypasses the sync outbox (SPEC §7.1); use \
-             mutate() for inserts/updates/deletes. Rejected: {}",
-            first_words(sql)
-        ))
+/// Prepare the first statement of `sql` for the raw-SQL tier, or refuse it.
+pub(crate) fn prepare_read_only<'c>(
+    conn: &'c Connection,
+    sql: &str,
+) -> Result<Statement<'c>, QueryReadFailure> {
+    let read_only = || {
+        QueryReadFailure::from(
+            "query() runs read-only statements and no PRAGMA; write through mutate() so the \
+             outbox records it (SPEC §7.1)"
+                .to_owned(),
+        )
     };
-    if !READ_ONLY_VERBS.contains(&verb.as_str()) {
-        return reject();
-    }
-    if verb == "with" {
-        // SQLite allows `WITH … DELETE/INSERT/UPDATE`; only a SELECT/VALUES
-        // main statement is a read.
-        match main_verb_after_with(head) {
-            Some(main) if main == "select" || main == "values" => {}
-            _ => return reject(),
-        }
-    }
-    Ok(())
-}
-
-/// The main verb of a `WITH …` statement. CTE bodies live inside
-/// parentheses, and a bare keyword cannot be a CTE name, so the first
-/// paren-depth-0 keyword after the clause is the main verb.
-fn main_verb_after_with(sql: &str) -> Option<String> {
-    const MAIN_VERBS: [&str; 6] = ["select", "values", "insert", "update", "delete", "replace"];
-    let bytes = sql.as_bytes();
-    let n = bytes.len();
-    let mut depth: i32 = 0;
-    let mut i = 0usize;
-    let mut saw_with = false;
-    while i < n {
-        match bytes[i] {
-            b'-' if bytes.get(i + 1) == Some(&b'-') => {
-                i = sql[i..].find('\n').map_or(n, |off| i + off + 1);
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i = sql[i + 2..].find("*/").map_or(n, |off| i + 2 + off + 2);
-            }
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < n {
-                    if bytes[i] == q {
-                        if bytes.get(i + 1) == Some(&q) {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'[' => {
-                i = sql[i + 1..].find(']').map_or(n, |off| i + 1 + off + 1);
-            }
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                i += 1;
-            }
-            c if c.is_ascii_alphabetic() || c == b'_' => {
-                let mut j = i + 1;
-                while j < n && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-                    j += 1;
-                }
-                let word = sql[i..j].to_ascii_lowercase();
-                if depth == 0 {
-                    if !saw_with && word == "with" {
-                        saw_with = true;
-                    } else if saw_with && MAIN_VERBS.contains(&word.as_str()) {
-                        return Some(word);
-                    }
-                }
-                i = j;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// Split into top-level statements at unquoted `;`, skipping string
-/// literals, quoted/bracketed identifiers and comments. Statements that are
-/// only whitespace/comments are dropped.
-fn split_statements(sql: &str) -> Vec<&str> {
-    let bytes = sql.as_bytes();
-    let mut statements = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    let n = bytes.len();
-    while i < n {
-        match bytes[i] {
-            b'-' if bytes.get(i + 1) == Some(&b'-') => {
-                i = sql[i..].find('\n').map_or(n, |off| i + off + 1);
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i = sql[i + 2..].find("*/").map_or(n, |off| i + 2 + off + 2);
-            }
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < n {
-                    if bytes[i] == q {
-                        if bytes.get(i + 1) == Some(&q) {
-                            i += 2; // doubled quote escapes itself
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'[' => {
-                i = sql[i + 1..].find(']').map_or(n, |off| i + 1 + off + 1);
-            }
-            b';' => {
-                let piece = &sql[start..i];
-                if !strip_leading(piece).is_empty() {
-                    statements.push(piece);
-                }
-                start = i + 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    let piece = &sql[start..];
-    if !strip_leading(piece).is_empty() {
-        statements.push(piece);
-    }
-    statements
-}
-
-/// Strip leading whitespace and comments.
-fn strip_leading(sql: &str) -> &str {
-    let mut rest = sql.trim_start();
+    let mut rest = skip_blank(sql);
     loop {
+        let word = &rest[..rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len())];
+        if word.eq_ignore_ascii_case("pragma") {
+            return Err(read_only());
+        }
+        if !["explain", "query", "plan"]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword))
+        {
+            break;
+        }
+        rest = skip_blank(&rest[word.len()..]);
+    }
+    let bytes = sql.as_bytes();
+    let mut end = 0;
+    while end < bytes.len() && bytes[end] != b';' {
+        end = match bytes[end] {
+            b'-' if bytes.get(end + 1) == Some(&b'-') => sql[end..]
+                .find('\n')
+                .map_or(bytes.len(), |off| end + off + 1),
+            b'/' if bytes.get(end + 1) == Some(&b'*') => sql[end + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |off| end + off + 4),
+            quote @ (b'\'' | b'"' | b'`') => sql[end + 1..]
+                .find(char::from(quote))
+                .map_or(bytes.len(), |off| end + off + 2),
+            b'[' => sql[end + 1..]
+                .find(']')
+                .map_or(bytes.len(), |off| end + off + 2),
+            _ => end + 1,
+        };
+    }
+    if !skip_blank(&sql[end..]).is_empty() {
+        return Err("query() runs one statement per call".to_owned().into());
+    }
+    let statement = Batch::new(conn, sql)
+        .next()?
+        .ok_or_else(|| "query() was given an empty statement".to_owned())?;
+    if !statement.readonly() || statement.column_count() == 0 {
+        return Err(read_only());
+    }
+    Ok(statement)
+}
+
+/// Skip leading whitespace, comments and empty statements.
+fn skip_blank(sql: &str) -> &str {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ';');
         if let Some(after) = rest.strip_prefix("--") {
             rest = after.find('\n').map_or("", |off| &after[off + 1..]);
         } else if let Some(after) = rest.strip_prefix("/*") {
@@ -271,17 +179,6 @@ fn strip_leading(sql: &str) -> &str {
         } else {
             return rest;
         }
-        rest = rest.trim_start();
-    }
-}
-
-fn first_words(sql: &str) -> String {
-    let compact = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() > 72 {
-        let head: String = compact.chars().take(72).collect();
-        format!("{head}…")
-    } else {
-        compact
     }
 }
 
@@ -289,52 +186,80 @@ fn first_words(sql: &str) -> String {
 mod tests {
     use super::*;
 
+    fn connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('a'), ('z');")
+            .unwrap();
+        conn
+    }
+
     #[test]
-    fn allows_read_only_verbs() {
+    fn runs_one_statement_sqlite_reports_read_only() {
+        let conn = connection();
         for sql in [
-            "SELECT 1",
-            "  select * from tasks",
-            "WITH x AS (SELECT 1) SELECT * FROM x",
-            "WITH x AS (SELECT 1), y AS (SELECT 2) SELECT * FROM x, y",
+            "  select id from t",
+            "WITH x AS (SELECT 1 AS v) SELECT v FROM x",
             "WITH RECURSIVE c(n) AS (VALUES (1)) SELECT n FROM c",
+            "WITH \"x$delete\" AS (SELECT 1 AS v) SELECT v FROM \"x$delete\"",
             "EXPLAIN QUERY PLAN SELECT 1",
-            "PRAGMA table_info(tasks)",
+            "SELECT * FROM pragma_table_info('t')",
             "VALUES (1), (2)",
             "-- leading comment\nSELECT 1",
             "/* block */ SELECT 1",
-            "SELECT 1;",
-            "SELECT 1; -- done",
             "SELECT ';' AS s",
-            "SELECT 'it''s; fine'",
-            "SELECT \"a;b\" FROM tasks",
-            "SELECT [a;b] FROM tasks",
+            "SELECT 'it''s; fine' AS s",
+            "SELECT \"id\" FROM t WHERE ';' <> 1 -- trailing; comment",
+            "SELECT /* ; */ 1",
+            "SELECT [id] FROM t",
+            "SELECT 1;",
+            "SELECT 1;  -- done",
+            "SELECT 1;;",
         ] {
-            assert!(assert_read_only_query(sql).is_ok(), "should allow: {sql}");
+            assert!(prepare_read_only(&conn, sql).is_ok(), "should allow: {sql}");
         }
     }
 
     #[test]
-    fn rejects_writes_and_multi_statements() {
+    fn refuses_writes_pragma_and_multi_statements_before_they_act() {
+        let conn = connection();
         for sql in [
-            "INSERT INTO tasks (id) VALUES ('t1')",
-            "UPDATE tasks SET title = 'x'",
-            "DELETE FROM tasks",
-            "DROP TABLE tasks",
+            "INSERT INTO t (id) VALUES ('w')",
+            "UPDATE t SET id = 'w'",
+            "DELETE FROM t",
+            "REPLACE INTO t (id) VALUES ('w')",
+            "DROP TABLE t",
             "CREATE TABLE evil (id)",
+            "ALTER TABLE t ADD COLUMN evil TEXT",
             "BEGIN",
             "VACUUM",
-            "SELECT 1; DROP TABLE tasks",
+            "ATTACH ':memory:' AS evil",
+            "WITH x AS (SELECT 1) DELETE FROM t",
+            "WITH x$select AS (SELECT 1) DELETE FROM t",
+            "WITH x AS (SELECT 1), y AS (SELECT 2) INSERT INTO t (id) VALUES ('w')",
+            "PRAGMA query_only = ON",
+            "EXPLAIN PRAGMA query_only = ON",
+            "explain /* c */ query plan pragma query_only = ON",
+            "; -- c\nPRAGMA query_only = ON",
+            "SELECT 1; PRAGMA query_only = ON",
+            "PRAGMA table_info(t)",
             "SELECT 1; SELECT 2",
-            "WITH t AS (SELECT 1) DELETE FROM tasks",
-            "WITH t AS (SELECT 1) INSERT INTO tasks (id) SELECT 'x'",
-            "WITH t AS (SELECT 1) UPDATE tasks SET title = 'x'",
+            "SELECT 1; DELETE FROM t",
             "",
             "   ",
             "-- only a comment",
             ";",
         ] {
-            assert!(assert_read_only_query(sql).is_err(), "should reject: {sql}");
+            let refused = prepare_read_only(&conn, sql).map(|_| ());
+            assert!(refused.is_err(), "should refuse: {sql}");
+            assert_eq!(refused.unwrap_err().code, None, "{sql}");
         }
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
+            .unwrap();
+        let query_only: i64 = conn
+            .query_row("PRAGMA query_only", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((count, query_only), (2, 0));
     }
 
     #[test]

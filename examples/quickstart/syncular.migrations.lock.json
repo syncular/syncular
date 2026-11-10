@@ -1,9 +1,10 @@
 {
-  "formatVersion": 2,
+  "formatVersion": 3,
   "migrations": [
     {
       "name": "0001_initial",
-      "sha256": "9c8b9b5541e527627a9f93b01aea6897431385657af55c0d8e74ad153f601c9a"
+      "sha256": "9c8b9b5541e527627a9f93b01aea6897431385657af55c0d8e74ad153f601c9a",
+      "schemaVersion": 1
     }
   ],
   "head": {

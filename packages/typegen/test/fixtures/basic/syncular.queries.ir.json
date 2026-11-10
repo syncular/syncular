@@ -679,8 +679,8 @@
     {
       "name": "projectDocCount",
       "file": "project-doc-count.sql",
-      "sourceSql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
-      "sql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs\nGROUP BY project_id",
+      "sourceSql": "-- Aggregate (a whole-expression count(*) is integer) + a plain grouped ref.\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
+      "sql": "-- Aggregate (a whole-expression count(*) is integer) + a plain grouped ref.\nSELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs\nGROUP BY project_id",
       "positionalSql": "SELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs GROUP BY project_id",
       "relations": [
         {
@@ -705,7 +705,7 @@
         {
           "name": "doc_count",
           "langName": "docCount",
-          "type": "float",
+          "type": "integer",
           "nullable": true,
           "fidelity": "fallback"
         }

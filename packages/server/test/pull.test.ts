@@ -3,7 +3,13 @@
  * (SPEC.md §3.2, §3.3, §4.5) — driven through bytes.
  */
 import { describe, expect, test } from 'bun:test';
-import { type CommitFrame, decodeRow } from '@syncular/core';
+import {
+  type CommitFrame,
+  decodeRow,
+  decodeRowsSegment,
+  type SegmentInlineFrame,
+} from '@syncular/core';
+import { computeEffective } from '../src/scopes';
 import {
   docRow,
   makeContext,
@@ -258,5 +264,106 @@ describe('revocation (§3.2 rule 5, §3.3)', () => {
     expect(s.start.status).toBe('revoked');
     expect(s.start.reasonCode).toBe('sync.scope_revoked');
     expect(s.end.nextCursor).toBe(cursor);
+  });
+});
+
+describe('wildcard fence (§3.2 rule 4)', () => {
+  /** docs in (o1, p1) and (o2, p1), seeded by an all-wildcard actor. */
+  async function fencedDocs() {
+    const t = makeContext();
+    t.scopes.value = { org_id: ['*'], projectId: ['*'] };
+    await sync(t, [
+      pushCommit('c1', [
+        upsert('docs', 'd-o1', docRow('d-o1', 'o1', 'p1')),
+        upsert('docs', 'd-o2', docRow('d-o2', 'o2', 'p1')),
+      ]),
+    ]);
+    return t;
+  }
+
+  function bootstrapRowIds(body: { type: string }[]): unknown[] {
+    return body
+      .filter((f): f is SegmentInlineFrame => f.type === 'SEGMENT_INLINE')
+      .flatMap((f) => decodeRowsSegment(f.payload).blocks.flat())
+      .map((row) => row.values[0]);
+  }
+
+  test("a requested key through '*' keeps the actor's other lists as fences", async () => {
+    const t = await fencedDocs();
+    t.scopes.value = { org_id: ['o1'], projectId: ['*'] };
+    const message = await sync(t, [
+      pullHeader(),
+      subFrame('boot', 'docs', { projectId: ['p1'] }, -1),
+      subFrame('inc', 'docs', { projectId: ['p1'] }, 0),
+    ]);
+    const boot = section(message, 'boot');
+    expect(boot.start.status).toBe('active');
+    expect(boot.start.effectiveScopes).toEqual({
+      org_id: ['o1'],
+      projectId: ['p1'],
+    });
+    expect(bootstrapRowIds(boot.body)).toEqual(['d-o1']);
+    const inc = section(message, 'inc');
+    expect(inc.start.effectiveScopes).toEqual({
+      org_id: ['o1'],
+      projectId: ['p1'],
+    });
+    expect(
+      commitsOf(inc.body).flatMap((c) => c.changes.map((ch) => ch.rowId)),
+    ).toEqual(['d-o1']);
+  });
+
+  test('all-wildcard actors and fully named requests are unchanged', async () => {
+    const t = await fencedDocs();
+    const open = await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'docs', { projectId: ['p1'] }, -1),
+    ]);
+    expect(section(open, 's1').start.effectiveScopes).toEqual({
+      projectId: ['p1'],
+    });
+    expect(bootstrapRowIds(section(open, 's1').body).sort()).toEqual([
+      'd-o1',
+      'd-o2',
+    ]);
+    t.scopes.value = { org_id: ['o1', 'o2'], projectId: ['*'] };
+    const named = await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'docs', { org_id: ['o2'], projectId: ['p1'] }, -1),
+    ]);
+    expect(section(named, 's1').start.effectiveScopes).toEqual({
+      org_id: ['o2'],
+      projectId: ['p1'],
+    });
+    expect(bootstrapRowIds(section(named, 's1').body)).toEqual(['d-o2']);
+  });
+
+  test('an omitted variable the actor holds no value for revokes', async () => {
+    const t = await fencedDocs();
+    t.scopes.value = { org_id: [], projectId: ['*'] };
+    const message = await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'docs', { projectId: ['p1'] }, -1),
+    ]);
+    expect(section(message, 's1').start.status).toBe('revoked');
+  });
+
+  test('without a wildcard the omitted variable stays open (independent dimensions)', () => {
+    const declared = new Set(['org_id', 'projectId']);
+    expect(
+      computeEffective(
+        declared,
+        { projectId: ['p1'] },
+        { ok: true, allowed: { org_id: ['o1'], projectId: ['p1'] } },
+      ),
+    ).toEqual({ status: 'active', effective: { projectId: ['p1'] } });
+    // Variables of other tables never join this table's effective scopes.
+    expect(
+      computeEffective(
+        new Set(['project_id']),
+        { project_id: ['p1'] },
+        { ok: true, allowed: { project_id: ['*'], org_id: ['o1'] } },
+      ),
+    ).toEqual({ status: 'active', effective: { project_id: ['p1'] } });
   });
 });

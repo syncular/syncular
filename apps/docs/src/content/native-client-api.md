@@ -48,7 +48,7 @@ All three wrappers share these properties:
 | `dbPath` | SQLite file. Without it the replica lives in memory and loses rows, cursors, client identity, and the outbox on restart. |
 | `clientId` | Stable client id. Absent, the core creates one and persists it in the database. |
 | `limits` | Client limits forwarded to `create`. |
-| `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `redirects` | The native transport policy. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) lists the semantics and error codes. |
+| `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, `redirects` | The native transport policy. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) lists the semantics and error codes. |
 
 `setHeaders` replaces the full header set. The next HTTP request uses the new headers. An open WebSocket keeps the headers from its handshake; call `pause()` then `resume()` to repeat the handshake.
 
@@ -60,9 +60,11 @@ The core has no callbacks. It queues five event types, and the wrapper's poll lo
 |---|---|---|
 | `change` | An exact, revisioned change batch | Refresh the screens that read the changed tables. |
 | `sync-intent` | The coalesced reason a sync round is due | Call `sync()` or `syncUntilIdle()`. |
-| `presence` | No payload | Call `presence(scopeKey)` again. |
+| `presence` | The `scopeKey` whose peers changed | Call `presence(scopeKey)` again. |
 | `diagnostics` | A privacy-safe snapshot, emitted only when its state changes | Feed a support screen. |
 | `progress` | Phase, bytes, and rows of the running round | Draw a progress bar. The queue keeps only the newest one. |
+
+The core also queues one `realtime-wake` event when the socket reader buffers a delta, a presence fanout, or a socket loss. The wrapper answers it with the `drainRealtime` command through its own command path and does not deliver it to your code; the resulting `change`, `presence`, and `sync-intent` events arrive as usual. An idle app therefore applies realtime traffic without issuing a command.
 
 :::figure{title="Where an event runs" note="Per SDK"}
 <div class="d-row">
@@ -123,7 +125,7 @@ A schema bump on an installed app follows the wipe-and-re-bootstrap flow in [Sch
 
 ## Collaborative text
 
-The CRDT helpers `crdtText`, `crdtInsertText`, `crdtDeleteText`, and `crdtApplyUpdate` need a core built with `crdt-yjs`. Each helper pushes its update through the normal mutate path and returns the enqueued `clientCommitId`. The merge model is on [CRDT columns](/concepts-crdt/).
+The CRDT helpers `crdtText`, `crdtInsertText`, `crdtDeleteText`, and `crdtApplyUpdate` need a core built with `crdt-yjs`. `crdtText` reads the column's current text. The other three push their update through the normal mutate path and return the enqueued `clientCommitId`. The merge model is on [CRDT columns](/concepts-crdt/).
 
 ## SDK pages
 

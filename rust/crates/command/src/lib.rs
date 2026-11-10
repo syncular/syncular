@@ -134,18 +134,33 @@ fn read_command_error(failure: QueryReadFailure) -> CommandError {
     }
 }
 
+/// The code identity follows the client core's own rule
+/// (`ClientError::from`), so a colon-less `sync.unknown_table` keeps its code.
+/// The command boundary keeps the full rendered message.
 fn client_err(message: String) -> CommandError {
-    let code = message
-        .split_once(':')
-        .map(|(candidate, _)| candidate)
-        .filter(|candidate| candidate.starts_with("client.") || candidate.starts_with("sync."))
-        .unwrap_or("client.failed");
+    let code = ClientError::from(message.clone()).code;
     let retryable = code == "client.storage_busy";
     CommandError {
-        code: code.to_owned(),
+        code,
         message,
         details: None,
         retryable,
+    }
+}
+
+/// An optional command field. Absent or `null` keeps the caller's default; a
+/// present value `read` does not accept is `sync.invalid_request`, never a
+/// silent default.
+fn optional<'a, T>(
+    value: Option<&'a Value>,
+    field: &str,
+    read: impl FnOnce(&'a Value) -> Option<T>,
+) -> Result<Option<T>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => read(value)
+            .map(Some)
+            .ok_or_else(|| format!("sync.invalid_request: {field} has the wrong type")),
     }
 }
 
@@ -256,30 +271,34 @@ fn parse_previous_version_snapshot_spec(
 
 pub fn parse_limits(value: Option<&Value>) -> Result<ClientLimits, CommandError> {
     let mut limits = ClientLimits::default();
-    let Some(object) = value.and_then(Value::as_object) else {
+    let Some(object) = optional(value, "limits", Value::as_object).map_err(client_err)? else {
         return Ok(limits);
     };
-    limits.limit_commits = object
-        .get("limitCommits")
-        .and_then(Value::as_i64)
-        .map(|v| v as i32);
-    limits.limit_snapshot_rows = object
-        .get("limitSnapshotRows")
-        .and_then(Value::as_i64)
-        .map(|v| v as i32);
-    limits.max_snapshot_pages = object
-        .get("maxSnapshotPages")
-        .and_then(Value::as_i64)
-        .map(|v| v as i32);
-    limits.accept = object
-        .get("accept")
-        .and_then(Value::as_u64)
-        .map(|v| v as u8);
-    limits.blob_cache_max_bytes = object.get("blobCacheMaxBytes").and_then(Value::as_i64);
-    limits.outcome_retention_max_entries = object
-        .get("outcomeRetentionMaxEntries")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
+    let i32_field = |key: &str| {
+        optional(object.get(key), key, |v| {
+            v.as_i64().and_then(|n| i32::try_from(n).ok())
+        })
+        .map_err(client_err)
+    };
+    limits.limit_commits = i32_field("limitCommits")?;
+    limits.limit_snapshot_rows = i32_field("limitSnapshotRows")?;
+    limits.max_snapshot_pages = i32_field("maxSnapshotPages")?;
+    limits.accept = optional(object.get("accept"), "limits.accept", |v| {
+        v.as_u64().and_then(|n| u8::try_from(n).ok())
+    })
+    .map_err(client_err)?;
+    limits.blob_cache_max_bytes = optional(
+        object.get("blobCacheMaxBytes"),
+        "limits.blobCacheMaxBytes",
+        Value::as_i64,
+    )
+    .map_err(client_err)?;
+    limits.outcome_retention_max_entries = optional(
+        object.get("outcomeRetentionMaxEntries"),
+        "limits.outcomeRetentionMaxEntries",
+        |v| v.as_u64().and_then(|n| usize::try_from(n).ok()),
+    )
+    .map_err(client_err)?;
     limits.max_push_commits_per_request = parse_push_limit(object, "maxPushCommitsPerRequest")?;
     limits.max_push_operations_per_request =
         parse_push_limit(object, "maxPushOperationsPerRequest")?;
@@ -334,7 +353,7 @@ pub fn parse_encryption(
     value: &Value,
 ) -> Result<syncular_client::values::EncryptionConfig, String> {
     let mut config = syncular_client::values::EncryptionConfig::default();
-    let Some(keys) = value.get("keys").and_then(Value::as_object) else {
+    let Some(keys) = optional(value.get("keys"), "encryption.keys", Value::as_object)? else {
         return Ok(config);
     };
     for (key_id, key_val) in keys {
@@ -402,7 +421,7 @@ pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| "mutation missing table".to_owned())?
             .to_owned();
-        let base_version = entry.get("baseVersion").and_then(Value::as_i64);
+        let base_version = optional(entry.get("baseVersion"), "baseVersion", Value::as_i64)?;
         match op {
             "upsert" | "patch" => {
                 let mut values = entry
@@ -479,9 +498,7 @@ fn subscription_from_params(value: &Value) -> Result<SubscriptionRequest, String
         id,
         table,
         scopes: scopes_from_params(value.get("scopes"))?,
-        params: value
-            .get("params")
-            .and_then(Value::as_str)
+        params: optional(value.get("params"), "subscription params", Value::as_str)?
             .map(str::to_owned),
     })
 }
@@ -503,10 +520,8 @@ fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> 
         .ok_or_else(|| "window base missing variable".to_owned())?
         .to_owned();
     let fixed_scopes = scopes_from_params(object.get("fixedScopes"))?;
-    let params = object
-        .get("params")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let params =
+        optional(object.get("params"), "window base params", Value::as_str)?.map(str::to_owned);
     Ok(WindowBase {
         table,
         variable,
@@ -614,9 +629,8 @@ fn crdt_target(params: &Value) -> Result<(String, String, String, String), Comma
         .and_then(Value::as_str)
         .ok_or_else(|| client_err("crdt command missing column".to_owned()))?
         .to_owned();
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
+    let name = optional(params.get("name"), "crdt name", Value::as_str)
+        .map_err(client_err)?
         .unwrap_or("text")
         .to_owned();
     Ok((table, row_id, column, name))
@@ -645,10 +659,13 @@ pub fn dispatch<T: Transport>(
         // carried in `effects` across a `shutdown` — a replacement create must
         // itself request securityPreflight; the gate opens only through
         // activateSecurity.
-        let requests_preflight = params
-            .get("securityPreflight")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let requests_preflight = optional(
+            params.get("securityPreflight"),
+            "securityPreflight",
+            Value::as_bool,
+        )
+        .map_err(client_err)?
+        .unwrap_or(false);
         let preflight_engaged = client.as_ref().map_or(
             effects.security_preflight_pending,
             SyncClient::security_preflight,
@@ -672,6 +689,7 @@ pub fn dispatch<T: Transport>(
                 | "localRevision"
                 | "statusSnapshot"
                 | "localAuthorityState"
+                | "drainRealtime"
                 | "shutdown"
         );
         if client
@@ -687,10 +705,11 @@ pub fn dispatch<T: Transport>(
     }
     let mut result = match method {
         "create" => {
-            let client_id = params
-                .get("clientId")
-                .and_then(Value::as_str)
+            let client_id = optional(params.get("clientId"), "clientId", Value::as_str)
+                .map_err(client_err)?
                 .map(str::to_owned);
+            let db_path =
+                optional(params.get("dbPath"), "dbPath", Value::as_str).map_err(client_err)?;
             let schema = params
                 .get("schema")
                 .ok_or_else(|| client_err("create missing schema".to_owned()))?;
@@ -712,12 +731,12 @@ pub fn dispatch<T: Transport>(
             // §12: a host-configured local authority opens with the client's
             // schema before the client, as the browser worker opens it.
             transport
-                .open_local_authority(schema, params.get("dbPath").and_then(Value::as_str))
+                .open_local_authority(schema, db_path)
                 .map_err(transport_command_error)?;
             // §native: a `dbPath` installs a file-backed rusqlite connection so
             // native hosts (Tauri plugin, FFI file variant) persist across
             // restarts; absent it, the default in-memory core (the shim's mode).
-            let mut instance = match params.get("dbPath").and_then(Value::as_str) {
+            let mut instance = match db_path {
                 Some(path) => SyncClient::open_path_with_identity(client_id, schema, limits, path)
                     .map_err(client_err)?,
                 None => {
@@ -726,10 +745,13 @@ pub fn dispatch<T: Transport>(
             };
             instance
                 .set_retain_failed_commits(
-                    params
-                        .get("retainFailedCommits")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
+                    optional(
+                        params.get("retainFailedCommits"),
+                        "retainFailedCommits",
+                        Value::as_bool,
+                    )
+                    .map_err(client_err)?
+                    .unwrap_or(false),
                 )
                 .map_err(client_err)?;
             // §8.8: the realtime policy rides the create params; absent ⇒
@@ -739,22 +761,26 @@ pub fn dispatch<T: Transport>(
                 .set_realtime_policy(realtime_policy)
                 .map_err(client_err)?;
             // Harness clock pin (§5.4 expiry runs on the virtual clock).
-            if let Some(now_ms) = params.get("nowMs").and_then(Value::as_i64) {
+            if let Some(now_ms) =
+                optional(params.get("nowMs"), "nowMs", Value::as_i64).map_err(client_err)?
+            {
                 instance.set_now_ms(now_ms);
             }
             // §5.4 capability of the host endpoint set (accept bit 3) — the
             // host applies it to its own transport.
-            effects.signed_urls = params
-                .get("signedUrls")
-                .and_then(Value::as_bool)
+            effects.signed_urls = optional(params.get("signedUrls"), "signedUrls", Value::as_bool)
+                .map_err(client_err)?
                 .unwrap_or(false);
             // §5.11: install client-side encryption keys. Shape:
             // { encryption: { keys: { "<keyId>": {"$bytes": "<hex>"} },
             //                 keyIdColumns: { "<table>": "<column>" } } }.
-            let security_preflight = params
-                .get("securityPreflight")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            let security_preflight = optional(
+                params.get("securityPreflight"),
+                "securityPreflight",
+                Value::as_bool,
+            )
+            .map_err(client_err)?
+            .unwrap_or(false);
             // A file-backed replica reopens in preflight when its persisted
             // quarantine marker is set (client core restores it). Refuse a plain
             // re-create so a rebuilt host handle — the React Native native module
@@ -779,7 +805,7 @@ pub fn dispatch<T: Transport>(
                 instance.set_encryption(config);
             }
             if security_preflight {
-                instance.begin_security_preflight();
+                instance.begin_security_preflight().map_err(client_err)?;
             }
             if let Some(enabled) = params.get("transportEnabled") {
                 let enabled = enabled.as_bool().ok_or_else(|| {
@@ -797,7 +823,7 @@ pub fn dispatch<T: Transport>(
         "beginSecurityPreflight" => {
             let running = need_client(client)?;
             running.disconnect_realtime(transport);
-            running.begin_security_preflight();
+            running.begin_security_preflight().map_err(client_err)?;
             effects.security_preflight_pending = true;
             Ok(json!({}))
         }
@@ -894,20 +920,19 @@ pub fn dispatch<T: Transport>(
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| client_err("unsubscribe missing id".to_owned()))?;
-            need_client(client)?.unsubscribe(id);
+            need_client(client)?.unsubscribe(id).map_err(client_err)?;
             Ok(json!({}))
         }
         "setWindow" => {
             let base = window_base_from_params(params.get("base")).map_err(client_err)?;
-            let units: Vec<String> = params
-                .get("units")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let units: Vec<String> = optional(params.get("units"), "setWindow units", |v| {
+                v.as_array()?
+                    .iter()
+                    .map(|unit| unit.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .map_err(client_err)?
+            .unwrap_or_default();
             let command_effects = need_client(client)?
                 .set_window(&base, &units)
                 .map_err(client_err)?;
@@ -969,7 +994,8 @@ pub fn dispatch<T: Transport>(
                 .cloned()
                 .ok_or_else(|| client_err("patch missing partial object".to_owned()))?;
             decode_bigint_members(&mut partial).map_err(client_err)?;
-            let base_version = params.get("baseVersion").and_then(Value::as_i64);
+            let base_version = optional(params.get("baseVersion"), "baseVersion", Value::as_i64)
+                .map_err(client_err)?;
             let id = need_client(client)?
                 .patch(table, row_id, partial, base_version)
                 .map_err(CommandError::from_client)?;
@@ -1024,7 +1050,9 @@ pub fn dispatch<T: Transport>(
             Ok(outcome.to_json())
         }
         "resetClientId" | "reset_client_id" => {
-            let client_id = need_client(client)?.reset_client_id(transport);
+            let client_id = need_client(client)?
+                .reset_client_id(transport)
+                .map_err(client_err)?;
             Ok(json!({ "clientId": client_id }))
         }
         "syncUntilIdle" => {
@@ -1217,16 +1245,21 @@ pub fn dispatch<T: Transport>(
                 .map_err(client_err)?;
             serde_json::to_value(snapshot).map_err(|error| client_err(error.to_string()))
         }
-        "previousVersionAudit" | "previous_version_audit" => {
-            Ok(match need_client(client)?.previous_version_audit() {
+        "previousVersionAudit" | "previous_version_audit" => Ok(
+            match need_client(client)?
+                .previous_version_audit()
+                .map_err(client_err)?
+            {
                 Some(audit) => {
                     serde_json::to_value(audit).map_err(|error| client_err(error.to_string()))?
                 }
                 None => Value::Null,
-            })
-        }
+            },
+        ),
         "previousVersionDiscard" | "previous_version_discard" => {
-            let outcome = need_client(client)?.previous_version_discard();
+            let outcome = need_client(client)?
+                .previous_version_discard()
+                .map_err(client_err)?;
             Ok(json!({
                 "present": outcome.present,
                 "discarded": outcome.discarded,
@@ -1279,8 +1312,12 @@ pub fn dispatch<T: Transport>(
             let index = params
                 .get("index")
                 .and_then(Value::as_u64)
-                .ok_or_else(|| client_err("crdtInsertText missing index".to_owned()))?
-                as u32;
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: crdtInsertText index must be a u32".to_owned(),
+                    )
+                })?;
             let value = params
                 .get("value")
                 .and_then(Value::as_str)
@@ -1296,13 +1333,19 @@ pub fn dispatch<T: Transport>(
             let index = params
                 .get("index")
                 .and_then(Value::as_u64)
-                .ok_or_else(|| client_err("crdtDeleteText missing index".to_owned()))?
-                as u32;
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: crdtDeleteText index must be a u32".to_owned(),
+                    )
+                })?;
             let len = params
                 .get("len")
                 .and_then(Value::as_u64)
-                .ok_or_else(|| client_err("crdtDeleteText missing len".to_owned()))?
-                as u32;
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    client_err("sync.invalid_request: crdtDeleteText len must be a u32".to_owned())
+                })?;
             let id = need_client(client)?
                 .crdt_delete_text(&table, &row_id, &column, &name, index, len)
                 .map_err(CommandError::from_client)?;
@@ -1327,13 +1370,11 @@ pub fn dispatch<T: Transport>(
 
         "uploadBlob" => {
             let bytes = value_bytes(params.get("bytes")).map_err(client_err)?;
-            let media_type = params
-                .get("mediaType")
-                .and_then(Value::as_str)
+            let media_type = optional(params.get("mediaType"), "mediaType", Value::as_str)
+                .map_err(client_err)?
                 .map(str::to_owned);
-            let name = params
-                .get("name")
-                .and_then(Value::as_str)
+            let name = optional(params.get("name"), "blob name", Value::as_str)
+                .map_err(client_err)?
                 .map(str::to_owned);
             let reference = need_client(client)?
                 .upload_blob(&bytes, media_type, name)
@@ -1421,7 +1462,9 @@ pub fn dispatch<T: Transport>(
             Ok(json!({ "ids": ids }))
         }
         "pendingPayloads" => {
-            let payloads = need_client(client)?.pending_payloads();
+            let payloads = need_client(client)?
+                .pending_payloads()
+                .map_err(client_err)?;
             Ok(json!({
                 "payloads": payloads.iter().map(|p| bytes_value(p)).collect::<Vec<_>>()
             }))
@@ -1447,6 +1490,10 @@ pub fn dispatch<T: Transport>(
             Ok(json!({}))
         }
         "localAuthorityState" => Ok(json!({ "state": transport.local_authority_state() })),
+        // A native host drains buffered realtime traffic after every command;
+        // this command does nothing else. The FFI host answers its
+        // `realtime-wake` event with it.
+        "drainRealtime" => Ok(json!({})),
         "attachLocalAuthority" | "abandonLocalAuthorityAttach" => {
             let running = need_client(client)?;
             if transport.local_authority_state().is_none() {
@@ -2039,6 +2086,33 @@ mod tests {
     }
 
     #[test]
+    fn subscribe_and_unsubscribe_queue_an_interactive_sync_intent() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let mut run = |command: &str, params: Value| {
+            dispatch(&mut transport, &mut client, &mut effects, command, &params)
+                .expect("command succeeds")
+        };
+        run("create", json!({ "schema": schema() }));
+        run("drainSyncIntents", json!({}));
+        for command in ["subscribe", "unsubscribe"] {
+            let params = if command == "subscribe" {
+                json!({ "id": "a", "table": "todos", "scopes": { "list_id": ["list-1"] } })
+            } else {
+                json!({ "id": "a" })
+            };
+            run(command, params);
+            let intents = run("drainSyncIntents", json!({}));
+            assert_eq!(
+                intents["intents"],
+                json!([{ "kind": "interactive" }]),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
     fn native_command_hosts_reject_subscription_identity_rebinds() {
         let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
@@ -2442,6 +2516,128 @@ mod tests {
         let full = client_err("client.storage_full: local SQLite storage is full".to_owned());
         assert_eq!(full.code, "client.storage_full");
         assert!(!full.retryable);
+    }
+
+    #[test]
+    fn client_err_keeps_a_colon_less_code_identity() {
+        let error = client_err("sync.unknown_table".to_owned());
+        assert_eq!(error.code, "sync.unknown_table");
+        let error = client_err("no client instance created".to_owned());
+        assert_eq!(error.code, "client.failed");
+    }
+
+    #[cfg(feature = "crdt-yjs")]
+    #[test]
+    fn crdt_offsets_outside_u32_are_invalid_requests() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create");
+        let target = json!({ "table": "todos", "rowId": "t1", "column": "body" });
+        for (method, extra) in [
+            (
+                "crdtInsertText",
+                json!({ "index": 4_294_967_296u64, "value": "x" }),
+            ),
+            ("crdtInsertText", json!({ "index": "0", "value": "x" })),
+            (
+                "crdtDeleteText",
+                json!({ "index": 0, "len": 4_294_967_296u64 }),
+            ),
+        ] {
+            let mut params = target.clone();
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let error = dispatch(&mut transport, &mut client, &mut effects, method, &params)
+                .expect_err("out-of-range offset");
+            assert_eq!(error.code, "sync.invalid_request", "{method} {params}");
+        }
+    }
+
+    #[test]
+    fn wrong_typed_optional_fields_are_invalid_requests() {
+        let created = || {
+            let mut transport = NoNetwork::default();
+            let mut client: Option<SyncClient> = None;
+            let mut effects = CreateEffects::default();
+            dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "create",
+                &json!({ "schema": schema() }),
+            )
+            .expect("create");
+            (transport, client, effects)
+        };
+        for params in [
+            json!({ "schema": schema(), "limits": "x" }),
+            json!({ "schema": schema(), "limits": { "accept": 256 } }),
+            json!({ "schema": schema(), "limits": { "accept": "15" } }),
+            json!({ "schema": schema(), "limits": { "limitCommits": 4_294_967_296i64 } }),
+            json!({ "schema": schema(), "limits": { "outcomeRetentionMaxEntries": -1 } }),
+            json!({ "schema": schema(), "clientId": 7 }),
+            json!({ "schema": schema(), "nowMs": "1" }),
+            json!({ "schema": schema(), "signedUrls": "true" }),
+            json!({ "schema": schema(), "securityPreflight": 1 }),
+            json!({ "schema": schema(), "encryption": { "keys": "k" } }),
+        ] {
+            let mut transport = NoNetwork::default();
+            let mut client: Option<SyncClient> = None;
+            let mut effects = CreateEffects::default();
+            let error = dispatch(&mut transport, &mut client, &mut effects, "create", &params)
+                .expect_err("wrong-typed create field");
+            assert_eq!(error.code, "sync.invalid_request", "{params}");
+        }
+        let base = json!({ "table": "todos", "variable": "list_id" });
+        for (method, params) in [
+            ("setWindow", json!({ "base": base, "units": [1] })),
+            ("setWindow", json!({ "base": base, "units": "l1" })),
+            (
+                "setWindow",
+                json!({ "base": { "table": "todos", "variable": "list_id", "params": 1 }, "units": [] }),
+            ),
+            (
+                "mutate",
+                json!({ "mutations": [{ "op": "delete", "table": "todos", "rowId": "t1", "baseVersion": "7" }] }),
+            ),
+            (
+                "patch",
+                json!({ "table": "todos", "rowId": "t1", "partial": { "title": "x" }, "baseVersion": "7" }),
+            ),
+            (
+                "subscribe",
+                json!({ "id": "s", "table": "todos", "params": {} }),
+            ),
+            (
+                "uploadBlob",
+                json!({ "bytes": { "$bytes": "00" }, "mediaType": 1 }),
+            ),
+        ] {
+            let (mut transport, mut client, mut effects) = created();
+            let error = dispatch(&mut transport, &mut client, &mut effects, method, &params)
+                .expect_err("wrong-typed field");
+            assert_eq!(error.code, "sync.invalid_request", "{method} {params}");
+        }
+        // An absent or null optional field keeps its default.
+        let (mut transport, mut client, mut effects) = created();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "delete", "table": "todos", "rowId": "t1", "baseVersion": null }] }),
+        )
+        .expect("null baseVersion is absent");
     }
 
     #[test]

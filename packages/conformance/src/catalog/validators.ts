@@ -34,7 +34,7 @@ const NUMERIC_SCOPE_SCHEMA: DriverSchema = {
       primaryKey: 'id',
       columns: [
         { name: 'id', type: 'string', nullable: false },
-        { name: 'scope_num', type: 'float', nullable: false },
+        { name: 'scope_num', type: 'integer', nullable: false },
         { name: 'title', type: 'string', nullable: false },
       ],
       scopes: [{ pattern: 'measurement:{scope_num}' }],
@@ -377,7 +377,7 @@ export const validatorScenarios: readonly Scenario[] = [
           },
         },
       ]);
-      const scopes = { scope_num: ['1', '1e+21', '1e-7'] };
+      const scopes = { scope_num: ['1', '9007199254740991', '-7'] };
       const writer = await ctx.newClient({
         actorId: 'numeric-writer',
         clientId: 'numeric-writer',
@@ -393,12 +393,16 @@ export const validatorScenarios: readonly Scenario[] = [
         {
           op: 'upsert',
           table: 'measurements',
-          values: { id: 'b', scope_num: 1e21, title: 'server' },
+          values: {
+            id: 'b',
+            scope_num: Number.MAX_SAFE_INTEGER,
+            title: 'server',
+          },
         },
         {
           op: 'upsert',
           table: 'measurements',
-          values: { id: 'c', scope_num: 1e-7, title: 'server' },
+          values: { id: 'c', scope_num: -7, title: 'server' },
         },
       ]);
       await syncIdle(writer);
@@ -424,12 +428,16 @@ export const validatorScenarios: readonly Scenario[] = [
         {
           op: 'upsert',
           table: 'measurements',
-          values: { id: 'b', scope_num: 1e21, title: 'mine' },
+          values: {
+            id: 'b',
+            scope_num: Number.MAX_SAFE_INTEGER,
+            title: 'mine',
+          },
         },
         {
           op: 'upsert',
           table: 'measurements',
-          values: { id: 'c', scope_num: 1e-7, title: 'mine' },
+          values: { id: 'c', scope_num: -7, title: 'mine' },
         },
       ]);
       await syncIdle(client);

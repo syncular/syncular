@@ -49,12 +49,16 @@ export type PgRow = Record<string, unknown>;
  * a time. An adapter does not need to queue calls itself, and must not
  * accept two in flight: node-postgres warns about that today and rejects it
  * in node-postgres 9.
+ *
+ * The result carries returned rows only. Drivers disagree on the affected-row
+ * count of a statement without result rows (Bun.sql reports none), so every
+ * write whose outcome matters ends in `RETURNING` and counts `rows`.
  */
 export interface PgQueryable {
   query<Row = PgRow>(
     text: string,
     params?: readonly unknown[],
-  ): Promise<{ rows: Row[]; rowCount: number }>;
+  ): Promise<{ rows: Row[] }>;
 }
 
 /**

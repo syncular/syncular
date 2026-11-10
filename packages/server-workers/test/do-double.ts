@@ -88,15 +88,12 @@ export class FakeWebSocket implements WebSocketLike {
   }
 
   serializeAttachment(value: unknown): void {
-    // Real DO serializes to a structured clone; JSON round-trip is a faithful
-    // stand-in for the plain identity object the host stores.
-    this.#attachment = JSON.parse(JSON.stringify(value));
+    // The platform stores a structured clone, as this double does.
+    this.#attachment = structuredClone(value);
   }
 
   deserializeAttachment(): unknown {
-    return this.#attachment === null
-      ? null
-      : JSON.parse(JSON.stringify(this.#attachment));
+    return structuredClone(this.#attachment);
   }
 
   /** Test helper: the frames the CLIENT would receive = the server's sends.
@@ -119,14 +116,25 @@ export class FakeWebSocketPair implements WebSocketPairLike {
   }
 }
 
-/** The `DurableObjectState` double: the accepted-socket registry. */
+/** The `DurableObjectState` double: the accepted-socket registry and the
+ * alarm slot. A test fires the alarm by calling the host's `alarm()`. */
 class FakeDurableObjectState implements DurableObjectStateLike {
   readonly #sockets: WebSocketLike[] = [];
+  alarmAt: number | null = null;
+  readonly storage = {
+    getAlarm: async (): Promise<number | null> => this.alarmAt,
+    setAlarm: async (scheduledTime: number): Promise<void> => {
+      this.alarmAt = scheduledTime;
+    },
+  };
   acceptWebSocket(ws: WebSocketLike): void {
     this.#sockets.push(ws);
   }
+  /** A socket the server closed leaves the registry, as on the platform. */
   getWebSockets(): WebSocketLike[] {
-    return [...this.#sockets];
+    return this.#sockets.filter(
+      (ws) => !(ws instanceof FakeWebSocket && ws.closed),
+    );
   }
 }
 

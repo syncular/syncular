@@ -82,12 +82,31 @@ export interface ServerLimits {
   readonly inlineSegmentMaxBytes: number;
   /** §6.11 declared-reference cascade cap per commit (reference default). */
   readonly maxCascadeOperationsPerCommit: number;
+  /**
+   * §1.7 cap on a request body's decoded bytes: an HTTP body after gzip
+   * decoding, and a socket round's assembled request (§8.7).
+   */
+  readonly maxRequestBytes: number;
+  /** §1.7 cap on `SUBSCRIPTION` frames per request. */
+  readonly maxSubscriptionsPerRequest: number;
+  /** §1.7 cap on requested scope values, summed over a subscription's keys. */
+  readonly maxScopeValuesPerSubscription: number;
+  /** Cap on concurrent registered-query watches per watch session. */
+  readonly maxWatchesPerSession: number;
 }
 
 export const DEFAULT_LIMITS: ServerLimits = {
   maxOperationsPerRequest: 500,
   inlineSegmentMaxBytes: 256 * 1024,
   maxCascadeOperationsPerCommit: 1_000,
+  // The size above which adapters already refuse to buffer a segment body.
+  maxRequestBytes: 16 * 1024 * 1024,
+  // One subscription per pushable operation: the existing per-request cap.
+  maxSubscriptionsPerRequest: 500,
+  // One default snapshot page (§4.2): a longer list wants a coarser scope.
+  maxScopeValuesPerSubscription: 1_000,
+  // Every commit reruns a session's affected watches one after another.
+  maxWatchesPerSession: 100,
 };
 
 /** Receives applied commits for realtime fanout (§8.2). */
@@ -235,8 +254,20 @@ export function clockOf(ctx: SyncServerConfig): () => number {
   return ctx.clock ?? Date.now;
 }
 
+/**
+ * The configured limits over the defaults. A cap that is not a positive safe
+ * integer (`NaN`, `0`, `Infinity`) would disable or jam it, so it throws;
+ * `inlineSegmentMaxBytes` is a threshold and may be `0` (inline nothing).
+ */
 export function limitsOf(ctx: SyncServerConfig): ServerLimits {
-  return { ...DEFAULT_LIMITS, ...ctx.limits };
+  const limits: ServerLimits = { ...DEFAULT_LIMITS, ...ctx.limits };
+  for (const [name, value] of Object.entries(limits)) {
+    const min = name === 'inlineSegmentMaxBytes' ? 0 : 1;
+    if (!Number.isSafeInteger(value) || value < min) {
+      throw new Error(`ServerLimits.${name} is out of range`);
+    }
+  }
+  return limits;
 }
 
 /** Refresh the registry after host authentication and return log continuity. */

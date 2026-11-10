@@ -421,6 +421,7 @@ class TsServerInstance implements ServerInstance {
     inlineSegmentMaxBytes: number;
     maxCascadeOperationsPerCommit: number;
   };
+  readonly #maxBlobBytes: number | undefined;
   #resolverFailing = false;
   #resolverOutage = false;
   #failNextIdempotencyLookup = false;
@@ -464,6 +465,7 @@ class TsServerInstance implements ServerInstance {
       maxCascadeOperationsPerCommit:
         options.limits?.maxCascadeOperationsPerCommit ?? 1_000,
     };
+    this.#maxBlobBytes = options.limits?.maxBlobBytes;
     this.#segments = new MemorySegmentStore(
       options.limits?.segmentTtlMs !== undefined
         ? { ttlMs: options.limits.segmentTtlMs }
@@ -669,6 +671,9 @@ class TsServerInstance implements ServerInstance {
       storage: this.#wrapped,
       segments: this.#segments,
       blobs: this.#blobs,
+      ...(this.#maxBlobBytes !== undefined
+        ? { maxBlobBytes: this.#maxBlobBytes }
+        : {}),
       // §5.10.2: the reference yjs-doc merger, kept out of core/server.
       crdtMergers: yjsCrdtMergers,
       resolveScopes: (args) => this.#resolveScopes(args.actorId),
@@ -752,11 +757,15 @@ class TsServerInstance implements ServerInstance {
     mediaType?: string,
   ): Promise<{ ok: true } | { ok: false; error: DriverError }> {
     try {
-      await handleBlobUpload(this.#ctx(actorId), {
+      await handleBlobUpload(
+        this.#ctx(actorId),
         blobId,
-        bytes,
-        ...(mediaType !== undefined ? { mediaType } : {}),
-      });
+        new Request('http://driver/blobs', {
+          method: 'PUT',
+          body: bytes.slice(),
+          headers: mediaType !== undefined ? { 'Content-Type': mediaType } : {},
+        }),
+      );
       return { ok: true };
     } catch (error) {
       if (error instanceof SyncError) {
@@ -772,17 +781,18 @@ class TsServerInstance implements ServerInstance {
   ): Promise<BlobDownloadResult> {
     try {
       const result = await handleBlobDownload(this.#ctx(actorId), blobId);
-      if (result.url !== undefined) {
+      if ('url' in result) {
         // §5.9.5 always-issue: the server exited the egress path.
         return {
           ok: true,
           url: result.url,
-          ...(result.urlExpiresAtMs !== undefined
-            ? { urlExpiresAtMs: result.urlExpiresAtMs }
-            : {}),
+          urlExpiresAtMs: result.urlExpiresAtMs,
         };
       }
-      return { ok: true, bytes: result.bytes ?? new Uint8Array(0) };
+      return {
+        ok: true,
+        bytes: new Uint8Array(await new Response(result.body).arrayBuffer()),
+      };
     } catch (error) {
       if (error instanceof SyncError) {
         return { ok: false, error: toDriverError(error) };
@@ -1356,9 +1366,10 @@ class TsLocalAuthorityInstance implements LocalAuthorityInstance {
   async abandonAttach(
     target: ServerInstance,
     actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
   ): Promise<AttachResult> {
     return attachOutcome(() =>
-      this.#open.abandonAttach(remoteTransport(target, actorId)),
+      this.#open.abandonAttach(remoteTransport(target, actorId, faults)),
     );
   }
 

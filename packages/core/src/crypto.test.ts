@@ -49,6 +49,14 @@ test('a decrypted blob_ref that does not parse as JSON fails', () => {
   ).toThrow(DecryptError);
 });
 
+test('a decrypted json value outside the validity rule fails', () => {
+  for (const raw of ['{"a":1e999,"a":1}', '{"a":"\\u0000"}']) {
+    expect(() =>
+      deserializePlain('json', new TextEncoder().encode(raw)),
+    ).toThrow(DecryptError);
+  }
+});
+
 describe('§5.11 envelope byte structure', () => {
   test('encode/decode round-trips fields', () => {
     const env = {

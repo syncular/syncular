@@ -65,7 +65,7 @@ function nativeTauri(baseUrl?: string): {
     stdout: 'pipe',
     stderr: 'inherit',
   });
-  const listeners = new Set<(event: { payload: unknown }) => void>();
+  const listeners = new Set<(message: unknown) => void>();
   const pending = new Map<
     number,
     { resolve(value: HarnessResponse): void; reject(error: Error): void }
@@ -130,27 +130,18 @@ function nativeTauri(baseUrl?: string): {
                 params: actual.params,
                 coverage: actual.coverage,
               }
-            : cmd.endsWith('syncular_snapshot_read')
-              ? {
-                  kind: 'command',
-                  command: { method: 'snapshotRead', params: actual },
-                }
-              : cmd.endsWith('syncular_query')
-                ? { kind: 'query', sql: actual.sql, params: actual.params }
-                : { kind: 'command', command: actual.command },
+            : cmd.endsWith('syncular_query')
+              ? { kind: 'query', sql: actual.sql, params: actual.params }
+              : { kind: 'command', command: actual.command },
       );
       for (const payload of response.events) {
-        for (const listener of listeners) listener({ payload });
+        for (const listener of listeners) listener(payload);
       }
       return response.reply as T;
     },
-    async listen<T>(
-      _event: string,
-      handler: (event: { payload: T }) => void,
-    ): Promise<() => void> {
-      const erased = handler as (event: { payload: unknown }) => void;
-      listeners.add(erased);
-      return () => listeners.delete(erased);
+    channel<T>(onMessage: (message: T) => void) {
+      listeners.add(onMessage as (message: unknown) => void);
+      return { toJSON: () => '__CHANNEL__:1' };
     },
   };
   return {
@@ -1148,9 +1139,9 @@ if (!available) {
             ).toEqual(resolution === 'edit' ? [{ id: loserId }] : []);
           }
         }
-        expect(await client.query('PRAGMA integrity_check')).toEqual([
-          { integrity_check: 'ok' },
-        ]);
+        expect(
+          await client.query('SELECT * FROM pragma_integrity_check'),
+        ).toEqual([{ integrity_check: 'ok' }]);
         await client.close();
       } finally {
         await winner.client.close();

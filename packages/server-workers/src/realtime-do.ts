@@ -46,23 +46,45 @@
  *     an async generator draining over `ws.send`; while it is pending it holds
  *     the DO's event loop, so the DO cannot be evicted mid-round. (This is the
  *     same property the §8.7 "one round in flight" rule relies on.)
- *   - **On the first serialized operation after a wake** (a socket frame, an
- *     HTTP sync round, a command, a wake), every accepted socket has a
- *     serialized attachment (`ws.serializeAttachment`, `{clientId, actorId,
- *     partition}`, written at accept time) but no live session. The host
- *     reconstructs the session of every socket in `getWebSockets()`, so
- *     sockets that stayed quiet through the hibernation keep receiving
- *     deltas. Each session is rebuilt via `hub.connect(...)`, which reloads the registration list from the
- *     client record in D1 (the §8.1 load-at-upgrade rule — exactly what a
- *     fresh upgrade does), then dispatch the message into it. Rehydration is
- *     transparent to the client: it saw `hello` once at the real upgrade, so
- *     the rehydration `hello` is swallowed (a one-shot filter on the send
- *     wrapper). Cursor/registration are the durable truth in D1; nothing
- *     in-flight is lost because nothing in-flight can be hibernated.
+ *   - **Before any entry point proceeds after a wake** (a socket frame or
+ *     close, an HTTP sync round including a pull-only one, an upgrade, a
+ *     command, an admin request), every accepted socket has a serialized
+ *     attachment (`ws.serializeAttachment`: its identity, written at accept
+ *     time, and its presence documents, rewritten on every change) but no
+ *     live session. The host rebuilds the
+ *     session of every socket in `getWebSockets()` once, through one promise
+ *     every entry point awaits, so no commit fans out to a partly rebuilt hub
+ *     and sockets that stayed quiet through the hibernation keep receiving
+ *     deltas. `hub.restore(...)` reloads each registration list from the
+ *     client record (the §8.1 load-at-upgrade rule), touches the partition
+ *     and reads its latest sequence once, and sends no `hello`: the client
+ *     was greeted at the real upgrade. Cursor/registration are the durable
+ *     truth in storage; nothing in-flight is lost because nothing in-flight
+ *     can be hibernated.
  *
- * So the serialized attachment is deliberately minimal — the three identity
- * fields `connect` needs. Everything else (`cursor`, `registrations`,
- * `lastKnownSeq`) is re-derived from D1 by `connect`, which is authoritative.
+ * The attachment holds what storage cannot: the identity `restore` needs and
+ * the connection's §8.6 presence documents, which `restore` seeds silently so
+ * a close after a wake still sends `leave` and a new socket still receives
+ * the snapshot. Everything else (`cursor`, `registrations`, `lastKnownSeq`)
+ * is re-derived from storage, which is authoritative.
+ *
+ * The attachment is one `Uint8Array`, so its structured-clone size is its
+ * byte length plus fixed framing: the identity as UTF-8 JSON and a newline,
+ * then per presence key a varint key length, the key's UTF-8 bytes, the
+ * document's UTF-8 JSON and a newline (a JSON text holds no raw newline).
+ * Each key costs at least 3 counted bytes (a non-empty key and `{}`) and at
+ * most 2 framing bytes below 128 key bytes, so a connection within
+ * `maxPresenceBytes` needs at most `cap + floor(2 * cap / 3)` presence
+ * bytes. The hub refuses a cap whose worst case leaves no room for an empty
+ * identity, and the upgrade refuses an identity that does not fit beside the
+ * worst case, so no presence change can overflow the attachment.
+ *
+ * ## Heartbeats (§8.5)
+ *
+ * The host arms the Durable Object alarm when a socket connects. `alarm()`
+ * sends `heartbeat` straight to every hibernatable socket, without rebuilding
+ * sessions, and re-arms while sockets remain. The host owns the alarm: a
+ * subclass that needs another alarm schedule cannot share it.
  *
  * ## The wake path (external-command fan-out)
  *
@@ -78,6 +100,7 @@ import {
   createRealtimeHub,
   D1ServerStorage,
   decodeRequestBody,
+  encodeHeartbeat,
   errorBody,
   eraseScopeValue,
   type EraseScopeValueOptions,
@@ -86,6 +109,7 @@ import {
   handleSyncRequest,
   pruneCommitLog,
   type PruneOptions,
+  type RealtimeConnectOptions,
   type RealtimeHub,
   type RealtimeHubConfig,
   type RealtimeSession,
@@ -110,6 +134,12 @@ import { decodeMessage } from '@syncular/core';
 export interface DurableObjectStateLike {
   acceptWebSocket(ws: WebSocketLike, tags?: string[]): void;
   getWebSockets(tag?: string): WebSocketLike[];
+  /** The alarm half of the DO storage API; the host owns the alarm and
+   * drives §8.5 heartbeats with it. */
+  readonly storage: {
+    getAlarm(): Promise<number | null>;
+    setAlarm(scheduledTime: number): Promise<void>;
+  };
 }
 
 export interface WebSocketLike {
@@ -166,6 +196,12 @@ export type RealtimeDOConfig<S extends RealtimeHostStorage = D1ServerStorage> =
      */
     readonly adminRingCapacity?: number;
     /**
+     * §8.5 heartbeat interval in ms; default 30000. The host sends `heartbeat`
+     * to every socket from the Durable Object alarm, which stays armed while
+     * sockets are connected.
+     */
+    readonly heartbeatIntervalMs?: number;
+    /**
      * Registered remote queries and commands (REMOTE.md). The Worker forwards
      * `POST <mount>/operations` here, so a command applies on the partition
      * FIFO and fans out to the partition's sockets like a pushed commit. A
@@ -181,21 +217,51 @@ export type RealtimeDOConfig<S extends RealtimeHostStorage = D1ServerStorage> =
  */
 export type RealtimeHubConfigInput = Omit<RealtimeHubConfig, 'storage'>;
 
-/** The attachment persisted on each hibernatable socket (§8.1 identity). */
-interface SocketAttachment {
-  readonly partition: string;
-  readonly actorId: string;
-  readonly clientId: string;
+/**
+ * Cloudflare's cap on a socket attachment's serialized size
+ * (https://developers.cloudflare.com/durable-objects/api/websockets/,
+ * `serializeAttachment`).
+ */
+const ATTACHMENT_LIMIT_BYTES = 16_384;
+/** Room for the structured-clone framing around the attachment's one
+ * `Uint8Array`: format header, buffer and view tags, length varints. */
+const ATTACHMENT_FRAMING_BYTES = 64;
+
+/** `maxPresenceBytes` leaves no room in a socket attachment for an empty
+ * identity beside a full presence budget (§8.6.1). */
+export class PresenceAttachmentError extends Error {
+  readonly code = 'realtime.presence_exceeds_attachment';
+
+  constructor(
+    readonly details: {
+      readonly maxPresenceBytes: number;
+      readonly attachmentLimitBytes: number;
+    },
+  ) {
+    super('maxPresenceBytes does not fit a socket attachment (§8.6.1)');
+    this.name = 'PresenceAttachmentError';
+  }
 }
 
-function isAttachment(value: unknown): value is SocketAttachment {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as SocketAttachment).partition === 'string' &&
-    typeof (value as SocketAttachment).actorId === 'string' &&
-    typeof (value as SocketAttachment).clientId === 'string'
-  );
+/** A hibernatable socket's attachment bytes (layout: see the module doc). */
+function encodeAttachment(
+  identity: RealtimeUpgradeIdentity,
+  presence: ReadonlyMap<string, string>,
+): Uint8Array {
+  const utf8 = new TextEncoder();
+  const bytes = [
+    ...utf8.encode(
+      JSON.stringify([identity.partition, identity.actorId, identity.clientId]),
+    ),
+    0x0a,
+  ];
+  for (const [scopeKey, json] of presence) {
+    const key = utf8.encode(scopeKey);
+    let length = key.length;
+    for (; length >= 0x80; length >>>= 7) bytes.push((length & 0x7f) | 0x80);
+    bytes.push(length, ...key, ...utf8.encode(json), 0x0a);
+  }
+  return Uint8Array.from(bytes);
 }
 
 /** The identity the upgrade request must carry (resolved by the Worker). */
@@ -246,6 +312,7 @@ function unsupportedEncoding(route: 'sync' | 'operations'): Response {
  *   }
  *   webSocketClose(ws: WebSocket) { return this.#impl.webSocketClose(ws); }
  *   webSocketError(ws: WebSocket) { return this.#impl.webSocketError(ws); }
+ *   alarm() { return this.#impl.alarm(); }
  * }
  * ```
  *
@@ -259,19 +326,17 @@ export class SyncularRealtimeHost<
   readonly #storage: RealtimeHostStorage;
   readonly #config: RealtimeDOConfig<RealtimeHostStorage>;
   #hub: RealtimeHub | undefined;
+  /** Attachment bytes held back for framing and a full presence budget. */
+  #presenceReserve = 0;
   #admin: SyncularAdmin | undefined;
   /** Live sessions, keyed by their socket. Empty after a hibernation wake;
-   * rehydrated for every socket before the first serialized operation (see
-   * the class doc). */
+   * rehydrated for every socket before any entry point proceeds (see the
+   * class doc). */
   readonly #sessions = new Map<WebSocketLike, RealtimeSession>();
-  /** Sockets whose rehydration `hello` must be swallowed (already greeted at
-   * the real upgrade — rehydration is transparent to the client). */
-  readonly #swallowHello = new Set<WebSocketLike>();
   readonly #closedSockets = new WeakSet<WebSocketLike>();
-  /** Accepted sockets whose upgrade is still building their session. */
-  readonly #upgrading = new WeakSet<WebSocketLike>();
-  /** Set once this instance rebuilt the sessions of hibernated sockets. */
-  #rehydrated = false;
+  /** This instance's one rebuild of hibernated sockets' sessions. Every entry
+   * point awaits it, so no commit fans out to a partly rebuilt hub. */
+  #rehydration: Promise<void> | undefined;
   /** Explicit FIFO: Durable Object events may interleave at `await`. */
   #partitionTail: Promise<void> = Promise.resolve();
 
@@ -334,6 +399,22 @@ export class SyncularRealtimeHost<
             : ring,
       };
       const hub = createRealtimeHub(withRing);
+      const cap = hub.maxPresenceBytes;
+      this.#presenceReserve =
+        ATTACHMENT_FRAMING_BYTES + cap + Math.floor((2 * cap) / 3);
+      if (
+        this.#presenceReserve +
+          encodeAttachment(
+            { partition: '', actorId: '', clientId: '' },
+            new Map(),
+          ).byteLength >
+        ATTACHMENT_LIMIT_BYTES
+      ) {
+        throw new PresenceAttachmentError({
+          maxPresenceBytes: cap,
+          attachmentLimitBytes: ATTACHMENT_LIMIT_BYTES,
+        });
+      }
       this.#hub = hub;
       this.#admin = SyncularAdmin.fromConfig(
         { ...withRing, realtime: hub },
@@ -350,9 +431,19 @@ export class SyncularRealtimeHost<
    * and accepts external-command wakes at `/__syncular_realtime/wake`.
    */
   async fetch(request: Request): Promise<Response> {
+    await this.#rehydrateSockets();
     const url = new URL(request.url);
     if (url.pathname === SYNC_DO_REQUEST_PATH) {
-      const bytes = await decodeRequestBody(request);
+      let bytes: Uint8Array | undefined;
+      try {
+        bytes = await decodeRequestBody(
+          request,
+          this.#getHub().limits.maxRequestBytes,
+        );
+      } catch (error) {
+        const sync = this.#syncError(error, 'sync');
+        return Response.json(errorBody(sync), { status: sync.httpStatus });
+      }
       if (bytes === undefined) return unsupportedEncoding('sync');
       // A round without PUSH_COMMIT frames writes only its own client
       // record, so it runs beside the FIFO instead of queueing behind every
@@ -364,10 +455,7 @@ export class SyncularRealtimeHost<
           (frame) => frame.type !== 'PUSH_COMMIT',
         );
       } catch {}
-      if (pullOnly) {
-        await this.#rehydrateSockets();
-        return this.#handleSync(request, bytes);
-      }
+      if (pullOnly) return this.#handleSync(request, bytes);
       return this.#serializePartition(() => this.#handleSync(request, bytes));
     }
     if (url.pathname === OPERATIONS_DO_REQUEST_PATH) {
@@ -447,23 +535,56 @@ export class SyncularRealtimeHost<
 
   /**
    * After a hibernation wake the session map is empty while sockets stay
-   * open. Rebuild every socket's session before the first serialized
-   * operation, so a commit fans out to sockets that stayed quiet through
-   * the hibernation. A socket whose session cannot be rebuilt is closed;
-   * its client reconnects and catches up (§8.4).
+   * open. Rebuild every socket's session once, so a commit fans out to sockets
+   * that stayed quiet through the hibernation. A socket whose session cannot
+   * be rebuilt is closed; its client reconnects and catches up (§8.4).
    */
-  async #rehydrateSockets(): Promise<void> {
-    if (this.#rehydrated) return;
-    this.#rehydrated = true;
-    for (const ws of this.#state.getWebSockets()) {
-      if (this.#upgrading.has(ws)) continue;
-      try {
-        await this.#sessionFor(ws);
-      } catch (error) {
-        ws.close(1011, 'realtime rehydration failed');
-        this.#syncError(error, 'realtime');
+  #rehydrateSockets(): Promise<void> {
+    this.#rehydration ??= (async () => {
+      const sockets = this.#state.getWebSockets().flatMap((ws) => {
+        const bytes = ws.deserializeAttachment();
+        if (!(bytes instanceof Uint8Array)) return [];
+        const utf8 = new TextDecoder();
+        let end = bytes.indexOf(0x0a);
+        const [partition, actorId, clientId] = JSON.parse(
+          utf8.decode(bytes.subarray(0, end)),
+        ) as [string, string, string];
+        const presence = new Map<string, string>();
+        for (let at = end + 1; at < bytes.length; at = end + 1) {
+          let length = 0;
+          for (let shift = 0; ; shift += 7) {
+            const byte = bytes[at++]!;
+            length |= (byte & 0x7f) << shift;
+            if (byte < 0x80) break;
+          }
+          end = bytes.indexOf(0x0a, at + length);
+          presence.set(
+            utf8.decode(bytes.subarray(at, at + length)),
+            utf8.decode(bytes.subarray(at + length, end)),
+          );
+        }
+        return [{ ws, identity: { partition, actorId, clientId }, presence }];
+      });
+      if (sockets.length === 0) return;
+      const results = await this.#getHub().restore(
+        sockets.map(({ ws, identity, presence }) => ({
+          ...this.#connectOptions(ws, identity),
+          presence,
+        })),
+      );
+      for (const [i, result] of results.entries()) {
+        const ws = sockets[i]!.ws;
+        if (result.status === 'rejected') {
+          ws.close(1011, 'realtime rehydration failed');
+          this.#syncError(result.reason, 'realtime');
+        } else if (this.#closedSockets.has(ws)) {
+          result.value.close();
+        } else {
+          this.#sessions.set(ws, result.value);
+        }
       }
-    }
+    })();
+    return this.#rehydration;
   }
 
   /**
@@ -499,7 +620,10 @@ export class SyncularRealtimeHost<
       return Response.json(errorBody(error), { status: error.httpStatus });
     }
     try {
-      const bytes = await decodeRequestBody(request);
+      const bytes = await decodeRequestBody(
+        request,
+        this.#getHub().limits.maxRequestBytes,
+      );
       if (bytes === undefined) return unsupportedEncoding('operations');
       const out = await handleRemoteOperation(
         bytes,
@@ -606,24 +730,40 @@ export class SyncularRealtimeHost<
     const pair = newWebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    // Hand the server socket to the runtime for hibernation. The attachment
-    // is the minimal §8.1 identity `connect` needs to rehydrate.
-    const attachment: SocketAttachment = {
-      partition: identity.partition,
-      actorId: identity.actorId,
-      clientId: identity.clientId,
-    };
+    // Hand the server socket to the runtime for hibernation with the §8.1
+    // identity `restore` needs to rehydrate.
+    const attachment = encodeAttachment(identity, new Map());
     server.serializeAttachment(attachment);
-    this.#upgrading.add(server);
     this.#state.acceptWebSocket(server);
     // Build the session now (first connect: hello IS delivered). Any failure
     // closes the socket loudly — never a half-open realtime connection.
     try {
-      const session = await this.#connectSession(server, attachment, false);
+      const hub = this.#getHub();
+      // §8.6.1: the identity must fit the attachment beside a full presence
+      // budget, so no later presence change can overflow it.
+      if (
+        this.#presenceReserve + attachment.byteLength >
+        ATTACHMENT_LIMIT_BYTES
+      ) {
+        throw new SyncError(
+          'sync.limit_exceeded',
+          'realtime identity does not fit the socket attachment (§8.6.1)',
+          JSON.stringify({
+            limit: 'attachmentBytes',
+            max: ATTACHMENT_LIMIT_BYTES,
+          }),
+        );
+      }
+      const session = await hub.connect(this.#connectOptions(server, identity));
       this.#sessions.set(server, session);
-      this.#upgrading.delete(server);
+      if ((await this.#state.storage.getAlarm()) === null) {
+        await this.#state.storage.setAlarm(
+          Date.now() + (this.#config.heartbeatIntervalMs ?? 30_000),
+        );
+      }
     } catch (error) {
-      this.#upgrading.delete(server);
+      this.#sessions.get(server)?.close();
+      this.#sessions.delete(server);
       server.close(1011, 'realtime connect failed');
       const sync = this.#syncError(error, 'realtime');
       return Response.json(errorBody(sync), { status: sync.httpStatus });
@@ -634,49 +774,43 @@ export class SyncularRealtimeHost<
     return new Response(null, init);
   }
 
-  /** Build a `RealtimeSession` for a socket via the hub (§8.1). */
-  async #connectSession(
+  /** The hub connect options of a hibernatable socket (§8.1). */
+  #connectOptions(
     ws: WebSocketLike,
-    attachment: SocketAttachment,
-    rehydrate: boolean,
-  ): Promise<RealtimeSession> {
-    if (rehydrate) this.#swallowHello.add(ws);
-    const session = await this.#getHub().connect({
-      partition: attachment.partition,
-      actorId: attachment.actorId,
-      clientId: attachment.clientId,
-      send: (data) => {
-        // Swallow exactly one hello on a rehydrated socket — the client was
-        // greeted at the real upgrade; rehydration is transparent (§8.1).
-        if (this.#swallowHello.has(ws)) {
-          this.#swallowHello.delete(ws);
-          if (isHello(data)) return;
-        }
-        sendOverSocket(ws, data);
-      },
+    identity: RealtimeUpgradeIdentity,
+  ): RealtimeConnectOptions {
+    return {
+      partition: identity.partition,
+      actorId: identity.actorId,
+      clientId: identity.clientId,
+      send: (data) => sendOverSocket(ws, data),
       closeSocket: () => ws.close(1008, 'protocol violation (§8.7)'),
-    });
-    return session;
+      // §8.6.1: presence survives a hibernation in the socket's attachment.
+      onPresence: (presence) =>
+        ws.serializeAttachment(encodeAttachment(identity, presence)),
+    };
   }
 
   /**
-   * Resolve the session for a socket, rehydrating from the attachment + D1 if
-   * the DO woke from hibernation and lost its in-memory map.
+   * The Durable Object alarm: send a §8.5 heartbeat to every socket and re-arm
+   * while sockets remain. The frame goes straight to the hibernatable sockets,
+   * so a heartbeat rebuilds no session.
    */
-  async #sessionFor(ws: WebSocketLike): Promise<RealtimeSession | undefined> {
-    if (this.#closedSockets.has(ws)) return undefined;
-    const existing = this.#sessions.get(ws);
-    if (existing !== undefined) return existing;
-    const attachment = ws.deserializeAttachment();
-    if (!isAttachment(attachment)) return undefined;
-    const session = await this.#connectSession(ws, attachment, true);
-    if (this.#closedSockets.has(ws)) {
-      session.close();
-      this.#swallowHello.delete(ws);
-      return undefined;
+  async alarm(): Promise<void> {
+    const sockets = this.#state.getWebSockets();
+    const heartbeat = encodeHeartbeat(Date.now());
+    for (const ws of sockets) {
+      try {
+        ws.send(heartbeat);
+      } catch {
+        // A closing socket; its close callback cleans up.
+      }
     }
-    this.#sessions.set(ws, session);
-    return session;
+    if (sockets.length > 0) {
+      await this.#state.storage.setAlarm(
+        Date.now() + (this.#config.heartbeatIntervalMs ?? 30_000),
+      );
+    }
   }
 
   /** Hibernation callback: an inbound frame. */
@@ -685,7 +819,7 @@ export class SyncularRealtimeHost<
     message: ArrayBuffer | string,
   ): Promise<void> {
     await this.#serializePartition(async () => {
-      const session = await this.#sessionFor(ws);
+      const session = this.#sessions.get(ws);
       if (session === undefined) return;
       if (typeof message === 'string') {
         session.handleMessage(message);
@@ -703,6 +837,7 @@ export class SyncularRealtimeHost<
   /** Hibernation callback: the socket closed. */
   async webSocketClose(ws: WebSocketLike): Promise<void> {
     this.#closedSockets.add(ws);
+    await this.#rehydrateSockets();
     const session = this.#sessions.get(ws);
     if (session !== undefined) {
       try {
@@ -715,7 +850,6 @@ export class SyncularRealtimeHost<
         this.#sessions.delete(ws);
       }
     }
-    this.#swallowHello.delete(ws);
   }
 
   /** Hibernation callback: a socket error — treat as a close. */
@@ -773,16 +907,6 @@ function sendOverSocket(ws: WebSocketLike, data: string | Uint8Array): void {
   const copy = new Uint8Array(data.byteLength);
   copy.set(data);
   ws.send(copy.buffer);
-}
-
-/** A `hello` control frame (text JSON) — used by the rehydration swallow. */
-function isHello(data: string | Uint8Array): boolean {
-  if (typeof data !== 'string') return false;
-  try {
-    return (JSON.parse(data) as { event?: unknown }).event === 'hello';
-  } catch {
-    return false;
-  }
 }
 
 const REALTIME_ID_HEADER = {

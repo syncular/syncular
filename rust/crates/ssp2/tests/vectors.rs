@@ -151,25 +151,35 @@ fn segment_vectors() {
 fn push_vectors() {
     let kind = "push";
     let manifest = read_manifest(kind);
-    let columns: Vec<Column> = manifest["columns"]
-        .as_array()
-        .expect("push manifest has a column table")
-        .iter()
-        .map(|c| Column {
-            name: str_field(c, "name").to_owned(),
-            ty: ColumnType::from_name(str_field(c, "type")).expect("known column type"),
-            nullable: c["nullable"].as_bool().expect("column nullable flag"),
-        })
-        .collect();
-    let primary_key = str_field(&manifest, "primaryKey");
-    let primary_key_index = columns
-        .iter()
-        .position(|c| c.name == primary_key)
-        .expect("primary key is a column of the table");
+    // A case's own column table overrides the kind's (spec/vectors/README.md).
+    let table = |case: &Value| -> (Vec<Column>, usize) {
+        let source = if case.get("columns").is_some() {
+            case
+        } else {
+            &manifest
+        };
+        let columns: Vec<Column> = source["columns"]
+            .as_array()
+            .expect("push manifest has a column table")
+            .iter()
+            .map(|c| Column {
+                name: str_field(c, "name").to_owned(),
+                ty: ColumnType::from_name(str_field(c, "type")).expect("known column type"),
+                nullable: c["nullable"].as_bool().expect("column nullable flag"),
+            })
+            .collect();
+        let primary_key = str_field(source, "primaryKey");
+        let primary_key_index = columns
+            .iter()
+            .position(|c| c.name == primary_key)
+            .expect("primary key is a column of the table");
+        (columns, primary_key_index)
+    };
 
     let valid = cases(&manifest, "cases");
     assert!(!valid.is_empty(), "{kind}: no cases in manifest");
     for case in &valid {
+        let (columns, primary_key_index) = table(case);
         let name = str_field(case, "name");
         let bin = read_bin(kind, str_field(case, "bin"));
         let expected = read_json(kind, str_field(case, "json"));
@@ -189,6 +199,7 @@ fn push_vectors() {
     }
 
     for case in &cases(&manifest, "invalid") {
+        let (columns, primary_key_index) = table(case);
         let name = str_field(case, "name");
         let bin = read_bin(kind, str_field(case, "bin"));
         let expected_code = str_field(case, "error");

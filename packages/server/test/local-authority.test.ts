@@ -353,6 +353,87 @@ describe('local authority (§12)', () => {
     ]);
   });
 
+  test('a lost undo response blocks attach until a retried abandon completes', async () => {
+    const authority = await openLocalAuthority({
+      database: new BunSqliteDatabase(':memory:'),
+      schema: NODE_SCHEMA,
+    });
+    await writeNodes(authority, [[node('a', null)]]);
+    const target = remote();
+    target.faults.dropResponseOfCommit = 0;
+    await expect(authority.attach(target.transport)).rejects.toThrow(
+      'injected: response lost',
+    );
+    // Commit 1 settles upload commit 0 (`cached`); commit 2 is the undo
+    // commit whose response is lost after the remote applied it.
+    target.faults.dropResponseOfCommit = 2;
+    await expect(authority.abandonAttach(target.transport)).rejects.toThrow(
+      'injected: response lost',
+    );
+    expect(authority.state).toBe('attaching');
+    expect(target.rows()).toEqual([]);
+
+    // A resumed upload would replay `cached` for the deleted rows.
+    const refused = authority.attach(target.transport);
+    await expect(refused).rejects.toBeInstanceOf(LocalAuthorityAttachError);
+    await expect(refused).rejects.toMatchObject({
+      code: 'sync.attach_rejected',
+      details: { reason: 'undo_pending' },
+    });
+    expect(target.commits).toHaveLength(3);
+
+    await authority.abandonAttach(target.transport);
+    expect(authority.state).toBe('local');
+    await authority.attach(target.transport);
+    expect(authority.state).toBe('attached');
+    const ids = target.commits.map((commit) => commit.clientCommitId);
+    const attachId = ids[0]!.slice(0, -':0'.length);
+    const fresh = ids[4]!;
+    expect(ids).toEqual([
+      `${attachId}:0`,
+      `${attachId}:0`,
+      `${attachId}:undo:0:0`,
+      `${attachId}:undo:1:0`,
+      fresh,
+    ]);
+    expect(fresh.startsWith(attachId)).toBe(false);
+    // The fresh attach recreates the row above the undo's tombstone (§6.2).
+    expect(target.rows()).toEqual([{ values: ['a', 'p1', null], version: 2 }]);
+  });
+
+  test('a rejected undo applies on a retried abandon once the blocker is gone', async () => {
+    const authority = await openLocalAuthority({
+      database: new BunSqliteDatabase(':memory:'),
+      schema: NODE_SCHEMA,
+    });
+    await writeNodes(authority, [[node('a', null)]]);
+    const allowed = ['p1'];
+    const target = remote({ allowed });
+    target.faults.dropResponseOfCommit = 0;
+    await expect(authority.attach(target.transport)).rejects.toThrow(
+      'injected: response lost',
+    );
+    // The remote refuses the undo delete while the actor lacks the scope.
+    allowed.length = 0;
+    await expect(
+      authority.abandonAttach(target.transport),
+    ).rejects.toMatchObject({
+      code: 'sync.attach_rejected',
+      details: { reason: 'commit_rejected', code: 'sync.forbidden' },
+    });
+    await expect(authority.attach(target.transport)).rejects.toMatchObject({
+      details: { reason: 'undo_pending' },
+    });
+
+    allowed.push('p1');
+    await authority.abandonAttach(target.transport);
+    expect(authority.state).toBe('local');
+    expect(target.commits.at(-1)!.clientCommitId).toEndWith(':undo:1:0');
+    expect(target.statuses.slice(-2)).toEqual(['rejected', 'applied']);
+    expect(target.rows()).toEqual([]);
+    await writeNodes(authority, [[node('b', null)]]);
+  });
+
   test('abandoning before any upload request needs no transport', async () => {
     const authority = await openLocalAuthority({
       database: new BunSqliteDatabase(':memory:'),

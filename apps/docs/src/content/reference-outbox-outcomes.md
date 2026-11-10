@@ -46,6 +46,10 @@ An `applied` or `cached` acknowledgement confirms server acceptance and removes 
 
 Imports restore and replay only affected rows or tables. Unique constraints can require peer rows in the same table.
 
+### Rejection rollback
+
+Without `retainFailedCommits`, the round that receives a rejection or conflict removes that commit from the visible rows. The client returns each affected row to the last row the server delivered, then replays every later pending commit in FIFO order. A server write that arrived after the rejected edit was queued stays visible.
+
 ### Replay failures
 
 Clients surface overlay replay failures on reopen and during sync. SQL reads, value decoding, row writes, savepoints, and FTS maintenance must succeed before the local apply transaction commits. A failure rolls back that transaction's visible rows, FTS projection, base changes, cursor, acknowledgements, outbox changes, and observation revision. Earlier completed protocol commits stay applied, and pending intent stays available for retry after the storage failure is corrected.
@@ -102,7 +106,7 @@ A declared `REFERENCES` column rejects a commit with `sync.reference_violation`.
 
 | `reason` | Meaning | Details |
 |---|---|---|
-| `missing_parent` | A present, non-null reference column names an absent parent. | `fieldPaths` names the column; `references` carries the parent table and row. |
+| `missing_parent` | A present, non-null reference column names an absent parent, or a parent in a scope the actor cannot write; both answer identically. | `fieldPaths` names the column; `references` carries the parent table and row. |
 | `restricted_delete` | A delete is blocked by a live child under `RESTRICT`. | `references.child` names the child table. |
 | `cascade_limit` | A cascade passed the per-commit operation cap. | |
 

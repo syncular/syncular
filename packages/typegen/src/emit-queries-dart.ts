@@ -9,11 +9,11 @@
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
-import type {
-  AnalyzedQuery,
-  QueryColumn,
-  QuerySyqlPlanBind,
-  QuerySyqlPublicInput,
+import {
+  type AnalyzedQuery,
+  type QueryColumn,
+  type QuerySyqlPlanBind,
+  syqlInput,
 } from './query';
 
 const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -33,11 +33,6 @@ function pascalCase(name: string): string {
     .filter((p) => p.length > 0)
     .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
     .join('');
-}
-
-/** Language-facing field name — the pinned §12 naming map. */
-function camelCase(name: string): string {
-  return snakeToCamel(name);
 }
 
 function typeName(name: string): string {
@@ -90,19 +85,13 @@ function optionalParamValue(type: IrColumnType, name: string): string {
   }
 }
 
-function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
-  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
-  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
-  return input;
-}
-
 function syqlDartType(type: IrColumnType, nullable: boolean): string {
   return `${DART_TYPE[type]}${nullable ? '?' : ''}`;
 }
 
 function syqlControlActive(query: AnalyzedQuery, name: string): string {
   const input = syqlInput(query, name);
-  const access = camelCase(input.langName);
+  const access = snakeToCamel(input.langName);
   if (input.kind === 'value' && input.default === false) return access;
   if (input.kind === 'value' && input.nullable) return `${access}.isPresent`;
   if (input.kind === 'value' || input.kind === 'group') {
@@ -118,7 +107,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
       .join(' && ');
   }
   const input = syqlInput(query, bind.input);
-  const access = camelCase(input.langName);
+  const access = snakeToCamel(input.langName);
   if (bind.kind === 'limit') return `effective${typeName(access)}`;
   if (bind.kind === 'group-member') {
     if (input.kind !== 'group') throw new Error('group bind/input mismatch');
@@ -127,7 +116,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     );
     if (member === undefined)
       throw new Error(`unknown group member ${bind.member}`);
-    const memberAccess = `${access}.${camelCase(member.langName)}`;
+    const memberAccess = `${access}.${snakeToCamel(member.langName)}`;
     const value = member.nullable
       ? optionalParamValue(member.type, memberAccess)
       : paramValue(member.type, memberAccess);
@@ -153,17 +142,17 @@ function emitSyqlDartTypes(query: AnalyzedQuery): string[] {
       lines.push(`class ${name} {`);
       for (const member of input.members) {
         lines.push(
-          `  final ${syqlDartType(member.type, member.nullable)} ${camelCase(member.langName)};`,
+          `  final ${syqlDartType(member.type, member.nullable)} ${snakeToCamel(member.langName)};`,
         );
       }
       const args = input.members
-        .map((member) => `required this.${camelCase(member.langName)}`)
+        .map((member) => `required this.${snakeToCamel(member.langName)}`)
         .join(', ');
       lines.push(`  const ${name}({${args}});`, '}', '');
     } else if (input.kind === 'sort') {
       const name = `${typeName(query.name)}${typeName(input.langName)}`;
       lines.push(
-        `enum ${name} { ${input.profiles.map((profile) => camelCase(profile.langName)).join(', ')} }`,
+        `enum ${name} { ${input.profiles.map((profile) => snakeToCamel(profile.langName)).join(', ')} }`,
         '',
       );
     }
@@ -186,7 +175,7 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
   );
   const args: string[] = [];
   for (const input of metadata.inputs) {
-    const name = camelCase(input.langName);
+    const name = snakeToCamel(input.langName);
     if (input.kind === 'value') {
       const type = syqlDartType(input.type, input.nullable);
       if (input.required) args.push(`required ${type} ${name}`);
@@ -203,7 +192,7 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
         input.profiles.find((profile) => profile.name === input.defaultProfile)
           ?.langName ?? input.defaultProfile;
       const type = `${typeName(query.name)}${typeName(input.langName)}`;
-      args.push(`${type} ${name} = ${type}.${camelCase(defaultCase)}`);
+      args.push(`${type} ${name} = ${type}.${snakeToCamel(defaultCase)}`);
     } else {
       args.push(`int? ${name}`);
     }
@@ -214,7 +203,7 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
   );
   const page = metadata.inputs.find((input) => input.kind === 'limit');
   if (page?.kind === 'limit') {
-    const name = camelCase(page.langName);
+    const name = snakeToCamel(page.langName);
     lines.push(
       `  final effective${typeName(name)} = ${name} ?? ${page.defaultSize};`,
       `  if (effective${typeName(name)} < 1 || effective${typeName(name)} > ${page.maxSize}) {`,
@@ -233,7 +222,7 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
   const sort = metadata.inputs.find((input) => input.kind === 'sort');
   const profileCount = sort?.kind === 'sort' ? sort.profiles.length : 1;
   const sortIndex =
-    sort?.kind === 'sort' ? `${camelCase(sort.langName)}.index` : '0';
+    sort?.kind === 'sort' ? `${snakeToCamel(sort.langName)}.index` : '0';
   const index =
     metadata.plan.backend === 'variants'
       ? `activationMask * ${profileCount} + ${sortIndex}`
@@ -269,26 +258,28 @@ function emitClass(query: AnalyzedQuery): string[] {
   for (const column of query.columns) {
     const opt = column.nullable ? '?' : '';
     lines.push(
-      `  final ${DART_TYPE[column.type]}${opt} ${camelCase(column.langName)};`,
+      `  final ${DART_TYPE[column.type]}${opt} ${snakeToCamel(column.langName)};`,
     );
   }
   lines.push('');
   const ctorParams = query.columns
-    .map((c) => `${c.nullable ? '' : 'required '}this.${camelCase(c.langName)}`)
+    .map(
+      (c) => `${c.nullable ? '' : 'required '}this.${snakeToCamel(c.langName)}`,
+    )
     .join(', ');
   lines.push(`  const ${Row}({${ctorParams}});`);
   lines.push('');
   lines.push(`  static ${Row}? fromRow(Map<String, Object?> row) {`);
   for (const column of query.columns) {
     if (!column.nullable) {
-      const name = camelCase(column.langName);
+      const name = snakeToCamel(column.langName);
       lines.push(`    final ${name} = ${rowAccessor(column)};`);
       lines.push(`    if (${name} == null) return null;`);
     }
   }
   const args = query.columns
     .map((c) => {
-      const name = camelCase(c.langName);
+      const name = snakeToCamel(c.langName);
       return c.nullable ? `${name}: ${rowAccessor(c)}` : `${name}: ${name}`;
     })
     .join(', ');
@@ -315,7 +306,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(`/// Run the ${query.name} named query (SELECT-only).`);
   const args: string[] = [];
   for (const p of query.params) {
-    const name = camelCase(p.langName);
+    const name = snakeToCamel(p.langName);
     args.push(`required ${DART_TYPE[p.type]} ${name}`);
   }
   const argsClause = args.length > 0 ? `, {${args.join(', ')}}` : '';
@@ -326,7 +317,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   if (query.params.length > 0) {
     const binds = query.params
       .map((p) => {
-        const name = camelCase(p.langName);
+        const name = snakeToCamel(p.langName);
         return paramValue(p.type, name);
       })
       .join(', ');

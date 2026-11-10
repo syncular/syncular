@@ -179,6 +179,19 @@ async function makeHandle(
   return { handle, events };
 }
 
+test('the worker handle serializes a BlobRef locally in canonical key order', async () => {
+  const { handle } = await makeHandle({ clientId: 'blob-ref-string' });
+  const ref = {
+    blobId: `sha256:${'ab'.repeat(32)}`,
+    byteLength: 3,
+    mediaType: 'text/plain',
+    name: 'a.txt',
+  };
+  expect(handle.blobRefString(ref)).toBe(
+    `{"blobId":"sha256:${'ab'.repeat(32)}","byteLength":3,"mediaType":"text/plain","name":"a.txt"}`,
+  );
+});
+
 test('worker RPC retains structured segment transport evidence', async () => {
   const details = {
     path: '/segments/test',
@@ -387,6 +400,45 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(diagnostics.lastRound).toMatchObject({ status: 'succeeded' });
   expect(JSON.stringify(diagnostics)).not.toContain('p1');
   expect(diagnosticEvents.length).toBeGreaterThan(0);
+});
+
+test('the worker builds no diagnostics push until a consumer pulls', async () => {
+  const messages: Array<{ t?: string; event?: { kind?: string } }> = [];
+  const { handle } = await makeHandle({
+    clientId: 'rpc-lazy-diagnostics',
+    autoSync: false,
+    worker: () => {
+      const worker = new Worker(WORKER_URL);
+      worker.addEventListener('message', (event) => messages.push(event.data));
+      return worker;
+    },
+  });
+  const pushes = () =>
+    messages.filter(
+      (message) =>
+        message.t === 'event' && message.event?.kind === 'diagnostics',
+    ).length;
+  await handle.subscribe({
+    id: 'tasks',
+    table: 'tasks',
+    scopes: { project_id: ['p1'] },
+  });
+  await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('lazy1', 'p1', 'a') },
+  ]);
+  await handle.statusSnapshot();
+  expect(pushes()).toBe(0);
+
+  const seen: string[] = [];
+  handle.onDiagnostics((snapshot) => seen.push(snapshot.replica.localRevision));
+  // A call after the subscription is a FIFO barrier for the worker's pull.
+  await handle.statusSnapshot();
+  await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('lazy2', 'p1', 'b') },
+  ]);
+  await handle.statusSnapshot();
+  expect(pushes()).toBeGreaterThan(0);
+  expect(seen.length).toBe(pushes());
 });
 
 test('worker subscriptions reject an identity rebind without losing completeness', async () => {
@@ -984,6 +1036,32 @@ test('worker realtime connect is single-owner across repeated RPC calls', async 
   await handle.disconnectRealtime();
 });
 
+test('a refused presence publish crosses the worker to both presence surfaces (§8.6.2)', async () => {
+  const configured: Array<[string, string | undefined]> = [];
+  const { handle } = await makeHandle({
+    clientId: 'rpc-presence-refused',
+    autoSync: false,
+    onPresence: (scopeKey, error) => configured.push([scopeKey, error]),
+  });
+  const subscribed: Array<[string, string | undefined]> = [];
+  const off = handle.onPresence((scopeKey, error) =>
+    subscribed.push([scopeKey, error]),
+  );
+  await handle.connectRealtime();
+  // The connection holds no scope key, so the hub refuses the publish.
+  await handle.setPresence('project:unheld', { who: 'me' });
+  await waitFor(
+    () => subscribed.length === 1 && configured.length === 1,
+    (notify) => handle.onPresence(notify),
+    'presence rejection over the worker RPC',
+  );
+  expect(subscribed).toEqual([['project:unheld', 'presence.forbidden']]);
+  expect(configured).toEqual(subscribed);
+  expect(await handle.presence('project:unheld')).toEqual([]);
+  off();
+  await handle.disconnectRealtime();
+});
+
 test('host auth headers reach /sync and rotate through setHeaders', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-auth',
@@ -1508,6 +1586,56 @@ test('wake-ups during a queued round share one follow-up drive', async () => {
   }
 });
 
+test('a drive deadline rejection re-arms the worker host loop', async () => {
+  const worker = new Worker(
+    new URL('./idle-retry-worker.ts', import.meta.url).href,
+  );
+  const backgrounds: number[] = [];
+  let notify: () => void = () => {};
+  worker.addEventListener('message', (event) => {
+    const message = event.data as {
+      readonly t?: string;
+      readonly delayMs?: number;
+    };
+    if (message.t !== 'background' || message.delayMs === undefined) return;
+    backgrounds.push(message.delayMs);
+    notify();
+  });
+  const { handle, events } = await makeHandle({
+    clientId: 'rpc-idle-retry',
+    worker: () => worker,
+    autoSync: true,
+    realtimePolicy: 'off',
+    onSynced: (result) => {
+      events.synced.push(result);
+      notify();
+    },
+  });
+  const observe = (next: () => void) => {
+    notify = next;
+    return () => {
+      notify = () => {};
+    };
+  };
+  await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('retry', 'p-retry') },
+  ]);
+  await waitFor(
+    () => backgrounds.length === 1,
+    observe,
+    'the loop schedules a retry after the deadline',
+  );
+  // §7.7: the deadline is retryable, so the loop owes another drive.
+  expect(events.synced[0]?.error?.code).toBe('sync.idle_timeout');
+  expect(backgrounds).toEqual([250]);
+  expect(await handle.pendingCommits()).toHaveLength(1);
+
+  worker.postMessage({ t: 'fire-background' });
+  await waitFor(() => events.synced.length === 2, observe, 'the retried drive');
+  expect(events.synced[1]?.error).toBeUndefined();
+  expect(await handle.pendingCommits()).toHaveLength(0);
+});
+
 test('concurrent and repeated handle close join one held worker close', async () => {
   let releaseClose: (() => void) | undefined;
   let closeCalls = 0;
@@ -1537,4 +1665,42 @@ test('concurrent and repeated handle close join one held worker close', async ()
   expect(settled).toEqual(['first', 'second']);
   await handle.close();
   expect(closeCalls).toBe(1);
+});
+
+test('the worker core forwards the heartbeat interval and runs the §8.5 watchdog', async () => {
+  const worker = new Worker(
+    new URL('./heartbeat-worker.ts', import.meta.url).href,
+  );
+  const posted: Array<{ readonly t?: string; readonly delayMs?: number }> = [];
+  worker.addEventListener('message', (event) => {
+    const message = event.data as { readonly t?: string };
+    if (message.t === 'timer' || message.t === 'socket-closed')
+      posted.push(event.data);
+  });
+  const { handle } = await makeHandle({
+    clientId: 'rpc-heartbeat',
+    worker: () => worker,
+    autoSync: false,
+    realtimeHeartbeatMs: 1_000,
+  });
+  await handle.connectRealtime();
+  // Messages to the worker are handled in order, so an RPC reply proves the
+  // socket text before it was applied.
+  worker.postMessage({ t: 'socket-text', text: '{"event":"x","data":{}}' });
+  await handle.statusSnapshot();
+  expect(posted).toEqual([]);
+
+  worker.postMessage({
+    t: 'socket-text',
+    text: JSON.stringify({ event: 'heartbeat', data: { timestamp: 1 } }),
+  });
+  await handle.statusSnapshot();
+  expect(posted).toEqual([{ t: 'timer', delayMs: 2_000 }]);
+
+  worker.postMessage({ t: 'fire-timer' });
+  expect((await handle.diagnosticsSnapshot()).host.realtime).toBe('lost');
+  expect(posted).toEqual([
+    { t: 'timer', delayMs: 2_000 },
+    { t: 'socket-closed' },
+  ]);
 });

@@ -5,8 +5,15 @@
  * loopback doctrine; HTTP/WebSocket bindings live in `./http`.
  */
 
-/** One combined push+pull round trip: SSP2 request bytes → response bytes. */
-export type SyncTransport = (request: Uint8Array) => Promise<Uint8Array>;
+/**
+ * One combined push+pull round trip: SSP2 request bytes → response bytes.
+ * `signal` aborts when the `syncUntilIdle` deadline elapses (§7.7); a
+ * transport that honors it releases the round instead of holding it open.
+ */
+export type SyncTransport = (
+  request: Uint8Array,
+  signal?: AbortSignal,
+) => Promise<Uint8Array>;
 
 /** One registered authoritative query or command request. */
 export type RemoteOperationTransport = (
@@ -32,7 +39,14 @@ export interface SegmentFetchRequest {
   readonly table: string;
   /** Canonical JSON (§11.2) of the requested scope map (§5.5 header). */
   readonly requestedScopesJson: string;
+  /**
+   * The descriptor's `byteLength` (§5.4): the downloader stops reading once
+   * the body exceeds it, and the client core rejects the result.
+   */
+  readonly byteLength?: number;
   readonly onProgress?: (bytesReceived: number) => void;
+  /** Aborts with the round when the `syncUntilIdle` deadline elapses (§7.7). */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -48,6 +62,9 @@ export interface SegmentDownloader {
   readonly fetchUrl?: (
     url: string,
     onProgress?: (bytesReceived: number) => void,
+    signal?: AbortSignal,
+    /** The descriptor's `byteLength`; reading stops once the body exceeds it. */
+    byteLength?: number,
   ) => Promise<Uint8Array>;
 }
 
@@ -72,4 +89,6 @@ export interface RealtimeSocket {
 
 export type RealtimeConnector = (
   handlers: RealtimeHandlers,
+  /** The client's id; the client passes it on every connect. */
+  clientId?: string,
 ) => Promise<RealtimeSocket> | RealtimeSocket;

@@ -238,7 +238,7 @@ export interface BlobSweptEvent {
   readonly partition: string;
   /** Blobs deleted this pass (unreferenced and older than the grace period). */
   readonly swept: number;
-  /** Size of the live keep-set consulted (§5.9.4 reference index). */
+  /** Old candidates a live row still references (§5.9.4 reference index). */
   readonly referenced: number;
   /** The grace period applied (ms) — the upload→push race protection. */
   readonly graceMs: number;

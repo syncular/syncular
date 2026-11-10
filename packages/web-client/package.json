@@ -89,6 +89,14 @@
         "types": "./dist/authority.d.ts",
         "default": "./dist/authority.js"
       }
+    },
+    "./native-bridge": {
+      "bun": "./src/native-bridge.ts",
+      "browser": "./dist/native-bridge.js",
+      "import": {
+        "types": "./dist/native-bridge.d.ts",
+        "default": "./dist/native-bridge.js"
+      }
     }
   },
   "files": [

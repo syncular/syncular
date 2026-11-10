@@ -265,6 +265,7 @@ impl Transport for HostIo {
     fn fetch_url(
         &mut self,
         url: &str,
+        _byte_length: u64,
         _on_progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<u8>, TransportError> {
         // The URL is the entire grant (§5.4): nothing but the URL crosses.
@@ -288,7 +289,11 @@ impl Transport for HostIo {
             .map(|_| ())
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+    fn blob_download(
+        &mut self,
+        blob_id: &str,
+        _byte_length: Option<u64>,
+    ) -> Result<BlobDownload, TransportError> {
         let result = self.call_host("blobDownload", json!({ "blobId": blob_id }))?;
         // §5.9.5 always-issue: a `url` field means presigned delivery; else
         // inline bytes.
@@ -303,7 +308,11 @@ impl Transport for HostIo {
             .map_err(|m| TransportError::new("transport.failed", m))
     }
 
-    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_blob_url(
+        &mut self,
+        url: &str,
+        _byte_length: Option<u64>,
+    ) -> Result<Vec<u8>, TransportError> {
         // The URL is the entire grant (§5.9.5): nothing but the URL crosses.
         let result = self.call_host("fetchBlobUrl", json!({ "url": url }))?;
         value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))

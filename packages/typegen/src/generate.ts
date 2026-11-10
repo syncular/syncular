@@ -43,14 +43,16 @@ import {
 } from './manifest';
 import {
   buildMigrationLock,
-  LEGACY_MIGRATION_LOCK_FORMAT_VERSION,
+  buildSchemaVersions,
   lockedMigrationNames,
   MIGRATION_LOCK_FILENAME,
+  MIGRATION_LOCK_FORMAT_VERSION,
   readMigrationLock,
   serializeMigrationLock,
   updateMigrationLock,
+  upgradeMigrationLock,
 } from './migration-lock';
-import { buildNamingMap, type NamingTarget } from './naming';
+import { type NamingTarget, validateSchemaIdentifiers } from './naming';
 import {
   type AnalyzedQuery,
   analyzeQueryFile,
@@ -92,10 +94,19 @@ function resolveScope(table: ParsedTable, spec: ManifestScopeSpec): IrScope {
   }
   const variable = match[2];
   const column = typeof spec === 'string' ? variable : spec.column;
-  if (!table.columns.some((c) => c.name === column)) {
+  const scopeColumn = table.columns.find((c) => c.name === column);
+  if (scopeColumn === undefined) {
     throw new TypegenError(
       MANIFEST_FILENAME,
       `table ${table.name}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
+    );
+  }
+  if (scopeColumn.type !== 'string' && scopeColumn.type !== 'integer') {
+    throw new TypegenError(
+      MANIFEST_FILENAME,
+      'a scope column must have type string or integer (§3.1)',
+      'typegen.scope_column_type',
+      { table: table.name, column, type: scopeColumn.type },
     );
   }
   return { pattern, variable, column };
@@ -190,6 +201,17 @@ function applyEncryption(
         `table ${parsed.name}: crdt column ${JSON.stringify(name)} cannot be encrypted — the server merges crdt bytes plaintext (§5.10.3, §5.11)`,
       );
     }
+    // The server indexes ciphertext under a random nonce: a UNIQUE index
+    // never fires there while clients enforce it on plaintext.
+    const index = parsed.indexes.find((i) => i.columns.includes(name));
+    if (index !== undefined) {
+      throw new TypegenError(
+        MANIFEST_FILENAME,
+        'an encrypted column cannot be an index column (§5.11)',
+        'typegen.encrypted_index_column',
+        { table: parsed.name, index: index.name, column: name },
+      );
+    }
   }
   return parsed.columns.map((column): IrColumn => {
     if (!encrypted.has(column.name)) return column;
@@ -254,6 +276,21 @@ function validateReferences(
           `table ${table.name}: reference column ${JSON.stringify(reference.column)} has type ${JSON.stringify(child.type)} but ${parent.name}.${parent.primaryKey} has type ${JSON.stringify(parentKey.type)} — the types must match (§6.11)`,
         );
       }
+      // The server reaches children through this index (§6.11); a migration
+      // that drops it leaves a schema the server refuses to compile.
+      if (
+        !table.indexes.some(
+          (index) =>
+            index.columns.length === 1 && index.columns[0] === reference.column,
+        )
+      ) {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          'a declared reference needs a single-column index over its column (§6.11)',
+          'typegen.reference_index_missing',
+          { table: table.name, column: reference.column },
+        );
+      }
       if (patternsOf(table) !== patternsOf(parent)) {
         throw new TypegenError(
           MANIFEST_FILENAME,
@@ -309,33 +346,6 @@ function buildSubscription(
   return { name: sub.name, table: sub.table, scopes };
 }
 
-function buildSchemaVersions(
-  manifest: Manifest,
-  migrations: readonly MigrationInput[],
-): IrDocument['schemaVersions'] {
-  const names = migrations.map((m) => m.name);
-  let cursor = 0;
-  const out = manifest.schemaVersions.map((entry) => {
-    const index = names.indexOf(entry.through, cursor);
-    if (index === -1) {
-      throw new TypegenError(
-        MANIFEST_FILENAME,
-        `schemaVersions: version ${entry.version} names migration ${JSON.stringify(entry.through)}, which does not exist after ${JSON.stringify(names[cursor - 1] ?? '(start)')} (migrations: ${names.join(', ')})`,
-      );
-    }
-    const covered = names.slice(cursor, index + 1);
-    cursor = index + 1;
-    return { version: entry.version, migrations: covered };
-  });
-  if (cursor !== names.length) {
-    throw new TypegenError(
-      MANIFEST_FILENAME,
-      `schemaVersions: migrations ${names.slice(cursor).join(', ')} are not covered by any schema version — the last entry's "through" must be the last migration`,
-    );
-  }
-  return out;
-}
-
 /** Pure IR construction — the testable heart of the generator. Migrations
  * named in `lockedNames` replay as immutable deployed history: rules that
  * only appended migrations must satisfy are skipped for them. */
@@ -359,7 +369,10 @@ export function buildIr(
     );
   }
   validateFinalSchemaIdentifiers(parsedTables);
-  const schemaVersions = buildSchemaVersions(manifest, migrations);
+  const schemaVersions = buildSchemaVersions(
+    manifest.schemaVersions,
+    migrations,
+  );
   const tables = manifest.tables.map((manifestTable) => {
     const parsed = parsedTables.get(manifestTable.name);
     if (parsed === undefined) {
@@ -498,22 +511,15 @@ export function makeQueryDb(ir: IrDocument): {
       try {
         const columnNames = stmt.columnNames;
         // Execute once against the empty DB to populate decltype; result is [].
-        const paramsCount = (stmt as unknown as { paramsCount: number })
-          .paramsCount;
+        const paramsCount = stmt.paramsCount;
         // An unbound FTS5 MATCH parameter is treated as the empty query and
         // fails parsing. A numeric probe is valid for MATCH and LIMIT alike,
         // while the empty database still guarantees no result rows.
         const probe = /\bMATCH\b/i.test(sql)
           ? Array.from({ length: paramsCount }, () => 1)
           : [];
-        (
-          stmt as unknown as {
-            all: (...params: readonly number[]) => unknown[];
-          }
-        ).all(...probe);
-        const declaredTypes = (
-          stmt as unknown as { declaredTypes: (string | null)[] }
-        ).declaredTypes;
+        stmt.all(...probe);
+        const declaredTypes = stmt.declaredTypes;
         return { columnNames, declaredTypes, paramsCount };
       } finally {
         stmt.finalize();
@@ -653,45 +659,32 @@ export function baselineMigrationHistory(manifestDir: string): GeneratedOutput {
   buildIr(manifest, migrations);
   return {
     path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
-    content: serializeMigrationLock(buildMigrationLock(migrations)),
+    content: serializeMigrationLock(
+      buildMigrationLock(migrations, manifest.schemaVersions),
+    ),
   };
 }
 
 /**
- * Validate and explicitly compact a version-1 migration lock to version 2.
- * The caller owns the in-place write so the CLI can make the format transition
- * visible and reviewable.
+ * Validate a format-1 or format-2 migration lock and convert it to the
+ * current format, recording each locked migration's schema version from the
+ * manifest. The caller owns the in-place write so the CLI can make the format
+ * transition visible and reviewable.
  */
 export function upgradeMigrationHistory(manifestDir: string): GeneratedOutput {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
   const locked = readMigrationLock(manifestDir);
-  if (locked.formatVersion !== LEGACY_MIGRATION_LOCK_FORMAT_VERSION) {
+  if (locked.formatVersion === MIGRATION_LOCK_FORMAT_VERSION) {
     throw new TypegenError(
       MIGRATION_LOCK_FILENAME,
-      'already uses the current compact migration-lock format',
+      'already uses the current migration-lock format',
     );
   }
-  // Validate the immutable prefix before replacing its representation.
-  updateMigrationLock(locked, migrations);
-  // upgrade-lock converts the committed representation of history that is
-  // already locked. Extending the lock over appended migrations is its own
-  // reviewable act, so unlocked migrations stop the conversion here.
-  if (migrations.length > locked.migrations.length) {
-    const appended = migrations
-      .slice(locked.migrations.length)
-      .map((migration) => migration.name)
-      .join(', ');
-    throw new TypegenError(
-      MIGRATION_LOCK_FILENAME,
-      `migrations ${appended} are appended beyond the locked history — run generate to extend the lock over them, commit the extended lock, then rerun \`migrations upgrade-lock\``,
-    );
-  }
-  const lockedNames = lockedMigrationNames(locked);
-  buildIr(manifest, migrations, lockedNames);
+  buildIr(manifest, migrations, lockedMigrationNames(locked));
   return {
     path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
     content: serializeMigrationLock(
-      buildMigrationLock(migrations, undefined, lockedNames),
+      upgradeMigrationLock(locked, migrations, manifest.schemaVersions),
     ),
   };
 }
@@ -700,7 +693,11 @@ export function upgradeMigrationHistory(manifestDir: string): GeneratedOutput {
 export function checkMigrationHistory(manifestDir: string): string[] {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
   const locked = readMigrationLock(manifestDir);
-  const current = updateMigrationLock(locked, migrations);
+  const current = updateMigrationLock(
+    locked,
+    migrations,
+    manifest.schemaVersions,
+  );
   buildIr(manifest, migrations, lockedMigrationNames(locked));
   const output = {
     path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
@@ -718,7 +715,11 @@ export function checkMigrationHistory(manifestDir: string): string[] {
 export function generate(manifestDir: string): GenerateResult {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
   const locked = readMigrationLock(manifestDir);
-  const migrationLock = updateMigrationLock(locked, migrations);
+  const migrationLock = updateMigrationLock(
+    locked,
+    migrations,
+    manifest.schemaVersions,
+  );
   const ir = buildIr(manifest, migrations, lockedMigrationNames(locked));
 
   // §5/§12 naming: the emitter targets this run generates (keyword hazards
@@ -734,15 +735,12 @@ export function generate(manifestDir: string): GenerateResult {
     targets,
     backend: manifest.queryBackend,
   };
-  for (const table of ir.tables) {
-    buildNamingMap(
-      table.columns.map((c) => c.name),
-      manifest.naming,
-      MANIFEST_FILENAME,
-      `table ${table.name}`,
-      targets,
-    );
-  }
+  validateSchemaIdentifiers(
+    ir.tables,
+    manifest.naming,
+    targets,
+    MANIFEST_FILENAME,
+  );
 
   const irJson = serializeIr(ir);
   const hash = irHash(irJson);

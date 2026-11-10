@@ -117,6 +117,10 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
     // §8.7: realtime-connected clients run their sync rounds over the
     // socket seam, through the same segment store.
     segments,
+    // The replay lanes push 501 commits in one burst and measure per-commit
+    // delta delivery; the default limit (256) would turn the tail into
+    // catch-up pulls.
+    maxUnackedDeltas: 1_024,
   });
   if (options?.measurements) {
     // Replace the method on the owned hub so HTTP pushes and its own socket

@@ -253,9 +253,9 @@ headers and skip this section.
 
 ### Cookie sessions
 
-A same-origin cookie session needs nothing extra: the browser sends the cookie
-with the upgrade request, and your upgrade handler runs the same
-`authenticate`. A cookie-session app reads the cookie inside that callback:
+The browser sends the session cookie with the upgrade request, and your upgrade
+handler runs the same `authenticate`. A cookie-session app reads the cookie
+inside that callback:
 
 ```ts title="src/auth.ts"
 export async function authenticate(request: Request) {
@@ -268,21 +268,43 @@ export async function authenticate(request: Request) {
 }
 ```
 
+A browser attaches a cookie that lacks `SameSite=Lax` or `SameSite=Strict` to
+a WebSocket upgrade that a page on another site opens, and that page then
+reads your user's rows over the socket. A cookie session therefore needs two
+settings:
+
+- Set the session cookie with `SameSite=Lax` (or `Strict`), `Secure` and
+  `HttpOnly`. Browsers then leave it off cross-site upgrades and POSTs.
+- Check the upgrade's `Origin` header against your app's origins before
+  `authenticate` runs. On Workers, pass `allowedOrigins` to the `realtime`
+  option ([Cloudflare Workers](/server-workers/)). With `Bun.serve`, compare
+  the header yourself, as below. Native clients send no `Origin`.
+
+`POST /sync` and `POST /operations` need no extra check: they accept only
+their SSP2 and operations content types, which a cross-site form or `no-cors`
+fetch cannot send, and answer anything else with 415. The admin console's
+action routes refuse a request whose `Sec-Fetch-Site` is not `same-origin` or
+`none`, or whose `Origin` names another host.
+
 The browser worker sends cookies only to endpoints on the page's own origin.
 Serve the sync routes from that origin, or proxy them there, when you
-authenticate with cookies. With `Bun.serve`, authenticate before upgrading and
-carry the identity into `hub.connect`:
+authenticate with cookies. With `Bun.serve`, check the origin and authenticate
+before upgrading, and carry the identity into `hub.connect`:
 
 ```ts title="src/server.ts"
+const appOrigins = ['https://app.example.com'];
+
 fetch: async (request, bunServer) => {
   const url = new URL(request.url);
   if (url.pathname === '/realtime') {
+    const origin = request.headers.get('Origin');
+    if (origin !== null && !appOrigins.includes(origin)) {
+      return new Response(null, { status: 403 });
+    }
     const auth = await authenticate(request);
     if (auth === null) return new Response(null, { status: 401 });
     const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-    if (bunServer.upgrade(request, { data: { clientId, ...auth } })) {
-      return undefined as unknown as Response;
-    }
+    if (bunServer.upgrade(request, { data: { clientId, ...auth } })) return;
     return new Response('expected a websocket upgrade', { status: 400 });
   }
   return app.fetch(request);
@@ -293,7 +315,9 @@ websocket: {
       partition: ws.data.partition,
       actorId: ws.data.actorId,
       clientId: ws.data.clientId,
-      send: (data) => ws.send(data),
+      send: (data) => {
+        ws.send(data);
+      },
       closeSocket: () => ws.close(1008, 'protocol violation'),
     });
     // … session wiring as in Server setup
@@ -359,8 +383,8 @@ hub.connect({
 });
 ```
 
-On Cloudflare Workers the same check goes in the `authenticateRealtime` callback
-([Cloudflare Workers](/server-workers/)).
+On Cloudflare Workers the same check goes in the `authenticate` function of the
+`realtime` option ([Cloudflare Workers](/server-workers/)).
 
 ### Fetch a ticket per attempt
 

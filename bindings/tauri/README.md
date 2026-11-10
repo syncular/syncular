@@ -11,9 +11,10 @@ Two pieces:
 - **`plugin/`** — `tauri-plugin-syncular` (Rust). Runs the `syncular-client`
   core DIRECTLY (no FFI), with a real file DB and the native HTTP+WS transport.
   Exposes `syncular_command`, `syncular_query`, and the independent atomic
-  `syncular_query_snapshot` read path plus a `syncular://event` event stream.
+  `syncular_query_snapshot` read path. Events travel on the IPC channel the
+  creating webview passes in `create`.
 - **`../../packages/tauri`** — `@syncular/tauri` (JS). `createTauriSyncClient()`
-  returns a `SyncClientLike` over `@tauri-apps/api`'s `invoke` / `listen`.
+  returns a `SyncClientLike` over `@tauri-apps/api`'s `invoke` and `Channel`.
 
 ## Architecture: why a native instance, not JS-in-the-webview
 
@@ -29,7 +30,7 @@ is Tauri IPC.
 │ @syncular/react hooks  │        │ tauri-plugin-syncular                │
 │   │ SyncClientLike        │  IPC   │   mutable owner (commands + sync)    │
 │ @syncular/tauri  ──────┼───────▶│     SyncClient + native transport    │
-│   invoke / listen         │        │   read owner (atomic snapshots)      │
+│   invoke / Channel        │        │   read owner (atomic snapshots)      │
 │                         │◀───────┤     read-only SQLite connection      │
 └───────────────────────────┘ events └──────────────────────────────────────┘
 ```
@@ -58,8 +59,12 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
   Collaborative text on a `crdt` column, byte-compatible with the web
   `@syncular/crdt-yjs` helper (a Tauri app and a browser edit the same doc).
   The example enables the feature; a lean plugin build omits `yrs`.
-- **`syncular://event`** — exact revisioned `change` batches plus ephemeral
-  `presence`. Table/scope/window/status/conflict/rejection facts stay in the
+- **`events` channel** — exact revisioned `change` batches plus ephemeral
+  `presence`, sent only to the webview whose `create` opened the client. A
+  `presence` event carries `error` (`presence.too_large` / `presence.forbidden`)
+  when the server refuses this client's publish. A `create` from another
+  webview takes the client over; every other command from a webview that does
+  not own it is refused with `sync.client_owned_by_another_webview`. Table/scope/window/status/conflict/rejection facts stay in the
   one committed batch instead of being re-inferred by the bridge. Bytes ride
   as `{ "$bytes": "<hex>" }` everywhere, the driver-protocol convention.
 
@@ -208,7 +213,7 @@ example build). CI runs it as the `tauri-bindings` job, gated on
   command *behavior* is proven by the core tests and the shell wiring by the
   example.
 - **JS tests**: `@syncular/tauri`'s bridge unit tests (injected
-  invoke/listen doubles) assert the `SyncClientLike` contract, event fanout, and
+  invoke/channel doubles) assert the `SyncClientLike` contract, event fanout, and
   the bytes convention, plus a shape-parity test against the real React
   `SyncClientLike` contract.
 

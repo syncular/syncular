@@ -38,7 +38,7 @@ When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on t
 One factory builds the canonical sync capabilities for HTTP-forwarded rounds and socket rounds. Segment and blob bytes live in R2 through the bucket binding, so the Worker holds no S3 credentials.
 
 ```ts title="src/worker.ts"
-import { D1ServerStorage, type RealtimeHubConfig } from '@syncular/server';
+import { type RealtimeHubConfig, type ServerStorage } from '@syncular/server';
 import { R2BlobStore, R2SegmentStore } from '@syncular/server-workers';
 import { schema } from './syncular.generated';
 
@@ -48,7 +48,7 @@ interface Env {
   REALTIME: DurableObjectNamespace<SyncularRealtimeDO>;
 }
 
-const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
+const canonicalSyncConfig = (env: Env, storage: ServerStorage) => {
   const segments = new R2SegmentStore(env.BUCKET);
   // Durable attachment bytes (§5.9) in R2: no TTL, no lifecycle rule; the
   // cron trigger runs `sweepOrphanBlobs` for GC (see step 5).
@@ -63,7 +63,7 @@ const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
 };
 ```
 
-A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself: `GET /segments/:id` streams the R2 object through `open` without buffering it in the isolate, and `GET /blobs/:id` re-authorizes the row references before it reads ([Blobs](/concepts-blobs/)).
+A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself. `GET /blobs/:id` and `GET /segments/:id` for a segment over 16 MiB stream the R2 object body through `open` without buffering it in the isolate; a smaller segment is buffered and compressed. The blob route checks that the object exists and authorizes the referencing rows before it opens the object ([Blobs](/concepts-blobs/)).
 
 Both stores write the same object keys as `S3SegmentStore` and `S3BlobStore`. One bucket therefore serves both access paths: a Bun or Node host that holds R2 S3 credentials publishes through the S3 endpoint, and the Worker reads the same objects through the binding. To get presigned URLs, use `S3SegmentStore` and `S3BlobStore` with `s3PresignedUrls` and `s3PresignedBlobUrls` on the Workers host as well, and set the R2 endpoint and access key secrets listed in step 4.
 
@@ -131,6 +131,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
   }
   webSocketClose(ws: WebSocket) { return this.#host.webSocketClose(ws); }
   webSocketError(ws: WebSocket) { return this.#host.webSocketError(ws); }
+  alarm() { return this.#host.alarm(); }
 }
 
 const handler = createWorkersFetchHandler<Env>({
@@ -140,14 +141,19 @@ const handler = createWorkersFetchHandler<Env>({
   }),
   realtime: (env) => ({
     namespace: env.REALTIME,
+    allowedOrigins: ['https://app.example.com'],
     authenticate: (request) => authenticateRealtime(request, env),
   }),
 });
 ```
 
+`allowedOrigins` lists the origins a browser upgrade may come from. An upgrade whose `Origin` header names another origin answers 403 `sync.forbidden` before `authenticate` runs; native clients send no `Origin` and pass. Set it when `authenticateRealtime` reads a cookie ([Cookie sessions](/guide-auth/#cookie-sessions)).
+
+The host sends the §8.5 `heartbeat` from the Durable Object alarm: it arms the alarm when a socket connects, sends the event straight to every socket without rebuilding sessions, and re-arms while sockets remain. Forward `alarm()` as above. `heartbeatIntervalMs` in `RealtimeDOConfig` sets the interval (default 30 000). The host owns the object's alarm, so a subclass cannot schedule its own.
+
 `createWorkersFetchHandler(factory)` builds the Hono app per request from your factory. That keeps it stateless, which Workers requires because each invocation may run on a fresh isolate.
 
-The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first event after a wake (a socket message, a forwarded `/sync` or `/operations` request, a wake), the host rebuilds the session of every open socket from a minimal serialized attachment plus the client record in D1, the durable source of truth. A socket that stayed quiet through the hibernation therefore still receives the next delta. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
+The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first event after a wake (a socket message or close, an upgrade, a forwarded `/sync`, `/operations` or admin request, a wake), the host rebuilds the session of every open socket from its serialized attachment plus the client record in D1, the durable source of truth. Every event waits for that one rebuild, so a push never fans out while sessions are missing. The rebuild touches the partition and reads its latest sequence once, and reads each client record once. A socket that stayed quiet through the hibernation therefore still receives the next delta. The attachment also holds the socket's presence documents, rewritten on every change, and the rebuild restores them without sending anything to peers. When a socket closes after a wake its peers still receive `leave`, a new socket still receives the snapshot of present peers, and a restored peer's next publish arrives as an `update`. Cloudflare caps an attachment at 16,384 bytes. With the default `maxPresenceBytes` of 8,192 the host holds 13,717 of them for presence and its framing, and the upgrade refuses an identity (partition, actor and client id as JSON) longer than the remaining 2,667 bytes with HTTP 413 `sync.limit_exceeded`. The host refuses a `maxPresenceBytes` above 9,785, where even an empty identity no longer fits, with `PresenceAttachmentError` (`realtime.presence_exceeds_attachment`) when it builds the hub. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
 
 Register [remote operations](/guide-remote-operations/) on the Durable Object with `operations` in `RealtimeDOConfig`. The adapter forwards `POST /operations` to the partition's object, so a command applies on the same FIFO as pushes and its commit reaches the partition's sockets as a delta. A Worker config that passes `operations` beside a `realtime` or `coordinator` namespace fails each `/operations` request, because the command would run outside the FIFO.
 
@@ -187,7 +193,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
     realtimeDOConfig(this.env),
   );
   fetch(request: Request) { return this.#host.fetch(request); }
-  // webSocketMessage, webSocketClose, webSocketError as in the D1 example
+  // webSocketMessage, webSocketClose, webSocketError, alarm as in the D1 example
 }
 ```
 
@@ -273,7 +279,7 @@ Retention windows, eligibility rules, and what to alert on are in [Operations an
 
 Cloudflare's edge does not compress `application/vnd.syncular.*` or `application/octet-stream` bodies, so the Worker compresses them (SPEC §1.3). `POST /sync` and `POST /operations` are answered by the partition's Durable Object as identity bodies. The Worker is the outermost hop, so it declares `Content-Encoding: gzip` on a 200 response whose body declares no encoding when the request accepts gzip, and leaves `encodeBody` at its default: workerd gzips the body once as it leaves the edge. A response that already declares an encoding passes through unchanged, so no body is encoded twice.
 
-Segment and blob routes run inside `createSyncularHono`, which encodes its own bodies from `Accept-Encoding` and marks them `encodeBody: 'manual'`. On Workers the only codec is gzip through `CompressionStream`; a Bun deployment of the same adapter prefers zstd. Every response whose body was negotiated carries `Vary: Accept-Encoding`.
+Segment routes run inside `createSyncularHono`, which encodes its own bodies from `Accept-Encoding` and marks them `encodeBody: 'manual'`. On Workers the only codec is gzip through `CompressionStream`; a Bun deployment of the same adapter prefers zstd. Every response whose body was negotiated carries `Vary: Accept-Encoding`. Blob downloads stream the stored bytes with identity encoding and declare no `Content-Encoding`, so workerd does not encode them either.
 
 Clients may gzip a request body. The forwarded `/sync` and `/operations` requests keep the client's `Content-Encoding` header, and the Durable Object decodes gzip before it parses SSP2. Any other request encoding is answered with HTTP 415.
 

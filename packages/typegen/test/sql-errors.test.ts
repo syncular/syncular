@@ -637,6 +637,29 @@ describe('unsupported constructs are hard errors that name the construct', () =>
     );
   });
 
+  test('DEFAULT takes signed numbers and keyword literals, never a constraint word', () => {
+    const columns = parse(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, a INT DEFAULT -1, b REAL DEFAULT +2.5, c BOOLEAN DEFAULT TRUE, d TEXT DEFAULT NULL NOT NULL)',
+    ).get('t')?.columns;
+    expect(columns?.map((column) => column.nullable)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+    ]);
+    let error: unknown;
+    try {
+      parse('CREATE TABLE t (id TEXT PRIMARY KEY, n TEXT DEFAULT NOT NULL)');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      code: 'typegen.invalid_default',
+      details: { column: 'n', found: 'NOT' },
+    });
+  });
+
   test('declared references (§6.11)', () => {
     const tables = parse(
       'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id) ON DELETE CASCADE)',

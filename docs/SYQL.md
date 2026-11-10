@@ -253,7 +253,8 @@ A query body directly contains one read-only SQLite `SELECT` or
 
 The reference realization, in which every conditional is active and default
 sort/limit controls are selected, MUST prepare successfully against the schema.
-Projection names and types are derived from SQLite and schema metadata.
+Projection names and types are derived from SQLite and schema metadata;
+the type of a computed column follows §14.4.
 
 SYQL targets a portable SQLite 3.46.0 core profile. Non-core functions and
 collations are rejected. Snapshot-external or nondeterministic constructs such
@@ -378,13 +379,25 @@ Given schema scope `list:{list_id}`, this predicate is constructive:
 todos.list_id = :listId
 ```
 
-Required equality and `IN` predicates over declared scope columns may produce
-exact dependencies. The predicate must be an unconditional conjunct of the
-`WHERE` clause of the SELECT scope that reads the instance: the outer
-statement or the body of a top-level CTE (§8). Predicates under `when`, `OR`,
-an ambiguous table reference, or any other nested statement do not. A
-predicate proves only instances of its own scope, even when another scope
-reuses the alias. A table
+Required equality and `IN` predicates over declared scope columns produce
+exact dependencies. A predicate is a proof only when it is a whole top-level
+conjunct of the `WHERE` clause of the SELECT scope that reads the instance:
+the outer statement or the body of a top-level CTE (§8). Parentheses around a
+whole conjunct are transparent. With `column` a declared scope column,
+optionally qualified, the conjunct has one of these forms:
+
+- `column = :bind`, `column == :bind`, or `column IS :bind`;
+- `:bind = column` or `:bind == column`;
+- `column IN (:a, :b)`, whose list holds binds only.
+
+Nothing else proves a scope: a comparison under `NOT`, compared again
+(`(column = :bind) = 0`, `column = :bind IS FALSE`), wrapped in a function,
+`CASE`, or `IIF`, or followed by `COLLATE`; an `IN` list with a literal; a
+`WHERE` clause with a top-level `OR`; a compound SELECT scope; predicates under
+`when`, an ambiguous table reference, or any other nested statement. A table
+without a proof keeps a table-wide dependency. Named `.sql` queries use the
+same rule. A predicate proves only instances of its own scope, even when
+another scope reuses the alias. A table
 read through several instances (a self-join) produces one dependency when every
 instance carries an identical scope proof: the same scope variables, each with
 the same operator and the same set of parameters. If any instance of a read
@@ -417,11 +430,13 @@ descriptor contains one coverage entry per read table; a client may report the
 query complete only when all entries are complete.
 
 A scope proof may propagate between qualified scope columns joined by a
-required outer `WHERE` equality or by a simple mandatory `ON` equality. For
+required outer `WHERE` equality or by a simple mandatory `ON` equality. Either
+equality is a whole conjunct `a.x = b.y` (or `==`) of two qualified scope
+columns. For
 example, `details.list_id = todos.list_id` inherits the required bind proven for
 `todos.list_id`. An `ON` clause containing `OR`, `NOT`, a subquery, or a CTE is
-not a proof. Scope predicates under `OR`, negation, a conditional, or a nested
-query other than a top-level CTE body are not proofs. An `IN` proof may contain only required binds. Otherwise compilation
+not a proof. Only the §13 conjunct forms prove a scope. An `IN` proof may
+contain only required binds. Otherwise compilation
 fails; it never silently widens coverage or treats invalidation as readiness.
 Comma-separated table sources are outside the proof-compatible SQL subset and
 MUST fail generation with guidance to use an explicit `JOIN ... ON` relation.
@@ -512,7 +527,7 @@ alias cannot provide an exact column origin.
 This rule applies independently of a physical column's `NOT NULL` declaration
 and is shared by every generated target. A result expression whose physical
 origin or join-side nullability cannot be proven MUST use the documented
-nullable fallback or fail compilation; it MUST NOT be emitted as required.
+nullable (§14.4) or fail compilation; it MUST NOT be emitted as required.
 Unqualified columns coalesced by `USING` or `NATURAL JOIN` MUST NOT be assigned
 an arbitrary single-table origin.
 
@@ -608,6 +623,38 @@ runner (Bun 1.4.0). It pays off only when the wide row is large; rows of about
 21 KB read about 30 % faster. SQLite 3.46.0, the floor of the portable
 profile, sorts the joined rows of that form again and returns the same result.
 The browser build and the Rust core bundle SQLite 3.53.
+
+### 14.4 Computed result columns
+
+A result column that SQLite reports no declared type for is a computed column.
+SQLite exposes no expression type at prepare time, so the compiler takes the
+type from the query text and never infers it from the expression's operators or
+function names. The compiler applies these rules in order:
+
+1. A column with a declared type SQLite reports keeps that type, mapped like a
+   schema column type.
+2. A column whose whole expression is `CAST(<expr> AS <type>)` has the mapped
+   type of `<type>` for `INTEGER`, `INT`, `BIGINT`, `SMALLINT`, `TEXT`, `REAL`,
+   `FLOAT`, `DOUBLE`, `BLOB`, `BOOLEAN` and `BOOL`. SQLite performs the cast at
+   run time, so every language receives a value of that storage class or
+   NULL. `BOOLEAN` and `BOOL` have NUMERIC affinity: the expression must
+   produce 0 or 1, and the generated decoder rejects any other value. The
+   other schema column type names (`JSON`, `JSONB`, `BYTEA`, `BLOB_REF`,
+   `BLOBREF`, `CRDT`) are refused, because their CAST affinity can change the
+   value; cast a JSON expression to `TEXT`. A cast that is an
+   operand, a function argument, or the left side of any operator
+   is not the whole expression: `CAST(a AS INTEGER) + 1` has no type.
+3. A column whose whole expression is `count(...)`, including `count(*)` and
+   `count(DISTINCT x)`, is `integer`. `count(...)` with `FILTER` or `OVER` is
+   not the whole expression.
+4. Any other computed column fails compilation with
+   `typegen.computed_column_type`. The error details carry the query name and
+   the column name, and the message instructs the author to wrap the
+   expression in `CAST(... AS <type>)`.
+
+Every computed column is nullable. Any other `CAST` target fails under rule 4. These rules apply to `.syql` queries through §8
+and to plain `.sql` queries alike; a `.syql` query reports the failure as
+`SYQL6002_INVALID_SQL`, whose message contains the same text.
 
 ## 15. Lowering and execution
 

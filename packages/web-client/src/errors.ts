@@ -63,6 +63,14 @@ export function invalidRequest(
   return new ClientSyncError('sync.invalid_request', message, retryable);
 }
 
+/** Shared retryable `sync.transport_failed` construction for client transports. */
+export function transportFailed(
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): ClientSyncError {
+  return new ClientSyncError('sync.transport_failed', message, true, details);
+}
+
 /**
  * SPEC §7.5: the latest sync attempt failed while a live query still waited
  * for its required coverage. `code` is the attempt's static progress error

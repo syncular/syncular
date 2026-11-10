@@ -7,9 +7,8 @@
  * gate so an app test can drop / duplicate / corrupt individual exchanges,
  * and an offline flag that makes every hop reject like a lost network.
  *
- * The fault controller is the conformance harness's `TransportFaults`,
- * re-exported (see `index.ts`) — the SAME vocabulary the reference pairing
- * arms, not a parallel one.
+ * The fault controller is the `TransportFaults` the conformance harness
+ * extends; this loopback honors every flag on it.
  */
 
 import {
@@ -20,22 +19,22 @@ import {
   SyncClient,
   type SyncClientConfig,
   type SyncTransport,
+  transportFailed,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import type { VirtualClock } from './clock';
-import { seededRandom, TransportFault, TransportFaults } from './faults';
+import {
+  seededRandom,
+  seedFromName,
+  TransportFault,
+  TransportFaults,
+} from './faults';
 import type { TestServer } from './server';
 
-/** A client-facing offline error: rejects a hop the way a dead network does. */
-class OfflineError extends Error {
-  override readonly name = 'OfflineError';
-  readonly code = 'sync.transport_failed';
-  readonly retryable = true;
-  constructor() {
-    super('injected: client is offline');
-  }
-}
+/** Rejects a hop the way `httpSyncTransport` reports a dead network. */
+const offline = () =>
+  transportFailed('injected: client is offline', { causeKind: 'network' });
 
 /**
  * A test client. Everything an app test needs to script a scenario:
@@ -53,7 +52,12 @@ export interface TestClient {
   readonly faults: TransportFaults;
   /** True while the client is offline (every hop rejects). */
   readonly offline: boolean;
-  /** Cut the network: sync / segment / realtime hops reject until online. */
+  /**
+   * Cut the network: sync / segment / realtime hops reject until online with
+   * the `sync.transport_failed` error a dead network raises
+   * (`details.causeKind: 'network'`), so the client reports connectivity
+   * `offline` and waits for a resume instead of scheduling a retry.
+   */
   goOffline(): void;
   /** Restore the network. Does NOT auto-sync — call `sync()` yourself. */
   goOnline(): void;
@@ -103,12 +107,12 @@ export function buildTestClient(options: TestClientOptions): {
 } {
   const { server, schema, clock, id, actorId } = options;
   const db = new BunClientDatabase();
-  const faults = new TransportFaults(seededRandom(hashSeed(id)));
+  const faults = new TransportFaults(seededRandom(seedFromName(id)));
   const state = { offline: false };
   const ctx = () => server.ctxFor(actorId);
 
   const transport: SyncTransport = async (request) => {
-    if (state.offline) throw new OfflineError();
+    if (state.offline) throw offline();
     if (faults.dropNextRequests > 0) {
       faults.dropNextRequests -= 1;
       throw new TransportFault('injected: request lost');
@@ -132,7 +136,7 @@ export function buildTestClient(options: TestClientOptions): {
   };
 
   const segments: SegmentDownloader = async (request: SegmentFetchRequest) => {
-    if (state.offline) throw new OfflineError();
+    if (state.offline) throw offline();
     if (faults.dropNextSegmentRequests > 0) {
       faults.dropNextSegmentRequests -= 1;
       throw new TransportFault('injected: segment request lost');
@@ -149,7 +153,11 @@ export function buildTestClient(options: TestClientOptions): {
   };
 
   const realtime: RealtimeConnector = async (handlers) => {
-    if (state.offline) throw new OfflineError();
+    if (state.offline) throw offline();
+    if (faults.refuseNextRealtimeConnect) {
+      faults.refuseNextRealtimeConnect = false;
+      throw new TransportFault('injected: realtime connect refused');
+    }
     const session = await server.hub.connect({
       partition: server.partition,
       actorId,
@@ -204,15 +212,4 @@ export function buildTestClient(options: TestClientOptions): {
   };
 
   return { client, start: () => api.start() };
-}
-
-/** Deterministic per-client fault seed from the client id (mirrors the
- * conformance harness's per-scenario seeding). */
-function hashSeed(name: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < name.length; i++) {
-    hash ^= name.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
 }

@@ -8,7 +8,7 @@ developers who need an exact command, option, or exit behavior.
 ::meta{for="App developers and CI authors" time="Reference" first="guide-schema" spec="2"}
 
 :::terms
-- **Manifest directory**: The directory that holds `syncular.json`. Every command takes it as `--manifest-dir`.
+- **Manifest directory**: The directory that holds `syncular.json`. `init`, `generate`, `migrations`, and `fmt` take it as `--manifest-dir`; `lsp` takes no options.
 - **Migration lock**: `syncular.migrations.lock.json`, the committed baseline of deployed migration history.
 - **Generated output**: A file `generate` writes. Each one carries the IR hash in its header.
 :::
@@ -28,9 +28,10 @@ developers who need an exact command, option, or exit behavior.
 :::
 
 Run the CLI with `bunx syncular`, or with the `syncular` bin from your package
-manager. Every command takes `--manifest-dir <dir>`, the directory that holds
-`syncular.json` (default: the current directory). An unknown argument prints the
-usage text and exits non-zero. The workflow these commands serve is on
+manager. `init`, `generate`, `migrations`, and `fmt` take `--manifest-dir <dir>`,
+the directory that holds `syncular.json` (default: the current directory). An
+unknown `--` option prints the usage text and exits non-zero. `lsp` takes no
+options. The workflow these commands serve is on
 [Schema & typegen](/guide-schema/) and [Named queries](/tooling-queries/).
 
 ## `syncular init`
@@ -100,7 +101,7 @@ The lock has three subcommands:
 |---|---|
 | `baseline` | Create the first lock from current history. Refuses to overwrite an existing lock. |
 | `check` | Validate committed history without generating outputs, the faster history-only CI gate. Prints `migration history is locked and unchanged`. |
-| `upgrade-lock` | Compact a validated format 1 lock to format 2. Review and commit the result. |
+| `upgrade-lock` | Convert a validated format 1 or 2 lock to format 3, which records each locked migration's schema version. `generate` and `check` refuse the older formats. Review and commit the result. |
 
 The lock workflow and the rules for editing deployed history are on
 [Schema & typegen](/guide-schema/#lock-the-migration-history).
@@ -112,8 +113,10 @@ syncular fmt queries/search-todos.syql
 syncular fmt --check
 ```
 
-Formats `.syql` files in canonical form: one style, no options. Given no files,
-it formats the manifest's queries directory recursively. `--check` exits 1 and
+Formats `.syql` files in canonical form with one style. Each bare argument is a
+file path, so `syncular fmt queries` exits 1 on the directory. Given no files, it
+formats the manifest's queries directory recursively, found through
+`--manifest-dir`. `--check` exits 1 and
 names each file that is not canonical, and it writes nothing. The formatter
 preserves semantics and is idempotent. `fmt` accepts `.syql` files only and
 fails on any other extension.

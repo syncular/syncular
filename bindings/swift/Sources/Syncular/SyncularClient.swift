@@ -84,6 +84,10 @@ public struct SyncularConfig: Sendable {
     /// `attachLocalAuthority()` completes, then against `baseUrl`. Nil leaves the
     /// client server-attached from the start.
     public var localAuthorityPath: String?
+    /// Interval the server sends realtime heartbeats at, in milliseconds
+    /// (default 30000). The transport treats twice this interval of silence as
+    /// a lost socket.
+    public var realtimeHeartbeatMs: UInt64?
 
     public init(
         baseUrl: String? = nil,
@@ -95,7 +99,8 @@ public struct SyncularConfig: Sendable {
         maxRequestBytes: UInt64? = nil,
         maxResponseBytes: UInt64? = nil,
         redirects: String? = nil,
-        localAuthorityPath: String? = nil
+        localAuthorityPath: String? = nil,
+        realtimeHeartbeatMs: UInt64? = nil
     ) {
         self.baseUrl = baseUrl
         self.wsUrl = wsUrl
@@ -107,6 +112,7 @@ public struct SyncularConfig: Sendable {
         self.maxResponseBytes = maxResponseBytes
         self.redirects = redirects
         self.localAuthorityPath = localAuthorityPath
+        self.realtimeHeartbeatMs = realtimeHeartbeatMs
     }
 
     /// The `syncular_client_new` config JSON. `dbPath` rides on `create`, not
@@ -126,6 +132,7 @@ public struct SyncularConfig: Sendable {
         if let maxResponseBytes { object["maxResponseBytes"] = .unsigned(maxResponseBytes) }
         if let redirects { object["redirects"] = .string(redirects) }
         if let localAuthorityPath { object["localAuthorityPath"] = .string(localAuthorityPath) }
+        if let realtimeHeartbeatMs { object["realtimeHeartbeatMs"] = .unsigned(realtimeHeartbeatMs) }
         return .object(object)
     }
 }
@@ -138,7 +145,7 @@ public protocol SyncularClientDelegate: AnyObject {
 
 /// The idiomatic wrapper. Construct with a schema (and optionally an explicit
 /// clientId), then use the typed conveniences or the raw `command`.
-public final class SyncularClient {
+public class SyncularClient {
     private var handle: OpaquePointer?
     /// Serializes ALL command dispatch (the core is thread-affine).
     private let commandQueue = DispatchQueue(label: "syncular.command")
@@ -421,9 +428,10 @@ public final class SyncularClient {
 
     /// Drive sync to quiescence (needs `native-transport`).
     @discardableResult
-    public func syncUntilIdle(maxRounds: Int? = nil) throws -> JSONValue {
+    public func syncUntilIdle(maxRounds: Int? = nil, timeoutMs: Int? = nil) throws -> JSONValue {
         var p: [String: JSONValue] = [:]
         if let maxRounds { p["maxRounds"] = .number(Double(maxRounds)) }
+        if let timeoutMs { p["timeoutMs"] = .number(Double(timeoutMs)) }
         return try command(method: "syncUntilIdle", params: .object(p))
     }
 
@@ -439,8 +447,8 @@ public final class SyncularClient {
     /// `query` for a flat column-shaped read.
     public func readRows(table: String) throws -> [JSONValue] {
         let result = try command(method: "readRows", params: .object(["table": .string(table)]))
-        guard case let .object(fields) = result, case let .array(rows)? = fields["rows"] else {
-            return []
+        guard case let .array(rows)? = result["rows"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "rows missing")
         }
         return rows
     }
@@ -450,10 +458,15 @@ public final class SyncularClient {
     /// work" signal (the status snapshot also includes server-push scheduling intent).
     public func pendingCommitIds() throws -> [String] {
         let result = try command(method: "pendingCommitIds", params: .object([:]))
-        guard case let .object(fields) = result, case let .array(ids)? = fields["ids"] else {
-            return []
+        guard case let .array(ids)? = result["ids"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "ids missing")
         }
-        return ids.compactMap { $0.stringValue }
+        return try ids.map {
+            guard let id = $0.stringValue else {
+                throw SyncularError(code: "client.invalid_host_response", message: "commit id is not a string")
+            }
+            return id
+        }
     }
 
     /// Run arbitrary read-only SQL over the local visible tables (the live-query
@@ -463,8 +476,8 @@ public final class SyncularClient {
             method: "query",
             params: .object(["sql": .string(sql), "params": .array(params)])
         )
-        guard case let .object(fields) = result, case let .array(rows)? = fields["rows"] else {
-            return []
+        guard case let .array(rows)? = result["rows"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "rows missing")
         }
         return rows
     }
@@ -526,15 +539,19 @@ public final class SyncularClient {
     /// Current conflicts (§6).
     public func conflicts() throws -> [JSONValue] {
         let result = try command(method: "conflicts", params: .object([:]))
-        if case let .object(fields) = result, case let .array(list)? = fields["conflicts"] { return list }
-        return []
+        guard case let .array(list)? = result["conflicts"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "conflicts missing")
+        }
+        return list
     }
 
     /// Presence peers for a scope key (§8.6).
     public func presence(scopeKey: String) throws -> [JSONValue] {
         let result = try command(method: "presence", params: .object(["scopeKey": .string(scopeKey)]))
-        if case let .object(fields) = result, case let .array(peers)? = fields["peers"] { return peers }
-        return []
+        guard case let .array(peers)? = result["peers"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "peers missing")
+        }
+        return peers
     }
 
     /// Publish (or clear, with `nil`) a presence doc for a scope key.
@@ -640,18 +657,29 @@ public final class SyncularClient {
             guard let eventPtr else { continue }
             let eventString = String(cString: eventPtr)
             syncular_free_string(eventPtr)
+            // `close()` joins this loop before it closes the client, so the
+            // drain cannot fail with `client.closed` here.
+            try? handleEvent(eventString)
+        }
+    }
 
-            guard let value = try? JSONValue(decoding: eventString),
-                  case let .object(fields) = value,
-                  let type = fields["type"]?.stringValue else {
-                continue
-            }
-            let event = SyncularEvent(type: type, payload: fields)
-            deliveryQueue.async { [weak self] in
-                guard let self else { return }
-                self.onEvent?(event)
-                self.delegate?.syncularClient(self, didReceive: event)
-            }
+    /// Answer a `realtime-wake` with `drainRealtime` through `command`; deliver
+    /// any other event on `deliveryQueue`.
+    func handleEvent(_ eventString: String) throws {
+        guard let value = try? JSONValue(decoding: eventString),
+              case let .object(fields) = value,
+              let type = fields["type"]?.stringValue else {
+            return
+        }
+        if type == "realtime-wake" {
+            try command(method: "drainRealtime", params: .object([:]))
+            return
+        }
+        let event = SyncularEvent(type: type, payload: fields)
+        deliveryQueue.async { [weak self] in
+            guard let self else { return }
+            self.onEvent?(event)
+            self.delegate?.syncularClient(self, didReceive: event)
         }
     }
 }

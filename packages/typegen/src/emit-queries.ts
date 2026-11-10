@@ -18,11 +18,11 @@
  * `--check` gates freshness byte-exactly, like every other emitter.
  */
 import type { IrColumnType } from './ir';
-import type {
-  AnalyzedQuery,
-  QueryParam,
-  QuerySyqlPlanBind,
-  QuerySyqlPublicInput,
+import {
+  type AnalyzedQuery,
+  type QueryParam,
+  type QuerySyqlPlanBind,
+  syqlInput,
 } from './query';
 
 const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -96,12 +96,6 @@ function reactiveParam(query: AnalyzedQuery, name: string): string {
   const param = query.params.find((candidate) => candidate.name === name);
   if (param === undefined) throw new Error(`unknown reactive param ${name}`);
   return `String(params.${propertyKey(param.langName)})`;
-}
-
-function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
-  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
-  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
-  return input;
 }
 
 function syqlTsValueType(type: IrColumnType, nullable: boolean): string {

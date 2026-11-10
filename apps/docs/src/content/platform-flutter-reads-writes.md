@@ -23,7 +23,7 @@ client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
 client.unsubscribe('todos');
 ```
 
-`subscriptionState(id)` returns `active`, `revoked`, or `failed`. Repeating a subscribe with the same definition is a no-op; a different definition under an existing id throws. The generated `syncular.generated.dart` carries a typed row class and a subscription helper per table declared in `syncular.json`.
+`subscriptionState(id)` returns `active`, `revoked`, or `failed`. Repeating a subscribe with the same definition is a no-op; a different definition under an existing id throws. The generated `syncular.generated.dart` carries a typed row class per table and a subscription helper per subscription declared in `syncular.json`.
 
 ## Write
 
@@ -73,4 +73,4 @@ client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
 client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
 
-`crdtApplyUpdate` accepts a Yjs update as a `List<int>`. Each helper returns the enqueued commit id. The merge model is on [CRDT columns](/concepts-crdt/).
+`crdtApplyUpdate` accepts a Yjs update as a `List<int>`. `crdtText` returns the current text; each of the other helpers returns the enqueued commit id. The merge model is on [CRDT columns](/concepts-crdt/).

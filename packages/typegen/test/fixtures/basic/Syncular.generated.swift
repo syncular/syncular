@@ -8,63 +8,201 @@ import Syncular
 /// The generated syncular schema (SPEC §2.4, §3.1) + typed rows.
 public enum BasicSchema {
     /// ServerSchema-compatible schema — pass to `SyncularClient(schema:)`.
-    public static let schema: JSONValue =
-        .object([
-          "version": .number(5),
-          "tables": .array([
-            .object([
-              "name": .string("tasks"),
-              "primaryKey": .string("id"),
-              "columns": .array([
-                .object(["name": .string("id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("project_id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("title"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("done"), "type": .string("boolean"), "nullable": .bool(false)]),
-                .object(["name": .string("reviewed"), "type": .string("boolean"), "nullable": .bool(true)]),
-                .object(["name": .string("priority"), "type": .string("integer"), "nullable": .bool(true)]),
-                .object(["name": .string("meta"), "type": .string("json"), "nullable": .bool(true)]),
-                .object(["name": .string("estimate"), "type": .string("float"), "nullable": .bool(true)]),
-                .object(["name": .string("estimated_at"), "type": .string("integer"), "nullable": .bool(true)]),
-              ]),
-              "scopes": .array([
-                .object(["pattern": .string("project:{project_id}"), "column": .string("project_id")]),
-              ]),
-            ]),
-            .object([
-              "name": .string("docs"),
-              "primaryKey": .string("id"),
-              "columns": .array([
-                .object(["name": .string("id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("org_id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("project_id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("body"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("score"), "type": .string("float"), "nullable": .bool(true)]),
-                .object(["name": .string("attachment"), "type": .string("bytes"), "nullable": .bool(true)]),
-                .object(["name": .string("body_doc"), "type": .string("crdt"), "nullable": .bool(true), "crdtType": .string("yjs-doc")]),
-                .object(["name": .string("remote_blob"), "type": .string("blob_ref"), "nullable": .bool(true)]),
-              ]),
-              "scopes": .array([
-                .object(["pattern": .string("org:{org_id}"), "column": .string("org_id")]),
-                .object(["pattern": .string("project:{projectId}"), "column": .string("project_id")]),
-              ]),
-            ]),
-            .object([
-              "name": .string("doc_revisions"),
-              "primaryKey": .string("id"),
-              "columns": .array([
-                .object(["name": .string("id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("org_id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("project_id"), "type": .string("string"), "nullable": .bool(false)]),
-                .object(["name": .string("doc_id"), "type": .string("string"), "nullable": .bool(true)]),
-                .object(["name": .string("note"), "type": .string("string"), "nullable": .bool(true)]),
-              ]),
-              "scopes": .array([
-                .object(["pattern": .string("org:{org_id}"), "column": .string("org_id")]),
-                .object(["pattern": .string("project:{projectId}"), "column": .string("project_id")]),
-              ]),
-            ]),
-          ]),
-        ])
+    public static let schema: JSONValue = try! JSONValue(decoding: """
+        {
+          "version": 5,
+          "tables": [
+            {
+              "name": "tasks",
+              "primaryKey": "id",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "project_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "title",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "done",
+                  "type": "boolean",
+                  "nullable": false
+                },
+                {
+                  "name": "reviewed",
+                  "type": "boolean",
+                  "nullable": true
+                },
+                {
+                  "name": "priority",
+                  "type": "integer",
+                  "nullable": true
+                },
+                {
+                  "name": "meta",
+                  "type": "json",
+                  "nullable": true
+                },
+                {
+                  "name": "estimate",
+                  "type": "float",
+                  "nullable": true
+                },
+                {
+                  "name": "estimated_at",
+                  "type": "integer",
+                  "nullable": true
+                }
+              ],
+              "scopes": [
+                {
+                  "pattern": "project:{project_id}",
+                  "column": "project_id"
+                }
+              ],
+              "indexes": [
+                {
+                  "name": "idx_tasks_project",
+                  "columns": [
+                    "project_id"
+                  ],
+                  "unique": false
+                },
+                {
+                  "name": "idx_tasks_project_title",
+                  "columns": [
+                    "project_id",
+                    "title"
+                  ],
+                  "unique": true
+                }
+              ]
+            },
+            {
+              "name": "docs",
+              "primaryKey": "id",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "org_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "project_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "body",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "score",
+                  "type": "float",
+                  "nullable": true
+                },
+                {
+                  "name": "attachment",
+                  "type": "bytes",
+                  "nullable": true
+                },
+                {
+                  "name": "body_doc",
+                  "type": "crdt",
+                  "nullable": true,
+                  "crdtType": "yjs-doc"
+                },
+                {
+                  "name": "remote_blob",
+                  "type": "blob_ref",
+                  "nullable": true
+                }
+              ],
+              "scopes": [
+                {
+                  "pattern": "org:{org_id}",
+                  "column": "org_id"
+                },
+                {
+                  "pattern": "project:{projectId}",
+                  "column": "project_id"
+                }
+              ]
+            },
+            {
+              "name": "doc_revisions",
+              "primaryKey": "id",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "org_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "project_id",
+                  "type": "string",
+                  "nullable": false
+                },
+                {
+                  "name": "doc_id",
+                  "type": "string",
+                  "nullable": true
+                },
+                {
+                  "name": "note",
+                  "type": "string",
+                  "nullable": true
+                }
+              ],
+              "scopes": [
+                {
+                  "pattern": "org:{org_id}",
+                  "column": "org_id"
+                },
+                {
+                  "pattern": "project:{projectId}",
+                  "column": "project_id"
+                }
+              ],
+              "references": [
+                {
+                  "column": "doc_id",
+                  "parentTable": "docs",
+                  "onDelete": "CASCADE"
+                }
+              ],
+              "indexes": [
+                {
+                  "name": "idx_doc_revisions_doc_id_ref",
+                  "columns": [
+                    "doc_id"
+                  ],
+                  "unique": false
+                }
+              ]
+            }
+          ]
+        }
+        """)
 
     /// Typed requested-scope builders per subscription.
     public enum subscriptions {

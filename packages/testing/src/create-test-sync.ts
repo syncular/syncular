@@ -15,13 +15,17 @@
  *     await sync.dispose();
  */
 
-import type { ClientSchema, SyncClientConfig } from '@syncular/client';
+import type { ClientSchema } from '@syncular/client';
 import type {
   CommitValidator,
   ResolveScopes,
   ValidatorRegistry,
 } from '@syncular/server';
-import { buildTestClient, type TestClient } from './client';
+import {
+  buildTestClient,
+  type TestClient,
+  type TestClientOptions,
+} from './client';
 import { createVirtualClock, type VirtualClock } from './clock';
 import {
   createTestServer,
@@ -60,18 +64,7 @@ export interface TestClientOverrides {
   /** Actor id for this client (defaults to the sync-wide actor). */
   readonly actorId?: string;
   /** Extra `SyncClient` config (e.g. `onConflict`, `limits`). */
-  readonly clientConfig?: Partial<
-    Omit<
-      SyncClientConfig,
-      | 'database'
-      | 'schema'
-      | 'clientId'
-      | 'now'
-      | 'transport'
-      | 'segments'
-      | 'realtime'
-    >
-  >;
+  readonly clientConfig?: TestClientOptions['clientConfig'];
 }
 
 export interface TestSync {

@@ -40,9 +40,11 @@ import {
   isRoundFailureCode,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
-  type PresenceKind,
+  type PresenceErrorCode,
   type PushResultFrame,
+  parseJsonDocument,
   parseRealtimeServerEvent,
+  type RealtimePresenceEvent,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
   type RejectionDetails,
@@ -64,6 +66,7 @@ import {
   deleteLocalRow,
   deleteScopedRows,
   localScopePredicate,
+  ownsLocalRow,
   evictScopedRows,
   yieldToHost,
   upsertLocalRow,
@@ -113,6 +116,7 @@ import {
   classifySqliteFailure,
   REALTIME_LOST_CODE,
   RealtimeUnavailableError,
+  transportFailed,
 } from './errors';
 import {
   ChangeAccumulator,
@@ -154,7 +158,6 @@ import {
 import {
   appendOutboxCommit,
   deleteOutboxCommit,
-  dropOutboxCommitsInScope,
   encodeOutboxCommit,
   listOutbox,
   iterateOutbox,
@@ -183,7 +186,6 @@ import {
   commitOutcome as readCommitOutcome,
   recordCommitOutcome,
 } from './outcomes';
-import { assertReadOnlyQuery } from './query-guard';
 import {
   buildPreviousVersionAudit,
   capturePreviousVersion,
@@ -446,6 +448,15 @@ export interface SyncClientConfig {
    * `required` without a `realtime` connector is refused at construction.
    */
   readonly realtimePolicy?: RealtimePolicy;
+  /**
+   * SPEC §8.5: the server's heartbeat interval in ms, default 30,000. The
+   * socket's first `heartbeat` event arms a watchdog; once armed, twice the
+   * interval without an inbound frame loses the socket with
+   * `transport.timeout` (`causeKind` `heartbeat`).
+   */
+  readonly realtimeHeartbeatMs?: number;
+  /** Timer seam for the heartbeat watchdog; defaults to `setTimeout`. */
+  readonly schedule?: (callback: () => void, delayMs: number) => () => void;
   /** Stable per-device id (§1.5); defaults to a persisted random UUID. */
   readonly clientId?: string;
   readonly leaderLock?: LeaderLock;
@@ -467,9 +478,11 @@ export interface SyncClientConfig {
   /**
    * §8.6 presence: a scope-mate's presence on a key this client holds
    * changed (join/update/leave). Fired after the local presence map is
-   * updated — the app's cue to re-render who's-online.
+   * updated — the app's cue to re-render who's-online. `error` is set when
+   * the server refused this client's own publish on `scopeKey` (§8.6.2);
+   * the map is unchanged then.
    */
-  readonly onPresence?: (scopeKey: string) => void;
+  readonly onPresence?: (scopeKey: string, error?: PresenceErrorCode) => void;
   /**
    * §5.11 client-side encryption. Supplies the key material (`keyProvider`)
    * and key selection (`keyIdFor`) for columns the generated schema marks
@@ -770,6 +783,15 @@ const PREVIOUS_VERSION_DEFAULT_MAX_TABLES = 32;
 const PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES = 1024 * 1024;
 const PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/** §7.7: an explicit round budget is a strict positive u32 count. */
+function requireRoundBudget(maxRounds: number | undefined): void {
+  if (
+    maxRounds !== undefined &&
+    (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
+  )
+    throw invalidRequest('maxRounds must be a positive integer');
+}
+
 function boundedBudget(
   value: number | undefined,
   fallback: number,
@@ -918,6 +940,10 @@ export class SyncClient {
   #realtimeRetryDelayMs: number | undefined;
   #realtimeConnectPromise: Promise<void> | undefined;
   #realtimeGeneration = 0;
+  readonly #heartbeatMs: number;
+  readonly #schedule: NonNullable<SyncClientConfig['schedule']>;
+  /** SPEC §8.5: cancels the armed heartbeat watchdog; unset while unarmed. */
+  #watchdog: (() => void) | undefined;
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   readonly #progress = new ProgressEmitter();
@@ -964,7 +990,9 @@ export class SyncClient {
   /** Compatibility projection from exact batches; never bridge-inferred. */
   readonly #invalidation = new InvalidationEmitter();
   /** §8.6: subscribable presence-change listeners (twin of onPresence). */
-  readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  readonly #presenceListeners = new Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >();
   readonly #syncNeededListeners = new Set<
     (reason: 'startup' | 'hello' | WakeReason) => void
   >();
@@ -1052,6 +1080,23 @@ export class SyncClient {
         "realtimePolicy 'required' needs a realtime connector",
       );
     }
+    // Twice the interval must stay within the 2^31 - 1 ms timer range.
+    const heartbeatMs = config.realtimeHeartbeatMs ?? 30_000;
+    if (
+      !Number.isInteger(heartbeatMs) ||
+      heartbeatMs < 1 ||
+      heartbeatMs > 2 ** 30
+    )
+      throw invalidRequest(
+        'realtimeHeartbeatMs must be an integer in 1..=2^30',
+      );
+    this.#heartbeatMs = heartbeatMs;
+    this.#schedule =
+      config.schedule ??
+      ((callback, delayMs) => {
+        const timer = setTimeout(callback, delayMs);
+        return () => clearTimeout(timer);
+      });
     this.#config = config;
     this.#realtimePolicy = realtimePolicy;
     this.#realtimeState =
@@ -1563,6 +1608,7 @@ export class SyncClient {
     if (this.#transportEnabled === enabled) return;
     this.#transportEnabled = enabled;
     this.#transportEpoch += 1;
+    this.#disarm();
     if (!enabled && !this.#syncOutstanding) this.disconnectRealtime();
     this.#emitSyncIntent(
       enabled && this.#securityLifecycle === 'active'
@@ -1673,8 +1719,8 @@ export class SyncClient {
   }
 
   /**
-   * The raw-SQL read tier. Guarded (query-guard.ts): a single read-only
-   * statement only — writes must go through `mutate()` so they hit the
+   * The raw-SQL read tier. Guarded (query-guard.ts): a single statement
+   * SQLite reports read-only — writes must go through `mutate()` so they hit the
    * outbox (SPEC §7.1). Reserved `_sync_*` columns are stripped from the
    * result, so a `SELECT *` row is safe to feed back into `mutate()`
    * values; alias explicitly (`_sync_version AS v`) to read one. Engine
@@ -1682,11 +1728,10 @@ export class SyncClient {
    */
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
     this.#requireActive();
-    assertReadOnlyQuery(sql);
     // RFC 0005's container lives in a separate database file, so this
     // connection cannot see it and there is no table-access guard to run.
     try {
-      return stripSyncColumns(this.#db.query(sql, params));
+      return stripSyncColumns(this.#db.queryReadOnly(sql, params));
     } catch (error) {
       throw classifySqliteFailure(error).error;
     }
@@ -1851,13 +1896,12 @@ export class SyncClient {
     };
     let read: SnapshotRead;
     try {
-      for (const statement of request.statements) {
-        assertReadOnlyQuery(statement.sql);
-      }
       read = this.#db.transaction(() => {
         const revision = getLocalRevision(this.#db);
         const queries = request.statements.map((statement) =>
-          stripSyncColumns(this.#db.query(statement.sql, statement.params)),
+          stripSyncColumns(
+            this.#db.queryReadOnly(statement.sql, statement.params),
+          ),
         );
         const pending: WindowUnitRef[] = [];
         const missing: WindowUnitRef[] = [];
@@ -2576,9 +2620,7 @@ export class SyncClient {
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
     if (this.#config.blobs === undefined) {
-      throw invalidRequest(
-        'uploadBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
-      );
+      throw invalidRequest('uploadBlob requires a blob transport');
     }
     const blobId = await computeBlobId(bytes);
     const nowMs = this.#now();
@@ -2611,29 +2653,28 @@ export class SyncClient {
   }
 
   async #fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
-    const blobId = blobIdOrRef.startsWith('sha256:')
-      ? blobIdOrRef
-      : parseBlobRef(blobIdOrRef).blobId;
+    // A BlobRef declares the size that caps the download (§5.9.5); a bare
+    // blobId declares none.
+    const ref = blobIdOrRef.startsWith('sha256:')
+      ? undefined
+      : parseBlobRef(blobIdOrRef);
+    const blobId = ref?.blobId ?? blobIdOrRef;
     const cached = getCachedBlob(this.#db, blobId);
     if (cached !== undefined) return cached;
     const transport = this.#config.blobs;
     if (transport === undefined) {
-      throw invalidRequest(
-        'fetchBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
-      );
+      throw invalidRequest('fetchBlob requires a blob transport');
     }
     // §5.9.5: the authorized endpoint serves bytes inline OR (always-issue,
     // presign configured) a signed url the client fetches directly. On a url
     // arm the client MUST NOT attach host auth and MUST NOT fall through:
     // failure => re-request, the caller's next fetchBlob mints a fresh url.
     this.#requireTransport();
-    const response = await transport.download(blobId);
+    const response = await transport.download(blobId, ref?.byteLength);
     let bytes: Uint8Array;
     if (response.kind === 'url') {
       if (transport.fetchUrl === undefined) {
-        throw invalidRequest(
-          'blob download returned a url but the transport cannot fetch urls (§5.9.5)',
-        );
+        throw invalidRequest('blob transport cannot fetch urls');
       }
       if (
         response.urlExpiresAtMs !== undefined &&
@@ -2642,22 +2683,22 @@ export class SyncClient {
         // §5.9.5: MUST NOT start a fetch at/past expiry — re-request recovers.
         throw new ClientSyncError(
           'sync.segment_expired',
-          `blob url for ${blobId} expired before fetch — re-request mints a fresh url (§5.9.5)`,
+          'blob url expired before fetch',
           true,
         );
       }
-      bytes = await transport.fetchUrl(response.url);
+      bytes = await transport.fetchUrl(response.url, ref?.byteLength);
     } else {
       bytes = response.bytes;
     }
-    const computed = await computeBlobId(bytes);
-    if (computed !== blobId) {
-      // §5.9.5 inherits §5.1: verify the content address, reject on mismatch.
-      // On the url path this invalidates the fetch (no fall-through) — the
-      // next fetchBlob re-requests the authorized endpoint (§5.9.5 recovery).
-      throw invalidRequest(
-        `blob content address mismatch for ${blobId} (§5.9.5)`,
-      );
+    // §5.9.5 inherits §5.1: the declared size caps the body and the content
+    // address must match. On the url path either failure invalidates the
+    // fetch (no fall-through); the next fetchBlob re-requests the endpoint.
+    if (bytes.byteLength > (ref?.byteLength ?? bytes.byteLength)) {
+      throw invalidRequest('blob exceeds its byteLength');
+    }
+    if ((await computeBlobId(bytes)) !== blobId) {
+      throw invalidRequest('blob content address mismatch');
     }
     putCachedBlob(this.#db, blobId, bytes, this.#now());
     this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -2676,15 +2717,25 @@ export class SyncClient {
     enforceBlobCacheCap(this.#db, this.#schema, cap);
   }
 
-  /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
+  /**
+   * Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. It
+   * runs on the round's operation chain because a refused upload drops
+   * outbox commits a round may have captured.
+   */
   flushBlobUploads(): Promise<void> {
     this.#requireTransport();
-    return this.#runProtectedAsync(() => this.#flushBlobUploads());
+    return this.#runProtectedAsync(async () => {
+      await this.#serialize(() => this.#flushBlobUploads(undefined));
+    });
   }
 
-  async #flushBlobUploads(): Promise<void> {
+  /** Returns the ids of the commits a refused upload dropped (§5.9.7). */
+  async #flushBlobUploads(
+    signal: AbortSignal | undefined,
+  ): Promise<ReadonlySet<string>> {
+    const refused = new Set<string>();
     const transport = this.#config.blobs;
-    if (transport === undefined || !this.#hasBlobs) return;
+    if (transport === undefined || !this.#hasBlobs) return refused;
     for (const pending of listPendingUploads(this.#db)) {
       const cached = getCachedBlob(this.#db, pending.blobId);
       if (
@@ -2699,14 +2750,47 @@ export class SyncClient {
           'Pending blob upload body is missing or corrupt',
         );
       }
-      await this.#uploadOne(
-        transport,
-        pending.blobId,
-        cached.bytes,
-        pending.mediaType,
-      );
+      try {
+        await this.#uploadOne(
+          transport,
+          pending.blobId,
+          cached.bytes,
+          pending.mediaType,
+          signal,
+        );
+      } catch (error) {
+        // §5.9.7: a non-retryable server refusal is this body's final
+        // outcome. Retryable refusals and transport failures fail the round.
+        // A failure without a server code (`sync.transport_failed`: no
+        // response, or a response without a JSON error body) is not one.
+        if (
+          !(error instanceof Error) ||
+          !('code' in error) ||
+          typeof error.code !== 'string' ||
+          error.code === 'sync.transport_failed' ||
+          !('retryable' in error) ||
+          error.retryable !== false
+        )
+          throw error;
+        clearPendingUpload(this.#db, pending.blobId);
+        const referencing = new Set(
+          this.#db
+            .query(
+              `SELECT commit_id FROM ${BLOB_COMMIT_REFS} WHERE blob_id=?`,
+              [pending.blobId],
+            )
+            .map((row) => row.commit_id),
+        );
+        for (const commit of listOutbox(this.#db)) {
+          if (!referencing.has(commit.clientCommitId)) continue;
+          this.#dropIncompatibleCommit(commit, error.message, error.code);
+          refused.add(commit.clientCommitId);
+        }
+        continue;
+      }
       clearPendingUpload(this.#db, pending.blobId);
     }
+    return refused;
   }
 
   /**
@@ -2721,7 +2805,8 @@ export class SyncClient {
     transport: BlobTransport,
     blobId: string,
     bytes: Uint8Array,
-    mediaType?: string,
+    mediaType: string | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<void> {
     if (
       transport.uploadGrant !== undefined &&
@@ -2731,6 +2816,7 @@ export class SyncClient {
         blobId,
         bytes.length,
         mediaType,
+        signal,
       );
       if (grant.kind === 'present') return; // idempotent §5.9.3 — no PUT needed
       if (grant.kind === 'url') {
@@ -2739,7 +2825,7 @@ export class SyncClient {
           grant.urlExpiresAtMs > this.#now()
         ) {
           try {
-            await transport.uploadToUrl(grant.url, bytes, mediaType);
+            await transport.uploadToUrl(grant.url, bytes, mediaType, signal);
             return;
           } catch {
             // Grant PUT failed — stream through the direct endpoint below.
@@ -2749,7 +2835,7 @@ export class SyncClient {
       // grant.kind === 'none' (no presign store) or a failed/expired grant:
       // stream through the direct host-authenticated endpoint.
     }
-    await transport.upload(blobId, bytes, mediaType);
+    await transport.upload(blobId, bytes, mediaType, signal);
   }
 
   conflicts(): readonly ConflictRecord[] {
@@ -2774,11 +2860,7 @@ export class SyncClient {
     maxRounds?: number,
   ): Promise<CurrentBaseProof> {
     this.#requireActive();
-    if (
-      maxRounds !== undefined &&
-      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
-    )
-      throw invalidRequest('maxRounds must be a positive integer');
+    requireRoundBudget(maxRounds);
     const { clientCommitId, sequence } = outcome;
     const provable = (
       candidate: CommitOutcome | undefined,
@@ -3047,12 +3129,16 @@ export class SyncClient {
   }
 
   /**
-   * §8.6: subscribe to presence changes (join/update/leave on any held key).
-   * The subscribable twin of the `onPresence` config callback — React's
-   * `usePresence` targets this so many components can watch one client.
+   * §8.6: subscribe to presence changes (join/update/leave on any held key)
+   * and to the server's refusal of this client's own publish (`error`,
+   * §8.6.2). The subscribable twin of the `onPresence` config callback —
+   * React's `usePresence` targets this so many components can watch one
+   * client.
    * Returns an unsubscribe function.
    */
-  onPresence(listener: (scopeKey: string) => void): () => void {
+  onPresence(
+    listener: (scopeKey: string, error?: PresenceErrorCode) => void,
+  ): () => void {
     this.#presenceListeners.add(listener);
     return () => {
       this.#presenceListeners.delete(listener);
@@ -3328,7 +3414,13 @@ export class SyncClient {
     let remaining = false;
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        const result = evictScopedRows(this.#db, table, effective, pinned);
+        const result = evictScopedRows(
+          this.#db,
+          table,
+          effective,
+          this.#scopeOwners(base.table, subId),
+          pinned,
+        );
         remaining = result.remaining;
         deleteWindowUnit(this.#db, baseKey, unit);
         deleteSubscription(this.#db, subId);
@@ -3379,6 +3471,7 @@ export class SyncClient {
             this.#db,
             table,
             entry.effective,
+            this.#scopeOwners(entry.table, entry.subId),
             pinned,
           );
           remaining = result.remaining;
@@ -3388,6 +3481,23 @@ export class SyncClient {
         if (remaining) await yieldToHost();
       } while (remaining);
     }
+  }
+
+  /**
+   * §3.3/§4.8/§5.6 row ownership: the effective scopes of every other
+   * active subscription on `table` that holds rows (`cursor >= 0`). A
+   * scoped delete keeps every row one of them still covers.
+   */
+  #scopeOwners(table: string, exceptId: string): ScopeMap[] {
+    return loadSubscriptions(this.#db).flatMap((sub) =>
+      sub.id !== exceptId &&
+      sub.table === table &&
+      sub.status === 'active' &&
+      sub.cursor >= 0 &&
+      sub.effectiveScopes !== undefined
+        ? [sub.effectiveScopes]
+        : [],
+    );
   }
 
   /**
@@ -3424,6 +3534,9 @@ export class SyncClient {
     const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
+        // §2.4: the server rejects a rowId holding U+0000.
+        if (mutation.rowId.includes('\u0000'))
+          throw invalidRequest('rowId holds U+0000');
         return definedObject({
           table: mutation.table,
           rowId: mutation.rowId,
@@ -4198,6 +4311,11 @@ export class SyncClient {
    * `setWindow` at an await point.
    */
   sync(): Promise<SyncSummary> {
+    return this.#sync();
+  }
+
+  /** `signal` is the `syncUntilIdle` deadline (§7.7); `sync()` has none. */
+  #sync(signal?: AbortSignal): Promise<SyncSummary> {
     this.#requireActive();
     if (this.#syncOutstanding) {
       return Promise.reject(
@@ -4207,7 +4325,7 @@ export class SyncClient {
     this.#syncOutstanding = true;
     this.#beginDiagnosticsDeferral();
     const startedAtMs = this.#now();
-    return this.#serialize(() => this.#runSync())
+    return this.#serialize(() => this.#runSync(signal))
       .then(
         (summary) => {
           const completedAtMs = this.#now();
@@ -4326,7 +4444,7 @@ export class SyncClient {
       : 'client.unknown_failure';
   }
 
-  async #runSync(): Promise<SyncSummary> {
+  async #runSync(signal: AbortSignal | undefined): Promise<SyncSummary> {
     this.#requireTransport();
     this.#roundRetryDelayMs = undefined;
     this.#progress.emit({
@@ -4384,7 +4502,14 @@ export class SyncClient {
         this.#hasBlobs &&
         this.#config.blobs !== undefined
       ) {
-        await this.#flushBlobUploads();
+        const refused = await this.#flushBlobUploads(signal);
+        // §5.9.7: a commit whose blob the server refused left the outbox.
+        for (let index = outbox.length - 1; index >= 0; index--) {
+          if (!refused.has(outbox[index]!.clientCommitId)) continue;
+          outbox.splice(index, 1);
+          pushFrames.splice(index, 1);
+          frameBytes.splice(index, 1);
+        }
       }
       // Captured after encoding: a subscribe/unsubscribe during the
       // encryption await must not make the final request exceed the byte
@@ -4459,7 +4584,7 @@ export class SyncClient {
         msgKind: 'request',
         frames,
       });
-      const responseBytes = await this.#roundTrip(requestBytes);
+      const responseBytes = await this.#roundTrip(requestBytes, signal);
       const message = decodeMessage(responseBytes);
       if (message.msgKind !== 'response') {
         throw invalidRequest('transport returned a non-response message');
@@ -4472,6 +4597,7 @@ export class SyncClient {
         subs,
         'pull',
         resetEpoch,
+        signal,
       );
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
@@ -4482,6 +4608,9 @@ export class SyncClient {
           : { state: 'complete' },
       );
       this.#retryDelayMs = 250;
+      // §4.7: a subscription that still holds a resume token needs another
+      // round, also when the drive that started its bootstrap ends early.
+      if (summary.bootstrapping.length > 0) this.#setSyncNeeded(true);
       if (deferred > 0) {
         // §6.1 splitBatch remainder: more queued commits than this request
         // could carry — keep the sync-needed signal raised for the host.
@@ -4489,11 +4618,14 @@ export class SyncClient {
         return { ...summary, deferredCommits: deferred };
       }
       return summary;
-    } catch (error) {
+    } catch (caught) {
       // §1.5: a round that ended without a complete, decodable response is a
       // failure the server could not see — keep its code for the next request.
-      const unseen = this.#unseenRoundFailureCode(error);
+      const unseen = this.#unseenRoundFailureCode(caught);
       if (unseen !== undefined) this.#roundFailureCode = unseen;
+      // §7.7: a round the drive deadline aborted ends with the deadline's
+      // error, whichever transport call observed the abort.
+      const error: unknown = signal?.aborted === true ? signal.reason : caught;
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
       // in leaseState (no local-data purge, §7.3.4) and re-throw. Not a
       // silent retry: the app drives recovery to a live resolver. The
@@ -4527,6 +4659,8 @@ export class SyncClient {
           ? details.causeKind
           : undefined;
       const unreachable = causeKind === 'connect' || causeKind === 'network';
+      // The round's work is still owed; the host's connectivity resume runs it.
+      if (unreachable) this.#setSyncNeeded(true);
       if (retryable && !unreachable) {
         const realtimeUnavailable = error instanceof RealtimeUnavailableError;
         const delay = realtimeUnavailable
@@ -4579,11 +4713,7 @@ export class SyncClient {
         : (options?.timeoutMs ?? SYNC_IDLE_TIMEOUT_MS);
     // §7.7: an explicit budget is a strict positive round count. Zero,
     // fractional, and out-of-range values are caller errors.
-    if (
-      maxRounds !== undefined &&
-      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
-    )
-      throw invalidRequest('maxRounds must be a positive integer');
+    requireRoundBudget(maxRounds);
     if (
       timeoutMs !== Number.POSITIVE_INFINITY &&
       !(Number.isFinite(timeoutMs) && timeoutMs > 0)
@@ -4621,17 +4751,8 @@ export class SyncClient {
   ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
-      pushed: 0,
-      applied: [] as string[],
-      rejected: [] as string[],
-      retryable: [] as string[],
-      conflicts: [] as ConflictRecord[],
-      commitsApplied: 0,
-      segmentRowsApplied: 0,
+      ...emptySummary(0),
       bootstrapping: [] as string[],
-      resets: [] as string[],
-      revoked: [] as string[],
-      failed: [] as string[],
       deferredCommits: 0,
       schemaFloor: undefined as SchemaFloor | undefined,
     };
@@ -4658,42 +4779,40 @@ export class SyncClient {
     let round = 0;
     let expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // One signal reaches every transport call of the drive's rounds.
+    const controller = new AbortController();
+    const expiredError = () =>
+      new ClientSyncError(
+        'sync.idle_timeout',
+        'syncUntilIdle exceeded its deadline',
+        true,
+        { timeoutMs, rounds: round },
+      );
     const deadline =
       timeoutMs === Number.POSITIVE_INFINITY
         ? undefined
         : new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               expired = true;
+              const error = expiredError();
               // The transport may never answer; release the round so the
               // client can run another one after the caller sees the error.
+              controller.abort(error);
               this.#abortPendingRound('syncUntilIdle deadline exceeded');
-              reject(
-                new ClientSyncError(
-                  'sync.idle_timeout',
-                  'syncUntilIdle exceeded its deadline',
-                  true,
-                  { timeoutMs, rounds: round },
-                ),
-              );
+              reject(error);
             }, timeoutMs);
           });
     const drive = (async (): Promise<SyncIdleResult> => {
       for (; round < budget; round++) {
         // The race already rejected; stop spending rounds on a dead drive.
-        if (expired)
-          throw new ClientSyncError(
-            'sync.idle_timeout',
-            'syncUntilIdle exceeded its deadline',
-            true,
-            { timeoutMs, rounds: round },
-          );
+        if (expired) throw expiredError();
         const before = JSON.stringify(
           loadSubscriptions(this.#db).map((sub) => [
             sub.id,
             sub.bootstrapState,
           ]),
         );
-        const last = await this.sync();
+        const last = await this.#sync(controller.signal);
         // Historical counters accumulate; current readiness (`bootstrapping`,
         // `deferredCommits`, `schemaFloor`) describes the latest round.
         aggregate.pushed += last.pushed;
@@ -4756,7 +4875,10 @@ export class SyncClient {
    * refuses the round with `RealtimeUnavailableError` instead of using the
    * seam (SPEC §8.8).
    */
-  #roundTrip(request: Uint8Array): Promise<Uint8Array> {
+  #roundTrip(
+    request: Uint8Array,
+    signal: AbortSignal | undefined,
+  ): Promise<Uint8Array> {
     const socket = this.#socket;
     if (socket !== undefined && this.#realtimePolicy !== 'off') {
       return new Promise<Uint8Array>((resolve, reject) => {
@@ -4777,12 +4899,9 @@ export class SyncClient {
           // Rust core records when its realtime round call fails (§8.8).
           this.#setRealtimeState('lost', 'sync.transport_failed');
           reject(
-            new ClientSyncError(
-              'sync.transport_failed',
-              'socket round send failed',
-              true,
-              { causeKind: 'unknown' },
-            ),
+            transportFailed('socket round send failed', {
+              causeKind: 'unknown',
+            }),
           );
         }
       });
@@ -4793,7 +4912,7 @@ export class SyncClient {
       throw this.#realtimeUnavailableError();
     }
     return Promise.resolve()
-      .then(() => this.#config.transport(request))
+      .then(() => this.#config.transport(request, signal))
       .catch((error: unknown) => {
         if (
           error instanceof ClientSyncError ||
@@ -4801,12 +4920,9 @@ export class SyncClient {
         ) {
           throw error;
         }
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'transport round failed',
-          true,
-          { causeKind: 'unknown' },
-        );
+        throw transportFailed('transport round failed', {
+          causeKind: 'unknown',
+        });
       });
   }
 
@@ -4832,11 +4948,11 @@ export class SyncClient {
   }
 
   /** Abort the in-flight socket round (socket closed or disconnected). */
-  #abortPendingRound(reason: string): void {
+  #abortPendingRound(reason: string | ClientSyncError): void {
     const round = this.#pendingRound;
     if (round === undefined) return;
     this.#pendingRound = undefined;
-    round.reject(new ClientSyncError('sync.transport_failed', reason, true));
+    round.reject(typeof reason === 'string' ? transportFailed(reason) : reason);
   }
 
   // -- realtime (§8 client side) ----------------------------------------------
@@ -4898,27 +5014,34 @@ export class SyncClient {
     }
     let openedSocket: RealtimeSocket | undefined;
     try {
-      const socket = await connector({
-        onText: (text) => {
-          if (generation !== this.#realtimeGeneration || !this.#started) return;
-          this.#handleRealtimeText(text);
+      const socket = await connector(
+        {
+          onText: (text) => {
+            if (generation !== this.#realtimeGeneration || !this.#started)
+              return;
+            this.#heard(this.#handleRealtimeText(text));
+          },
+          onBinary: (bytes) => {
+            if (generation !== this.#realtimeGeneration || !this.#started)
+              return;
+            this.#heard();
+            this.#routeRealtimeBinary(bytes);
+          },
+          onClose: () => {
+            if (openedSocket === undefined || this.#socket !== openedSocket)
+              return;
+            this.#socket = undefined;
+            this.#disarm();
+            this.#presence.clear(); // §8.6.1: presence is per-connection
+            // §8.8: an undesired close is a visible lost state, not a silent
+            // downgrade to HTTP rounds.
+            this.#setRealtimeState('lost', REALTIME_LOST_CODE);
+            this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
+            this.#emitDiagnostics();
+          },
         },
-        onBinary: (bytes) => {
-          if (generation !== this.#realtimeGeneration || !this.#started) return;
-          this.#routeRealtimeBinary(bytes);
-        },
-        onClose: () => {
-          if (openedSocket === undefined || this.#socket !== openedSocket)
-            return;
-          this.#socket = undefined;
-          this.#presence.clear(); // §8.6.1: presence is per-connection
-          // §8.8: an undesired close is a visible lost state, not a silent
-          // downgrade to HTTP rounds.
-          this.#setRealtimeState('lost', REALTIME_LOST_CODE);
-          this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
-          this.#emitDiagnostics();
-        },
-      });
+        this.#clientId,
+      );
       openedSocket = socket;
       if (!this.#transportEnabled) {
         socket.close();
@@ -4952,6 +5075,7 @@ export class SyncClient {
     this.#realtimeConnectPromise = undefined;
     this.#socket?.close();
     this.#socket = undefined;
+    this.#disarm();
     this.#presence.clear(); // §8.6.1: presence is per-connection
     this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
     this.#setRealtimeState(
@@ -4969,13 +5093,47 @@ export class SyncClient {
    * Close the socket and record the loss; later rounds use the configured
    * transport until the supervisor reconnects.
    */
-  #loseSocket(): void {
+  #loseSocket(code = REALTIME_LOST_CODE): void {
     const socket = this.#socket;
     this.#socket = undefined;
+    this.#disarm();
     this.#presence.clear(); // §8.6.1: presence is per-connection
-    this.#setRealtimeState('lost', REALTIME_LOST_CODE);
+    this.#setRealtimeState('lost', code);
     socket?.close();
     this.#emitDiagnostics();
+  }
+
+  /**
+   * SPEC §8.5 watchdog: the connection's first `heartbeat` arms it; once
+   * armed, every inbound frame restarts it, and twice the interval of
+   * silence loses the socket. A server that sends no heartbeats never arms it.
+   */
+  #heard(heartbeat?: boolean): void {
+    if (
+      this.#socket === undefined ||
+      !this.#transportEnabled ||
+      (this.#watchdog === undefined && heartbeat !== true)
+    )
+      return;
+    this.#watchdog?.();
+    this.#watchdog = this.#schedule(() => {
+      this.#loseSocket('transport.timeout');
+      this.#abortPendingRound(
+        new ClientSyncError(
+          'transport.timeout',
+          'realtime heartbeat missed',
+          true,
+          {
+            causeKind: 'heartbeat',
+          },
+        ),
+      );
+    }, 2 * this.#heartbeatMs);
+  }
+
+  #disarm(): void {
+    this.#watchdog?.();
+    this.#watchdog = undefined;
   }
 
   /**
@@ -5017,7 +5175,8 @@ export class SyncClient {
     // Unknown tag: tolerated and ignored (§8.7 closed registry).
   }
 
-  #handleRealtimeText(text: string): void {
+  /** Returns whether the text was a §8.5 `heartbeat`. */
+  #handleRealtimeText(text: string): boolean | undefined {
     let parsed: ReturnType<typeof parseRealtimeServerEvent>;
     try {
       parsed = parseRealtimeServerEvent(text);
@@ -5039,47 +5198,38 @@ export class SyncClient {
       this.#emitSyncNeeded(event.data.reason);
       return;
     }
-    if (event.event === 'presence') {
-      this.#applyPresence(event.data);
-    }
+    if (event.event === 'presence') this.#applyPresence(event.data);
+    return event.event === 'heartbeat';
   }
 
-  /** §8.6 apply an inbound presence fanout to the local map. */
-  #applyPresence(data: {
-    scopeKey: string;
-    kind?: PresenceKind;
-    actorId?: string;
-    clientId?: string;
-    doc?: Record<string, unknown> | null;
-    error?: string;
-  }): void {
-    // The publisher-directed error variant (§8.6.2) surfaces via the
-    // sync-needed reason channel is inappropriate; it is an out-of-band
-    // presence rejection — record nothing to the peer map, just ignore
-    // here (setPresence callers observe it through the callback if wired).
-    if (data.error !== undefined || data.kind === undefined) return;
-    const { scopeKey, kind, actorId, clientId } = data;
-    if (actorId === undefined || clientId === undefined) return;
-    const peerKey = `${actorId} ${clientId}`;
-    let peers = this.#presence.get(scopeKey);
-    if (kind === 'leave') {
-      peers?.delete(peerKey);
-      if (peers !== undefined && peers.size === 0) {
-        this.#presence.delete(scopeKey);
+  /**
+   * §8.6 apply an inbound presence fanout to the local map, or hand a
+   * publisher-directed rejection (§8.6.2) to the listeners unchanged.
+   */
+  #applyPresence(data: RealtimePresenceEvent['data']): void {
+    const { scopeKey, kind, actorId, clientId, doc, error } = data;
+    if (error === undefined) {
+      // No `kind` is the client→server shape. The parser pins both ids and a
+      // join/update doc on a fanout (§8.6.2); these checks narrow types.
+      if (kind === undefined || actorId === undefined || clientId === undefined)
+        return;
+      const peerKey = `${actorId} ${clientId}`;
+      let peers = this.#presence.get(scopeKey);
+      if (kind === 'leave') {
+        peers?.delete(peerKey);
+        if (peers?.size === 0) this.#presence.delete(scopeKey);
+      } else if (doc) {
+        if (peers === undefined) {
+          peers = new Map();
+          this.#presence.set(scopeKey, peers);
+        }
+        peers.set(peerKey, { actorId, clientId, doc });
       }
-    } else {
-      const doc = data.doc;
-      if (doc === null || doc === undefined) return;
-      if (peers === undefined) {
-        peers = new Map();
-        this.#presence.set(scopeKey, peers);
-      }
-      peers.set(peerKey, { actorId, clientId, doc });
     }
-    this.#config.onPresence?.(scopeKey);
+    this.#config.onPresence?.(scopeKey, error);
     for (const listener of this.#presenceListeners) {
       try {
-        listener(scopeKey);
+        listener(scopeKey, error);
       } catch {
         // A UI listener must never break presence application.
       }
@@ -5147,6 +5297,7 @@ export class SyncClient {
     sentSubs: readonly SubscriptionRecord[] | undefined,
     mode: 'pull' | 'delta',
     resetEpoch: number = this.#localResetEpoch,
+    signal?: AbortSignal,
   ): Promise<SyncSummary> {
     const summary = emptySummary(sentCommits.length);
     const commitsById = new Map(
@@ -5179,11 +5330,7 @@ export class SyncClient {
     if (header?.type !== 'RESP_HEADER') {
       throw invalidRequest('missing RESP_HEADER');
     }
-    if (
-      message.wireVersion < 2 ||
-      header.logEpoch === undefined ||
-      header.resetRequired === undefined
-    ) {
+    if (message.wireVersion < 2) {
       throw new ClientSyncError(
         'client.invalid_host_response',
         'the server response does not carry wire version 2 log-epoch state',
@@ -5232,19 +5379,51 @@ export class SyncClient {
     let section: OpenSection | undefined;
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
+    let deltaDropped = false;
+    // §8.2: a delta section applies only to a locally active subscription
+    // that holds a cursor and no resume token. A subscription at cursor -1
+    // (never synced, reset, or rebootstrapped) bootstraps on its own pull.
+    const skipsSection = (sub: SubscriptionRecord | undefined) =>
+      sub === undefined ||
+      (mode === 'delta' &&
+        (sub.status !== 'active' ||
+          sub.cursor < 0 ||
+          sub.bootstrapState !== undefined));
     const incompleteSubscriptions = new Set(
       mode === 'pull' ? subsById.keys() : [],
     );
 
-    // §5.4/§5.5: issue every segment download of this response before the
-    // apply loop reaches the first one, so a paged bootstrap overlaps its page
-    // fetches instead of paying one blocking round trip per page. Eligibility
-    // mirrors the loop: a descriptor outside an applied section, inside a
-    // skipped delta section, or from an unconfigured downloader is never
-    // fetched, and a prefetched failure is only observed where the loop awaits
-    // it. A promise left over because an earlier frame ended apply is handled
-    // at creation, never unhandled.
+    // §5.4/§5.5: queue every segment download of this response, so a paged
+    // bootstrap overlaps its page fetches instead of paying one blocking round
+    // trip per page. At most four downloads run at once, the Rust native
+    // transport's pool size: enough to overlap round trips, while the client
+    // holds at most four bodies, the one being applied and three ahead. The
+    // loop takes each body out of the map before applying it and tops the
+    // window up at the next descriptor. Eligibility mirrors the loop: a
+    // descriptor outside an applied section, inside a skipped delta section,
+    // or from an unconfigured downloader is never queued, and a failure is
+    // only observed where the loop awaits it. A promise left over because an
+    // earlier frame ended apply is handled at creation, never unhandled.
+    const queued: [SegmentRefFrame, SubscriptionRecord][] = [];
     const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
+    const prefetch = () => {
+      for (let next; prefetched.size < 4 && (next = queued.shift());) {
+        const [frame, sub] = next;
+        const pending = this.#downloadSegment(
+          frame,
+          sub,
+          (bytes) => {
+            // Only the descriptor the loop is applying reports bytes; a
+            // sibling still in flight would overwrite its progress.
+            if (reporting === frame)
+              this.#progress.update({ bytesReceived: bytes });
+          },
+          signal,
+        );
+        pending.catch(() => {});
+        prefetched.set(frame, pending);
+      }
+    };
     let reporting: SegmentRefFrame | undefined;
     const deleteKey = (commitSeq: number, table: string, rowId: string) =>
       `${commitSeq}\u0000${table}\u0000${rowId}`;
@@ -5253,12 +5432,7 @@ export class SyncClient {
       for (const frame of message.frames) {
         if (frame.type === 'SUB_START') {
           const sub = subsById.get(frame.id);
-          openSub =
-            sub === undefined ||
-            (mode === 'delta' &&
-              (sub.status !== 'active' || sub.bootstrapState !== undefined))
-              ? undefined
-              : sub;
+          openSub = skipsSection(sub) ? undefined : sub;
         } else if (frame.type === 'SUB_END') {
           openSub = undefined;
         } else if (frame.type === 'ERROR') {
@@ -5272,16 +5446,10 @@ export class SyncClient {
             (this.#acceptMask() & ACCEPT_SQLITE) === 0
           )
         ) {
-          const pending = this.#downloadSegment(frame, openSub, (bytes) => {
-            // Only the descriptor the loop is applying reports bytes; a
-            // sibling still in flight would overwrite its progress.
-            if (reporting === frame)
-              this.#progress.update({ bytesReceived: bytes });
-          });
-          pending.catch(() => {});
-          prefetched.set(frame, pending);
+          queued.push([frame, openSub]);
         }
       }
+      prefetch();
     }
 
     // §2.2 scope migration: the server emits the delete tagged with the old
@@ -5303,12 +5471,7 @@ export class SyncClient {
       for (const frame of message.frames) {
         if (frame.type === 'SUB_START') {
           const sub = subsById.get(frame.id);
-          openSub =
-            sub === undefined ||
-            (mode === 'delta' &&
-              (sub.status !== 'active' || sub.bootstrapState !== undefined))
-              ? undefined
-              : sub;
+          openSub = skipsSection(sub) ? undefined : sub;
         } else if (frame.type === 'SUB_END') {
           openSub = undefined;
         } else if (frame.type === 'ERROR') {
@@ -5436,10 +5599,12 @@ export class SyncClient {
               sub.cursor < 0 &&
               sub.bootstrapState === undefined &&
               frame.bootstrap;
+            // §4.4: a section whose registration was removed mid-round
+            // (unsubscribe, eviction) is skipped; it never re-creates it.
             const skip =
-              sub === undefined ||
-              (mode === 'delta' &&
-                (sub.status !== 'active' || sub.bootstrapState !== undefined));
+              skipsSection(sub) ||
+              getSubscription(this.#db, frame.id) === undefined;
+            if (skip && mode === 'delta') deltaDropped = true;
             section = { start: frame, sub, fresh, skip, cleared: false };
             break;
           }
@@ -5498,11 +5663,16 @@ export class SyncClient {
                 rowsProcessed: 0,
                 rowsTotal: frame.rowCount,
               });
-              const prefetch = prefetched.get(frame);
-              if (prefetch !== undefined) reporting = frame;
-              bytes = await (prefetch ??
-                this.#downloadSegment(frame, section.sub, (bytesReceived) =>
-                  this.#progress.update({ bytesReceived }),
+              prefetch();
+              const pending = prefetched.get(frame);
+              prefetched.delete(frame);
+              if (pending !== undefined) reporting = frame;
+              bytes = await (pending ??
+                this.#downloadSegment(
+                  frame,
+                  section.sub,
+                  (bytesReceived) => this.#progress.update({ bytesReceived }),
+                  signal,
                 ));
             } else {
               bytes = frame.payload;
@@ -5522,7 +5692,7 @@ export class SyncClient {
               await this.#applySegmentOrFail(
                 section,
                 summary,
-                (table, clearFirst, effective) =>
+                (table, clearFirst, effective, owners) =>
                   applySqliteSegment(
                     this.#db,
                     this.#schema,
@@ -5538,6 +5708,7 @@ export class SyncClient {
                       table,
                       clearFirst,
                       effective,
+                      owners,
                       frame.rowCount > 0,
                       resetEpoch,
                     ),
@@ -5564,7 +5735,7 @@ export class SyncClient {
               await this.#applySegmentOrFail(
                 section,
                 summary,
-                (table, clearFirst, effective) =>
+                (table, clearFirst, effective, owners) =>
                   applyRowsSegment(
                     this.#db,
                     this.#schema,
@@ -5574,6 +5745,7 @@ export class SyncClient {
                       table,
                       clearFirst,
                       effective,
+                      owners,
                       segment.blocks.some((block) => block.length > 0),
                       resetEpoch,
                     ),
@@ -5665,6 +5837,11 @@ export class SyncClient {
 
     if (mode === 'delta') {
       if (deltaCursor >= 0) this.#sendAck(deltaCursor);
+      // §8.2: a skipped delta section is a drop; a pull repairs it.
+      if (deltaDropped) {
+        this.#setSyncNeeded(true);
+        this.#emitSyncNeeded('catchup-required');
+      }
     } else {
       this.#ackAfterPull();
     }
@@ -5957,8 +6134,12 @@ export class SyncClient {
   }
 
   /** Whether a fresh-bootstrap clear would remove at least one local row. */
-  #scopedRowsExist(table: CompiledClientTable, effective: ScopeMap): boolean {
-    const scope = localScopePredicate(table, effective);
+  #scopedRowsExist(
+    table: CompiledClientTable,
+    effective: ScopeMap,
+    owners: readonly ScopeMap[],
+  ): boolean {
+    const scope = localScopePredicate(table, effective, owners);
     return (
       scope !== undefined &&
       this.#db.query(
@@ -5973,19 +6154,21 @@ export class SyncClient {
     table: CompiledClientTable,
     clearFirst: boolean,
     effective: ScopeMap,
+    owners: readonly ScopeMap[],
     hasRows: boolean,
     resetEpoch: number,
   ): Parameters<typeof applyRowsSegment>[4] {
     return {
       clearFirst,
       effective,
+      owners,
       isCurrent: () => this.#localResetEpoch === resetEpoch,
       onProgress: (rowsProcessed) => this.#progress.update({ rowsProcessed }),
       transaction: (fn) =>
         this.#applyBatch((batch) => {
           if (
             hasRows ||
-            (clearFirst && this.#scopedRowsExist(table, effective))
+            (clearFirst && this.#scopedRowsExist(table, effective, owners))
           )
             batch.table(table.name);
           const result = fn();
@@ -6007,6 +6190,7 @@ export class SyncClient {
       table: CompiledClientTable,
       clearFirst: boolean,
       effective: ScopeMap,
+      owners: readonly ScopeMap[],
     ) => number | Promise<number>,
     clearFirst: boolean,
   ): Promise<void> {
@@ -6018,6 +6202,7 @@ export class SyncClient {
         table,
         clearFirst,
         section.start.effectiveScopes,
+        this.#scopeOwners(sub.table, sub.id),
       );
       section.cleared = true;
     } catch (error) {
@@ -6025,6 +6210,8 @@ export class SyncClient {
         error instanceof ClientSyncError &&
         error.code === 'sync.scope_revoked'
       ) {
+        section.skip = true;
+        if (getSubscription(this.#db, sub.id) === undefined) return;
         const registered = getWindowUnitBySubId(this.#db, sub.id);
         this.#applyBatch((batch) => {
           saveSubscription(
@@ -6045,7 +6232,6 @@ export class SyncClient {
           }
         });
         summary.failed.push(sub.id);
-        section.skip = true;
         return;
       }
       throw error;
@@ -6056,6 +6242,7 @@ export class SyncClient {
     frame: SegmentRefFrame,
     sub: SubscriptionRecord,
     onProgress: (bytesReceived: number) => void,
+    signal: AbortSignal | undefined,
   ): Promise<Uint8Array> {
     const downloader = this.#config.segments;
     if (downloader === undefined) {
@@ -6089,18 +6276,24 @@ export class SyncClient {
           true,
         );
       }
-      bytes = await fetchUrl(frame.url, onProgress);
+      bytes = await fetchUrl(frame.url, onProgress, signal, frame.byteLength);
     } else {
       bytes = await downloader({
         segmentId: frame.segmentId,
         table: frame.table,
         requestedScopesJson: canonicalScopeJson(sub.scopes),
+        byteLength: frame.byteLength,
         onProgress,
+        ...(signal !== undefined ? { signal } : {}),
       });
     }
-    // §5.1: verify the content address before applying; on mismatch the
-    // segment is discarded and the cursor/resume token stay unpersisted,
-    // so the next pull re-delivers.
+    // §5.4: the descriptor's byteLength caps the body; §5.1: verify the
+    // content address before applying. On either failure the segment is
+    // discarded and the cursor/resume token stay unpersisted, so the next
+    // pull re-delivers.
+    if (bytes.byteLength > frame.byteLength) {
+      throw invalidRequest('segment exceeds its byteLength', true);
+    }
     onProgress(bytes.byteLength);
     const hash = await sha256Hex(bytes);
     if (`sha256:${hash}` !== frame.segmentId) {
@@ -6120,6 +6313,10 @@ export class SyncClient {
     bootstrapState: string | undefined,
     summary: MutableSummary,
   ): boolean {
+    // §4.4: SUB_END rewrites a live registration only. An unsubscribe or
+    // eviction during this round's awaits removed it; persisting now would
+    // re-create it. Everything below is synchronous with this check.
+    if (getSubscription(this.#db, sub.id) === undefined) return false;
     if (start.status === 'active') {
       // §1.4 rule 4: durable cursor/resume state persists only at SUB_END;
       // §3.3: the effective-scope echo is persisted for the purge contract.
@@ -6213,6 +6410,7 @@ export class SyncClient {
     // (never the requested map), drop doomed outbox commits, stop pulling.
     const table = this.#table(sub.table);
     const lastEffective = sub.effectiveScopes;
+    const owners = this.#scopeOwners(sub.table, sub.id);
     const registered = getWindowUnitBySubId(this.#db, sub.id);
     let failed = false;
     this.#applyBatch((batch) => {
@@ -6227,26 +6425,25 @@ export class SyncClient {
               batch,
               (name, values) =>
                 name === table.name &&
-                matchesLocalScopes(table, lastEffective, values),
+                ownsLocalRow(table, lastEffective, owners, values),
             ),
           ];
-          deleteScopedRows(this.#db, table, lastEffective);
+          deleteScopedRows(this.#db, table, lastEffective, owners);
           batch.scopeMap(table, lastEffective);
-          const pendingById = new Map(
-            listOutbox(this.#db).map((commit) => [
-              commit.clientCommitId,
-              commit,
-            ]),
+          // §3.3: a whole pending commit leaves when one of its upserts
+          // provably lands in the revoked scopes and no other owner covers it.
+          const doomed = listOutbox(this.#db).filter((commit) =>
+            commit.operations.some(
+              (op) =>
+                op.table === table.name &&
+                op.values !== undefined &&
+                ownsLocalRow(table, lastEffective, owners, op.values),
+            ),
           );
-          const droppedIds = dropOutboxCommitsInScope(
-            this.#db,
-            table,
-            lastEffective,
-          );
-          if (droppedIds.length > 0) {
-            for (const clientCommitId of droppedIds) {
-              const commit = pendingById.get(clientCommitId);
-              if (commit === undefined) continue;
+          if (doomed.length > 0) {
+            for (const commit of doomed) {
+              const { clientCommitId } = commit;
+              deleteOutboxCommit(this.#db, clientCommitId);
               const results: CommitOperationOutcome[] = commit.operations.map(
                 (operation, opIndex) => {
                   const rejection: RejectionRecord = {
@@ -6343,12 +6540,14 @@ export class SyncClient {
     return { opIndex, existed: true, syncVersion, values };
   }
 
+  /** `onlyKeys` holds overlay row keys (`JSON [table,rowId]`). */
   #captureBeforeImages(
     operations: readonly OutboxOperation[],
     onlyKeys?: ReadonlySet<string>,
   ): OutboxBeforeImage[] {
     return operations.flatMap((operation, opIndex) =>
-      onlyKeys && !onlyKeys.has(`${operation.table}\u0000${operation.rowId}`)
+      onlyKeys &&
+      !onlyKeys.has(JSON.stringify([operation.table, operation.rowId]))
         ? []
         : [this.#captureBeforeImage(operation, opIndex)],
     );
@@ -6408,14 +6607,14 @@ export class SyncClient {
       imageByIndex.has(index),
     );
     const affectedKeys = new Set(
-      commit.operations.map(
-        (operation) => `${operation.table}\u0000${operation.rowId}`,
+      commit.operations.map((operation) =>
+        JSON.stringify([operation.table, operation.rowId]),
       ),
     );
     if (complete) {
       const restored = new Set<string>();
       commit.operations.forEach((operation, index) => {
-        const key = `${operation.table}\u0000${operation.rowId}`;
+        const key = JSON.stringify([operation.table, operation.rowId]);
         if (restored.has(key)) return;
         const image = imageByIndex.get(index);
         if (image) this.#restoreBeforeImage(operation, image, batch);
@@ -6429,15 +6628,15 @@ export class SyncClient {
     deleteOutboxCommit(this.#db, commit.clientCommitId);
 
     if (!complete) return;
-    for (const later of listOutbox(this.#db)) {
+    for (const later of listOutbox(this.#db, [...affectedKeys])) {
       if (later.seq <= commit.seq) continue;
       const affectedOperations = later.operations.filter((operation) =>
-        affectedKeys.has(`${operation.table}\u0000${operation.rowId}`),
+        affectedKeys.has(JSON.stringify([operation.table, operation.rowId])),
       );
       if (affectedOperations.length === 0) continue;
       replaceOutboxBeforeImages(
         this.#db,
-        later.clientCommitId,
+        later,
         this.#captureBeforeImages(later.operations, affectedKeys),
       );
       // §7.4.4: a later commit the recovery already classified refused never
@@ -6614,27 +6813,30 @@ export class SyncClient {
       type: localColumnType(column),
     }));
     const sparse: Array<RowValue | undefined> = [];
-    for (const column of table.columns) {
-      const raw = values[column.name];
+    for (const { name, type } of declared) {
+      const raw = values[name];
       if (raw === undefined) {
         sparse.push(undefined);
         continue;
       }
-      // §7.1: the schema-agnostic outbox form serializes through JSON, which
-      // turns NaN and ±Infinity into null. The authoring boundary refuses them
-      // instead of recording a different value; the wire `f64` encoding itself
-      // stays IEEE-754 binary64 (§2.4).
+      // §2.4/§7.1: authoring refuses the push admission values the server
+      // rejects. JSON would also turn NaN and ±Infinity into null, so the
+      // outbox never records a different value.
       if (
-        localColumnType(column) === 'float' &&
-        typeof raw === 'number' &&
-        !Number.isFinite(raw)
+        (type === 'float' &&
+          typeof raw === 'number' &&
+          !Number.isFinite(raw)) ||
+        (type === 'string' && typeof raw === 'string' && raw.includes('\0'))
       )
-        return `column ${column.name} (float) requires a finite number value`;
+        return `column ${name} holds a value push admission rejects`;
       try {
+        if (typeof raw === 'string' && type === 'json')
+          parseJsonDocument(raw, 'json value');
+        if (typeof raw === 'string' && type === 'blob_ref') parseBlobRef(raw);
         sparse.push(jsonToRowValue(raw));
       } catch (error) {
-        if (error instanceof ClientSyncError)
-          return `column ${column.name}: ${error.message}`;
+        if (error instanceof ClientSyncError || error instanceof DecodeError)
+          return `column ${name}: ${error.message}`;
         throw error;
       }
     }
@@ -6703,11 +6905,24 @@ export class SyncClient {
         scope,
         this.#schema,
       );
+      const outbox = new Set(listOutbox(this.#db, scope));
       const pending = [
         ...failedOverlayCommits(this.#db, false, scope, this.#schema),
-        ...listOutbox(this.#db, scope),
+        ...outbox,
       ].sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq);
-      for (const commit of [...acknowledged, ...pending])
+      // §7.2: a caller that restored the bases itself has just written the
+      // server base of every exact-key row in scope. Each pending commit's
+      // before-image of such a row is re-taken right before the commit
+      // replays, so a later rollback restores that base plus earlier intent.
+      const rebased =
+        restoreBases || scope === undefined ? undefined : new Set(scope);
+      for (const commit of [...acknowledged, ...pending]) {
+        if (rebased !== undefined && outbox.has(commit))
+          replaceOutboxBeforeImages(
+            this.#db,
+            commit,
+            this.#captureBeforeImages(commit.operations, rebased),
+          );
         this.#applyOperationsLocally(
           commit.operations.filter(
             (op) =>
@@ -6718,6 +6933,7 @@ export class SyncClient {
           batch,
           true,
         );
+      }
     };
     const priorRejections = [...this.#rejections];
     try {

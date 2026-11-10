@@ -113,6 +113,11 @@ class SyncularConfig {
   /// `"follow"` follows only an uncredentialed request.
   final String? redirects;
 
+  /// Interval the server sends realtime heartbeats at, in milliseconds
+  /// (default 30000). The transport treats twice this interval of silence as a
+  /// lost socket.
+  final int? realtimeHeartbeatMs;
+
   const SyncularConfig({
     this.baseUrl,
     this.localAuthorityPath,
@@ -124,6 +129,7 @@ class SyncularConfig {
     this.maxRequestBytes,
     this.maxResponseBytes,
     this.redirects,
+    this.realtimeHeartbeatMs,
   });
 
   /// The `syncular_client_new` config JSON (transport fields only; `dbPath`
@@ -141,6 +147,9 @@ class SyncularConfig {
     if (maxRequestBytes != null) object['maxRequestBytes'] = maxRequestBytes;
     if (maxResponseBytes != null) object['maxResponseBytes'] = maxResponseBytes;
     if (redirects != null) object['redirects'] = redirects;
+    if (realtimeHeartbeatMs != null) {
+      object['realtimeHeartbeatMs'] = realtimeHeartbeatMs;
+    }
     return object;
   }
 }
@@ -370,9 +379,10 @@ class SyncularClient {
   Map<String, Object?> sync() => command('sync', const {});
 
   /// Drive sync to quiescence (needs `native-transport`).
-  Map<String, Object?> syncUntilIdle({int? maxRounds}) {
+  Map<String, Object?> syncUntilIdle({int? maxRounds, int? timeoutMs}) {
     final p = <String, Object?>{};
     if (maxRounds != null) p['maxRounds'] = maxRounds;
+    if (timeoutMs != null) p['timeoutMs'] = timeoutMs;
     return command('syncUntilIdle', p);
   }
 
@@ -596,13 +606,21 @@ class SyncularClient {
     while (true) {
       final eventJson = _ffi.clientPollEvent(_handle, 0);
       if (eventJson == null) return;
-      final value = decodeJson(eventJson);
-      if (value is! Map) continue;
-      final type = value['type'];
-      if (type is! String) continue;
-      _eventController.add(
-        SyncularEvent(type, value.cast<String, Object?>()),
-      );
+      handleEvent(eventJson);
+    }
+  }
+
+  /// Answer a `realtime-wake` with `drainRealtime` through [command]; deliver
+  /// any other event to [events]. Package-internal: the poll loop calls it.
+  void handleEvent(String eventJson) {
+    final value = decodeJson(eventJson);
+    if (value is! Map) return;
+    final type = value['type'];
+    if (type is! String) return;
+    if (type == 'realtime-wake') {
+      command('drainRealtime', {});
+    } else {
+      _eventController.add(SyncularEvent(type, value.cast<String, Object?>()));
     }
   }
 }

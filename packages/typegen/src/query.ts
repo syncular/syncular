@@ -64,8 +64,13 @@
 import { TypegenError } from './errors';
 import { isSyqlTrivia, lexSyqlSqlSource, type SyqlToken } from './syql-lexer';
 import type { IrColumn, IrColumnType, IrDocument, IrTable } from './ir';
-import { findProjection, lowerProjection, mainVerbAfterWith } from './lower';
-import { buildNamingMap, type NamingMode, type NamingTarget } from './naming';
+import { findProjection, lowerProjection } from './lower';
+import {
+  buildNamingMap,
+  type NamingMode,
+  type NamingTarget,
+  validateQueryIdentifier,
+} from './naming';
 
 /** The SQL decltype keyword → §2.4 type map (mirrors sql.ts TYPE_MAP so a
  * plain column ref's decltype resolves to the exact IR type). */
@@ -116,7 +121,7 @@ export interface QueryColumn {
   readonly type: IrColumnType;
   readonly nullable: boolean;
   /** `exact` = resolved to an IR column (plain ref); `fallback` = a computed
-   * expression typed by the documented honest fallback. */
+   * expression typed by its `CAST` or `count()` (SYQL §14.1). */
   readonly fidelity: 'exact' | 'fallback';
   /** Proven physical origin for reactive row identity and diagnostics. */
   readonly origin?: { readonly table: string; readonly column: string };
@@ -304,6 +309,16 @@ export interface AnalyzedQuery {
   readonly syql?: QuerySyqlMetadata;
 }
 
+/** The public SYQL input an emitter binds by name. */
+export function syqlInput(
+  query: AnalyzedQuery,
+  name: string,
+): QuerySyqlPublicInput {
+  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
+  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
+  return input;
+}
+
 // -- path → name --------------------------------------------------------------
 
 /** A single kebab-case path segment (folder) or filename stem. */
@@ -381,13 +396,38 @@ export function validateOverrideName(name: string, location: string): string {
   return name;
 }
 
-// -- statement splitting ------------------------------------------------------
+// -- SQL tokens -----------------------------------------------------------------
 //
-// A file may hold multiple statements separated by top-level `;`. We split on
-// semicolons that are NOT inside a single-quoted string, a `--` line comment,
-// or a `/* */` block comment. The SELECT-only subset has no BEGIN/END blocks,
-// so top-level semicolons are unambiguous statement terminators. A trailing
-// semicolon on the last statement is optional (an empty tail is dropped).
+// Every scan below reads the lossless SYQL lexer (`syql-lexer.ts`), so string
+// literals, quoted identifiers, and comments are atomic tokens: their text is
+// never split, rescanned, or rewritten. SQLite remains the authority on
+// correctness.
+
+/** Significant SQL tokens (no trivia) with each token's parenthesis depth,
+ * its innermost enclosing `(` (or -1), and every `(` index's matching `)`. */
+function sqlStructure(sql: string, file = 'query SQL') {
+  const tokens = lexSyqlSqlSource(file, sql).filter(
+    (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
+  );
+  const depths: number[] = [];
+  const parents: number[] = [];
+  const closes = new Map<number, number>();
+  const stack: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.text === ')') {
+      const open = stack.pop();
+      if (open !== undefined) closes.set(open, index);
+    }
+    parents[index] = stack.at(-1) ?? -1;
+    depths[index] = stack.length;
+    if (token.text === '(') stack.push(index);
+  });
+  return { tokens, depths, parents, closes };
+}
+
+function lowerWord(token: SyqlToken | undefined): string | undefined {
+  return token?.kind === 'identifier' ? token.text.toLowerCase() : undefined;
+}
 
 export interface SplitStatement {
   /** The raw statement text (leading comment block + SQL), as written. */
@@ -396,113 +436,56 @@ export interface SplitStatement {
   readonly startLine: number;
 }
 
-/** Split file content into statements on top-level `;` (string/comment-aware).
- * Blank/comment-only tails are dropped; each statement keeps its own leading
- * comment block (everything between the previous `;` and this SQL). */
-export function splitStatements(content: string): SplitStatement[] {
-  const parts: { text: string; startOffset: number }[] = [];
-  let i = 0;
-  let start = 0;
-  while (i < content.length) {
-    const ch = content[i] as string;
-    const next = content[i + 1];
-    if (ch === '-' && next === '-') {
-      const end = content.indexOf('\n', i);
-      i = end === -1 ? content.length : end;
-    } else if (ch === '/' && next === '*') {
-      const end = content.indexOf('*/', i + 2);
-      i = end === -1 ? content.length : end + 2;
-    } else if (ch === "'") {
-      let j = i + 1;
-      for (;;) {
-        if (j >= content.length) break;
-        if (content[j] === "'") {
-          if (content[j + 1] === "'") j += 2;
-          else {
-            j += 1;
-            break;
-          }
-        } else j += 1;
-      }
-      i = j;
-    } else if (ch === ';') {
-      parts.push({ text: content.slice(start, i), startOffset: start });
-      i += 1;
-      start = i;
-    } else {
-      i += 1;
-    }
-  }
-  if (start < content.length) {
-    parts.push({ text: content.slice(start), startOffset: start });
-  }
+/** Split file content into statements on top-level `;` tokens. A statement
+ * keeps its leading comment block; comment-only parts are dropped. The
+ * SELECT-only subset has no BEGIN/END blocks, so every `;` token ends one
+ * statement and a trailing `;` is optional. */
+export function splitStatements(
+  content: string,
+  file = 'query SQL',
+): SplitStatement[] {
   const out: SplitStatement[] = [];
-  for (const part of parts) {
-    // Drop parts whose SQL body (comments/whitespace stripped) is empty — a
-    // trailing `;` or a comment-only tail is not a statement.
-    if (stripCommentsAndStrings(part.text).trim().length === 0) continue;
-    // Report the line of the statement's first NON-blank character (skip the
-    // blank/whitespace run after the previous `;`), so the location points at
-    // real content, not the terminator's trailing newline.
-    const lead = part.text.length - part.text.replace(/^\s+/, '').length;
-    const before = content.slice(0, part.startOffset + lead);
-    const startLine = before.split('\n').length;
-    out.push({ text: part.text.replace(/^\s+/, ''), startLine });
+  let lead: SyqlToken | undefined;
+  let hasSql = false;
+  for (const token of lexSyqlSqlSource(file, content)) {
+    if (token.kind === 'eof' || token.text === ';') {
+      if (lead !== undefined && hasSql) {
+        out.push({
+          text: content.slice(lead.span.start.offset, token.span.start.offset),
+          startLine: lead.span.start.line,
+        });
+      }
+      lead = undefined;
+      hasSql = false;
+    } else if (token.kind !== 'whitespace') {
+      lead ??= token;
+      hasSql ||= !isSyqlTrivia(token);
+    }
   }
   return out;
 }
 
-/** The leading comment block of a statement: the run of blank + line/block
- * comment lines before the first SQL token. `-- name:` / `-- param` markers are
- * scoped HERE (to the statement they directly precede), not file-wide. Returns
- * the `--` comment lines (block comments carry no markers we parse). */
-function leadingCommentBlock(statementText: string): string[] {
-  const lines: string[] = [];
-  let i = 0;
-  while (i < statementText.length) {
-    // Skip leading whitespace on the line.
-    while (
-      i < statementText.length &&
-      /[ \t\r]/.test(statementText[i] as string)
-    ) {
-      i += 1;
-    }
-    const ch = statementText[i];
-    const next = statementText[i + 1];
-    if (ch === '\n') {
-      i += 1;
-      continue;
-    }
-    if (ch === '-' && next === '-') {
-      const end = statementText.indexOf('\n', i);
-      const line = statementText.slice(i, end === -1 ? undefined : end);
-      lines.push(line);
-      i = end === -1 ? statementText.length : end + 1;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const end = statementText.indexOf('*/', i + 2);
-      // Block comments carry no markers we parse; skip and keep scanning for
-      // more leading comments (but they don't contribute -- name:/-- param).
-      i = end === -1 ? statementText.length : end + 2;
-      continue;
-    }
-    break; // first SQL token — the comment block ends here
+/** The `--` comments before a statement's first SQL token. `-- name:` and
+ * `-- param` markers are scoped to the statement they precede. */
+function leadingComments(statementText: string): string[] {
+  const comments: string[] = [];
+  for (const token of lexSyqlSqlSource('query SQL', statementText)) {
+    if (!isSyqlTrivia(token)) break;
+    if (token.kind === 'line-comment') comments.push(token.text);
   }
-  return lines;
+  return comments;
 }
 
-const NAME_MARKER_RE = /^\s*--\s*name:\s*(\S+)\s*$/;
+const NAME_MARKER_RE = /^--\s*name:\s*(\S+)\s*$/;
 
 /** The `-- name:` override in a statement's leading comment block, or null. */
 export function parseStatementName(
   statementText: string,
   location: string,
 ): string | null {
-  const lines = leadingCommentBlock(statementText);
   let found: string | null = null;
-  for (const line of lines) {
-    const m = NAME_MARKER_RE.exec(line);
+  for (const comment of leadingComments(statementText)) {
+    const m = NAME_MARKER_RE.exec(comment);
     if (m === null) continue;
     if (found !== null) {
       throw new TypegenError(
@@ -515,20 +498,13 @@ export function parseStatementName(
   return found;
 }
 
-// -- lightweight SQL scanning -------------------------------------------------
-//
-// We do NOT re-implement SQLite's parser (that is what prepare() is for). We
-// scan the text only for: header `-- param` comments, `:name` placeholders,
-// FROM/JOIN table identifiers, and SELECT-column → source resolution. SQLite
-// remains the authority on correctness.
-
 interface CommentParam {
   readonly name: string;
   readonly type: IrColumnType;
 }
 
 const PARAM_COMMENT_RE =
-  /^\s*--\s*param\s+:([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_]+)\s*$/;
+  /^--\s*param\s+:([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_]+)\s*$/;
 
 const PARAM_TYPES = new Set<string>([
   'string',
@@ -541,14 +517,11 @@ const PARAM_TYPES = new Set<string>([
   'crdt',
 ]);
 
-/** Parse `-- param :name <type>` header lines. They must precede the SQL. */
+/** Parse the `-- param :name <type>` markers of the leading comment block. */
 function parseCommentParams(file: string, raw: string): CommentParam[] {
   const out: CommentParam[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    if (!trimmed.startsWith('--')) break; // first non-comment line ends the header
-    const match = PARAM_COMMENT_RE.exec(line);
+  for (const comment of leadingComments(raw)) {
+    const match = PARAM_COMMENT_RE.exec(comment);
     if (match === null) continue; // an ordinary comment, ignore
     const name = match[1] as string;
     const type = (match[2] as string).toLowerCase();
@@ -563,65 +536,35 @@ function parseCommentParams(file: string, raw: string): CommentParam[] {
   return out;
 }
 
-/** Strip `--` and block comments so identifier scans don't hit commented SQL,
- * and string literals so `':x'` inside a string isn't read as a param. */
+/** Blank comments and string/blob literals with spaces (newlines kept), so
+ * offset-preserving text scans never read inside them. */
 export function stripCommentsAndStrings(sql: string): string {
-  let out = '';
-  let i = 0;
-  while (i < sql.length) {
-    const ch = sql[i] as string;
-    const next = sql[i + 1];
-    if (ch === '-' && next === '-') {
-      const end = sql.indexOf('\n', i);
-      const stop = end === -1 ? sql.length : end;
-      out += ' '.repeat(stop - i);
-      i = stop;
-    } else if (ch === '/' && next === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      const stop = end === -1 ? sql.length : end + 2;
-      out += sql.slice(i, stop).replace(/[^\n]/g, ' ');
-      i = stop;
-    } else if (ch === "'") {
-      let stop = i + 1;
-      while (stop < sql.length) {
-        if (sql[stop] === "'" && sql[stop + 1] === "'") {
-          stop += 2;
-          continue;
-        }
-        if (sql[stop] === "'") {
-          stop += 1;
-          break;
-        }
-        stop += 1;
-      }
-      out += sql.slice(i, stop).replace(/[^\n]/g, ' ');
-      i = stop;
-    } else {
-      out += ch;
-      i += 1;
-    }
-  }
-  return out;
+  return lexSyqlSqlSource('query SQL', sql)
+    .map((token) =>
+      token.kind === 'line-comment' ||
+      token.kind === 'block-comment' ||
+      token.kind === 'string' ||
+      token.kind === 'blob'
+        ? token.text.replace(/[^\n]/g, ' ')
+        : token.text,
+    )
+    .join('');
 }
 
-/** Distinct `:name` placeholders in first-occurrence order (dedup by name,
- * matching SQLite's paramsCount which counts distinct names). */
+/** Distinct `:name` binds in first-occurrence order (SQLite's paramsCount
+ * counts distinct names). */
 function scanParamNames(sql: string): string[] {
-  const cleaned = stripCommentsAndStrings(sql);
-  // `:name` but not `::` (Postgres cast) — our subset never has `::`.
-  const re = /:([A-Za-z_][A-Za-z0-9_]*)/g;
-  const seen: string[] = [];
-  for (const m of cleaned.matchAll(re)) {
-    const name = m[1] as string;
-    if (!seen.includes(name)) seen.push(name);
+  const names: string[] = [];
+  for (const token of lexSyqlSqlSource('query SQL', sql)) {
+    const name = token.text.slice(1);
+    if (token.kind === 'bind' && !names.includes(name)) names.push(name);
   }
-  return seen;
+  return names;
 }
 
-/** Rewrite `:name` → positional placeholders AND strip comments + collapse
- * whitespace, producing a clean single-line SQL string suitable for
- * embedding in a generated string literal. String literals are preserved
- * verbatim (their inner whitespace is not collapsed).
+/** The emitted single-line statement: `:name` binds become positional, every
+ * whitespace/comment run between tokens becomes one space, and every other
+ * token (string literals, quoted identifiers) keeps its exact text.
  *
  * When every param occurs exactly once, plain `?` is emitted. When ANY
  * param repeats (the §7 neutralization guards mention a param in the guard
@@ -629,74 +572,27 @@ function scanParamNames(sql: string): string[] {
  * form — one bound value per DISTINCT param, reuse resolved by SQLite —
  * so the generated bind array stays one-entry-per-param. */
 export function toPositionalSql(sql: string): string {
-  interface ParamToken {
-    readonly param: string;
-  }
-  const tokens: (string | ParamToken)[] = [];
-  let i = 0;
-  while (i < sql.length) {
-    const ch = sql[i] as string;
-    const next = sql[i + 1];
-    if (ch === '-' && next === '-') {
-      const end = sql.indexOf('\n', i);
-      i = end === -1 ? sql.length : end + 1;
-      tokens.push(' ');
-    } else if (ch === '/' && next === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      i = end === -1 ? sql.length : end + 2;
-      tokens.push(' ');
-    } else if (ch === "'") {
-      // Preserve string literals verbatim (including any '' escapes).
-      let j = i + 1;
-      let lit = "'";
-      for (;;) {
-        if (j >= sql.length) break;
-        if (sql[j] === "'") {
-          if (sql[j + 1] === "'") {
-            lit += "''";
-            j += 2;
-          } else {
-            lit += "'";
-            j += 1;
-            break;
-          }
-        } else {
-          lit += sql[j];
-          j += 1;
-        }
-      }
-      tokens.push(lit);
-      i = j;
-    } else if (ch === ':' && next !== undefined && /[A-Za-z_]/.test(next)) {
-      let end = i + 1;
-      while (end < sql.length && /[A-Za-z0-9_]/.test(sql[end] as string)) {
-        end += 1;
-      }
-      tokens.push({ param: sql.slice(i + 1, end) });
-      i = end;
-    } else if (/\s/.test(ch)) {
-      tokens.push(' ');
-      i += 1;
-    } else {
-      tokens.push(ch);
-      i += 1;
-    }
-  }
-  const order: string[] = [];
-  let repeats = false;
+  const tokens = lexSyqlSqlSource('query SQL', sql);
+  const order = scanParamNames(sql);
+  const repeats =
+    tokens.filter((token) => token.kind === 'bind').length > order.length;
+  let out = '';
+  let space = false;
   for (const token of tokens) {
-    if (typeof token === 'string') continue;
-    if (order.includes(token.param)) repeats = true;
-    else order.push(token.param);
+    if (isSyqlTrivia(token) || token.kind === 'eof') {
+      space = out.length > 0;
+      continue;
+    }
+    if (space) out += ' ';
+    space = false;
+    out +=
+      token.kind !== 'bind'
+        ? token.text
+        : repeats
+          ? `?${order.indexOf(token.text.slice(1)) + 1}`
+          : '?';
   }
-  const rendered = tokens
-    .map((token) => {
-      if (typeof token === 'string') return token;
-      return repeats ? `?${order.indexOf(token.param) + 1}` : '?';
-    })
-    .join('');
-  // Collapse runs of the whitespace placeholders; trim.
-  return rendered.replace(/\s+/g, ' ').trim();
+  return out;
 }
 
 // -- FROM/JOIN table resolution ----------------------------------------------
@@ -739,7 +635,10 @@ const RESERVED_ALIAS = new Set([
   'indexed',
   'not',
 ]);
-function sqlIdentifier(token: SyqlToken | undefined): string | undefined {
+/** The name a plain or quoted identifier token spells. */
+export function sqlIdentifier(
+  token: SyqlToken | undefined,
+): string | undefined {
   if (token?.kind === 'identifier') return token.text;
   if (token?.kind !== 'quoted-identifier') return undefined;
   const quote = token.text[0];
@@ -793,9 +692,7 @@ export function scanRelations(
   ir: IrDocument,
   lowered = false,
 ): SqlRelations {
-  const tokens = lexSyqlSqlSource('query SQL', sql).filter(
-    (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
-  );
+  const { tokens, depths, parents, closes } = sqlStructure(sql);
   const known = new Map(
     ir.tables.flatMap((table) => [
       [table.name.toLowerCase(), table.name] as const,
@@ -813,19 +710,6 @@ export function scanRelations(
         )
       : [],
   );
-  const closes = new Map<number, number>();
-  const parents: number[] = [];
-  const depths: number[] = [];
-  const stack: number[] = [];
-  tokens.forEach((token, index) => {
-    if (token.text === ')') {
-      const open = stack.pop();
-      if (open !== undefined) closes.set(open, index);
-    }
-    parents[index] = stack.at(-1) ?? -1;
-    depths[index] = stack.length;
-    if (token.text === '(') stack.push(index);
-  });
   const activeFromDepths = new Set<number>();
   const clauseEnders = new Set([
     'where',
@@ -1062,6 +946,268 @@ export function scanRelations(
   };
 }
 
+// -- scope proofs (SYQL §13) ----------------------------------------------------
+
+/** A declared scope column of one table instance: the instance's SELECT scope
+ * ({@link SqlRelations.scopeAt}), lowercased alias, and lowercased column. */
+export interface ScopeColumn {
+  readonly scope: string;
+  readonly alias: string;
+  readonly column: string;
+}
+
+export interface ScopeProofs {
+  /** `column = :bind`, `:bind = column`, `column IS :bind`, and
+   * `column IN (:a, :b)` conjuncts of a WHERE clause. */
+  readonly binds: readonly (ScopeColumn & {
+    readonly operator: 'equal' | 'in';
+    readonly params: readonly string[];
+  })[];
+  /** Qualified `a.x = b.y` conjuncts. A symmetric equality (a WHERE conjunct
+   * or an inner-join ON conjunct) proves each operand from the other; an
+   * outer-join ON conjunct proves only `target` from `source`. */
+  readonly equalities: readonly {
+    readonly target: ScopeColumn;
+    readonly source: ScopeColumn;
+    readonly symmetric: boolean;
+  }[];
+}
+
+const CLAUSE_WORDS = new Set([
+  'where',
+  'group',
+  'having',
+  'order',
+  'limit',
+  'window',
+  'join',
+  'inner',
+  'left',
+  'right',
+  'full',
+  'cross',
+  'natural',
+]);
+
+/**
+ * The scope-proof rule shared by `.sql` and `.syql` queries (SYQL §13). A
+ * comparison proves a scope only when it is a whole top-level conjunct of
+ * the WHERE clause of the SELECT scope that reads the instance: the outer
+ * statement or a top-level CTE body. Parentheses around a whole conjunct are
+ * transparent. Nothing else is a proof: a WHERE clause with a top-level OR, a
+ * compound SELECT scope, a nested subquery, and any other conjunct shape (NOT,
+ * a comparison of the comparison, a function, CASE, COLLATE, IS after the
+ * bind, a literal in an IN list). Column equalities also come from the
+ * conjuncts of an ON clause without OR, NOT, or a subquery.
+ */
+export function scopeProofs(sql: string, ir: IrDocument): ScopeProofs {
+  const { tokens, depths, closes } = sqlStructure(sql);
+  const relations = scanRelations(sql, ir);
+  const binds: ScopeProofs['binds'][number][] = [];
+  const equalities: ScopeProofs['equalities'][number][] = [];
+  const tableOf = (ref: TableRef) =>
+    ir.tables.find((table) => table.name === ref.table);
+  const scopeColumn = (
+    scope: string,
+    qualifier: string | undefined,
+    column: string,
+  ): ScopeColumn | undefined => {
+    const name = column.toLowerCase();
+    const candidates = relations.tables.filter(
+      (ref) =>
+        relations.scopeAt(ref.start) === scope &&
+        (qualifier === undefined
+          ? tableOf(ref)?.columns.some((c) => c.name.toLowerCase() === name)
+          : ref.alias.toLowerCase() === qualifier.toLowerCase()),
+    );
+    const ref = candidates.length === 1 ? candidates[0] : undefined;
+    const declared =
+      ref === undefined
+        ? undefined
+        : tableOf(ref)?.scopes.find((s) => s.column.toLowerCase() === name);
+    return ref === undefined || declared === undefined
+      ? undefined
+      : { scope, alias: ref.alias.toLowerCase(), column: name };
+  };
+  const columnAt = (index: number) => {
+    const first = sqlIdentifier(tokens[index]);
+    if (first === undefined) return undefined;
+    if (tokens[index + 1]?.text !== '.')
+      return { qualifier: undefined, column: first, next: index + 1 };
+    const column = sqlIdentifier(tokens[index + 2]);
+    return column === undefined
+      ? undefined
+      : { qualifier: first, column, next: index + 3 };
+  };
+  const equal = (index: number) =>
+    tokens[index]?.text === '=' || tokens[index]?.text === '==';
+  const bindAt = (index: number) =>
+    tokens[index]?.kind === 'bind'
+      ? (tokens[index] as SyqlToken).text.slice(1)
+      : undefined;
+  const conjuncts = (from: number, to: number): [number, number][] => {
+    const parts: [number, number][] = [];
+    let start = from;
+    let cases = 0;
+    let between = false;
+    for (let index = from; index < to; index += 1) {
+      if (depths[index] !== depths[from]) continue;
+      const word = lowerWord(tokens[index]);
+      if (word === 'case') cases += 1;
+      else if (word === 'end') cases -= 1;
+      else if (cases > 0) continue;
+      else if (word === 'or') return [];
+      else if (word === 'between') between = true;
+      else if (word === 'and' && between) between = false;
+      else if (word === 'and') {
+        parts.push([start, index]);
+        start = index + 1;
+      }
+    }
+    parts.push([start, to]);
+    return parts.flatMap(([start, end]) =>
+      tokens[start]?.text === '(' &&
+      closes.get(start) === end - 1 &&
+      !['select', 'with', 'values'].includes(lowerWord(tokens[start + 1]) ?? '')
+        ? conjuncts(start + 1, end - 1)
+        : [[start, end]],
+    );
+  };
+  const classify = (
+    scope: string,
+    start: number,
+    end: number,
+    join?: {
+      readonly kind: string | undefined;
+      readonly introduced: ReadonlySet<string>;
+    },
+  ): void => {
+    const reversed = bindAt(start);
+    const left = columnAt(reversed === undefined ? start : start + 2);
+    if (left === undefined) return;
+    if (reversed !== undefined) {
+      const subject = scopeColumn(scope, left.qualifier, left.column);
+      if (
+        join === undefined &&
+        equal(start + 1) &&
+        left.next === end &&
+        subject
+      )
+        binds.push({ ...subject, operator: 'equal', params: [reversed] });
+      return;
+    }
+    const operator = left.next;
+    const bind = bindAt(operator + 1);
+    const list = tokens.slice(operator + 2, end - 1);
+    const right = columnAt(operator + 1);
+    if (
+      join === undefined &&
+      bind !== undefined &&
+      operator + 2 === end &&
+      (equal(operator) || lowerWord(tokens[operator]) === 'is')
+    ) {
+      const subject = scopeColumn(scope, left.qualifier, left.column);
+      if (subject)
+        binds.push({ ...subject, operator: 'equal', params: [bind] });
+    } else if (
+      join === undefined &&
+      lowerWord(tokens[operator]) === 'in' &&
+      closes.get(operator + 1) === end - 1 &&
+      list.length % 2 === 1 &&
+      list.every((token, index) =>
+        index % 2 === 0 ? token.kind === 'bind' : token.text === ',',
+      )
+    ) {
+      const subject = scopeColumn(scope, left.qualifier, left.column);
+      const params = list.flatMap((token) =>
+        token.kind === 'bind' ? [token.text.slice(1)] : [],
+      );
+      if (subject) binds.push({ ...subject, operator: 'in', params });
+    } else if (
+      equal(operator) &&
+      right?.next === end &&
+      left.qualifier !== undefined &&
+      right.qualifier !== undefined
+    ) {
+      const l = scopeColumn(scope, left.qualifier, left.column);
+      const r = scopeColumn(scope, right.qualifier, right.column);
+      if (l === undefined || r === undefined) return;
+      if (join?.kind !== 'left' && join?.kind !== 'right') {
+        equalities.push({ target: l, source: r, symmetric: true });
+        return;
+      }
+      // An outer join's ON constrains matched rows of its null-extended side
+      // only; an equality with both operands on one side proves nothing.
+      if (join.introduced.has(l.alias) === join.introduced.has(r.alias)) return;
+      const [introduced, prior] = join.introduced.has(l.alias)
+        ? [l, r]
+        : [r, l];
+      equalities.push(
+        join.kind === 'left'
+          ? { target: introduced, source: prior, symmetric: false }
+          : { target: prior, source: introduced, symmetric: false },
+      );
+    }
+  };
+  const ranges = [
+    { scope: 'main', from: 0, to: tokens.length },
+    ...relations.cteScopes.map((cte) => ({
+      scope: `cte:${cte.name}`,
+      from: tokens.findIndex((token) => token.span.start.offset >= cte.start),
+      to: tokens.findIndex((token) => token.span.start.offset >= cte.end),
+    })),
+  ];
+  for (const range of ranges) {
+    const own: number[] = [];
+    for (let index = range.from; index < range.to; index += 1) {
+      if (depths[index] === depths[range.from]) own.push(index);
+    }
+    const words = own.map((index) => lowerWord(tokens[index]) ?? '');
+    if (words.some((w) => w === 'union' || w === 'intersect' || w === 'except'))
+      continue;
+    own.forEach((at, position) => {
+      const word = words[position];
+      if (word !== 'where' && word !== 'on') return;
+      let next = position + 1;
+      while (next < words.length && !CLAUSE_WORDS.has(words[next] as string))
+        next += 1;
+      const to = own[next] ?? range.to;
+      if (word === 'where') {
+        for (const [start, end] of conjuncts(at + 1, to))
+          classify(range.scope, start, end);
+        return;
+      }
+      if (
+        tokens
+          .slice(at + 1, to)
+          .some((token) =>
+            ['or', 'not', 'select', 'with'].includes(lowerWord(token) ?? ''),
+          )
+      )
+        return;
+      const join = words.lastIndexOf('join', position);
+      if (join < 0) return;
+      const kind =
+        words[join - 1] === 'outer' ? words[join - 2] : words[join - 1];
+      if (kind === 'full') return;
+      // The relations between JOIN and ON, a parenthesized group included.
+      const introduced = new Set(
+        relations.tables
+          .filter(
+            (ref) =>
+              ref.start >
+                (tokens[own[join] as number] as SyqlToken).span.start.offset &&
+              ref.start < (tokens[at] as SyqlToken).span.start.offset,
+          )
+          .map((ref) => ref.alias.toLowerCase()),
+      );
+      for (const [start, end] of conjuncts(at + 1, to))
+        classify(range.scope, start, end, { kind, introduced });
+    });
+  }
+  return { binds, equalities };
+}
+
 // -- SELECT column → source resolution ---------------------------------------
 //
 // For each result column bun gives us (name + decltype), we resolve its origin
@@ -1224,95 +1370,9 @@ function applicationColumnType(column: IrColumn): IrColumnType {
     : column.type;
 }
 
-function inferParamType(
-  paramName: string,
-  sql: string,
-  refs: readonly TableRef[],
-  ir: IrDocument,
-): IrColumnType | null {
-  const cleaned = stripCommentsAndStrings(sql);
-  const byName = new Map(ir.tables.map((t) => [t.name, t] as const));
-  const lookup = (
-    qualifier: string | undefined,
-    column: string,
-  ): IrColumnType | null => {
-    if (qualifier !== undefined) {
-      const ref = refs.find((r) => r.alias === qualifier);
-      const table = ref && byName.get(ref.table);
-      const resolved = table?.columns.find((c) => c.name === column);
-      return resolved === undefined ? null : applicationColumnType(resolved);
-    }
-    for (const ref of refs) {
-      const table = byName.get(ref.table);
-      const col = table?.columns.find((c) => c.name === column);
-      if (col !== undefined) return applicationColumnType(col);
-    }
-    return null;
-  };
-  // `col = :name`, `col >= :name`, `col <> :name`, `col LIKE :name`, etc.
-  const cmp = new RegExp(
-    `(?:(${IDENT})\\.)?(${IDENT})\\s*(?:=|==|!=|<>|<=|>=|<|>|\\bLIKE\\b|\\bIS\\b)\\s*:${paramName}\\b`,
-    'i',
-  );
-  const cmpM = cmp.exec(cleaned);
-  if (cmpM !== null) {
-    const t = lookup(cmpM[1], cmpM[2] as string);
-    if (t !== null) return t;
-  }
-  // reversed: `:name = col`
-  const rev = new RegExp(
-    `:${paramName}\\b\\s*(?:=|==|!=|<>|<=|>=|<|>)\\s*(?:(${IDENT})\\.)?(${IDENT})`,
-    'i',
-  );
-  const revM = rev.exec(cleaned);
-  if (revM !== null) {
-    const t = lookup(revM[1], revM[2] as string);
-    if (t !== null) return t;
-  }
-  // `col IN (…, :name, …)` — find the nearest `col IN (` before the param.
-  const inRe = new RegExp(
-    `(?:(${IDENT})\\.)?(${IDENT})\\s+IN\\s*\\(([^)]*:${paramName}\\b[^)]*)\\)`,
-    'i',
-  );
-  const inM = inRe.exec(cleaned);
-  if (inM !== null) {
-    const t = lookup(inM[1], inM[2] as string);
-    if (t !== null) return t;
-  }
-  // `col BETWEEN :name AND …` / `col BETWEEN … AND :name` — both endpoints
-  // take the column's type (the §4 from+to group shape).
-  const btwLeft = new RegExp(
-    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+:${paramName}\\b`,
-    'i',
-  );
-  const btwLeftM = btwLeft.exec(cleaned);
-  if (btwLeftM !== null) {
-    const t = lookup(btwLeftM[1], btwLeftM[2] as string);
-    if (t !== null) return t;
-  }
-  const btwRight = new RegExp(
-    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+\\S+\\s+AND\\s+:${paramName}\\b`,
-    'i',
-  );
-  const btwRightM = btwRight.exec(cleaned);
-  if (btwRightM !== null) {
-    const t = lookup(btwRightM[1], btwRightM[2] as string);
-    if (t !== null) return t;
-  }
-  // `… LIKE <expr mentioning :name>` — a LIKE operand is TEXT, even inside
-  // a concatenation (`title like '%' || :q || '%'`, the search-fragment
-  // shape).
-  const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'i');
-  if (like.test(cleaned)) return 'string';
-  const match = new RegExp(`\\bMATCH\\b\\s*:${paramName}\\b`, 'i');
-  if (match.test(cleaned)) return 'string';
-  return null;
-}
-
 /**
- * Return every revision-1 column/LIKE type constraint for one bind. Unlike
- * `inferParamType` (the legacy first-match helper), SYQL uses the complete set
- * so conflicting checked uses cannot be silently accepted.
+ * Every column/LIKE/MATCH type constraint on one bind, in pattern order. A
+ * `.sql` query takes the first; SYQL rejects conflicting evidence.
  */
 export function inferParamTypeEvidence(
   paramName: string,
@@ -1336,15 +1396,17 @@ export function inferParamTypeEvidence(
       if (type !== undefined) evidence.push(type);
       return;
     }
-    const matches = refs.flatMap((ref) => {
-      const table = byName.get(ref.table);
-      const item = table?.columns.find(
-        (candidate) => candidate.name === column,
-      );
-      const type = item === undefined ? undefined : applicationColumnType(item);
-      return type === undefined ? [] : [type];
-    });
-    if (matches.length === 1) evidence.push(matches[0] as IrColumnType);
+    // An unqualified name read by several relations is evidence only when
+    // every candidate column has the same type.
+    const matches = new Set(
+      refs.flatMap((ref) => {
+        const item = byName
+          .get(ref.table)
+          ?.columns.find((candidate) => candidate.name === column);
+        return item === undefined ? [] : [applicationColumnType(item)];
+      }),
+    );
+    if (matches.size === 1) evidence.push(...matches);
   };
 
   const comparison = new RegExp(
@@ -1391,68 +1453,50 @@ export function inferParamTypeEvidence(
 
 // -- fallback column typing (computed expressions) ----------------------------
 
-const AGG_RE = /\b(count|sum|total|avg|min|max)\s*\(/i;
+export const AGGREGATE_FUNCTIONS = new Set([
+  'avg',
+  'count',
+  'group_concat',
+  'max',
+  'min',
+  'sum',
+  'total',
+]);
 
-/** decltype-null column: the documented honest fallback. Aggregates and
- * arithmetic → nullable number; everything else → nullable string. */
-function fallbackColumnType(expr: string): IrColumnType {
-  if (AGG_RE.test(expr) || /[+\-*/]/.test(expr)) return 'float';
-  return 'string';
+/** True when `expr` calls an aggregate outside a subquery. `min`/`max` with
+ * several arguments are scalar functions, and an OVER clause makes a window
+ * function, which aggregates no rows. */
+function callsAggregate(expr: string): boolean {
+  const { tokens, depths, parents, closes } = sqlStructure(expr);
+  return tokens.some((token, index) => {
+    const name = lowerWord(token) ?? '';
+    const close = closes.get(index + 1);
+    if (!AGGREGATE_FUNCTIONS.has(name) || close === undefined) return false;
+    for (let open = parents[index] ?? -1; open >= 0; open = parents[open] ?? -1)
+      if (lowerWord(tokens[open + 1]) === 'select') return false;
+    let after = close + 1;
+    if (lowerWord(tokens[after]) === 'filter')
+      after = (closes.get(after + 1) ?? after) + 1;
+    const scalar =
+      (name === 'min' || name === 'max') &&
+      tokens
+        .slice(index + 2, close)
+        .some(
+          (arg, at) =>
+            arg.text === ',' && depths[index + 2 + at] === depths[index + 2],
+        );
+    return !scalar && lowerWord(tokens[after]) !== 'over';
+  });
 }
 
 function inferReactiveMetadata(
   sql: string,
-  refs: readonly TableRef[],
+  relations: SqlRelations,
   ir: IrDocument,
-  params: readonly QueryParam[],
   columns: readonly QueryColumn[],
 ): QueryReactiveMetadata {
-  const conservative = /\b(?:UNION|EXCEPT|INTERSECT)\b/i.test(
-    stripCommentsAndStrings(sql),
-  );
-  const requiredAt = (index: number): boolean => {
-    const cleaned = stripCommentsAndStrings(sql);
-    const where = /\bWHERE\b/i.exec(cleaned);
-    if (where === null || index < where.index + where[0].length) return false;
-    const matchStack: number[] = [];
-    for (
-      let cursor = where.index + where[0].length;
-      cursor < index;
-      cursor += 1
-    ) {
-      if (cleaned[cursor] === '(') matchStack.push(cursor);
-      else if (cleaned[cursor] === ')') matchStack.pop();
-    }
-    const stack: number[] = [];
-    for (
-      let cursor = where.index + where[0].length;
-      cursor < cleaned.length;
-      cursor += 1
-    ) {
-      const char = cleaned[cursor];
-      if (char === '(') stack.push(cursor);
-      else if (char === ')') stack.pop();
-      const atBoundary =
-        cursor === 0 || !/[A-Za-z0-9_:]/.test(cleaned[cursor - 1] ?? '');
-      if (
-        cursor > index &&
-        atBoundary &&
-        /^(?:GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b/i.test(cleaned.slice(cursor))
-      ) {
-        break;
-      }
-      if (
-        atBoundary &&
-        /^OR\b/i.test(cleaned.slice(cursor)) &&
-        stack.length <= matchStack.length &&
-        stack.every((open, stackIndex) => matchStack[stackIndex] === open)
-      ) {
-        return false;
-      }
-    }
-    return true;
-  };
-  const byParam = new Map(params.map((param) => [param.name, param] as const));
+  const refs = relations.tables;
+  const proofs = scopeProofs(sql, ir).binds;
   const dependencies: Array<{
     table: string;
     scopes: QueryScopeBinding[];
@@ -1469,47 +1513,28 @@ function inferReactiveMetadata(
   ].sort()) {
     const table = ir.tables.find((candidate) => candidate.name === tableName);
     const tableRefs = refs.filter((ref) => ref.table === tableName);
+    const ref = tableRefs.length === 1 ? tableRefs[0] : undefined;
     const scopes: QueryScopeBinding[] = [];
-    if (table !== undefined && tableRefs.length === 1 && !conservative) {
-      const qualifier = tableRefs[0]?.alias;
+    if (table !== undefined && ref !== undefined) {
       for (const scope of table.scopes) {
-        const column = scope.column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const qualified =
-          qualifier === undefined
-            ? `(?<![A-Za-z0-9_.:])(?:${IDENT}\\.)?${column}\\b`
-            : `(?<![A-Za-z0-9_.:])(?:${qualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.)?${column}\\b`;
-        const found: string[] = [];
-        const equality = new RegExp(
-          `${qualified}\\s*(?:=|==|\\bIS\\b)\\s*:(${IDENT})\\b|:(${IDENT})\\b\\s*(?:=|==)\\s*${qualified}`,
-          'gi',
-        );
-        for (const match of sql.matchAll(equality)) {
-          if (!requiredAt(match.index)) continue;
-          const name = match[1] ?? match[2];
-          const param = name === undefined ? undefined : byParam.get(name);
-          if (param !== undefined) {
-            found.push(param.name);
-          }
-        }
-        const inList = new RegExp(`${qualified}\\s+IN\\s*\\(([^)]*)\\)`, 'gi');
-        for (const match of sql.matchAll(inList)) {
-          if (!requiredAt(match.index)) continue;
-          for (const paramMatch of (match[1] ?? '').matchAll(
-            /:([A-Za-z_][A-Za-z0-9_]*)/g,
-          )) {
-            const param = byParam.get(paramMatch[1] as string);
-            if (param !== undefined) {
-              found.push(param.name);
-            }
-          }
-        }
-        const unique = [...new Set(found)];
-        if (unique.length > 0) {
+        const params = [
+          ...new Set(
+            proofs
+              .filter(
+                (proof) =>
+                  proof.scope === relations.scopeAt(ref.start) &&
+                  proof.alias === ref.alias.toLowerCase() &&
+                  proof.column === scope.column.toLowerCase(),
+              )
+              .flatMap((proof) => proof.params),
+          ),
+        ];
+        if (params.length > 0) {
           scopes.push({
             table: tableName,
             variable: scope.variable,
             pattern: scope.pattern,
-            params: unique,
+            params,
           });
         }
       }
@@ -1669,24 +1694,8 @@ export function lowerFtsSourceIds(sql: string, ir: IrDocument): string {
   );
   const relations = scanRelations(sql, ir);
   if (!relations.tables.some((ref) => ftsNames.has(ref.table))) return sql;
-  const tokens = lexSyqlSqlSource('query SQL', sql).filter(
-    (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
-  );
-  const depths: number[] = [];
-  const closes = new Map<number, number>();
-  const stack: number[] = [];
-  tokens.forEach((token, index) => {
-    if (token.text === ')') {
-      const open = stack.pop();
-      if (open !== undefined) closes.set(open, index);
-    }
-    depths[index] = stack.length;
-    if (token.text === '(') stack.push(index);
-  });
-  const lower = (index: number): string | undefined => {
-    const token = tokens[index];
-    return token?.kind === 'identifier' ? token.text.toLowerCase() : undefined;
-  };
+  const { tokens, depths, closes } = sqlStructure(sql);
+  const lower = (index: number) => lowerWord(tokens[index]);
   // Every SELECT scope as an offset range; the outer statement spans all.
   const scopes = [
     { start: -1, end: sql.length + 1 },
@@ -1857,22 +1866,28 @@ export function analyzeStatement(
   }
   // SELECT-only (the read tier). A `WITH` is allowed when its main statement
   // is a SELECT (SQLite also allows WITH … INSERT/UPDATE/DELETE — writes).
-  const firstKeyword = /^\s*([A-Za-z]+)/.exec(
-    stripCommentsAndStrings(statementText).trimStart(),
-  )?.[1];
-  const upperKeyword = firstKeyword?.toUpperCase();
-  if (upperKeyword === 'WITH') {
-    const main = mainVerbAfterWith(stripCommentsAndStrings(statementText));
-    if (main !== 'SELECT') {
+  // CTE bodies sit inside parentheses and a bare keyword cannot name a CTE,
+  // so the first depth-0 verb after `WITH` is the main verb.
+  const statement = sqlStructure(statementText, file);
+  const firstKeyword = lowerWord(statement.tokens[0]);
+  if (firstKeyword === 'with') {
+    const main = statement.tokens.find(
+      (token, index) =>
+        statement.depths[index] === 0 &&
+        ['select', 'values', 'insert', 'update', 'delete', 'replace'].includes(
+          lowerWord(token) ?? '',
+        ),
+    );
+    if (lowerWord(main) !== 'select') {
       throw new TypegenError(
         file,
-        `named queries are SELECT-only (the read tier); this WITH statement's main verb is ${JSON.stringify(main ?? '')}. Writes go through mutate() (SPEC §7.1).`,
+        `named queries are SELECT-only (the read tier); this WITH statement's main verb is ${JSON.stringify(main?.text.toUpperCase() ?? '')}. Writes go through mutate() (SPEC §7.1).`,
       );
     }
-  } else if (upperKeyword !== 'SELECT') {
+  } else if (firstKeyword !== 'select') {
     throw new TypegenError(
       file,
-      `named queries are SELECT-only (the read tier); found ${JSON.stringify(firstKeyword ?? '')}. Writes go through mutate() (SPEC §7.1).`,
+      `named queries are SELECT-only (the read tier); found ${JSON.stringify(statement.tokens[0]?.text ?? '')}. Writes go through mutate() (SPEC §7.1).`,
     );
   }
 
@@ -1979,6 +1994,53 @@ export function analyzeStatement(
       : { ...source, nullableByJoin: source.nullableByJoin || cteRef.nullable };
   };
   const items = splitSelectList(sql);
+  // A bare column of a SELECT that aggregates without GROUP BY reads NULL
+  // when no row matches, and a compound SELECT returns the rows of every
+  // branch, so a column is nullable when any branch can yield NULL there.
+  const outer = sqlStructure(sql);
+  const cuts = outer.tokens.flatMap((token, index) =>
+    outer.depths[index] === 0 &&
+    ['union', 'intersect', 'except'].includes(lowerWord(token) ?? '')
+      ? [token.span]
+      : [],
+  );
+  const branches = [0, ...cuts.map((span) => span.end.offset)].map(
+    (start, index) => {
+      const end = cuts[index]?.start.offset ?? sql.length;
+      const branchItems = splitSelectList(sql.slice(start, end));
+      const grouped = outer.tokens.some(
+        (token, at) =>
+          outer.depths[at] === 0 &&
+          token.span.start.offset >= start &&
+          token.span.start.offset < end &&
+          lowerWord(token) === 'group',
+      );
+      const aggregated =
+        !grouped &&
+        (branchItems?.some((item) => callsAggregate(item.expr)) ?? false);
+      return { start, end, items: branchItems, aggregated };
+    },
+  );
+  const branchNullable = (index: number): boolean =>
+    branches.some((branch, position) => {
+      if (branch.aggregated) return true;
+      if (position === 0) return false;
+      const item = branch.items?.[index];
+      const source =
+        item === undefined
+          ? null
+          : resolveSource(
+              item,
+              scoped.tables.filter(
+                (ref) =>
+                  scoped.scopeAt(ref.start) === 'main' &&
+                  ref.start >= branch.start &&
+                  ref.start < branch.end,
+              ),
+              ir,
+            );
+      return source === null || source.column.nullable || source.nullableByJoin;
+    });
   const columns: QueryColumn[] = described.columnNames.map((colName, index) => {
     const decl = described.declaredTypes[index];
     const item = items?.[index];
@@ -1998,7 +2060,7 @@ export function analyzeStatement(
         name: sqlName,
         langName,
         type: 'integer',
-        nullable: syncVersionNullable,
+        nullable: syncVersionNullable || branchNullable(index),
         fidelity: 'exact',
       };
     }
@@ -2006,27 +2068,58 @@ export function analyzeStatement(
       // Exact: app-facing queries read the decrypted local mirror. Encrypted
       // columns therefore expose their pre-wire declaredType, while the schema
       // IR and mutation codec continue to carry the bytes wire type.
-      const sourceType =
-        source.column.encrypted === true &&
-        source.column.declaredType !== undefined
-          ? source.column.declaredType
-          : source.column.type;
       return {
         name: sqlName,
         langName,
-        type: sourceType,
-        nullable: source.column.nullable || source.nullableByJoin,
+        type: applicationColumnType(source.column),
+        nullable:
+          source.column.nullable ||
+          source.nullableByJoin ||
+          branchNullable(index),
         fidelity: 'exact',
         origin: { table: source.table, column: source.column.name },
       };
     }
-    // Fallback: decltype affinity if present, else the expr-shape fallback.
-    const mapped =
-      decl !== null && decl !== undefined
-        ? DECLTYPE_MAP[decl.toUpperCase()]
+    // Computed column (SYQL §14.1): the type is the decltype SQLite reports,
+    // else the target of a whole-expression CAST, else integer for a
+    // whole-expression count(); anything else is refused.
+    const { tokens, depths, closes } = sqlStructure(item?.expr ?? '');
+    const whole =
+      tokens[1]?.text === '(' && closes.get(1) === tokens.length - 1
+        ? lowerWord(tokens[0])
         : undefined;
+    const asAt = tokens.findLastIndex(
+      (token, at) => depths[at] === 1 && lowerWord(token) === 'as',
+    );
+    const castType = tokens
+      .flatMap((token, at) =>
+        at > asAt && depths[at] === 1 && token.kind === 'identifier'
+          ? [token.text.toUpperCase()]
+          : [],
+      )
+      .join(' ');
     const type =
-      mapped ?? (item !== undefined ? fallbackColumnType(item.expr) : 'string');
+      (decl !== null && decl !== undefined
+        ? DECLTYPE_MAP[decl.toUpperCase()]
+        : undefined) ??
+      // SQLite gives the other mapped names NUMERIC or BLOB affinity, which
+      // can change the value's storage class.
+      (whole === 'cast' &&
+      asAt > 0 &&
+      /^(INTEGER|INT|BIGINT|SMALLINT|TEXT|REAL|FLOAT|DOUBLE|BLOB|BOOLEAN|BOOL)$/.test(
+        castType,
+      )
+        ? DECLTYPE_MAP[castType]
+        : undefined) ??
+      (whole === 'count' ? 'integer' : undefined);
+    if (type === undefined) {
+      throw new TypegenError(
+        file,
+        'computed result column has no declared type; wrap the expression in CAST(... AS <type>)',
+        'typegen.computed_column_type',
+        { query: name, column: sqlName },
+      );
+    }
     return {
       name: sqlName,
       langName,
@@ -2065,8 +2158,8 @@ export function analyzeStatement(
     if (commented !== undefined) {
       return { name: paramName, langName, type: commented, source: 'comment' };
     }
-    const inferred = inferParamType(paramName, sql, refs, ir);
-    if (inferred !== null) {
+    const inferred = inferParamTypeEvidence(paramName, sql, refs, ir)[0];
+    if (inferred !== undefined) {
       return { name: paramName, langName, type: inferred, source: 'inferred' };
     }
     throw new TypegenError(
@@ -2084,21 +2177,43 @@ export function analyzeStatement(
     }
   }
 
-  const reactive = inferReactiveMetadata(sql, refs, ir, params, columns);
+  validateQueryIdentifier(name, naming.targets, file, 'query name');
+  for (const column of columns) {
+    validateQueryIdentifier(
+      column.langName,
+      naming.targets,
+      file,
+      'result column',
+    );
+  }
+  for (const param of params) {
+    if (!internalParams.has(param.name))
+      validateQueryIdentifier(param.langName, naming.targets, file, 'param');
+  }
 
+  const reactive = inferReactiveMetadata(sql, scoped, ir, columns);
+
+  // The emitted statement is what SQLite checks: the positional form, with
+  // FTS source-id lowering applied, must prepare to the same result columns
+  // and take exactly one value per distinct param.
   const physical = lowerFtsSourceIds(sql, ir);
-  if (physical !== sql) {
-    const lowered = analyze(physical);
-    if (
-      lowered.paramsCount !== described.paramsCount ||
-      lowered.columnNames.length !== described.columnNames.length ||
-      lowered.columnNames.some((n, i) => n !== described.columnNames[i])
-    ) {
-      throw new TypegenError(
-        file,
-        `internal: FTS source-id lowering changed the result columns [${described.columnNames.join(', ')}] to [${lowered.columnNames.join(', ')}]`,
-      );
-    }
+  const positionalSql = toPositionalSql(physical);
+  const emitted = analyze(positionalSql);
+  if (
+    emitted.paramsCount !== params.length ||
+    emitted.columnNames.join('\0') !== described.columnNames.join('\0')
+  ) {
+    throw new TypegenError(
+      file,
+      'internal: the emitted positional SQL does not prepare to the analyzed columns and params',
+      'typegen.emitted_sql_mismatch',
+      {
+        columns: described.columnNames,
+        emittedColumns: emitted.columnNames,
+        params: params.length,
+        emittedParams: emitted.paramsCount,
+      },
+    );
   }
 
   return {
@@ -2106,17 +2221,13 @@ export function analyzeStatement(
     file,
     sourceSql,
     sql: physical,
-    positionalSql: toPositionalSql(physical),
-    relations: scanTableRefs(toPositionalSql(physical), ir, true).map(
-      (ref) => ({
-        table: ref.table,
-        start: ref.start,
-        end: ref.end,
-        ...(ref.explicitAlias === undefined
-          ? {}
-          : { alias: ref.explicitAlias }),
-      }),
-    ),
+    positionalSql,
+    relations: scanTableRefs(positionalSql, ir, true).map((ref) => ({
+      table: ref.table,
+      start: ref.start,
+      end: ref.end,
+      ...(ref.explicitAlias === undefined ? {} : { alias: ref.explicitAlias }),
+    })),
     params,
     columns,
     tables,
@@ -2142,7 +2253,7 @@ export function analyzeQueryFile(
   db: QueryDb,
   naming: QueryNamingOptions = DEFAULT_NAMING,
 ): AnalyzedQuery[] {
-  const statements = splitStatements(content);
+  const statements = splitStatements(content, relPath);
   if (statements.length === 0) {
     throw new TypegenError(relPath, 'query file is empty');
   }
@@ -2174,7 +2285,7 @@ export function analyzeQuery(
   db: QueryDb,
   naming: QueryNamingOptions = DEFAULT_NAMING,
 ): AnalyzedQuery {
-  const statements = splitStatements(raw);
+  const statements = splitStatements(raw, file);
   if (statements.length > 1) {
     throw new TypegenError(
       file,

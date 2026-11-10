@@ -73,18 +73,29 @@ the conformance shim and the C-ABI FFI use, so the surface is conformance-locked
 | `syncular_command(command)` | The whole surface in one command. `command` is `{ "method": "...", "params": {...} }` (create, subscribe, mutate, sync, syncUntilIdle, resetClientId, conflicts, presence, setPresence, and more). The reply is `{ "result": ... }` or `{ "error": { "code", "message" } }`. |
 | `syncular_query(sql, params)` | The raw read-only SQL fast path. |
 | `syncular_query_snapshot(sql, params, coverage)` | One IPC read for rows, window completeness, and the exact local revision. |
-| `syncular_snapshot_read(...)` | Several statements plus coverage, subscription progress, and delivery state in one read transaction. |
 | `syncular_set_headers(headers)` | Replaces the native transport's request headers at runtime. |
-| `syncular://event` | Exact revisioned `change` batches plus `presence` and lifecycle events. |
+| `events` channel | Exact revisioned `change` batches plus `presence` and lifecycle events. A `presence` event carries `error` (`presence.too_large` or `presence.forbidden`) when the server refuses this client's publish. The bridge passes a Tauri IPC `Channel` in the `create` params. |
+
+The plugin runs one native client per app. Only the webview whose `create`
+succeeded last receives its events; other webviews receive nothing, including
+webviews granted `core:event:default`. A `create` without an `events` channel
+fails with `sync.invalid_request`. A `create` from a second webview replaces
+the first webview's client and moves ownership to the second webview. The
+plugin refuses every other command from a webview that does not own the client
+with `sync.client_owned_by_another_webview`, and the command never reaches the
+client. A reload keeps the webview's label, so the owner stays the owner. Open
+the client in one webview.
 
 The Rust core originates the table, scope, window, status, and conflict domains.
 The bridge forwards them without counter diffing or a global-invalidation
 fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe SQLite integers use
 `{ "$bigint": "<decimal>" }`.
 
-The generic `syncular_command` entry routes `querySnapshot` and `snapshotRead`
-through the same handlers as their dedicated commands. Both return structured
-read errors with `code`, `retryable`, and `details`. Owned reads report failures
+The `snapshotRead` method of `syncular_command` reads several statements plus
+coverage, subscription progress, and delivery state in one read transaction.
+`syncular_command` routes `querySnapshot` through the same handler as
+`syncular_query_snapshot`. Both reads return structured read errors with
+`code`, `retryable`, and `details`. Owned reads report failures
 and the first clearing success to the mutable owner; repeated successful reads
 add no diagnostics messages to its mailbox. The reader tracks at most 256
 outstanding owners, matching the diagnostic journal.
@@ -198,7 +209,9 @@ commits, and resumes its scheduler when the gate opens. The gate is independent
 of security preflight and encryption keys.
 
 ```ts title="src/session.ts"
-const client = await createTauriAuthoritySyncClient({
+import { createTauriSyncClient } from '@syncular/tauri';
+
+const client = await createTauriSyncClient({
   schema,
   securityPreflight: true,
   transportEnabled: false,

@@ -37,11 +37,23 @@
 //! inbound realtime traffic — the FFI forwards those outputs verbatim as
 //! `change` and `sync-intent` events. `poll_event` drains them. Native hosts do
 //! not infer changes by diffing counters or method names.
+//!
+//! Inbound realtime traffic (a delta, a presence fanout, a socket loss) is
+//! applied only on the command path. When the socket reader buffers such
+//! traffic, the transport's wake callback queues one `realtime-wake` event;
+//! further traffic adds none until a command drains the buffer. The host
+//! answers the event with the `drainRealtime` command.
+//!
+//! ## Threading
+//!
+//! The event queue sits outside the mutex that guards the client, so one pump
+//! thread may block in `poll_event` while another thread issues commands.
+//! Commands are not concurrent: the host serializes them.
 
 use std::collections::VecDeque;
 use std::ffi::{c_char, CStr, CString};
 use std::os::raw::c_longlong;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use serde_json::{json, Value};
 use syncular_client::{ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, SyncClient};
@@ -58,9 +70,17 @@ struct Event {
     json: Value,
 }
 
-/// The opaque handle behind the `void*`. One `SyncClient` instance, its owned
-/// transport, and the exact core-output queue, guarded for cross-thread polling.
+/// The opaque handle behind the `void*`. `poll_event` reads only `queue`;
+/// `command` locks `core`, so a pump thread blocked in `poll_event` never
+/// aliases the state a command mutates.
 pub struct Handle {
+    queue: Arc<EventQueue>,
+    core: Mutex<Core>,
+}
+
+/// One `SyncClient` instance, its owned transport, and the producer side of the
+/// event queue.
+struct Core {
     client: Option<SyncClient>,
     transport: HostTransport,
     effects: CreateEffects,
@@ -69,17 +89,29 @@ pub struct Handle {
     last_diagnostics_snapshot: Option<ClientDiagnosticsSnapshot>,
 }
 
-/// A bounded, blocking event queue: `poll_event` waits up to `timeout_ms` for
-/// the next event. The native WS reader thread and the command path both push.
+/// The blocking event queue: `poll_event` waits up to `timeout_ms` for the
+/// next event. Commands push their outputs; the WS reader thread pushes only
+/// the `realtime-wake` event. Only commands add other events, so an idle host
+/// accumulates at most one wake. Progress events coalesce to the latest.
 pub(crate) struct EventQueue {
-    inner: Mutex<VecDeque<Event>>,
+    inner: Mutex<QueueState>,
     ready: Condvar,
+}
+
+struct QueueState {
+    events: VecDeque<Event>,
+    /// A `realtime-wake` is queued or delivered and no command has drained the
+    /// transport since.
+    wake_pending: bool,
 }
 
 impl EventQueue {
     fn new() -> Self {
         EventQueue {
-            inner: Mutex::new(VecDeque::new()),
+            inner: Mutex::new(QueueState {
+                events: VecDeque::new(),
+                wake_pending: false,
+            }),
             ready: Condvar::new(),
         }
     }
@@ -87,19 +119,43 @@ impl EventQueue {
     fn push(&self, event: Event) {
         let mut guard = self.inner.lock().expect("event queue lock");
         if event.json.get("type").and_then(Value::as_str) == Some("progress") {
-            guard.retain(|queued| {
+            guard.events.retain(|queued| {
                 queued.json.get("type").and_then(Value::as_str) != Some("progress")
             });
         }
-        guard.push_back(event);
+        guard.events.push_back(event);
         self.ready.notify_one();
+    }
+
+    /// The transport buffered inbound realtime traffic: queue one
+    /// `realtime-wake` unless one is already outstanding.
+    fn wake(&self) {
+        let mut guard = self.inner.lock().expect("event queue lock");
+        if guard.wake_pending {
+            return;
+        }
+        guard.wake_pending = true;
+        guard.events.push_back(Event {
+            json: json!({ "type": "realtime-wake" }),
+        });
+        self.ready.notify_one();
+    }
+
+    /// A command is about to drain the transport: retire the outstanding wake.
+    /// Traffic buffered after this call queues a new one.
+    fn clear_wake(&self) {
+        let mut guard = self.inner.lock().expect("event queue lock");
+        guard.wake_pending = false;
+        guard.events.retain(|queued| {
+            queued.json.get("type").and_then(Value::as_str) != Some("realtime-wake")
+        });
     }
 
     /// Pop the next event, waiting up to `timeout_ms` (< 0 = block until one
     /// arrives, 0 = non-blocking). Returns `None` on timeout.
     fn pop(&self, timeout_ms: i64) -> Option<Event> {
         let mut guard = self.inner.lock().expect("event queue lock");
-        if let Some(event) = guard.pop_front() {
+        if let Some(event) = guard.events.pop_front() {
             return Some(event);
         }
         if timeout_ms == 0 {
@@ -108,7 +164,7 @@ impl EventQueue {
         if timeout_ms < 0 {
             loop {
                 guard = self.ready.wait(guard).expect("event queue wait");
-                if let Some(event) = guard.pop_front() {
+                if let Some(event) = guard.events.pop_front() {
                     return Some(event);
                 }
             }
@@ -118,7 +174,7 @@ impl EventQueue {
             .ready
             .wait_timeout(guard, dur)
             .expect("event queue wait_timeout");
-        guard2.pop_front()
+        guard2.events.pop_front()
     }
 }
 
@@ -127,13 +183,38 @@ impl Handle {
     #[cfg(feature = "bench-internals")]
     #[doc(hidden)]
     pub fn benchmark_client(&mut self) -> Option<&mut SyncClient> {
-        self.client.as_mut()
+        self.core
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .client
+            .as_mut()
     }
 
     fn new(config: &Value) -> Result<Self, String> {
-        let queue = Arc::new(EventQueue::new());
-        let transport = HostTransport::from_config(config)?;
+        let core = Core::new(config)?;
         Ok(Handle {
+            queue: core.queue.clone(),
+            core: Mutex::new(core),
+        })
+    }
+
+    fn command(&self, command: &Value) -> Value {
+        self.core
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .command(command)
+    }
+}
+
+impl Core {
+    fn new(config: &Value) -> Result<Self, String> {
+        let queue = Arc::new(EventQueue::new());
+        let wake_queue = queue.clone();
+        let transport = HostTransport::from_config_with_notify(
+            config,
+            Some(Arc::new(move || wake_queue.wake())),
+        )?;
+        Ok(Core {
             client: None,
             transport,
             effects: CreateEffects::default(),
@@ -231,16 +312,15 @@ impl Handle {
         let Some(client) = self.client.as_mut() else {
             return;
         };
+        self.queue.clear_wake();
         for frame in self.transport.take_inbound() {
             match frame {
                 transport::Inbound::Text(text) => {
-                    // A presence fanout is the client-observable event a native
+                    // A presence frame is the client-observable event a native
                     // host wants pushed; detect it on the wire (the core has no
                     // presence callback) before handing the control frame off.
-                    if let Some(scope_key) = presence_scope_key(&text) {
-                        self.queue.push(Event {
-                            json: json!({ "type": "presence", "scopeKey": scope_key }),
-                        });
+                    if let Some(json) = presence_event(&text) {
+                        self.queue.push(Event { json });
                     }
                     client.on_realtime_text(&text);
                 }
@@ -299,18 +379,21 @@ impl Handle {
     }
 }
 
-/// A presence fanout control frame (§8.6.2) — `{"event":"presence",...}`, the
-/// one inbound realtime event a native host surfaces as an event.
-fn presence_scope_key(text: &str) -> Option<String> {
-    serde_json::from_str::<Value>(text).ok().and_then(|v| {
-        if v.get("event").and_then(Value::as_str) != Some("presence") {
-            return None;
-        }
-        v.get("data")?
-            .get("scopeKey")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
+/// A well-formed presence control frame (§8.6.2), the one inbound realtime
+/// event a native host surfaces as an event: a fanout, or the server's refusal
+/// of this client's own publish, which carries the server's `error` code.
+fn presence_event(text: &str) -> Option<Value> {
+    let Ok(ssp2::ControlMessage::Presence {
+        scope_key, error, ..
+    }) = ssp2::parse_control(text)
+    else {
+        return None;
+    };
+    let mut event = json!({ "type": "presence", "scopeKey": scope_key });
+    if let Some(error) = error {
+        event["error"] = Value::from(error);
+    }
+    Some(event)
 }
 
 // -- C-ABI surface (the 5 functions kept exactly in sync with rust/ffi.h) ----
@@ -374,8 +457,9 @@ pub extern "C" fn syncular_client_command(
     if handle.is_null() {
         return std::ptr::null_mut();
     }
-    // Safety: non-null per the contract; we do not free it here.
-    let handle = unsafe { &mut *handle };
+    // Safety: non-null per the contract; we do not free it here. Shared: a
+    // concurrent `poll_event` holds a shared reference too.
+    let handle = unsafe { &*handle };
     let command = match c_str_to_value(command_json) {
         Ok(value) => value,
         Err(message) => {
@@ -424,7 +508,12 @@ pub extern "C" fn syncular_client_close(handle: *mut Handle) {
     }
     // Safety: reclaim the Box; dropping shuts down the transport/socket.
     let mut handle = unsafe { Box::from_raw(handle) };
-    handle.transport.shutdown();
+    handle
+        .core
+        .get_mut()
+        .unwrap_or_else(PoisonError::into_inner)
+        .transport
+        .shutdown();
     drop(handle);
 }
 
@@ -468,6 +557,26 @@ mod progress_event_tests {
         }
         assert_eq!(queue.pop(0).unwrap().json["type"], "change");
         assert_eq!(queue.pop(0).unwrap().json["rows"], 4096);
+        assert!(queue.pop(0).is_none());
+    }
+
+    #[test]
+    fn realtime_wakes_coalesce_until_a_command_drains() {
+        let queue = EventQueue::new();
+        queue.wake();
+        queue.wake();
+        assert_eq!(queue.pop(0).unwrap().json["type"], "realtime-wake");
+        // Delivered but not yet answered: further traffic adds no event.
+        queue.wake();
+        assert!(queue.pop(0).is_none());
+        queue.clear_wake();
+        queue.wake();
+        queue.push(Event {
+            json: json!({"type": "change", "revision": 1}),
+        });
+        // A drain retires a queued wake and keeps every other event.
+        queue.clear_wake();
+        assert_eq!(queue.pop(0).unwrap().json["type"], "change");
         assert!(queue.pop(0).is_none());
     }
 }

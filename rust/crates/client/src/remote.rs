@@ -13,7 +13,7 @@ use ssp2::{decode_message, encode_message};
 
 use crate::api::{Mutation, RejectionDetails};
 use crate::schema::ClientSchema;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportError};
 use crate::values::{
     encode_sparse_row_json, full_row_values, normalize_values_casing, render_row_id_json,
     EncryptionConfig,
@@ -81,6 +81,24 @@ pub struct RemoteClientError {
     /// attached none, as on servers that predate the member. Boxed to keep
     /// `Result<_, RemoteClientError>` small.
     pub details: Option<Box<RejectionDetails>>,
+}
+
+/// A transport failure keeps the server's own `retryable` verdict (the native
+/// transport copies it into `details.retryable`). Without one, a host
+/// transport failure (`transport.*`, `sync.transport_failed`) is retryable
+/// and every other code, a client-local `client.*` refusal included, is not.
+impl From<TransportError> for RemoteClientError {
+    fn from(error: TransportError) -> Self {
+        let retryable = error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("retryable"))
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                error.code.starts_with("transport.") || error.code == "sync.transport_failed"
+            });
+        Self::new(error.code, error.message, retryable)
+    }
 }
 
 impl RemoteClientError {
@@ -288,7 +306,7 @@ impl SyncRemoteClient {
     ) -> Result<RemoteCommitResult, RemoteClientError> {
         let bytes = transport
             .sync(&prepared.bytes)
-            .map_err(|error| RemoteClientError::new(error.code, error.message, true))?;
+            .map_err(RemoteClientError::from)?;
         let response = decode_message(&bytes).map_err(|_| {
             RemoteClientError::invalid_response("remote commit response is not valid SSP2")
         })?;
@@ -378,7 +396,7 @@ impl SyncRemoteClient {
         });
         let response = transport
             .remote_operation(&encode_operation_value(&request)?)
-            .map_err(|error| RemoteClientError::new(error.code, error.message, true))?;
+            .map_err(RemoteClientError::from)?;
         let decoded = decode_operation_value(&response)?;
         validate_operation_revision(&decoded)?;
         if decoded.get("kind").and_then(Value::as_str) == Some("error") {
@@ -435,7 +453,7 @@ impl SyncRemoteClient {
         });
         let response = transport
             .remote_operation(&encode_operation_value(&request)?)
-            .map_err(|error| RemoteClientError::new(error.code, error.message, true))?;
+            .map_err(RemoteClientError::from)?;
         let decoded = decode_operation_value(&response)?;
         validate_operation_revision(&decoded)?;
         if decoded.get("kind").and_then(Value::as_str) == Some("error") {
@@ -774,12 +792,41 @@ mod tests {
     use ssp2::{decode_message, encode_message};
 
     use super::{
-        decode_operation_value, encode_operation_value, RemoteBytes, RemoteCommitInput,
-        SyncRemoteClient,
+        decode_operation_value, encode_operation_value, RemoteBytes, RemoteClientError,
+        RemoteCommitInput, SyncRemoteClient,
     };
     use crate::api::{Mutation, RejectionDetails};
     use crate::schema::{compile_schema, ColumnIr, SchemaIr, ScopePatternIr, TableIr};
     use crate::transport::{SegmentRequest, Transport, TransportError};
+
+    #[test]
+    fn transport_failures_take_retryable_from_details_then_from_the_code() {
+        let classify = |code: &str, details: Option<Value>| {
+            let mut error = TransportError::new(code, "failed");
+            error.details = details;
+            RemoteClientError::from(error).retryable
+        };
+        assert!(classify("transport.timeout", None));
+        assert!(classify(
+            "transport.failed",
+            Some(json!({ "causeKind": "io" }))
+        ));
+        assert!(classify("sync.transport_failed", None));
+        assert!(!classify("client.local_authority_unconfigured", None));
+        assert!(!classify("sync.forbidden", None));
+        assert!(!classify(
+            "sync.rate_limited",
+            Some(json!({ "retryable": false, "causeKind": "status" }))
+        ));
+        assert!(classify(
+            "sync.storage_unavailable",
+            Some(json!({ "retryable": true, "causeKind": "status" }))
+        ));
+        assert!(!classify(
+            "transport.failed",
+            Some(json!({ "retryable": false }))
+        ));
+    }
 
     struct CachedTransport {
         requests: Vec<Vec<u8>>,
@@ -796,8 +843,8 @@ mod tests {
                     Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: Some("epoch-1".to_owned()),
-                        reset_required: Some(false),
+                        log_epoch: "epoch-1".to_owned(),
+                        reset_required: false,
                     },
                     Frame::PushResult {
                         client_commit_id: "job-1".to_owned(),

@@ -528,3 +528,58 @@ test('fanout during a refused mixed push+pull delivers only the durable commit a
     db.close();
   }
 });
+
+test('a pull refused by the serve gate leaves the client record and registrations alone (§4.5)', async () => {
+  const db = new BunSqliteDatabase();
+  const a = new SqliteServerStorage(db);
+  const t = makeContext({ storage: a });
+  try {
+    await a.ensureSchema(SCHEMA);
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    const before = await a.getClientRecord(PARTITION, 'client-1');
+    let notified = 0;
+    let migrated = false;
+    const wrapped = new Proxy(a, {
+      get(target, property) {
+        if (property === 'getMaxCommitSeq') {
+          return async (partition: string) => {
+            if (!migrated) {
+              migrated = true;
+              await new SqliteServerStorage(db).ensureSchema(SCHEMA_V2);
+            }
+            return target.getMaxCommitSeq(partition);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, {
+      storage: wrapped,
+      realtime: {
+        notifyCommit: () => {},
+        notifySubscriptions: () => {
+          notified += 1;
+        },
+      },
+    });
+    await expect(
+      handleSyncRequest(
+        requestBytes([
+          pullHeader(),
+          subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+        ]),
+        t.ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+    expect(migrated).toBe(true);
+    const after = await a.getClientRecord(PARTITION, 'client-1');
+    expect(after?.cursor).toBe(before?.cursor);
+    expect(after?.subscriptions).toEqual([]);
+    expect(notified).toBe(0);
+  } finally {
+    db.close();
+  }
+});

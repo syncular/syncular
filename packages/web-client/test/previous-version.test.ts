@@ -101,6 +101,9 @@ function v2Server(): TestServer {
   return server;
 }
 
+/** A canonical `blob_ref` (§5.9.1); authoring refuses any other text (§7.1). */
+const BLOB_REF = `{"blobId":"sha256:${'0'.repeat(64)}","byteLength":3}`;
+
 const THING_ROW = {
   id: 'r1',
   project_id: 'p1',
@@ -111,7 +114,7 @@ const THING_ROW = {
   j: '{"a":1}',
   by: new Uint8Array([1, 2, 3]),
   cr: new Uint8Array([9, 8]),
-  br: 'blob:xyz',
+  br: BLOB_REF,
   meta: 'm1',
 };
 
@@ -355,7 +358,7 @@ describe('RFC 0005 opt-in capture', () => {
       expect(row.f).toBe(1.5);
       expect(row.b).toBe(true);
       expect(row.j).toBe('{"a":1}');
-      expect(row.br).toBe('blob:xyz');
+      expect(row.br).toBe(BLOB_REF);
       expect([...(row.by as Uint8Array)]).toEqual([1, 2, 3]);
       expect([...(row.cr as Uint8Array)]).toEqual([9, 8]);
       expect('_sync_version' in row).toBe(false);
@@ -376,6 +379,25 @@ describe('RFC 0005 opt-in capture', () => {
       expect(() =>
         bumped.client.previousVersionSnapshot({ table: 'missing' }),
       ).toThrow();
+    } finally {
+      await bumped.client.close();
+      bumped.db.close();
+    }
+  });
+
+  test('capture includes rows with a negative rowid', async () => {
+    const server = v2Server();
+    const path = tempPath('negative-rowid');
+    await seedV1(server, path);
+    const raw = rawDb(path);
+    raw.exec(
+      "INSERT INTO things(rowid,id,project_id,_sync_version) VALUES(-5,'neg','p1',1)",
+    );
+    raw.close();
+    const bumped = await openAt(server, path, V2_SCHEMA, enabled());
+    try {
+      const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
+      expect(snap.rows.map((row) => row.id).sort()).toEqual(['neg', 'r1']);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -588,7 +610,7 @@ describe('RFC 0005 compatibility audit', () => {
             j: '{"a":1}',
             by: { $bytes: '010203' },
             cr: { $bytes: '0908' },
-            br: 'blob:xyz',
+            br: BLOB_REF,
             meta: 'm1',
           },
         },

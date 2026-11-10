@@ -267,6 +267,14 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
         for scope in &table.scopes {
             let variable = parse_pattern_variable(&scope.pattern)?;
             let column = scope.column.clone().unwrap_or_else(|| variable.clone());
+            if !columns.iter().any(|c| {
+                c.name == column && matches!(c.ty, ColumnType::String | ColumnType::Integer)
+            }) {
+                return Err(format!(
+                    "table {:?}: scope column {column:?} must be a string or integer column (§3.1)",
+                    table.name
+                ));
+            }
             let open = scope.pattern.find('{').expect("validated scope pattern");
             let prefix = scope.pattern[..open]
                 .strip_suffix(':')
