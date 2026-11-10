@@ -2861,6 +2861,11 @@ impl SyncClient {
             lease,
             subscriptions: ordered_subscriptions,
             subscriptions_truncated,
+            active_subscriptions: self
+                .subs
+                .iter()
+                .filter(|sub| sub.state == SubState::Active)
+                .count(),
             last_round: self.last_round.clone(),
             last_change: self.last_change.clone(),
             storage: self.diagnostics_storage(),

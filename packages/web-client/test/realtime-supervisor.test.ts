@@ -102,6 +102,7 @@ function diagnostics(
     lease: { state: 'none' },
     subscriptions: [],
     subscriptionsTruncated: false,
+    activeSubscriptions: 0,
     storage: { status: 'healthy' },
     queryFailures: [],
   };

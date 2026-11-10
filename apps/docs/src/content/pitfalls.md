@@ -56,6 +56,10 @@ Measured in one app on a dev API: 223 subscriptions per round for an account wit
 
 Subscribe lazily. Open a unit's subscriptions when its screen or campaign is open, close them when it is not, and leave out tables no screen reads. A [window](/concepts-windowing/) manages one subscription per unit and turns a change of the set into including or omitting ids. **Open:** the protocol has no multi-table subscription, no subset pull, and no registration by reference, so the list stays proportional to tables times open units.
 
+The server accepts at most 500 subscriptions in one request (`maxSubscriptionsPerRequest`). Keep tables with rows times open units under 500. Past 500, every pull of that account fails with `sync.limit_exceeded` (HTTP 413, `details.limit`, `details.max`, `details.actual`), the client does not retry it, and the heaviest accounts stop syncing while lighter ones keep working. Raising the server limit is the last resort; [Request limits](/guide-server/#request-limits) lists what each extra subscription costs.
+
+Check the count before the limit does. `diagnosticsSnapshot().activeSubscriptions` (`active_subscriptions` in the Rust snapshot) is the number of registrations the next pull sends. Assert in the app's own tests that it stays under 500 with every unit of the heaviest fixture account open.
+
 See [SPEC §4.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#41-subscription-identity).
 
 ### Do give each scope unit that can be lost its own subscription

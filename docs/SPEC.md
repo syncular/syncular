@@ -5732,7 +5732,9 @@ with zero rows. An id registered against a different table is `failed` with
 `client.subscription_intent_mismatch`. The request cannot carry scopes or
 scope values. The result prioritizes expected ids, returns at most 256
 subscriptions, and sets `subscriptionsTruncated` when other registrations were
-omitted. Last-change table and window domains are independently capped at 256
+omitted. `activeSubscriptions` counts every registration the next pull sends
+(state `active`), including those omitted from the list; the §1.7
+`maxSubscriptionsPerRequest` limit applies to this count. Last-change table and window domains are independently capped at 256
 and set `domainsTruncated` when clipped.
 
 Diagnostics MUST NOT contain requested/effective scope values, row ids, row

@@ -367,6 +367,8 @@ pub struct ClientDiagnosticsSnapshot {
     pub lease: ClientDiagnosticsLease,
     pub subscriptions: Vec<DiagnosticSubscription>,
     pub subscriptions_truncated: bool,
+    /// Registrations the next pull sends; the server limit counts these.
+    pub active_subscriptions: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_round: Option<DiagnosticLastRound>,
     #[serde(skip_serializing_if = "Option::is_none")]

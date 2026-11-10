@@ -104,6 +104,7 @@ const DIAGNOSTICS = {
   lease: { state: 'none' },
   subscriptions: [],
   subscriptionsTruncated: false,
+  activeSubscriptions: 0,
   storage: { status: 'healthy' },
 } as const;
 

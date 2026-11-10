@@ -12,6 +12,7 @@ import {
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { encodeMessage } from '@syncular/core';
+import { errorBody, handleSyncRequest, SyncError } from '@syncular/server';
 import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
 
 describe('privacy-safe client diagnostics', () => {
@@ -182,6 +183,7 @@ describe('privacy-safe client diagnostics', () => {
           complete: false,
         },
       ],
+      activeSubscriptions: 0,
       storage: { status: 'healthy' },
     });
 
@@ -197,8 +199,11 @@ describe('privacy-safe client diagnostics', () => {
     expect(
       fixture.client.diagnosticsSnapshot({
         expectedSubscriptions: expected,
-      }).subscriptions[0],
-    ).toMatchObject({ state: 'bootstrapping', complete: false, cursor: -1 });
+      }),
+    ).toMatchObject({
+      activeSubscriptions: 1,
+      subscriptions: [{ state: 'bootstrapping', complete: false, cursor: -1 }],
+    });
 
     // A bootstrap with zero matching rows is complete, not missing/unknown.
     await fixture.client.syncUntilIdle();
@@ -462,5 +467,63 @@ describe('privacy-safe client diagnostics', () => {
     expect(snapshot.storage).toEqual({ status: 'unreadable' });
     expect(JSON.stringify(snapshot)).not.toContain('/private/path');
     expect(JSON.stringify(snapshot)).not.toContain('corrupt');
+  });
+
+  test('a subscription-limit refusal reaches the app with its details and is not retried', async () => {
+    const server = makeServer();
+    const ctx = {
+      ...server.ctxFor('actor-1'),
+      limits: { ...server.limits, maxSubscriptionsPerRequest: 1 },
+    };
+    let requests = 0;
+    const fixture = await makeClient(server, {
+      clientId: 'subscription-limit',
+      transport: httpSyncTransport('http://server.invalid/sync', {
+        fetch: Object.assign(
+          async (_url: unknown, init?: RequestInit) => {
+            requests += 1;
+            try {
+              const bytes = new Uint8Array(init?.body as ArrayBuffer);
+              return new Response(
+                (await handleSyncRequest(bytes, ctx)).slice()
+                  .buffer as ArrayBuffer,
+              );
+            } catch (error) {
+              if (!(error instanceof SyncError)) throw error;
+              return Response.json(errorBody(error), {
+                status: error.httpStatus,
+              });
+            }
+          },
+          { preconnect: fetch.preconnect },
+        ),
+      }),
+    });
+    for (const id of ['a', 'b']) {
+      fixture.client.subscribe({
+        id,
+        table: 'tasks',
+        scopes: { project_id: [id] },
+      });
+    }
+    expect(fixture.client.diagnosticsSnapshot().activeSubscriptions).toBe(2);
+    const failure = await fixture.client.syncUntilIdle().catch((e) => e);
+    expect(failure).toBeInstanceOf(ClientSyncError);
+    expect(failure).toMatchObject({
+      code: 'sync.limit_exceeded',
+      retryable: false,
+      details: {
+        limit: 'maxSubscriptionsPerRequest',
+        max: 1,
+        actual: 2,
+        httpStatus: 413,
+      },
+    });
+    expect(requests).toBe(1);
+    expect(fixture.intents.some((i) => i.kind === 'background')).toBe(false);
+    expect(fixture.client.diagnosticsSnapshot().lastRound).toMatchObject({
+      status: 'failed',
+      errorCode: 'sync.limit_exceeded',
+    });
   });
 });

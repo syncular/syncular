@@ -2329,16 +2329,15 @@ export class SyncClient {
     }
     const capturedAtMs = this.#now();
     const leaseState = this.#diagnosticLease(capturedAtMs);
+    const round = this.#lastRound;
     const connectivity = !this.#transportEnabled
       ? 'offline'
-      : this.#lastRound?.status === 'succeeded'
+      : round?.status === 'succeeded'
         ? 'online'
-        : this.#lastRound?.status === 'failed' &&
-            (this.#lastRound.causeKind === 'network' ||
-              this.#lastRound.causeKind === 'connect')
+        : round?.status === 'failed' &&
+            (round.causeKind === 'network' || round.causeKind === 'connect')
           ? 'offline'
-          : this.#lastRound?.status === 'failed' &&
-              this.#lastRound.httpStatus !== undefined
+          : round?.status === 'failed' && round.httpStatus !== undefined
             ? 'online'
             : 'unknown';
     const expectedOrder = new Map(
@@ -2386,6 +2385,8 @@ export class SyncClient {
       ),
       subscriptionsTruncated:
         allSubscriptions.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+      activeSubscriptions: registered.filter((sub) => sub.status === 'active')
+        .length,
       lastRound: this.#lastRound,
       lastChange: this.#lastChange,
       storage: this.#diagnosticStorage(),
