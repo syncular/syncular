@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'Diagnostics report the active subscription count',
+    body: "`diagnosticsSnapshot().activeSubscriptions` reports how many subscriptions the next pull sends, in the TypeScript and Rust clients and through every binding. The server refuses a request with more than `limits.maxSubscriptionsPerRequest` subscriptions (default 500) with `sync.limit_exceeded`, and the client does not retry it. Keep tables with rows times open scope units under that budget, and assert the count in the app's own tests.",
+    links: [
+      {
+        href: '/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front',
+        label: 'Subscription budget',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'The Kotlin binding needs JDK 22 or newer',
     body: 'The Kotlin binding uses the stable `java.lang.foreign` API. It targets JDK 22, and CI builds and tests it on JDK 25. Remove `--enable-preview` from the JVM arguments and `-Xjvm-enable-preview` from the Kotlin compiler arguments. JDK 21 is no longer supported: its preview API names were renamed in JDK 22.',
     links: [
