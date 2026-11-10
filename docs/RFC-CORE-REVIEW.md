@@ -1,6 +1,6 @@
 # RFC: Core review findings and fix program
 
-- Status: in progress; fixes land on branch `core-review`
+- Status: implemented on local branch `core-review` (34 commits, not pushed); N5 and the §3.2 questions wait on the maintainer
 - Date: 2026-11-10
 - Review baseline: `a531dcea` (0.58.0)
 - Scope: `packages/core`, `packages/crypto`, `packages/server`,
@@ -425,6 +425,13 @@ beside each fix; docs and changelog with user-visible changes; no push.
   blobs (`55f9d816`), Rust parity (`a78cb90b`), heartbeat watchdog and
   download caps (`f2c37b9c`). The catalog holds 290 scenarios. Web bundles:
   client 165,007 and worker 185,969 bytes, under the original ceilings.
+- 2026-11-10: final gate green on `9da02bed`: `bun run check` (4,042 tests
+  in the main lane, the multi-tab lane, the downgrade test, runtime
+  verification), the Rust workspace tests, clippy, `cargo fmt`, the Tauri
+  plugin check and the React Native tests. Not run locally: the Kotlin and
+  Flutter binding checks and the browser test lane. Production source
+  against `main`: `server` -559 lines, `web-client` +412, `server-workers`
+  +54, `server-hono` +15, `core` +8.
 
 Follow-ups found while fixing:
 
