@@ -1,11 +1,17 @@
 {
   "irVersion": 1,
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "schemaVersions": [
     {
       "version": 1,
       "migrations": [
         "0001_initial"
+      ]
+    },
+    {
+      "version": 2,
+      "migrations": [
+        "0002_index_todos_list"
       ]
     }
   ],
@@ -55,6 +61,15 @@
           "pattern": "list:{list_id}",
           "variable": "list_id",
           "column": "list_id"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_todos_list",
+          "columns": [
+            "list_id"
+          ],
+          "unique": false
         }
       ],
       "extensions": {}

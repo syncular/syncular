@@ -5,6 +5,11 @@
       "name": "0001_initial",
       "sha256": "122a7aa7d2b08116c46c677c94d7a4cb23231c2958c4f76c7fbe30eef58c5e04",
       "schemaVersion": 1
+    },
+    {
+      "name": "0002_index_todos_list",
+      "sha256": "dfacb4882b46b986f6bb3e218ce80c37f17e89e2f0fe6ea579309476f928eeb7",
+      "schemaVersion": 2
     }
   ],
   "head": {
