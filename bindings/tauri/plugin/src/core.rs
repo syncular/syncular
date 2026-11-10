@@ -4,7 +4,7 @@
 //! it is unit-testable without a window or a mock runtime. The Tauri shell
 //! (see `lib.rs`) is a thin layer that owns one [`SyncularCore`] on a
 //! dedicated thread, forwards mutable commands and raw queries to it, and pumps
-//! drained events onto the `syncular://event` Tauri channel. The shell's
+//! drained events onto the creating webview's IPC channel. The shell's
 //! file-backed atomic snapshot sidecar is intentionally outside this mutable
 //! core and uses a separate read-only SQLite connection.
 //!

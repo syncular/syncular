@@ -24,7 +24,6 @@ describe('@syncular/tauri package contract', () => {
     );
 
     expect(source).toContain("import('@tauri-apps/api/core')");
-    expect(source).toContain("import('@tauri-apps/api/event')");
     expect(source).not.toContain('import(/* @vite-ignore */');
   });
 });

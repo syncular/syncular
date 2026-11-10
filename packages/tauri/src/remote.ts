@@ -13,10 +13,11 @@
  * dedicated `syncular_query` fast path; atomic reactive reads use
  * `syncular_query_snapshot`, backed by an independent read-only SQLite
  * connection so network sync cannot stall local UI reads. Client-observable
- * events arrive on the `syncular://event` Tauri event.
+ * events arrive on the Tauri IPC channel the bridge passes to `create`, so
+ * only this webview receives them.
  *
- * `@tauri-apps/api` is a required peer dependency: the bridge takes
- * `invoke`/`listen` either from its ESM entry points, from the ambient
+ * `@tauri-apps/api` is a required peer dependency: the bridge takes `invoke`
+ * and `Channel` either from `@tauri-apps/api/core`, from the ambient
  * `window.__TAURI__`, or via injected doubles (tests).
  */
 import type {
@@ -51,14 +52,20 @@ export type SnapshotReadResult = SnapshotRead;
 /** The two Tauri primitives the bridge needs — injectable for tests. */
 export interface TauriApi {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
-  listen<T>(
-    event: string,
-    handler: (event: { payload: T }) => void,
-  ): Promise<() => void>;
+  /**
+   * A Tauri IPC channel delivering each message to `onMessage`. Only the
+   * webview that created it receives its messages.
+   */
+  channel<T>(onMessage: (message: T) => void): { toJSON(): string };
 }
 
-/** The plugin's Tauri event name — mirror of `tauri-plugin-syncular`. */
-export const SYNCULAR_EVENT = 'syncular://event';
+interface TauriCore {
+  invoke: TauriApi['invoke'];
+  Channel: new <T>() => {
+    onmessage: (message: T) => void;
+    toJSON(): string;
+  };
+}
 
 const PLUGIN = 'plugin:syncular|';
 
@@ -96,29 +103,24 @@ export class TauriSyncError extends NativeSyncError {
 async function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
   if (injected !== undefined) return injected;
   // Prefer the ambient global (present when `withGlobalTauri` is enabled).
-  const ambient = (
-    globalThis as {
-      __TAURI__?: {
-        core?: { invoke?: TauriApi['invoke'] };
-        event?: { listen?: TauriApi['listen'] };
-      };
-    }
-  ).__TAURI__;
-  if (ambient?.core?.invoke && ambient.event?.listen) {
-    return {
-      invoke: ambient.core.invoke.bind(ambient.core),
-      listen: ambient.event.listen.bind(ambient.event),
-    };
-  }
-  // Fall back to the ESM package (the common path). These must remain literal,
-  // bundler-visible specifiers: hiding a bare package import behind
+  // Otherwise use the ESM package (the common path). The specifier must remain
+  // literal and bundler-visible: hiding a bare package import behind
   // `@vite-ignore` makes WebKit resolve it as a URL at runtime instead of
   // letting Vite/Bun include the Tauri API in the webview bundle.
-  const [core, event] = await Promise.all([
-    import('@tauri-apps/api/core'),
-    import('@tauri-apps/api/event'),
-  ]);
-  return { invoke: core.invoke, listen: event.listen };
+  const ambient = (globalThis as { __TAURI__?: { core?: Partial<TauriCore> } })
+    .__TAURI__?.core;
+  const core: TauriCore =
+    ambient?.invoke !== undefined && ambient.Channel !== undefined
+      ? { invoke: ambient.invoke.bind(ambient), Channel: ambient.Channel }
+      : await import('@tauri-apps/api/core');
+  return {
+    invoke: core.invoke,
+    channel: (onMessage) => {
+      const channel = new core.Channel<Parameters<typeof onMessage>[0]>();
+      channel.onmessage = onMessage;
+      return channel;
+    },
+  };
 }
 
 /** The webview-side proxy implementing `SyncClientLike` over the plugin. */
@@ -129,10 +131,10 @@ export class TauriSyncClient extends NativeBridgeClient {
   /** @internal — use {@link createTauriSyncClient}. */
   constructor(
     tauri: TauriApi,
-    unlisten: () => void,
+    release: () => void,
     securityLifecycle: SecurityLifecycle = 'active',
   ) {
-    super('tauri', TauriSyncError, unlisten, securityLifecycle);
+    super('tauri', TauriSyncError, release, securityLifecycle);
     this.#tauri = tauri;
   }
 
@@ -246,20 +248,24 @@ export async function createTauriSyncClient(
       : {}),
   };
   const tauri = await resolveTauri(config.tauri);
-  // Wire the event stream BEFORE create, so no early change batch is missed.
+  // The create carries the event channel, so no early change batch is missed.
+  // Releasing the bridge drops its reference, which ends dispatch.
   let client: TauriSyncClient | undefined;
-  const unlisten = await tauri.listen<SyncularEvent>(SYNCULAR_EVENT, (event) =>
-    client?.__dispatchEvent(event.payload),
+  const events = tauri.channel<SyncularEvent>((event) =>
+    client?.__dispatchEvent(event),
   );
-  client = createClient(
+  const opened = createClient(
     tauri,
-    unlisten,
+    () => {
+      client = undefined;
+    },
     config.securityPreflight === true ? 'preflight' : 'active',
   );
-  await client.__open(() =>
+  client = opened;
+  await opened.__open(() =>
     tauri.invoke<NativeReply>(`${PLUGIN}syncular_command`, {
-      command: { method: 'create', params },
+      command: { method: 'create', params: { ...params, events } },
     }),
   );
-  return client;
+  return opened;
 }

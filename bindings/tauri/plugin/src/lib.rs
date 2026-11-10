@@ -20,7 +20,8 @@
 //!   read-only SQL); routed through the same `query` command.
 //! - `syncular_query_snapshot(sql, params, coverage)` — atomic reactive reads
 //!   on an independent read-only SQLite connection for file-backed clients.
-//! - `syncular://event` — exact revisioned `change` batches plus ephemeral
+//! - the `events` IPC channel the creating webview passes in `create` — exact
+//!   revisioned `change` batches plus ephemeral
 //!   `presence`; command/realtime sync intents stay inside the event-driven
 //!   owner loop.
 //!
@@ -34,13 +35,15 @@
 //! cannot block local views while the mutable client remains single-owned.
 
 use std::collections::BTreeSet;
+use std::str::FromStr;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use tauri::ipc::{Channel, JavaScriptChannelId};
 use tauri::plugin::{Builder, TauriPlugin};
-use tauri::{Emitter, Manager, RunEvent, Runtime};
+use tauri::{Manager, RunEvent, Runtime};
 
 pub mod core;
 pub mod transport;
@@ -50,9 +53,6 @@ use syncular_client::{
     FileQuerySnapshotReader, QueryReadFailure, WindowBase, WindowCoverage,
     MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
-
-/// The Tauri event name carrying derived client-observable events.
-pub const EVENT_NAME: &str = "syncular://event";
 
 /// Plugin configuration. Passed to [`init`]; every field is optional except a
 /// caller almost always wants a `base_url` (for real network sync) and a
@@ -266,6 +266,9 @@ struct SyncularState {
     reader: Mutex<Option<Sender<ReadRequest>>>,
     config: SyncularConfig,
     security_gate: SecurityGate,
+    /// The IPC channel of the webview whose `create` opened the client. Only
+    /// that webview receives the client's events.
+    events: Arc<Mutex<Option<Channel<Value>>>>,
 }
 
 struct SecurityGateState {
@@ -976,7 +979,8 @@ fn pump_events<F: Fn(&Value)>(core: &mut SyncularCore, emit: &F) {
 #[tauri::command]
 async fn syncular_command<R: Runtime>(
     app: tauri::AppHandle<R>,
-    command: Value,
+    webview: tauri::Webview<R>,
+    mut command: Value,
 ) -> Result<Value, String> {
     let method = command
         .get("method")
@@ -1038,9 +1042,27 @@ async fn syncular_command<R: Runtime>(
     } else {
         None
     };
-    let mut command = command;
     let mut database = None;
+    let mut events = None;
     if method == "create" {
+        // An app-wide emit reaches every webview allowed to `listen`, so the
+        // events travel on the creating webview's own IPC channel.
+        let channel = command
+            .get_mut("params")
+            .and_then(Value::as_object_mut)
+            .and_then(|params| params.remove("events"));
+        match channel
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(JavaScriptChannelId::from_str)
+        {
+            Some(Ok(id)) => events = Some(id.channel_on(webview)),
+            _ => {
+                return Ok(invalid_request(
+                    "sync.invalid_request: create requires an events channel",
+                ))
+            }
+        }
         if let Some(reads) = command.pointer("/params/authorityReads") {
             let declarations: Vec<syncular_client::AuthorityReadDeclaration> =
                 match serde_json::from_value(reads.clone()) {
@@ -1086,6 +1108,17 @@ async fn syncular_command<R: Runtime>(
             .pointer("/params/securityPreflight")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+    // Installed before the create runs, so its first events reach the channel.
+    let previous_events = match events {
+        Some(channel) => Some(
+            state
+                .events
+                .lock()
+                .map_err(|_| "syncular event channel poisoned".to_owned())?
+                .replace(channel),
+        ),
+        None => None,
+    };
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     state.send(Request::Command {
         command,
@@ -1095,6 +1128,13 @@ async fn syncular_command<R: Runtime>(
         .recv()
         .map_err(|_| "the syncular core dropped the reply".to_owned())?;
     let succeeded = reply.get("error").is_none();
+    // A refused create leaves the previous client, and its webview, in place.
+    if let (false, Some(previous)) = (succeeded, previous_events) {
+        *state
+            .events
+            .lock()
+            .map_err(|_| "syncular event channel poisoned".to_owned())? = previous;
+    }
     if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
         let next = match database.filter(|path| path.as_str() != ":memory:") {
             Some(path) => Some(spawn_reader(
@@ -1386,8 +1426,8 @@ async fn syncular_snapshot_read<R: Runtime>(
 ///
 /// The owning thread is spawned in `setup`; it builds the core (native
 /// transport if `base_url` + the `native-transport` feature), pumps events onto
-/// [`EVENT_NAME`], and runs the §8.4 host loop. The mailbox `Sender` is managed
-/// as plugin state and torn down on `RunEvent::Exit`.
+/// the creating webview's `events` channel, and runs the §8.4 host loop. The
+/// mailbox `Sender` is managed as plugin state and torn down on `RunEvent::Exit`.
 pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
     Builder::<R>::new("syncular")
         .invoke_handler(tauri::generate_handler![
@@ -1398,6 +1438,8 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
         ])
         .setup(move |app, _api| {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
+            let events = Arc::new(Mutex::new(None::<Channel<Value>>));
+            let emit_events = Arc::clone(&events);
             app.manage(SyncularState {
                 sender: Mutex::new(tx.clone()),
                 reader: Mutex::new(None),
@@ -1405,12 +1447,14 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
                 // Fail closed until the first successful `create` declares
                 // whether this process starts active or in preflight.
                 security_gate: SecurityGate::new_preflight(),
+                events,
             });
-            let app_handle = app.clone();
             let emit = move |value: &Value| {
                 // Best-effort: a webview that has gone away must not crash the
-                // owning thread. Emit to all windows on the syncular channel.
-                let _ = app_handle.emit(EVENT_NAME, value.clone());
+                // owning thread.
+                if let Some(channel) = emit_events.lock().ok().and_then(|slot| slot.clone()) {
+                    let _ = channel.send(value.clone());
+                }
             };
             std::thread::Builder::new()
                 .name("syncular-core".to_owned())
@@ -1434,6 +1478,29 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run one `syncular_command` from the mock `main` webview. A `create`
+    /// carries that webview's events channel unless the test sets `events`.
+    fn run_command(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        mut command: Value,
+    ) -> Result<Value, String> {
+        if command["method"] == "create" {
+            if let Some(params) = command.get_mut("params").and_then(Value::as_object_mut) {
+                params
+                    .entry("events")
+                    .or_insert_with(|| json!("__CHANNEL__:1"));
+            }
+        }
+        let window = match app.get_webview_window("main") {
+            Some(window) => window,
+            None => tauri::WebviewWindowBuilder::new(app, "main", Default::default())
+                .build()
+                .expect("mock webview"),
+        };
+        let webview = window.as_ref().clone();
+        tauri::async_runtime::block_on(syncular_command(app.clone(), webview, command))
+    }
 
     #[test]
     fn config_to_transport_json_shapes_fields() {
@@ -1473,10 +1540,10 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build mock app");
-        let created = tauri::async_runtime::block_on(syncular_command(
-            app.handle().clone(),
+        let created = run_command(
+            app.handle(),
             json!({ "method": "create", "params": { "schema": { "version": 1, "tables": [] } } }),
-        ))
+        )
         .expect("a structured create reply, not an IPC rejection");
         assert_eq!(
             created["error"]["code"], "sync.invalid_request",
@@ -1562,8 +1629,8 @@ mod tests {
             Value::from("client.security_preflight_required")
         );
 
-        let created = tauri::async_runtime::block_on(syncular_command(
-            app.handle().clone(),
+        let created = run_command(
+            app.handle(),
             json!({
                 "method": "create",
                 "params": {
@@ -1571,7 +1638,7 @@ mod tests {
                     "schema": { "version": 1, "tables": [] }
                 }
             }),
-        ))
+        )
         .expect("create reply");
         assert!(created.get("error").is_none(), "{created}");
 
@@ -1595,15 +1662,12 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("build mock app");
         let command = |method: &str| {
-            tauri::async_runtime::block_on(syncular_command(
-                app.handle().clone(),
-                json!({ "method": method, "params": {} }),
-            ))
-            .expect("command reply")
+            run_command(app.handle(), json!({ "method": method, "params": {} }))
+                .expect("command reply")
         };
 
-        let created = tauri::async_runtime::block_on(syncular_command(
-            app.handle().clone(),
+        let created = run_command(
+            app.handle(),
             json!({
                 "method": "create",
                 "params": {
@@ -1611,7 +1675,7 @@ mod tests {
                     "schema": { "version": 1, "tables": [] }
                 }
             }),
-        ))
+        )
         .expect("create reply");
         assert!(created.get("error").is_none(), "{created}");
 
@@ -1637,10 +1701,7 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build mock app");
-        let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
-                .expect("command reply")
-        };
+        let command = |value: Value| run_command(app.handle(), value).expect("command reply");
 
         let created = command(json!({
             "method": "create",
@@ -1719,10 +1780,7 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("mock app");
         let handle = app.handle().clone();
-        let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(handle.clone(), value))
-                .expect("IPC reply")
-        };
+        let command = |value: Value| run_command(&handle, value).expect("IPC reply");
         let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
             {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "role", "type": "string", "nullable": false}, {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
         ]}]});
@@ -1950,10 +2008,7 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build mock app");
-        let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
-                .expect("command reply")
-        };
+        let command = |value: Value| run_command(app.handle(), value).expect("command reply");
         let snapshot = |sql: &str| {
             tauri::async_runtime::block_on(syncular_query_snapshot(
                 app.handle().clone(),
@@ -2050,6 +2105,50 @@ mod tests {
         );
         assert_eq!(entry.base.params.as_deref(), Some("opaque"));
         assert_eq!(entry.units, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    /// Sync events reach only the webview that created the client. An app-wide
+    /// emit reaches every webview's default `listen`, including windows the
+    /// app never granted `syncular:default`.
+    #[test]
+    fn events_never_broadcast_app_wide() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let broadcast = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&broadcast);
+        app.listen_any("syncular://event", move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        let call = |command: Value| run_command(app.handle(), command).unwrap();
+        let schema = json!({ "version": 1, "tables": [{
+            "name": "todo", "primaryKey": "id",
+            "columns": [{ "name": "id", "type": "string", "nullable": false }],
+            "scopes": []
+        }] });
+        let refused = call(json!({ "method": "create", "params": {
+            "schema": schema, "events": null
+        } }));
+        assert_eq!(
+            refused["error"]["code"], "sync.invalid_request",
+            "{refused}"
+        );
+        let created = call(json!({ "method": "create", "params": { "schema": schema } }));
+        assert!(created.get("error").is_none(), "{created}");
+        call(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "t1" }
+        }] } }));
+        // The owner pumps a command's events before it serves the next one.
+        call(json!({ "method": "localRevision", "params": {} }));
+        assert_eq!(broadcast.load(Ordering::SeqCst), 0);
     }
 
     /// The owner-thread mailbox loop end-to-end, without any Tauri window: post
@@ -3070,10 +3169,7 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build file app");
-        let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(file_app.handle().clone(), value))
-                .expect("command reply")
-        };
+        let command = |value: Value| run_command(file_app.handle(), value).expect("command reply");
         let read = |statements: Value, owner: Option<Value>| {
             tauri::async_runtime::block_on(syncular_snapshot_read(
                 file_app.handle().clone(),
@@ -3185,10 +3281,8 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build memory app");
-        let memory_command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(memory_app.handle().clone(), value))
-                .expect("command reply")
-        };
+        let memory_command =
+            |value: Value| run_command(memory_app.handle(), value).expect("command reply");
         let memory_read = |statements: Value| {
             tauri::async_runtime::block_on(syncular_snapshot_read(
                 memory_app.handle().clone(),
@@ -3265,10 +3359,7 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build file app");
-        let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
-                .expect("command reply")
-        };
+        let command = |value: Value| run_command(app.handle(), value).expect("command reply");
         let dedicated_snapshot = |sql: &str, owner: Option<Value>| {
             tauri::async_runtime::block_on(syncular_query_snapshot(
                 app.handle().clone(),
@@ -3598,10 +3689,7 @@ mod tests {
             }))
             .build(mock_context(noop_assets()))
             .expect("build file app");
-        let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
-                .expect("command reply")
-        };
+        let command = |value: Value| run_command(app.handle(), value).expect("command reply");
         let read = |statements: Value, owner: Value| {
             tauri::async_runtime::block_on(syncular_snapshot_read(
                 app.handle().clone(),

@@ -38,7 +38,7 @@ test('ordinary native bridge excludes the authority method; explicit bridge pres
             : {},
       } as T;
     },
-    listen: async () => () => {},
+    channel: () => ({ toJSON: () => '__CHANNEL__:1' }),
   };
   const ordinary = await createTauriSyncClient({ schema: {}, tauri });
   expect('authoritySnapshot' in ordinary).toBe(false);

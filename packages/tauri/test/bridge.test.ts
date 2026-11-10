@@ -1,5 +1,5 @@
 /**
- * Bridge unit tests with injected invoke/listen doubles: assert the
+ * Bridge unit tests with injected invoke/channel doubles: assert the
  * `SyncClientLike` contract — method → command mapping, the query fast path,
  * exact change fanout, presence, and lossless parameter envelopes.
  * Plus a shape-parity test against the React `SyncClientLike` contract, so a drift in
@@ -24,7 +24,7 @@ import {
 } from '../src/index';
 import { createTauriSyncClient as createRemoteTauriSyncClient } from '../src/remote';
 
-/** A recording invoke/listen double. Commands answer from a scripted table. */
+/** A recording invoke/channel double. Commands answer from a scripted table. */
 function makeTauri(
   responder: (cmd: string, args: Record<string, unknown>) => unknown,
 ): {
@@ -33,23 +33,19 @@ function makeTauri(
   emit: (payload: unknown) => void;
 } {
   const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
-  const handlers = new Set<(event: { payload: unknown }) => void>();
+  const handlers = new Set<(message: unknown) => void>();
   const tauri: TauriApi = {
     invoke: async <T>(cmd: string, args?: Record<string, unknown>) => {
       calls.push({ cmd, args: args ?? {} });
       return responder(cmd, args ?? {}) as T;
     },
-    listen: async <T>(
-      _event: string,
-      handler: (event: { payload: T }) => void,
-    ) => {
-      handlers.add(handler as (event: { payload: unknown }) => void);
-      return () =>
-        handlers.delete(handler as (event: { payload: unknown }) => void);
+    channel: <T>(onMessage: (message: T) => void) => {
+      handlers.add(onMessage as (message: unknown) => void);
+      return { toJSON: () => '__CHANNEL__:1' };
     },
   };
   const emit = (payload: unknown) => {
-    for (const h of handlers) h({ payload });
+    for (const h of handlers) h(payload);
   };
   return { tauri, calls, emit };
 }
@@ -250,6 +246,20 @@ describe('createTauriSyncClient', () => {
       if (previousRegistry === undefined) delete host.__SYNCULAR__;
       else host.__SYNCULAR__ = previousRegistry;
     }
+  });
+
+  test('create carries the webview event channel, and close ends dispatch', async () => {
+    const { client, calls, emit } = await build();
+    const create = calls[0]?.args.command as {
+      params: { events?: { toJSON(): string } };
+    };
+    expect(create.params.events?.toJSON()).toBe('__CHANNEL__:1');
+    const seen: string[] = [];
+    client.onPresence((scopeKey) => seen.push(scopeKey));
+    emit({ type: 'presence', scopeKey: 'room:1' });
+    await client.close();
+    emit({ type: 'presence', scopeKey: 'room:2' });
+    expect(seen).toEqual(['room:1']);
   });
 
   test('forwards retained failure policy and mixed sparse aggregate unchanged', async () => {
@@ -556,6 +566,32 @@ describe('createTauriSyncClient', () => {
       code: SECURITY_PREFLIGHT_REQUIRED_CODE,
     });
     await barrier;
+    await client.close();
+  });
+
+  test('a failed beginSecurityPreflight stays gated and activation reopens it', async () => {
+    // The native core seals the gate in memory before it persists the
+    // pending marker, so a failed begin leaves native in preflight too.
+    const { tauri } = makeTauri((cmd, args) =>
+      (args.command as { method?: string } | undefined)?.method ===
+      'beginSecurityPreflight'
+        ? { error: { code: 'sync.storage', message: 'disk full' } }
+        : defaultResponder(cmd, args),
+    );
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    await expect(client.beginSecurityPreflight()).rejects.toMatchObject({
+      code: 'sync.storage',
+    });
+    expect(await client.securityLifecycle()).toBe('preflight');
+    await expect(client.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await client.activateSecurity();
+    expect(await client.securityLifecycle()).toBe('active');
+    expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
     await client.close();
   });
 
@@ -1996,7 +2032,7 @@ test('conflicts decode server row bytes and drop reserved columns', async () => 
   await client.close();
 });
 
-test('a rejected create releases the event listener and rejects with a typed error', async () => {
+test('a rejected create rejects with a typed error', async () => {
   for (const [create, expected] of [
     [
       () => Promise.reject('the syncular core thread has stopped'),
@@ -2013,15 +2049,9 @@ test('a rejected create releases the event listener and rejects with a typed err
       { code: 'sync.invalid_request' },
     ],
   ] as const) {
-    let listening = 0;
     const tauri: TauriApi = {
       invoke: <T>() => create() as Promise<T>,
-      listen: async () => {
-        listening += 1;
-        return () => {
-          listening -= 1;
-        };
-      },
+      channel: () => ({ toJSON: () => '__CHANNEL__:1' }),
     };
     const failure = await createTauriSyncClient({ schema: {}, tauri }).then(
       () => undefined,
@@ -2029,6 +2059,5 @@ test('a rejected create releases the event listener and rejects with a typed err
     );
     expect(failure).toBeInstanceOf(TauriSyncError);
     expect(failure).toMatchObject(expected);
-    expect(listening).toBe(0);
   }
 });

@@ -156,7 +156,7 @@ client id and stores it in that database; later opens restore it. An explicit
 `clientId` can initialize a new database. A different id for an existing
 database fails with `client.identity_mismatch`. The bridge resolves
 `@tauri-apps/api` automatically, or the ambient `window.__TAURI__` when
-`withGlobalTauri` is enabled; tests inject `invoke` and `listen` doubles.
+`withGlobalTauri` is enabled; tests inject `invoke` and `channel` doubles.
 
 ::checkpoint[The console prints the server's rows for `groceries`. Restart the app: the rows appear again without a round trip.]
 ::::
