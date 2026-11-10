@@ -554,11 +554,32 @@ fn a_tombstone_beats_an_unversioned_upsert_and_an_insert_recreates() {
         client.push(&mut authority, "d", vec![recreate]).0,
         PushStatus::Applied
     );
+    // §6.2: the recreate starts above the deleted version, so a baseVersion
+    // held from the previous incarnation conflicts.
     assert_eq!(
         stored(&authority, "tasks", "t1").map(|(version, _)| version),
-        Some(1)
+        Some(2)
     );
-    assert!(!store::has_tombstone(&authority.conn, "tasks", "t1").unwrap());
+    assert!(store::tombstone(&authority.conn, "tasks", "t1")
+        .unwrap()
+        .is_none());
+    let stale = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some("o1"), None, Some("stale"), None],
+        Some(1),
+    );
+    let (_, results, _) = client.push(&mut authority, "stale", vec![stale]);
+    assert!(
+        matches!(
+            &results[0],
+            OpResult::Conflict {
+                server_version: 2,
+                ..
+            }
+        ),
+        "{results:?}"
+    );
     // Deleting an absent row is applied with no change.
     assert_eq!(
         client
@@ -715,7 +736,53 @@ fn declared_references_cascade_set_null_and_restrict() {
         (changes[0].op, changes[0].row_version),
         (Op::Upsert, Some(2))
     );
-    assert!(store::has_tombstone(&authority.conn, "tasks", "t1").unwrap());
+    assert!(store::tombstone(&authority.conn, "tasks", "t1")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn a_tombstone_from_before_recorded_versions_recreates_at_one() {
+    let path = temp_path();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sync_tombstones(tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+               commit_seq INTEGER NOT NULL, PRIMARY KEY (tbl, row_id));
+             INSERT INTO sync_tombstones VALUES ('tasks', 't1', 1);",
+        )
+        .unwrap();
+    }
+    let mut authority = LocalAuthority::open(&path, &schema_json(1)).expect("open");
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    assert_eq!(
+        store::tombstone(&authority.conn, "tasks", "t1").unwrap(),
+        Some(None)
+    );
+    let (_, results, _) = client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    assert_eq!(error_code(&results), (0, "sync.row_deleted".to_owned()));
+    let recreate = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some("o1"), None, Some("again"), None],
+        Some(0),
+    );
+    assert_eq!(
+        client.push(&mut authority, "b", vec![recreate]).0,
+        PushStatus::Applied
+    );
+    assert_eq!(
+        stored(&authority, "tasks", "t1").map(|(version, _)| version),
+        Some(1)
+    );
+    client.push(&mut authority, "c", vec![delete("tasks", "t1")]);
+    assert_eq!(
+        store::tombstone(&authority.conn, "tasks", "t1").unwrap(),
+        Some(Some(1))
+    );
+    drop(authority);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -1002,7 +1069,9 @@ fn a_cursor_behind_the_horizon_resets() {
     .unwrap();
     assert_eq!(horizon, 3);
     assert!(
-        store::has_tombstone(&authority.conn, "tasks", "t1").unwrap(),
+        store::tombstone(&authority.conn, "tasks", "t1")
+            .unwrap()
+            .is_some(),
         "seq 4 survives"
     );
     let frames = client.pull(&mut authority, vec![subscription("tasks", 1, None)], 0, 0);
@@ -1597,7 +1666,9 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
         1,
         "only the remote's own row remains"
     );
-    assert!(store::has_tombstone(&remote.conn, "tasks", "t0000").unwrap());
+    assert!(store::tombstone(&remote.conn, "tasks", "t0000")
+        .unwrap()
+        .is_some());
     assert_eq!(local.state(), AuthorityState::Local);
     assert_eq!(count(&local, "tasks"), 501);
 }
@@ -1696,8 +1767,8 @@ fn a_lost_undo_response_blocks_attach_until_a_retried_abandon_completes() {
     assert_eq!(local.state(), AuthorityState::Attached);
     assert_eq!(
         stored(&remote, "tasks", "t1").map(|(version, _)| version),
-        Some(1),
-        "the remote holds the row once the fresh attach completes"
+        Some(2),
+        "the fresh attach recreates the row above the undo's tombstone"
     );
 }
 

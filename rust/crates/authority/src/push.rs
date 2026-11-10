@@ -312,7 +312,7 @@ fn apply_operation(
             table: table.name.clone(),
             row_id: op.row_id.clone(),
             upsert: false,
-            row_version: None,
+            row_version: Some(stored.version),
             scopes: stored.scopes,
             payload: None,
         };
@@ -477,19 +477,22 @@ fn apply_operation(
             "insert missing scope column value (§3.4)",
         )
     };
-    if op.base_version.is_none() {
-        // §6.2: a payload that presents every scope column is authorized
-        // before the tombstone read, so the answer never discloses a deletion.
-        if scopes.is_none() && table.scopes.iter().all(|scope| present[scope.column]) {
-            return Err(insert_denied());
-        }
-        if store::has_tombstone(conn, &table.name, &op.row_id)? {
-            return Err(error(
-                op_index,
-                "sync.row_deleted",
-                "a deleted row rejects an unversioned upsert within the retention horizon (§5.2)",
-            ));
-        }
+    // §6.2: a payload that presents every scope column is authorized before
+    // the tombstone read, so the answer never discloses a deletion. Every
+    // scope value is granted, so every actor passes the tombstone's scopes.
+    if op.base_version.is_none()
+        && scopes.is_none()
+        && table.scopes.iter().all(|scope| present[scope.column])
+    {
+        return Err(insert_denied());
+    }
+    let tombstone = store::tombstone(conn, &table.name, &op.row_id)?;
+    if op.base_version.is_none() && tombstone.is_some() {
+        return Err(error(
+            op_index,
+            "sync.row_deleted",
+            "a deleted row rejects an unversioned upsert within the retention horizon (§5.2)",
+        ));
     }
     if present.iter().any(|p| !p) {
         return Err(error(
@@ -504,12 +507,15 @@ fn apply_operation(
     merge_crdt(table, &mut values, None, &present, op_index)?;
     let payload = store::encode_payload(&table.columns, &values);
     check_blobs(table, &values, op_index)?;
-    if op.base_version.is_some() {
+    // §6.2: a recreate starts above the deleted row's version; without
+    // column versions every column sits at that version.
+    if tombstone.is_some() {
         store::clear_tombstone(conn, &table.name, &op.row_id)?;
     }
+    let version = tombstone.flatten().unwrap_or(0) + 1;
     let row = StoredRow {
         row_id: op.row_id.clone(),
-        version: 1,
+        version,
         scopes: scopes.clone(),
         payload: payload.clone(),
         column_versions: None,
@@ -519,7 +525,7 @@ fn apply_operation(
         table: table.name.clone(),
         row_id: op.row_id.clone(),
         upsert: true,
-        row_version: Some(1),
+        row_version: Some(version),
         scopes,
         payload: Some(payload),
     };
@@ -679,7 +685,7 @@ fn enforce_references(
                             table: child.name.clone(),
                             row_id: row.row_id.clone(),
                             upsert: false,
-                            row_version: None,
+                            row_version: Some(row.version),
                             scopes: row.scopes,
                             payload: None,
                         });

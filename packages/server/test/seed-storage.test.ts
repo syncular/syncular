@@ -262,7 +262,7 @@ describe('a commit above the PostgreSQL bind-parameter limit', () => {
       const tx = await storage.begin(partition);
       const tombstones: Record<string, number | undefined> = {};
       for (const id of deleted)
-        tombstones[id] = await tx.getTombstoneSeq('tasks', id);
+        tombstones[id] = (await tx.getTombstone('tasks', id))?.commitSeq;
       const sample = await tx.getRow('tasks', 'bulk-071999');
       await tx.rollback();
       return { ms, maxSeq, windows, tombstones, sample };

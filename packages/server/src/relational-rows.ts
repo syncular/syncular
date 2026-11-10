@@ -850,7 +850,7 @@ export function prefetchRowsBatchSql(
   const projection = tables
     .map((table) => {
       const quoted = quoteIdent(table.name);
-      return `SELECT ids.tbl AS tbl, ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq
+      return `SELECT ids.tbl AS tbl, ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq, t.server_version AS tombstone_version, t.scopes AS tombstone_scopes
        FROM ids
        LEFT JOIN ${quoted} r
          ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${params.partition} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=ids.id

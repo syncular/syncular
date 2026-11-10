@@ -88,6 +88,7 @@ import type {
   StoredPushResult,
   StoredReaction,
   StoredRow,
+  Tombstone,
 } from './storage';
 import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
 
@@ -197,7 +198,7 @@ CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
   ON sync_blob_refs(partition, blob_id);
 CREATE TABLE IF NOT EXISTS sync_tombstones(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
-  commit_seq INTEGER NOT NULL,
+  commit_seq INTEGER NOT NULL, server_version INTEGER, scopes TEXT,
   PRIMARY KEY(partition, tbl, row_id)
 );
 CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
@@ -216,12 +217,15 @@ CREATE TABLE IF NOT EXISTS sync_writer_fence(
 );
 `;
 
-/** Columns added to `sync_clients` after its first release, by column name. */
-export const SYNC_CLIENT_ROUND_COLUMNS = {
-  last_round_at_ms: 'INTEGER',
-  last_error_code: 'TEXT',
-  consecutive_failures: 'INTEGER NOT NULL DEFAULT 0',
-} as const;
+/** Columns added to core tables after their first release: table, column, type. */
+export const SQLITE_ADDED_COLUMNS = [
+  ['sync_clients', 'wire_version', 'INTEGER NOT NULL DEFAULT 1'],
+  ['sync_clients', 'last_round_at_ms', 'INTEGER'],
+  ['sync_clients', 'last_error_code', 'TEXT'],
+  ['sync_clients', 'consecutive_failures', 'INTEGER NOT NULL DEFAULT 0'],
+  ['sync_tombstones', 'server_version', 'INTEGER'],
+  ['sync_tombstones', 'scopes', 'TEXT'],
+] as const;
 
 /** Split the DDL into individual statements (D1 applies them one by one). */
 export function sqliteDdlStatements(): string[] {
@@ -397,6 +401,24 @@ export function toStoredRow(record: SqliteRowRecord): StoredRow {
     payload: asUint8Array(record.payload),
     ...(record.column_versions !== null
       ? { columnVersions: asUint8Array(record.column_versions) }
+      : {}),
+  };
+}
+
+export interface SqliteTombstoneRecord {
+  commit_seq: number;
+  server_version: number | null;
+  scopes: string | null;
+}
+
+export function toTombstone(record: SqliteTombstoneRecord): Tombstone {
+  return {
+    commitSeq: record.commit_seq,
+    ...(record.server_version !== null
+      ? { serverVersion: record.server_version }
+      : {}),
+    ...(record.scopes !== null
+      ? { scopes: JSON.parse(record.scopes) as Record<string, string> }
       : {}),
   };
 }
@@ -1776,16 +1798,16 @@ export abstract class SqliteFamilyTransaction {
     return rows;
   }
 
-  async getTombstoneSeq(
+  async getTombstone(
     table: string,
     rowId: string,
-  ): Promise<number | undefined> {
+  ): Promise<Tombstone | undefined> {
     this.assertOpen();
-    const [row] = await this.all<{ commit_seq: number }>(
-      'SELECT commit_seq FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
+    const [row] = await this.all<SqliteTombstoneRecord>(
+      'SELECT commit_seq, server_version, scopes FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
       [this.partition, table, rowId],
     );
-    return row?.commit_seq;
+    return row === undefined ? undefined : toTombstone(row);
   }
 
   async clearTombstone(table: string, rowId: string): Promise<void> {
@@ -1883,9 +1905,16 @@ export abstract class SqliteFamilyTransaction {
         // pruned with the commit log (§4.6). A delete that the same commit
         // follows with an upsert is a §2.2 scope move, not a deletion.
         this.run(
-          `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq) VALUES (?,?,?,?)
-           ON CONFLICT(partition, tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq`,
-          [p, change.table, change.rowId, commitSeq],
+          `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq, server_version, scopes) VALUES (?,?,?,?,?,?)
+           ON CONFLICT(partition, tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq, server_version=excluded.server_version, scopes=excluded.scopes`,
+          [
+            p,
+            change.table,
+            change.rowId,
+            commitSeq,
+            change.deletedVersion ?? null,
+            JSON.stringify(change.scopes),
+          ],
         );
       }
       for (const [variable, value] of Object.entries(change.scopes)) {

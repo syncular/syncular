@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
   tbl TEXT NOT NULL,
   row_id TEXT NOT NULL,
   commit_seq INTEGER NOT NULL,
+  server_version INTEGER,
+  scopes TEXT,
   PRIMARY KEY (tbl, row_id));
 CREATE INDEX IF NOT EXISTS sync_tombstones_by_seq ON sync_tombstones(commit_seq);
 CREATE TABLE IF NOT EXISTS sync_push_results(
@@ -418,6 +420,8 @@ pub(crate) struct NewChange {
     pub table: String,
     pub row_id: String,
     pub upsert: bool,
+    /// An upsert's version after the write. A delete's is the deleted row's
+    /// last version, which only its tombstone records (§2.2).
     pub row_version: Option<i64>,
     pub scopes: Scopes,
     pub payload: Option<Vec<u8>>,
@@ -490,7 +494,7 @@ pub(crate) fn append_commit(
                 change.table,
                 change.row_id,
                 if change.upsert { 1 } else { 2 },
-                change.row_version,
+                change.row_version.filter(|_| change.upsert),
                 scopes_json(&change.scopes),
                 change.payload,
             ])
@@ -498,11 +502,18 @@ pub(crate) fn append_commit(
         .db()?;
         if !change.upsert && !live.contains(&key(change)) {
             conn.prepare_cached(
-                "INSERT INTO sync_tombstones(tbl, row_id, commit_seq) VALUES (?1,?2,?3)
-                 ON CONFLICT(tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq",
+                "INSERT INTO sync_tombstones(tbl, row_id, commit_seq, server_version, scopes) VALUES (?1,?2,?3,?4,?5)
+                 ON CONFLICT(tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq,
+                   server_version=excluded.server_version, scopes=excluded.scopes",
             )
             .and_then(|mut statement| {
-                statement.execute(params![change.table, change.row_id, commit_seq])
+                statement.execute(params![
+                    change.table,
+                    change.row_id,
+                    commit_seq,
+                    change.row_version,
+                    scopes_json(&change.scopes),
+                ])
             })
             .db()?;
         }
@@ -510,13 +521,19 @@ pub(crate) fn append_commit(
     Ok(commit_seq)
 }
 
-pub(crate) fn has_tombstone(
+/// The row's tombstone (§2.2): `Some` with the deleted row's last version,
+/// `None` inside when the tombstone predates recorded versions.
+pub(crate) fn tombstone(
     conn: &Connection,
     table: &str,
     row_id: &str,
-) -> Result<bool, AuthorityError> {
-    conn.prepare_cached("SELECT 1 FROM sync_tombstones WHERE tbl=?1 AND row_id=?2")
-        .and_then(|mut statement| statement.exists(params![table, row_id]))
+) -> Result<Option<Option<i64>>, AuthorityError> {
+    conn.prepare_cached("SELECT server_version FROM sync_tombstones WHERE tbl=?1 AND row_id=?2")
+        .and_then(|mut statement| {
+            statement
+                .query_row(params![table, row_id], |row| row.get(0))
+                .optional()
+        })
         .db()
 }
 
@@ -772,6 +789,18 @@ fn column_ddl_type(column: &Column) -> &'static str {
 pub(crate) fn migrate(conn: &Connection, schema: &Schema) -> Result<(), AuthorityError> {
     transaction(conn, || {
         conn.execute_batch(INTERNAL_DDL).db()?;
+        // A database from before tombstones recorded version and scopes.
+        let recorded = conn
+            .prepare("SELECT 1 FROM pragma_table_info('sync_tombstones') WHERE name='scopes'")
+            .and_then(|mut statement| statement.exists([]))
+            .db()?;
+        if !recorded {
+            conn.execute_batch(
+                "ALTER TABLE sync_tombstones ADD COLUMN server_version INTEGER;
+                 ALTER TABLE sync_tombstones ADD COLUMN scopes TEXT;",
+            )
+            .db()?;
+        }
         let layouts: serde_json::Map<String, Value> = schema
             .tables
             .iter()

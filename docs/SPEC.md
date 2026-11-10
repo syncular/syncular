@@ -867,14 +867,16 @@ A commit contains one or more **changes**:
 | `scopes` | The stored scope values extracted from the row (§3.1) |
 
 Every synced row carries a **`server_version`** (`i64`, ≥ 1): starts at 1
-on insert, increments by exactly 1 on every applied upsert. A §2.2 scope
+on insert, or one above its tombstone's `server_version` when the insert
+recreates a deleted row (§6.2), and increments by exactly 1 on every
+applied upsert. A §2.2 scope
 move keeps the stored `server_version` unchanged: it re-homes the row, it
 does not write a new row version. `server_version` is the
 optimistic-concurrency token for `baseVersion` conflict detection (§6.2).
 
 Every stored column carries a **`column_version`**: the row's
 `server_version` at the column's last write. An insert sets every column to
-1; an applied upsert sets each present column except the immutable primary
+the row's starting `server_version`; an applied upsert sets each present column except the immutable primary
 key to the new `server_version` and leaves absent columns unchanged (§6.2).
 `column_version` is server-internal: it never appears in `COMMIT` frames,
 segments, SQLite images, or conflict records. Relational storage keeps one
@@ -884,8 +886,11 @@ column versions existed carries no blob, which reads as every column at the
 row's current `server_version`.
 
 Every applied delete — including a §6.11 cascaded delete — records a
-**tombstone** `(partition, tbl, row_id, commit_seq)` in a server-side
-tombstone table. The delete half of a §2.2 scope move records no tombstone:
+**tombstone** `(partition, tbl, row_id, commit_seq, server_version,
+scopes)` in a server-side tombstone table: `server_version` and `scopes`
+are the deleted row's last `server_version` and stored scopes. A tombstone
+written before servers recorded them carries neither and keeps the rules
+that predate them (§6.2). The delete half of a §2.2 scope move records no tombstone:
 the same commit keeps the row live. An upsert consults the table only when
 its stored row is absent (§6.2 delete precedence); pruning removes
 tombstones with `commit_seq ≤ horizonSeq` in the same pass as the commit
@@ -1702,7 +1707,13 @@ Servers prune the commit log. The contract:
   tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
   precedence rule of §6.2 no longer sees the delete, and the ordinary insert
   rule applies. Retention defaults therefore bound how long a delete beats a
-  concurrent unversioned upsert.
+  concurrent unversioned upsert. A row recreated after its tombstone is
+  pruned starts at `server_version = 1`, so a `baseVersion` from the previous
+  incarnation can again match it. Such a `baseVersion` comes from an outbox
+  entry that stayed unpushed for the whole retention window, the same window
+  that bounds delete precedence; the client's cursor is then below
+  `horizonSeq`, so its next pull answers `sync.cursor_expired` and the client
+  re-bootstraps.
 - Compaction (dropping superseded intermediate changes for the same
   (table, rowId, scope) older than a host-configured full-history window)
   is allowed and invisible to correct clients: any client whose cursor is
@@ -3540,7 +3551,7 @@ For an upsert against an **absent** row, the tombstone table decides
 
 | `baseVersion` | Tombstone within horizon | Outcome |
 |---|---|---|
-| `0` | any | insert with `server_version = 1` — explicit intent recreates |
+| `0` | any | insert — explicit intent recreates, with `server_version` one above the tombstone's (below) |
 | `> 0` | any | error `sync.row_missing` (after payload authorization, so absence is not disclosed to an actor without the scope) |
 | absent | yes | reject `sync.row_deleted` — a delete beats a concurrent unversioned upsert (after payload authorization when the payload presents every scope column, below) |
 | absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
@@ -3555,13 +3566,23 @@ An unversioned upsert whose payload presents every scope column is
 authorized on the payload (§3.4 steps 2 and 3) before the server reads the
 tombstone table: a missing or empty scope value, or a denial, is
 `sync.forbidden` whether or not a tombstone exists, so the answer never
-discloses a deletion to an actor who could not write the row. A payload that
-omits a scope column carries no authorization row; the server answers it
-from the tombstone table without authorization, so `sync.row_deleted` for a
-partial upsert tells any actor that the row id was deleted within the
-horizon. A recreated row clears its
-tombstone. Beyond the pruning horizon the tombstone is gone and the
-insert rule applies (§4.6).
+discloses a deletion to an actor who could not write the row. The server
+then authorizes the actor against the tombstone's stored scopes (§3.4 step
+3). A tombstone the actor fails is treated as absent: the operation takes
+the "absent, no tombstone" row, so a payload that omits a scope column gets
+the same `sync.row_missing` as for a row id that never existed, and a full
+payload inserts at `server_version = 1`. A tombstone without stored scopes
+(written before servers recorded them) answers `sync.row_deleted` to any
+actor, and a partial upsert against it tells any actor that the row id was
+deleted within the horizon.
+
+An insert over a tombstone the actor passes starts at the tombstone's
+`server_version + 1`, and every column's `column_version` starts there too,
+so a `baseVersion` held from the previous incarnation is below every column
+of the new one and yields the ordinary conflict. A tombstone without a
+stored `server_version` recreates at 1. A recreated row clears its
+tombstone. Beyond the pruning horizon the tombstone is gone, the insert
+rule applies, and a recreate starts at 1 again (§4.6).
 
 A registered command's `upsert` mutation is unversioned unless it sets
 `insert`, which sends `baseVersion = 0` ([REMOTE.md](./REMOTE.md) §3).
@@ -7407,14 +7428,20 @@ Each is a driver-interface script, not a prose test.
 20. **Delete precedence (§6.2).** (a) A delete followed by a stale
     unversioned patch rejects `sync.row_deleted`, and the row stays absent
     on the server and on both clients. (b) An explicit insert
-    (`baseVersion = 0`) over a fresh tombstone recreates the row at
-    `server_version = 1`. (b2) A client's own delete followed by one commit
+    (`baseVersion = 0`) over a fresh tombstone recreates the row one above
+    the deleted `server_version`, and a patch carrying a `baseVersion` from
+    the deleted incarnation conflicts with `sync.version_conflict`.
+    (b2) A client's own delete followed by one commit
     that upserts the row unversioned and an unrelated row rejects the whole
     commit: the report lists it as `rejected`, the round removes both rows
     locally, and the server stores neither; the same commit with
     `baseVersion = 0` applies. (c) After pruning advances the horizon past the
     delete (§4.6), an unversioned full-row upsert inserts again — the
     ordinary insert rule is restored. Both pairings (TS×TS, Rust×TS).
+    (d) A patch that omits its scope column, from an actor outside the
+    deleted row's scope, gets the same result record as for a row id that
+    never existed (`sync.row_missing`), while an actor inside the scope gets
+    `sync.row_deleted`. Servers with scope authorization only.
 
 21. **Column-granular writes (§2.4, §6.1–§6.3).** (a) Disjoint unversioned
     patches to different columns both land. (b) Disjoint patches carrying

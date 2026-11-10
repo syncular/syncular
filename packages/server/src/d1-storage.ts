@@ -78,9 +78,11 @@ import {
   type SqliteStatementSpec,
   SqliteFamilyStorage,
   SqliteFamilyTransaction,
+  SQLITE_ADDED_COLUMNS,
+  type SqliteTombstoneRecord,
   sqliteDdlStatements,
-  SYNC_CLIENT_ROUND_COLUMNS,
   toStoredRow,
+  toTombstone,
 } from './sqlite-dialect';
 import type { SqliteValue } from './sqlite-driver';
 import type {
@@ -100,6 +102,7 @@ import type {
   StoredCheckpoint,
   StoredPushResult,
   StoredRow,
+  Tombstone,
 } from './storage';
 import {
   isD1ConstraintError,
@@ -226,7 +229,7 @@ class D1Transaction
     string,
     {
       readonly row: StoredRow | undefined;
-      readonly tombstoneSeq: number | undefined;
+      readonly tombstone: Tombstone | undefined;
     }
   >();
 
@@ -283,10 +286,10 @@ class D1Transaction
     return record === null ? undefined : toStoredRow(record);
   }
 
-  override async getTombstoneSeq(
+  override async getTombstone(
     table: string,
     rowId: string,
-  ): Promise<number | undefined> {
+  ): Promise<Tombstone | undefined> {
     this.assertOpen();
     // Persisted read, no #pending overlay: a delete buffered by this commit
     // records its tombstone at appendCommit, matching the SQLite/Postgres
@@ -295,8 +298,8 @@ class D1Transaction
     if (this.#clearedTombstones.has(key)) return undefined;
     const prefetched = this.#prefetched.get(key);
     return prefetched === undefined
-      ? super.getTombstoneSeq(table, rowId)
-      : prefetched.tombstoneSeq;
+      ? super.getTombstone(table, rowId)
+      : prefetched.tombstone;
   }
 
   /**
@@ -329,7 +332,7 @@ class D1Transaction
             .bind(this.partition, bound),
           this.#db
             .prepare(
-              'SELECT row_id, commit_seq FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id IN (SELECT value FROM json_each(?))',
+              'SELECT row_id, commit_seq, server_version, scopes FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id IN (SELECT value FROM json_each(?))',
             )
             .bind(this.partition, table, bound),
         ];
@@ -344,16 +347,15 @@ class D1Transaction
       );
       const tombstones = new Map(
         (
-          batchRows(results[2 * i + 1]) as {
+          batchRows(results[2 * i + 1]) as (SqliteTombstoneRecord & {
             row_id: string;
-            commit_seq: number;
-          }[]
-        ).map((record) => [record.row_id, record.commit_seq]),
+          })[]
+        ).map((record) => [record.row_id, toTombstone(record)]),
       );
       for (const rowId of ids) {
         this.#prefetched.set(D1Transaction.#key(table, rowId), {
           row: rows.get(rowId),
-          tombstoneSeq: tombstones.get(rowId),
+          tombstone: tombstones.get(rowId),
         });
       }
     });
@@ -922,23 +924,33 @@ export class D1ServerStorage
     for (const statement of sqliteDdlStatements()) {
       await this.#db.exec(`${statement.replace(/\s+/g, ' ')};`);
     }
+    for (const sql of await this.#addedColumnDdl()) {
+      await this.#db.exec(`${sql};`);
+    }
+  }
+
+  /**
+   * `ALTER TABLE` statements for the `SQLITE_ADDED_COLUMNS` this database
+   * lacks, read in one statement.
+   */
+  async #addedColumnDdl(): Promise<string[]> {
     const { results } = await this.#db
-      .prepare('PRAGMA table_info("sync_clients")')
-      .all<{ name: string }>();
-    if (!results.some((column) => column.name === 'wire_version')) {
-      await this.#db.exec(
-        'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1;',
-      );
-    }
-    for (const [name, definition] of Object.entries(
-      SYNC_CLIENT_ROUND_COLUMNS,
-    )) {
-      if (!results.some((column) => column.name === name)) {
-        await this.#db.exec(
-          `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition};`,
-        );
-      }
-    }
+      .prepare(
+        'SELECT t.value AS tbl, c.name AS name FROM json_each(?) AS t, pragma_table_info(t.value) AS c',
+      )
+      .bind(
+        JSON.stringify([
+          ...new Set(SQLITE_ADDED_COLUMNS.map(([table]) => table)),
+        ]),
+      )
+      .all<{ tbl: string; name: string }>();
+    return SQLITE_ADDED_COLUMNS.filter(
+      ([table, name]) =>
+        !results.some((column) => column.tbl === table && column.name === name),
+    ).map(
+      ([table, name, definition]) =>
+        `ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`,
+    );
   }
 
   async ensureSchema(
@@ -1058,25 +1070,11 @@ export class D1ServerStorage
           'sqlite',
         );
       }
-      // A database from before the round-state columns gains them in place.
+      // A database from before a core-table column gains it in place.
       statementsExecuted++;
-      const clientColumns = await this.#db
-        .prepare('PRAGMA table_info("sync_clients")')
-        .all<{ name: string }>();
-      const missingRoundColumns = Object.entries(
-        SYNC_CLIENT_ROUND_COLUMNS,
-      ).filter(
-        ([name]) =>
-          !clientColumns.results.some((column) => column.name === name),
-      );
-      if (missingRoundColumns.length > 0) {
-        await batch(
-          missingRoundColumns.map(([name, definition]) =>
-            this.#db.prepare(
-              `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
-            ),
-          ),
-        );
+      const added = await this.#addedColumnDdl();
+      if (added.length > 0) {
+        await batch(added.map((sql) => this.#db.prepare(sql)));
       }
       // Server-only indexes reconcile at every open of a database already at
       // this version: they never reach a client, so no version bump is needed.
@@ -1210,25 +1208,15 @@ export class D1ServerStorage
             break;
           continue;
         }
+        // The column read, the checkpoint pair, and every missing column.
         if (remaining < 4) break;
         statementsExecuted++;
-        const columns = await this.#db
-          .prepare('PRAGMA table_info("sync_clients")')
-          .all<{ name: string }>();
-        const missingColumns = Object.entries({
-          wire_version: 'INTEGER NOT NULL DEFAULT 1',
-          ...SYNC_CLIENT_ROUND_COLUMNS,
-        }).filter(
-          ([name]) => !columns.results.some((column) => column.name === name),
-        );
+        const added = await this.#addedColumnDdl();
+        if (remaining < 3 + added.length) break;
         if (
           !(await save(
             { ...state, phase: 'prepare', offset: 0 },
-            missingColumns.map(([name, definition]) =>
-              this.#db.prepare(
-                `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
-              ),
-            ),
+            added.map((sql) => this.#db.prepare(sql)),
           ))
         )
           break;

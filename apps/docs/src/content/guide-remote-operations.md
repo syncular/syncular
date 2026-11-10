@@ -224,7 +224,8 @@ A command `upsert` is unversioned. Within the tombstone horizon the server
 refuses an unversioned upsert of a deleted row with `sync.row_deleted`, so a
 command that deleted a row with a stable, derived id cannot write it back the
 same way. Set `insert: true` to send an explicit insert (`baseVersion = 0`):
-the server recreates the row at `server_version = 1` and clears its tombstone.
+the server recreates the row one above the deleted row's `server_version` and
+clears its tombstone.
 An explicit insert of an existing row is refused with `sync.version_conflict`,
 so read the row first and set the flag only when it is absent.
 

@@ -144,6 +144,7 @@ import type {
   StoredPushResult,
   StoredReaction,
   StoredRow,
+  Tombstone,
 } from './storage';
 import {
   isPostgresConstraintError,
@@ -270,9 +271,11 @@ CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
   ON sync_blob_refs(partition, blob_id);
 CREATE TABLE IF NOT EXISTS sync_tombstones(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
-  commit_seq BIGINT NOT NULL,
+  commit_seq BIGINT NOT NULL, server_version BIGINT, scopes JSONB,
   PRIMARY KEY(partition, tbl, row_id)
 );
+ALTER TABLE sync_tombstones ADD COLUMN IF NOT EXISTS server_version BIGINT;
+ALTER TABLE sync_tombstones ADD COLUMN IF NOT EXISTS scopes JSONB;
 CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
   partition TEXT NOT NULL, name TEXT NOT NULL,
   schema_version INTEGER NOT NULL,
@@ -480,6 +483,8 @@ interface PrefetchRow {
   readonly payload: unknown;
   readonly column_versions: unknown;
   readonly tombstone_seq: unknown;
+  readonly tombstone_version: unknown;
+  readonly tombstone_scopes: unknown;
 }
 
 type AdmissionRow = ServeGateRow & Partial<PrefetchRow>;
@@ -529,11 +534,13 @@ async function readAdmissionOn(
             NULL::text AS tbl, NULL::text AS lookup_id, NULL::text AS row_id,
             NULL::bigint AS server_version, NULL::jsonb AS scopes,
             NULL::bytea AS payload, NULL::bytea AS column_versions,
-            NULL::bigint AS tombstone_seq
+            NULL::bigint AS tombstone_seq, NULL::bigint AS tombstone_version,
+            NULL::jsonb AS tombstone_scopes
        UNION ALL
        SELECT NULL::bigint, NULL::text, NULL::json, NULL::jsonb,
               p.tbl, p.lookup_id, p.row_id, p.server_version, p.scopes,
-              p.payload, p.column_versions, p.tombstone_seq
+              p.payload, p.column_versions, p.tombstone_seq,
+              p.tombstone_version, p.tombstone_scopes
          FROM (${prefetchRowsBatchSql(prefetch.tables, {
            partition: '$1',
            specs: `$${params.length}`,
@@ -809,6 +816,23 @@ function toStoredRow(record: RowRecord): StoredRow {
     ...(record.column_versions === null || record.column_versions === undefined
       ? {}
       : { columnVersions: asBytes(record.column_versions) }),
+  };
+}
+
+function toTombstone(
+  seq: unknown,
+  version: unknown,
+  scopes: unknown,
+): Tombstone | null {
+  if (seq === null || seq === undefined) return null;
+  return {
+    commitSeq: asNumber(seq),
+    ...(version === null || version === undefined
+      ? {}
+      : { serverVersion: asNumber(version) }),
+    ...(scopes === null || scopes === undefined
+      ? {}
+      : { scopes: asJson<Record<string, string>>(scopes) }),
   };
 }
 
@@ -1144,7 +1168,7 @@ class PostgresTransaction implements StorageTransaction {
    * key, so the next read goes to the database again.
    */
   readonly #prefetchedRows = new Map<string, StoredRow | null>();
-  readonly #prefetchedTombstones = new Map<string, number | null>();
+  readonly #prefetchedTombstones = new Map<string, Tombstone | null>();
   /**
    * Upserts staged per table (row id → row and its push operation index).
    * Every statement of this transaction writes them first (see the
@@ -1357,7 +1381,7 @@ class PostgresTransaction implements StorageTransaction {
     this.#recordPrefetched(rows);
   }
 
-  /** Answer the following `getRow`/`getTombstoneSeq` calls from a read snapshot. */
+  /** Answer the following `getRow`/`getTombstone` calls from a read snapshot. */
   #recordPrefetched(records: readonly PrefetchRow[]): void {
     for (const record of records) {
       const key = `${record.tbl}\u0000${record.lookup_id}`;
@@ -1369,26 +1393,35 @@ class PostgresTransaction implements StorageTransaction {
       );
       this.#prefetchedTombstones.set(
         key,
-        record.tombstone_seq === null || record.tombstone_seq === undefined
-          ? null
-          : asNumber(record.tombstone_seq),
+        toTombstone(
+          record.tombstone_seq,
+          record.tombstone_version,
+          record.tombstone_scopes,
+        ),
       );
     }
   }
 
-  async getTombstoneSeq(
+  async getTombstone(
     table: string,
     rowId: string,
-  ): Promise<number | undefined> {
+  ): Promise<Tombstone | undefined> {
     this.#assertOpen();
     const prefetched = this.#prefetchedTombstones.get(`${table}\u0000${rowId}`);
     if (prefetched !== undefined) return prefetched ?? undefined;
-    const { rows } = await this.#client.query<{ commit_seq: unknown }>(
-      'SELECT commit_seq FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+    const { rows } = await this.#client.query<{
+      commit_seq: unknown;
+      server_version: unknown;
+      scopes: unknown;
+    }>(
+      'SELECT commit_seq, server_version, scopes FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
       [this.#partition, table, rowId],
     );
-    const seq = rows[0]?.commit_seq;
-    return seq === null || seq === undefined ? undefined : asNumber(seq);
+    const row = rows[0];
+    return (
+      toTombstone(row?.commit_seq, row?.server_version, row?.scopes) ??
+      undefined
+    );
   }
 
   async clearTombstone(table: string, rowId: string): Promise<void> {
@@ -1739,8 +1772,10 @@ class PostgresTransaction implements StorageTransaction {
     // chunks run under the same commitSeq with their global idx. Serialized
     // scopes bind as text before parsing JSONB; drivers that encode JSONB
     // parameters would otherwise store the string as a scalar. A commit can
-    // delete one row twice, so a chunk's tombstone insert keeps one row per
-    // key and a later chunk updates it to the same commit_seq.
+    // delete one row twice, so a chunk's tombstone insert keeps the latest
+    // delete per key and a later chunk overwrites it with its own. `version`
+    // is an upsert's row version or a delete's deleted version (§2.2); only
+    // the tombstone keeps the latter.
     const valuesOf = (
       params: unknown[],
       slice: readonly NewChange[],
@@ -1753,7 +1788,7 @@ class PostgresTransaction implements StorageTransaction {
           change.table,
           change.rowId,
           change.op === 'upsert' ? 1 : 2,
-          change.rowVersion ?? null,
+          change.rowVersion ?? change.deletedVersion ?? null,
           JSON.stringify(change.scopes),
           change.payload ?? null,
         );
@@ -1767,16 +1802,21 @@ class PostgresTransaction implements StorageTransaction {
          )`;
     const tombstones = (
       movedParam: string,
-    ) => `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
-         SELECT DISTINCT ON (tbl, row_id) partition, tbl, row_id, commit_seq
-           FROM inserted
-          WHERE op = 2
+    ) => `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq, server_version, scopes)
+         SELECT DISTINCT ON (inserted.tbl, inserted.row_id) inserted.partition,
+                inserted.tbl, inserted.row_id, inserted.commit_seq,
+                v.version, inserted.scopes
+           FROM inserted JOIN v ON v.idx = inserted.idx
+          WHERE inserted.op = 2
             AND NOT EXISTS (
               SELECT 1
                 FROM jsonb_to_recordset(${movedParam}::text::jsonb) AS moved(tbl text, row_id text)
                WHERE moved.tbl = inserted.tbl AND moved.row_id = inserted.row_id)
+          ORDER BY inserted.tbl, inserted.row_id, inserted.idx DESC
          ON CONFLICT (partition, tbl, row_id)
-         DO UPDATE SET commit_seq = excluded.commit_seq`;
+         DO UPDATE SET commit_seq = excluded.commit_seq,
+                       server_version = excluded.server_version,
+                       scopes = excluded.scopes`;
     const firstSlice = commit.changes.slice(0, PG_CHANGES_PER_STATEMENT);
     const params = [...head];
     const values = valuesOf(params, firstSlice, 0);
@@ -1785,12 +1825,14 @@ class PostgresTransaction implements StorageTransaction {
     const { rows } = await q.query<{ max_commit_seq: unknown }>(
       `WITH allocated AS (${allocate}),
        allocated_commit AS (${commitRow}),
+       v(idx, tbl, row_id, op, version, scopes, payload) AS (
+         VALUES ${values.join(',')}
+       ),
        inserted AS (
          INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, v.row_version, v.scopes, v.payload
-           FROM allocated
-           CROSS JOIN (VALUES ${values.join(',')}) AS v(idx, tbl, row_id, op, row_version, scopes, payload)
-         RETURNING partition, tbl, row_id, op, commit_seq, scopes
+         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, CASE WHEN v.op = 1 THEN v.version END, v.scopes, v.payload
+           FROM allocated CROSS JOIN v
+         RETURNING partition, idx, tbl, row_id, op, commit_seq, scopes
        ),
        ${scopesCte},
        tombstoned AS (${tombstones(movedParam)})
@@ -1812,11 +1854,14 @@ class PostgresTransaction implements StorageTransaction {
       chunkParams.push(moved);
       const chunkMovedParam = `$${chunkParams.length}`;
       await q.query(
-        `WITH inserted AS (
+        `WITH v(idx, tbl, row_id, op, version, scopes, payload) AS (
+           VALUES ${chunkValues.join(',')}
+         ),
+         inserted AS (
            INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, v.row_version, v.scopes, v.payload
-             FROM (VALUES ${chunkValues.join(',')}) AS v(idx, tbl, row_id, op, row_version, scopes, payload)
-           RETURNING partition, tbl, row_id, op, commit_seq, scopes
+           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, CASE WHEN v.op = 1 THEN v.version END, v.scopes, v.payload
+             FROM v
+           RETURNING partition, idx, tbl, row_id, op, commit_seq, scopes
          ),
          ${scopesCte},
          tombstoned AS (${tombstones(chunkMovedParam)})

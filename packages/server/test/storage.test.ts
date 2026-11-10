@@ -244,6 +244,83 @@ runStorageContract('postgres/pglite', async () => {
 // D1 (Cloudflare Workers) against the local bun:sqlite-backed double
 // (test/d1-double.ts documents its fidelity limits). Same contract, so the
 // D1 path is held to the reference behavior key-for-key.
+for (const backend of [
+  'sqlite',
+  'postgres',
+  'd1/migrate',
+  'd1/migrateSchema',
+  'd1/same-version open',
+] as const) {
+  test(`${backend} adds the tombstone version and scopes to an existing tombstone table`, async () => {
+    // The table as released before tombstones recorded version and scopes.
+    const legacy = [
+      'CREATE TABLE sync_tombstones(partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL, commit_seq BIGINT NOT NULL, PRIMARY KEY(partition, tbl, row_id))',
+      "INSERT INTO sync_tombstones VALUES ('part', 'tasks', 'old', 7)",
+    ];
+    let storage: ServerStorage;
+    if (backend === 'postgres') {
+      const pg = await PGlite.create();
+      for (const sql of legacy) await pg.exec(sql);
+      const postgres = new PostgresServerStorage(pgliteExecutor(pg));
+      await postgres.migrate();
+      storage = postgres;
+    } else if (backend === 'sqlite') {
+      const db = new BunSqliteDatabase();
+      for (const sql of legacy) db.exec(sql);
+      storage = new SqliteServerStorage(db);
+    } else {
+      const raw = new Database(':memory:');
+      const open = () =>
+        new D1ServerStorage(new D1DatabaseDouble(raw), {
+          pushApplySerialized: true,
+        });
+      if (backend === 'd1/same-version open') {
+        await prepareD1(open());
+        raw.exec('DROP TABLE sync_tombstones');
+      }
+      for (const sql of legacy) raw.exec(sql);
+      const d1 = open();
+      if (backend === 'd1/migrate') {
+        await d1.migrate();
+        expect(
+          raw
+            .query<{ name: string }, []>(
+              "SELECT name FROM pragma_table_info('sync_tombstones') WHERE name IN ('server_version', 'scopes') ORDER BY name",
+            )
+            .all(),
+        ).toEqual([{ name: 'scopes' }, { name: 'server_version' }]);
+      }
+      if (backend !== 'd1/same-version open') await prepareD1(d1);
+      storage = d1;
+    }
+    await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+    const tx = await storage.begin('part');
+    expect(await tx.getTombstone('tasks', 'old')).toEqual({ commitSeq: 7 });
+    await tx.appendCommit({
+      clientId: 'c1',
+      clientCommitId: 'delete',
+      actorId: 'a1',
+      createdAtMs: 1,
+      changes: [
+        {
+          table: 'tasks',
+          rowId: 'new',
+          op: 'delete',
+          deletedVersion: 2,
+          scopes: { project_id: 'p1' },
+        },
+      ],
+    });
+    await tx.commit();
+    const after = await storage.begin('part');
+    expect(await after.getTombstone('tasks', 'new')).toMatchObject({
+      serverVersion: 2,
+      scopes: { project_id: 'p1' },
+    });
+    await after.rollback();
+  });
+}
+
 async function prepareD1(storage: D1ServerStorage): Promise<void> {
   while (
     !(await storage.migrateSchema(compileSchema(CONTRACT_SCHEMA))).complete

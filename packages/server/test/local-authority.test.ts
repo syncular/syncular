@@ -397,7 +397,8 @@ describe('local authority (§12)', () => {
       fresh,
     ]);
     expect(fresh.startsWith(attachId)).toBe(false);
-    expect(target.rows()).toEqual([{ values: ['a', 'p1', null], version: 1 }]);
+    // The fresh attach recreates the row above the undo's tombstone (§6.2).
+    expect(target.rows()).toEqual([{ values: ['a', 'p1', null], version: 2 }]);
   });
 
   test('a rejected undo applies on a retried abandon once the blocker is gone', async () => {

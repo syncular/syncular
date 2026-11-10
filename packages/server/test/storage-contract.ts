@@ -327,7 +327,7 @@ export function runStorageContract(
       });
       await move.commit();
       const moved = await storage.begin(PARTITION);
-      expect(await moved.getTombstoneSeq('tasks', 'r1')).toBeUndefined();
+      expect(await moved.getTombstone('tasks', 'r1')).toBeUndefined();
       await moved.rollback();
       expect((await storage.getRow(PARTITION, 'tasks', 'r1'))?.scopes).toEqual({
         project_id: 'p2',
@@ -340,18 +340,32 @@ export function runStorageContract(
         clientCommitId: 'delete',
         actorId: 'a1',
         createdAtMs: NOW + 2,
+        // A commit that deletes one row twice keeps its last delete.
         changes: [
           {
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            deletedVersion: 1,
+            scopes: { project_id: 'p1' },
+          },
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'delete',
+            deletedVersion: 3,
             scopes: { project_id: 'p2' },
           },
         ],
       });
       await del.commit();
       const after = await storage.begin(PARTITION);
-      expect(await after.getTombstoneSeq('tasks', 'r1')).toBe(seq);
+      // §2.2: the tombstone carries the deleted row's version and scopes.
+      expect(await after.getTombstone('tasks', 'r1')).toEqual({
+        commitSeq: seq,
+        serverVersion: 3,
+        scopes: { project_id: 'p2' },
+      });
       await after.rollback();
     });
 

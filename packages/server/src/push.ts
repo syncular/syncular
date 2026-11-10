@@ -635,6 +635,7 @@ async function applyOperation(
           table: op.table,
           rowId: op.rowId,
           op: 'delete',
+          deletedVersion: stored.serverVersion,
           scopes: stored.scopes,
         },
       ],
@@ -909,26 +910,31 @@ async function applyOperation(
       'upsert with baseVersion targets an absent row (§6.2)',
     );
   }
-  if (op.baseVersion === undefined) {
-    // §6.2: a payload that presents every scope column is authorized before
-    // the tombstone read, so the answer never discloses a deletion to an
-    // actor who could not write the row.
-    if (
-      'kind' in insert &&
-      table.scopePatterns.every((pattern) => present[pattern.columnIndex])
-    ) {
-      return insert;
-    }
+  // §6.2: a payload that presents every scope column is authorized before
+  // the tombstone read, so the answer never discloses a deletion to an actor
+  // who could not write the row.
+  if (
+    op.baseVersion === undefined &&
+    'kind' in insert &&
+    table.scopePatterns.every((pattern) => present[pattern.columnIndex])
+  ) {
+    return insert;
+  }
+  // §6.2: a tombstone whose stored scopes the actor fails reads as absent.
+  const tombstone = await tx.getTombstone(op.table, op.rowId);
+  const deleted =
+    tombstone?.scopes === undefined ||
+    authorizeWrite(table, tombstone.scopes, resolved)
+      ? tombstone
+      : undefined;
+  if (op.baseVersion === undefined && deleted !== undefined) {
     // §5.2: a delete within the retention horizon beats an unversioned
     // upsert; an explicit insert (baseVersion 0) recreates instead.
-    const tombstoneSeq = await tx.getTombstoneSeq(op.table, op.rowId);
-    if (tombstoneSeq !== undefined) {
-      return errorRecord(
-        opIndex,
-        'sync.row_deleted',
-        'a deleted row rejects an unversioned upsert within the retention horizon (§5.2)',
-      );
-    }
+    return errorRecord(
+      opIndex,
+      'sync.row_deleted',
+      'a deleted row rejects an unversioned upsert within the retention horizon (§5.2)',
+    );
   }
   if (presentCount < table.columns.length) {
     // §6.3: an insert requires every column present.
@@ -979,15 +985,14 @@ async function applyOperation(
     actorId,
   );
   if (insertReject !== undefined) return insertReject;
-  // §5.2: an explicit insert recreates — the tombstone goes with it. An
-  // unversioned insert already proved above, under the partition lock, that
-  // no tombstone exists (this commit writes its own only in `appendCommit`).
-  if (op.baseVersion !== undefined) {
-    await tx.clearTombstone(op.table, op.rowId);
-  }
+  // §6.2: an insert recreates over the tombstone and starts above the
+  // deleted row's version; without a column-versions blob every column sits
+  // at that version.
+  if (tombstone !== undefined) await tx.clearTombstone(op.table, op.rowId);
+  const serverVersion = (deleted?.serverVersion ?? 0) + 1;
   const newRow = {
     rowId: op.rowId,
-    serverVersion: 1,
+    serverVersion,
     scopes: insert.scopes,
     payload: insertPayload,
   };
@@ -999,7 +1004,7 @@ async function applyOperation(
         table: op.table,
         rowId: op.rowId,
         op: 'upsert',
-        rowVersion: 1,
+        rowVersion: serverVersion,
         scopes: insert.scopes,
         payload: insertPayload,
       },
@@ -1012,7 +1017,7 @@ async function applyOperation(
         rowId: op.rowId,
         row: toValidateRow(table.columns, values),
         stored: undefined,
-        nextServerVersion: 1,
+        nextServerVersion: serverVersion,
       },
     ],
     staged: {
@@ -1574,6 +1579,7 @@ async function enforceReferences(
               table: child.name,
               rowId: childRow.rowId,
               op: 'delete',
+              deletedVersion: childRow.serverVersion,
               scopes: childRow.scopes,
             });
             operations.push({

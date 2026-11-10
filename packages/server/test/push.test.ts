@@ -755,6 +755,121 @@ describe('tombstone disclosure (§6.2)', () => {
     if (record?.status !== 'error') throw new Error('expected error record');
     expect(record.code).toBe('sync.row_deleted');
   });
+
+  // A patch that omits its scope columns: only the tombstone's stored scopes
+  // can authorize it.
+  let patches = 0;
+  const patchAnswer = async (
+    t: ReturnType<typeof makeContext>,
+    rowId: string,
+  ) => {
+    const payload = encodeSparseRow(TASK_COLUMNS, 0, [
+      rowId,
+      undefined,
+      'patched',
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const message = await sync(t, [
+      pushCommit(`patch-${++patches}`, [upsert('tasks', rowId, payload)]),
+    ]);
+    const record = pushResults(message)[0]?.results[0];
+    if (record?.status !== 'error') throw new Error('expected error record');
+    return { code: record.code, message: record.message };
+  };
+
+  test('a partial upsert from an actor outside the tombstone scope sees a row that never existed', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 'deleted', 'p2');
+    await sync(t, [pushCommit('c2', [del('tasks', 'deleted')])]);
+    t.scopes.value = { project_id: ['p1'] };
+    const deleted = await patchAnswer(t, 'deleted');
+    expect(deleted.code).toBe('sync.row_missing');
+    expect(deleted).toEqual(await patchAnswer(t, 'never-existed'));
+    t.scopes.value = { project_id: ['p2'] };
+    expect((await patchAnswer(t, 'deleted')).code).toBe('sync.row_deleted');
+  });
+
+  test('a tombstone without stored scopes answers sync.row_deleted to any actor', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 'deleted', 'p2');
+    await sync(t, [pushCommit('c2', [del('tasks', 'deleted')])]);
+    t.storage.db.exec(
+      'UPDATE sync_tombstones SET server_version = NULL, scopes = NULL',
+    );
+    t.scopes.value = { project_id: ['p1'] };
+    expect((await patchAnswer(t, 'deleted')).code).toBe('sync.row_deleted');
+  });
+});
+
+describe('recreate over a tombstone (§6.2)', () => {
+  const version = async (t: ReturnType<typeof makeContext>, rowId: string) =>
+    (await t.storage.getRow('part-1', 'tasks', rowId))?.serverVersion;
+
+  test('starts above the deleted version, so a stale baseVersion conflicts', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    for (const title of ['v2', 'v3']) {
+      await sync(t, [
+        pushCommit(title, [upsert('tasks', 't1', taskRow('t1', 'p1', title))]),
+      ]);
+    }
+    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    const recreated = await sync(t, [
+      pushCommit('recreate', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'new'), 0),
+      ]),
+    ]);
+    expect(pushResults(recreated)[0]?.status).toBe('applied');
+    expect(await version(t, 't1')).toBe(4);
+    const stale = await sync(t, [
+      pushCommit('stale', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'stale'), 3),
+      ]),
+    ]);
+    const record = pushResults(stale)[0]?.results[0];
+    if (record?.status !== 'conflict') throw new Error('expected conflict');
+    expect(record.serverVersion).toBe(4);
+    expect(decodeRow(TASK_COLUMNS, record.serverRow)[2]).toBe('new');
+  });
+
+  test('a tombstone without a stored version recreates at 1', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [
+      pushCommit('v2', [upsert('tasks', 't1', taskRow('t1', 'p1', 'v2'))]),
+    ]);
+    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    t.storage.db.exec(
+      'UPDATE sync_tombstones SET server_version = NULL, scopes = NULL',
+    );
+    await sync(t, [
+      pushCommit('recreate', [upsert('tasks', 't1', taskRow('t1', 'p1'), 0)]),
+    ]);
+    expect(await version(t, 't1')).toBe(1);
+  });
+
+  test('an actor outside the tombstone scope inserts at 1 and clears the tombstone', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 't1', 'p2');
+    await sync(t, [
+      pushCommit('v2', [upsert('tasks', 't1', taskRow('t1', 'p2', 'v2'))]),
+    ]);
+    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    t.scopes.value = { project_id: ['p1'] };
+    const inserted = await sync(t, [
+      pushCommit('insert', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    expect(pushResults(inserted)[0]?.status).toBe('applied');
+    expect(await version(t, 't1')).toBe(1);
+    expect(
+      t.storage.db.query('SELECT count(*) AS n FROM sync_tombstones').get(),
+    ).toEqual({ n: 0 });
+  });
 });
 
 describe('rowId admission (§6.1)', () => {

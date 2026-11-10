@@ -40,8 +40,8 @@ import {
 } from './relational-rows';
 import type { CompiledSchema, CompiledTable } from './schema';
 import {
+  SQLITE_ADDED_COLUMNS,
   SQLITE_DDL,
-  SYNC_CLIENT_ROUND_COLUMNS,
   SqliteFamilyStorage,
   SqliteFamilyTransaction,
   type SqliteStatementSpec,
@@ -347,21 +347,12 @@ export class SqliteServerStorage
     super();
     this.db = db;
     this.db.exec(SQLITE_DDL);
-    const clientColumns = this.db
-      .query<{ name: string }, []>('PRAGMA table_info("sync_clients")')
-      .all();
-    if (!clientColumns.some((column) => column.name === 'wire_version')) {
-      this.db.exec(
-        'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
-      );
-    }
-    for (const [name, definition] of Object.entries(
-      SYNC_CLIENT_ROUND_COLUMNS,
-    )) {
-      if (!clientColumns.some((column) => column.name === name)) {
-        this.db.exec(
-          `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
-        );
+    for (const [table, name, definition] of SQLITE_ADDED_COLUMNS) {
+      const columns = this.db
+        .query<{ name: string }, []>(`PRAGMA table_info("${table}")`)
+        .all();
+      if (!columns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
       }
     }
     const commitColumns = this.db
