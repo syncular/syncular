@@ -60,6 +60,8 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
       'sync_version',
       'values_json',
       'delivery_seq',
+      'tbl',
+      'row_id',
     ]);
     db.close();
   });

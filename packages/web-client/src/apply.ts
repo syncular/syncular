@@ -1,5 +1,5 @@
 import { hasUniqueIndex } from './schema';
-import { OUTBOX_TABLE, OUTBOX_IMAGES, countOutbox } from './outbox';
+import { OUTBOX_IMAGES, countOutbox } from './outbox';
 import { RETAINED_ROWS, type OverlayScope } from './failed-overlay';
 import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
 /**
@@ -144,18 +144,19 @@ export async function applyCommitFrame(
     });
   }
   transaction(() => {
-    const scope = resolved.map((change, index) =>
-      JSON.stringify(
-        hasUniqueIndex(change.table)
-          ? [change.table.name]
-          : [change.table.name, frame.changes[index]!.rowId],
-      ),
-    );
+    // Exact keys name the rows this frame rebases; unique-key peers widen the
+    // replay to the table.
+    const scope = resolved.flatMap((change, index) => [
+      ...(hasUniqueIndex(change.table)
+        ? [JSON.stringify([change.table.name])]
+        : []),
+      JSON.stringify([change.table.name, frame.changes[index]!.rowId]),
+    ]);
     restoreFailedBases(db, schema, scope);
     for (const [index, change] of resolved.entries()) {
       const rowId = frame.changes[index]!.rowId;
       db.exec(
-        `UPDATE ${OUTBOX_IMAGES} SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE (client_commit_id,op_index) IN(SELECT client_commit_id,json_each.key FROM ${OUTBOX_TABLE},json_each(operations) WHERE json_extract(value,'$.table')=? AND json_extract(value,'$.rowId')=?)`,
+        `UPDATE ${OUTBOX_IMAGES} SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE tbl=? AND row_id=?`,
         [frame.commitSeq, change.table.name, rowId],
       );
       db.exec(
@@ -499,16 +500,15 @@ export async function applySqliteSegment(
       (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
         const scope = !replay
           ? []
-          : hasUniqueIndex(table)
-            ? [JSON.stringify([table.name])]
-            : [
-                ...(after === undefined && options.clearFirst
-                  ? bootstrapScope(db, table, options.effective)
-                  : []),
-                ...rows.map((row) =>
-                  JSON.stringify([table.name, String(row[table.primaryKey])]),
-                ),
-              ];
+          : [
+              ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
+              ...(after === undefined && options.clearFirst
+                ? bootstrapScope(db, table, options.effective)
+                : []),
+              ...rows.map((row) =>
+                JSON.stringify([table.name, String(row[table.primaryKey])]),
+              ),
+            ];
         const protectedRows = restoreFailedBases(db, schema, scope);
         if (after === undefined && options.clearFirst)
           deleteScopedRows(db, table, options.effective);
@@ -593,19 +593,16 @@ export async function applyRowsSegment(
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-      const scope: OverlayScope = hasUniqueIndex(table)
-        ? [JSON.stringify([table.name])]
-        : [
-            ...(clearThisBlock
-              ? bootstrapScope(db, table, options.effective)
-              : []),
-            ...rows.map((row) =>
-              JSON.stringify([
-                table.name,
-                String(row.values[table.primaryKeyIndex]),
-              ]),
-            ),
-          ];
+      const scope: OverlayScope = [
+        ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
+        ...(clearThisBlock ? bootstrapScope(db, table, options.effective) : []),
+        ...rows.map((row) =>
+          JSON.stringify([
+            table.name,
+            String(row.values[table.primaryKeyIndex]),
+          ]),
+        ),
+      ];
       const protectedRows = restoreFailedBases(db, schema, scope);
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);

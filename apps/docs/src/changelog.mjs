@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'A rejected edit rolls back to the latest server row',
+    body: 'The web client restored a rejected or conflicted row to its value at `mutate` time, even when a newer server write to that row had arrived since; the local row then stayed stale while the cursor had moved past that write. Rollback now returns the row to the last server-delivered row and replays the remaining pending commits over it. Applying a server change finds the pending commits for its row through an index: 500 incoming commits with 4,000 pending commits apply in 15 ms, down from 3.2 s.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#rejection-rollback',
+        label: 'Rejection rollback',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'Follower replies reach only the tab that asked',
     body: "Multi-tab protocol 3 addresses each leader reply to the follower that sent the request. Before, two followers whose requests shared an id could settle each other's calls. Tabs of an older build block with `leader-incompatible` until they reload. A follower whose core fails to start after it wins the lock reports `leader-start-failed` and contests the lock again, at most three times, and a newer tab deposes every older tab that promotes ahead of it.",
     links: [

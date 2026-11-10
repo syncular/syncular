@@ -444,6 +444,263 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     expect(tableRows(a.db, 'tasks').map((r) => r.id)).toEqual(['t1']);
     expect(tableRows(b.db, 'tasks').map((r) => r.id)).toEqual(['t1']);
   });
+
+  for (const laterEdit of [false, true])
+    test(
+      laterEdit
+        ? 'a conflict rollback replays a later pending edit over the server write pulled since'
+        : 'a conflict rollback restores the server write pulled after the edit was queued',
+      async () => {
+        const server = makeServer();
+        const a = await makeClient(server, { clientId: 'client-a' });
+        const b = await makeClient(server, {
+          clientId: 'client-b',
+          limits: { maxPushCommitsPerRequest: 1 },
+        });
+        for (const c of [a, b])
+          c.client.subscribe({
+            id: 's1',
+            table: 'tasks',
+            scopes: { project_id: ['p1'] },
+          });
+        a.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t1', 'p1', 'orig'),
+          },
+        ]);
+        await a.client.syncUntilIdle();
+        await b.client.syncUntilIdle();
+
+        // B queues an unrelated commit ahead of its edit of t1 at version 1.
+        b.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t2', 'p1', 'unrelated'),
+          },
+        ]);
+        b.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t1', 'p1', 'b-edit'),
+            baseVersion: 1,
+          },
+        ]);
+        if (laterEdit) b.client.patch('tasks', 't1', { priority: 5 });
+        a.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t1', 'p1', 'theirs'),
+            baseVersion: 1,
+          },
+        ]);
+        await a.client.syncUntilIdle();
+
+        // Round 1 pushes only the unrelated commit and pulls A's write.
+        const first = await b.client.sync();
+        expect(first.applied).toHaveLength(1);
+        expect(first.commitsApplied).toBeGreaterThan(0);
+        // Round 2 pushes the edit, which conflicts with A's write.
+        const second = await b.client.sync();
+        expect(second.conflicts).toHaveLength(1);
+        expect(second.conflicts[0]?.serverRow.title).toBe('theirs');
+
+        const row = b.db.query("SELECT * FROM tasks WHERE id='t1'")[0];
+        expect(row?.title).toBe('theirs');
+        expect(row?._sync_version).toBe(2);
+        expect(row?.priority).toBe(laterEdit ? 5 : null);
+        expect(b.client.pendingCommits()).toHaveLength(laterEdit ? 1 : 0);
+        for (const c of [a, b]) {
+          await c.client.close();
+          c.db.close();
+        }
+        server.storage.db.close();
+      },
+    );
+
+  test('applying a commit reads pending outbox rows through the row index', async () => {
+    class StatementLog extends BunClientDatabase {
+      log: { sql: string; params: readonly SqlValue[] }[] | undefined;
+      override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+        this.log?.push({ sql, params });
+        return super.query(sql, params);
+      }
+      override exec(sql: string, params: readonly SqlValue[] = []): void {
+        this.log?.push({ sql, params });
+        super.exec(sql, params);
+      }
+    }
+    const outboxStatements = async (pending: number) => {
+      const server = makeServer();
+      const a = await makeClient(server, { clientId: 'writer' });
+      const database = new StatementLog();
+      const b = await makeClient(server, { clientId: 'reader', database });
+      for (const c of [a, b])
+        c.client.subscribe({
+          id: 's1',
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+        });
+      await b.client.syncUntilIdle();
+      a.client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('in', 'p1') },
+      ]);
+      await a.client.syncUntilIdle();
+      // The round carries no push; the pending commits land while it waits.
+      const gate = responseGate();
+      b.faults.holdResponseOnce = gate.fault;
+      const round = b.client.sync();
+      await gate.held;
+      for (let i = 0; i < pending; i++)
+        b.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues(`local-${i}`, 'p1'),
+          },
+        ]);
+      database.log = [];
+      gate.release();
+      expect((await round).commitsApplied).toBe(1);
+      const statements = database.log.filter((entry) =>
+        entry.sql.includes('_syncular_outbox'),
+      );
+      database.log = undefined;
+      const plans = statements.flatMap((entry) =>
+        database
+          .query(`EXPLAIN QUERY PLAN ${entry.sql}`, entry.params)
+          .map((row) => String(row.detail)),
+      );
+      expect(
+        plans.filter((detail) => /SCAN _syncular_outbox/.test(detail)),
+      ).toEqual([]);
+      expect(b.client.pendingCommits()).toHaveLength(pending);
+      for (const c of [a, b]) {
+        await c.client.close();
+        c.db.close();
+      }
+      server.storage.db.close();
+      return statements.map((entry) => entry.sql);
+    };
+    expect(await outboxStatements(200)).toEqual(await outboxStatements(5));
+  });
+
+  test('a replica with the unkeyed before-image layout keeps and rebases its pending edit', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-image-layout-'));
+    const databasePath = join(directory, 'client.db');
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    try {
+      a.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      a.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('t1', 'p1', 'orig'),
+        },
+      ]);
+      await a.client.syncUntilIdle();
+      const first = await makeClient(server, {
+        clientId: 'client-b',
+        databasePath,
+      });
+      let edit: string;
+      try {
+        first.client.subscribe({
+          id: 's1',
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+        });
+        await first.client.syncUntilIdle();
+        first.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t2', 'p1', 'unrelated'),
+          },
+        ]);
+        edit = first.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t1', 'p1', 'b-edit'),
+            baseVersion: 1,
+          },
+        ]);
+      } finally {
+        await first.client.close();
+        first.db.close();
+      }
+      // The previous release's layout: images carry no row key and no index.
+      const legacy = new BunClientDatabase(databasePath);
+      legacy.exec('DROP INDEX _syncular_outbox_before_images_row');
+      legacy.exec(
+        'ALTER TABLE _syncular_outbox_before_images DROP COLUMN row_id',
+      );
+      legacy.exec('ALTER TABLE _syncular_outbox_before_images DROP COLUMN tbl');
+      legacy.close();
+
+      a.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('t1', 'p1', 'theirs'),
+          baseVersion: 1,
+        },
+      ]);
+      await a.client.syncUntilIdle();
+      const reopened = await makeClient(server, {
+        clientId: 'client-b',
+        databasePath,
+        limits: { maxPushCommitsPerRequest: 1 },
+      });
+      try {
+        expect(
+          reopened.db.query(
+            'SELECT tbl,row_id FROM _syncular_outbox_before_images ORDER BY row_id',
+          ),
+        ).toEqual([
+          { tbl: 'tasks', row_id: 't1' },
+          { tbl: 'tasks', row_id: 't2' },
+        ]);
+        reopened.client.subscribe({
+          id: 's1',
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+        });
+        // Round 1 drains the unrelated commit and pulls A's write; the
+        // pending edit replays over it.
+        expect((await reopened.client.sync()).applied).toHaveLength(1);
+        expect(
+          reopened.client.pendingCommits().map((c) => c.clientCommitId),
+        ).toEqual([edit]);
+        const t1 = "SELECT title,_sync_version FROM tasks WHERE id='t1'";
+        expect(reopened.db.query(t1)).toEqual([
+          { title: 'b-edit', _sync_version: 2 },
+        ]);
+        expect((await reopened.client.sync()).conflicts).toHaveLength(1);
+        expect(reopened.db.query(t1)).toEqual([
+          { title: 'theirs', _sync_version: 2 },
+        ]);
+      } finally {
+        await reopened.client.close();
+        reopened.db.close();
+      }
+    } finally {
+      await a.client.close();
+      a.db.close();
+      server.storage.db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('durable commit outcomes', () => {

@@ -1,6 +1,6 @@
 import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
-import { OUTBOX_TABLE } from './outbox';
+import { OUTBOX_IMAGES } from './outbox';
 export const RETAINED_ROWS = '_syncular_failed_rows';
 import { ClientSyncError } from './errors';
 import type { ClientDatabase } from './database';
@@ -266,7 +266,7 @@ export function failedOverlayCommits(
           (conflict) =>
             conflict.serverVersion >= 0 &&
             !db.query(
-              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM ${OUTBOX_TABLE},json_each(operations)WHERE json_extract(json_each.value,'$.table')=? AND json_extract(json_each.value,'$.rowId')=? LIMIT 1`,
+              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM ${OUTBOX_IMAGES} WHERE tbl=? AND row_id=? LIMIT 1`,
               [table.name, conflict.rowId, table.name, conflict.rowId],
             ).length,
         );

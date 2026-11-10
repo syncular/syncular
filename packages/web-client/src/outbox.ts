@@ -1,7 +1,7 @@
 import { BLOB_COMMIT_REFS } from './blob';
 export const OUTBOX_TABLE = '_syncular_outbox';
 export const OUTBOX_IMAGES = '_syncular_outbox_before_images';
-import { overlayScopePredicate, type OverlayScope } from './failed-overlay';
+import type { OverlayScope } from './failed-overlay';
 /**
  * The durable outbox (SPEC.md §7.1) with encode-at-send (the §0 binary-push
  * outbox rule): local mutations are persisted in a schema-agnostic JSON
@@ -80,10 +80,14 @@ export function appendOutboxCommit(
     `INSERT INTO ${OUTBOX_TABLE}(client_commit_id,created_at_ms,operations)VALUES(?,?,?)`,
     [clientCommitId, nowMs, JSON.stringify(operations)],
   );
-  replaceOutboxBeforeImages(db, clientCommitId, beforeImages);
+  replaceOutboxBeforeImages(db, { clientCommitId, operations }, beforeImages);
 }
 
-/** Pending commits in FIFO creation order (§7.1). Full reads serve replay and the public listing. */
+/**
+ * Pending commits in FIFO creation order (§7.1). Full reads serve replay and
+ * the public listing; a scoped read finds commits through the before-image
+ * row index and never parses operation bodies it does not return.
+ */
 export function listOutbox(
   db: ClientDatabase,
   scope?: OverlayScope,
@@ -92,7 +96,7 @@ export function listOutbox(
     .query(
       scope === undefined
         ? `SELECT * FROM ${OUTBOX_TABLE} ORDER BY seq ASC`
-        : `SELECT * FROM ${OUTBOX_TABLE} WHERE EXISTS(SELECT 1 FROM json_each(operations) WHERE ${overlayScopePredicate("json_extract(value,'$.table')", "json_extract(value,'$.rowId')")}) ORDER BY seq`,
+        : `SELECT * FROM ${OUTBOX_TABLE} WHERE client_commit_id IN(SELECT client_commit_id FROM ${OUTBOX_IMAGES} WHERE (tbl,row_id) IN(SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?1)) UNION SELECT client_commit_id FROM ${OUTBOX_IMAGES} WHERE tbl IN(SELECT json_extract(value,'$[0]') FROM json_each(?1) WHERE json_array_length(value)=1)) ORDER BY seq`,
       scope && [JSON.stringify(scope)],
     )
     .map(decodeOutboxRow);
@@ -176,17 +180,22 @@ export function listOutboxBeforeImages(
     }));
 }
 
+/** Each image carries its operation's row key, the index of every per-row outbox lookup. */
 export function replaceOutboxBeforeImages(
   db: ClientDatabase,
-  clientCommitId: string,
+  commit: Pick<OutboxCommit, 'clientCommitId' | 'operations'>,
   replacements: readonly OutboxBeforeImage[],
 ): void {
   for (const image of replacements) {
+    // Images are captured per operation index of this same commit.
+    const operation = commit.operations[image.opIndex]!;
     db.exec(
-      `INSERT INTO ${OUTBOX_IMAGES}(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?) ON CONFLICT(client_commit_id,op_index)DO UPDATE SET existed=excluded.existed,sync_version=excluded.sync_version,values_json=excluded.values_json`,
+      `INSERT INTO ${OUTBOX_IMAGES}(client_commit_id,op_index,tbl,row_id,existed,sync_version,values_json)VALUES(?,?,?,?,?,?,?) ON CONFLICT(client_commit_id,op_index)DO UPDATE SET existed=excluded.existed,sync_version=excluded.sync_version,values_json=excluded.values_json`,
       [
-        clientCommitId,
+        commit.clientCommitId,
         image.opIndex,
+        operation.table,
+        operation.rowId,
         image.existed ? 1 : 0,
         image.syncVersion ?? null,
         image.values === undefined ? null : JSON.stringify(image.values),

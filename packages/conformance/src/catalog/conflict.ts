@@ -280,6 +280,88 @@ export const conflictScenarios: readonly Scenario[] = [
     },
   },
 
+  // §7.2: a rollback rebuilds the row from the last server-delivered base.
+  // B queues an unrelated commit and then its edit of t1; A's write of t1
+  // reaches B in the round that drains only the unrelated commit, so the edit
+  // conflicts one round later. The variant keeps a later pending patch of t1.
+  ...[false, true].map(
+    (laterEdit): Scenario => ({
+      name: laterEdit
+        ? 'conflict/rollback-replays-later-edit-over-pulled-base'
+        : 'conflict/rollback-restores-pulled-server-base',
+      specRefs: ['§6.5', '§7.1', '§7.2'],
+      async run(ctx) {
+        const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+        await a.api.mutate([
+          { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'orig') },
+        ]);
+        await syncIdle(a);
+        const b = await ctx.newClient({
+          actorId: 'actor-b',
+          clientId: 'client-b',
+          allowed: P1,
+          limits: { maxPushCommitsPerRequest: 1 },
+        });
+        await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await syncIdle(b);
+
+        const unrelated = await b.api.mutate([
+          { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'other') },
+        ]);
+        const edit = await b.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('t1', 'p1', 'b-edit'),
+            baseVersion: 1,
+          },
+        ]);
+        const later = laterEdit
+          ? await b.api.patch('tasks', 't1', { priority: 5 })
+          : undefined;
+        await a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('t1', 'p1', 'theirs'),
+            baseVersion: 1,
+          },
+        ]);
+        await syncIdle(a);
+
+        const first = await syncOk(b);
+        checkEqual(first.applied, [unrelated], 'round 1 drains one commit');
+        check(first.commitsApplied > 0, "round 1 pulls A's write");
+        const second = await syncOk(b);
+        checkEqual(second.rejected, [edit], 'round 2 rejects the edit');
+        checkEqual(second.conflicts, 1, 'the edit conflicts');
+
+        const t1 = (await b.api.readRows('tasks')).find(
+          (row) => row.rowId === 't1',
+        );
+        checkEqual(t1?.version, 2, "the local row keeps A's version");
+        checkEqual(
+          t1?.values,
+          task('t1', 'p1', 'theirs', false, laterEdit ? 5 : null),
+          laterEdit
+            ? 'the later pending patch replays over the pulled base'
+            : 'the local row equals the server row',
+        );
+        checkEqual(
+          await b.api.pendingCommitIds(),
+          later === undefined ? [] : [later],
+          'only the later commit stays queued',
+        );
+        await syncIdle(b);
+        await syncIdle(a);
+        await expectConverged(ctx, 'tasks', [a, b], {
+          variable: 'project_id',
+          values: ['p1'],
+        });
+      },
+    }),
+  ),
+
   {
     name: 'conflict/insert-race-discloses-winner',
     specRefs: ['§6.2'],

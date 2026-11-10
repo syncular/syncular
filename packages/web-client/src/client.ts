@@ -6343,12 +6343,14 @@ export class SyncClient {
     return { opIndex, existed: true, syncVersion, values };
   }
 
+  /** `onlyKeys` holds overlay row keys (`JSON [table,rowId]`). */
   #captureBeforeImages(
     operations: readonly OutboxOperation[],
     onlyKeys?: ReadonlySet<string>,
   ): OutboxBeforeImage[] {
     return operations.flatMap((operation, opIndex) =>
-      onlyKeys && !onlyKeys.has(`${operation.table}\u0000${operation.rowId}`)
+      onlyKeys &&
+      !onlyKeys.has(JSON.stringify([operation.table, operation.rowId]))
         ? []
         : [this.#captureBeforeImage(operation, opIndex)],
     );
@@ -6408,14 +6410,14 @@ export class SyncClient {
       imageByIndex.has(index),
     );
     const affectedKeys = new Set(
-      commit.operations.map(
-        (operation) => `${operation.table}\u0000${operation.rowId}`,
+      commit.operations.map((operation) =>
+        JSON.stringify([operation.table, operation.rowId]),
       ),
     );
     if (complete) {
       const restored = new Set<string>();
       commit.operations.forEach((operation, index) => {
-        const key = `${operation.table}\u0000${operation.rowId}`;
+        const key = JSON.stringify([operation.table, operation.rowId]);
         if (restored.has(key)) return;
         const image = imageByIndex.get(index);
         if (image) this.#restoreBeforeImage(operation, image, batch);
@@ -6429,15 +6431,15 @@ export class SyncClient {
     deleteOutboxCommit(this.#db, commit.clientCommitId);
 
     if (!complete) return;
-    for (const later of listOutbox(this.#db)) {
+    for (const later of listOutbox(this.#db, [...affectedKeys])) {
       if (later.seq <= commit.seq) continue;
       const affectedOperations = later.operations.filter((operation) =>
-        affectedKeys.has(`${operation.table}\u0000${operation.rowId}`),
+        affectedKeys.has(JSON.stringify([operation.table, operation.rowId])),
       );
       if (affectedOperations.length === 0) continue;
       replaceOutboxBeforeImages(
         this.#db,
-        later.clientCommitId,
+        later,
         this.#captureBeforeImages(later.operations, affectedKeys),
       );
       // §7.4.4: a later commit the recovery already classified refused never
@@ -6703,11 +6705,24 @@ export class SyncClient {
         scope,
         this.#schema,
       );
+      const outbox = new Set(listOutbox(this.#db, scope));
       const pending = [
         ...failedOverlayCommits(this.#db, false, scope, this.#schema),
-        ...listOutbox(this.#db, scope),
+        ...outbox,
       ].sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq);
-      for (const commit of [...acknowledged, ...pending])
+      // §7.2: a caller that restored the bases itself has just written the
+      // server base of every exact-key row in scope. Each pending commit's
+      // before-image of such a row is re-taken right before the commit
+      // replays, so a later rollback restores that base plus earlier intent.
+      const rebased =
+        restoreBases || scope === undefined ? undefined : new Set(scope);
+      for (const commit of [...acknowledged, ...pending]) {
+        if (rebased !== undefined && outbox.has(commit))
+          replaceOutboxBeforeImages(
+            this.#db,
+            commit,
+            this.#captureBeforeImages(commit.operations, rebased),
+          );
         this.#applyOperationsLocally(
           commit.operations.filter(
             (op) =>
@@ -6718,6 +6733,7 @@ export class SyncClient {
           batch,
           true,
         );
+      }
     };
     const priorRejections = [...this.#rejections];
     try {
