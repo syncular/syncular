@@ -469,3 +469,65 @@ Follow-ups found while fixing:
   arriving end to end; Kotlin and Flutter changes ran only in CI.
 - **UNIQUE text match.** The Rust client classifies a unique violation by
   SQLite's message text; only a string reaches that site (`write_row`).
+
+## 8. Second round: typegen, React, Tauri, testkit, docs
+
+Three reviews followed the fix program: `packages/typegen` (12 confirmed
+findings), `packages/react` + `packages/tauri` + the testkit + `create-app`
+(11), and the docs site and READMEs against the code (about 55 false
+statements). Evidence labels as in §2.
+
+| Id | Sev | Ev | Defect | Status |
+| --- | --- | --- | --- | --- |
+| A1 | high | C | The `create-app` web and Tauri templates upgraded `/realtime` without `authenticate`; every socket connected as a hard-coded actor. | fixed fb86af79 |
+| A2 | low | C | No template or demo called `hub.heartbeat()`. | fixed fb86af79 |
+| A3 | low | C | The Tauri template shipped `"csp": null`. | fixed fb86af79 (not checked in a running window) |
+| B1 | medium | C | `snapshotRead()` invoked a plugin command missing from the permission list; every real Tauri app got an ACL refusal. | fixed 5d33232b |
+| B2 | medium | U | `conflicts()` on Tauri and React Native returned `{$bytes}` envelopes. | fixed 5d33232b |
+| B3 | medium | U | A failed Tauri `create` rejected with a bare string and leaked its listener. | fixed 5d33232b |
+| B4 | low | U | The Tauri plugin config had no heartbeat interval. | fixed 5d33232b |
+| R1 | medium | U | `useRawSql` table inference missed comma joins and schema-qualified names. | fixed fb86af79: inference deleted; `dependencies` or `tables` is required |
+| R2 | low | U | `claimCoverage` was not part of the hook identity. | fixed fb86af79 |
+| K1 | medium | U | The testkit's `goOffline()` did not fail like a dead network. | fixed fb86af79 |
+| K2 | low | U | Four testkit fault flags were silently ignored. | fixed fb86af79 |
+| G1 | high | C | Swift, Kotlin and Dart schema constants omitted `indexes` and `references`. | fixed 57d4dd9e |
+| G2 | high | C | A scope column could have any type. | fixed for boolean, json, bytes, blob_ref, crdt; float open (below) |
+| Q3 | high | C | Emitted query SQL differed from the SQL that SQLite checked. | fixed 57d4dd9e |
+| Q4 | high | U | `.sql` queries claimed scope coverage the SQL did not prove. | fixed 57d4dd9e |
+| G5 | medium | U | A migration could join a deployed schema version. | fixed 57d4dd9e: lock format 3; old locks need `migrations upgrade-lock` |
+| Q6 | medium | U | SYQL accepted proofs §13.2 forbids. | fixed 57d4dd9e |
+| Q7 | medium | C | The Swift query output did not compile. | fixed 57d4dd9e; Kotlin and Dart gates skip without a toolchain |
+| G8 | medium | U | A UNIQUE index over an encrypted column was accepted. | fixed 57d4dd9e |
+| G9 | medium | U | Dropping a reference's index was accepted. | fixed 57d4dd9e |
+| G10, Q10 | low | U | Names and DDL accepted that a compiler or SQLite rejects. | fixed 57d4dd9e |
+| Q11 | low | U | Some nullable results were typed non-null. | fixed 57d4dd9e |
+| G12 | low | U | About 300 typegen throw sites carry no code. | open: new errors have codes; the rest are unchanged |
+| P1 to P7 | low | U | Seven places where the docs were right and the code fell short. | fixed ffe14e66 (React Native iOS and Android changes not compiled) |
+| Docs | | U | 56 statements and snippets the code did not keep. | fixed 7e9c23c3 |
+
+Simplifications taken: one native command bridge for Tauri and React Native
+(`5d33232b`, net -1,157 lines); the React table inference and the testkit
+duplicates (`fb86af79`); the typegen scanners, duplicated inference and
+legacy lock path (`57d4dd9e`, `packages/typegen/src` net -234).
+
+Open after the second round:
+
+- **Float scope columns.** For 1e21, 1e-7 and 1.0 the TS server
+  (`1e+21`, `1e-7`, `1`), the Rust authority (`1000000000000000000000`,
+  `0.0000001`, `1`) and the Rust client's text comparison (`1.0e+21`,
+  `1.0e-07`, `1.0`) disagree; only the TS client matches every spelling. Two
+  conformance scenarios scope by a float column on purpose. Decide: refuse
+  float, or define one rendering in SPEC §3.1 and implement it four times.
+- **Lock format 3** refuses older migration locks until
+  `syncular migrations upgrade-lock` runs once.
+- **`useRawSql`** throws without `dependencies` or `tables`.
+- **Worker bundle** is 12 bytes under its ceiling.
+- **Not run locally:** Kotlin and Flutter checks, the Kotlin and Dart
+  compile gates for generated code, the React Native native modules, the
+  Tauri template CSP in a window, the browser test lane.
+- **Unconfirmed leads from the second round:** `useRawSql` with
+  `enabled: false` reports `ready` with no rows; a failed
+  `beginSecurityPreflight` on Tauri leaves the bridge in preflight; Tauri
+  events reach every webview; one native client per Tauri app regardless of
+  windows; computed columns typed by the "string" fallback decode four
+  different ways across languages.
