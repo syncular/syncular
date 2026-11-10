@@ -116,6 +116,42 @@ export const presenceScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'presence/reconnect-replaces-the-stale-socket',
+    specRefs: ['§8.6.1', 'B.16'],
+    requires: ['realtime'],
+    async run(ctx) {
+      // Two handles share one clientId: the first one's socket stands in for
+      // the stale socket of a client that reconnected.
+      const stale = await connectedOn(ctx, 'actor-a', 'client-a', P1);
+      const b = await connectedOn(ctx, 'actor-b', 'client-b', P1);
+      await stale.api.setPresence?.(KEY_P1, { v: 1 });
+      await b.realtime.waitForPresence(1);
+      const fresh = await connectedOn(ctx, 'actor-a', 'client-a', P1);
+      await fresh.api.setPresence?.(KEY_P1, { v: 2 });
+      await b.realtime.waitForPresence(2);
+      // The stale socket's close announces nothing: the identity
+      // (actor-a, client-a) is still present through the fresh socket.
+      await stale.api.disconnectRealtime();
+      await fresh.api.setPresence?.(KEY_P1, { v: 3 });
+      await b.realtime.waitForPresence(3);
+      checkEqual(
+        b.realtime.presenceEvents.map((e) => [e.kind, e.clientId, e.doc]),
+        [
+          ['join', 'client-a', { v: 1 }],
+          ['update', 'client-a', { v: 2 }],
+          ['update', 'client-a', { v: 3 }],
+        ],
+        'the same (actorId, clientId) replaces its document; the stale close sends no leave',
+      );
+      checkEqual(
+        peerDocs((await b.api.presence?.(KEY_P1)) ?? []),
+        [{ v: 3 }],
+        'B holds one peer with the latest document',
+      );
+    },
+  },
+
+  {
     name: 'presence/cross-scope-isolation-privacy-probe',
     specRefs: ['§8.6.3', 'B.16'],
     requires: ['realtime'],

@@ -45,7 +45,11 @@ const SCHEMA: ServerSchema = {
   ],
 };
 
-const STATE = { acceptWebSocket: () => {}, getWebSockets: () => [] };
+const STATE = {
+  acceptWebSocket: () => {},
+  getWebSockets: () => [],
+  storage: { getAlarm: async () => null, setAlarm: async () => {} },
+};
 
 const PULL: RequestFrame[] = [
   {

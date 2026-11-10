@@ -131,6 +131,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
   }
   webSocketClose(ws: WebSocket) { return this.#host.webSocketClose(ws); }
   webSocketError(ws: WebSocket) { return this.#host.webSocketError(ws); }
+  alarm() { return this.#host.alarm(); }
 }
 
 const handler = createWorkersFetchHandler<Env>({
@@ -140,14 +141,19 @@ const handler = createWorkersFetchHandler<Env>({
   }),
   realtime: (env) => ({
     namespace: env.REALTIME,
+    allowedOrigins: ['https://app.example.com'],
     authenticate: (request) => authenticateRealtime(request, env),
   }),
 });
 ```
 
+`allowedOrigins` lists the origins a browser upgrade may come from. An upgrade whose `Origin` header names another origin answers 403 `sync.forbidden` before `authenticate` runs; native clients send no `Origin` and pass. Set it when `authenticateRealtime` reads a cookie ([Cookie sessions](/guide-auth/#cookie-sessions)).
+
+The host sends the §8.5 `heartbeat` from the Durable Object alarm: it arms the alarm when a socket connects, sends the event straight to every socket without rebuilding sessions, and re-arms while sockets remain. Forward `alarm()` as above. `heartbeatIntervalMs` in `RealtimeDOConfig` sets the interval (default 30 000). The host owns the object's alarm, so a subclass cannot schedule its own.
+
 `createWorkersFetchHandler(factory)` builds the Hono app per request from your factory. That keeps it stateless, which Workers requires because each invocation may run on a fresh isolate.
 
-The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first event after a wake (a socket message, a forwarded `/sync` or `/operations` request, a wake), the host rebuilds the session of every open socket from a minimal serialized attachment plus the client record in D1, the durable source of truth. A socket that stayed quiet through the hibernation therefore still receives the next delta. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
+The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first event after a wake (a socket message or close, an upgrade, a forwarded `/sync`, `/operations` or admin request, a wake), the host rebuilds the session of every open socket from a minimal serialized attachment plus the client record in D1, the durable source of truth. Every event waits for that one rebuild, so a push never fans out while sessions are missing. The rebuild touches the partition and reads its latest sequence once, and reads each client record once. A socket that stayed quiet through the hibernation therefore still receives the next delta. Presence documents live in the object's memory and do not survive a hibernation: a socket that closes after one sends no `leave`, and its peers keep showing its last document until they reconnect. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
 
 Register [remote operations](/guide-remote-operations/) on the Durable Object with `operations` in `RealtimeDOConfig`. The adapter forwards `POST /operations` to the partition's object, so a command applies on the same FIFO as pushes and its commit reaches the partition's sockets as a delta. A Worker config that passes `operations` beside a `realtime` or `coordinator` namespace fails each `/operations` request, because the command would run outside the FIFO.
 
@@ -187,7 +193,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
     realtimeDOConfig(this.env),
   );
   fetch(request: Request) { return this.#host.fetch(request); }
-  // webSocketMessage, webSocketClose, webSocketError as in the D1 example
+  // webSocketMessage, webSocketClose, webSocketError, alarm as in the D1 example
 }
 ```
 

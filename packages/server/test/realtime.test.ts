@@ -2,7 +2,7 @@
  * Realtime session (SPEC.md §8): hello, subscription registration from
  * pulls, binary deltas, wake-ups, acks — transport-agnostic callbacks.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import {
   type CommitFrame,
   decodeMessage,
@@ -128,6 +128,60 @@ describe('handshake (§8.1)', () => {
         send: wire.send,
       }),
     ).rejects.toMatchObject({ code: 'sync.invalid_client_id' });
+  });
+
+  test('restore reads the partition once and each client record once, and sends no hello', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    for (const clientId of ['client-1', 'client-2', 'client-3']) {
+      await sync(
+        t,
+        [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+        {
+          clientId,
+        },
+      );
+    }
+    const calls = { touch: 0, maxSeq: 0, record: 0 };
+    const touch = t.storage.touchPartition.bind(t.storage);
+    const maxSeq = t.storage.getMaxCommitSeq.bind(t.storage);
+    const record = t.storage.getClientRecord.bind(t.storage);
+    t.storage.touchPartition = (...args) => {
+      calls.touch += 1;
+      return touch(...args);
+    };
+    t.storage.getMaxCommitSeq = (...args) => {
+      calls.maxSeq += 1;
+      return maxSeq(...args);
+    };
+    t.storage.getClientRecord = (...args) => {
+      calls.record += 1;
+      return record(...args);
+    };
+    const wires = [makeWire(), makeWire(), makeWire()];
+    const restored = await hub.restore(
+      wires.map((wire, i) => ({
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: `client-${i + 1}`,
+        send: wire.send,
+      })),
+    );
+    expect(restored.map((result) => result.status)).toEqual([
+      'fulfilled',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(calls).toEqual({ touch: 1, maxSeq: 1, record: 3 });
+    expect(wires.flatMap((wire) => wire.texts)).toEqual([]);
+    await sync(
+      t,
+      [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])],
+      {
+        clientId: 'writer',
+      },
+    );
+    expect(wires.map((wire) => wire.binaries.length)).toEqual([1, 1, 1]);
   });
 });
 
@@ -276,6 +330,61 @@ describe('delta delivery (§8.2)', () => {
       commit?.commitSeq ?? -1,
     );
   });
+
+  test.each([
+    ['count', { maxUnackedDeltas: 2 }, 2],
+    ['bytes', { maxUnackedDeltaBytes: 1 }, 1],
+  ] as const)(
+    'unacknowledged deltas past the %s limit become catch-up wakes until the post-pull ack',
+    async (_limit, limits, delivered) => {
+      const t = makeContext();
+      const hub = createRealtimeHub({
+        schema: t.ctx.schema,
+        storage: t.ctx.storage,
+        segments: t.segments,
+        resolveScopes: t.ctx.resolveScopes,
+        ...limits,
+      });
+      Object.assign(t.ctx, { realtime: hub });
+      const { wire, session } = await connectedSession(t, hub);
+      const push = (id: string) =>
+        sync(t, [pushCommit(id, [upsert('tasks', id, taskRow(id, 'p1'))])], {
+          clientId: 'writer',
+        });
+      const ack = async () =>
+        session.handleMessage(
+          JSON.stringify({
+            type: 'ack',
+            cursor: await t.storage.getMaxCommitSeq('part-1'),
+          }),
+        );
+      // A client that acknowledges each delta never reaches the limit.
+      for (const id of ['a1', 'a2', 'a3']) {
+        await push(id);
+        await ack();
+      }
+      expect(wire.binaries).toHaveLength(3);
+      expect(wire.texts.slice(1)).toEqual([]);
+      // A client that stops acknowledging gets wakes past the limit.
+      for (const id of ['u1', 'u2', 'u3']) await push(id);
+      expect(wire.binaries).toHaveLength(3 + delivered);
+      const wakes = wire.texts
+        .slice(1)
+        .map((text) => parseRealtimeServerEvent(text))
+        .map((event) =>
+          event.known && event.event.event === 'sync'
+            ? event.event.data.reason
+            : undefined,
+        );
+      expect(wakes).toEqual(
+        Array.from({ length: 3 - delivered }, () => 'catchup-required'),
+      );
+      // The acknowledgement after the catch-up pull resumes deltas.
+      await ack();
+      await push('r1');
+      expect(wire.binaries).toHaveLength(4 + delivered);
+    },
+  );
 
   test('out-of-order commit notifications wake before sending a gap delta', async () => {
     const t = makeContext();
@@ -929,6 +1038,25 @@ describe('control plane (§8.3, §8.5)', () => {
     session.handleMessage('not json at all'); // must not throw
     session.handleMessage('{"type":"presence"}'); // unknown → ignored
   });
+
+  test('hub.heartbeat sends a §8.5 heartbeat to every session', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const wires = [makeWire(), makeWire()];
+    for (const [i, partition] of ['part-1', 'part-2'].entries()) {
+      await hub.connect({
+        partition,
+        actorId: 'actor-1',
+        clientId: `client-${i}`,
+        send: wires[i]!.send,
+      });
+    }
+    hub.heartbeat();
+    for (const wire of wires) {
+      const beat = parseRealtimeServerEvent(wire.texts.at(-1) ?? '');
+      expect(beat.known && beat.event.event).toBe('heartbeat');
+    }
+  });
 });
 
 describe('presence (§8.6)', () => {
@@ -1126,6 +1254,58 @@ describe('presence (§8.6)', () => {
     // 28 UTF-8 bytes fit.
     publish('é'.repeat(10));
     expect(presenceEvents(b.wire).at(-1)?.doc).toEqual({ s: 'é'.repeat(10) });
+  });
+
+  test('a reconnected client replaces its stale socket document; the stale close announces nothing (§8.6.1)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const stale = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    const publish = (session: typeof stale.session, v: number) =>
+      session.handleMessage(
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'project:p1', doc: { v } },
+        }),
+      );
+    publish(stale.session, 1);
+    const fresh = await presentClient(t, hub, 'client-a');
+    publish(fresh.session, 2);
+    stale.session.close();
+    expect(
+      presenceEvents(b.wire).map(({ kind, clientId, doc }) => [
+        kind,
+        clientId,
+        doc,
+      ]),
+    ).toEqual([
+      ['join', 'client-a', { v: 1 }],
+      ['update', 'client-a', { v: 2 }],
+    ]);
+    fresh.session.close();
+    expect(lastPresence(b.wire)?.kind).toBe('leave');
+  });
+
+  test('a publish reuses the scope keys computed when registrations were assigned', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const a = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    const scopeKeysOf = spyOn(hub, 'scopeKeysOf');
+    try {
+      for (const v of [1, 2, 3]) {
+        a.session.handleMessage(
+          JSON.stringify({
+            event: 'presence',
+            data: { scopeKey: 'project:p1', doc: { v } },
+          }),
+        );
+      }
+      expect(presenceEvents(b.wire)).toHaveLength(3);
+      expect(scopeKeysOf).not.toHaveBeenCalled();
+    } finally {
+      scopeKeysOf.mockRestore();
+    }
   });
 
   test('a malformed presence publish drops the connection (§8.1)', async () => {

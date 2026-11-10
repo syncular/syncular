@@ -715,8 +715,8 @@ fixes the bound on undrained inbound realtime traffic.
 The defaults are unbounded deadlines and unbounded body sizes, matching
 the reference HTTP binding; a host chooses its own application policy.
 The JSON config keys are `requestTimeoutMs`, `roundDeadlineMs`,
-`maxRequestBytes`, `maxResponseBytes`, and `redirects` (`"deny"` or
-`"follow"`). A programmatic policy carries the same fields, and a
+`maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs` (§8.5), and
+`redirects` (`"deny"` or `"follow"`). A programmatic policy carries the same fields, and a
 non-positive or unrepresentable bound is rejected before it reaches the
 transport. A numeric bound is a `u64` integer token in the config JSON; a
 float-formatted value is refused, so a host binding serializes a
@@ -5976,7 +5976,13 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   observed.)
 - Flow control: the server bounds in-flight unacked deltas and per-window
   message counts (host-configured); when exceeded, or when a delta would
-  exceed the host's max message size, it drops to a wake-up.
+  exceed the host's max message size, it drops to a wake-up. The reference
+  server counts the deltas it sent to a connection above the connection's
+  highest ack, and their bytes. When another delta would take the count past
+  `maxUnackedDeltas` (default 256) or, with at least one delta outstanding,
+  the bytes past `maxUnackedDeltaBytes` (default 4 MiB), it sends
+  `catchup-required` instead and suppresses deltas as for a dropped delta.
+  The client's ack after its catch-up round lifts the suppression.
 
 ### 8.3 Wake-ups
 
@@ -6068,6 +6074,16 @@ Server sends `{"event":"heartbeat","data":{"timestamp":<ms>}}` on a host
 interval (suggested 30 s). A client that hears nothing (any frame counts)
 for 2× the interval SHOULD reconnect. No client→server ping is specified.
 
+The reference hub sends the event to every connection when the host calls
+`RealtimeHub.heartbeat()`; the host owns the interval. The Workers Durable
+Object host sends it from the object's alarm while sockets are connected
+(`heartbeatIntervalMs`, default 30 000). The native Rust transport takes the
+interval from the transport config key `realtimeHeartbeatMs` (default
+30 000). A connected socket that delivers no frame for twice that interval
+ends with `Inbound::Disconnected` carrying `transport.timeout` and
+`causeKind` `heartbeat` (§8.8 unsolicited termination). A host that never
+sends heartbeats therefore sees idle native sockets reconnect every 60 s.
+
 ### 8.6 Presence
 
 Scope-keyed **ephemeral** presence: a connected client publishes a small
@@ -6107,7 +6123,10 @@ presence encoding; wire version 1 carries presence as text only.
   (§8.6.3). Two connections of the same actor (two devices, two tabs behind
   distinct `clientId`s) are two distinct peers, each with its own document;
   the same `clientId` reconnecting **replaces** its own prior document for
-  the key (last publish wins per `(scopeKey, actorId, clientId)`).
+  the key (last publish wins per `(scopeKey, actorId, clientId)`). A publish
+  removes the document another connection of the same identity holds on the
+  key without a `leave`, so a stale connection of a reconnected client
+  announces nothing when it closes.
 
 #### 8.6.2 Wire
 
@@ -6217,8 +6236,9 @@ is no separate presence grant, token, or resolver call.
   in-memory ephemeral state alongside the session set; it MUST NOT touch
   `ServerStorage`.
 - On publish (authorized, within cap): store/replace the connection's
-  document for the key and fan a `join` (first document from this connection
-  on this key) or `update` (replacement) to every **other** connection
+  document for the key and fan a `join` (first document from this peer
+  identity on this key) or `update` (replacement, also of a document another
+  connection of the same identity held) to every **other** connection
   registered on the key. A publisher does not receive its own fanout.
 - On leave (`doc: null`, or disconnect, or losing the key's registration):
   remove the connection's document for the key and fan a `leave` to the
@@ -6268,6 +6288,9 @@ group), both pairings:
   its presence — and the presence it observes — survives the round intact
   (presence state is independent of round state; the round's registration
   replace re-derives the same grant, §8.6.3).
+- **A reconnect replaces the stale socket.** Two connections of one
+  `(actorId, clientId)` publish in turn on a key; the peer observes a `join`
+  then an `update`, and the first connection's close sends no `leave`.
 
 ### 8.7 Sync rounds over the socket
 
@@ -7264,7 +7287,12 @@ Each is a driver-interface script, not a prose test.
     (push + pull), and both its published presence and the presence it
     observes survive the round intact (presence state is independent of
     round state; the round's registration replace re-derives the same
-    grant, §8.6.3). Both pairings (TS×TS, Rust×TS).
+    grant, §8.6.3). (e) A reconnect replaces the stale socket: two
+    connections share `client-a`; the first publishes (B observes a
+    `join`), the second publishes (B observes an `update`), the first
+    disconnects, and the second publishes again; B observes no `leave` and
+    holds one peer with the latest document (§8.6.1). Both pairings
+    (TS×TS, Rust×TS).
 
 17. **Reconnect storm (§8.4).** ~20 sessions on the same scope connect,
     a burst of commits fans out, and all sessions churn (disconnect +

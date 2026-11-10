@@ -67,6 +67,10 @@ pub struct HostTransportPolicy {
     /// will accept. Does not cap realtime socket buffers.
     pub max_response_bytes: Option<u64>,
     pub redirects: RedirectPolicy,
+    /// The server's §8.5 heartbeat interval; `None` is the suggested 30 s. An
+    /// established realtime socket that receives no frame for twice the
+    /// interval is lost.
+    pub realtime_heartbeat: Option<Duration>,
 }
 
 impl HostTransportPolicy {
@@ -87,6 +91,19 @@ impl HostTransportPolicy {
             if deadline.is_zero() || now.checked_add(deadline).is_none() {
                 return Err(
                     "sync.invalid_request: transport config roundDeadlineMs is out of range"
+                        .to_owned(),
+                );
+            }
+        }
+        if let Some(interval) = self.realtime_heartbeat {
+            if interval.is_zero()
+                || interval
+                    .checked_mul(2)
+                    .and_then(|silence| now.checked_add(silence))
+                    .is_none()
+            {
+                return Err(
+                    "sync.invalid_request: transport config realtimeHeartbeatMs is out of range"
                         .to_owned(),
                 );
             }
@@ -144,6 +161,11 @@ impl HostTransportPolicy {
                 "sync.invalid_request: transport config maxResponseBytes must be a positive integer",
             )?,
             redirects,
+            realtime_heartbeat: bound(
+                "realtimeHeartbeatMs",
+                "sync.invalid_request: transport config realtimeHeartbeatMs must be a positive integer",
+            )?
+            .map(Duration::from_millis),
         };
         policy.validate()?;
         Ok(policy)
@@ -2632,9 +2654,16 @@ mod native {
             let inbound = Arc::clone(&self.inbound);
             let stop = Arc::clone(&self.reader_stop);
             let round = Arc::clone(&self.round);
+            // §8.5: any inbound frame proves the socket; twice the heartbeat
+            // interval of silence loses it.
+            let silence = 2 * self
+                .policy
+                .realtime_heartbeat
+                .unwrap_or(Duration::from_secs(30));
             self.reader = Some(std::thread::spawn(move || {
                 let mut events = Events::new();
                 let mut pending: Option<mpsc::Sender<Result<(), TransportError>>> = None;
+                let mut heard = Instant::now();
                 let failure = 'io: loop {
                     if stop.load(Ordering::SeqCst) {
                         let _ = ws.close(None);
@@ -2659,6 +2688,9 @@ mod native {
                     let mut drained = false;
                     for _ in 0..64 {
                         let received = ws.read();
+                        if received.is_ok() {
+                            heard = Instant::now();
+                        }
                         if let Ok(message) = &received {
                             let kind = match message {
                                 Message::Text(_) => Some(RealtimeReceiptKind::Text),
@@ -2740,8 +2772,14 @@ mod native {
                     if let Err(error) = registration.poller.modify(&registration.stream, interest) {
                         break io_err("realtime rearm failed", error);
                     }
+                    let Some(wait) = (heard + silence)
+                        .checked_duration_since(Instant::now())
+                        .filter(|wait| !wait.is_zero())
+                    else {
+                        break timeout_error("realtime heartbeat missed", "heartbeat");
+                    };
                     events.clear();
-                    if let Err(error) = registration.poller.wait(&mut events, None) {
+                    if let Err(error) = registration.poller.wait(&mut events, Some(wait)) {
                         if error.kind() != std::io::ErrorKind::Interrupted {
                             break io_err("realtime wait failed", error);
                         }
@@ -3010,6 +3048,17 @@ mod native {
                 .unwrap_err(),
                 "sync.invalid_request: transport config roundDeadlineMs is out of range"
             );
+            for interval in [Duration::ZERO, Duration::MAX / 2 + Duration::from_secs(1)] {
+                assert_eq!(
+                    HostTransportPolicy {
+                        realtime_heartbeat: Some(interval),
+                        ..Default::default()
+                    }
+                    .validate()
+                    .unwrap_err(),
+                    "sync.invalid_request: transport config realtimeHeartbeatMs is out of range"
+                );
+            }
             assert!(HostTransportPolicy {
                 max_request_bytes: Some(0),
                 ..Default::default()
@@ -3328,6 +3377,42 @@ mod tests {
             Inbound::Disconnected(error) if error.code == "transport.failed"
                 && error.details.as_ref().and_then(|d| d.get("causeKind"))
                     == Some(&serde_json::json!("inbound_overflow"))
+        ));
+        transport.shutdown();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_silent_socket_is_lost_after_twice_the_heartbeat_interval() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(socket).unwrap();
+            socket
+                .send(tungstenite::Message::Text("{\"event\":\"hello\"}".into()))
+                .unwrap();
+            // Then silence until the client gives up on the socket.
+            while socket.read().is_ok() {}
+        });
+        let (woke, wakes) = mpsc::channel::<()>();
+        let mut transport = HostTransport::from_config_with_notify(
+            &serde_json::json!({"baseUrl": base, "realtimeHeartbeatMs": 50}),
+            Some(Arc::new(move || {
+                let _ = woke.send(());
+            })),
+        )
+        .unwrap();
+        transport.realtime_connect().unwrap();
+        for _ in 0..2 {
+            wakes.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        let inbound = transport.take_inbound();
+        assert!(matches!(&inbound[0], Inbound::Text(_)));
+        assert!(matches!(
+            &inbound[1],
+            Inbound::Disconnected(error) if error.code == "transport.timeout"
+                && error.details == Some(serde_json::json!({ "causeKind": "heartbeat" }))
         ));
         transport.shutdown();
         server.join().unwrap();

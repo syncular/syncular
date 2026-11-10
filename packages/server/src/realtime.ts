@@ -66,7 +66,7 @@ import {
   matchesEffective,
   type ResolvedScopes,
 } from './scopes';
-import type { ServerStorage, StoredCommit } from './storage';
+import type { ClientRecord, ServerStorage, StoredCommit } from './storage';
 
 /**
  * Realtime adds fanout/presence tuning to the canonical sync-server config;
@@ -75,6 +75,15 @@ import type { ServerStorage, StoredCommit } from './storage';
 export interface RealtimeHubConfig extends Omit<SyncServerConfig, 'realtime'> {
   /** Deltas larger than this become `delta-too-large` wake-ups (§8.2). */
   readonly maxDeltaBytes?: number;
+  /**
+   * §8.2 flow control: sent deltas a session may leave unacknowledged before
+   * the server stops sending it deltas and answers with a `catchup-required`
+   * wake-up. Default 256.
+   */
+  readonly maxUnackedDeltas?: number;
+  /** §8.2 flow control: bytes of unacknowledged deltas per session. Default
+   * 4 MiB. */
+  readonly maxUnackedDeltaBytes?: number;
   /**
    * §8.6 presence: cap on the serialized size (bytes) of a published
    * presence document. An over-cap publish is rejected loudly to the
@@ -120,6 +129,8 @@ interface Registration {
 
 const DEFAULT_MAX_DELTA_BYTES = 1024 * 1024;
 const DEFAULT_MAX_PRESENCE_BYTES = 16 * 1024;
+const DEFAULT_MAX_UNACKED_DELTAS = 256;
+const DEFAULT_MAX_UNACKED_DELTA_BYTES = 4 * 1024 * 1024;
 
 type PresenceDoc = Record<string, unknown>;
 
@@ -252,6 +263,11 @@ export class RealtimeSession {
   lastKnownSeq: number;
   /** Replaced at socket-round completion (§8.7); initial set from §8.1. */
   registrations: readonly Registration[];
+  /** The scope keys `registrations` cover: the presence grant (§8.6.3). */
+  scopeKeys: ReadonlySet<string>;
+  /** Sent deltas the client has not acknowledged, in commit order (§8.2). */
+  #unacked: { commitSeq: number; bytes: number }[] = [];
+  #unackedBytes = 0;
   /** Epoch-ms (hub clock) at registration, for `realtime.closed`. */
   readonly openedAtMs: number;
   #send: (data: string | Uint8Array) => void | Promise<void>;
@@ -320,6 +336,7 @@ export class RealtimeSession {
     this.wakePending = cursor < latestSeq;
     this.#wakeRequiredThroughSeq = cursor < latestSeq ? latestSeq : 0;
     this.registrations = registrations;
+    this.scopeKeys = hub.scopeKeysOf(registrations);
     this.openedAtMs = clock();
     this.#send = options.send;
     this.#closeSocket = options.closeSocket;
@@ -349,6 +366,9 @@ export class RealtimeSession {
     if ((parsed as { type?: unknown }).type !== 'ack') return;
     const cursor = (parsed as { cursor?: unknown }).cursor;
     if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor)) return;
+    while ((this.#unacked[0]?.commitSeq ?? Infinity) <= cursor) {
+      this.#unackedBytes -= this.#unacked.shift()!.bytes;
+    }
     this.cursor = Math.max(this.cursor, cursor);
     // The client may have caught up through another binding (§8.4). Its ack
     // proves those commits no longer need socket notifications, so the next
@@ -397,7 +417,7 @@ export class RealtimeSession {
     }
     // §8.6.3 authorization: the publish key must be in the connection's
     // registered effective scopes.
-    if (!this.#currentScopeKeys().has(scopeKey)) {
+    if (!this.scopeKeys.has(scopeKey)) {
       this.#sendSafe(
         encodePresenceError(scopeKey, 'presence.forbidden', this.#clock()),
       );
@@ -451,7 +471,21 @@ export class RealtimeSession {
   }
 
   #fanoutPublish(scopeKey: string, doc: PresenceDoc): void {
-    const kind = this.#hub.presence.set(this.partition, scopeKey, this, doc);
+    // §8.6.1: the peer identity is (actorId, clientId). Another session of
+    // this identity (a stale socket of a reconnected client) loses its
+    // document silently, so its later close announces nothing.
+    let replaced = false;
+    for (const peer of this.#hub.presence.peers(this.partition, scopeKey)) {
+      if (
+        peer !== this &&
+        peer.actorId === this.actorId &&
+        peer.clientId === this.clientId
+      ) {
+        replaced = peer.forgetPresence(scopeKey) || replaced;
+      }
+    }
+    const set = this.#hub.presence.set(this.partition, scopeKey, this, doc);
+    const kind = replaced ? 'update' : set;
     let rate = this.#presenceRate.get(scopeKey);
     if (rate === undefined) {
       rate = { lastFanoutMs: this.#clock() };
@@ -465,11 +499,17 @@ export class RealtimeSession {
   /** §8.6.1/§8.6.3: clear this session's document for a key and fan a
    * leave to the remaining peers. */
   #leavePresence(scopeKey: string): void {
-    const existed = this.#hub.presence.clear(this.partition, scopeKey, this);
+    if (this.forgetPresence(scopeKey))
+      this.#hub.fanoutPresence(this, scopeKey, 'leave', null);
+  }
+
+  /** Clear this session's document for a key without fanout, including a
+   * coalesced publish still pending. Returns whether a document existed. */
+  forgetPresence(scopeKey: string): boolean {
     const rate = this.#presenceRate.get(scopeKey);
     if (rate?.timer !== undefined) clearTimeout(rate.timer);
     this.#presenceRate.delete(scopeKey);
-    if (existed) this.#hub.fanoutPresence(this, scopeKey, 'leave', null);
+    return this.#hub.presence.clear(this.partition, scopeKey, this);
   }
 
   /** Deliver a fanout event to this session (called by the hub for peers,
@@ -493,17 +533,12 @@ export class RealtimeSession {
     );
   }
 
-  /** The scope keys this connection currently holds (§8.6.3). */
-  #currentScopeKeys(): Set<string> {
-    return this.#hub.scopeKeysOf(this.registrations);
-  }
-
   /** §8.6.3: drop presence on keys the connection no longer holds and
    * deliver the snapshot on keys it newly holds. Called after a
    * registration change (§8.7 round end, §8.1 reconnect handled by
    * connect's snapshot). */
   reconcilePresence(previousKeys: ReadonlySet<string>): void {
-    const currentKeys = this.#currentScopeKeys();
+    const currentKeys = this.scopeKeys;
     // Keys lost: leave my own published docs; presence delivery stops
     // naturally (peers no longer fan to me — I am not registered).
     for (const key of previousKeys) {
@@ -551,7 +586,7 @@ export class RealtimeSession {
   /** Snapshot delivery on connect (§8.6.4) — the newly-registered
    * connection sees who is already present on each of its keys. */
   deliverInitialPresence(): void {
-    for (const key of this.#currentScopeKeys()) this.#deliverSnapshot(key);
+    for (const key of this.scopeKeys) this.#deliverSnapshot(key);
   }
 
   /**
@@ -781,6 +816,7 @@ export class RealtimeSession {
         this.partition,
         this.actorId,
         this.clientId,
+        await this.#storage.getClientRecord(this.partition, this.clientId),
       );
     } catch {
       if (!failClosed) {
@@ -797,8 +833,9 @@ export class RealtimeSession {
     // §8.6.3: a registration change re-derives the presence grant — capture
     // the keys before, reconcile after (leaves on lost keys, snapshots on
     // gained keys).
-    const previousKeys = this.#currentScopeKeys();
+    const previousKeys = this.scopeKeys;
     this.registrations = registrations;
+    this.scopeKeys = this.#hub.scopeKeysOf(registrations);
     this.reconcilePresence(previousKeys);
   }
 
@@ -846,12 +883,7 @@ export class RealtimeSession {
   }
 
   sendHeartbeat(): void {
-    this.#sendSafe(
-      JSON.stringify({
-        event: 'heartbeat',
-        data: { timestamp: this.#clock() },
-      }),
-    );
+    this.#sendSafe(encodeHeartbeat(this.#clock()));
   }
 
   sendWake(reason: WakeReason): void {
@@ -1010,6 +1042,21 @@ export class RealtimeSession {
   }
 
   #sendDelta(tagged: Uint8Array, commitSeq: number, changes: number): void {
+    // A wake earlier in a deferred flush suppresses the rest of it.
+    if (this.wakePending) return;
+    // §8.2 flow control: a client this far behind on acks catches up by pull;
+    // its acknowledgement after that round lifts the suppression. One delta
+    // always fits, so `maxDeltaBytes` alone bounds a single message.
+    if (
+      this.#unacked.length >= this.#hub.maxUnackedDeltas ||
+      (this.#unacked.length > 0 &&
+        this.#unackedBytes + tagged.length > this.#hub.maxUnackedDeltaBytes)
+    ) {
+      this.sendWake('catchup-required');
+      return;
+    }
+    this.#unacked.push({ commitSeq, bytes: tagged.length });
+    this.#unackedBytes += tagged.length;
     this.#sendSafe(tagged);
     this.cursor = Math.max(this.cursor, commitSeq);
     const events = this.#events;
@@ -1099,6 +1146,16 @@ export class RealtimeHub {
     return this.#config.maxPresenceBytes ?? DEFAULT_MAX_PRESENCE_BYTES;
   }
 
+  /** §8.2 flow control: unacknowledged deltas per session. */
+  get maxUnackedDeltas(): number {
+    return this.#config.maxUnackedDeltas ?? DEFAULT_MAX_UNACKED_DELTAS;
+  }
+
+  /** §8.2 flow control: unacknowledged delta bytes per session. */
+  get maxUnackedDeltaBytes(): number {
+    return this.#config.maxUnackedDeltaBytes ?? DEFAULT_MAX_UNACKED_DELTA_BYTES;
+  }
+
   /** §8.6.4 presence rate cap (ms); 0 = off (reference default). */
   get presenceMinIntervalMs(): number {
     return this.#config.presenceMinIntervalMs ?? 0;
@@ -1124,7 +1181,7 @@ export class RealtimeHub {
       if (session === origin) continue;
       if (session.partition !== origin.partition) continue;
       // Receive authorization (§8.6.3): the receiver must itself hold the key.
-      if (!this.scopeKeysOf(session.registrations).has(scopeKey)) continue;
+      if (!session.scopeKeys.has(scopeKey)) continue;
       session.receivePresence(
         scopeKey,
         kind,
@@ -1143,11 +1200,8 @@ export class RealtimeHub {
     partition: string,
     actorId: string,
     clientId: string,
+    record: ClientRecord | undefined,
   ): Promise<Registration[]> {
-    const record = await this.#config.storage.getClientRecord(
-      partition,
-      clientId,
-    );
     let resolved: ResolvedScopes;
     try {
       const allowed = await this.#config.resolveScopes({
@@ -1259,14 +1313,67 @@ export class RealtimeHub {
    * Register a connected socket (§8.1): load the client's last pull's
    * subscription list, resolve + intersect scopes, send `hello`.
    */
-  async connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
+  connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
+    return this.#open(options, undefined);
+  }
+
+  /**
+   * Rebuild the sessions of sockets that outlived their host's memory, such as
+   * a hibernated Durable Object (§8.1). Each client saw `hello` and the
+   * presence snapshot at its real upgrade, so neither is sent again. The
+   * partition is touched and its latest sequence read once per partition, and
+   * each client record once. The caller holds back commits until this
+   * resolves, so the shared latest sequence stays current.
+   */
+  async restore(
+    sockets: readonly RealtimeConnectOptions[],
+  ): Promise<PromiseSettledResult<RealtimeSession>[]> {
+    const partitions = new Map<
+      string,
+      { logEpoch: string; latestSeq: number }
+    >();
+    const results: PromiseSettledResult<RealtimeSession>[] = [];
+    for (const options of sockets) {
+      try {
+        let shared = partitions.get(options.partition);
+        if (shared === undefined) {
+          const { logEpoch } = await touchAuthenticatedPartition({
+            ...this.#config,
+            partition: options.partition,
+            actorId: options.actorId,
+          });
+          shared = {
+            logEpoch,
+            latestSeq: await this.#config.storage.getMaxCommitSeq(
+              options.partition,
+            ),
+          };
+          partitions.set(options.partition, shared);
+        }
+        const value = await this.#open(options, shared);
+        results.push({ status: 'fulfilled', value });
+      } catch (reason) {
+        results.push({ status: 'rejected', reason });
+      }
+    }
+    return results;
+  }
+
+  async #open(
+    options: RealtimeConnectOptions,
+    restored: { logEpoch: string; latestSeq: number } | undefined,
+  ): Promise<RealtimeSession> {
     const { storage } = this.#config;
     const clock = this.#config.clock ?? Date.now;
-    const registry = await touchAuthenticatedPartition({
-      ...this.#config,
-      partition: options.partition,
-      actorId: options.actorId,
-    });
+    const logEpoch =
+      restored?.logEpoch ??
+      (
+        await touchAuthenticatedPartition({
+          ...this.#config,
+          partition: options.partition,
+          actorId: options.actorId,
+        })
+      ).logEpoch;
     if (options.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
       throw syncError(
         'sync.invalid_client_id',
@@ -1287,8 +1394,10 @@ export class RealtimeHub {
       options.partition,
       options.actorId,
       options.clientId,
+      record,
     );
-    const latestSeq = await storage.getMaxCommitSeq(options.partition);
+    const latestSeq =
+      restored?.latestSeq ?? (await storage.getMaxCommitSeq(options.partition));
     const cursor = record?.cursor ?? -1;
     const session = new RealtimeSession(
       this,
@@ -1299,44 +1408,46 @@ export class RealtimeHub {
       clock,
       this.#config.maxDeltaBytes ?? DEFAULT_MAX_DELTA_BYTES,
       storage,
-      registry.logEpoch,
+      logEpoch,
       record !== undefined && isSupportedProtocolWireVersion(record.wireVersion)
         ? record.wireVersion
         : PROTOCOL_WIRE_VERSION,
       this.#config.events,
     );
     this.#sessions.add(session);
-    const helloResult = options.send(
-      JSON.stringify({
-        event: 'hello',
-        data: {
-          protocolVersion: 1,
-          sessionId: session.sessionId,
-          actorId: options.actorId,
-          clientId: options.clientId,
-          cursor,
-          latestCursor: latestSeq,
-          requiresSync:
-            record === undefined ||
-            cursor < latestSeq ||
-            (this.#config.schemaWindow !== undefined &&
-              record.subscriptions.some(
-                (subscription) =>
-                  !schemaWindowOf(
-                    this.#config.schema,
-                    this.#config.schemaWindow,
-                  ).some(
-                    (schema) => schema.version === subscription.schemaVersion,
-                  ),
-              )),
-          timestamp: clock(),
-        },
-      }),
-    );
-    if (helloResult instanceof Promise) helloResult.catch(() => {});
-    // §8.6.4: the newly-registered connection sees who is already present
-    // on each key it holds (a burst of joins, after hello).
-    session.deliverInitialPresence();
+    if (restored === undefined) {
+      const helloResult = options.send(
+        JSON.stringify({
+          event: 'hello',
+          data: {
+            protocolVersion: 1,
+            sessionId: session.sessionId,
+            actorId: options.actorId,
+            clientId: options.clientId,
+            cursor,
+            latestCursor: latestSeq,
+            requiresSync:
+              record === undefined ||
+              cursor < latestSeq ||
+              (this.#config.schemaWindow !== undefined &&
+                record.subscriptions.some(
+                  (subscription) =>
+                    !schemaWindowOf(
+                      this.#config.schema,
+                      this.#config.schemaWindow,
+                    ).some(
+                      (schema) => schema.version === subscription.schemaVersion,
+                    ),
+                )),
+            timestamp: clock(),
+          },
+        }),
+      );
+      if (helloResult instanceof Promise) helloResult.catch(() => {});
+      // §8.6.4: the newly-registered connection sees who is already present
+      // on each key it holds (a burst of joins, after hello).
+      session.deliverInitialPresence();
+    }
     const events = this.#config.events;
     if (events !== undefined) {
       emitEvent(events, {
@@ -1435,6 +1546,23 @@ export class RealtimeHub {
   wakeAll(reason: WakeReason): void {
     for (const session of this.#sessions) session.sendWake(reason);
   }
+
+  /**
+   * §8.5: send `heartbeat` to every session. The host calls this on its
+   * heartbeat interval (suggested 30 s); a client that hears nothing for twice
+   * the interval treats the socket as lost.
+   */
+  heartbeat(): void {
+    for (const session of this.#sessions) session.sendHeartbeat();
+  }
+}
+
+/** The §8.5 `heartbeat` control message. */
+export function encodeHeartbeat(timestampMs: number): string {
+  return JSON.stringify({
+    event: 'heartbeat',
+    data: { timestamp: timestampMs },
+  });
 }
 
 export function createRealtimeHub(config: RealtimeHubConfig): RealtimeHub {

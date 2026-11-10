@@ -119,14 +119,25 @@ export class FakeWebSocketPair implements WebSocketPairLike {
   }
 }
 
-/** The `DurableObjectState` double: the accepted-socket registry. */
+/** The `DurableObjectState` double: the accepted-socket registry and the
+ * alarm slot. A test fires the alarm by calling the host's `alarm()`. */
 class FakeDurableObjectState implements DurableObjectStateLike {
   readonly #sockets: WebSocketLike[] = [];
+  alarmAt: number | null = null;
+  readonly storage = {
+    getAlarm: async (): Promise<number | null> => this.alarmAt,
+    setAlarm: async (scheduledTime: number): Promise<void> => {
+      this.alarmAt = scheduledTime;
+    },
+  };
   acceptWebSocket(ws: WebSocketLike): void {
     this.#sockets.push(ws);
   }
+  /** A socket the server closed leaves the registry, as on the platform. */
   getWebSockets(): WebSocketLike[] {
-    return [...this.#sockets];
+    return this.#sockets.filter(
+      (ws) => !(ws instanceof FakeWebSocket && ws.closed),
+    );
   }
 }
 

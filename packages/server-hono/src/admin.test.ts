@@ -602,6 +602,34 @@ describe('operator actions', () => {
     });
   });
 
+  test('a cross-site admin action answers 403; same-origin and proxied requests pass', async () => {
+    const { app, auth } = await harness({ actions: true });
+    const prune = (headers: Record<string, string>) =>
+      app.request('http://localhost/admin/prune', {
+        method: 'POST',
+        headers: { ...auth.headers, ...headers },
+      });
+    for (const headers of [
+      { 'sec-fetch-site': 'cross-site' },
+      { 'sec-fetch-site': 'same-site' },
+      { origin: 'https://evil.example' },
+      { origin: 'null' },
+    ]) {
+      const res = await prune(headers);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'sync.forbidden' });
+    }
+    for (const headers of [
+      {},
+      { 'sec-fetch-site': 'same-origin', origin: 'http://localhost' },
+      { 'sec-fetch-site': 'none' },
+      // A TLS-ending proxy: the browser origin is https, the server sees http.
+      { origin: 'https://localhost' },
+    ]) {
+      expect((await prune(headers)).status).toBe(200);
+    }
+  });
+
   test('retrying a reaction that is not dead-lettered answers 400', async () => {
     const { app, seed, auth } = await harness({ actions: true });
     await seed();

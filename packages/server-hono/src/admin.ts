@@ -127,6 +127,20 @@ export function createSyncularAdminRoutes(
 
   /** Run the host guards; actions also need `authorizeActions`. */
   async function guard(request: Request, partition: string): Promise<void> {
+    // A cookie-authenticated operator's browser must not run an action for
+    // another site. The origin check compares hosts, so a proxy that ends TLS
+    // in front of the server still passes it.
+    if (request.method === 'POST') {
+      const site = request.headers.get('sec-fetch-site');
+      const origin = request.headers.get('origin');
+      if (
+        (site !== null && site !== 'same-origin' && site !== 'none') ||
+        (origin !== null &&
+          URL.parse(origin)?.host !== new URL(request.url).host)
+      ) {
+        throw new SyncError('sync.forbidden', 'cross-site admin request');
+      }
+    }
     const context = { partition, request };
     if (!(await options.authorize(context))) {
       throw new SyncError('sync.auth_required');

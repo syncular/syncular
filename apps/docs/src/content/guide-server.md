@@ -287,6 +287,14 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
 });
 ```
 
+Send heartbeats from the host. Clients treat a socket that delivers no frame for twice the interval as lost, and the native Rust transport assumes 30 seconds unless its `realtimeHeartbeatMs` says otherwise, so a host without this line sees idle native sockets reconnect every minute:
+
+```ts title="src/server.ts"
+setInterval(() => hub.heartbeat(), 30_000);
+```
+
+The hub bounds what a slow client can leave unacknowledged. Past `maxUnackedDeltas` sent deltas (default 256) or `maxUnackedDeltaBytes` (default 4 MiB) above the client's last ack, it stops sending deltas to that socket and sends one `catchup-required` wake instead; the ack after the client's catch-up round resumes delivery. Both are `RealtimeHubConfig` fields.
+
 The [demo server](https://github.com/syncular/syncular/blob/main/apps/demo/src/server.ts) is the complete worked example: one Bun process serving HTTP, WebSocket realtime, the admin console, and a static frontend. On Cloudflare Workers the upgrade runs through a Durable Object ([Cloudflare Workers](/server-workers/#add-the-durable-object)).
 
 An in-memory hub reaches only its own instance's sockets. Behind a load balancer, add a fanout bridge: `PostgresFanout` on Postgres ([Multi-instance fanout](/server-storage-reference/#multi-instance-fanout)) or the Durable Object on Workers.

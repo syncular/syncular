@@ -119,6 +119,14 @@ export interface WorkersRealtimeOptions {
     | Promise<RealtimeUpgradeIdentity | undefined>;
   /** The mount path segment for the upgrade route; default `/realtime`. */
   readonly path?: string;
+  /**
+   * Origins a browser upgrade may come from, such as
+   * `['https://app.example.com']`. When set, an upgrade whose `Origin` header
+   * names another origin answers 403 before `authenticate` runs. Native
+   * clients send no `Origin` and pass. Set it whenever `authenticate` reads a
+   * cookie.
+   */
+  readonly allowedOrigins?: readonly string[];
 }
 
 /** Resolve the per-env realtime wiring for one Worker invocation. */
@@ -392,6 +400,18 @@ async function handleRealtimeUpgrade(
   if (request.method !== 'GET') return undefined;
   if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
     return new Response('expected a websocket upgrade', { status: 426 });
+  }
+  const origin = request.headers.get('origin');
+  if (
+    origin !== null &&
+    realtime.allowedOrigins !== undefined &&
+    !realtime.allowedOrigins.includes(origin)
+  ) {
+    const error = new SyncError(
+      'sync.forbidden',
+      'realtime upgrade origin is not allowed',
+    );
+    return Response.json(errorBody(error), { status: error.httpStatus });
   }
   const identity = await realtime.authenticate(request);
   if (identity === undefined) {
