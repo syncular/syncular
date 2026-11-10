@@ -52,6 +52,7 @@ function TodoList() {
   const { rows } = useRawSql<TodosRow>(
     'SELECT id, title, done FROM todos WHERE list_id = ? ORDER BY position, id',
     ['groceries'],
+    { tables: ['todos'] },
   );
   // mutate([{ table: 'todos', op: 'upsert', values: { ... } }])
 }

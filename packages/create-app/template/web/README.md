@@ -54,7 +54,10 @@ covered by `tsc`).
    See
    [Scopes & authorization](https://syncular.dev/concepts-scopes/).
 2. **`src/server.ts` → `authenticate`** — plug in your real session/token
-   check; return `{ actorId, partition }` or `null` for a 401.
+   check; return `{ actorId, partition }` or `null` for a 401. `POST /sync`
+   and the `/realtime` upgrade both run it. A browser WebSocket sends cookies
+   but no custom headers, so authenticate the upgrade from a cookie or a
+   [short-lived ticket](https://syncular.dev/guide-auth/#realtime-tickets).
 3. **`src/frontend/main.ts`** — the UI. It queries and mutates through the
    worker handle; grow it into your app.
 4. **`migrations/` + `syncular.json`** — append migrations and add tables or

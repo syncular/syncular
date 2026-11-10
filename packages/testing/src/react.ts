@@ -18,7 +18,7 @@
  *     const sync = await createTestSync({ schema });
  *     const client = await sync.client('a');
  *     const { result } = renderHook(
- *       () => useRawSql('SELECT * FROM notes'),
+ *       () => useRawSql('SELECT * FROM notes', [], { tables: ['notes'] }),
  *       { wrapper: syncWrapper(client) },
  *     );
  *

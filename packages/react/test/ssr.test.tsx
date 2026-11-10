@@ -17,7 +17,9 @@ import {
 import { FakeClient } from './fake-client';
 
 function App(): ReactNode {
-  const { rows, isLoading } = useRawSql('SELECT * FROM tasks');
+  const { rows, isLoading } = useRawSql('SELECT * FROM tasks', undefined, {
+    tables: ['tasks'],
+  });
   const status = useSyncStatus();
   const { conflicts } = useConflicts();
   const { outcomes } = useCommitOutcomes();

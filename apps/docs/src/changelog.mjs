@@ -18,6 +18,26 @@ export const changelog = [
   {
     date: '2026-11-10',
     title:
+      'Authenticated realtime upgrades in the templates, useRawSql requires dependencies, testkit offline is a dead network',
+    body: "The `create-syncular` web and Tauri templates and both demo servers run the same `authenticate(request)` on the `/realtime` upgrade as on `POST /sync`, answer 401 when it returns `null`, and connect the socket as the authenticated actor and partition. They send `hub.heartbeat()` every 30 000 ms. The Tauri template's window ships a CSP of `default-src 'self'` with `connect-src` limited to the IPC scheme and the template's sync origin. `useRawSql` no longer guesses its tables from the SQL text: a call without `dependencies` or `tables` throws `client.raw_sql_dependencies_required` when it mounts, and `inferTables` is removed from `@syncular/react`. Toggling `claimCoverage` now changes the observed query. The testkit's `goOffline()` rejects with `sync.transport_failed` and `causeKind: 'network'`, so the client reports connectivity `offline` and schedules no retry, as with a dead network in production. The testkit loopback honors `refuseNextRealtimeConnect`; `deferNextPulls`, `dropNextUrlFetches` and `corruptNextUrlFetch` leave the testkit's `TransportFaults`, because its loopback never honored them.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/#raw-sql',
+        label: 'Raw SQL',
+      },
+      {
+        href: '/tooling-testing/',
+        label: 'Testing',
+      },
+      {
+        href: '/guide-auth/#browser-authenticate-the-realtime-socket',
+        label: 'Authenticate the realtime socket',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
       'Tombstones record the deleted version and scopes: recreates conflict with stale versions, deletes stay hidden',
     body: "A delete's tombstone now records the deleted row's last `server_version` and its scopes, in SQLite, PostgreSQL, D1 and the Rust local authority. A row recreated with `baseVersion = 0` inside the tombstone horizon starts one above the deleted version, so a patch carrying a `baseVersion` from the deleted row conflicts with `sync.version_conflict`; before, the row restarted at 1 and that patch was refused with `sync.invalid_request` or applied over a row its client never saw. A patch that omits its scope columns is authorized against the tombstone's scopes before the server answers `sync.row_deleted`; an actor outside them gets `sync.row_missing`, the answer for a row id that never existed. Storages add the two nullable columns to an existing `sync_tombstones` table on open or in `migrate()`; a tombstone written before them keeps the earlier rules. Custom `StorageTransaction` implementations replace `getTombstoneSeq` with `getTombstone`, which returns `{ commitSeq, serverVersion?, scopes? }`, and record a delete change's `deletedVersion` and `scopes` on its tombstone.",
     links: [

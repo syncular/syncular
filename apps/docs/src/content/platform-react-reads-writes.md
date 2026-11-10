@@ -118,8 +118,10 @@ It returns the same phase and revision result. The options are `dependencies`,
 `coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. Set `id` to a
 stable value without protected data for support diagnostics; the default id is
 `raw` and never contains SQL. The table-list shorthand `tables` with `scopeKeys`
-still works. Without dependencies, the hook infers tables with a conservative
-`FROM` and `JOIN` scanner.
+still works. Pass `dependencies` or `tables` naming every table the statement
+reads: the query re-runs only when one of them changes. Without either, the
+hook throws a `ClientSyncError` with code
+`client.raw_sql_dependencies_required` when it mounts.
 
 The core runs exactly one statement, and only one that SQLite reports read-only
 (`sqlite3_stmt_readonly`) and that returns columns. `node:sqlite` does not

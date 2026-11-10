@@ -125,15 +125,21 @@ const admin: SyncularHonoAdminOptions | undefined =
       }
     : undefined;
 
+/** Demo sign-in: each device names its actor in a header, or in the
+ * `actor` query parameter on the realtime upgrade (a browser WebSocket sends
+ * no custom headers). Anything else is unauthenticated. */
+async function authenticate(
+  request: Request,
+): Promise<{ actorId: string; partition: string } | null> {
+  const actorId =
+    request.headers.get('x-syncular-demo-actor') ??
+    new URL(request.url).searchParams.get('actor');
+  return isDemoActor(actorId) ? { actorId, partition: PARTITION } : null;
+}
 const hono = createSyncularHono({
   config,
   ...(admin !== undefined ? { admin } : {}),
-  // Demo sign-in: each device names its actor in a header. Anything else
-  // is unauthenticated.
-  authenticate: async (request) => {
-    const actorId = request.headers.get('x-syncular-demo-actor');
-    return isDemoActor(actorId) ? { actorId, partition: PARTITION } : null;
-  },
+  authenticate,
 });
 
 /** Seed the two demo lists through the real §6 pipeline (idempotent per
@@ -224,13 +230,16 @@ function staticResponse(body: string | Uint8Array, type: string): Response {
 // -- one process, one port ----------------------------------------------------
 
 interface SocketData {
-  clientId: string;
   actorId: string;
+  partition: string;
+  clientId: string;
   session?: RealtimeSession;
 }
 
 await ensureSyncServerReady(config);
 await seed();
+// §8.5: a client that hears nothing for twice this interval drops the socket.
+setInterval(() => hub.heartbeat(), 30_000);
 
 const server = Bun.serve<SocketData, never>({
   port: PORT,
@@ -240,13 +249,13 @@ const server = Bun.serve<SocketData, never>({
     const path = url.pathname;
 
     if (path === '/realtime') {
-      const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-      const actorId = url.searchParams.get('actor');
-      if (!isDemoActor(actorId)) {
+      const auth = await authenticate(request);
+      if (auth === null) {
         return new Response('realtime requires a demo actor', { status: 401 });
       }
-      if (bunServer.upgrade(request, { data: { clientId, actorId } })) {
-        return undefined as unknown as Response;
+      const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
+      if (bunServer.upgrade(request, { data: { ...auth, clientId } })) {
+        return;
       }
       return new Response('expected a websocket upgrade', { status: 400 });
     }
@@ -314,7 +323,7 @@ const server = Bun.serve<SocketData, never>({
     open(ws) {
       hub
         .connect({
-          partition: PARTITION,
+          partition: ws.data.partition,
           actorId: ws.data.actorId,
           clientId: ws.data.clientId,
           send: (data) => {

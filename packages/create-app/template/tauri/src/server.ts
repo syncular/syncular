@@ -30,8 +30,6 @@ import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8787);
-const PARTITION = 'demo';
-const ACTOR_ID = 'demo-user';
 
 // -- sync server ------------------------------------------------------------
 
@@ -57,11 +55,19 @@ const config: SyncServerConfig = {
   realtime: hub,
 };
 await ensureSyncServerReady(config);
-const hono = createSyncularHono({
-  config,
-  // Replace with your real auth: return { actorId, partition } or null (401).
-  authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
-});
+// §8.5: a client that hears nothing for twice this interval drops the socket.
+setInterval(() => hub.heartbeat(), 30_000);
+
+/** Replace with your real auth: return { actorId, partition } or null (401).
+ * POST /sync and the /realtime upgrade both run it. A browser WebSocket sends
+ * cookies but no custom headers, so authenticate the upgrade from a cookie or
+ * a query parameter. */
+async function authenticate(
+  _request: Request,
+): Promise<{ actorId: string; partition: string } | null> {
+  return { actorId: 'demo-user', partition: 'demo' };
+}
+const hono = createSyncularHono({ config, authenticate });
 
 // -- frontend build + static assets ------------------------------------------
 
@@ -129,6 +135,8 @@ function staticResponse(body: string | Uint8Array, type: string): Response {
 // -- one process, one port ----------------------------------------------------
 
 interface SocketData {
+  actorId: string;
+  partition: string;
   clientId: string;
   session?: RealtimeSession;
 }
@@ -140,9 +148,15 @@ const server = Bun.serve<SocketData, never>({
     const path = url.pathname;
 
     if (path === '/realtime') {
+      const auth = await authenticate(request);
+      if (auth === null) {
+        return new Response('realtime requires authentication', {
+          status: 401,
+        });
+      }
       const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-      if (bunServer.upgrade(request, { data: { clientId } })) {
-        return undefined as unknown as Response;
+      if (bunServer.upgrade(request, { data: { ...auth, clientId } })) {
+        return;
       }
       return new Response('expected a websocket upgrade', { status: 400 });
     }
@@ -172,8 +186,8 @@ const server = Bun.serve<SocketData, never>({
     open(ws) {
       hub
         .connect({
-          partition: PARTITION,
-          actorId: ACTOR_ID,
+          partition: ws.data.partition,
+          actorId: ws.data.actorId,
           clientId: ws.data.clientId,
           send: (data) => {
             ws.send(data);

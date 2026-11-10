@@ -59,10 +59,14 @@ const config: SyncServerConfig = {
   resolveScopes,
   realtime: hub,
 };
-const hono = createSyncularHono({
-  config,
-  authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
-});
+/** Demo sign-in: every request is the single demo actor. POST /sync and the
+ * /realtime upgrade both run it. */
+async function authenticate(
+  _request: Request,
+): Promise<{ actorId: string; partition: string } | null> {
+  return { actorId: ACTOR_ID, partition: PARTITION };
+}
+const hono = createSyncularHono({ config, authenticate });
 
 /** Seed a few rows across the three lists (the supported
  * recipe: `seedMutations` pushes app-shaped values through the real §6
@@ -161,12 +165,16 @@ function staticResponse(body: string | Uint8Array, type: string): Response {
 // -- one process, one port ----------------------------------------------------
 
 interface SocketData {
+  actorId: string;
+  partition: string;
   clientId: string;
   session?: RealtimeSession;
 }
 
 await ensureSyncServerReady(config);
 await seed();
+// §8.5: a client that hears nothing for twice this interval drops the socket.
+setInterval(() => hub.heartbeat(), 30_000);
 
 const server = Bun.serve<SocketData, never>({
   port: PORT,
@@ -175,9 +183,15 @@ const server = Bun.serve<SocketData, never>({
     const path = url.pathname;
 
     if (path === '/realtime') {
+      const auth = await authenticate(request);
+      if (auth === null) {
+        return new Response('realtime requires authentication', {
+          status: 401,
+        });
+      }
       const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-      if (bunServer.upgrade(request, { data: { clientId } })) {
-        return undefined as unknown as Response;
+      if (bunServer.upgrade(request, { data: { ...auth, clientId } })) {
+        return;
       }
       return new Response('expected a websocket upgrade', { status: 400 });
     }
@@ -211,8 +225,8 @@ const server = Bun.serve<SocketData, never>({
     open(ws) {
       hub
         .connect({
-          partition: PARTITION,
-          actorId: ACTOR_ID,
+          partition: ws.data.partition,
+          actorId: ws.data.actorId,
           clientId: ws.data.clientId,
           send: (data) => {
             ws.send(data);

@@ -38,7 +38,10 @@ describe('useRawSql against a real SyncClient', () => {
       <SyncProvider client={client}>{children}</SyncProvider>
     );
     const { result } = renderHook(
-      () => useRawSql('SELECT id, title FROM tasks ORDER BY id'),
+      () =>
+        useRawSql('SELECT id, title FROM tasks ORDER BY id', undefined, {
+          tables: ['tasks'],
+        }),
       { wrapper },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -70,9 +73,12 @@ describe('useRawSql against a real SyncClient', () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <SyncProvider client={b}>{children}</SyncProvider>
     );
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper,
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper,
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     a.mutate([

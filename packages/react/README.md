@@ -219,9 +219,11 @@ Options:
 | `id` | Stable cache identity for a raw query. |
 | `tables`, `scopeKeys` | Compatibility shorthand; prefer `dependencies`. |
 
-Without explicit dependencies, raw SQL uses a conservative `FROM`/`JOIN`
-scan. Generated queries are preferred whenever the statement is known at
-build time because typegen can prove more.
+`useRawSql` reads no table names from the SQL text. Pass `dependencies` or
+`tables` naming every table the statement reads; without either, the hook
+throws a `ClientSyncError` with code `client.raw_sql_dependencies_required`
+when it mounts. Generated queries are preferred whenever the statement is
+known at build time because typegen derives the dependencies from the schema.
 
 ## Exact changes and windows
 

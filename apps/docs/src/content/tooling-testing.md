@@ -126,7 +126,7 @@ test('an offline client queues writes, then drains on reconnect', async () => {
 });
 ```
 
-`goOnline()` does not start a round. The test decides when the round runs.
+`goOffline()` models a dead network: every hop rejects with `sync.transport_failed` and `details.causeKind: 'network'`, the error `httpSyncTransport` raises when the fetch fails. The client therefore reports connectivity `offline` and schedules no retry. `goOnline()` does not start a round. The test decides when the round runs.
 
 ::checkpoint[The test passes: the outbox holds one commit offline and zero after `syncAll()`.]
 ::::
@@ -147,14 +147,11 @@ expect(a.api.pendingCommits()).toHaveLength(0);
 |---|---|
 | `dropNextRequests = N` | Fails the next N sync requests before they reach the server. The outbox survives. |
 | `dropNextResponses = N` | Delivers the next N requests, then loses their responses. The server applied the commit and the ack is lost. |
-| `deferNextPulls = N` | Returns acks while withholding pull sections without advancing their cursors. |
 | `duplicateNextRequest = true` | Delivers the next request twice and returns the second response (an idempotency-cache test). |
 | `truncateNextResponse = true` | Cuts the next response at a seeded offset (a decode error). |
 | `dropNextSegmentRequests = N` | Fails the next N segment downloads. |
 | `truncateNextSegmentDownload = true` | Cuts the next segment download at a seeded offset. |
-| `dropNextUrlFetches = N` | Fails the next N signed-URL fetches. |
-| `corruptNextUrlFetch = true` | Corrupts the bytes of the next signed-URL fetch (tamper detection). |
-| `refuseNextRealtimeConnect = true` | Refuses the next realtime connect. |
+| `refuseNextRealtimeConnect = true` | Refuses the next realtime connect; `connectRealtime()` rejects with `TransportFault`. |
 | `corrupt(bytes)` | Returns a copy with one seeded byte flipped, for tamper tests. |
 
 ::checkpoint[The test passes: one commit stays queued after the dropped request and drains on the retry.]
@@ -202,7 +199,7 @@ client.api.subscribe({ id: 's', table: 'todos', scopes: { list_id: ['x'] } });
 await client.sync();
 
 const { result } = renderHook(
-  () => useRawSql('SELECT * FROM todos'),
+  () => useRawSql('SELECT * FROM todos', [], { tables: ['todos'] }),
   { wrapper: syncWrapper(client) },
 );
 

@@ -90,7 +90,7 @@ client.actorId        // the actor it authenticates as
 client.faults         // transport-fault controller (below)
 client.offline        // boolean
 
-client.goOffline()    // cut the network — every hop rejects
+client.goOffline()    // dead network: every hop rejects (causeKind 'network')
 client.goOnline()     // restore it (does NOT auto-sync; call sync())
 await client.sync()   // syncUntilIdle: push the outbox, pull to idle
 await client.connectRealtime()    // attach a live socket to the hub
@@ -108,6 +108,7 @@ a.api.mutate([{ table: 'todos', op: 'upsert', values: { id: 't1', list_id: 'l', 
 expect(a.api.query('SELECT title FROM todos')).toEqual([{ title: 'draft' }]);
 expect(a.api.pendingCommits()).toHaveLength(1);
 await expect(a.api.sync()).rejects.toThrow(); // offline
+a.api.diagnosticsSnapshot().host.connectivity; // 'offline', no retry scheduled
 
 a.goOnline();
 await sync.syncAll();               // the queue drains
@@ -116,9 +117,9 @@ expect(a.api.pendingCommits()).toHaveLength(0);
 
 ### Fault injection
 
-`client.faults` is the conformance harness's `TransportFaults` controller,
-**re-exported, not re-implemented** — the same vocabulary the reference
-pairing arms. Arm one flag; the next matching exchange misbehaves:
+`client.faults` is the `TransportFaults` controller the conformance harness
+extends, so both arm the same vocabulary. The kit's loopback honors every flag
+on it. Arm one flag; the next matching exchange misbehaves:
 
 ```ts
 a.faults.dropNextRequests = 1;      // lose the next request (outbox survives)
@@ -126,6 +127,8 @@ a.faults.dropNextResponses = 1;     // server applies it, the ack is lost
 a.faults.duplicateNextRequest = true;   // replay it — idempotency-cache test
 a.faults.truncateNextResponse = true;   // cut the response short (decode error)
 a.faults.truncateNextSegmentDownload = true;
+a.faults.dropNextSegmentRequests = 1;
+a.faults.refuseNextRealtimeConnect = true; // connectRealtime() rejects once
 a.faults.corrupt(bytes);            // flip a seeded byte (§5.1 tamper)
 ```
 
@@ -219,7 +222,7 @@ client.api.subscribe({ id: 's', table: 'todos', scopes: { list_id: ['x'] } });
 await client.sync();
 
 const { result } = renderHook(
-  () => useRawSql('SELECT * FROM todos'),
+  () => useRawSql('SELECT * FROM todos', [], { tables: ['todos'] }),
   { wrapper: syncWrapper(client) },
 );
 

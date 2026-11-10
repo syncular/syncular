@@ -8,7 +8,6 @@
  * option.
  */
 export type { SyncClientLike } from './client';
-export { inferTables } from './infer-tables';
 export {
   type SyncBoundaryActions,
   type SyncBoundaryState,

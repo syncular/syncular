@@ -5,7 +5,7 @@
  *   counter-proof: an unrelated-table event never re-runs);
  * - coalescing (one apply batch = one re-run);
  * - status / conflicts / presence hooks;
- * - the explicit `tables` option overriding the inference heuristic.
+ * - the declared `tables` deciding re-runs; no declaration is refused.
  *
  * Worker-handle mode parity is covered by `parity.test.tsx` — both cores
  * satisfy the same interface these hooks target.
@@ -86,6 +86,54 @@ test('useSyncClient exposes proof through the supplied client', async () => {
 });
 
 describe('useRawSql', () => {
+  test.each([
+    'SELECT * FROM tasks t, projects p WHERE t.project_id = p.id',
+    'SELECT * FROM main.tasks',
+    'SELECT * FROM "main"."tasks"',
+  ])('refuses to mount without dependencies or tables: %s', (sql) => {
+    const spy = console.error;
+    console.error = () => {};
+    try {
+      expect(() =>
+        renderHook(() => useRawSql(sql), {
+          wrapper: wrapper(new FakeClient()),
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          code: 'client.raw_sql_dependencies_required',
+        }),
+      );
+    } finally {
+      console.error = spy;
+    }
+  });
+
+  test('toggling claimCoverage claims the window', async () => {
+    const client = new FakeClient();
+    const base = { table: 'tasks', variable: 'project_id' };
+    const claims: string[][] = [];
+    const setWindow = client.setWindow.bind(client);
+    client.setWindow = (claimed, units) => {
+      claims.push([...units]);
+      setWindow(claimed, units);
+    };
+    const view = renderHook(
+      ({ claimCoverage }: { claimCoverage: boolean }) =>
+        useRawSql('SELECT * FROM tasks', [], {
+          tables: ['tasks'],
+          coverage: [{ base, units: ['p1'] }],
+          claimCoverage,
+        }),
+      { wrapper: wrapper(client), initialProps: { claimCoverage: false } },
+    );
+    await flushEffects();
+    expect(claims).toEqual([]);
+
+    view.rerender({ claimCoverage: true });
+    await waitFor(() => expect(claims).toEqual([['p1']]));
+    view.unmount();
+  });
+
   test('cached rows render while registration waits and retain its error', async () => {
     const client = new FakeClient();
     const base = { table: 'tasks', variable: 'project_id' };
@@ -100,6 +148,7 @@ describe('useRawSql', () => {
     const view = renderHook(
       () =>
         useRawSql('SELECT * FROM tasks', [], {
+          tables: ['tasks'],
           coverage: [{ base, units: ['p1'] }],
         }),
       { wrapper: wrapper(client) },
@@ -123,6 +172,7 @@ describe('useRawSql', () => {
       ({ units }: { units: readonly string[] }) => {
         renders += 1;
         return useRawSql('SELECT * FROM tasks', [], {
+          tables: ['tasks'],
           coverage: [{ base, units }],
         });
       },
@@ -147,6 +197,7 @@ describe('useRawSql', () => {
     const view = renderHook(
       () =>
         useRawSql('SELECT * FROM tasks', [], {
+          tables: ['tasks'],
           coverage: [{ base, units: ['p1'] }],
         }),
       { wrapper: wrapper(client) },
@@ -200,9 +251,12 @@ describe('useRawSql', () => {
   test('runs on mount and returns rows', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1', title: 'hello' }]);
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: wrapper(client),
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: wrapper(client),
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.rows).toEqual([{ id: 't1', title: 'hello' }]);
   });
@@ -210,9 +264,12 @@ describe('useRawSql', () => {
   test('re-runs when a depended-on table invalidates', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: wrapper(client),
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: wrapper(client),
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     const before = client.queryCount;
 
@@ -232,9 +289,12 @@ describe('useRawSql', () => {
         <SyncProvider client={client}>{children}</SyncProvider>
       </StrictMode>
     );
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: strictWrapper,
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: strictWrapper,
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     const before = client.queryCount;
 
@@ -247,9 +307,12 @@ describe('useRawSql', () => {
   test('I4 counter-proof: an unrelated-table invalidation NEVER re-runs', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: wrapper(client),
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: wrapper(client),
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     const before = client.queryCount;
 
@@ -263,9 +326,12 @@ describe('useRawSql', () => {
   test('coalescing: one apply batch = exactly one re-run', async () => {
     const client = new FakeClient();
     client.setRows('tasks', []);
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: wrapper(client),
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: wrapper(client),
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     const before = client.queryCount;
 
@@ -274,7 +340,7 @@ describe('useRawSql', () => {
     await waitFor(() => expect(client.queryCount).toBe(before + 1));
   });
 
-  test('explicit tables option overrides the SQL inference', async () => {
+  test('the declared tables decide re-runs, whatever the SQL reads', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
     // The SQL reads `tasks`, but we DECLARE the dep as `docs` — so a `tasks`
@@ -297,9 +363,12 @@ describe('useRawSql', () => {
   test('refresh() forces a re-run', async () => {
     const client = new FakeClient();
     client.setRows('tasks', []);
-    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
-      wrapper: wrapper(client),
-    });
+    const { result } = renderHook(
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['tasks'] }),
+      {
+        wrapper: wrapper(client),
+      },
+    );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     const before = client.queryCount;
     act(() => result.current.refresh());

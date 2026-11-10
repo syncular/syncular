@@ -1,5 +1,6 @@
 import {
   canonicalValue,
+  ClientSyncError,
   type LiveQueryPhase,
   type QueryDependency,
   type SqlRow,
@@ -8,7 +9,6 @@ import {
   type WindowCoverage,
 } from '@syncular/client';
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
-import { inferTables } from './infer-tables';
 import { useReactiveStore } from './use-client';
 
 export interface UseRawSqlOptions<Row = SqlRow> {
@@ -61,21 +61,28 @@ export function useRawSql<Row = SqlRow>(
 ): UseRawSqlResult<Row> {
   const store = useReactiveStore();
   const enabled = options?.enabled ?? true;
-  const inferred = options?.tables ?? [...inferTables(sql)];
   const dependencies =
     options?.dependencies ??
-    inferred.map((table) => ({
+    options?.tables?.map((table) => ({
       table,
       ...(options?.scopeKeys !== undefined
         ? { scopeKeys: options.scopeKeys }
         : {}),
     }));
+  if (dependencies === undefined) {
+    throw new ClientSyncError(
+      'client.raw_sql_dependencies_required',
+      '@syncular/react: useRawSql needs `dependencies` or `tables` naming every table the SQL reads; the query re-runs only when one of them changes.',
+    );
+  }
   const coverage = options?.coverage ?? [];
+  const claimCoverage = options?.claimCoverage ?? true;
   const identity = canonicalValue({
     sql,
     params: params ?? [],
     dependencies,
     coverage,
+    claimCoverage,
     ...(options?.id !== undefined ? { id: options.id } : {}),
   });
   // `identity` canonically contains every value-shaped input. Depending on
@@ -94,7 +101,7 @@ export function useRawSql<Row = SqlRow>(
         ...(coverage.length > 0 ? { coverage } : {}),
         ...(options?.mapRow !== undefined ? { mapRow: options.mapRow } : {}),
         ...(options?.rowKey !== undefined ? { rowKey: options.rowKey } : {}),
-        claimCoverage: options?.claimCoverage ?? true,
+        claimCoverage,
       }),
     [store, identity, options?.mapRow, options?.rowKey],
   );
