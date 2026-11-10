@@ -53,7 +53,7 @@ void  syncular_free_string(char *ptr);
 { "baseUrl": "https://host/mount", "headers": { "authorization": "..." }, "wsUrl": "wss://..." }
 ```
 
-`baseUrl` engages the native transport (requires a `native-transport` build): blocking HTTP through `ureq` against `{baseUrl}/sync`, `{baseUrl}/segments/{id}`, the blob endpoints, and bare signed-URL fetches, plus a `tungstenite` realtime socket with a reader thread. `wsUrl` is optional and derives from `baseUrl` as `{baseUrl}/realtime`. A `baseUrl` on a lean build makes `syncular_client_new` return NULL. The config also accepts the transport policy keys `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`, documented in [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy).
+`baseUrl` engages the native transport (requires a `native-transport` build): blocking HTTP through `ureq` against `{baseUrl}/sync`, `{baseUrl}/segments/{id}`, the blob endpoints, and bare signed-URL fetches, plus a `tungstenite` realtime socket with a reader thread. `wsUrl` is optional and derives from `baseUrl` as `{baseUrl}/realtime`. A `baseUrl` on a lean build makes `syncular_client_new` return NULL. The config also accepts the transport policy keys `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, and `redirects`, documented in [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy).
 
 ### Local authority
 

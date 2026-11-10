@@ -59,6 +59,7 @@ implementer needs no access to any existing source tree.
 | [§9](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#9-versioning-and-evolution) | Versioning and evolution |
 | [§10](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-error-catalog) | The error catalog |
 | [§11](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-canonical-json-debug-rendering) | Canonical JSON debug rendering |
+| [§12](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#12-local-authority) | Local authority: the server profile a client runs in-process before it attaches a remote server |
 
 Appendix A lists the golden vectors and Appendix B the conformance scenarios.
 
@@ -182,6 +183,7 @@ crates.io publishes the Rust side in dependency order:
 | Crate | What it is | Source |
 |---|---|---|
 | `syncular-ssp2` | The SSP2 wire codec, implemented from SPEC.md alone | [rust/crates/ssp2](https://github.com/syncular/syncular/tree/main/rust/crates/ssp2) |
+| `syncular-authority` | The local authority (SPEC.md §12): the server profile a native client runs in-process before it attaches a remote server | [rust/crates/authority](https://github.com/syncular/syncular/tree/main/rust/crates/authority) |
 | `syncular-client` | The Rust client core on rusqlite: the native runtime the bindings host and the execution boundary for generated Rust named queries | [rust/crates/client](https://github.com/syncular/syncular/tree/main/rust/crates/client) |
 | `syncular-command` | The shared JSON command router over the client core, used by the conformance shim, the FFI core, and the Tauri plugin | [rust/crates/command](https://github.com/syncular/syncular/tree/main/rust/crates/command) |
 | `syncular-ffi` | The client core packaged as a C-ABI native library (`rust/ffi.h`): the runtime for iOS, Android, JVM, and desktop | [rust/crates/ffi](https://github.com/syncular/syncular/tree/main/rust/crates/ffi) |

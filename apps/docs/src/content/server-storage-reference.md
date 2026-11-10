@@ -214,7 +214,7 @@ Blobs are durable and never expire. A blob referenced by a live row must stay do
 An S3 or R2 lifecycle-expiration rule on the `blob/` prefix deletes attachments that live rows still reference. Reclamation is reference-driven: the scheduled `sweepOrphanBlobs` pass deletes only blobs that no live row references ([Blob GC](/server-operations/#blob-gc)).
 :::
 
-Two independent presign switches take the server out of the blob byte path. `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned download URLs after the row-derived authorization check. `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage upload grants that sign `content-length` and `x-amz-checksum-sha256`, so S3, R2 and MinIO refuse a PUT of another size or other bytes. Without them, clients stream through the direct `PUT /blobs/:blobId` endpoint, which is fully supported.
+Two independent presign switches take the server out of the blob byte path. `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned download URLs after the row-derived authorization check. `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage upload grants that sign `content-length` and `x-amz-checksum-sha256`, so S3, R2 and MinIO refuse a PUT of another size or other bytes. Without them, clients stream through the direct `PUT /blobs/:blobId` endpoint.
 
 ## Upgrading a server database
 
@@ -320,7 +320,7 @@ A custom `ServerStorage` implements these atomic operations on top of the shared
 | `updateClientCursor(partition, clientId, cursor, updatedAtMs)` | Update only the existing record's cursor and timestamp, each to its maximum, atomically. Keep missing records absent. Preserve actor, wire version, and subscriptions. |
 | `advanceClientCursor(partition, clientId, actorId, logEpoch, cursor, updatedAtMs)` | The realtime acknowledgment path. The same atomic update, plus checks of the actor and the current partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1 perform one update without reading or serializing the subscription list. |
 | `putClientRecord` | A full replacement. Changing subscriptions can lower the retention cursor floor. HTTP registration keeps its cursor and subscription replacement rules. |
-| `getActiveClientCursorFloor(partition, cutoffMs)` | Return the minimum cursor whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve negative bootstrap cursors. Pruning and admin horizon status use this scalar aggregate; `listClientCursors` remains the explicit listing interface. |
+| `getActiveClientCursorFloor(partition, cutoffMs)` | Return the minimum non-negative cursor whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. A bootstrapping client at cursor -1 holds no cursor. Pruning and admin horizon status use this scalar aggregate; `listClientCursors` remains the explicit listing interface. |
 | `getPartitionLogEpoch(partition)` | A point read that leaves the last-authenticated timestamp unchanged. `pruneCommitLog` reads it before computing retention inputs. |
 | `pruneCommitsThrough(partition, { logEpoch, throughSeq })` | In one transaction: verify the epoch, compute `max(currentHorizon, throughSeq)`, advance the horizon, and delete commit, change, and scope records through it. Return `{ previousHorizonSeq, horizonSeq, removedCommits }`. Serialize it with restore rotation. An epoch mismatch rejects before deleting. A retry cleans up even when the horizon already covers the requested sequence. |
 | `setHorizonSeq` | A monotonic update. |

@@ -186,15 +186,15 @@ b.api.patch('todos', 't1', { title: 'B' }, { baseVersion: version });
 await a.sync(); // wins version + 1
 await b.sync(); // loses against the stale base
 
-expect(b.api.conflicts[0]?.serverRow.title).toBe('A');
+expect(b.api.conflicts()[0]?.serverRow.title).toBe('A');
 expect(
-  Object.keys(b.api.conflicts[0]?.operation?.values ?? {}),
+  Object.keys(b.api.conflicts()[0]?.operation?.values ?? {}),
 ).toContain('title');
 ```
 
 Pass `validators` to `createTestSync` to exercise the same business rules as
 production. A `ValidationRejection` with structured details reaches
-`client.api.rejections` through both loopback and socket sync rounds, so app
+`client.api.rejections()` through both loopback and socket sync rounds, so app
 tests can assert field focus and correction routing without displaying server
 diagnostics.
 

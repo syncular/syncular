@@ -10,7 +10,7 @@ Reference for how the Dart package loads the core on each platform, schedules ev
 
 | Platform | Default name | Notes |
 |---|---|---|
-| Android | `libsyncular.so` | `arm64-v8a` and `x86_64` from `build-native.sh android` (needs `cargo-ndk`), in `jniLibs/<abi>/` |
+| Android | `libsyncular.so` | `arm64-v8a` and `x86_64` from `build-native.sh` (needs `cargo-ndk`), in `jniLibs/<abi>/` |
 | iOS | none | `DynamicLibrary.process()`: the xcframework slice is statically linked into the Runner, so leave `libraryPath` null |
 | macOS | `libsyncular.dylib` | Bundle in `.app/Contents/Frameworks`, or link the xcframework macOS slice |
 | Linux | `libsyncular.so` | Next to the executable or on the loader path |
@@ -32,7 +32,7 @@ The core is thread-affine. Commands and the poll timer both run on the isolate t
 | `roundDeadlineMs` | `int?` | One deadline for the total time of a sync round, which also fails a slow transfer that is still progressing; expiry returns `transport.timeout` |
 | `maxRequestBytes` | `int?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `int?` | Larger decoded responses fail with `transport.response_too_large` |
-| `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |
+| `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to an HTTP request with no headers, and the realtime socket then fails to connect with `transport.redirect` |
 | `realtimeHeartbeatMs` | `int?` | Heartbeat interval of the realtime server in milliseconds (default 30000); after the first heartbeat, twice that interval of silence closes the socket as lost |
 
 [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) gives the full semantics.
@@ -59,4 +59,4 @@ Set `SyncularConfig.localAuthorityPath` to start without a server (SPEC §12). T
 
 ## Example app
 
-[`bindings/flutter/example`](https://github.com/syncular/syncular/tree/main/bindings/flutter/example) is a Flutter todo app of about 150 lines. Its platform scaffolds come from `flutter create` and stay out of the repository. Point it at a server with `--dart-define=SYNCULAR_SERVER=http://...`.
+[`bindings/flutter/example`](https://github.com/syncular/syncular/tree/main/bindings/flutter/example) is a Flutter todo app of about 200 lines. Its platform scaffolds come from `flutter create` and stay out of the repository. Point it at a server with `--dart-define=SYNCULAR_SERVER=http://...`.

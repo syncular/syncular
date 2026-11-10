@@ -189,7 +189,7 @@ with `durationMs` and an `outcome`: `rebound` (the leader answered),
 
 ### Build compatibility
 
-Every message carries the tab's `MULTI_TAB_PROTOCOL_VERSION` and schema version.
+Every `hello`, request and `announce` message carries the tab's `MULTI_TAB_PROTOCOL_VERSION` and schema version; replies and events carry neither.
 A follower whose leader differs becomes `blocked` with reason
 `leader-incompatible`, code `client.leader_incompatible`, and `leader: 'older'`
 or `'newer'`. A leader that hears from a newer tab closes its core and releases

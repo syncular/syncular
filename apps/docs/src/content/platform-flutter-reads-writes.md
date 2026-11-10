@@ -73,4 +73,4 @@ client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
 client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
 
-`crdtApplyUpdate` accepts a Yjs update as a `List<int>`. Each helper returns the enqueued commit id. The merge model is on [CRDT columns](/concepts-crdt/).
+`crdtApplyUpdate` accepts a Yjs update as a `List<int>`. `crdtText` returns the current text; each of the other helpers returns the enqueued commit id. The merge model is on [CRDT columns](/concepts-crdt/).

@@ -304,9 +304,7 @@ fetch: async (request, bunServer) => {
     const auth = await authenticate(request);
     if (auth === null) return new Response(null, { status: 401 });
     const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-    if (bunServer.upgrade(request, { data: { clientId, ...auth } })) {
-      return undefined as unknown as Response;
-    }
+    if (bunServer.upgrade(request, { data: { clientId, ...auth } })) return;
     return new Response('expected a websocket upgrade', { status: 400 });
   }
   return app.fetch(request);
@@ -317,7 +315,9 @@ websocket: {
       partition: ws.data.partition,
       actorId: ws.data.actorId,
       clientId: ws.data.clientId,
-      send: (data) => ws.send(data),
+      send: (data) => {
+        ws.send(data);
+      },
       closeSocket: () => ws.close(1008, 'protocol violation'),
     });
     // … session wiring as in Server setup
@@ -383,8 +383,8 @@ hub.connect({
 });
 ```
 
-On Cloudflare Workers the same check goes in the `authenticateRealtime` callback
-([Cloudflare Workers](/server-workers/)).
+On Cloudflare Workers the same check goes in the `authenticate` function of the
+`realtime` option ([Cloudflare Workers](/server-workers/)).
 
 ### Fetch a ticket per attempt
 

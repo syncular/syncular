@@ -159,7 +159,7 @@ Two config changes fix both: add `@sqlite.org/sqlite-wasm` plus `SYNCULAR_VITE_O
 
 The page tried to start a worker graph that still referred to a retired Vite optimizer chunk. This is a development-host identity mismatch, and the replica is intact. Stop Vite, reinstall from the lockfile, restart once with `--force`, and reload every open app tab. Do not clear OPFS: device identity, subscription progress, and an unsynced outbox may live there.
 
-Use `SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE` from `@syncular/react/vite` and the schema-and-runtime-aware `retainViteSyncClientResource` recipe in [Configure Vite](/platform-web-install/#configure-vite). The client sanitizes the original bundler text and URL before it surfaces this code, so support diagnostics retain no local paths or chunk names.
+Use `SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE` from `@syncular/react/vite` and the schema-and-runtime-aware `createViteSyncClientResource` recipe in [Keep one owner during HMR](/platform-web-realtime/#keep-one-owner-during-hmr). The client sanitizes the original bundler text and URL before it surfaces this code, so support diagnostics retain no local paths or chunk names.
 
 ## Data is in the local database, the UI never updates
 

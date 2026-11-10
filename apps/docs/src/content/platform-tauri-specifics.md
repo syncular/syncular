@@ -199,7 +199,9 @@ commits, and resumes its scheduler when the gate opens. The gate is independent
 of security preflight and encryption keys.
 
 ```ts title="src/session.ts"
-const client = await createTauriAuthoritySyncClient({
+import { createTauriSyncClient } from '@syncular/tauri';
+
+const client = await createTauriSyncClient({
   schema,
   securityPreflight: true,
   transportEnabled: false,

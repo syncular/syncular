@@ -38,7 +38,7 @@ When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on t
 One factory builds the canonical sync capabilities for HTTP-forwarded rounds and socket rounds. Segment and blob bytes live in R2 through the bucket binding, so the Worker holds no S3 credentials.
 
 ```ts title="src/worker.ts"
-import { D1ServerStorage, type RealtimeHubConfig } from '@syncular/server';
+import { type RealtimeHubConfig, type ServerStorage } from '@syncular/server';
 import { R2BlobStore, R2SegmentStore } from '@syncular/server-workers';
 import { schema } from './syncular.generated';
 
@@ -48,7 +48,7 @@ interface Env {
   REALTIME: DurableObjectNamespace<SyncularRealtimeDO>;
 }
 
-const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
+const canonicalSyncConfig = (env: Env, storage: ServerStorage) => {
   const segments = new R2SegmentStore(env.BUCKET);
   // Durable attachment bytes (§5.9) in R2: no TTL, no lifecycle rule; the
   // cron trigger runs `sweepOrphanBlobs` for GC (see step 5).
@@ -63,7 +63,7 @@ const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
 };
 ```
 
-A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself. `GET /segments/:id` and `GET /blobs/:id` stream the R2 object body through `open` without buffering it in the isolate. The blob route checks that the object exists and authorizes the referencing rows before it opens the object ([Blobs](/concepts-blobs/)).
+A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself. `GET /blobs/:id` and `GET /segments/:id` for a segment over 16 MiB stream the R2 object body through `open` without buffering it in the isolate; a smaller segment is buffered and compressed. The blob route checks that the object exists and authorizes the referencing rows before it opens the object ([Blobs](/concepts-blobs/)).
 
 Both stores write the same object keys as `S3SegmentStore` and `S3BlobStore`. One bucket therefore serves both access paths: a Bun or Node host that holds R2 S3 credentials publishes through the S3 endpoint, and the Worker reads the same objects through the binding. To get presigned URLs, use `S3SegmentStore` and `S3BlobStore` with `s3PresignedUrls` and `s3PresignedBlobUrls` on the Workers host as well, and set the R2 endpoint and access key secrets listed in step 4.
 

@@ -23,8 +23,8 @@ FFI/Tauri already consume.
 
 **The stdio conformance shim locks the CORE.** The shared `syncular-command`
 router is exercised against the full conformance catalog (Rust client × TS
-server, 68/68) through the shim. Every binding consumes that SAME router — the
-FFI crate, the Tauri plugin, and (transitively) the Swift/Kotlin/RN wrappers —
+server) through the shim. Every binding consumes that SAME router (the
+FFI crate, the Tauri plugin, and transitively the Swift/Kotlin/RN wrappers),
 so none of them re-implements protocol logic. There is exactly one command
 router, and it is the one under test.
 

@@ -46,7 +46,7 @@ let lease = status["leaseState"]
 // arrive on the main queue:
 client.onEvent = { event in
     switch event.type {
-    case "sync-intent": client.syncInBackground()
+    case "sync-intent": Task { try? client.syncUntilIdle() }
     case "change":      refreshVisibleState()
     case "diagnostics": refreshSupportEvidence(event.payload)
     default:            break
@@ -95,17 +95,18 @@ The wrapper links the native core; the core is built by
    links the mac slice.
 
 2. **Release (a consuming app).** Build the `Syncular.xcframework`
-   (`build-native.sh apple` on a **full-Xcode** machine — iOS device + simulator
-   + macOS slices) and consume it as a `.binaryTarget`:
+   (`build-native.sh` on a **full-Xcode** machine: iOS device, simulator
+   and macOS slices) and consume it as a `.binaryTarget`:
 
    ```swift
    .binaryTarget(name: "CSyncular", path: "Syncular.xcframework"),
-   .target(name: "Syncular", dependencies: ["CSyncular"]),  // drop linkerSettings
+   .target(name: "Syncular", dependencies: ["CSyncularFFI", "CSyncular"]),  // drop linkerSettings
    ```
 
-   The C module map here (`Sources/CSyncularFFI`) is a verbatim copy of
-   `rust/ffi.h`; the xcframework embeds the same header, so the Swift target
-   compiles unchanged against either linkage.
+   The Swift sources `import CSyncularFFI`, whose module map
+   (`Sources/CSyncularFFI`) wraps a verbatim copy of `rust/ffi.h`. The
+   xcframework ships the library and the same header without a module map, so
+   keep the `CSyncularFFI` target and link the binary target beside it.
 
 ## Lifecycle (the wrapper owns it)
 

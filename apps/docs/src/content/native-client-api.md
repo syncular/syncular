@@ -60,7 +60,7 @@ The core has no callbacks. It queues five event types, and the wrapper's poll lo
 |---|---|---|
 | `change` | An exact, revisioned change batch | Refresh the screens that read the changed tables. |
 | `sync-intent` | The coalesced reason a sync round is due | Call `sync()` or `syncUntilIdle()`. |
-| `presence` | No payload | Call `presence(scopeKey)` again. |
+| `presence` | The `scopeKey` whose peers changed | Call `presence(scopeKey)` again. |
 | `diagnostics` | A privacy-safe snapshot, emitted only when its state changes | Feed a support screen. |
 | `progress` | Phase, bytes, and rows of the running round | Draw a progress bar. The queue keeps only the newest one. |
 
@@ -125,7 +125,7 @@ A schema bump on an installed app follows the wipe-and-re-bootstrap flow in [Sch
 
 ## Collaborative text
 
-The CRDT helpers `crdtText`, `crdtInsertText`, `crdtDeleteText`, and `crdtApplyUpdate` need a core built with `crdt-yjs`. Each helper pushes its update through the normal mutate path and returns the enqueued `clientCommitId`. The merge model is on [CRDT columns](/concepts-crdt/).
+The CRDT helpers `crdtText`, `crdtInsertText`, `crdtDeleteText`, and `crdtApplyUpdate` need a core built with `crdt-yjs`. `crdtText` reads the column's current text. The other three push their update through the normal mutate path and return the enqueued `clientCommitId`. The merge model is on [CRDT columns](/concepts-crdt/).
 
 ## SDK pages
 

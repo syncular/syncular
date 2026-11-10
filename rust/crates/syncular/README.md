@@ -6,9 +6,8 @@ The Syncular Rust client core has **moved to the
 This crate is an empty placeholder, published only to redirect existing
 users to the new crate name.
 
-```toml
-[dependencies]
-syncular-client = "0.2"
+```sh
+cargo add syncular-client
 ```
 
 ## Related crates

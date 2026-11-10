@@ -85,13 +85,12 @@ const config: SyncServerConfig = {
 ```ts title="src/server.ts"
 import { createSyncularHono } from '@syncular/server-hono';
 
-const app = createSyncularHono({
-  config,
-  authenticate: async (request) => {
-    const actor = await verify(request); // your auth
-    return actor ? { actorId: actor.id, partition: actor.tenant } : null;
-  },
-});
+async function authenticate(request: Request) {
+  const actor = await verify(request); // your auth
+  return actor ? { actorId: actor.id, partition: actor.tenant } : null;
+}
+
+const app = createSyncularHono({ config, authenticate });
 ```
 
 [Authentication](/guide-auth/) shows a bearer-token and a cookie `authenticate`.
@@ -244,18 +243,25 @@ const config: SyncServerConfig = {
 };
 ```
 
-The host owns the upgrade. With `Bun.serve`, upgrade on `/realtime` and hand the socket to the hub. The `partition` and `actorId` come from your own authentication of the upgrade request; [Authentication](/guide-auth/#browser-authenticate-the-realtime-socket) shows the authenticated upgrade and [short-lived tickets](/guide-auth/#realtime-tickets) for bearer-token apps.
+The host owns the upgrade. With `Bun.serve`, run the same `authenticate` on the upgrade request, answer 401 when it returns `null`, and hand its `partition` and `actorId` to the hub. A browser WebSocket sends cookies and no custom headers; [Authentication](/guide-auth/#browser-authenticate-the-realtime-socket) adds the `Origin` check a cookie session needs, and [short-lived tickets](/guide-auth/#realtime-tickets) cover bearer-token apps.
 
 ```ts title="src/server.ts"
-const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>({
+interface SocketData {
+  actorId: string;
+  partition: string;
+  clientId: string;
+  session?: RealtimeSession;
+}
+
+const server = Bun.serve<SocketData, never>({
   port: 8787,
-  fetch(request, bunServer) {
+  async fetch(request, bunServer) {
     const url = new URL(request.url);
     if (url.pathname === '/realtime') {
+      const auth = await authenticate(request);
+      if (auth === null) return new Response(null, { status: 401 });
       const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-      if (bunServer.upgrade(request, { data: { clientId } })) {
-        return undefined as unknown as Response;
-      }
+      if (bunServer.upgrade(request, { data: { ...auth, clientId } })) return;
       return new Response('expected a websocket upgrade', { status: 400 });
     }
     return app.fetch(request);
@@ -264,10 +270,12 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
     open(ws) {
       hub
         .connect({
-          partition: 'main', // from YOUR auth on the upgrade request
-          actorId: 'user-1',
+          partition: ws.data.partition,
+          actorId: ws.data.actorId,
           clientId: ws.data.clientId,
-          send: (data) => ws.send(data),
+          send: (data) => {
+            ws.send(data);
+          },
           closeSocket: () => ws.close(1008, 'protocol violation'),
         })
         .then((session) => { ws.data.session = session; })

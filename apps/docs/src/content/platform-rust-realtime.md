@@ -53,13 +53,20 @@ A host that cannot block, such as a browser worker answering with `fetch`, drive
 2. `next_operation()` names the next operation: `RoundOperation::UploadGrant`, `UploadPut`, `Upload`, `Sync { request, realtime }`, or `Downloads(fetches)`. Perform it in the host, then call `submit(RoundReply::…)`. Repeat until `next_operation()` returns `None`.
 3. `finish()` returns the `CompletedSyncRound` for `apply_sync_round`.
 
-```rust
-use syncular_client::{AppliedSyncRound, RoundReply};
+`prepare_sync_round` returns the `SyncOutcome` of a round that cannot start as its error, and `submit` returns a `TransportError`; the snippet wraps both in one host error type.
 
-let mut prepared = client.prepare_sync_round(false)?;
+```rust
+use syncular_client::{AppliedSyncRound, RoundReply, SyncOutcome, TransportError};
+
+enum RoundError {
+    NotStarted(Box<SyncOutcome>),
+    Reply(TransportError),
+}
+
+let mut prepared = client.prepare_sync_round(false).map_err(RoundError::NotStarted)?;
 while let Some(operation) = prepared.next_operation() {
     let reply = host_operation(&mut io, operation).await;
-    prepared.submit(reply)?;
+    prepared.submit(reply).map_err(RoundError::Reply)?;
 }
 let outcome = match client.apply_sync_round(prepared.finish().expect("complete")) {
     AppliedSyncRound::Continue(_) => { /* an upload continued: run the next exchange */ }

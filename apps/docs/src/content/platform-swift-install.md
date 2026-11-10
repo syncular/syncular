@@ -19,7 +19,7 @@ You need a Rust toolchain, a Syncular server (the [Quickstart](/quickstart/) ser
 <div class="node"><span class="t">Package.swift</span>links <code>vendor/libsyncular.dylib</code></div>
 </div>
 <div class="d-box"><span class="d-label">Shipping app</span>
-<div class="node"><span class="t">build-native.sh apple</span>assembles <code>Syncular.xcframework</code></div>
+<div class="node"><span class="t">build-native.sh</span>assembles <code>Syncular.xcframework</code></div>
 <div class="node"><span class="t">Package.swift</span><code>.binaryTarget</code> replaces the linker flags</div>
 </div>
 </div>
@@ -27,7 +27,7 @@ You need a Rust toolchain, a Syncular server (the [Quickstart](/quickstart/) ser
 
 ::::::steps
 :::::step{title="Build the core" time="5 min"}
-For local development, run the package gate. It builds the macOS dylib and copies it to `bindings/swift/vendor/`.
+For local development, run the package gate. It copies the lean macOS dylib (no `native-transport`) to `bindings/swift/vendor/` for the wrapper's tests and the `native-transport` dylib to `bindings/swift/example/vendor/`. A client with a `baseUrl` needs the `native-transport` dylib.
 
 ```sh title="terminal"
 cd bindings/swift
@@ -37,12 +37,12 @@ cd bindings/swift
 For a shipping app, build the xcframework on a machine with full Xcode:
 
 ```sh title="terminal"
-rust/scripts/build-native.sh apple
+rust/scripts/build-native.sh
 ```
 
 `build-native.sh` compiles with `native-transport` on, which `baseUrl` requires.
 
-::checkpoint[`vendor/libsyncular.dylib` exists (local) or `rust/target/native` holds `Syncular.xcframework` (release).]
+::checkpoint[`example/vendor/libsyncular.dylib` exists (local) or `rust/target/native` holds `Syncular.xcframework` (release).]
 :::::
 
 :::::step{title="Add the package" time="3 min"}
@@ -50,10 +50,10 @@ In a release app, consume the xcframework and drop the dev linker settings:
 
 ```swift title="Package.swift"
 .binaryTarget(name: "CSyncular", path: "Syncular.xcframework"),
-.target(name: "Syncular", dependencies: ["CSyncular"]),
+.target(name: "Syncular", dependencies: ["CSyncularFFI", "CSyncular"]),
 ```
 
-`Sources/CSyncularFFI` is a verbatim copy of `rust/ffi.h` and the xcframework embeds the same header, so the Swift target compiles unchanged against either linkage. In local development, set `DYLD_LIBRARY_PATH=vendor` so the loader finds the dylib.
+The Swift sources `import CSyncularFFI`, whose module map wraps a verbatim copy of `rust/ffi.h`. The xcframework ships the library and the same header without a module map, so keep the `CSyncularFFI` target and link the binary target beside it. In local development, set `DYLD_LIBRARY_PATH` to the directory that holds the `native-transport` dylib (`example/vendor`) so the loader finds it.
 
 ::checkpoint[`import Syncular` compiles in your target.]
 :::::

@@ -25,10 +25,10 @@ You need JDK 21 or newer, a Rust toolchain, Gradle, and a Syncular server (the [
 ::::::steps
 :::::step{title="Build the core" time="5 min"}
 ```sh title="terminal"
-rust/scripts/build-native.sh desktop
+rust/scripts/build-native.sh
 ```
 
-`build-native.sh` compiles with `native-transport` on, which `baseUrl` requires. `desktop` produces the host library; `android` produces `arm64-v8a` and `x86_64` `.so` files through `cargo-ndk`.
+`build-native.sh` compiles with `native-transport` on, which `baseUrl` requires, and builds every target whose toolchain exists on the machine: the host library under `rust/target/native/desktop`, and `arm64-v8a` and `x86_64` `.so` files through `cargo-ndk` when the NDK is installed.
 
 ::checkpoint[`rust/target/native` holds `libsyncular.dylib`, `.so`, or `syncular.dll` for your host.]
 :::::

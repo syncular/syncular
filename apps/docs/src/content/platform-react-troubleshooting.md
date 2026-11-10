@@ -48,7 +48,9 @@ rows and revision of the last successful read. The error is a
 true, the client has scheduled a retry after `retryDelayMs`, and the query
 returns to `loading` or `partial` when that attempt starts. When false, no
 automatic attempt follows; fix the cause in
-[Troubleshooting](/troubleshooting/#error-code-index) and call `refresh()`.
+[Troubleshooting](/troubleshooting/#error-code-index) and start a sync with
+`client.sync()`. The query leaves `error` when that attempt starts; `refresh()`
+re-reads only the local replica.
 
 ## Router state lags the URL
 

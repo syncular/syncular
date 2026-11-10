@@ -32,7 +32,7 @@ Every write reaches the server as a **commit**, the atomic unit that applies ent
 
 Each applied commit gets a `commitSeq`, and every change in the commit shares it ([SPEC §2.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#21-commits-and-the-log)). Your `authenticate()` maps each request to one partition. Partitions are server-internal and never appear on the wire.
 
-Every synced row carries a `server_version`. It starts at 1 and increases by 1 per upsert. It is the optimistic-concurrency token behind [conflict detection](/concepts-conflicts/).
+Every synced row carries a `server_version`. It starts at 1, or one above its tombstone's `server_version` when an insert recreates a deleted row, and increases by 1 per upsert. It is the optimistic-concurrency token behind [conflict detection](/concepts-conflicts/).
 
 ## Push payloads
 

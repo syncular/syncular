@@ -11,7 +11,7 @@ calls of a first live query.
 - **Client**: Any object that implements `SyncClientLike`: a worker handle, a direct client, or a native bridge.
 - **Reactive store**: The client-scoped store the hooks read through `useSyncExternalStore`.
 - **Revision**: A monotonic number that identifies one local change batch.
-- **Phase**: The state of a query result: `loading`, `partial`, `ready`, or `error`.
+- **Phase**: The state of a query result: `loading`, `partial`, `ready`, `blocked`, or `error`.
 :::
 
 ## How the pieces connect
@@ -43,7 +43,7 @@ snapshot.
 startup handling. The shape:
 
 ```tsx title="src/App.tsx"
-import { SyncProvider, useQuery } from '@syncular/react';
+import { SyncProvider, useQuery, type SyncClientLike } from '@syncular/react';
 import { listTodosQuery } from './syncular.queries';
 
 function Todos({ listId }: { listId: string }) {
@@ -58,7 +58,7 @@ function Todos({ listId }: { listId: string }) {
   );
 }
 
-export const App = ({ client }) => (
+export const App = ({ client }: { client: SyncClientLike }) => (
   <SyncProvider client={client}>
     <Todos listId="groceries" />
   </SyncProvider>

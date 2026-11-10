@@ -50,7 +50,7 @@ With a `baseUrl` the core can hold a WebSocket to `{baseUrl}/realtime` (or `wsUr
 }
 ```
 
-`close()` waits for the poll loop to leave its in-flight `poll_event` call before the core is freed, so it can block for up to 25 ms. The client also closes in `deinit`.
+`close()` waits for the poll loop to leave its in-flight `poll_event` call before the core is freed: up to 25 ms, plus the time of a `drainRealtime` the loop is running and of any command that holds the command queue. The client also closes in `deinit`.
 
 ## Follow the network
 

@@ -7,12 +7,12 @@ of a result means and how to render all of them.
 ::meta{for="React developers building screens over synced rows" time="8 minutes" first="platform-react-install" spec="4"}
 
 :::terms
-- **Phase**: `loading`, `partial`, `ready`, or `error`: the completeness of a query result.
+- **Phase**: `loading`, `partial`, `ready`, `blocked`, or `error`: the completeness of a query result.
 - **Coverage**: The window of rows a query needs to be complete.
 - **Dependency**: A table and optional scope keys a query reads.
 :::
 
-:::figure{title="The four phases of a query result" note="Render from phase" ticks}
+:::figure{title="The five phases of a query result" note="Render from phase" ticks}
 <div class="d-row">
 <div class="node"><span class="t">loading</span>No complete answer, no rows yet</div>
 <span class="d-arrow"></span>
@@ -21,6 +21,7 @@ of a result means and how to render all of them.
 <div class="node ok"><span class="t">ready</span>Complete snapshot, including a true empty result</div>
 </div>
 <div class="d-row">
+<div class="node bad"><span class="t">blocked</span>The browser leader cannot serve reads; the rows of the last read stay</div>
 <div class="node bad"><span class="t">error</span>The latest read, or the latest sync attempt while coverage was incomplete, failed</div>
 </div>
 
@@ -40,13 +41,14 @@ import { listTodosQuery } from './syncular.queries';
 const todos = useQuery(listTodosQuery, { listId });
 
 if (todos.phase === 'loading') return <Skeleton />;
+if (todos.phase === 'blocked') return <Unavailable availability={todos.availability} />;
 if (todos.phase === 'error') return <ErrorView error={todos.error} />;
 if (todos.phase === 'ready' && todos.rows.length === 0) return <Empty />;
 return <Rows rows={todos.rows} partial={todos.phase === 'partial'} />;
 ```
 
 The result is `{ rows, phase, revision, isLoading, isRefreshing, error,
-refresh }`. Observing the query claims its coverage; unobserving releases only
+availability, refresh }`. Observing the query claims its coverage; unobserving releases only
 that consumer's claim. No separate `useWindow` effect or completeness read is
 needed.
 

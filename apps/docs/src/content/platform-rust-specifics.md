@@ -19,7 +19,7 @@ Most Rust hosts use `HostTransport` and never touch this page. Read it when you 
 | `download_segment(&mut self, request, on_progress)` | yes | Bootstrap segment fetch (SPEC §5.5) |
 | `download_segments(&mut self, fetches, on_progress)` | no | Every eligible segment body of one response, in wire order; the default calls the single fetches in order and stops after the first error |
 | `realtime_connect`, `realtime_send`, `realtime_close` | yes | Socket lifecycle and client-to-server control messages |
-| `supports_url_fetch`, `fetch_url(url, on_progress)` | no | Signed-URL fetches; the default returns an error |
+| `supports_url_fetch`, `fetch_url(url, byte_length, on_progress)` | no | Signed-URL fetches; reading stops once the body exceeds `byte_length`; the default returns an error |
 | `blob_upload`, `blob_download`, `blob_upload_grant`, `blob_put_url`, `fetch_blob_url` | no | Blob endpoints; the defaults return an error |
 | `remote_operation` | no | The remote operation endpoint; the default returns `client.remote_operations_unconfigured` |
 | `realtime_connect_for_client`, `round_deadline`, `set_round_deadline` | no | Per-client connect and the round deadline hooks |
@@ -63,7 +63,7 @@ let policy = HostTransportPolicy {
 - `max_request_bytes`: a larger HTTP request body is refused before any network I/O with `transport.request_too_large`. It does not cap a realtime socket buffer.
 - `max_response_bytes`: a larger decoded response body is refused with `transport.response_too_large`, counted after decompression. It does not cap a realtime socket buffer.
 - `realtime_heartbeat`: the server's heartbeat interval (SPEC §8.5); `None` means 30 seconds. A connection's first `heartbeat` event arms silence detection. Once armed, a realtime socket that delivers no frame for twice the interval closes and queues `Inbound::Disconnected` with `transport.timeout` and `causeKind` `heartbeat`, so an idle replica notices a dead connection. Set it to the interval your server sends heartbeats on. A server that sends none never arms it, and every new connection starts unarmed.
-- `redirects`: `Deny` or `Follow`. `Follow` follows a redirect only for a request with no configured headers, no base-URL userinfo, and no signed capability URL. A credential-bearing request is refused with `transport.redirect` under both policies. The WebSocket handshake obeys the same rule and additionally refuses a realtime URL with userinfo or a query.
+- `redirects`: `Deny` or `Follow`. `Follow` follows a redirect only for a request with no configured headers, no base-URL userinfo, and no signed capability URL. A credential-bearing request is refused with `transport.redirect` under both policies. The WebSocket handshake follows no redirect: under `Follow`, `realtime_connect` fails with `transport.redirect` before it connects, so a transport that follows redirects has no realtime.
 
 A realtime socket round has its own fixed silence bound of 30 seconds, which `request_timeout` does not change. The transport sends a request in `0x01` chunks of at most 64 KiB and restarts the bound on every flushed request chunk and every received response chunk. A round that ends without its response `END` (a silence timeout, a malformed response stream, or the whole-round deadline) closes the socket and queues `Inbound::Disconnected` with the round's code, so the unread tail of that response cannot reach the next round. `SyncClient::realtime_lost` handles it like any other lost socket.
 
@@ -88,10 +88,12 @@ use syncular_client::{native_transport::HostTransport, Transport};
 let mut transport = HostTransport::from_config(&json!({
     "localAuthorityPath": "./data/authority.sqlite",
     "baseUrl": "https://api.example.com/sync-mount",
-}))?;
-transport.open_local_authority(&schema, Some("./data/replica.sqlite"))?;
+}))?; // a config error is a `String`
+transport
+    .open_local_authority(&schema, Some("./data/replica.sqlite"))
+    .map_err(|error| error.code)?; // a `TransportError`
 // ... sync rounds reach the authority ...
-transport.attach_local_authority()?;
+transport.attach_local_authority().map_err(|error| error.code)?;
 assert_eq!(transport.local_authority_state(), Some("attached"));
 ```
 

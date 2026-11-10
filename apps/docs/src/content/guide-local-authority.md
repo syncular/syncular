@@ -139,7 +139,7 @@ await remote.syncUntilIdle();
 
 The remote server's log epoch differs from the authority's, so the first round resets the replica: the client discards its synced rows, keeps its client ID and outbox, and bootstraps from the remote server. After attach the authority file keeps only its state; delete `./data/authority.sqlite` once the client runs against the remote server.
 
-Writes made while attaching wait in the outbox and push after the reset. A write that carries `baseVersion` names an authority version, and every attached row starts at version 1 on the remote server, so a `baseVersion` above 1 is refused with `sync.invalid_request`. Queue only unversioned writes while attaching.
+Writes made while attaching wait in the outbox and push after the reset. A write that carries `baseVersion` names an authority version, and the remote server numbers attached rows itself: from 1, or one above the tombstone a previously abandoned attach left. The remote server refuses a `baseVersion` above the row's remote version with `sync.invalid_request`. Queue only unversioned writes while attaching.
 
 ## When attach stops
 

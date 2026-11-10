@@ -69,8 +69,9 @@ function syncConfig(env: Env): SyncServerConfig {
     // Worker serves the bytes inline through GET /segments/:id and
     // GET /blobs/:id.
     resolveScopes: (args) => resolveScopes(args, env),
-    // No `sqliteImageBuilder`: Workers has no SQLite engine, so bit-2
-    // clients are served the rows lane (§5.3 support floor).
+    // No `sqliteImageBuilder`: Workers has no SQLite engine, so a bit-2
+    // client receives a stored image when one exists for its scope and the
+    // rows lane otherwise (§5.3 support floor).
   };
 }
 
@@ -94,8 +95,9 @@ the Worker reads those objects through the binding. The keys are
 `{prefix}blob/{partition}/sha256/{hex}`.
 
 Segments and blobs are served inline on the binding path. `GET /segments/:id`
-streams the object without buffering it in the isolate, and `GET /blobs/:id`
-re-authorizes the referencing rows before it reads the bytes. Choose
+buffers and compresses a segment of up to 16 MiB and streams a larger one
+without buffering it, and `GET /blobs/:id` re-authorizes the referencing rows before
+it reads the bytes. Choose
 `S3SegmentStore` and `S3BlobStore` with `s3PresignedUrls` and
 `s3PresignedBlobUrls` when clients should download from R2 directly; that path
 needs the R2 endpoint plus an access key as secrets.
@@ -211,15 +213,18 @@ A `RealtimeSession` is in-memory only. The honest rule, as built:
   async generator draining over `ws.send`; while pending it holds the DO's
   event loop, so the DO cannot be evicted mid-round. (This is the same
   property the §8.7 "one round in flight" rule already relies on.)
-- **On the first message after a wake**, the socket carries a serialized
-  attachment (`ws.serializeAttachment` — the minimal `{clientId, actorId,
-  partition}` §8.1 identity, written at accept time) but no live session. The
-  host rebuilds it via `hub.connect(...)`, which reloads the registration list
-  from the client record in D1 (exactly what a fresh upgrade does, §8.1).
-  Rehydration is transparent to the client: it was greeted once at the real
-  upgrade, so the rehydration `hello` is swallowed. Cursor and registrations
-  are the durable truth in D1; nothing in-flight is lost because nothing
-  in-flight can be hibernated.
+- **On the first event after a wake** (a socket message or close, an
+  upgrade, a forwarded `/sync`, `/operations` or admin request), each socket
+  carries a serialized attachment (`ws.serializeAttachment`: the minimal
+  `{clientId, actorId, partition}` §8.1 identity, written at accept time) but
+  no live session. The host rebuilds every socket's session once through
+  `hub.restore(...)`, which touches the partition and reads its latest
+  sequence once and reloads each registration list from the client record in
+  D1. Every event waits for that one rebuild, so a push never fans out while
+  sessions are missing. A restored session sends no `hello`: the client was
+  greeted at the real upgrade. Cursor and registrations are the durable truth
+  in D1; nothing in-flight is lost because nothing in-flight can be
+  hibernated.
 
 So the serialized attachment is deliberately minimal — the three identity
 fields `connect` needs. Everything else is re-derived from D1, which is
@@ -287,6 +292,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
   }
   webSocketClose(ws: WebSocket) { return this.#host.webSocketClose(ws); }
   webSocketError(ws: WebSocket) { return this.#host.webSocketError(ws); }
+  alarm() { return this.#host.alarm(); }
 }
 
 export default {

@@ -86,8 +86,14 @@ CREATE TABLE todos (
 );
 ```
 
-Two value rules apply to every table:
+Three value rules apply to every table:
 
+- The server refuses at push admission, and both client cores refuse at
+  authoring, with `sync.invalid_request`: a string or row id containing
+  U+0000, a `json` value outside the
+  [JSON validity rule](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#conventions-and-primitive-encodings),
+  a NaN or infinite `float`, and a `blob_ref` whose text is not the canonical
+  serialization ([Authoring value validation](/platform-web-reads-writes/#authoring-value-validation)).
 - Integer row values stay within `-9007199254740991..=9007199254740991`. Both
   client cores reject larger values before they queue a mutation or patch.
 - A primary key is `TEXT`, `INTEGER`, `BOOLEAN`, or `JSON`. The wire addresses

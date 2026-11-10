@@ -14,7 +14,7 @@ bridge calls read, which write, and how the webview learns about changes.
 
 :::figure{title="A read and a write over IPC" note="Both stay local" ticks}
 <div class="d-row">
-<div class="node ok"><span class="t">Webview · read</span><code>client.query(sql)</code></div>
+<div class="node ok"><span class="t">Webview · read</span><code>client.querySnapshot(spec)</code></div>
 <span class="d-arrow"></span>
 <div class="node ok"><span class="t">Read owner</span>Read-only SQLite connection</div>
 </div>
@@ -24,7 +24,7 @@ bridge calls read, which write, and how the webview learns about changes.
 <div class="node hot"><span class="t">Mutable owner</span>Applies locally, queues the commit</div>
 </div>
 
-::caption[A file-backed plugin serves reads from the independent read owner, so network work on the mutable owner cannot stall a read. An in-memory database reads through the mutable owner.]
+::caption[A file-backed plugin serves `querySnapshot` and `snapshotRead` from the independent read owner, so network work on the mutable owner cannot stall them. `query` and every read of an in-memory database go through the mutable owner.]
 :::
 
 :::::steps

@@ -18,7 +18,8 @@ errors, and closed-client rejections.
 | `client.authority_read_forbidden` | An authority read carried SQL, tables, or columns outside the native ceiling. | [Platform specifics](/platform-tauri-specifics/#authority-evidence-before-activation) |
 | `sync.offline` | The transport gate is closed. | [Platform specifics](/platform-tauri-specifics/#local-activation-with-transport-closed) |
 | `client.not_created` from `set_now_ms` | The test clock was set before a `create`. | [Platform specifics](/platform-tauri-specifics/#test-clock) |
-| Network commands fail while local work succeeds | The plugin was built without `native-transport`. | [Install & first sync](/platform-tauri-install/#install-the-dependencies) |
+| Network commands fail while local work succeeds | The plugin was built without `native-transport`, and `base_url` is unset. | [Install & first sync](/platform-tauri-install/#install-the-dependencies) |
+| `create` and every later call fail with "this build has no native transport" | `base_url` is set, and the plugin was built without `native-transport`. | [Install & first sync](/platform-tauri-install/#install-the-dependencies) |
 
 ## Slow, partial, or non-converging views
 

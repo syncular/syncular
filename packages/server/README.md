@@ -357,7 +357,7 @@ revision (`catalog-v1` to `catalog-v2`) and rerun it; do not delete the database
 or unrelated rows. This does not apply to application commands. After an
 unknown command outcome, reuse the original idempotency key because changing it
 can execute the operation twice. The full inspection and recovery recipe is in
-the public [server guide](https://syncular.dev/guide-server/#seeding-data).
+the public [server guide](https://syncular.dev/server-operations/#seeding-data).
 
 One extra rule applies when the seed actor changes. A Syncular `clientId` is
 bound to its first actor inside a partition. Keep the client ID stable for seed
@@ -412,7 +412,7 @@ scope variable, named-query obligation, subscription descriptor, or client
 authority. Never expose table/index/value selection through a client-controlled
 route. Custom adapters may omit the additive method; authoritative commands
 must check for it and fail closed. See the public
-[storage lookup guide](https://syncular.dev/server-storage/#choosing-the-right-row-lookup)
+[storage lookup guide](https://syncular.dev/server-storage-reference/#advanced-row-lookups-for-trusted-server-code)
 for a user-scoped key-grant table revoked through a Workspace index and for the
 atomic reverse-index/queue fallback required by ordered or derived lookups.
 
@@ -1063,11 +1063,10 @@ row-derived authorization check passes** (`handleBlobDownload` resolves the
 actor's scopes and tests the referencing rows first; a `blobId` is never a
 bearer capability minted from the id alone). The signed object key embeds the
 `blobId`, TTL SHOULD be ≤ 15 min (default 900 s), and the URL is a short-lived
-grant to exactly those immutable bytes. The issued `url`/`urlExpiresAtMs` ride
-additively on `BlobDownloadResult` alongside the bytes; the mounted §5.9.5
-direct-download endpoint stays the default serving path. Client consumption of
-the presigned URL (following it instead of streaming bytes through the sync
-server) is a later rung — the server-side issuance ships now.
+grant to exactly those immutable bytes. When `blobSignedUrls` is set, the
+download answers `{ url, urlExpiresAtMs }` and no bytes, and the reference
+clients fetch the URL and verify the content address (see "Presigned blobs,
+end to end" above).
 
 ### Native HMAC vs delegated presign (§5.4)
 
@@ -1377,9 +1376,9 @@ SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db bun run bench
 ```
 
 Custom storage adapters must implement
-`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum cursor
-whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve
-negative bootstrap cursors. Pruning and admin horizon status use this scalar
+`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum
+non-negative cursor whose `updatedAtMs >= cutoffMs`, or `null` when no client
+qualifies. A bootstrapping client at cursor -1 holds no cursor. Pruning and admin horizon status use this scalar
 aggregate; `listClientCursors` remains the explicit listing interface.
 
 SQLite image builders now return `Promise<Uint8Array>` and receive

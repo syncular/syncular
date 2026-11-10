@@ -14,9 +14,9 @@ server-authoritative commands, and live query watches through the remote
 operation transport. See [remote server operations](https://syncular.dev/guide-remote-operations/).
 Its schema and sync transport are optional for query-only or command-only
 processes.
-Ordinary commits use wire version 1 until the caller supplies an acquired
-partition `logEpoch`. Set `logEpoch` after a restore rotation requires epoch
-validation.
+Without a `logEpoch`, the first `prepareCommit` sends one empty pull to learn
+the partition log epoch and binds every later commit to it; set `logEpoch` in
+the constructor to skip that round.
 
 Applied and cached acknowledgements drain the send queue while protected local
 intent stays visible until the same row's server image arrives at that commit
@@ -315,8 +315,8 @@ stable code-like values (`A-Z`, `a-z`, `0-9`, dot, underscore, dash).
 During Vite development, retain the React client resource only while its
 captured generated schema version and published Syncular runtime identity both
 match. The
-[schema-and-runtime-aware Vite guide](https://syncular.dev/platform-web-install/#configure-vite) uses
-`retainViteSyncClientResource` to close the old worker before constructing a
+[schema-and-runtime-aware Vite guide](https://syncular.dev/platform-web-realtime/#keep-one-owner-during-hmr) uses
+`createViteSyncClientResource` to close the old worker before constructing a
 schema-bump or package-upgrade replacement; hot-reloading query code alone does
 not migrate the worker-owned database.
 
@@ -740,8 +740,8 @@ bun run build:packages && bun run verify:packages
 
 `init`, `call`, `ready`, `result`, `error`, `event` — every API method
 multiplexes over `call` (typed end-to-end from the single `WorkerApi`
-shape in `worker-protocol.ts`); `event` carries `sync-needed`,
-`change`, `conflict` and `synced`. Query-result blobs transfer (not copy) when
+shape in `worker-protocol.ts`); `event` carries `progress`, `sync-needed`,
+`conflict`, `synced`, `upgrading`, `presence`, `change` and `diagnostics`. Query-result blobs transfer (not copy) when
 they own their buffer.
 
 ## Package layout

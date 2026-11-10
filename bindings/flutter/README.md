@@ -12,7 +12,7 @@ Layout:
 
 - **`syncular/`** — the Dart package (`pubspec.yaml`, `lib/syncular.dart` +
   `lib/src/{ffi,client}.dart`, `test/`). This is the reusable binding.
-- **`example/`** — a minimal Flutter todo app (`lib/main.dart`, ~150 lines)
+- **`example/`**: a minimal Flutter todo app (`lib/main.dart`, ~200 lines)
   proving the binding end-to-end against the demo server.
 
 Like every binding here, this is its **own isolated build** — its gate is

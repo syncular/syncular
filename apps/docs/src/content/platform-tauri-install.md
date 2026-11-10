@@ -58,8 +58,9 @@ tauri-plugin-syncular = { git = "https://github.com/syncular/syncular", features
 
 `native-transport` compiles the plugin's blocking HTTP and WebSocket stack
 (`ureq` and `tungstenite`, with no async runtime). Without it the plugin builds
-a client-local core: network commands return errors while local reads and
-writes keep working.
+a client-local core: with `base_url` unset, network commands return errors while
+local reads and writes keep working. With `base_url` set, that build fails
+`create` and every later call with the core's startup error.
 
 ::checkpoint[`cargo check` in `src-tauri/` resolves the plugin, and `bun install` resolves the bridge.]
 ::::
