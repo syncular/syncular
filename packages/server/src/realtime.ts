@@ -27,15 +27,19 @@ import {
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
   type PresenceKind,
-  parseRealtimePresencePublish,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
   type ResponseFrame,
   type ScopeMap,
   type WakeReason,
 } from '@syncular/core';
-import type { SyncRequestContext, SyncServerConfig } from './context';
+import type {
+  ServerLimits,
+  SyncRequestContext,
+  SyncServerConfig,
+} from './context';
 import {
+  limitsOf,
   REMOTE_COMMAND_CLIENT_ID_PREFIX,
   RESOLVER_OUTAGE,
   touchAuthenticatedPartition,
@@ -261,6 +265,8 @@ export class RealtimeSession {
    * token identifies the owning round so a finished round's cleanup
    * never clobbers a follow-up round's in-flight marker. */
   #requestScanner: MessageStreamScanner | undefined;
+  /** Bytes the scanner holds, against `maxRequestBytes` (§1.7). */
+  #requestBytes = 0;
   #activeRound: symbol | undefined;
   /** Deltas wait for every round response and registration refresh to finish. */
   #roundsRefreshing = 0;
@@ -337,7 +343,7 @@ export class RealtimeSession {
     // §8.6.2: client→server presence carries `event: 'presence'` (server
     // control messages carry `event`; the ack carries `type`, §8.1).
     if ((parsed as { event?: unknown }).event === 'presence') {
-      this.#handlePresence(text);
+      this.#handlePresence((parsed as { data?: unknown }).data);
       return;
     }
     if ((parsed as { type?: unknown }).type !== 'ack') return;
@@ -367,18 +373,28 @@ export class RealtimeSession {
     });
   }
 
-  /** §8.6.2 inbound presence publish/leave from the client. */
-  #handlePresence(text: string): void {
-    let publish: ReturnType<typeof parseRealtimePresencePublish>;
-    try {
-      publish = parseRealtimePresencePublish(text);
-    } catch {
+  /**
+   * §8.6.2 inbound presence publish/leave from the client: the `data` of the
+   * control message `handleMessage` parsed, a non-empty `scopeKey` and a
+   * `doc` that is an object or `null`.
+   */
+  #handlePresence(data: unknown): void {
+    const publish =
+      typeof data === 'object' && data !== null && !Array.isArray(data)
+        ? (data as { scopeKey?: unknown; doc?: unknown })
+        : undefined;
+    const scopeKey = publish?.scopeKey;
+    const doc = publish?.doc;
+    if (
+      typeof scopeKey !== 'string' ||
+      scopeKey.length === 0 ||
+      (doc !== null && (typeof doc !== 'object' || Array.isArray(doc)))
+    ) {
       // A malformed known event is a parse error (§8.1) — a broken client;
       // drop the connection loudly rather than silently ignore.
       this.#violation('malformed presence control message (§8.6.2)');
       return;
     }
-    const { scopeKey, doc } = publish.data;
     // §8.6.3 authorization: the publish key must be in the connection's
     // registered effective scopes.
     if (!this.#currentScopeKeys().has(scopeKey)) {
@@ -391,15 +407,21 @@ export class RealtimeSession {
       this.#leavePresence(scopeKey);
       return;
     }
-    // §8.6.2 size cap: fail loud to the publisher, fan out nothing.
+    // §8.6.2 size cap on the serialized document's UTF-8 bytes: fail loud
+    // to the publisher, fan out nothing. A string never has fewer UTF-8
+    // bytes than UTF-16 code units, so the unit count rejects first.
     const serialized = JSON.stringify(doc);
-    if (serialized.length > this.#hub.maxPresenceBytes) {
+    const cap = this.#hub.maxPresenceBytes;
+    if (
+      serialized.length > cap ||
+      new TextEncoder().encode(serialized).length > cap
+    ) {
       this.#sendSafe(
         encodePresenceError(scopeKey, 'presence.too_large', this.#clock()),
       );
       return;
     }
-    this.#publishPresence(scopeKey, doc);
+    this.#publishPresence(scopeKey, doc as PresenceDoc);
   }
 
   /** §8.6.4: store + fan out a publish, honoring the rate cap (latest-wins
@@ -554,6 +576,17 @@ export class RealtimeSession {
       return;
     }
     const chunk = bytes.subarray(1);
+    // §1.7: the assembled request counts against `maxRequestBytes`; past it
+    // the stream has no acceptable end, so the connection drops (§8.7).
+    this.#requestBytes =
+      this.#requestScanner === undefined
+        ? chunk.length
+        : this.#requestBytes + chunk.length;
+    if (this.#requestBytes > this.#hub.limits.maxRequestBytes) {
+      this.#requestScanner = undefined;
+      this.#violation('request exceeds maxRequestBytes (§1.7)');
+      return;
+    }
     this.#requestScanner ??= new MessageStreamScanner();
     let done: ReturnType<MessageStreamScanner['push']>;
     try {
@@ -923,9 +956,8 @@ export class RealtimeSession {
     const frames: ResponseFrame[] = [
       {
         type: 'RESP_HEADER',
-        ...(this.wireVersion >= 2
-          ? { logEpoch: this.logEpoch, resetRequired: false }
-          : {}),
+        logEpoch: this.logEpoch,
+        resetRequired: false,
       },
     ];
     for (const section of sections) {
@@ -1012,6 +1044,8 @@ export interface RealtimeConnection {
 export class RealtimeHub {
   #config: RealtimeHubConfig;
   readonly #schema: CompiledSchema;
+  /** The validated configured limits (§1.7); a bad value throws here. */
+  readonly limits: ServerLimits;
   readonly #sessions = new Set<RealtimeSession>();
   /** §8.6 presence registry — ephemeral, in-memory, never persisted. */
   readonly presence = new PresenceRegistry();
@@ -1020,6 +1054,7 @@ export class RealtimeHub {
     this.#config = config;
     this.#schema = compileSchema(config.schema);
     schemaWindowOf(config.schema, config.schemaWindow);
+    this.limits = limitsOf(config);
   }
 
   projectPayload(registration: Registration, payload: Uint8Array): Uint8Array {
@@ -1159,7 +1194,11 @@ export class RealtimeHub {
         table.declaredVariables.has(key),
       );
       if (!keysValid) continue;
-      const outcome = computeEffective(subscription.scopes, resolved);
+      const outcome = computeEffective(
+        table.declaredVariables,
+        subscription.scopes,
+        resolved,
+      );
       if (outcome.status !== 'active') continue;
       registrations.push({
         id: subscription.id,
@@ -1416,7 +1455,8 @@ function errorResponseBytes(
     frames: [
       {
         type: 'RESP_HEADER',
-        ...(wireVersion >= 2 ? { logEpoch, resetRequired: false } : {}),
+        logEpoch,
+        resetRequired: false,
       },
       {
         type: 'ERROR',

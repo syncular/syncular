@@ -146,6 +146,29 @@ Every buffered response the adapter serves is encoded per the request's `Accept-
 
 A deployment without the realtime socket conforms to the protocol. Clients that never open it sync over `POST /sync` with identical semantics.
 
+## Request limits
+
+The `limits` field of the sync config caps what one request or watch session may ask of the server. Each value must be a positive safe integer; `createSyncularHono`, `createRealtimeHub` and every request throw on `NaN`, `0`, a fraction or `Infinity`. `inlineSegmentMaxBytes` is a size threshold and also accepts `0`.
+
+| Limit | Default | Applies to |
+|---|---|---|
+| `maxRequestBytes` | 16 MiB | Decoded bytes of a `POST /sync` or `POST /operations` body after gzip decoding, and of a socket round's assembled request |
+| `maxSubscriptionsPerRequest` | 500 | `SUBSCRIPTION` frames in one request |
+| `maxScopeValuesPerSubscription` | 1,000 | Requested scope values, summed over one subscription's keys |
+| `maxWatchesPerSession` | 100 | Registered-query watches open on one `RemoteOperationWatchHub` session |
+| `maxOperationsPerRequest` | 500 | Push operations in one request (`sync.too_many_operations`) |
+
+A request past one of the first three limits fails with HTTP 413 `sync.limit_exceeded`; `details.limit` names the limit and `details.max` holds its value. The adapter stops decoding a gzip body when it reaches `maxRequestBytes`, so a small compressed body never inflates past the cap. A socket round that grows past `maxRequestBytes` closes the connection. A watch past `maxWatchesPerSession` receives a `watch_error` with `sync.limit_exceeded`; the session's other watches keep running, and each commit reruns a session's affected watches one at a time.
+
+Raise `maxSubscriptionsPerRequest` before an app holds more subscriptions than the default. A client sends its complete subscription list on every pull ([Subscriptions](/concepts-subscriptions/)), so a client above the cap cannot pull until the server accepts the list.
+
+```ts
+const config: SyncServerConfig = {
+  // schema, storage, segments, resolveScopes, ...
+  limits: { maxSubscriptionsPerRequest: 2_000, maxRequestBytes: 32 * 1024 * 1024 },
+};
+```
+
 ## Add CORS and other host headers
 
 Mount `createSyncularHono` behind the host's Hono middleware. Headers set with `c.header()` before `await next()` carry through successful sync, operations, segment, and blob responses, 304 replies, and adapter errors. This includes the CORS headers a Tauri WebView or a browser on another origin needs. The adapter keeps `encodeBody: 'manual'` for every body it compressed itself, which matters on Cloudflare Workers.

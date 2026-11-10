@@ -88,19 +88,31 @@ interface BootstrapToken {
   rowCursor: string | null;
 }
 
+/**
+ * §4.7: a usable resume token for `table`, or `undefined`. A token whose pin
+ * is not a commit sequence of this log (`0 ≤ asOfCommitSeq ≤ maxSeq`) or
+ * whose position does not name one of its tables is unusable.
+ */
 function parseBootstrapToken(
   raw: string | undefined,
   table: string,
+  maxSeq: number,
 ): BootstrapToken | undefined {
   if (raw === undefined) return undefined;
   try {
     const parsed = JSON.parse(raw) as Partial<BootstrapToken>;
     if (
-      typeof parsed.asOfCommitSeq !== 'number' ||
+      !Number.isSafeInteger(parsed.asOfCommitSeq) ||
+      parsed.asOfCommitSeq === undefined ||
+      parsed.asOfCommitSeq < 0 ||
+      parsed.asOfCommitSeq > maxSeq ||
       !Array.isArray(parsed.tables) ||
-      typeof parsed.tableIndex !== 'number' ||
-      (parsed.rowCursor !== null && typeof parsed.rowCursor !== 'string') ||
-      parsed.tables[0] !== table
+      parsed.tables[0] !== table ||
+      !Number.isSafeInteger(parsed.tableIndex) ||
+      parsed.tableIndex === undefined ||
+      parsed.tableIndex < 0 ||
+      parsed.tableIndex >= parsed.tables.length ||
+      (parsed.rowCursor !== null && typeof parsed.rowCursor !== 'string')
     ) {
       return undefined;
     }
@@ -482,41 +494,35 @@ async function* bootstrapSegments(
 }
 
 /**
- * The storage reads a section needs before its first frame. A pull starts
- * them for every subscription before awaiting any, so a storage that batches
- * concurrent page reads (PostgreSQL, D1) answers the first pages of every
- * subscription in one statement, and the horizon re-check runs once per pull.
+ * One subscription's section decision (§4.5–§4.7) with the storage reads it
+ * needs before its first frame.
  */
-export interface PreparedSection {
-  /** §4.5 window read for an incremental cursor; empty when none was read. */
-  readonly commits: StoredCommit[];
-  /** Horizon to judge the cursor against, re-read after any window read. */
-  readonly horizonSeq: number;
-  /**
-   * A bootstrap's first snapshot page (`limitSnapshotRows + 1` rows from the
-   * resume cursor), which is also the §5.3 image eligibility probe.
-   */
-  readonly firstPage: StoredRow[] | undefined;
-  /** §4.7 pin of a fresh bootstrap; absent ⇒ `maxCommitSeq`. */
-  readonly pin: number | undefined;
-  /**
-   * §5.3 stored image for a sqlite-lane bootstrap's reuse key. Read only when
-   * the eligibility probe shows a snapshot larger than one rows page, since a
-   * smaller table can never match a stored image.
-   */
-  readonly image: SegmentRecord | undefined;
-}
+export type PreparedSection =
+  | { readonly kind: 'revoked' }
+  /** §4.6: the cursor is behind the horizon. */
+  | { readonly kind: 'reset' }
+  /** §4.5 window read for an in-range cursor. */
+  | { readonly kind: 'incremental'; readonly commits: StoredCommit[] }
+  | {
+      readonly kind: 'bootstrap';
+      /** §4.7 pin: a usable resume token's, the sqlite lane's scope pin, or `maxCommitSeq`. */
+      readonly asOf: number;
+      readonly startCursor: string | null;
+      /**
+       * The first snapshot page (`limitSnapshotRows + 1` rows from
+       * `startCursor`), which is also the §5.3 image eligibility probe.
+       */
+      readonly firstPage: StoredRow[];
+      /** §5.3 stored image under the reuse key, read only for an eligible probe. */
+      readonly image: SegmentRecord | undefined;
+    };
 
-interface PendingSection {
-  readonly commits?: Promise<StoredCommit[]>;
-  readonly firstPage?: Promise<StoredRow[]>;
-  readonly lane?: Promise<{
-    readonly pin: number | undefined;
-    readonly image: SegmentRecord | undefined;
-  }>;
-}
-
-/** Run the pre-frame storage reads of every subscription concurrently. */
+/**
+ * Decide the section of every plan and run its pre-frame storage reads. The
+ * reads of all plans start before any is awaited, so a storage that batches
+ * concurrent page reads (PostgreSQL, D1) answers the first pages of every
+ * plan in one statement per table, and the horizon re-check runs once.
+ */
 export async function prepareSections(
   ctx: SyncRequestContext,
   schema: CompiledSchema,
@@ -526,103 +532,98 @@ export async function prepareSections(
   horizonSeq: number,
   logEpoch: string,
 ): Promise<PreparedSection[]> {
-  const reads = plans.map((plan): PendingSection => {
-    const sub = plan.frame;
-    if (plan.status === 'revoked') return {};
-    const token = parseBootstrapToken(sub.bootstrapState, sub.table);
-    if (
-      token === undefined &&
-      sub.cursor >= 0 &&
-      sub.cursor >= horizonSeq &&
-      sub.cursor <= maxSeq
-    ) {
-      return {
-        commits: ctx.storage.readCommitWindow(ctx.partition, {
-          table: sub.table,
+  const prepared = await Promise.all(
+    plans.map(async (plan): Promise<PreparedSection> => {
+      const sub = plan.frame;
+      if (plan.status === 'revoked') return { kind: 'revoked' };
+      // §4.7: a present resume token keeps the subscription bootstrapping,
+      // whether or not it is usable.
+      if (
+        sub.bootstrapState === undefined &&
+        sub.cursor >= 0 &&
+        sub.cursor <= maxSeq
+      ) {
+        if (sub.cursor < horizonSeq) return { kind: 'reset' };
+        return {
+          kind: 'incremental',
+          commits: await ctx.storage.readCommitWindow(ctx.partition, {
+            table: sub.table,
+            scopeFilter: plan.effective,
+            afterSeq: sub.cursor,
+            throughSeq: maxSeq,
+            limitChanges: limits.limitCommits + 1,
+          }),
+        };
+      }
+      // §4.7: resume at the token's pin unless the token is unusable or the
+      // pin fell behind the horizon; then restart from a fresh pin.
+      const token = parseBootstrapToken(sub.bootstrapState, sub.table, maxSeq);
+      const resume =
+        token !== undefined && token.asOfCommitSeq >= horizonSeq
+          ? token
+          : undefined;
+      const startCursor = resume?.rowCursor ?? null;
+      const scan = ctx.storage.scanRows(ctx.partition, {
+        table: plan.table.name,
+        scopeFilter: plan.effective,
+        afterRowId: startCursor,
+        limit: limits.limitSnapshotRows + 1,
+      });
+      if (!sqliteLaneEligible(limits, plan, startCursor)) {
+        return {
+          kind: 'bootstrap',
+          asOf: resume?.asOfCommitSeq ?? maxSeq,
+          startCursor,
+          firstPage: await scan,
+          image: undefined,
+        };
+      }
+      // §4.7: a sqlite-lane bootstrap starts at the table start and pins at
+      // the newest change in its scope (never below the horizon, never above
+      // maxCommitSeq), so a stored image stays the reuse key's match until
+      // this scope changes (§5.3). The server computes the pin; a client
+      // token never supplies the reuse key.
+      const [firstPage, latest] = await Promise.all([
+        scan,
+        ctx.storage.latestScopedChangeSeq(ctx.partition, {
+          table: plan.table.name,
           scopeFilter: plan.effective,
-          afterSeq: sub.cursor,
-          throughSeq: maxSeq,
-          limitChanges: limits.limitCommits + 1,
         }),
-      };
-    }
-    // §4.6 reset: no reads.
-    if (token === undefined && sub.cursor >= 0 && sub.cursor < horizonSeq) {
-      return {};
-    }
-    // Bootstrapping: the same resume decision `preparedSection` makes (§4.7).
-    const resume =
-      token !== undefined && token.asOfCommitSeq >= horizonSeq
-        ? token
-        : undefined;
-    const startCursor = resume?.rowCursor ?? null;
-    const firstPage = ctx.storage.scanRows(ctx.partition, {
-      table: plan.table.name,
-      scopeFilter: plan.effective,
-      afterRowId: startCursor,
-      limit: limits.limitSnapshotRows + 1,
-    });
-    if (!sqliteLaneEligible(limits, plan, startCursor)) return { firstPage };
-    // §4.7: a fresh sqlite-lane bootstrap pins at the newest change in its
-    // scope (never below the horizon, never above maxCommitSeq), so a stored
-    // image stays the reuse key's match until this scope changes (§5.3).
-    const pinned =
-      resume !== undefined
-        ? Promise.resolve({ asOf: resume.asOfCommitSeq, pin: undefined })
-        : ctx.storage
-            .latestScopedChangeSeq(ctx.partition, {
-              table: plan.table.name,
-              scopeFilter: plan.effective,
-            })
-            .then((latest) => {
-              const pin = Math.min(maxSeq, Math.max(latest, horizonSeq));
-              return { asOf: pin, pin };
-            });
-    const lane = pinned.then(async ({ asOf, pin }) => {
+      ]);
+      const asOf = Math.min(maxSeq, Math.max(latest, horizonSeq));
       // §5.3 eligibility: a stored image only matches a snapshot larger than
       // one rows page, so the probe decides before the reuse lookup; a remote
       // `find` on a small table would be a wasted round trip.
-      const probe = await firstPage;
-      if (probe.length <= limits.limitSnapshotRows) {
-        return { pin, image: undefined };
-      }
-      return {
-        pin,
-        image: await ctx.segments.find(
-          {
-            partition: ctx.partition,
-            logEpoch,
-            table: plan.table.name,
-            schemaVersion: schema.version,
-            mediaType: 'sqlite',
-            scopeDigest: await scopeDigest(plan.effective),
-            asOfCommitSeq: asOf,
-          },
-          clockOf(ctx)(),
-        ),
-      };
-    });
-    return { firstPage, lane };
-  });
-  const settled = await Promise.all(
-    reads.map(async (read) => ({
-      commits: read.commits === undefined ? undefined : await read.commits,
-      firstPage: await read.firstPage,
-      lane: await read.lane,
-    })),
+      const image =
+        firstPage.length <= limits.limitSnapshotRows
+          ? undefined
+          : await ctx.segments.find(
+              {
+                partition: ctx.partition,
+                logEpoch,
+                table: plan.table.name,
+                schemaVersion: schema.version,
+                mediaType: 'sqlite',
+                scopeDigest: await scopeDigest(plan.effective),
+                asOfCommitSeq: asOf,
+              },
+              clockOf(ctx)(),
+            );
+      return { kind: 'bootstrap', asOf, startCursor, firstPage, image };
+    }),
   );
   // Validate continuity before committing to an active section. A prune
   // during a paged read can otherwise make an incomplete window look empty.
-  const windowHorizon = settled.some((read) => read.commits !== undefined)
-    ? Math.max(horizonSeq, await ctx.storage.getHorizonSeq(ctx.partition))
-    : horizonSeq;
-  return settled.map((read) => ({
-    commits: read.commits ?? [],
-    horizonSeq: read.commits === undefined ? horizonSeq : windowHorizon,
-    firstPage: read.firstPage,
-    pin: read.lane?.pin,
-    image: read.lane?.image,
-  }));
+  if (!prepared.some((section) => section.kind === 'incremental')) {
+    return prepared;
+  }
+  const windowHorizon = await ctx.storage.getHorizonSeq(ctx.partition);
+  return prepared.map((section, index) =>
+    section.kind === 'incremental' &&
+    (plans[index]?.frame.cursor ?? -1) < windowHorizon
+      ? { kind: 'reset' }
+      : section,
+  );
 }
 
 /**
@@ -680,7 +681,7 @@ export async function* preparedSection(
     throw new Error('subscriptionSection requires a non-empty log epoch');
   }
 
-  if (plan.status === 'revoked') {
+  if (prepared.kind === 'revoked') {
     yield {
       type: 'SUB_START',
       id: sub.id,
@@ -693,12 +694,9 @@ export async function* preparedSection(
     return { nextCursor: sub.cursor, active: false };
   }
 
-  const token = parseBootstrapToken(sub.bootstrapState, sub.table);
-  const { commits, horizonSeq } = prepared;
-
   // §4.6: a cursor behind the horizon (and not resuming a bootstrap)
   // cannot compute deltas — answer `reset` and echo the cursor.
-  if (token === undefined && sub.cursor >= 0 && sub.cursor < horizonSeq) {
+  if (prepared.kind === 'reset') {
     yield {
       type: 'SUB_START',
       id: sub.id,
@@ -711,21 +709,8 @@ export async function* preparedSection(
     return { nextCursor: sub.cursor, active: false };
   }
 
-  const bootstrapping =
-    token !== undefined || sub.cursor < 0 || sub.cursor > maxSeq;
-
-  if (bootstrapping) {
-    // §4.7: resume at the pinned point unless the pin fell behind the
-    // horizon (or the token is unusable) — then restart from a fresh pin.
-    const resume =
-      token !== undefined && token.asOfCommitSeq >= horizonSeq
-        ? token
-        : undefined;
-    const asOf = resume?.asOfCommitSeq ?? prepared.pin ?? maxSeq;
-    const startCursor = resume?.rowCursor ?? null;
-    if (prepared.firstPage === undefined) {
-      throw new Error('prepareSections did not read the bootstrap page');
-    }
+  if (prepared.kind === 'bootstrap') {
+    const { asOf } = prepared;
     yield {
       type: 'SUB_START',
       id: sub.id,
@@ -740,7 +725,7 @@ export async function* preparedSection(
       limits,
       plan,
       asOf,
-      startCursor,
+      prepared.startCursor,
       trace,
       logEpoch,
       prepared.firstPage,
@@ -777,6 +762,7 @@ export async function* preparedSection(
   let delivered = 0;
   let deliveredCommits = 0;
   let lastDeliveredSeq = sub.cursor;
+  const { commits } = prepared;
   for (const commit of commits) {
     if (
       delivered > 0 &&

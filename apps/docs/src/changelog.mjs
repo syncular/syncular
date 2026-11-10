@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'Wildcard grants keep the other scope fences; request limits',
+    body: "When a requested scope variable passes through an allowed `'*'`, the server now adds the actor's lists for the table's other declared variables to the effective scopes. Before, an actor allowed `clinic_id: ['clinic-a']` and `appointment_id: ['*']` who subscribed by `appointment_id` alone received other clinics' rows. `SUB_START` echoes the widened scopes. The sync config gains `maxRequestBytes` (16 MiB, counted after gzip decoding), `maxSubscriptionsPerRequest` (500), `maxScopeValuesPerSubscription` (1,000) and `maxWatchesPerSession` (100), each answered with `sync.limit_exceeded`; an invalid limit throws at startup. `decodeRequestBody` takes the byte cap as a second argument.",
+    links: [
+      {
+        href: '/concepts-scopes/#variables-are-independent-dimensions',
+        label: 'Variables are independent dimensions',
+      },
+      {
+        href: '/guide-server/#request-limits',
+        label: 'Request limits',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'A rejected edit rolls back to the latest server row',
     body: 'The web client restored a rejected or conflicted row to its value at `mutate` time, even when a newer server write to that row had arrived since; the local row then stayed stale while the cursor had moved past that write. Rollback now returns the row to the last server-delivered row and replays the remaining pending commits over it. Applying a server change finds the pending commits for its row through an index: 500 incoming commits with 4,000 pending commits apply in 15 ms, down from 3.2 s.',
     links: [

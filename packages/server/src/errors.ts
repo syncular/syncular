@@ -212,6 +212,14 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'splitBatch',
     httpStatus: 400,
   },
+  // §1.7 / D3: a request or watch session past a configured `ServerLimits`
+  // cap; `details.limit` names the cap.
+  'sync.limit_exceeded': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 413,
+  },
   'sync.not_found': {
     category: 'not-found',
     retryable: false,

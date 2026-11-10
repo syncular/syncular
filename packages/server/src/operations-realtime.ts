@@ -4,7 +4,7 @@ import {
   type RemoteOperationRealtimeMessage,
 } from '@syncular/core';
 import type { RealtimeNotifier, SyncRequestContext } from './context';
-import { REMOTE_COMMAND_CLIENT_ID_PREFIX } from './context';
+import { limitsOf, REMOTE_COMMAND_CLIENT_ID_PREFIX } from './context';
 import { reportError, SyncError, syncError } from './errors';
 import type {
   RegisteredRemoteQuery,
@@ -22,16 +22,24 @@ interface WatchState {
   readonly clientId: string;
   readonly operation: RegisteredRemoteQuery;
   readonly params: unknown;
-  running: boolean;
-  dirty: boolean;
 }
 
+/**
+ * One socket's registered-query watches. A session runs one refresh at a
+ * time: `notify` queues each affected watch once, and the drain reruns the
+ * queue in order, so a commit costs at most one query per watch and never
+ * more than one query at a time.
+ */
 class WatchSession implements RemoteOperationWatchSession {
   readonly #ctx: SyncRequestContext;
   readonly #registry: RemoteOperationRegistry;
   readonly #send: (bytes: Uint8Array) => void;
   readonly #closed: () => void;
+  readonly #maxWatches: number;
   readonly #watches = new Map<string, WatchState>();
+  /** Watches waiting for a refresh, in arrival order, each at most once. */
+  readonly #pending = new Set<WatchState>();
+  #draining: Promise<void> | undefined;
   #isClosed = false;
 
   get partition(): string {
@@ -48,6 +56,7 @@ class WatchSession implements RemoteOperationWatchSession {
     this.#registry = registry;
     this.#send = send;
     this.#closed = closed;
+    this.#maxWatches = limitsOf(ctx).maxWatchesPerSession;
   }
 
   async receive(bytes: Uint8Array): Promise<void> {
@@ -80,6 +89,8 @@ class WatchSession implements RemoteOperationWatchSession {
       throw syncError('operation.invalid_request');
     }
     if (message.kind === 'unwatch') {
+      const state = this.#watches.get(message.watchId);
+      if (state !== undefined) this.#pending.delete(state);
       this.#watches.delete(message.watchId);
       return;
     }
@@ -122,13 +133,25 @@ class WatchSession implements RemoteOperationWatchSession {
       this.#sendError(message.watchId, syncError('operation.unknown'));
       return;
     }
+    if (this.#watches.size >= this.#maxWatches) {
+      this.#sendError(
+        message.watchId,
+        syncError(
+          'sync.limit_exceeded',
+          'watch session holds the maximum number of watches',
+          JSON.stringify({
+            limit: 'maxWatchesPerSession',
+            max: this.#maxWatches,
+          }),
+        ),
+      );
+      return;
+    }
     const state: WatchState = {
       watchId: message.watchId,
       clientId: message.clientId,
       operation,
       params: message.params,
-      running: false,
-      dirty: false,
     };
     this.#watches.set(message.watchId, state);
     await this.#refresh(state);
@@ -136,68 +159,68 @@ class WatchSession implements RemoteOperationWatchSession {
 
   notify(tables: ReadonlySet<string>): void {
     for (const state of this.#watches.values()) {
-      if (!state.operation.tables.some((table) => tables.has(table))) continue;
-      if (state.running) state.dirty = true;
-      else void this.#refresh(state);
+      if (state.operation.tables.some((table) => tables.has(table))) {
+        void this.#refresh(state);
+      }
     }
   }
 
-  async #refresh(state: WatchState): Promise<void> {
-    if (this.#isClosed || this.#watches.get(state.watchId) !== state) return;
-    if (state.running) {
-      state.dirty = true;
-      return;
-    }
-    state.running = true;
+  /** Queue `state` and resolve when the session's queue has drained. */
+  #refresh(state: WatchState): Promise<void> {
+    this.#pending.add(state);
+    this.#draining ??= this.#drain();
+    return this.#draining;
+  }
+
+  async #drain(): Promise<void> {
     try {
-      do {
-        state.dirty = false;
-        try {
-          const response = await state.operation.run(
-            this.#ctx,
-            state.clientId,
-            state.params,
-          );
-          if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
-            return;
-          }
-          if (response.kind !== 'query') {
-            throw syncError('operation.query_failed');
-          }
-          if (
-            !this.#emit(
-              encodeRemoteOperationRealtimeMessage({
-                revision: 1,
-                kind: 'snapshot',
-                watchId: state.watchId,
-                operationId: response.operationId,
-                rows: response.rows,
-                maxCommitSeq: response.maxCommitSeq,
-              }),
-            )
-          )
-            return;
-        } catch (error) {
-          if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
-            return;
-          }
-          if (!(error instanceof SyncError)) {
-            reportError(error, this.#ctx.onError, 'operations');
-          }
-          this.#sendError(
-            state.watchId,
-            error instanceof SyncError
-              ? error
-              : syncError('operation.query_failed'),
-          );
-        }
-      } while (
-        state.dirty &&
-        !this.#isClosed &&
-        this.#watches.get(state.watchId) === state
-      );
+      // A watch queued again while it runs is appended and runs once more.
+      for (const state of this.#pending) {
+        this.#pending.delete(state);
+        await this.#run(state);
+      }
     } finally {
-      state.running = false;
+      this.#draining = undefined;
+    }
+  }
+
+  async #run(state: WatchState): Promise<void> {
+    if (this.#isClosed || this.#watches.get(state.watchId) !== state) return;
+    try {
+      const response = await state.operation.run(
+        this.#ctx,
+        state.clientId,
+        state.params,
+      );
+      if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
+        return;
+      }
+      if (response.kind !== 'query') {
+        throw syncError('operation.query_failed');
+      }
+      this.#emit(
+        encodeRemoteOperationRealtimeMessage({
+          revision: 1,
+          kind: 'snapshot',
+          watchId: state.watchId,
+          operationId: response.operationId,
+          rows: response.rows,
+          maxCommitSeq: response.maxCommitSeq,
+        }),
+      );
+    } catch (error) {
+      if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
+        return;
+      }
+      if (!(error instanceof SyncError)) {
+        reportError(error, this.#ctx.onError, 'operations');
+      }
+      this.#sendError(
+        state.watchId,
+        error instanceof SyncError
+          ? error
+          : syncError('operation.query_failed'),
+      );
     }
   }
 
@@ -229,6 +252,7 @@ class WatchSession implements RemoteOperationWatchSession {
     if (this.#isClosed) return;
     this.#isClosed = true;
     this.#watches.clear();
+    this.#pending.clear();
     this.#closed();
   }
 }

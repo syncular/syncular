@@ -613,7 +613,8 @@ independent codecs agree byte-for-byte on which messages are
   (`sync.invalid_subscription`, §3.2, §4.1), unknown tables
   (`sync.unknown_table`), `clientId` actor binding
   (`sync.invalid_client_id`), operation caps
-  (`sync.too_many_operations`), and row-payload decode against the
+  (`sync.too_many_operations`), server limits (`sync.limit_exceeded`),
+  and row-payload decode against the
   generated row codec (§6.1 — still reported as `sync.invalid_request`,
   but by the server: the envelope codec carries payloads as opaque
   `bytes` and cannot know the schema). These MUST NOT be decode errors
@@ -625,13 +626,24 @@ Request validation has **two failure surfaces**, split by request half:
   §1.1, or an in-band `ERROR` frame if streaming already began):
   duplicate subscription ids, requested `'*'` values, undeclared scope
   keys (requested *or* resolved, §3.2), a **subscription** naming an
-  unknown table (§4.3), `clientId` actor binding (§1.5), and the
-  operation cap (§6.1).
+  unknown table (§4.3), `clientId` actor binding (§1.5), the
+  operation cap (§6.1), and the server limits below.
 - **Commit-level** — rejects only the enclosing `PUSH_COMMIT`: its
   `PUSH_RESULT` is `rejected` with one `error` result record (§6.3)
   and the batch continues (§6.4). This is the surface for a push
   **operation** naming an unknown table (`sync.unknown_table`) and for
   a `payload` that fails row-codec decode (`sync.invalid_request`).
+
+**Server limits.** A server enforces configured caps on the decoded bytes
+of a request (an HTTP body after content decoding, §1.3, and a socket
+round's assembled request, §8.7), on `SUBSCRIPTION` frames per request,
+and on requested scope values summed over one subscription's keys. A
+request past a cap fails request-level with `sync.limit_exceeded`;
+`details.limit` names the cap and `details.max` holds its value. The
+server reads a compressed body only up to the cap, so a small gzip body
+never inflates past it. A socket round assembled past the byte cap has no
+acceptable end, so the server drops the connection (§8.7). The reference
+server's defaults are 16 MiB, 500 subscriptions and 1,000 scope values.
 
 Response-side semantic expectations that are not `opt()` ties (e.g.
 `reasonCode` emptiness for `active`, `effectiveScopes` emptiness when
@@ -1257,22 +1269,34 @@ On every pull (and on realtime connect), per subscription:
    do not participate in this table's intersection (rule 4).
 4. **Effective = requested ∩ allowed**, computed per requested key —
    the intersection therefore runs over this table's declared variables
-   only, since requested keys were validated in rule 2 (keys present
-   only in allowed never enter effective):
+   only, since requested keys were validated in rule 2 (a key present
+   only in allowed enters effective only through the wildcard fence
+   below, and only when this table declares it):
    - key absent from allowed → key excluded entirely;
    - allowed contains `'*'` → the requested values pass through;
    - otherwise set intersection of the value lists; an **empty
      intersection excludes the key entirely** — a requested key never
      survives with an empty list (it then revokes via rule 5).
+   - **Wildcard fence**: when at least one requested key passed through
+     an allowed `'*'`, every variable the table declares, the request
+     omits, and allowed holds a list without `'*'` for joins effective
+     with the allowed list. A wildcard grant on one variable therefore
+     never lifts the actor's lists on the table's other variables. A
+     request that names every declared variable, and an allowed map whose
+     lists for the omitted variables all hold `'*'`, are unaffected. The
+     fence applies wherever effective scopes are computed: pull, segment
+     download (§5.5), realtime registration (§8.1, §8.7).
 5. The subscription is **revoked** when any of:
    - `resolveScopes` threw (fail-loud: no data on errors — an
      authorization bug must fence, not leak);
    - a requested key is missing from effective (partial scope loss must
      not silently deliver a subset the client didn't ask to trust);
+   - the wildcard fence (rule 4) adds a variable whose allowed list is
+     empty;
    - effective is empty.
 6. Otherwise the subscription is **active** with the effective scopes,
    which are echoed in `SUB_START` so the client knows exactly what it is
-   receiving.
+   receiving, including variables the wildcard fence added.
 
 A pull for an active subscription returns exactly the changes whose
 stored scopes match the effective scopes: for every effective key, the
@@ -1282,15 +1306,21 @@ change's stored value for that key is in the effective value list.
 An allowed map such as `{ workspace_id: ['w1', 'w2'], surgery_id: ['s1',
 's2'] }` authorizes every row whose `workspace_id` is in the first list
 and whose `surgery_id` is in the second. It does not encode only the pairs
-`(w1, s1)` and `(w2, s2)`. A host that needs parent/child authorization
-MUST therefore do one of the following: declare and request the parent
-scope on every child table as well as the child scope, while validating
-the parent reference server-side; enumerate the exact authorized child
-values; or perform the operation behind a server-authoritative command.
-Granting `'*'` for a child variable is safe only while another declared
-scope independently fences every read and write path for that child. A
-later table that declares only the child variable does not inherit the
-parent fence and MUST be treated as a new authorization decision.
+`(w1, s1)` and `(w2, s2)`. A subscription that omits a variable is
+fenced on it only by the wildcard fence of rule 4. An actor allowed
+`{ workspace_id: ['w1'], surgery_id: ['s1'] }` who subscribes by
+`workspace_id` alone receives a row stored as `(w1, s9)`; an actor
+allowed `{ workspace_id: ['w1'], surgery_id: ['*'] }` who subscribes by
+`surgery_id` alone receives only rows stored under `w1`. A host that
+needs parent/child authorization MUST therefore do one of the following:
+declare and request the parent scope on every child table as well as the
+child scope, while validating the parent reference server-side;
+enumerate the exact authorized child values; or perform the operation
+behind a server-authoritative command. The wildcard fence covers reads
+on a table that declares both variables; writes are authorized by the
+table's write variables alone (§3.4). A later table that declares only
+the child variable does not inherit the parent fence and MUST be treated
+as a new authorization decision.
 
 ### 3.3 Revocation and the purge contract
 
@@ -1717,7 +1747,9 @@ Bootstrap is **resumable, pinned, and paged**:
   subscription would receive lies in `(scope pin, maxCommitSeq]`: the
   snapshot at the scope pin is the snapshot at `maxCommitSeq`, and the next
   incremental pull replays an empty window. The scope pin keeps a stored
-  image's reuse key (§5.3) stable across commits outside the scope.
+  image's reuse key (§5.3) stable across commits outside the scope. The
+  server computes the scope pin at every sqlite-lane start; a resume
+  token's `asOfCommitSeq` never becomes an image reuse key.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
   shape `{ "asOfCommitSeq": i, "tables": [..], "tableIndex": i,
   "rowCursor": string|null }`. **Clients MUST treat it as opaque** and
@@ -1733,9 +1765,13 @@ Bootstrap is **resumable, pinned, and paged**:
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
-- A `bootstrapState` that does not parse as the shape above, or whose
-  `tables` do not correspond to the subscription, MUST be handled the
-  same way: silently restart the bootstrap with a fresh pin. An
+- A `bootstrapState` that does not parse as the shape above, whose
+  `asOfCommitSeq` is not an integer in `[0, maxCommitSeq]`, whose
+  `tableIndex` is not an index into `tables`, or whose `tables` do not
+  correspond to the subscription, MUST be handled the same way: silently
+  restart the bootstrap with a fresh pin. A present token keeps the
+  subscription bootstrapping even when its cursor lies in
+  `[horizonSeq, maxCommitSeq]`. An
   unusable resume token is never a request error — clients round-trip
   the token opaquely, so a bad token means corrupt client state, and
   bootstrap is self-healing by construction (a fresh bootstrap always
@@ -6484,6 +6520,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.authority_unavailable` | internal | no | inspectServer | A local authority is attaching or attached (§12.3) and serves no sync or segment request; `details.state` is `attaching` or `attached` |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
+| `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes, subscriptions per request, or scope values per subscription (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
 | `sync.cursor_expired` | reset-required | no | rebootstrap | Cursor behind the pruning horizon (§4.6) — *new in SSP2*; delivered as `SUB_START` reason code |

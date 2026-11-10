@@ -535,6 +535,7 @@ const VERDICT_ORDER: readonly AdminTraceVerdict[] = [
 
 /** One known client's subscriptions on the row's table and its verdict. */
 function traceVerdict(
+  declared: ReadonlySet<string>,
   record: ClientRecord,
   row: AdminRowInspection,
   lastChange: RowChangeRecord | undefined,
@@ -565,7 +566,10 @@ function traceVerdict(
         mismatches,
       };
       if (allowed === undefined || allowed === 'outage') return traced;
-      const effective = computeEffective(sub.scopes, { ok: true, allowed });
+      const effective = computeEffective(declared, sub.scopes, {
+        ok: true,
+        allowed,
+      });
       return {
         ...traced,
         effectiveMatch:
@@ -906,7 +910,14 @@ export class SyncularAdmin {
       ...base,
       client: (await this.#clientView(partition))(record),
       ...(allowed !== undefined ? { allowed } : {}),
-      ...traceVerdict(record, row, lastChange, horizonSeq, allowed),
+      ...traceVerdict(
+        this.#requireSchema().tables.get(table)?.declaredVariables ?? new Set(),
+        record,
+        row,
+        lastChange,
+        horizonSeq,
+        allowed,
+      ),
     };
   }
 
@@ -929,6 +940,8 @@ export class SyncularAdmin {
     const lastChange = row.history[0];
     const horizonSeq = await this.#storage.getHorizonSeq(partition);
     const view = await this.#clientView(partition);
+    const declared =
+      this.#requireSchema().tables.get(table)?.declaredVariables ?? new Set();
     const allowedByActor = new Map<string, ScopeMap | 'outage' | undefined>();
     const clients: AdminRowDeliveryClient[] = [];
     for (const record of await list(partition)) {
@@ -941,6 +954,7 @@ export class SyncularAdmin {
       clients.push({
         client: view(record),
         verdict: traceVerdict(
+          declared,
           record,
           row,
           lastChange,

@@ -1419,3 +1419,34 @@ describe('socket close cleanup (§8.2)', () => {
     }
   });
 });
+
+test('a forwarded gzip body past maxRequestBytes answers 413 sync.limit_exceeded (§1.7)', async () => {
+  const db = await makeDb();
+  const ns = new FakeDurableObjectNamespace(db, {
+    syncConfig: (storage) => ({
+      schema: SCHEMA,
+      storage,
+      resolveScopes: () => ({ list_id: ['*'] }),
+      segments: new MemorySegmentStore(),
+      limits: { maxRequestBytes: 1024 },
+    }),
+  });
+  const request = new Request(new URL(SYNC_DO_REQUEST_PATH, 'https://do'), {
+    method: 'POST',
+    headers: {
+      'content-type': SSP2_CONTENT_TYPE,
+      'content-encoding': 'gzip',
+    },
+    body: Bun.gzipSync(new Uint8Array(1024 * 1024)).slice().buffer,
+  });
+  writeRequestIdentityHeaders(request.headers, {
+    partition: PARTITION,
+    actorId: ACTOR_ID,
+  });
+  const response = await ns.get(ns.idFromName(PARTITION)).fetch(request);
+  expect(response.status).toBe(413);
+  expect(await response.json()).toMatchObject({
+    code: 'sync.limit_exceeded',
+    details: { limit: 'maxRequestBytes', max: 1024 },
+  });
+});

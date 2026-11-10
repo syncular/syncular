@@ -138,7 +138,7 @@ return {
 };
 ```
 
-A row for `(clinic-a, appt-1)` passes. A row for `(clinic-b, appt-1)` fails because the table and subscription also carry the clinic fence. A later `patient_notes` table scoped only by `appointment_id` would make the same wildcard authorize notes for every appointment, so adding or changing a table's scope patterns is an authorization review.
+A row for `(clinic-a, appt-1)` passes. A row for `(clinic-b, appt-1)` fails because the table carries the clinic fence. The fence holds for a subscription that requests only `appointment_id`: when a requested variable passes through `'*'`, the server adds every other variable the table declares and the actor holds a non-wildcard list for, here `clinic_id: ['clinic-a']`, and `SUB_START` echoes the widened effective scopes. An empty list for such a variable revokes the subscription. Without a wildcard the server adds nothing: an actor allowed `clinic_id: ['clinic-a']` and `appointment_id: ['appt-1']` who subscribes by `clinic_id` alone receives every appointment row in `clinic-a`. Writes are checked against the table's write scope variables, independent of the subscription. A later `patient_notes` table scoped only by `appointment_id` would make the same wildcard authorize notes for every appointment, so adding or changing a table's scope patterns is an authorization review.
 
 Test isolation with at least two parents and representative child IDs. Prove that an in-parent row is readable and writable, that an out-of-parent row with an otherwise allowed child value is neither readable nor writable, and that revocation, realtime, segments, and future child-only projections keep that boundary.
 

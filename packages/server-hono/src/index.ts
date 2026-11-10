@@ -19,6 +19,7 @@ import {
   type RemoteOperationRegistry,
   type RemoteOperationResolver,
   handleSyncRequest,
+  limitsOf,
   RealtimeHub,
   RingBufferEvents,
   SEGMENT_STREAM_THRESHOLD_BYTES,
@@ -61,6 +62,8 @@ export interface SyncularHonoAdminOptions extends SyncularAdminGuards {
 export function createSyncularHono(options: SyncularHonoOptions): Hono {
   const app = new Hono();
   let config = options.config;
+  // Validates every configured limit once, at creation.
+  const { maxRequestBytes } = limitsOf(config);
   const admin = options.admin;
   if (admin !== undefined) {
     const ring = new RingBufferEvents(
@@ -175,7 +178,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     if (auth === null)
       return errorResponse(c, new SyncError('sync.auth_required'));
     try {
-      const bytes = await decodeRequestBody(c.req.raw);
+      const bytes = await decodeRequestBody(c.req.raw, maxRequestBytes);
       if (bytes === undefined) return unsupportedEncoding(c, 'sync');
       const out = await handleSyncRequest(bytes, {
         ...config,
@@ -201,7 +204,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     if (auth === null)
       return errorResponse(c, new SyncError('sync.auth_required'));
     try {
-      const bytes = await decodeRequestBody(c.req.raw);
+      const bytes = await decodeRequestBody(c.req.raw, maxRequestBytes);
       if (bytes === undefined) return unsupportedEncoding(c, 'operations');
       const out = await handleRemoteOperation(
         bytes,

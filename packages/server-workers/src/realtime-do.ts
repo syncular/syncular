@@ -352,7 +352,16 @@ export class SyncularRealtimeHost<
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === SYNC_DO_REQUEST_PATH) {
-      const bytes = await decodeRequestBody(request);
+      let bytes: Uint8Array | undefined;
+      try {
+        bytes = await decodeRequestBody(
+          request,
+          this.#getHub().limits.maxRequestBytes,
+        );
+      } catch (error) {
+        const sync = this.#syncError(error, 'sync');
+        return Response.json(errorBody(sync), { status: sync.httpStatus });
+      }
       if (bytes === undefined) return unsupportedEncoding('sync');
       // A round without PUSH_COMMIT frames writes only its own client
       // record, so it runs beside the FIFO instead of queueing behind every
@@ -499,7 +508,10 @@ export class SyncularRealtimeHost<
       return Response.json(errorBody(error), { status: error.httpStatus });
     }
     try {
-      const bytes = await decodeRequestBody(request);
+      const bytes = await decodeRequestBody(
+        request,
+        this.#getHub().limits.maxRequestBytes,
+      );
       if (bytes === undefined) return unsupportedEncoding('operations');
       const out = await handleRemoteOperation(
         bytes,

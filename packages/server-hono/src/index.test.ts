@@ -943,3 +943,43 @@ describe('large segment downloads', () => {
     );
   });
 });
+
+describe('request body limit (§1.7 maxRequestBytes)', () => {
+  const config = (limits?: SyncServerConfig['limits']): SyncServerConfig => ({
+    schema: SCHEMA,
+    storage: new SqliteServerStorage(),
+    segments: new MemorySegmentStore(),
+    resolveScopes: () => ({ project_id: ['p1'] }),
+    ...(limits !== undefined ? { limits } : {}),
+  });
+
+  test('a gzip body that inflates past the cap answers 413 sync.limit_exceeded', async () => {
+    const app = createSyncularHono({
+      config: config({ maxRequestBytes: 1024 }),
+      authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+    });
+    const response = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        'content-encoding': 'gzip',
+      },
+      body: Bun.gzipSync(new Uint8Array(1024 * 1024)).slice()
+        .buffer as ArrayBuffer,
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.limit_exceeded',
+      details: { limit: 'maxRequestBytes', max: 1024 },
+    });
+  });
+
+  test('an invalid limit throws when the routes are created', () => {
+    expect(() =>
+      createSyncularHono({
+        config: config({ maxRequestBytes: Number.NaN }),
+        authenticate: async () => null,
+      }),
+    ).toThrow('ServerLimits.maxRequestBytes is out of range');
+  });
+});

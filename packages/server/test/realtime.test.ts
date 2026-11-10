@@ -1099,6 +1099,58 @@ describe('presence (§8.6)', () => {
     expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
     expect(presenceEvents(b.wire)).toHaveLength(0); // never fanned out
   });
+
+  test('the document cap counts UTF-8 bytes (§8.6.2)', async () => {
+    const t = makeContext();
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      maxPresenceBytes: 64,
+    });
+    Object.assign(t.ctx, { realtime: hub });
+    const a = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    // 48 UTF-16 code units, 88 UTF-8 bytes.
+    const publish = (text: string) =>
+      a.session.handleMessage(
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'project:p1', doc: { s: text } },
+        }),
+      );
+    publish('é'.repeat(40));
+    expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
+    expect(presenceEvents(b.wire)).toHaveLength(0);
+    // 28 UTF-8 bytes fit.
+    publish('é'.repeat(10));
+    expect(presenceEvents(b.wire).at(-1)?.doc).toEqual({ s: 'é'.repeat(10) });
+  });
+
+  test('a malformed presence publish drops the connection (§8.1)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    let closed = 0;
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: makeWire().send,
+      closeSocket: () => {
+        closed += 1;
+      },
+    });
+    session.handleMessage(
+      JSON.stringify({ event: 'presence', data: { scopeKey: 'project:p1' } }),
+    );
+    expect(closed).toBe(1);
+    expect(hub.sessionCount).toBe(0);
+  });
 });
 
 describe('whole-commit authority refusal over a socket', () => {
@@ -1287,5 +1339,47 @@ describe('unexpected exceptions in a socket round (SYNCULAR-ERROR-CLASS-001)', (
     expect(error?.details).toBe(JSON.stringify({ retryAfterMs: 2500 }));
     expect(JSON.stringify(message.frames)).not.toContain('secret-7f3a');
     expect(reported).toHaveLength(1);
+  });
+});
+
+describe('socket round size (§1.7, §8.7)', () => {
+  test('a round assembled past maxRequestBytes drops the connection', async () => {
+    const t = makeContext();
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      limits: { maxRequestBytes: 64 },
+    });
+    const wire = makeWire();
+    let closed = 0;
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+      closeSocket: () => {
+        closed += 1;
+      },
+    });
+    const bytes = requestBytes(
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      'client-1',
+    );
+    expect(bytes.length).toBeGreaterThan(64);
+    const chunk = (part: Uint8Array) => {
+      const tagged = new Uint8Array(part.length + 1);
+      tagged[0] = REALTIME_TAG_ROUND;
+      tagged.set(part, 1);
+      return tagged;
+    };
+    // The first chunk fits; the second takes the assembly past the cap.
+    expect(session.handleBinary(chunk(bytes.subarray(0, 40)))).toBeUndefined();
+    expect(closed).toBe(0);
+    expect(session.handleBinary(chunk(bytes.subarray(40)))).toBeUndefined();
+    expect(closed).toBe(1);
+    expect(hub.sessionCount).toBe(0);
+    expect(wire.binaries).toHaveLength(0);
   });
 });

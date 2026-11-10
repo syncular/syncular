@@ -544,6 +544,58 @@ export const scopeScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'scopes/wildcard-fence-adds-omitted-variables',
+    specRefs: ['§3.2'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      await seedRows(ctx, 'docs', [
+        doc('inside', 'o1', 'p1', 'inside parent'),
+        doc('outside-same-child', 'o2', 'p1', 'outside parent'),
+        doc('inside-other-child', 'o1', 'p2', 'other child'),
+      ]);
+      const fenced = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1'], projectId: ['*'] },
+      });
+      const open = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        allowed: { org_id: ['*'], projectId: ['*'] },
+      });
+      for (const client of [fenced, open]) {
+        // The request names only the wildcard-granted child variable.
+        await client.api.subscribe({
+          id: 'docs',
+          table: 'docs',
+          scopes: { projectId: ['p1', 'p2'] },
+        });
+        await syncIdle(client);
+      }
+      checkEqual(
+        (await fenced.api.readRows('docs')).map((row) => row.rowId).sort(),
+        ['inside', 'inside-other-child'],
+        "the actor's org list fences a subscription that omits org_id (§3.2 rule 4)",
+      );
+      checkEqual(
+        (await fenced.api.subscriptionState('docs'))?.effectiveScopes,
+        { org_id: ['o1'], projectId: ['p1', 'p2'] },
+        'the effective scopes echo the variable the fence added',
+      );
+      checkEqual(
+        (await open.api.readRows('docs')).map((row) => row.rowId).sort(),
+        ['inside', 'inside-other-child', 'outside-same-child'],
+        'an all-wildcard actor is not fenced',
+      );
+      checkEqual(
+        (await open.api.subscriptionState('docs'))?.effectiveScopes,
+        { projectId: ['p1', 'p2'] },
+        'an all-wildcard actor keeps the requested scopes',
+      );
+    },
+  },
+
+  {
     name: 'scopes/revocation-purges-exactly-the-grant',
     specRefs: ['§3.3', '§3.4', 'B.4'],
     requires: ['scope-authorization'],
