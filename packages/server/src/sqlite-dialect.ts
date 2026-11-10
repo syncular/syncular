@@ -168,8 +168,10 @@ export const LIST_SCOPE_VALUE_ROWS_SQLITE_SQL =
 /**
  * §4.6.1 history scrub, bound by `eraseScopeValueHistoryParams`: upsert change
  * records of the binding first, then the change scope entries whose commit
- * no longer holds a change of the binding. Each returns one row per removed
- * record (D1 batch results carry no reliable change count).
+ * no longer holds a change of the binding, then `serverRow` of stored
+ * conflict results whose conflict authorization scopes carry the binding.
+ * Each returns one row per changed record (D1 batch results carry no reliable
+ * change count).
  */
 export const ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL = [
   `DELETE FROM sync_changes WHERE rowid IN (
@@ -185,6 +187,19 @@ export const ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL = [
          SELECT 1 FROM sync_changes c
          WHERE c.partition=s.partition AND c.commit_seq=s.commit_seq
            AND c.tbl=s.tbl AND json_extract(c.scopes, ?6)=s.value)
+     LIMIT ?7) RETURNING 1 AS removed`,
+  `UPDATE sync_push_results SET result=json_set(result, '$.results', json((
+     SELECT json_group_array(json(json_remove(e.value, '$.serverRow')))
+       FROM (SELECT value FROM json_each(sync_push_results.result, '$.results')
+              ORDER BY key) e)))
+   WHERE rowid IN (
+     SELECT rowid FROM sync_push_results
+     WHERE partition=?1
+       AND json_extract(result, '$.conflictAuthorization.table')=?2
+       AND json_extract(result,
+             '$.conflictAuthorization.scopes' || substr(?6, 2))=?4
+       AND EXISTS (SELECT 1 FROM json_each(result, '$.results') r
+                   WHERE json_type(r.value, '$.serverRow') IS NOT NULL)
      LIMIT ?7) RETURNING 1 AS removed`,
 ] as const;
 

@@ -2551,7 +2551,7 @@ export class D1ServerStorage implements ServerStorage {
   ): Promise<number | null> {
     const row = await this.#db
       .prepare(
-        'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=?',
+        'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=? AND cursor>=0',
       )
       .bind(partition, cutoffMs)
       .first<{ cursor: number | null }>();

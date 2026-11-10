@@ -1080,7 +1080,10 @@ export interface ServerStorage {
     cursor: number,
     updatedAtMs: number,
   ): Promise<void>;
-  /** Minimum cursor with updatedAtMs >= cutoff; null when none are active. */
+  /**
+   * Minimum non-negative cursor with updatedAtMs >= cutoff (§4.6); null when
+   * none are active. A bootstrapping client (cursor < 0) holds no cursor.
+   */
   getActiveClientCursorFloor(
     partition: string,
     cutoffMs: number,
@@ -1116,9 +1119,11 @@ export interface ServerStorage {
    * `eraseScopeValueHistory`: under the partition write lock, removes up to
    * `limit` upsert change records of `table` at or below `throughSeq` whose
    * scopes bind `variable` to `value`, then up to `limit` change scope index
-   * entries of that binding whose commit holds no such change any more.
+   * entries of that binding whose commit holds no such change any more,
+   * then strips `serverRow` from up to `limit` stored conflict results of
+   * `table` whose conflict authorization scopes bind `variable` to `value`.
    * Delete change records stay: clients behind the erasure still need them.
-   * Returns the number of records removed.
+   * Returns the number of records removed or stripped.
    */
   listScopeValueRows?(
     partition: string,

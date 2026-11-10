@@ -218,6 +218,80 @@ describe('eraseScopeValue', () => {
     });
   }
 
+  for (const fixture of fixtures) {
+    test(`${fixture.name}: strips the row payload of stored conflict results of the binding`, async () => {
+      const storage = await fixture.open();
+      const config: SyncServerConfig = {
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ project_id: ['*'], org_id: ['*'] }),
+        clock: () => 1_000,
+      };
+      await seedMutations(
+        config,
+        {
+          partition: PARTITION,
+          actorId: 'a',
+          clientId: 'seed',
+          commitId: 'c1',
+        },
+        [
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: { id: 't1', project_id: 'p1', title: 'secret' },
+          },
+        ],
+      );
+      // §4.6.1: an idempotency result outlives pruning, so a conflict result
+      // of the binding would keep the erased row's payload without the strip.
+      for (const project of ['p1', 'p2']) {
+        const tx = await storage.begin(PARTITION);
+        await tx.preparePushApply('writer', `conflict-${project}`, 1);
+        await tx.commitRejectedPushResult?.('writer', `conflict-${project}`, {
+          status: 'rejected',
+          recordedAtMs: 1_000,
+          conflictAuthorization: {
+            table: 'tasks',
+            schemaVersion: 1,
+            scopes: { project_id: project },
+          },
+          results: [
+            {
+              opIndex: 0,
+              status: 'conflict',
+              code: 'sync.conflict',
+              message: 'stale base version',
+              serverVersion: 1,
+              serverRow: new Uint8Array([7, 7, 7]),
+              conflictColumns: new Uint8Array([1]),
+            },
+          ],
+        });
+      }
+
+      const steps = await eraseAll(config, 'p1');
+      expect(steps.at(-1)?.done).toBe(true);
+      const conflict = async (project: string) => {
+        const [stored] = await storage.listPushResults!(
+          PARTITION,
+          `conflict-${project}`,
+        );
+        const [result] = stored?.result.results ?? [];
+        if (result?.status !== 'conflict') throw new Error('expected conflict');
+        return result;
+      };
+      const erased = await conflict('p1');
+      expect(erased.serverRow).toEqual(new Uint8Array());
+      expect(erased.conflictColumns).toEqual(new Uint8Array([1]));
+      expect(erased.serverVersion).toBe(1);
+      expect((await conflict('p2')).serverRow).toEqual(
+        new Uint8Array([7, 7, 7]),
+      );
+    });
+  }
+
   test('rejects an undeclared variable, an empty value and an oversized budget', async () => {
     const config: SyncServerConfig = {
       schema: SCHEMA,

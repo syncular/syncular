@@ -1527,10 +1527,8 @@ class PostgresTransaction implements StorageTransaction {
   ): Promise<boolean> {
     this.#assertOpen();
     await this.#ensurePushSavepoint();
-    // `RETURNING`: the affected-row check must not depend on a driver's
-    // `rowCount` for a statement with no result rows. Bun.sql's canonical
-    // adapter derives `rowCount` from the returned rows, so a bare UPDATE
-    // reports 0 and the CAS would never advance on a real Bun.sql host.
+    // `RETURNING`: `PgQueryable` reports returned rows only (no affected-row
+    // count), so every affected-row check counts returned rows.
     const result = await this.#client.query<{ name: string }>(
       `UPDATE sync_backfill_checkpoints
           SET watermark=$1, observed_rows=$2, updated_at_ms=$3
@@ -2445,9 +2443,12 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
    */
   async begin(partition: string): Promise<StorageTransaction> {
     let resolveReady!: (tx: PostgresTransaction) => void;
-    const ready = new Promise<PostgresTransaction>((r) => {
-      resolveReady = r;
+    let rejectReady!: (error: unknown) => void;
+    const ready = new Promise<PostgresTransaction>((res, rej) => {
+      resolveReady = res;
+      rejectReady = rej;
     });
+    let opened = false;
     let resolveScope!: () => void;
     let rejectScope!: (error: unknown) => void;
     const scope = new Promise<void>((res, rej) => {
@@ -2465,12 +2466,20 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           resolveScope,
           rejectScope,
         );
+        opened = true;
         resolveReady(tx);
         // Hold the transaction open until commit()/rollback() settles `scope`.
         await scope;
       })
       .catch((error: unknown) => {
         if (error instanceof RollbackSignal) return;
+        // The executor failed before the callback ran (no connection, BEGIN
+        // refused): `begin()` itself rejects, and no transaction exists to
+        // observe `done`.
+        if (!opened) {
+          rejectReady(error);
+          return;
+        }
         throw error;
       });
     const tx = await ready;
@@ -2576,7 +2585,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         [partition, horizonSeq],
       );
       const removed = await client.query(
-        'DELETE FROM sync_commits WHERE partition=$1 AND commit_seq<=$2',
+        'DELETE FROM sync_commits WHERE partition=$1 AND commit_seq<=$2 RETURNING commit_seq',
         [partition, horizonSeq],
       );
       await client.query(
@@ -2595,7 +2604,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       return {
         previousHorizonSeq,
         horizonSeq,
-        removedCommits: removed.rowCount,
+        removedCommits: removed.rows.length,
       };
     });
   }
@@ -2856,10 +2865,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           SET status='completed', completed_at_ms=$4,
               lease_owner=NULL, lease_expires_at_ms=NULL
         WHERE partition=$1 AND idempotency_key=$2
-          AND status='leased' AND lease_owner=$3`,
+          AND status='leased' AND lease_owner=$3
+        RETURNING idempotency_key`,
       [partition, idempotencyKey, leaseOwner, completedAtMs],
     );
-    return result.rowCount === 1;
+    return result.rows.length === 1;
   }
 
   async extendReactionLease(
@@ -2871,10 +2881,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     const result = await this.#exec.query(
       `UPDATE sync_reactions SET lease_expires_at_ms=$4
         WHERE partition=$1 AND idempotency_key=$2
-          AND status='leased' AND lease_owner=$3`,
+          AND status='leased' AND lease_owner=$3
+        RETURNING idempotency_key`,
       [partition, idempotencyKey, leaseOwner, leaseExpiresAtMs],
     );
-    return result.rowCount === 1;
+    return result.rows.length === 1;
   }
 
   async failReaction(
@@ -2887,7 +2898,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           SET status=$4, available_at_ms=$5, last_failure=$6,
               lease_owner=NULL, lease_expires_at_ms=NULL
         WHERE partition=$1 AND idempotency_key=$2
-          AND status='leased' AND lease_owner=$3`,
+          AND status='leased' AND lease_owner=$3
+        RETURNING idempotency_key`,
       [
         partition,
         idempotencyKey,
@@ -2897,7 +2909,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         JSON.stringify(update.failure),
       ],
     );
-    return result.rowCount === 1;
+    return result.rows.length === 1;
   }
 
   async retryReaction(
@@ -2910,10 +2922,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           SET status='pending', attempts=0, available_at_ms=$3,
               last_failure=NULL, lease_owner=NULL, lease_expires_at_ms=NULL,
               completed_at_ms=NULL
-        WHERE partition=$1 AND idempotency_key=$2 AND status='dead-letter'`,
+        WHERE partition=$1 AND idempotency_key=$2 AND status='dead-letter'
+        RETURNING idempotency_key`,
       [partition, idempotencyKey, nowMs],
     );
-    return result.rowCount === 1;
+    return result.rows.length === 1;
   }
 
   async getReaction(
@@ -3283,7 +3296,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     cutoffMs: number,
   ): Promise<number | null> {
     const { rows } = await this.#exec.query<{ cursor: unknown }>(
-      'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=$1 AND updated_at_ms>=$2',
+      'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=$1 AND updated_at_ms>=$2 AND cursor>=0',
       [partition, cutoffMs],
     );
     return rows[0]!.cursor === null ? null : asNumber(rows[0]!.cursor);
@@ -3392,7 +3405,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             WHERE s.partition=$1 AND s.tbl=$2 AND s.var=$3 AND s.value=$4
               AND s.commit_seq<=$5 AND c2.op=1 AND c2.scopes->>$3=s.value
             LIMIT $6) d
-         WHERE c.partition=$1 AND c.commit_seq=d.commit_seq AND c.idx=d.idx`,
+         WHERE c.partition=$1 AND c.commit_seq=d.commit_seq AND c.idx=d.idx
+         RETURNING c.commit_seq`,
         params,
       );
       const scopes = await client.query(
@@ -3405,10 +3419,29 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
                    AND c.tbl=s.tbl AND c.scopes->>$3=s.value)
             LIMIT $6) d
          WHERE cs.partition=$1 AND cs.tbl=$2 AND cs.var=$3 AND cs.value=$4
-           AND cs.commit_seq=d.commit_seq`,
+           AND cs.commit_seq=d.commit_seq
+         RETURNING cs.commit_seq`,
         params,
       );
-      return changes.rowCount + scopes.rowCount;
+      // §4.6.1: stored conflict results of the binding lose their row payload.
+      const results = await client.query(
+        `UPDATE sync_push_results p SET result=jsonb_set(p.result, '{results}', (
+           SELECT jsonb_agg(e - 'serverRow' ORDER BY i)
+             FROM jsonb_array_elements(p.result->'results')
+                  WITH ORDINALITY AS t(e, i)))
+         FROM (
+           SELECT client_id, client_commit_id FROM sync_push_results
+            WHERE partition=$1
+              AND result->'conflictAuthorization'->>'table'=$2
+              AND result->'conflictAuthorization'->'scopes'->>$3=$4
+              AND jsonb_path_exists(result, '$.results[*].serverRow')
+            LIMIT $5) d
+         WHERE p.partition=$1 AND p.client_id=d.client_id
+           AND p.client_commit_id=d.client_commit_id
+         RETURNING p.client_id`,
+        [partition, query.table, query.variable, query.value, query.limit],
+      );
+      return changes.rows.length + scopes.rows.length + results.rows.length;
     });
   }
 

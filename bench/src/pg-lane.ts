@@ -38,7 +38,7 @@ function queryableOver(handle: Pick<SQL, 'unsafe'>): PgQueryable {
       params?: readonly unknown[],
     ) {
       const rows = await handle.unsafe<Row[]>(text, params ? [...params] : []);
-      return { rows, rowCount: rows.length };
+      return { rows };
     },
   };
 }

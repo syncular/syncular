@@ -121,7 +121,7 @@ function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
   const over = (h: any): PgQueryable => ({
     async query(text, params) {
       const rows = await h.unsafe(text, params ? [...params] : []);
-      return { rows, rowCount: rows.length };
+      return { rows };
     },
   });
   return {
@@ -136,6 +136,8 @@ const storage = new PostgresServerStorage(
 );
 await storage.migrate();
 ```
+
+`query` returns `{ rows }`. The storage reads no affected-row count: every write whose outcome matters ends in `RETURNING` and counts the returned rows, because Bun.sql reports no count for a statement without result rows.
 
 Drivers decode `int8` differently (node-postgres returns `string`, Bun.sql returns `bigint`). The storage layer coerces every sequence read through `Number(...)`, so no type-parser configuration is needed. The node-postgres adapter and the full wiring notes are in the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
 

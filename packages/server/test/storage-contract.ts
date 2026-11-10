@@ -1196,24 +1196,31 @@ export function runStorageContract(
           code: 'sync.storage.invalid_limit',
         },
       ] as const;
+      const expectRejection = async (
+        run: () => Promise<unknown>,
+        code: (typeof cases)[number]['code'],
+      ) => {
+        try {
+          await run();
+          throw new Error('expected scanRowsByIndex to reject');
+        } catch (error) {
+          expect(error).toBeInstanceOf(StorageQueryError);
+          expect((error as StorageQueryError).code).toBe(code);
+          expect((error as Error).message).not.toContain('tasks');
+          expect((error as Error).message).not.toContain('p1');
+        }
+      };
+      for (const { query, code } of cases) {
+        await expectRejection(
+          async () => storage.scanRowsByIndex?.(PARTITION, query),
+          code,
+        );
+      }
       // The same contract holds on a push transaction, where the commit
       // readers call it.
       const tx = await storage.begin(PARTITION);
       for (const { query, code } of cases) {
-        for (const run of [
-          () => storage.scanRowsByIndex?.(PARTITION, query),
-          () => tx.scanRowsByIndex?.(query),
-        ]) {
-          try {
-            await run();
-            throw new Error('expected scanRowsByIndex to reject');
-          } catch (error) {
-            expect(error).toBeInstanceOf(StorageQueryError);
-            expect((error as StorageQueryError).code).toBe(code);
-            expect((error as Error).message).not.toContain('tasks');
-            expect((error as Error).message).not.toContain('p1');
-          }
-        }
+        await expectRejection(async () => tx.scanRowsByIndex?.(query), code);
       }
       await tx.rollback();
     });
@@ -1399,7 +1406,7 @@ export function runStorageContract(
 
     // --- Client records (§4.5, §8.1) ---
 
-    test('active cursor floor is partition-bound, includes cutoff equality, and preserves bootstrap cursors', async () => {
+    test('active cursor floor is partition-bound, includes cutoff equality, and ignores bootstrap cursors', async () => {
       const storage = await make();
       expect(
         await storage.getActiveClientCursorFloor(PARTITION, NOW),
@@ -1434,9 +1441,10 @@ export function runStorageContract(
         cursor: -1,
         updatedAtMs: NOW + 1,
       });
-      expect(await storage.getActiveClientCursorFloor(PARTITION, NOW)).toBe(-1);
+      // §4.6: a bootstrapping client (cursor -1) does not hold the floor.
+      expect(await storage.getActiveClientCursorFloor(PARTITION, NOW)).toBe(7);
       expect(
-        await storage.getActiveClientCursorFloor(PARTITION, NOW + 2),
+        await storage.getActiveClientCursorFloor(PARTITION, NOW + 1),
       ).toBeNull();
     });
 

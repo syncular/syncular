@@ -1235,7 +1235,7 @@ function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
   const over = (h: any): PgQueryable => ({
     async query(text, params) {
       const rows = await h.unsafe(text, params ? [...params] : []);
-      return { rows, rowCount: rows.length };
+      return { rows };
     },
   });
   return {
@@ -1282,6 +1282,11 @@ function pgPoolExecutor(pool: Pool): PgExecutor {
   };
 }
 ```
+
+**Result shape.** `query` returns `{ rows }`. The storage never reads an
+affected-row count: every write whose outcome matters ends in `RETURNING`
+and counts the returned rows, because drivers disagree on the count of a
+statement without result rows.
 
 **Type-parser note.** `commit_seq`/`server_version` are `int8`. Drivers
 decode `int8` differently (node-postgres → `string`, Bun.sql → `bigint`,

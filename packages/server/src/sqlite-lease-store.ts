@@ -31,7 +31,6 @@ export class SqliteLeaseStore implements LeaseStore {
         lease_id TEXT NOT NULL, actor_id TEXT NOT NULL,
         allowed_scopes TEXT NOT NULL,
         issued_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
-        revoked INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (partition, client_id)
       );
       CREATE TABLE IF NOT EXISTS sync_lease_revocations(
@@ -57,9 +56,14 @@ export class SqliteLeaseStore implements LeaseStore {
         },
         [string, string]
       >(
-        `SELECT lease_id, actor_id, allowed_scopes, issued_at_ms,
-                expires_at_ms, revoked
-         FROM sync_leases WHERE partition=? AND client_id=?`,
+        // §7.3.4: the revocation table is the only record of a revocation, so
+        // a revoked id stays revoked whatever its lease row says.
+        `SELECT l.lease_id, l.actor_id, l.allowed_scopes, l.issued_at_ms,
+                l.expires_at_ms,
+                EXISTS (SELECT 1 FROM sync_lease_revocations r
+                         WHERE r.partition=l.partition
+                           AND r.lease_id=l.lease_id) AS revoked
+         FROM sync_leases l WHERE l.partition=? AND l.client_id=?`,
       )
       .get(partition, clientId);
     if (row === null) return undefined;
@@ -71,15 +75,6 @@ export class SqliteLeaseStore implements LeaseStore {
       expiresAtMs: row.expires_at_ms,
       revoked: row.revoked !== 0,
     };
-  }
-
-  #isRevoked(partition: string, leaseId: string): boolean {
-    const row = this.db
-      .query<{ n: number }, [string, string]>(
-        'SELECT 1 AS n FROM sync_lease_revocations WHERE partition=? AND lease_id=?',
-      )
-      .get(partition, leaseId);
-    return row !== null;
   }
 
   async issue(
@@ -94,8 +89,7 @@ export class SqliteLeaseStore implements LeaseStore {
     const reuse =
       existing !== undefined &&
       existing.actorId === actorId &&
-      !existing.revoked &&
-      !this.#isRevoked(partition, existing.leaseId);
+      !existing.revoked;
     const leaseId = reuse ? existing.leaseId : this.#newId();
     const record: LeaseRecord = {
       leaseId,
@@ -109,13 +103,13 @@ export class SqliteLeaseStore implements LeaseStore {
       .query(
         `INSERT INTO sync_leases(
           partition, client_id, lease_id, actor_id, allowed_scopes,
-          issued_at_ms, expires_at_ms, revoked
-        ) VALUES (?,?,?,?,?,?,?,0)
+          issued_at_ms, expires_at_ms
+        ) VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(partition, client_id) DO UPDATE SET
           lease_id=excluded.lease_id, actor_id=excluded.actor_id,
           allowed_scopes=excluded.allowed_scopes,
           issued_at_ms=excluded.issued_at_ms,
-          expires_at_ms=excluded.expires_at_ms, revoked=0`,
+          expires_at_ms=excluded.expires_at_ms`,
       )
       .run(
         partition,
@@ -134,11 +128,6 @@ export class SqliteLeaseStore implements LeaseStore {
       .query(
         `INSERT OR IGNORE INTO sync_lease_revocations(partition, lease_id)
          VALUES (?,?)`,
-      )
-      .run(partition, leaseId);
-    this.db
-      .query(
-        'UPDATE sync_leases SET revoked=1 WHERE partition=? AND lease_id=?',
       )
       .run(partition, leaseId);
   }

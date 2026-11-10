@@ -9,7 +9,12 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { PGlite } from '@electric-sql/pglite';
-import { decodeRow, encodeRow } from '@syncular/core';
+import {
+  decodeRow,
+  decodeRowsSegment,
+  encodeRow,
+  type SegmentInlineFrame,
+} from '@syncular/core';
 import {
   compileSchema,
   SyncularAdmin,
@@ -27,11 +32,22 @@ import {
 import type { PgExecutor } from '../src/pg-executor';
 import type { NewChange } from '../src/storage';
 import { pgliteExecutor } from '@syncular/server/pglite';
-import { BunSqliteDatabase } from '@syncular/server/sqlite';
+import { BunSqliteDatabase, SqliteLeaseStore } from '@syncular/server/sqlite';
 import { StorageConstraintError } from '../src/storage-errors';
 import { D1DatabaseDouble } from './d1-double';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
+import {
+  makeContext,
+  pullHeader,
+  pushCommit,
+  pushResults,
+  section,
+  subFrame,
+  sync,
+  taskRow,
+  upsert,
+} from './helpers';
 
 for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
   test(`${backend} scope replacement removes exact old keys across repeated writes and rollback`, async () => {
@@ -1206,7 +1222,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double']) {
       SELECT 'part', CAST(n AS TEXT), 'actor', 2, CASE WHEN n=100001 THEN -1 ELSE n END, '[]', CASE WHEN n%2=0 THEN 99 ELSE 100 END FROM numbers`;
     const sqliteSeed = `WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<100001) ${seed}`;
     const aggregate =
-      'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=?';
+      'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=? AND cursor>=0';
     if (backend === 'postgres/pglite') {
       const db = await PGlite.create();
       const pg = new PostgresServerStorage(pgliteExecutor(db));
@@ -1263,7 +1279,8 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double']) {
           times.push(performance.now() - start);
           heaps.push(process.memoryUsage().heapUsed - before);
           transferredBytes = JSON.stringify(result).length;
-          if (typeof result === 'number') expect(result).toBe(-1);
+          // §4.6: the bootstrapping client (cursor -1) holds no floor.
+          if (typeof result === 'number') expect(result).toBe(1);
           else expect(result).toHaveLength(100001);
         }
         measurements.push({ mode, times, heaps, transferredBytes });
@@ -1282,7 +1299,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double']) {
         clock: () => 110,
         retention: { activeWindowMs: 10 },
       });
-      expect((await admin.horizonStatus('part')).activeCursorFloor).toBe(-1);
+      expect((await admin.horizonStatus('part')).activeCursorFloor).toBe(1);
       expect(
         await pruneCommitLog({
           storage,
@@ -1350,4 +1367,181 @@ test('PGlite cleanup retains a commit failure and releases the transaction queue
   expect(full).toHaveProperty('rollbackError', rollback);
   capacityRestored = true;
   expect(await executor.transaction(async () => 'imported')).toBe('imported');
+});
+
+test('sqlite requests wait behind an open push transaction (§6.4)', async () => {
+  // Client A's push pauses inside its transaction on a host validator; client
+  // B bootstraps meanwhile. B must neither read A's uncommitted row nor write
+  // its client record into A's transaction, which then rolls back.
+  let entered!: () => void;
+  const validating = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const storage = new SqliteServerStorage();
+  const t = makeContext({
+    storage,
+    validators: {
+      tasks: async (op) => {
+        if (op.rowId !== 't2') return;
+        entered();
+        await released;
+        throw new Error('validator outage');
+      },
+    },
+  });
+  const push = sync(t, [
+    pushCommit('a1', [
+      upsert('tasks', 't1', taskRow('t1', 'p1')),
+      upsert('tasks', 't2', taskRow('t2', 'p1')),
+    ]),
+  ]);
+  await validating;
+
+  // B's storage calls are observed: A stays open until B either finishes or
+  // has a call that does not settle while A holds the connection. Without
+  // the queue every call settles at once, so B runs to completion inside A.
+  let pullFinished!: () => void;
+  const pullDone = new Promise<void>((resolve) => {
+    pullFinished = resolve;
+  });
+  let blocked!: () => void;
+  const pullBlocked = new Promise<void>((resolve) => {
+    blocked = resolve;
+  });
+  const observed = new Proxy(storage, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        const result: unknown = Reflect.apply(value, target, args);
+        if (!(result instanceof Promise)) return result;
+        let settled = false;
+        void result.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        void Promise.resolve()
+          .then(() => undefined)
+          .then(() => undefined)
+          .then(() => {
+            if (!settled) blocked();
+          });
+        return result;
+      };
+    },
+  });
+  const pull = sync(
+    { ...t, ctx: { ...t.ctx, storage: observed } },
+    [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+    { clientId: 'client-2' },
+  ).finally(pullFinished);
+  await Promise.race([pullDone, pullBlocked]);
+  release();
+
+  expect(pushResults(await push)[0]?.status).not.toBe('applied');
+  const bootstrap = section(await pull, 's1');
+  const rows = bootstrap.body
+    .filter(
+      (frame): frame is SegmentInlineFrame => frame.type === 'SEGMENT_INLINE',
+    )
+    .flatMap((frame) => decodeRowsSegment(frame.payload).blocks.flat());
+  expect(rows).toHaveLength(0);
+  expect(await storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+  expect(await storage.getClientRecord('part-1', 'client-2')).toBeDefined();
+});
+
+test('postgres begin rejects when the executor cannot open a transaction', async () => {
+  const refused = new Error('no connection');
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const storage = new PostgresServerStorage({
+      async query<Row>() {
+        return { rows: [] as Row[] };
+      },
+      async transaction() {
+        throw refused;
+      },
+    });
+    await expect(storage.begin('part')).rejects.toBe(refused);
+    await expect(storage.begin('part')).rejects.toBe(refused);
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('sqlite lease revocation is read from the revocation record (§7.3.4)', async () => {
+  const leases = new SqliteLeaseStore(new BunSqliteDatabase(), {
+    leaseId: (() => {
+      let next = 0;
+      return () => `lease-${++next}`;
+    })(),
+  });
+  const scopes = { project_id: ['p1'] };
+  const issued = await leases.issue('part', 'client', 'actor', scopes, 0, 100);
+  // The revocation record alone revokes the lease, whatever the lease row
+  // says (an interrupted two-statement revoke left exactly this state).
+  leases.db.run(
+    'INSERT INTO sync_lease_revocations(partition, lease_id) VALUES (?,?)',
+    ['part', issued.leaseId],
+  );
+  expect((await leases.get('part', 'client'))?.revoked).toBe(true);
+  const refreshed = await leases.issue(
+    'part',
+    'client',
+    'actor',
+    scopes,
+    1,
+    100,
+  );
+  expect(refreshed.leaseId).toBe('lease-2');
+  expect((await leases.get('part', 'client'))?.revoked).toBe(false);
+  await leases.revoke('part', 'lease-2');
+  expect(await leases.get('part', 'client')).toMatchObject({
+    leaseId: 'lease-2',
+    revoked: true,
+  });
+});
+
+test('pglite pool statements wait behind an open transaction (§6.4)', async () => {
+  const executor = pgliteExecutor(await PGlite.create());
+  await executor.query('CREATE TABLE probe(id TEXT PRIMARY KEY)');
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let inserted!: () => void;
+  const staged = new Promise<void>((resolve) => {
+    inserted = resolve;
+  });
+  const transaction = executor
+    .transaction(async (client) => {
+      await client.query("INSERT INTO probe(id) VALUES ('uncommitted')");
+      inserted();
+      await released;
+      throw new Error('rolled back');
+    })
+    .catch(() => undefined);
+  await staged;
+  // On one connection, a pool statement issued now would read the open
+  // transaction's row and its write would roll back with it.
+  const read = executor.query<{ id: string }>('SELECT id FROM probe');
+  const write = executor.query("INSERT INTO probe(id) VALUES ('other')");
+  release();
+  await transaction;
+  expect((await read).rows).toEqual([]);
+  await write;
+  expect((await executor.query('SELECT id FROM probe')).rows).toEqual([
+    { id: 'other' },
+  ]);
 });
