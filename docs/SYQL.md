@@ -104,7 +104,8 @@ predicate         = "predicate", camel_name, "(",
                     ")", template_block ;
 predicate_param   = camel_name, [ ":", value_type ] ;
 
-query             = [ "sync" ], "query", camel_name, "(",
+query             = { acknowledgement },
+                    [ "sync" ], "query", camel_name, "(",
                     [ query_param, { ",", query_param }, [ "," ] ],
                     ")", [ "by", sql_name, ".", sql_name ],
                     "{", SQL_TEMPLATE,
@@ -132,6 +133,10 @@ dynamic_limit     = "limit", camel_name, "default", INTEGER,
                     "max", INTEGER ;
 
 template_block    = "{", SQL_TEMPLATE, "}" ;
+
+acknowledgement   = "allow", plan_finding, [ sql_name ], SQL_STRING ;
+plan_finding      = "scan" | "automatic_index" | "unbounded" |
+                    "many_tables" ;
 ```
 
 The semicolon before the query's closing brace terminates the complete query,
@@ -140,6 +145,8 @@ authored SQL statement is not permitted. Semicolons inside atomic SQL strings
 or comments are ordinary token contents.
 
 `by qualifier.column` is valid only on a `sync query`.
+
+An `acknowledgement` precedes the query it belongs to and follows §14.5.
 
 ## 5. Imports and predicate modules
 
@@ -656,6 +663,76 @@ Every computed column is nullable. Any other `CAST` target fails under rule 4. T
 and to plain `.sql` queries alike; a `.syql` query reports the failure as
 `SYQL6002_INVALID_SQL`, whose message contains the same text.
 
+### 14.5 Query plan check
+
+The compiler runs `EXPLAIN QUERY PLAN` on every physical statement (§15) of
+every query, `.syql` and plain `.sql` alike, against the schema database of §8.
+That database holds every declared table and index and no `sqlite_stat1`
+statistics. Neither client runs `ANALYZE`, so a client plans without
+statistics as well. The check reports four findings whose answer depends only
+on the schema and the statement, never on row counts or the SQLite version:
+
+| Code | Finding |
+| --- | --- |
+| `typegen.query_scan` | A plan scans a table, and an index on one column of that table removes a scan from the plan. The compiler finds those columns by planning the statement again once per column with a single-column index added. |
+| `typegen.query_automatic_index` | A plan row uses an `AUTOMATIC` index: SQLite builds a transient index on every execution because no declared index serves the join constraint. |
+| `typegen.query_unbounded` | The statement has no `WHERE` and no `LIMIT` outside parentheses, and a top-level plan row scans a table. The statement reads every row of that table. |
+| `typegen.query_many_tables` | The query reads more than four tables. Every table is a reactive dependency (§13), so a change to any of them re-runs the query. |
+
+A finding fails compilation. The error details carry `query`, `file` and, per
+kind:
+
+- `typegen.query_scan`: `statement`, `sql`, `table`, `columns` (the columns
+  whose index removes the scan) and `plan` (the plan's detail lines);
+- `typegen.query_automatic_index`: `statement`, `sql`, `table`, `columns`
+  (the automatic index's key columns) and `plan`;
+- `typegen.query_unbounded`: `statement`, `sql`, `table` and `plan`;
+- `typegen.query_many_tables`: `tables`.
+
+`statement` is the index of the physical statement in the query's execution
+plan, `0` for a `.sql` query. `table` is the schema table the plan reads; a
+plan row on a CTE names the CTE.
+
+The check does not report which index the planner chooses, temporary B-trees
+for `ORDER BY` or `GROUP BY`, or a cost. Statistics, row counts and the SQLite
+version decide those.
+
+An author resolves a finding by changing the query, by declaring an index, or
+by acknowledging it on the query. An acknowledgement names the finding kind,
+the table for every kind except `many_tables`, and a reason. It silences every
+finding of that kind and table in every physical statement of its query. An
+acknowledgement that matches no finding of its query fails compilation with
+`typegen.query_acknowledgement_unused`, whose details carry `query`, `file`,
+`finding` and `table`.
+
+In a `.syql` source, acknowledgements precede the query (§4). The reason is a
+SQL string literal and MUST contain a non-blank character. A malformed
+acknowledgement, an acknowledgement before a predicate, and a second
+acknowledgement of the same kind and table on one query fail with
+`SYQL2013_INVALID_ACKNOWLEDGEMENT`.
+
+```syql
+allow unbounded settings 'one row per setting key, at most 40 rows'
+query allSettings() {
+  select key, value from settings order by key;
+}
+```
+
+In a `.sql` source, an acknowledgement is a line comment in the statement's
+leading comment block, beside `-- name:` and `-- param`:
+
+```sql
+-- allow scan tasks: the filter reads at most 200 rows of one list
+-- allow many_tables: the report joins five tables once per export
+```
+
+A leading comment whose words after `--` are `allow` and a finding kind is an
+acknowledgement. The kind is followed by the table (absent for
+`many_tables`), a colon, and a non-blank reason. A comment of that form that
+does not parse, and a second acknowledgement of the same kind and table on one
+statement, fail with `typegen.query_acknowledgement_invalid`, whose details
+carry `file` and `comment`.
+
 ## 15. Lowering and execution
 
 The logical query is lowered to one target-neutral physical plan. Conditions
@@ -713,7 +790,8 @@ Before returning output, it parses both forms and verifies span-free semantic
 AST equality. Canonical formatting is byte-idempotent.
 
 Optional records remain inline in signatures. SQL clauses and `and` conjuncts
-are line-oriented. Simple sort profiles remain one line.
+are line-oriented. Simple sort profiles remain one line. Each acknowledgement takes one line directly
+above its query.
 
 ## 17. Diagnostics
 
