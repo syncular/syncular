@@ -87,7 +87,7 @@ await client.syncUntilIdle();
 
 This is a complete client for batch-style work. `syncUntilIdle()` runs sync rounds until the outbox is pushed and the subscription has caught up. A CLI or cron worker calls it explicitly, once after start and again after writing. The [quickstart](/quickstart/) runs this shape in a terminal.
 
-The bearer token is application auth: the server's `authenticate` callback maps it to an actor and partition. The client ID identifies the replica and is no authentication credential. `openSqliteDatabase()` selects `bun:sqlite` on Bun and built-in `node:sqlite` on Node 22.13 or newer, so no SQLite package or native addon is needed. Runtime-specific code can import `openBunDatabase()` from `@syncular/client/bun` or `openNodeDatabase()` from `@syncular/client/node`.
+The bearer token is application auth: the server's `authenticate` callback maps it to an actor and partition. The client ID identifies the replica and is no authentication credential. `openSqliteDatabase()` selects `bun:sqlite` on Bun and built-in `node:sqlite` on Node 22.16 or newer, so no SQLite package or native addon is needed. Runtime-specific code can import `openBunDatabase()` from `@syncular/client/bun` or `openNodeDatabase()` from `@syncular/client/node`.
 
 ::checkpoint[`client.query('SELECT count(*) FROM appointments')` returns the rows in `clinic-42`.]
 ::::
@@ -139,7 +139,7 @@ installRealtimeSupervisor(client);
 
 With a realtime connection the callbacks fire while the service sits idle: the server announces new commits over the WebSocket, the client raises `onSyncNeeded`, and the scheduler pulls them. `installRealtimeSupervisor` owns the initial connection, reconnection with bounded backoff, and a catch-up sync after reconnect. A custom service loop can call `connectRealtime()` and `disconnectRealtime()` directly.
 
-The built-in connector uses the standard `WebSocket` constructor, which Bun and Node 22.13 or newer provide globally and which cannot send headers. The example therefore authenticates the socket with a query parameter. Keep long-lived service bearers out of URLs that a proxy may log. Mint and verify a short-lived ticket ([Realtime tickets](/guide-auth/#realtime-tickets)), and supply a custom `RealtimeConnector` that obtains one per connection attempt when you rotate.
+The built-in connector uses the standard `WebSocket` constructor, which Bun and Node 22.16 or newer provide globally and which cannot send headers. The example therefore authenticates the socket with a query parameter. Keep long-lived service bearers out of URLs that a proxy may log. Mint and verify a short-lived ticket ([Realtime tickets](/guide-auth/#realtime-tickets)), and supply a custom `RealtimeConnector` that obtains one per connection attempt when you rotate.
 
 ::checkpoint[A commit written by another client reaches the service's replica without a manual `syncUntilIdle()`.]
 ::::

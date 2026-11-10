@@ -9,7 +9,7 @@ export const STORAGE_BUSY_CODE = 'client.storage_busy';
  */
 export const STORAGE_FENCED_CODE = 'client.storage_fenced';
 
-/** The browser cannot provide the persistent storage APIs Syncular requires. */
+/** The runtime cannot provide the storage APIs Syncular requires. */
 export const STORAGE_UNAVAILABLE_CODE = 'client.storage_unavailable';
 
 /** A local read hit SQLITE_CORRUPT or SQLITE_NOTADB (SPEC §7.5). */
