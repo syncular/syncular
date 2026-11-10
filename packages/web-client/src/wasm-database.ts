@@ -145,7 +145,7 @@ function coerceParams(params: readonly SqlValue[]): unknown[] {
  */
 interface StorageFence {
   fenced: boolean;
-  readonly siblings: Set<Oo1Database>;
+  readonly siblings: Set<WasmClientDatabase>;
 }
 
 class WasmClientDatabase implements ClientDatabase {
@@ -177,7 +177,6 @@ class WasmClientDatabase implements ClientDatabase {
       if (fence === undefined || this.#closed) return;
       fence.fenced = true;
       for (const sibling of fence.siblings) sibling.close();
-      fence.siblings.clear();
       this.close();
     });
   }
@@ -211,7 +210,7 @@ class WasmClientDatabase implements ClientDatabase {
     if (statement === undefined) {
       statement = this.#db.prepare(sql);
       if (this.#statements.size === STATEMENT_CACHE_LIMIT) {
-        for (const evicted of this.#statements.values()) evicted.finalize();
+        this.#statements.forEach((evicted) => evicted.finalize());
         this.#statements.clear();
       }
       this.#statements.set(sql, statement);
@@ -266,18 +265,16 @@ class WasmClientDatabase implements ClientDatabase {
       db.close();
       throw error;
     }
-    this.#fence?.siblings.add(db);
+    const database = new WasmClientDatabase(
+      db,
+      this.#sqlite3,
+      undefined,
+      this.#fence,
+    );
+    this.#fence?.siblings.add(database);
     return {
-      database: new WasmClientDatabase(
-        db,
-        this.#sqlite3,
-        undefined,
-        this.#fence,
-      ),
-      close: () => {
-        this.#fence?.siblings.delete(db);
-        db.close();
-      },
+      database,
+      close: () => database.close(),
       removeFile: () => {
         sah.util.unlink(fileName);
       },
@@ -335,7 +332,10 @@ class WasmClientDatabase implements ClientDatabase {
 
   close(): void {
     if (this.#closed) return;
-    this.#statements.clear();
+    this.#fence?.siblings.delete(this);
+    // oo1 DB.close() does not finalize prepared statements, and an open one
+    // keeps the database file open, so pauseVfs() below would throw.
+    this.#statements.forEach((statement) => statement.finalize());
     this.#db.close();
     // DB.close() leaves the SAH pool live. Close siblings first, then pause the
     // VFS without deleting files, before releasing this worker's physical lock.
