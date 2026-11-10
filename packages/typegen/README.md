@@ -706,6 +706,41 @@ Missing **both** inference and a comment is a generate-time error naming the
 param and the fix. A `-- param` comment for a param the query does not use is
 also an error. The inference is deliberately simple and honest.
 
+**Query plan check.** Generation runs `EXPLAIN QUERY PLAN` on every emitted
+statement (each physical statement of a `.syql` query) against the in-memory
+schema database, which holds the declared indexes and no statistics, and fails
+on four findings ([SYQL §14.5](../../docs/SYQL.md#145-query-plan-check)):
+
+| Code | Finding |
+|---|---|
+| `typegen.query_scan` | A scan that an index on one column of the scanned table removes; `columns` lists those columns |
+| `typegen.query_automatic_index` | A transient index SQLite builds on every run for a join |
+| `typegen.query_unbounded` | A top-level scan in a statement with no `WHERE` and no `LIMIT` outside parentheses |
+| `typegen.query_many_tables` | More than four tables, each a reactive dependency |
+
+The details carry `query`, `file`, the statement index, its positional `sql`,
+the `table` and the `plan` lines (`tables` for `many_tables`). Declare the
+index, change the query, or acknowledge the finding on the statement with a
+reason. A `.sql` acknowledgement is a leading comment beside `-- name:` and
+`-- param`; a `.syql` acknowledgement is an `allow` line above the query:
+
+```sql
+-- allow scan tasks: a project holds at most 200 tasks
+SELECT id, title FROM tasks WHERE priority = :priority
+```
+
+```syql
+allow scan tasks 'a project holds at most 200 tasks'
+query tasksByPriority(priority) {
+  select id, title from tasks where priority = :priority;
+}
+```
+
+An acknowledgement without a reason fails with
+`typegen.query_acknowledgement_invalid` (`SYQL2013_INVALID_ACKNOWLEDGEMENT` in
+`.syql`), and one that matches no finding of its query fails with
+`typegen.query_acknowledgement_unused`.
+
 **Emitted SQL.** Wrappers take **positional** params (`query(sql, params[])`),
 so the emitted SQL rewrites `:name` → `?` (repeats included) and each runner
 reorders the named params object into the positional array. Comments are

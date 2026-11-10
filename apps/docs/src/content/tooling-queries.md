@@ -65,6 +65,15 @@ sync query listTodos(listId) {
 ```
 :::
 
+Both forms read one list through `list_id`. Typegen plans every query
+([Query plan check](#query-plan-check)) and fails generation with
+`typegen.query_scan` while `todos` has no index on that column. Declare it in a
+migration:
+
+```sql title="migrations/0002_index_todos_list/up.sql"
+CREATE INDEX idx_todos_list ON todos (list_id);
+```
+
 In `.syql`, `query` is a reactive local read, and `sync query` also claims
 synchronization coverage: the query is not ready until every covered table
 window is complete. Use explicit `JOIN ... ON` syntax in both formats. Typegen
@@ -93,6 +102,7 @@ nullable in every target, even when the physical column is `NOT NULL`.
 select t.id, n.title as note_title
 from todos t
 left join notes n on n.list_id = t.list_id
+where t.list_id = :listId
 ```
 
 Here `id` stays required and `noteTitle` is nullable. Aliases, left-to-right
@@ -118,6 +128,7 @@ select id,
        cast(done = 1 as integer) as is_done,
        cast(length(title) as integer) as title_length
 from todos
+where list_id = :listId
 ```
 
 ::checkpoint[`syncular fmt --check` passes for `.syql` files.]
@@ -169,6 +180,8 @@ Generation emits the target-neutral QueryIR plus the configured TypeScript,
 Swift, Kotlin, Dart, and Rust APIs. All targets share the same physical plan,
 bind order, input-presence semantics, reactive facts, and runtime validation
 rules. The migration-lock subcommands are on [Schema & typegen](/guide-schema/).
+A query plan finding fails `generate` and `--check` alike
+([Query plan check](#query-plan-check)).
 
 ::checkpoint[The queries file exists, and `generate --check` prints `generated output is up to date`.]
 ::::
@@ -221,6 +234,67 @@ on the output to change them. React Native and Tauri use the TypeScript output.
 ::checkpoint[The call returns rows typed as `ListTodosRow` with the columns the `SELECT` projects.]
 ::::
 :::::
+
+## Query plan check
+
+Typegen runs `EXPLAIN QUERY PLAN` on every statement it emits, against an
+in-memory SQLite that holds your tables and declared indexes and no row
+statistics. Neither client runs `ANALYZE`, so a client plans the statement the
+same way on the same SQLite version. Every SDK runs the SQL typegen checked,
+so the check covers TypeScript, Swift, Kotlin, Dart and Rust apps. A `.syql`
+query is checked once per physical statement: each sort profile and, under the
+`variants` backend, each combination of active optional inputs.
+
+Generation fails on four findings. Each depends only on the schema and the
+statement:
+
+| Code | The plan | Example that fails |
+|---|---|---|
+| `typegen.query_scan` | Scans a table, and an index on one column of that table removes the scan. `columns` in the details lists those columns. | `select id from todos where list_id = :listId` with no index on `list_id` |
+| `typegen.query_automatic_index` | Builds a transient index on every run because no declared index serves a join. | `select t.id from todos t join tags g on g.label = t.title` with no index on `tags.label` |
+| `typegen.query_unbounded` | Reads every row of a table: the statement has no `WHERE` and no `LIMIT` outside parentheses. | `select id, title from todos` |
+| `typegen.query_many_tables` | Reads more than four tables, and a change to any of them re-runs the query. | A join over five tables |
+
+The error details carry the query name, the source file, the statement index
+and its positional SQL, the table, and the plan lines:
+
+```text title="terminal"
+list-todos.sql: the query plan scans a table that an index on one of the listed columns would let SQLite search; declare the index or acknowledge the finding
+typegen.query_scan {"query":"listTodos","file":"list-todos.sql","statement":0,"sql":"select id, list_id AS \"listId\", title, done from todos where list_id = ? order by position, id","table":"todos","columns":["list_id"],"plan":["SCAN todos","USE TEMP B-TREE FOR ORDER BY"]}
+```
+
+The check reports no cost. A scan of a 20-row table fails the same way as a
+scan of a 200,000-row table, and the check leaves out index choice and
+temporary sorts, which depend on row counts. Resolve a finding by declaring the
+index, by changing the query, or by acknowledging the finding on the query with
+a reason.
+
+In a `.sql` file, the acknowledgement is a comment in the statement's leading
+comment block, beside `-- name:` and `-- param`. Name the finding, the table
+(omitted for `many_tables`), a colon, and the reason:
+
+```sql title="queries/all-settings.sql"
+-- allow unbounded settings: one row per setting key, at most 40 rows
+select key, value from settings order by key
+```
+
+In a `.syql` file, the acknowledgement is an `allow` line directly above the
+query, with the reason as a SQL string:
+
+```syql title="queries/all-settings.syql"
+allow unbounded settings 'one row per setting key, at most 40 rows'
+query allSettings() {
+  select key, value from settings order by key;
+}
+```
+
+An acknowledgement covers every finding of its kind and table in every
+statement of its query. An acknowledgement that matches no finding fails with
+`typegen.query_acknowledgement_unused`, so a fixed query sheds its stale
+acknowledgement. A `.sql` acknowledgement without a reason fails with
+`typegen.query_acknowledgement_invalid`; a `.syql` one fails with
+`SYQL2013_INVALID_ACKNOWLEDGEMENT`. Queries an app passes to `client.query()`
+or `useRawSql()` by hand are outside the check.
 
 ## Reference: what each target emits
 
