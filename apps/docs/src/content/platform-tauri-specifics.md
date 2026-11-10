@@ -73,7 +73,6 @@ the conformance shim and the C-ABI FFI use, so the surface is conformance-locked
 | `syncular_command(command)` | The whole surface in one command. `command` is `{ "method": "...", "params": {...} }` (create, subscribe, mutate, sync, syncUntilIdle, resetClientId, conflicts, presence, setPresence, and more). The reply is `{ "result": ... }` or `{ "error": { "code", "message" } }`. |
 | `syncular_query(sql, params)` | The raw read-only SQL fast path. |
 | `syncular_query_snapshot(sql, params, coverage)` | One IPC read for rows, window completeness, and the exact local revision. |
-| `syncular_snapshot_read(...)` | Several statements plus coverage, subscription progress, and delivery state in one read transaction. |
 | `syncular_set_headers(headers)` | Replaces the native transport's request headers at runtime. |
 | `syncular://event` | Exact revisioned `change` batches plus `presence` and lifecycle events. |
 
@@ -82,9 +81,11 @@ The bridge forwards them without counter diffing or a global-invalidation
 fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe SQLite integers use
 `{ "$bigint": "<decimal>" }`.
 
-The generic `syncular_command` entry routes `querySnapshot` and `snapshotRead`
-through the same handlers as their dedicated commands. Both return structured
-read errors with `code`, `retryable`, and `details`. Owned reads report failures
+The `snapshotRead` method of `syncular_command` reads several statements plus
+coverage, subscription progress, and delivery state in one read transaction.
+`syncular_command` routes `querySnapshot` through the same handler as
+`syncular_query_snapshot`. Both reads return structured read errors with
+`code`, `retryable`, and `details`. Owned reads report failures
 and the first clearing success to the mutable owner; repeated successful reads
 add no diagnostics messages to its mailbox. The reader tracks at most 256
 outstanding owners, matching the diagnostic journal.

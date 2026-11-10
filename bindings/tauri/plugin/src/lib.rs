@@ -91,6 +91,10 @@ pub struct SyncularConfig {
     /// request with none of those, and still refuses a credential-bearing
     /// request.
     pub redirects: Option<String>,
+    /// Interval the server sends realtime heartbeats at, in milliseconds.
+    /// `None` (the default) means 30000. Twice this interval of silence after
+    /// the first heartbeat closes the socket as lost.
+    pub realtime_heartbeat_ms: Option<u64>,
     /// On-disk SQLite path a `create` opens when it names no database. Absent →
     /// in-memory (nothing survives a restart). Apps usually set this to a file
     /// under the app-data dir; see [`init`].
@@ -119,6 +123,7 @@ impl Default for SyncularConfig {
             max_request_bytes: None,
             max_response_bytes: None,
             redirects: None,
+            realtime_heartbeat_ms: None,
             db_path: None,
             database_dir: None,
             auto_sync: true,
@@ -162,6 +167,9 @@ impl SyncularConfig {
         }
         if let Some(redirects) = &self.redirects {
             map.insert("redirects".to_owned(), Value::from(redirects.clone()));
+        }
+        if let Some(ms) = self.realtime_heartbeat_ms {
+            map.insert("realtimeHeartbeatMs".to_owned(), Value::from(ms));
         }
         Value::Object(map)
     }
@@ -518,7 +526,25 @@ where
     let mut core = match SyncularCore::new_with_notify(&config.to_transport_json(), Some(notify)) {
         Ok(core) => core,
         Err(message) => {
-            emit(&json!({ "type": "error", "message": message }));
+            // The webview learns of a startup failure as the structured reply
+            // to its `create` (and to every later call), keeping the core's code.
+            let error = syncular_client::ClientError::from(message);
+            let reply = json!({ "error": {
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            } });
+            while let Ok(request) = rx.recv() {
+                match request {
+                    Request::Command { reply: tx, .. }
+                    | Request::Query { reply: tx, .. }
+                    | Request::SetHeaders { reply: tx, .. } => {
+                        let _ = tx.send(reply.clone());
+                    }
+                    Request::Shutdown => return,
+                    _ => {}
+                }
+            }
             return;
         }
     };
@@ -1256,8 +1282,8 @@ fn parse_string_list(value: Option<&Value>) -> Result<Vec<String>, String> {
 /// for an in-memory replica (SQLite cannot share an anonymous database across
 /// connections). `statements` is a list of `{sql, params?}`; `subscriptions`
 /// and `commitIds` name the catch-up and delivery reads. All results share one
-/// revision and one read transaction.
-#[tauri::command]
+/// revision and one read transaction. The webview reaches it as the
+/// `snapshotRead` method of `syncular_command`.
 async fn syncular_snapshot_read<R: Runtime>(
     app: tauri::AppHandle<R>,
     statements: Value,
@@ -1368,7 +1394,6 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
             syncular_command,
             syncular_query,
             syncular_query_snapshot,
-            syncular_snapshot_read,
             syncular_set_headers
         ])
         .setup(move |app, _api| {
@@ -1421,6 +1446,7 @@ mod tests {
             max_request_bytes: Some(1024),
             max_response_bytes: Some(2048),
             redirects: Some("deny".to_owned()),
+            realtime_heartbeat_ms: Some(15000),
             ..Default::default()
         };
         let json = config.to_transport_json();
@@ -1432,6 +1458,34 @@ mod tests {
         assert_eq!(json["maxRequestBytes"], 1024);
         assert_eq!(json["maxResponseBytes"], 2048);
         assert_eq!(json["redirects"], "deny");
+        assert_eq!(json["realtimeHeartbeatMs"], 15000);
+    }
+
+    #[test]
+    fn a_startup_failure_is_the_structured_reply_to_create() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                realtime_heartbeat_ms: Some(0),
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+        let created = tauri::async_runtime::block_on(syncular_command(
+            app.handle().clone(),
+            json!({ "method": "create", "params": { "schema": { "version": 1, "tables": [] } } }),
+        ))
+        .expect("a structured create reply, not an IPC rejection");
+        assert_eq!(
+            created["error"]["code"], "sync.invalid_request",
+            "{created}"
+        );
+        assert_eq!(
+            created["error"]["details"]["legacyCause"],
+            "sync.invalid_request: transport config realtimeHeartbeatMs must be a positive integer"
+        );
     }
 
     #[test]

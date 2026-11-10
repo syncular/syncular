@@ -1528,3 +1528,78 @@ test('progress arrives as an event and listener removal does not issue a command
   expect(calls.length).toBe(before);
   await client.close();
 });
+
+test('conflicts decode server row bytes and drop reserved columns', async () => {
+  const conflict = {
+    clientCommitId: 'c1',
+    opIndex: 0,
+    table: 'todo',
+    rowId: 't1',
+    code: 'sync.version_conflict',
+    message: 'stale',
+    serverVersion: 2,
+    conflictColumns: ['payload'],
+  };
+  const { nativeModule, eventEmitter } = makeNative((method, params) =>
+    method === 'conflicts'
+      ? OK({
+          conflicts: [
+            {
+              ...conflict,
+              serverRow: {
+                id: 't1',
+                payload: { $bytes: '0102' },
+                _sync_version: 2,
+              },
+            },
+          ],
+        })
+      : defaultResponder(method, params),
+  );
+  const client = await createNativeSyncClient({
+    schema: {},
+    nativeModule,
+    eventEmitter,
+  });
+  expect(await client.conflicts()).toEqual([
+    {
+      ...conflict,
+      serverRow: { id: 't1', payload: new Uint8Array([1, 2]) },
+    },
+  ]);
+  await client.close();
+});
+
+test('a rejected native create releases the event listener and rejects with a typed error', async () => {
+  const { nativeModule, eventEmitter, pump } = makeNative(defaultResponder);
+  let listening = 0;
+  const failure = await createNativeSyncClient({
+    schema: {},
+    nativeModule: {
+      ...nativeModule,
+      create: () => Promise.reject(new Error('native module unavailable')),
+    },
+    eventEmitter: {
+      addListener: (event, handler) => {
+        listening += 1;
+        const subscription = eventEmitter.addListener(event, handler);
+        return {
+          remove: () => {
+            listening -= 1;
+            subscription.remove();
+          },
+        };
+      },
+    },
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(failure).toBeInstanceOf(NativeSyncError);
+  expect(failure).toMatchObject({
+    code: 'client.failed',
+    details: { cause: 'Error: native module unavailable' },
+  });
+  expect(listening).toBe(0);
+  expect(pump.started).toBe(0);
+});

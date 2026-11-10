@@ -130,14 +130,9 @@ function nativeTauri(baseUrl?: string): {
                 params: actual.params,
                 coverage: actual.coverage,
               }
-            : cmd.endsWith('syncular_snapshot_read')
-              ? {
-                  kind: 'command',
-                  command: { method: 'snapshotRead', params: actual },
-                }
-              : cmd.endsWith('syncular_query')
-                ? { kind: 'query', sql: actual.sql, params: actual.params }
-                : { kind: 'command', command: actual.command },
+            : cmd.endsWith('syncular_query')
+              ? { kind: 'query', sql: actual.sql, params: actual.params }
+              : { kind: 'command', command: actual.command },
       );
       for (const payload of response.events) {
         for (const listener of listeners) listener({ payload });

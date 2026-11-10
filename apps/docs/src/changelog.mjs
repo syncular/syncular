@@ -18,6 +18,26 @@ export const changelog = [
   {
     date: '2026-11-10',
     title:
+      'Tauri and React Native share one native bridge; Tauri snapshotRead passes the plugin ACL',
+    body: '`@syncular/tauri` and the React Native binding now run one command bridge, `@syncular/client/native-bridge`, so both hosts decode, gate and fail the same way. In a real Tauri app `snapshotRead` failed with "not allowed by ACL", because the plugin registered `syncular_snapshot_read` without a permission; the bridge now sends it as the `snapshotRead` method of `syncular_command`, and the plugin no longer registers the dedicated command. `conflicts()` decodes `serverRow` like `commitOutcome()`: binary and `crdt` cells arrive as `Uint8Array`, and `_sync_*` columns are dropped. A failed `create` releases the event listener and rejects with a typed error: a rejected host call carries `client.failed` with the host text in `details.cause`. The Tauri plugin answers `create` with its startup failure, for example `sync.invalid_request` for an invalid transport field, instead of emitting an event no listener receives. `SyncularConfig` gains `realtime_heartbeat_ms`, forwarded as `realtimeHeartbeatMs`. React Native now refuses a malformed `$bytes` envelope with `sync.invalid_request` instead of padding it, and a closed React Native client rejects queries and listener registration with `client.closed`, as Tauri did.',
+    links: [
+      {
+        href: '/platform-tauri-specifics/#the-command-and-event-surface',
+        label: 'Tauri command surface',
+      },
+      {
+        href: '/platform-tauri-install/',
+        label: 'Tauri install',
+      },
+      {
+        href: '/platform-react-native-reads-writes/#direct-client-calls',
+        label: 'React Native direct client calls',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
       'Authenticated realtime upgrades in the templates, useRawSql requires dependencies, testkit offline is a dead network',
     body: "The `create-syncular` web and Tauri templates and both demo servers run the same `authenticate(request)` on the `/realtime` upgrade as on `POST /sync`, answer 401 when it returns `null`, and connect the socket as the authenticated actor and partition. They send `hub.heartbeat()` every 30 000 ms. The Tauri template's window ships a CSP of `default-src 'self'` with `connect-src` limited to the IPC scheme and the template's sync origin. `useRawSql` no longer guesses its tables from the SQL text: a call without `dependencies` or `tables` throws `client.raw_sql_dependencies_required` when it mounts, and `inferTables` is removed from `@syncular/react`. Toggling `claimCoverage` now changes the observed query. The testkit's `goOffline()` rejects with `sync.transport_failed` and `causeKind: 'network'`, so the client reports connectivity `offline` and schedules no retry, as with a dead network in production. The testkit loopback honors `refuseNextRealtimeConnect`; `deferNextPulls`, `dropNextUrlFetches` and `corruptNextUrlFetch` leave the testkit's `TransportFaults`, because its loopback never honored them.",
     links: [

@@ -4,7 +4,6 @@ import type {
 } from '@syncular/client/authority';
 import {
   createTauriSyncClient,
-  decodeRow,
   TauriSyncClient,
   TauriSyncError,
   type TauriSyncClientConfig,
@@ -31,7 +30,7 @@ export class TauriAuthoritySyncClient extends TauriSyncClient {
         ...table,
         rows: table.rows.map((row) => ({
           ...row,
-          values: decodeRow(row.values),
+          values: this.decodeRow(row.values),
         })),
       })),
     };

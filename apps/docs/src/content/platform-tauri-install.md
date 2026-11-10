@@ -102,10 +102,17 @@ tauri::Builder::default()
 | `max_request_bytes` | Largest request body the transport sends. Absent: unbounded. |
 | `max_response_bytes` | Largest decoded (post-decompression) response body. Absent: unbounded. |
 | `redirects` | `"deny"` (default) refuses every redirect, so credentials, URL userinfo, and signed capabilities never replay to another origin. `"follow"` follows a redirect only for a request with none of those. |
+| `realtime_heartbeat_ms` | Interval the server sends realtime heartbeats at, in milliseconds. Absent: 30000. After the first heartbeat, twice that interval of silence closes the socket as lost. |
 | `db_path` | On-disk SQLite path a `create` opens when it names no database. Absent: in-memory, and nothing survives a restart. |
 | `database_dir` | Directory of named databases. A `create` with `database: 'name'` opens `<database_dir>/name.db`; the plugin creates the directory. Without `db_path`, every `create` must name a database. |
 | `auto_sync` | Run the background host loop. Default `true`. |
 | `authority_columns` | The native ceiling for authority reads; see [Platform specifics](/platform-tauri-specifics/#authority-evidence-before-activation). |
+
+The native core validates the transport fields when the plugin starts. An
+invalid value, such as `request_timeout_ms: Some(0)`, is the error reply to the
+webview's `create`: `createTauriSyncClient` rejects with a `TauriSyncError`
+whose `code` is `sync.invalid_request` and whose `details.legacyCause` names the
+field.
 
 ::checkpoint[The app starts and the plugin registers without an error in the Rust log.]
 ::::

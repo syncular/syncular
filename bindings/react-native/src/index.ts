@@ -1,96 +1,39 @@
-import {
-  ProgressEmitter,
-  type SyncProgress,
-  type SyncProgressListener,
-} from '@syncular/client';
-import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
 /**
  * @syncular/react-native — the JS bridge to the native syncular core running
  * over the FFI (the same C ABI Swift/Kotlin wrap). RN's Hermes runtime has no
  * OPFS / sqlite-wasm, so the persistent path is the NATIVE core: `rusqlite` on
  * the device filesystem, HTTP+WS owned in Rust.
  *
- * This module is the webview-equivalent of `@syncular/tauri`: a thin JS proxy
- * that implements the SAME `SyncClientLike` interface the React package
- * normalizes, so `@syncular/react` hooks (`useRawSql`, `useMutation`,
- * `usePresence`, …) work UNCHANGED in a React Native app. It is the fifth host
- * of one interface, after direct / worker-leader / multi-tab follower / Tauri.
+ * This module is the React Native host of the shared native command bridge
+ * (`@syncular/client/native-bridge`, which `@syncular/tauri` also uses), so
+ * `@syncular/react` hooks (`useRawSql`, `useMutation`, `usePresence`, …) work
+ * unchanged in a React Native app.
  *
  * Every method forwards to the TurboModule's `command` (the whole command
- * surface in one JSON envelope — `{method, params}`); `query` uses the `query`
- * fast path. Exact revisioned `change` batches and `presence` events arrive on
- * the `syncular::event` NativeEventEmitter topic and fan out to the registered
- * listeners. The bridge never reconstructs changes from counters.
- *
- * Bytes cross as the established `{$bytes:hex}` envelope — the same convention
- * the Rust command router, the driver protocol, and the Tauri bridge use.
+ * surface in one `{method, params}` envelope); `query` uses the `query` fast
+ * path. Exact revisioned `change` batches and `presence` events arrive on the
+ * `syncular::event` NativeEventEmitter topic. The bridge never reconstructs
+ * changes from counters.
  *
  * The native module is INJECTABLE (`createNativeSyncClient({ nativeModule })`),
  * so the bridge is unit-tested with a NativeModule double and never needs a
  * device. In an app it auto-resolves the codegen module from `NativeSyncular`.
  */
-import type {
-  ClientChangeBatch,
-  ClientChangeListener,
-  ClientDiagnosticsListener,
-  ClientDiagnosticsRequest,
-  ClientDiagnosticsSnapshot,
-  CommitOutcome,
-  CommitOutcomeQuery,
-  CurrentBaseProof,
-  ConflictRecord,
-  EncryptionKeyringConfig,
-  InvalidationEvent,
-  InvalidationListener,
-  LocalDataPurgeInput,
-  LocalDataPurgeResult,
-  LocalDataRebootstrapInput,
-  LocalDataRebootstrapResult,
-  MutationInput,
-  PresencePeer,
-  PreviousVersionAudit,
-  PreviousVersionReadSpec,
-  PreviousVersionSnapshot,
-  QueryReadSpec,
-  QuerySnapshot,
-  RejectionRecord,
-  ResolveCommitOutcomeInput,
-  RetainedCommitRow,
-  SecurityLifecycle,
-  SnapshotRead,
-  SnapshotReadRequest,
-  SqlRow,
-  SqlValue,
-  SyncClientConfig,
-  SyncStatusSnapshot,
-  WindowBase,
-  WindowState,
-} from '@syncular/client';
+import type { SecurityLifecycle } from '@syncular/client';
 import {
-  decodeLocalDataRebootstrapResult,
-  decodePreviousVersionAuditResult,
-  decodePreviousVersionDiscardResult,
-  decodePreviousVersionSnapshot,
-  SECURITY_PREFLIGHT_REQUIRED_CODE,
-  withClientDiagnosticsHost,
-} from '@syncular/client';
+  NativeBridgeClient,
+  type NativeCreateConfig,
+  type NativeReply,
+  NativeSyncError,
+  nativeCreateParams,
+  type SyncularEvent,
+} from '@syncular/client/native-bridge';
 
-/** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
-interface CommandReply {
-  readonly result?: unknown;
-  readonly error?: {
-    readonly code: string;
-    readonly message: string;
-    readonly details?: unknown;
-    readonly retryable?: boolean;
-  };
-}
-
-/** One event pushed on the native event topic (the derived observable set). */
-export interface SyncularEvent {
-  readonly type: string;
-  readonly [key: string]: unknown;
-}
+export {
+  type BytesEnvelope,
+  NativeSyncError,
+  type SyncularEvent,
+} from '@syncular/client/native-bridge';
 
 /**
  * The native surface the bridge needs — the TurboModule `Spec`, minus the RN
@@ -119,32 +62,7 @@ export interface SyncularEventEmitter {
 export const SYNCULAR_EVENT = 'syncular::event';
 
 /** Config for {@link createNativeSyncClient}. */
-export interface NativeSyncClientConfig {
-  /** The generated schema JSON (the app passes `schema` from typegen). */
-  readonly schema: unknown;
-  /**
-   * Stable per-device/actor client id. If omitted, the native core creates and
-   * persists one in the database. A mismatched explicit id fails loudly.
-   */
-  readonly clientId?: string;
-  /** §4.2 client limits, forwarded to the native `create`. */
-  readonly limits?: Record<string, unknown>;
-  /**
-   * SPEC §8.8 realtime policy, forwarded to the native `create`. Absent ⇒
-   * `optional`. `required` refuses a sync round while the socket is not
-   * connected instead of falling back to HTTP.
-   */
-  readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
-  /** Portable E2EE keyring installed in the Rust core. */
-  readonly encryption?: EncryptionKeyringConfig;
-  /** Open the native replica behind the fail-closed security gate. */
-  readonly securityPreflight?: boolean;
-  /**
-   * RFC 0005 previous-version context, forwarded to the native `create`. The
-   * Rust create handler must read this key to enable capture; while it does
-   * not, the native core treats the feature as off (default-off).
-   */
-  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+export interface NativeSyncClientConfig extends NativeCreateConfig {
   /** Base URL of the sync server mount (engages the native transport). */
   readonly baseUrl?: string;
   /**
@@ -184,192 +102,6 @@ export interface NativeSyncClientConfig {
 /** SPEC §12.3 local-authority state. */
 export type LocalAuthorityState = 'local' | 'attaching' | 'attached';
 
-/** The bytes envelope both sides share. */
-export type BytesEnvelope = { readonly $bytes: string };
-type BigIntEnvelope = { readonly $bigint: string };
-
-function isBytesEnvelope(value: unknown): value is BytesEnvelope {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { $bytes?: unknown }).$bytes === 'string'
-  );
-}
-
-function isBigIntEnvelope(value: unknown): value is BigIntEnvelope {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { $bigint?: unknown }).$bigint === 'string'
-  );
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let out = '';
-  for (const b of bytes) out += b.toString(16).padStart(2, '0');
-  return out;
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.length % 2 === 0 ? hex : `0${hex}`;
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-/** Encode an SQL param for the command JSON (bytes → `{$bytes:hex}`). */
-function encodeParam(value: SqlValue): unknown {
-  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
-  if (typeof value === 'bigint') return { $bigint: value.toString() };
-  return value;
-}
-
-function encodeJsonValue(value: unknown): unknown {
-  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
-  if (typeof value === 'bigint') return { $bigint: value.toString() };
-  if (Array.isArray(value)) return value.map(encodeJsonValue);
-  if (value !== null && typeof value === 'object') {
-    const encoded: Record<string, unknown> = {};
-    for (const [key, member] of Object.entries(value)) {
-      encoded[key] = encodeJsonValue(member);
-    }
-    return encoded;
-  }
-  return value;
-}
-
-function encodeEncryption(config: EncryptionKeyringConfig): unknown {
-  return {
-    keys: Object.fromEntries(
-      Object.entries(config.keys).map(([keyId, key]) => [
-        keyId,
-        { $bytes: bytesToHex(key) },
-      ]),
-    ),
-    ...(config.keyIdColumns !== undefined
-      ? { keyIdColumns: config.keyIdColumns }
-      : {}),
-  };
-}
-
-/** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
-function decodeCell(value: unknown): SqlValue {
-  if (isBytesEnvelope(value)) return hexToBytes(value.$bytes);
-  if (isBigIntEnvelope(value)) return BigInt(value.$bigint);
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
-    return value;
-  }
-  return JSON.stringify(value);
-}
-
-/** A decoded outcome row cell. Structurally the shared `RowValue` (bytes are
- * `Uint8Array`); native outcome rows emit plain JSON numbers, never `$bigint`. */
-type OutcomeRowValue = ConflictRecord['serverRow'][string];
-
-/** Decode one native outcome row image. Only the `{$bytes}` envelope is
- * honored; operation `values` stay `JsonRowValue` and are not passed here. */
-function decodeOutcomeRow(
-  row: Readonly<Record<string, unknown>>,
-): Record<string, OutcomeRowValue> {
-  const out: Record<string, OutcomeRowValue> = {};
-  for (const [key, value] of Object.entries(row)) {
-    // Reserved `_sync_*` columns stay engine-internal, matching `decodeRow`.
-    if (key.startsWith('_sync_')) continue;
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean'
-    ) {
-      out[key] = value;
-    } else if (isBytesEnvelope(value)) {
-      out[key] = hexToBytes(value.$bytes);
-    } else {
-      out[key] = JSON.stringify(value);
-    }
-  }
-  return out;
-}
-
-function decodeRetainedRows(
-  rows: readonly RetainedCommitRow[],
-): RetainedCommitRow[] {
-  return rows.map((row) => ({
-    ...row,
-    localRow: row.localRow === null ? null : decodeOutcomeRow(row.localRow),
-    serverRow: row.serverRow === null ? null : decodeOutcomeRow(row.serverRow),
-    ...(row.uniqueConflicts !== undefined
-      ? {
-          uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
-            ...conflict,
-            serverRow: decodeOutcomeRow(conflict.serverRow),
-          })),
-        }
-      : {}),
-  }));
-}
-
-/** Decode the row images a native `CommitOutcome` carries: conflict server
- * rows and retained-row images. */
-function decodeCommitOutcome(outcome: CommitOutcome): CommitOutcome {
-  return {
-    ...outcome,
-    results: outcome.results.map((result) =>
-      result.status === 'conflict'
-        ? {
-            ...result,
-            conflict: {
-              ...result.conflict,
-              serverRow: decodeOutcomeRow(result.conflict.serverRow),
-            },
-          }
-        : result,
-    ),
-    ...(outcome.retainedRows !== undefined
-      ? {
-          retainedRows: decodeRetainedRows(outcome.retainedRows),
-        }
-      : {}),
-  };
-}
-
-function decodeRow(row: Record<string, unknown>): SqlRow {
-  const out: SqlRow = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (key.startsWith('_sync_')) continue;
-    out[key] = decodeCell(value);
-  }
-  return out;
-}
-
-/**
- * Decode the JSON cell envelopes in an RFC 0005 snapshot reply's rows before
- * the strict bridge decoder sees them; a malformed reply is passed through
- * untouched so `decodePreviousVersionSnapshot` rejects it.
- */
-function decodeSnapshotRows(value: unknown): unknown {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return value;
-  }
-  const source = value as Record<string, unknown>;
-  if (!Array.isArray(source.rows)) return value;
-  return {
-    ...source,
-    rows: source.rows.map((row) =>
-      row !== null && typeof row === 'object' && !Array.isArray(row)
-        ? decodeRow(row as Record<string, unknown>)
-        : row,
-    ),
-  };
-}
-
 /** Resolve the native module + event emitter from the RN runtime when not injected. */
 function resolveNative(config: NativeSyncClientConfig): {
   nativeModule: SyncularNativeModule;
@@ -385,16 +117,9 @@ function resolveNative(config: NativeSyncClientConfig): {
   // Imported indirectly so this file typechecks/tests without `react-native`
   // installed (the double path never touches these requires).
   const rn = requireReactNative();
-  const nativeModule =
-    config.nativeModule ??
-    (requireNativeSyncular() as unknown as SyncularNativeModule);
+  const nativeModule = config.nativeModule ?? requireNativeSyncular();
   const eventEmitter =
-    config.eventEmitter ??
-    (new rn.NativeEventEmitter(
-      nativeModule as unknown as ConstructorParameters<
-        typeof rn.NativeEventEmitter
-      >[0],
-    ) as SyncularEventEmitter);
+    config.eventEmitter ?? new rn.NativeEventEmitter(nativeModule);
   return { nativeModule, eventEmitter };
 }
 
@@ -414,35 +139,21 @@ function requireReactNative(): {
   }
 }
 
-function requireNativeSyncular(): unknown {
+function requireNativeSyncular(): SyncularNativeModule {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return require('./NativeSyncular').default;
 }
 
-/**
- * The RN-side proxy implementing `SyncClientLike` over the TurboModule. Every
- * snapshot method returns a promise. React hooks accept the canonical
- * snapshot interface directly.
- */
-export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
+/** The RN-side proxy implementing `SyncClientLike` over the TurboModule. */
+export class NativeSyncClient extends NativeBridgeClient {
   readonly #native: SyncularNativeModule;
   readonly #autoSync: boolean;
-  readonly #invalidationListeners = new Set<InvalidationListener>();
-  readonly #changeListeners = new Set<ClientChangeListener>();
-  readonly #progress = new ProgressEmitter();
-  readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
-  readonly #presenceListeners = new Set<(scopeKey: string) => void>();
-  #subscription: { remove(): void } | undefined;
-  #closed = false;
-  #closing: Promise<void> | undefined;
   #paused = false;
   #syncScheduled = false;
   #syncRunning = false;
   #syncAgain = false;
   #retryAt: number | undefined;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
-  #securityLifecycle: SecurityLifecycle;
-  #preflightBarrier: Promise<void> | undefined;
 
   /** @internal — use {@link createNativeSyncClient}. */
   constructor(
@@ -451,163 +162,88 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     autoSync: boolean,
     securityLifecycle: SecurityLifecycle = 'active',
   ) {
+    super(
+      'react-native',
+      NativeSyncError,
+      () => subscription.remove(),
+      securityLifecycle,
+    );
     this.#native = native;
-    this.#subscription = subscription;
     this.#autoSync = autoSync;
-    this.#securityLifecycle = securityLifecycle;
   }
 
-  /** Dispatch a `command` and unwrap `{result}` / throw on `{error}`. */
-  async #command(
+  protected override async send(
     method: string,
     params: Record<string, unknown>,
-  ): Promise<unknown> {
-    if (this.#closed) {
-      throw new NativeSyncError(
-        'client.closed',
-        'the native sync client is closed',
-      );
-    }
-    // The allowlist mirrors the command router's and the Tauri bridge's:
-    // `shutdown` is included so a future close() refactor that routes the
-    // teardown through #command keeps working during preflight.
-    if (
-      this.#securityLifecycle === 'preflight' &&
-      ![
-        'securityLifecycle',
-        'beginSecurityPreflight',
-        'activateSecurity',
-        'purgeLocalData',
-        'previousVersionDiscard',
-        'localRevision',
-        'statusSnapshot',
-        'localAuthorityState',
-        'drainRealtime',
-        'shutdown',
-      ].includes(method)
-    ) {
-      this.#throwSecurityPreflight();
-    }
-    const replyJson = await this.#native.command(
-      JSON.stringify({ method, params }),
-    );
-    const reply = JSON.parse(replyJson) as CommandReply;
-    if (reply.error !== undefined) {
-      throw new NativeSyncError(
-        reply.error.code,
-        reply.error.message,
-        reply.error.details,
-        reply.error.retryable ?? false,
-      );
-    }
-    return reply.result;
-  }
-
-  #throwSecurityPreflight(): never {
-    throw new NativeSyncError(
-      SECURITY_PREFLIGHT_REQUIRED_CODE,
-      'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
+  ): Promise<NativeReply> {
+    return JSON.parse(
+      await this.#native.command(JSON.stringify({ method, params })),
     );
   }
 
-  #requireActive(): void {
-    if (this.#securityLifecycle === 'preflight') this.#throwSecurityPreflight();
+  protected override async sendQuery(
+    sql: string,
+    params: unknown,
+  ): Promise<NativeReply> {
+    return JSON.parse(await this.#native.query(sql, JSON.stringify(params)));
+  }
+
+  protected override sendQuerySnapshot(
+    params: Record<string, unknown>,
+  ): Promise<NativeReply> {
+    return this.send('querySnapshot', params);
+  }
+
+  protected override sendHeaders(
+    headers: Readonly<Record<string, string>>,
+  ): Promise<NativeReply> {
+    return this.send('setHeaders', { headers });
+  }
+
+  protected override shutdown(): Promise<void> {
+    this.#clearRetry();
+    this.#native.stopEvents();
+    return this.#native.close();
+  }
+
+  protected override allowPreflightCommand(method: string): boolean {
+    return method === 'localAuthorityState';
   }
 
   /** @internal — fan an incoming native event out to the local listeners. */
-  __dispatchEvent(event: SyncularEvent): void {
-    switch (event.type) {
-      case 'progress': {
-        this.#progress.emit(event.progress as SyncProgress);
-        break;
+  override __dispatchEvent(event: SyncularEvent): void {
+    if (event.type === 'realtime-wake') {
+      // The core buffered inbound realtime traffic; this command applies it
+      // and queues the resulting change/presence/sync-intent events.
+      if (!this.closed) void this.command('drainRealtime', {});
+    } else if (event.type !== 'sync-intent') {
+      super.__dispatchEvent(event);
+    } else if (this.#autoSync) {
+      const intent =
+        event.intent !== null && typeof event.intent === 'object'
+          ? (event.intent as Record<string, unknown>)
+          : undefined;
+      if (intent?.kind === 'interactive') {
+        this.#requestAutoSync();
+      } else if (
+        intent?.kind === 'background' &&
+        typeof intent.delayMs === 'number' &&
+        Number.isFinite(intent.delayMs)
+      ) {
+        this.#requestBackgroundSync(Math.max(0, intent.delayMs));
       }
-      case 'change': {
-        const batch = decodeChangeBatch(event.batch);
-        if (batch === undefined) break;
-        for (const listener of this.#changeListeners) {
-          try {
-            listener(batch);
-          } catch {
-            /* a UI listener must never break event dispatch */
-          }
-        }
-        const payload = invalidationFromChange(batch);
-        if (payload === undefined) break;
-        for (const listener of this.#invalidationListeners) {
-          try {
-            listener(payload);
-          } catch {
-            /* a UI listener must never break event dispatch */
-          }
-        }
-        break;
-      }
-      case 'presence': {
-        const scopeKey =
-          typeof event.scopeKey === 'string' ? event.scopeKey : '';
-        for (const listener of this.#presenceListeners) {
-          try {
-            listener(scopeKey);
-          } catch {
-            /* never break dispatch */
-          }
-        }
-        break;
-      }
-      case 'sync-intent': {
-        if (!this.#autoSync) break;
-        const intent =
-          event.intent !== null && typeof event.intent === 'object'
-            ? (event.intent as Record<string, unknown>)
-            : undefined;
-        if (intent?.kind === 'interactive') {
-          this.#requestAutoSync();
-        } else if (
-          intent?.kind === 'background' &&
-          typeof intent.delayMs === 'number' &&
-          Number.isFinite(intent.delayMs)
-        ) {
-          this.#requestBackgroundSync(Math.max(0, intent.delayMs));
-        }
-        break;
-      }
-      case 'realtime-wake':
-        // The core buffered inbound realtime traffic; this command applies it
-        // and queues the resulting change/presence/sync-intent events.
-        if (!this.#closed) void this.#command('drainRealtime', {});
-        break;
-      case 'diagnostics': {
-        const snapshot = decodeDiagnosticsSnapshot(
-          event.snapshot,
-          'react-native',
-        );
-        if (snapshot === undefined) break;
-        for (const listener of this.#diagnosticsListeners) {
-          try {
-            listener(snapshot);
-          } catch {
-            /* a diagnostics observer must never break event dispatch */
-          }
-        }
-        break;
-      }
-      default:
-        // Unknown extension events are deliberately ignored.
-        break;
     }
   }
 
-  #requestAutoSync(): void {
-    if (
-      this.#closed ||
-      this.#paused ||
-      this.#securityLifecycle === 'preflight'
-    ) {
-      return;
-    }
+  #clearRetry(): void {
     if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
     this.#retryTimer = undefined;
     this.#retryAt = undefined;
+  }
+
+  #requestAutoSync(): void {
+    if (this.closed || this.#paused || this.preflight) return;
+    this.#clearRetry();
     if (this.#syncRunning) {
       this.#syncAgain = true;
       return;
@@ -621,16 +257,10 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   }
 
   #requestBackgroundSync(delayMs: number): void {
-    if (
-      this.#closed ||
-      this.#paused ||
-      this.#securityLifecycle === 'preflight'
-    ) {
-      return;
-    }
+    if (this.closed || this.#paused || this.preflight) return;
     const deadline = Date.now() + delayMs;
     if (this.#retryAt !== undefined && this.#retryAt <= deadline) return;
-    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#clearRetry();
     this.#retryAt = deadline;
     this.#retryTimer = setTimeout(() => {
       this.#retryTimer = undefined;
@@ -640,7 +270,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   }
 
   async #runAutoSync(): Promise<void> {
-    if (this.#closed || this.#paused || this.#syncRunning) return;
+    if (this.closed || this.#paused || this.#syncRunning) return;
     this.#syncRunning = true;
     try {
       await this.syncUntilIdle();
@@ -656,75 +286,11 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     }
   }
 
-  // -- SyncClientLike ---------------------------------------------------------
-
-  securityLifecycle(): Promise<SecurityLifecycle> {
-    return Promise.resolve(this.#securityLifecycle);
-  }
-
-  beginSecurityPreflight(): Promise<void> {
-    if (this.#closed) {
-      return Promise.reject(
-        new NativeSyncError(
-          'client.closed',
-          'the native sync client is closed',
-        ),
-      );
-    }
-    if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
-    this.#securityLifecycle = 'preflight';
-    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
-    this.#retryTimer = undefined;
-    this.#retryAt = undefined;
+  override beginSecurityPreflight(): Promise<void> {
+    this.#clearRetry();
     this.#syncScheduled = false;
     this.#syncAgain = false;
-    const barrier = this.#command('beginSecurityPreflight', {}).then(() => {});
-    this.#preflightBarrier = barrier;
-    void barrier.then(
-      () => {
-        if (this.#preflightBarrier === barrier)
-          this.#preflightBarrier = undefined;
-      },
-      () => {
-        if (this.#preflightBarrier === barrier)
-          this.#preflightBarrier = undefined;
-      },
-    );
-    return barrier;
-  }
-
-  /**
-   * Complete the security preflight. `headers` optionally carries a fresh
-   * FULL transport header set for the native transport, validated by the
-   * shared command router and forwarded with the activation so the host can
-   * apply it before the startup sync the activation enqueues — the path for
-   * a preflight that outlives the boot token.
-   */
-  async activateSecurity(
-    options: {
-      readonly encryption?: EncryptionKeyringConfig;
-      readonly headers?: Readonly<Record<string, string>>;
-    } = {},
-  ): Promise<void> {
-    if (this.#securityLifecycle === 'active') {
-      throw new NativeSyncError(
-        'sync.invalid_request',
-        'activateSecurity requires the client to be in security preflight',
-      );
-    }
-    await this.#preflightBarrier;
-    await this.#command('activateSecurity', {
-      ...(options.encryption !== undefined
-        ? { encryption: encodeEncryption(options.encryption) }
-        : {}),
-      ...(options.headers !== undefined ? { headers: options.headers } : {}),
-    });
-    this.#securityLifecycle = 'active';
-  }
-
-  /** Replace the full native transport header set without recreating state. */
-  async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
-    await this.#command('setHeaders', { headers });
+    return super.beginSecurityPreflight();
   }
 
   /**
@@ -732,7 +298,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
    * `localAuthorityPath`.
    */
   async localAuthorityState(): Promise<LocalAuthorityState | null> {
-    const result = (await this.#command('localAuthorityState', {})) as {
+    const result = (await this.command('localAuthorityState', {})) as {
       state: LocalAuthorityState | null;
     };
     return result.state;
@@ -746,486 +312,12 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
    * `localAuthorityPath` or `baseUrl`.
    */
   async attachLocalAuthority(): Promise<void> {
-    await this.#command('attachLocalAuthority', {});
+    await this.command('attachLocalAuthority', {});
   }
 
   /** SPEC §12.3: delete the rows a stopped attach uploaded, then sync locally. */
   async abandonLocalAuthorityAttach(): Promise<void> {
-    await this.#command('abandonLocalAuthorityAttach', {});
-  }
-
-  onInvalidate(listener: InvalidationListener): () => void {
-    this.#invalidationListeners.add(listener);
-    return () => this.#invalidationListeners.delete(listener);
-  }
-
-  onProgress(listener: SyncProgressListener): () => void {
-    return this.#progress.on(listener);
-  }
-  progressSnapshot(): SyncProgress | undefined {
-    return this.#progress.snapshot();
-  }
-
-  onChange(listener: ClientChangeListener): () => void {
-    this.#changeListeners.add(listener);
-    return () => this.#changeListeners.delete(listener);
-  }
-
-  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
-    this.#diagnosticsListeners.add(listener);
-    return () => this.#diagnosticsListeners.delete(listener);
-  }
-
-  onPresence(listener: (scopeKey: string) => void): () => void {
-    this.#presenceListeners.add(listener);
-    return () => this.#presenceListeners.delete(listener);
-  }
-
-  async query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]> {
-    this.#requireActive();
-    const replyJson = await this.#native.query(
-      sql,
-      JSON.stringify((params ?? []).map(encodeParam)),
-    );
-    const reply = JSON.parse(replyJson) as CommandReply;
-    if (reply.error !== undefined) {
-      throw new NativeSyncError(
-        reply.error.code,
-        reply.error.message,
-        reply.error.details,
-        reply.error.retryable ?? false,
-      );
-    }
-    const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
-    return rows.map((r) => decodeRow(r as Record<string, unknown>));
-  }
-
-  async querySnapshot<Row = SqlRow>(
-    spec: QueryReadSpec,
-  ): Promise<QuerySnapshot<Row>> {
-    const result = (await this.#command('querySnapshot', {
-      sql: spec.sql,
-      params: (spec.params ?? []).map(encodeParam),
-      coverage: spec.coverage ?? [],
-      ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
-    })) as {
-      revision: string;
-      rows: Record<string, unknown>[];
-      coverage: QuerySnapshot['coverage'];
-    };
-    return {
-      revision: BigInt(result.revision),
-      rows: result.rows.map(decodeRow) as unknown as readonly Row[],
-      coverage: result.coverage,
-    };
-  }
-
-  /** Read rows, coverage, catch-up and delivery from one native snapshot. */
-  async snapshotRead(request: SnapshotReadRequest): Promise<SnapshotRead> {
-    const result = (await this.#command('snapshotRead', {
-      statements: request.statements.map((statement) => ({
-        sql: statement.sql,
-        params: (statement.params ?? []).map(encodeParam),
-      })),
-      coverage: request.coverage ?? [],
-      subscriptions: request.subscriptions ?? [],
-      commitIds: request.commitIds ?? [],
-      ...(request.owner !== undefined ? { owner: request.owner } : {}),
-    })) as {
-      revision: string;
-      queries: readonly (readonly Record<string, unknown>[])[];
-      coverage: SnapshotRead['coverage'];
-      subscriptions: SnapshotRead['subscriptions'];
-      deliveries: SnapshotRead['deliveries'];
-    };
-    return {
-      revision: BigInt(result.revision),
-      queries: result.queries.map((rows) => rows.map(decodeRow)),
-      coverage: result.coverage,
-      subscriptions: result.subscriptions,
-      deliveries: result.deliveries.map((delivery) =>
-        delivery.status === 'known'
-          ? { ...delivery, outcome: decodeCommitOutcome(delivery.outcome) }
-          : delivery,
-      ),
-    };
-  }
-
-  async localRevision(): Promise<bigint> {
-    const result = (await this.#command('localRevision', {})) as {
-      revision: string;
-    };
-    return BigInt(result.revision);
-  }
-
-  async statusSnapshot(): Promise<SyncStatusSnapshot> {
-    return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
-  }
-
-  async diagnosticsSnapshot(
-    request: ClientDiagnosticsRequest = {},
-  ): Promise<ClientDiagnosticsSnapshot> {
-    const snapshot = (await this.#command('diagnosticsSnapshot', {
-      expectedSubscriptions: request.expectedSubscriptions ?? [],
-    })) as ClientDiagnosticsSnapshot;
-    return withClientDiagnosticsHost(snapshot, {
-      ...snapshot.host,
-      kind: 'react-native',
-      role: 'single',
-    });
-  }
-
-  async mutate(mutations: readonly MutationInput[]): Promise<string> {
-    const result = (await this.#command('mutate', {
-      mutations: mutations.map(encodeMutation),
-    })) as { clientCommitId: string };
-    return result.clientCommitId;
-  }
-
-  async patch(
-    table: string,
-    rowId: string,
-    partial: Readonly<Record<string, unknown>>,
-    options?: { readonly baseVersion?: number },
-  ): Promise<string> {
-    const result = (await this.#command('patch', {
-      table,
-      rowId,
-      partial: encodeJsonValue(partial),
-      ...(options?.baseVersion !== undefined
-        ? { baseVersion: options.baseVersion }
-        : {}),
-    })) as { clientCommitId: string };
-    return result.clientCommitId;
-  }
-
-  async purgeLocalData(
-    input: LocalDataPurgeInput,
-  ): Promise<LocalDataPurgeResult> {
-    return (await this.#command('purgeLocalData', {
-      input,
-    })) as LocalDataPurgeResult;
-  }
-
-  async rebootstrapLocalData(
-    input: LocalDataRebootstrapInput,
-  ): Promise<LocalDataRebootstrapResult> {
-    return decodeLocalDataRebootstrapResult(
-      await this.#command('rebootstrapLocalData', { input }),
-    );
-  }
-
-  async previousVersionSnapshot(
-    spec: PreviousVersionReadSpec,
-  ): Promise<PreviousVersionSnapshot> {
-    return decodePreviousVersionSnapshot(
-      decodeSnapshotRows(
-        await this.#command('previousVersionSnapshot', { spec }),
-      ),
-    );
-  }
-
-  async previousVersionAudit(): Promise<PreviousVersionAudit | undefined> {
-    return decodePreviousVersionAuditResult(
-      await this.#command('previousVersionAudit', {}),
-    );
-  }
-
-  async previousVersionDiscard(): Promise<{
-    present: boolean;
-    discarded: boolean;
-  }> {
-    return decodePreviousVersionDiscardResult(
-      await this.#command('previousVersionDiscard', {}),
-    );
-  }
-
-  // -- Native CRDT (SPEC.md §5.10.5; needs the FFI `crdt-yjs` feature) ---------
-
-  /** Materialize a `crdt` column's collaborative text — decoded from the
-   * stored (server-merged) Yjs bytes. `name` selects the shared text
-   * (default `"text"`). An absent row / NULL column is the empty document. */
-  async crdtText(
-    table: string,
-    rowId: string,
-    column: string,
-    name = 'text',
-  ): Promise<string> {
-    const result = (await this.#command('crdtText', {
-      table,
-      rowId,
-      column,
-      name,
-    })) as { text: string };
-    return result.text;
-  }
-
-  /** Insert `value` at UTF-16 offset `index` in a `crdt` column's text and
-   * push the resulting Yjs update (baseVersion-less). Returns the commit id. */
-  async crdtInsertText(
-    table: string,
-    rowId: string,
-    column: string,
-    index: number,
-    value: string,
-    name = 'text',
-  ): Promise<string> {
-    const result = (await this.#command('crdtInsertText', {
-      table,
-      rowId,
-      column,
-      name,
-      index,
-      value,
-    })) as { clientCommitId: string };
-    return result.clientCommitId;
-  }
-
-  /** Delete `len` UTF-16 code units at `index` in a `crdt` column's text. */
-  async crdtDeleteText(
-    table: string,
-    rowId: string,
-    column: string,
-    index: number,
-    len: number,
-    name = 'text',
-  ): Promise<string> {
-    const result = (await this.#command('crdtDeleteText', {
-      table,
-      rowId,
-      column,
-      name,
-      index,
-      len,
-    })) as { clientCommitId: string };
-    return result.clientCommitId;
-  }
-
-  /** Escape hatch: apply an arbitrary Yjs update onto a `crdt` column. */
-  async crdtApplyUpdate(
-    table: string,
-    rowId: string,
-    column: string,
-    update: Uint8Array,
-  ): Promise<string> {
-    const result = (await this.#command('crdtApplyUpdate', {
-      table,
-      rowId,
-      column,
-      update: { $bytes: bytesToHex(update) },
-    })) as { clientCommitId: string };
-    return result.clientCommitId;
-  }
-
-  /**
-   * Stage a blob for attachment (§5.9.7) and return the canonical `BlobRef`
-   * string to store in a `blob_ref` column. The native core owns the upload
-   * queue; write the referencing row after this resolves (§5.9.3).
-   */
-  async uploadBlob(
-    bytes: Uint8Array,
-    options?: { readonly mediaType?: string; readonly name?: string },
-  ): Promise<string> {
-    const result = (await this.#command('uploadBlob', {
-      bytes: { $bytes: bytesToHex(bytes) },
-      ...(options?.mediaType !== undefined
-        ? { mediaType: options.mediaType }
-        : {}),
-      ...(options?.name !== undefined ? { name: options.name } : {}),
-    })) as { ref: string };
-    return result.ref;
-  }
-
-  /**
-   * Resolve blob bytes for a `blob_ref` column value or a bare `blobId`
-   * (§5.9.7): the native core serves a local cache hit and otherwise
-   * downloads and verifies the content address.
-   */
-  async fetchBlob(ref: string): Promise<{
-    readonly blobId: string;
-    readonly byteLength: number;
-    readonly bytes: Uint8Array;
-    readonly mediaType?: string;
-  }> {
-    const result = (await this.#command('fetchBlob', { blob: ref })) as {
-      blob: {
-        blobId: string;
-        byteLength: number;
-        bytes: unknown;
-        mediaType?: string;
-      };
-    };
-    const bytes = result.blob.bytes;
-    if (!isBytesEnvelope(bytes))
-      throw new NativeSyncError(
-        'sync.invalid_request',
-        'fetchBlob reply carried no $bytes envelope',
-      );
-    return {
-      blobId: result.blob.blobId,
-      byteLength: result.blob.byteLength,
-      bytes: hexToBytes(bytes.$bytes),
-      ...(result.blob.mediaType !== undefined
-        ? { mediaType: result.blob.mediaType }
-        : {}),
-    };
-  }
-
-  async subscribe(input: {
-    readonly id: string;
-    readonly table: string;
-    readonly scopes?: Record<string, readonly string[]>;
-    readonly params?: string;
-  }): Promise<void> {
-    await this.#command('subscribe', {
-      id: input.id,
-      table: input.table,
-      scopes: input.scopes ?? {},
-      ...(input.params !== undefined ? { params: input.params } : {}),
-    });
-  }
-
-  /** Register several subscriptions in one local transaction. */
-  async subscribeMany(
-    inputs: readonly {
-      readonly id: string;
-      readonly table: string;
-      readonly scopes?: Record<string, readonly string[]>;
-      readonly params?: string;
-    }[],
-  ): Promise<void> {
-    await this.#command('subscribeMany', {
-      subscriptions: inputs.map((input) => ({
-        id: input.id,
-        table: input.table,
-        scopes: input.scopes ?? {},
-        ...(input.params !== undefined ? { params: input.params } : {}),
-      })),
-    });
-  }
-
-  async unsubscribe(id: string): Promise<void> {
-    await this.#command('unsubscribe', { id });
-  }
-
-  async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
-    await this.#command('setWindow', {
-      base: base as unknown as Record<string, unknown>,
-      units: units as string[],
-    });
-  }
-
-  async windowState(base: WindowBase): Promise<WindowState> {
-    const result = (await this.#command('windowState', {
-      base: base as unknown as Record<string, unknown>,
-    })) as { units: string[]; pending: string[] };
-    return { units: result.units, pending: result.pending };
-  }
-
-  async sync(): Promise<unknown> {
-    return this.#command('sync', {});
-  }
-
-  async syncUntilIdle(maxRounds?: number): Promise<unknown> {
-    return this.#command('syncUntilIdle', {
-      ...(maxRounds !== undefined ? { maxRounds } : {}),
-    });
-  }
-
-  async proveCurrentBase(
-    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
-    maxRounds?: number,
-  ): Promise<CurrentBaseProof> {
-    if (
-      maxRounds !== undefined &&
-      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
-    )
-      throw new NativeSyncError(
-        'sync.invalid_request',
-        'maxRounds must be a positive integer',
-      );
-    const proof = (await this.#command('proveCurrentBase', {
-      outcome: {
-        clientCommitId: outcome.clientCommitId,
-        sequence: outcome.sequence,
-      },
-      ...(maxRounds !== undefined ? { maxRounds } : {}),
-    })) as CurrentBaseProof;
-    return proof.proven
-      ? { proven: true, rows: decodeRetainedRows(proof.rows) }
-      : proof;
-  }
-
-  async conflicts(): Promise<readonly ConflictRecord[]> {
-    const result = (await this.#command('conflicts', {})) as {
-      conflicts: ConflictRecord[];
-    };
-    return result.conflicts;
-  }
-
-  async rejections(): Promise<readonly RejectionRecord[]> {
-    const result = (await this.#command('rejections', {})) as {
-      rejections: RejectionRecord[];
-    };
-    return result.rejections;
-  }
-
-  async commitOutcome(
-    clientCommitId: string,
-  ): Promise<CommitOutcome | undefined> {
-    const result = (await this.#command('commitOutcome', {
-      clientCommitId,
-    })) as { outcome?: CommitOutcome };
-    return result.outcome === undefined
-      ? undefined
-      : decodeCommitOutcome(result.outcome);
-  }
-
-  async commitOutcomes(
-    query: CommitOutcomeQuery = {},
-  ): Promise<readonly CommitOutcome[]> {
-    const result = (await this.#command('commitOutcomes', { query })) as {
-      outcomes: CommitOutcome[];
-    };
-    return result.outcomes.map(decodeCommitOutcome);
-  }
-
-  async resolveCommitOutcome(
-    input: ResolveCommitOutcomeInput,
-  ): Promise<CommitOutcome> {
-    const result = (await this.#command('resolveCommitOutcome', {
-      input,
-    })) as { outcome: CommitOutcome };
-    return decodeCommitOutcome(result.outcome);
-  }
-
-  async pendingCommits(): Promise<unknown[]> {
-    const result = (await this.#command('pendingCommitIds', {})) as {
-      ids: string[];
-    };
-    return result.ids;
-  }
-
-  async presence(scopeKey: string): Promise<readonly PresencePeer[]> {
-    const result = (await this.#command('presence', { scopeKey })) as {
-      peers: PresencePeer[];
-    };
-    return result.peers;
-  }
-
-  async setPresence(
-    scopeKey: string,
-    doc: Record<string, unknown> | null,
-  ): Promise<void> {
-    await this.#command('setPresence', { scopeKey, doc });
-  }
-
-  async connectRealtime(): Promise<void> {
-    await this.#command('connectRealtime', {});
-  }
-
-  async disconnectRealtime(): Promise<void> {
-    await this.#command('disconnectRealtime', {});
+    await this.command('abandonLocalAuthorityAttach', {});
   }
 
   /**
@@ -1235,9 +327,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
    */
   async pause(): Promise<void> {
     this.#paused = true;
-    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
-    this.#retryTimer = undefined;
-    this.#retryAt = undefined;
+    this.#clearRetry();
     this.#native.stopEvents();
     try {
       await this.disconnectRealtime();
@@ -1257,168 +347,6 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     this.#native.startEvents();
     if (this.#autoSync) this.#requestAutoSync();
   }
-
-  /**
-   * Detach the event listener and close the native core. Every call returns
-   * the same promise, which settles with the one native close.
-   */
-  close(): Promise<void> {
-    this.#closing ??= (async () => {
-      this.#closed = true;
-      if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
-      this.#retryTimer = undefined;
-      this.#native.stopEvents();
-      this.#subscription?.remove();
-      this.#subscription = undefined;
-      this.#invalidationListeners.clear();
-      this.#progress.clear();
-      this.#changeListeners.clear();
-      this.#diagnosticsListeners.clear();
-      this.#presenceListeners.clear();
-      await this.#native.close();
-    })();
-    return this.#closing;
-  }
-}
-
-function decodeDiagnosticsSnapshot(
-  value: unknown,
-  kind: 'react-native',
-): ClientDiagnosticsSnapshot | undefined {
-  if (value === null || typeof value !== 'object') return undefined;
-  const snapshot = value as ClientDiagnosticsSnapshot;
-  if (snapshot.version !== 1 || snapshot.host === undefined) return undefined;
-  return withClientDiagnosticsHost(snapshot, {
-    ...snapshot.host,
-    kind,
-    role: 'single',
-  });
-}
-
-/** The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`). */
-export class NativeSyncError extends Error {
-  readonly code: string;
-  readonly details: unknown;
-  readonly retryable: boolean;
-  constructor(
-    code: string,
-    message: string,
-    details?: unknown,
-    retryable = false,
-  ) {
-    super(message);
-    this.name = 'NativeSyncError';
-    this.code = code;
-    this.details = details;
-    this.retryable = retryable;
-  }
-}
-
-function toStringSet(value: unknown): ReadonlySet<string> {
-  if (Array.isArray(value)) {
-    return new Set(value.filter((v): v is string => typeof v === 'string'));
-  }
-  return new Set<string>();
-}
-
-function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
-  if (value === null || typeof value !== 'object') return undefined;
-  const raw = value as Record<string, unknown>;
-  if (typeof raw.revision !== 'string') return undefined;
-  const tables = Array.isArray(raw.tables)
-    ? raw.tables.flatMap((entry) => {
-        if (entry === null || typeof entry !== 'object') return [];
-        const item = entry as Record<string, unknown>;
-        if (typeof item.table !== 'string') return [];
-        return [
-          {
-            table: item.table,
-            ...(Array.isArray(item.scopeKeys)
-              ? { scopeKeys: toStringSet(item.scopeKeys) }
-              : {}),
-          },
-        ];
-      })
-    : [];
-  const windows = Array.isArray(raw.windows)
-    ? raw.windows.flatMap((entry) => {
-        if (entry === null || typeof entry !== 'object') return [];
-        const item = entry as Record<string, unknown>;
-        if (
-          typeof item.baseKey !== 'string' ||
-          typeof item.table !== 'string'
-        ) {
-          return [];
-        }
-        return [
-          {
-            baseKey: item.baseKey,
-            table: item.table,
-            units: toStringSet(item.units),
-          },
-        ];
-      })
-    : [];
-  const appliedCommits: NonNullable<
-    ClientChangeBatch['appliedCommits']
-  >[number][] = [];
-  if (raw.appliedCommits !== undefined) {
-    if (!Array.isArray(raw.appliedCommits)) return undefined;
-    for (const entry of raw.appliedCommits) {
-      if (entry === null || typeof entry !== 'object') return undefined;
-      const item = entry as Record<string, unknown>;
-      if (
-        typeof item.subscriptionId !== 'string' ||
-        typeof item.table !== 'string' ||
-        typeof item.commitSeq !== 'number' ||
-        !Number.isSafeInteger(item.commitSeq) ||
-        item.commitSeq < 1 ||
-        (item.source !== 'delta' && item.source !== 'pull')
-      )
-        return undefined;
-      appliedCommits.push({
-        subscriptionId: item.subscriptionId,
-        table: item.table,
-        commitSeq: item.commitSeq,
-        source: item.source,
-      });
-    }
-  }
-  return {
-    revision: BigInt(raw.revision),
-    tables,
-    windows,
-    ...(raw.appliedCommits !== undefined ? { appliedCommits } : {}),
-    ...(raw.status !== undefined
-      ? { status: raw.status as SyncStatusSnapshot }
-      : {}),
-    conflictsChanged: raw.conflictsChanged === true,
-    rejectionsChanged: raw.rejectionsChanged === true,
-    outcomesChanged: raw.outcomesChanged === true,
-  };
-}
-
-function invalidationFromChange(
-  batch: ClientChangeBatch,
-): InvalidationEvent | undefined {
-  if (batch.tables.length === 0 && batch.windows.length === 0) return undefined;
-  const tables = new Set<string>();
-  const scopeKeys = new Set<string>();
-  for (const table of batch.tables) {
-    tables.add(table.table);
-    for (const key of table.scopeKeys ?? []) scopeKeys.add(key);
-  }
-  for (const window of batch.windows) tables.add(window.table);
-  return { tables, scopeKeys };
-}
-
-function encodeMutation(mutation: MutationInput): unknown {
-  if (mutation.op === 'delete') return mutation;
-  const values: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(mutation.values)) {
-    values[key] = encodeJsonValue(value);
-  }
-  return { ...mutation, values };
 }
 
 /**
@@ -1429,91 +357,58 @@ function encodeMutation(mutation: MutationInput): unknown {
 export async function createNativeSyncClient(
   config: NativeSyncClientConfig,
 ): Promise<NativeSyncClient> {
+  const createParams = {
+    ...nativeCreateParams(config, NativeSyncError),
+    ...(config.dbPath !== undefined ? { dbPath: config.dbPath } : {}),
+  };
+  const transportConfig = {
+    ...(config.baseUrl !== undefined ? { baseUrl: config.baseUrl } : {}),
+    ...(config.localAuthorityPath !== undefined
+      ? { localAuthorityPath: config.localAuthorityPath }
+      : {}),
+    ...(config.headers !== undefined ? { headers: config.headers } : {}),
+    ...(config.requestTimeoutMs !== undefined
+      ? { requestTimeoutMs: config.requestTimeoutMs }
+      : {}),
+    ...(config.roundDeadlineMs !== undefined
+      ? { roundDeadlineMs: config.roundDeadlineMs }
+      : {}),
+    ...(config.maxRequestBytes !== undefined
+      ? { maxRequestBytes: config.maxRequestBytes }
+      : {}),
+    ...(config.maxResponseBytes !== undefined
+      ? { maxResponseBytes: config.maxResponseBytes }
+      : {}),
+    ...(config.redirects !== undefined ? { redirects: config.redirects } : {}),
+    ...(config.realtimeHeartbeatMs !== undefined
+      ? { realtimeHeartbeatMs: config.realtimeHeartbeatMs }
+      : {}),
+  };
   const { nativeModule, eventEmitter } = resolveNative(config);
 
   // Wire the event stream BEFORE create so no early change batch is missed.
-  const clientRef: { client: NativeSyncClient | undefined } = {
-    client: undefined,
-  };
-  const subscription = eventEmitter.addListener(SYNCULAR_EVENT, (payload) => {
-    clientRef.client?.__dispatchEvent(
+  let client: NativeSyncClient | undefined;
+  const subscription = eventEmitter.addListener(SYNCULAR_EVENT, (payload) =>
+    client?.__dispatchEvent(
       typeof payload === 'string'
         ? (JSON.parse(payload) as SyncularEvent)
         : payload,
-    );
-  });
-
-  const client = new NativeSyncClient(
+    ),
+  );
+  client = new NativeSyncClient(
     nativeModule,
     subscription,
     config.autoSync ?? true,
     config.securityPreflight === true ? 'preflight' : 'active',
   );
-  clientRef.client = client;
-
-  const transportConfig: Record<string, unknown> = {};
-  if (config.baseUrl !== undefined) transportConfig.baseUrl = config.baseUrl;
-  if (config.localAuthorityPath !== undefined) {
-    transportConfig.localAuthorityPath = config.localAuthorityPath;
-  }
-  if (config.headers !== undefined) transportConfig.headers = config.headers;
-  if (config.requestTimeoutMs !== undefined) {
-    transportConfig.requestTimeoutMs = config.requestTimeoutMs;
-  }
-  if (config.roundDeadlineMs !== undefined) {
-    transportConfig.roundDeadlineMs = config.roundDeadlineMs;
-  }
-  if (config.maxRequestBytes !== undefined) {
-    transportConfig.maxRequestBytes = config.maxRequestBytes;
-  }
-  if (config.maxResponseBytes !== undefined) {
-    transportConfig.maxResponseBytes = config.maxResponseBytes;
-  }
-  if (config.redirects !== undefined) {
-    transportConfig.redirects = config.redirects;
-  }
-  if (config.realtimeHeartbeatMs !== undefined) {
-    transportConfig.realtimeHeartbeatMs = config.realtimeHeartbeatMs;
-  }
-
-  const createParams: Record<string, unknown> = { schema: config.schema };
-  if (config.clientId !== undefined) createParams.clientId = config.clientId;
-  if (config.limits !== undefined) createParams.limits = config.limits;
-  if (config.realtimePolicy !== undefined) {
-    createParams.realtimePolicy = config.realtimePolicy;
-  }
-  if (config.dbPath !== undefined) createParams.dbPath = config.dbPath;
-  if (config.securityPreflight === true && config.encryption !== undefined) {
-    subscription.remove();
-    throw new NativeSyncError(
-      'sync.invalid_request',
-      'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
-    );
-  }
-  if (config.encryption !== undefined) {
-    createParams.encryption = encodeEncryption(config.encryption);
-  }
-  if (config.securityPreflight !== undefined) {
-    createParams.securityPreflight = config.securityPreflight;
-  }
-  if (config.previousVersionContext !== undefined) {
-    createParams.previousVersionContext = config.previousVersionContext;
-  }
-
-  const replyJson = await nativeModule.create(
-    JSON.stringify(transportConfig),
-    JSON.stringify(createParams),
+  await client.__open(async () =>
+    JSON.parse(
+      await nativeModule.create(
+        JSON.stringify(transportConfig),
+        JSON.stringify(createParams),
+      ),
+    ),
   );
-  const reply = JSON.parse(replyJson) as CommandReply;
-  if (reply.error !== undefined) {
-    subscription.remove();
-    throw new NativeSyncError(
-      reply.error.code,
-      reply.error.message,
-      reply.error.details,
-      reply.error.retryable ?? false,
-    );
-  }
 
   // Begin pumping poll_event → native event emitter.
   nativeModule.startEvents();

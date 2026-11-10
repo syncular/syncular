@@ -72,7 +72,9 @@ Outside React, call the client directly. Each method returns a promise:
 `subscribe`, `query`, `mutate`, `patch`, `sync`, `syncUntilIdle`, `setWindow`,
 `conflicts`, and `statusSnapshot`. Final commit outcomes use the native SQLite
 journal: `commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome` survive
-process restarts, and `useCommitOutcomes()` observes the journal.
+process restarts, and `useCommitOutcomes()` observes the journal. `conflicts()`
+decodes each record's `serverRow` like an outcome row: binary and `crdt` cells
+arrive as `Uint8Array`, and reserved `_sync_*` columns are dropped.
 
 ## Blobs
 
