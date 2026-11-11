@@ -998,9 +998,20 @@ async function startWorkerCore(options: {
         } as MainToWorkerMessage);
       },
     );
-    // A config callback is a consumer from the first round.
-    if (config.onDiagnostics !== undefined)
-      await invoke('diagnosticsSnapshot', []);
+    // A config callback is a consumer from the first round. Under security
+    // preflight the core refuses the snapshot after the pull registered the
+    // worker as a push source, and activateSecurity() emits the first one.
+    if (config.onDiagnostics !== undefined) {
+      await invoke('diagnosticsSnapshot', []).catch((error: unknown) => {
+        if (
+          config.securityPreflight !== true ||
+          !(error instanceof ClientSyncError) ||
+          error.code !== 'client.security_preflight_required'
+        ) {
+          throw error;
+        }
+      });
+    }
     return {
       clientId: initResult.clientId,
       invoke,

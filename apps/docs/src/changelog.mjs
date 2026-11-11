@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'A preflight worker handle starts with an onDiagnostics callback',
+    body: 'Since 0.60.0, `createSyncClientHandle({ securityPreflight: true, onDiagnostics })` pulled a diagnostics snapshot during start, which preflight refuses, so the handle failed to start with `client.security_preflight_required`. The start now accepts that refusal, and the callback receives its first snapshot when `activateSecurity()` completes.',
+    links: [
+      {
+        href: '/platform-web-reads-writes/',
+        label: 'Web reads and writes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'The JS client holds one copy of each downloaded body',
     body: "Since 0.59.0 the JS client assembled every segment, blob and response body through a `Blob` and its `arrayBuffer()`, which kept one more full copy resident until garbage collection. It copies the chunks into one allocation of the body's size again; a 100k-row bootstrap held 151 to 153 MB during the segment download on 0.59.0, against 138 to 140 MB on 0.58.0.",
     links: [

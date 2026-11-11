@@ -515,6 +515,22 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
   expect(await handle.query('SELECT id FROM tasks')).toEqual([]);
 });
 
+test('a preflight handle with a config onDiagnostics starts and gets its first snapshot at activation', async () => {
+  const seen: string[] = [];
+  const { handle } = await makeHandle({
+    clientId: 'rpc-preflight-diagnostics',
+    securityPreflight: true,
+    transportEnabled: false,
+    onDiagnostics: (snapshot) => seen.push(snapshot.replica.localRevision),
+  });
+  expect(await handle.securityLifecycle()).toBe('preflight');
+  expect(seen).toEqual([]);
+
+  // The worker posts the activation snapshot before the RPC reply.
+  await handle.activateSecurity();
+  expect(seen.length).toBe(1);
+});
+
 test('application-authorized local purge crosses the worker RPC atomically', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-local-purge',
