@@ -14,7 +14,7 @@
  * promises; the synchronous SQLite driver resolves them with rows it read at
  * call time. Both classes run the identical `test/storage-contract.ts`.
  */
-import type { PushOperationResult, ScopeMap } from '@syncular/core';
+import type { PushOperationResult, UnitScopes } from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -37,8 +37,6 @@ import {
   SYNC_ROW_ID_COLUMN,
   SYNC_SCOPES_COLUMN,
   SYNC_VERSION_COLUMN,
-  commitWindowPageSql,
-  LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
   upsertSql,
   upsertValues,
 } from './relational-rows';
@@ -56,20 +54,23 @@ import type {
   ClientPushResult,
   ClientRecord,
   ClientRecordWriteOptions,
-  ClientSubscription,
   CommitChangeSummary,
   CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
   CommitPruneQuery,
   CommitPruneResult,
-  CommitWindowQuery,
   DurableJsonValue,
   IndexRowScanQuery,
+  LiveWindow,
+  LiveWindowQuery,
   NewCommit,
+  OutboxSequence,
+  OutboxSettlement,
   NewReaction,
   PartitionRegistryEntry,
   PrunedReactionCounts,
+  PushWatermark,
   ReactionClaimQuery,
   ReactionFailure,
   ReactionFailureUpdate,
@@ -84,13 +85,16 @@ import type {
   ScopeValueHistoryQuery,
   ScopeValueQuery,
   StoredChange,
-  StoredCommit,
   StoredPushResult,
   StoredReaction,
   StoredRow,
   Tombstone,
 } from './storage';
-import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
+import {
+  assertScopeIndexedScan,
+  readLiveWindowPages,
+  resolveIndexRowScan,
+} from './storage-query';
 
 /**
  * Schema DDL, one statement per `;`-delimited chunk. Native SQLite applies
@@ -105,15 +109,8 @@ import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
  * the Postgres storage documents (§3.1, performance-by-
  * construction).
  *
- * The old `sync_row_scopes_by_row` index is dropped: with it present the
- * planner answered a scope scan of two or more values by walking the index
- * in `row_id` order and filtering, instead of seeking the PRIMARY KEY once
- * per value. The per-row scope replacement (`deleteSqliteRowScopesSql`)
- * binds `(partition, tbl, var, value, row_id)` and needs no secondary index.
- * `DROP INDEX IF EXISTS` stays in the DDL so existing databases lose the
- * index the next time the DDL runs: on every `SqliteServerStorage`
- * construction, and on D1 in `migrate()` and the core phase of
- * `migrateSchema`.
+ * Changes to the core tables of an existing database (added and dropped
+ * columns and indexes) live in `sqliteUpgradeDdl`, which runs after this DDL.
  */
 export const SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
@@ -132,7 +129,6 @@ CREATE TABLE IF NOT EXISTS sync_row_scopes(
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
   PRIMARY KEY(partition, tbl, var, value, row_id)
 );
-DROP INDEX IF EXISTS sync_row_scopes_by_row;
 CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq INTEGER NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
@@ -158,7 +154,13 @@ CREATE TABLE IF NOT EXISTS sync_change_scopes(
 CREATE TABLE IF NOT EXISTS sync_push_results(
   partition TEXT NOT NULL, client_id TEXT NOT NULL,
   client_commit_id TEXT NOT NULL, result TEXT NOT NULL,
+  outbox_id TEXT, client_seq INTEGER,
   PRIMARY KEY(partition, client_id, client_commit_id)
+);
+CREATE TABLE IF NOT EXISTS sync_push_watermarks(
+  partition TEXT NOT NULL, client_id TEXT NOT NULL, outbox_id TEXT NOT NULL,
+  through_seq INTEGER NOT NULL,
+  PRIMARY KEY(partition, client_id, outbox_id)
 );
 CREATE TABLE IF NOT EXISTS sync_reactions(
   partition TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -183,10 +185,12 @@ CREATE INDEX IF NOT EXISTS sync_reactions_dead_letter
 CREATE TABLE IF NOT EXISTS sync_clients(
   partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
   wire_version INTEGER NOT NULL DEFAULT 1,
-  cursor INTEGER NOT NULL, subscriptions TEXT NOT NULL,
+  cursor INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
   last_round_at_ms INTEGER, last_error_code TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  schema_version INTEGER, units TEXT, registration_digest BLOB,
+  catching_up TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY(partition, client_id)
 );
 CREATE TABLE IF NOT EXISTS sync_blob_refs(
@@ -217,15 +221,109 @@ CREATE TABLE IF NOT EXISTS sync_writer_fence(
 );
 `;
 
-/** Columns added to core tables after their first release: table, column, type. */
-export const SQLITE_ADDED_COLUMNS = [
+/**
+ * Columns added to core tables after their first release: table, column,
+ * type. A client record from before wire version 4 gains NULL `units` and
+ * `registration_digest`, so it holds no registration list (§9), and a push
+ * result gains NULL `outbox_id` and `client_seq`: it is a result stored
+ * before the upgrade, settled by the client's next push (§9). The
+ * watermark delete and the settlement range over the `(partition,
+ * client_id)` prefix of the primary key, which the watermark keeps to one
+ * request's results per outbox.
+ */
+const SQLITE_ADDED_COLUMNS = [
   ['sync_clients', 'wire_version', 'INTEGER NOT NULL DEFAULT 1'],
   ['sync_clients', 'last_round_at_ms', 'INTEGER'],
   ['sync_clients', 'last_error_code', 'TEXT'],
   ['sync_clients', 'consecutive_failures', 'INTEGER NOT NULL DEFAULT 0'],
+  ['sync_clients', 'schema_version', 'INTEGER'],
+  ['sync_clients', 'units', 'TEXT'],
+  ['sync_clients', 'registration_digest', 'BLOB'],
+  ['sync_clients', 'catching_up', "TEXT NOT NULL DEFAULT '[]'"],
   ['sync_tombstones', 'server_version', 'INTEGER'],
   ['sync_tombstones', 'scopes', 'TEXT'],
+  ['sync_push_results', 'outbox_id', 'TEXT'],
+  ['sync_push_results', 'client_seq', 'INTEGER'],
 ] as const;
+
+/** Core-table columns wire version 4 deleted: the version 3 subscription list. */
+const SQLITE_DROPPED_COLUMNS = [['sync_clients', 'subscriptions']] as const;
+
+/**
+ * Indexes that `sqliteUpgradeDdl` creates, on a fresh database and an
+ * upgraded one alike. `sync_change_scopes_by_key` serves the §4.5 live
+ * scan: one range per (variable, value) across tables.
+ */
+const SQLITE_ADDED_INDEXES = [
+  [
+    'sync_change_scopes_by_key',
+    'CREATE INDEX IF NOT EXISTS sync_change_scopes_by_key ON sync_change_scopes(partition, var, value, commit_seq)',
+  ],
+] as const;
+
+/**
+ * Indexes that `sqliteUpgradeDdl` drops. With `sync_row_scopes_by_row`
+ * present the planner answered a scope scan of two or more values by walking
+ * it in `row_id` order and filtering, instead of seeking the PRIMARY KEY once
+ * per value; the per-row scope replacement (`deleteSqliteRowScopesSql`)
+ * binds the full key and needs no secondary index.
+ */
+const SQLITE_DROPPED_INDEXES = ['sync_row_scopes_by_row'] as const;
+
+/**
+ * One statement that reads what `sqliteUpgradeDdl` needs: the columns of
+ * every table with added or dropped columns, and which added indexes exist.
+ */
+export const SQLITE_UPGRADE_PROBE: SqliteStatementSpec = {
+  sql: `SELECT t.value AS tbl, c.name AS name
+          FROM json_each(?) AS t, pragma_table_info(t.value) AS c
+        UNION ALL
+        SELECT '' AS tbl, name FROM sqlite_master
+         WHERE type='index' AND name IN (SELECT value FROM json_each(?))`,
+  params: [
+    JSON.stringify([
+      ...new Set(
+        [...SQLITE_ADDED_COLUMNS, ...SQLITE_DROPPED_COLUMNS].map(
+          ([table]) => table,
+        ),
+      ),
+    ]),
+    JSON.stringify([
+      ...SQLITE_ADDED_INDEXES.map(([name]) => name),
+      ...SQLITE_DROPPED_INDEXES,
+    ]),
+  ],
+};
+
+/**
+ * The statements that bring the core tables of a database from an earlier
+ * release to the current DDL, given the `SQLITE_UPGRADE_PROBE` rows: missing
+ * columns, dropped columns, dropped indexes, then missing indexes. Empty for
+ * a current database. Run after `SQLITE_DDL`: on every `SqliteServerStorage`
+ * construction, and on D1 in `migrate()`, the core phase of `migrateSchema`
+ * and the first open of a database at the current schema version.
+ */
+export function sqliteUpgradeDdl(
+  present: readonly { readonly tbl: string; readonly name: string }[],
+): string[] {
+  const has = (table: string, name: string) =>
+    present.some((row) => row.tbl === table && row.name === name);
+  return [
+    ...SQLITE_ADDED_COLUMNS.filter(([table, name]) => !has(table, name)).map(
+      ([table, name, definition]) =>
+        `ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`,
+    ),
+    ...SQLITE_DROPPED_COLUMNS.filter(([table, name]) => has(table, name)).map(
+      ([table, name]) => `ALTER TABLE ${table} DROP COLUMN ${name}`,
+    ),
+    ...SQLITE_DROPPED_INDEXES.filter((name) => has('', name)).map(
+      (name) => `DROP INDEX IF EXISTS ${name}`,
+    ),
+    ...SQLITE_ADDED_INDEXES.filter(([name]) => !has('', name)).map(
+      ([, ddl]) => ddl,
+    ),
+  ];
+}
 
 /** Split the DDL into individual statements (D1 applies them one by one). */
 export function sqliteDdlStatements(): string[] {
@@ -436,102 +534,6 @@ export function toStoredChange(record: SqliteChangeRecord): StoredChange {
   };
 }
 
-/**
- * One result row of `commitWindowPageSql` (candidate LEFT JOIN commit meta
- * LEFT JOIN changes): meta/change columns are NULL when the joined row
- * vanished (see the builder's LEFT JOIN contract). `payload` is a BLOB —
- * Native SQLite hands back `Uint8Array`, D1 `ArrayBuffer`; `toStoredChange`
- * normalizes via `asUint8Array`.
- */
-export interface SqliteCommitWindowRecord {
-  commit_seq: number;
-  actor_id: string | null;
-  created_at_ms: number | null;
-  tbl: string | null;
-  row_id: string | null;
-  op: number | null;
-  row_version: number | null;
-  scopes: string | null;
-  payload: Uint8Array | null;
-}
-
-/**
- * Fold one `commitWindowPageSql` page into commits, preserving the exact
- * semantics of the old per-candidate loop:
- *
- *   - rows arrive ordered (commit_seq, idx); consecutive rows with the same
- *     `commit_seq` are one candidate commit;
- *   - every candidate advances the cursor (`lastSeq`) — including vanished
- *     commits (NULL meta) and commits whose changes all fail the exact
- *     multi-variable scope verification (`matchesEffective`);
- *   - a commit is emitted only with its matching changes, in `idx` order;
- *   - stops after the commit that accumulates at least `remaining` matching
- *     changes (never splitting a commit).
- *
- * `candidateCount` counts the processed candidates so the caller can detect
- * a short page (window exhausted) exactly as it did with the old candidate
- * query.
- */
-export function collectCommitWindowPage(
-  records: readonly SqliteCommitWindowRecord[],
-  scopeFilter: ScopeMap,
-  remaining: number,
-): {
-  commits: StoredCommit[];
-  delivered: number;
-  lastSeq: number;
-  candidateCount: number;
-} {
-  const commits: StoredCommit[] = [];
-  let delivered = 0;
-  let lastSeq = 0;
-  let candidateCount = 0;
-  let i = 0;
-  while (i < records.length) {
-    const head = records[i];
-    if (head === undefined) break;
-    const seq = head.commit_seq;
-    candidateCount += 1;
-    lastSeq = seq;
-    const changes: StoredChange[] = [];
-    for (; i < records.length; i++) {
-      const record = records[i];
-      if (record === undefined || record.commit_seq !== seq) break;
-      // NULL tbl: a candidate with no change rows for the table (LEFT JOIN
-      // contract) — it still advanced the cursor above.
-      if (
-        record.tbl === null ||
-        record.row_id === null ||
-        record.op === null ||
-        record.scopes === null
-      ) {
-        continue;
-      }
-      const change = toStoredChange({
-        tbl: record.tbl,
-        row_id: record.row_id,
-        op: record.op,
-        row_version: record.row_version,
-        scopes: record.scopes,
-        payload: record.payload,
-      });
-      if (matchesEffective(change.scopes, scopeFilter)) changes.push(change);
-    }
-    // NULL meta: the commit vanished — cursor advanced, nothing emitted.
-    if (head.actor_id === null || head.created_at_ms === null) continue;
-    if (changes.length === 0) continue;
-    commits.push({
-      commitSeq: seq,
-      createdAtMs: head.created_at_ms,
-      actorId: head.actor_id,
-      changes,
-    });
-    delivered += changes.length;
-    if (delivered >= remaining) break;
-  }
-  return { commits, delivered, lastSeq, candidateCount };
-}
-
 interface SqliteReactionRecord {
   idempotency_key: string;
   type: string;
@@ -583,12 +585,18 @@ interface SqliteClientRecord {
   actor_id: string;
   wire_version: number;
   cursor: number;
-  subscriptions: string;
   updated_at_ms: number;
+  schema_version: number | null;
+  units: string | null;
+  registration_digest: Uint8Array | null;
+  catching_up: string;
   last_round_at_ms: number | null;
   last_error_code: string | null;
   consecutive_failures: number;
 }
+
+const CLIENT_RECORD_COLUMNS =
+  'client_id, actor_id, wire_version, cursor, updated_at_ms, schema_version, units, registration_digest, catching_up, last_round_at_ms, last_error_code, consecutive_failures';
 
 function toClientRecord(record: SqliteClientRecord): ClientRecord {
   return {
@@ -597,7 +605,18 @@ function toClientRecord(record: SqliteClientRecord): ClientRecord {
     wireVersion: record.wire_version,
     cursor: record.cursor,
     updatedAtMs: record.updated_at_ms,
-    subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
+    ...(record.schema_version !== null
+      ? { schemaVersion: record.schema_version }
+      : {}),
+    ...(record.units !== null && record.registration_digest !== null
+      ? {
+          registration: {
+            units: JSON.parse(record.units) as UnitScopes[],
+            digest: asUint8Array(record.registration_digest),
+          },
+        }
+      : {}),
+    catchingUp: JSON.parse(record.catching_up) as ClientRecord['catchingUp'],
     ...clientRoundState(
       record.last_round_at_ms,
       record.last_error_code,
@@ -1135,64 +1154,71 @@ export abstract class SqliteFamilyStorage {
 
   async latestScopedChangeSeq(
     partition: string,
-    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+    query: { readonly table: string; readonly scopes: UnitScopes },
   ): Promise<number> {
-    const firstVariable = Object.keys(query.scopeFilter).sort()[0];
-    const values =
-      firstVariable === undefined
-        ? []
-        : (query.scopeFilter[firstVariable] ?? []);
-    if (firstVariable === undefined || values.length === 0) return 0;
+    const variable = Object.keys(query.scopes).sort()[0];
+    const value = variable === undefined ? undefined : query.scopes[variable];
+    if (variable === undefined || value === undefined) return 0;
+    // One index-only max over the (partition, tbl, var, value) prefix.
     const [row] = await this.guardedAll<{ seq: number | null }>(
-      LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
-      [partition, query.table, firstVariable, JSON.stringify(values)],
+      'SELECT max(commit_seq) AS seq FROM sync_change_scopes WHERE partition=? AND tbl=? AND var=? AND value=?',
+      [partition, query.table, variable, value],
     );
     return row?.seq ?? 0;
   }
 
-  async readCommitWindow(
+  readLiveWindow(
     partition: string,
-    query: CommitWindowQuery,
-  ): Promise<StoredCommit[]> {
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
-    // Candidates via the inverted index (one variable) LEFT JOINed to the
-    // commit meta + the table's changes — one statement per page, never two
-    // per candidate (see `commitWindowPageSql`). Exact multi-variable
-    // verification against the stored scope map in `collectCommitWindowPage`.
-    const sql = commitWindowPageSql(firstValues.length, 'sqlite');
-    const commits: StoredCommit[] = [];
-    let deliveredChanges = 0;
-    let afterSeq = query.afterSeq;
-    const batchSize = Math.max(64, query.limitChanges);
-    while (deliveredChanges < query.limitChanges) {
-      const records = await this.guardedAll<SqliteCommitWindowRecord>(sql, [
-        partition,
-        query.table,
-        firstVariable,
-        JSON.stringify(firstValues),
-        afterSeq,
-        query.throughSeq,
-        batchSize,
-        partition,
-        partition,
-        query.table,
-      ]);
-      if (records.length === 0) break;
-      const page = collectCommitWindowPage(
-        records,
-        query.scopeFilter,
-        query.limitChanges - deliveredChanges,
-      );
-      commits.push(...page.commits);
-      deliveredChanges += page.delivered;
-      afterSeq = page.lastSeq;
-      if (page.candidateCount < batchSize) break;
-    }
-    return commits;
+    query: LiveWindowQuery,
+  ): Promise<LiveWindow> {
+    // One statement per page: the unit keys bind as one JSON array, and the
+    // CROSS JOIN keeps them the outer loop, so each key seeks one range of
+    // `sync_change_scopes_by_key` (INDEXED BY fails loudly when the index is
+    // missing). The candidates LEFT JOIN the commit meta and every change of
+    // the commit; a candidate whose commit vanished comes back with NULL
+    // meta and still advances the scan.
+    return readLiveWindowPages(query, async (keys, limit) =>
+      (
+        await this.guardedAll<{
+          commit_seq: number;
+          actor_id: string | null;
+          created_at_ms: number | null;
+          tbl: string | null;
+          row_id: string;
+          op: number;
+          row_version: number | null;
+          scopes: string;
+          payload: Uint8Array | null;
+        }>(
+          `SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
+             ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
+           FROM (SELECT DISTINCT s.commit_seq AS commit_seq
+               FROM json_each(?2) AS k
+               CROSS JOIN sync_change_scopes AS s INDEXED BY sync_change_scopes_by_key
+                 ON s.partition=?1 AND s.var=json_extract(k.value, '$.var')
+                AND s.value=json_extract(k.value, '$.value')
+                AND s.commit_seq>json_extract(k.value, '$.after') AND s.commit_seq<=?3
+               ORDER BY s.commit_seq LIMIT ?4) AS c
+           LEFT JOIN sync_commits AS m ON m.partition=?1 AND m.commit_seq=c.commit_seq
+           LEFT JOIN sync_changes AS ch ON ch.partition=?1 AND ch.commit_seq=c.commit_seq
+           ORDER BY c.commit_seq, ch.idx`,
+          [partition, JSON.stringify(keys), query.throughSeq, limit],
+        )
+      ).map((record) => ({
+        commitSeq: record.commit_seq,
+        ...(record.actor_id !== null && record.created_at_ms !== null
+          ? {
+              meta: {
+                actorId: record.actor_id,
+                createdAtMs: record.created_at_ms,
+              },
+            }
+          : {}),
+        ...(record.tbl !== null
+          ? { change: toStoredChange({ ...record, tbl: record.tbl }) }
+          : {}),
+      })),
+    );
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
@@ -1262,7 +1288,7 @@ export abstract class SqliteFamilyStorage {
     clientId: string,
   ): Promise<ClientRecord | undefined> {
     const [record] = await this.all<SqliteClientRecord>(
-      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? AND client_id=?',
+      `SELECT ${CLIENT_RECORD_COLUMNS} FROM sync_clients WHERE partition=? AND client_id=?`,
       [partition, clientId],
     );
     return record === undefined ? undefined : toClientRecord(record);
@@ -1274,17 +1300,26 @@ export abstract class SqliteFamilyStorage {
     options?: ClientRecordWriteOptions,
   ): Promise<void> {
     // One row per (partition, client_id): every non-key field is written
-    // from the new record. `keepRoundOutcome` leaves the round-state columns
-    // alone (§1.5, §4.5).
+    // from the new record, except the registration list and digest, which
+    // only a traveling list replaces (§4.5). `keepRoundOutcome` leaves the
+    // round-state columns alone (§1.5, §4.5).
+    const registration = record.registration;
     await this.all(
-      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)
+      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, updated_at_ms, last_round_at_ms, schema_version, units, registration_digest, catching_up) VALUES (?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(partition, client_id) DO UPDATE SET
          actor_id=excluded.actor_id,
          wire_version=excluded.wire_version,
          cursor=excluded.cursor,
-         subscriptions=excluded.subscriptions,
          updated_at_ms=excluded.updated_at_ms,
-         last_round_at_ms=excluded.last_round_at_ms${
+         last_round_at_ms=excluded.last_round_at_ms,
+         schema_version=excluded.schema_version,${
+           registration === undefined
+             ? ''
+             : `
+         units=excluded.units,
+         registration_digest=excluded.registration_digest,`
+         }
+         catching_up=excluded.catching_up${
            options?.keepRoundOutcome === true
              ? ''
              : `,
@@ -1297,9 +1332,12 @@ export abstract class SqliteFamilyStorage {
         record.actorId,
         record.wireVersion,
         record.cursor,
-        JSON.stringify(record.subscriptions),
         record.updatedAtMs,
         record.updatedAtMs,
+        record.schemaVersion ?? null,
+        registration === undefined ? null : JSON.stringify(registration.units),
+        registration?.digest ?? null,
+        JSON.stringify(record.catchingUp),
       ],
     );
   }
@@ -1328,27 +1366,19 @@ export abstract class SqliteFamilyStorage {
     cursor: number,
     updatedAtMs: number,
   ): Promise<void> {
+    // §8.2: the ack never raises the record cursor above a catching-up
+    // unit's cursor, so pruning keeps that unit's history (§4.6).
     await this.all(
       `UPDATE sync_clients
-       SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
+       SET cursor=MAX(cursor, MIN(?, coalesce((
+             SELECT min(json_extract(u.value, '$.cursor'))
+               FROM json_each(sync_clients.catching_up) AS u
+              WHERE json_extract(u.value, '$.cursor')>=0), ?))),
+           updated_at_ms=MAX(updated_at_ms, ?)
        WHERE partition=? AND client_id=? AND actor_id=?
          AND EXISTS (SELECT 1 FROM sync_partition_registry
                      WHERE partition=sync_clients.partition AND log_epoch=?)`,
-      [cursor, updatedAtMs, partition, clientId, actorId, logEpoch],
-    );
-  }
-
-  async updateClientCursor(
-    partition: string,
-    clientId: string,
-    cursor: number,
-    updatedAtMs: number,
-  ): Promise<void> {
-    await this.all(
-      `UPDATE sync_clients
-       SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
-       WHERE partition=? AND client_id=?`,
-      [cursor, updatedAtMs, partition, clientId],
+      [cursor, cursor, updatedAtMs, partition, clientId, actorId, logEpoch],
     );
   }
 
@@ -1492,7 +1522,7 @@ export abstract class SqliteFamilyStorage {
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
     return (
       await this.all<SqliteClientRecord>(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
+        `SELECT ${CLIENT_RECORD_COLUMNS} FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC`,
         [partition],
       )
     ).map(toClientRecord);
@@ -1701,16 +1731,39 @@ export abstract class SqliteFamilyStorage {
     }));
   }
 
+  async listPushWatermarks(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<PushWatermark[]> {
+    // The clients come from the retained commit log, which has no index on
+    // `client_commit_id`; the read is bounded by retention (§4.6).
+    return (
+      await this.all<{
+        client_id: string;
+        outbox_id: string;
+        through_seq: number;
+      }>(
+        `SELECT client_id, outbox_id, through_seq FROM sync_push_watermarks
+          WHERE partition=? AND client_id IN (
+            SELECT client_id FROM sync_commits WHERE partition=? AND client_commit_id=?)
+          ORDER BY client_id, outbox_id`,
+        [partition, partition, clientCommitId],
+      )
+    ).map((row) => ({
+      clientId: row.client_id,
+      outboxId: row.outbox_id,
+      throughSeq: row.through_seq,
+    }));
+  }
+
   async scopeActivity(
     partition: string,
     query: ScopeActivityQuery,
   ): Promise<ScopeCommitActivity[]> {
     // One statement for the page: candidate (commit, table) pairs from the
-    // change-scope index, joined to the commit metadata with the table's
-    // change count. `tbl` sits between `partition` and `var` in the index key,
-    // so the `var`/`value` filter ranges over the partition's change-scope
-    // entries; only the LIMIT bounds the output. A candidate whose commit was
-    // pruned has no metadata and is skipped.
+    // `sync_change_scopes_by_key` range of the key, newest first, joined to
+    // the commit metadata with the table's change count. A candidate whose
+    // commit was pruned has no metadata and is skipped.
     return (
       await this.all<{
         commit_seq: number;
@@ -1931,12 +1984,106 @@ export abstract class SqliteFamilyTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<void> {
     this.assertOpen();
     this.run(
-      'INSERT OR IGNORE INTO sync_push_results(partition, client_id, client_commit_id, result) VALUES (?,?,?,?)',
-      [this.partition, clientId, clientCommitId, serializePushResult(result)],
+      'INSERT OR IGNORE INTO sync_push_results(partition, client_id, client_commit_id, result, outbox_id, client_seq) VALUES (?,?,?,?,?,?)',
+      [
+        this.partition,
+        clientId,
+        clientCommitId,
+        serializePushResult(result),
+        sequence?.outboxId ?? null,
+        sequence?.clientSeq ?? null,
+      ],
     );
+  }
+
+  /**
+   * The §9 settlement and §6.3.2 steps 1 and 2 for one request, then the
+   * idempotency read of its first commit. The reads run before the writes,
+   * so D1, which buffers the writes until commit, answers exactly as SQLite:
+   * the first commit's result counts as deleted when the writes delete it.
+   */
+  protected async settleOutbox(
+    clientId: string,
+    clientCommitId: string,
+    outbox: OutboxSettlement,
+  ): Promise<{
+    readonly watermark: number;
+    readonly persisted: StoredPushResult | undefined;
+  }> {
+    const first = outbox.commits[0];
+    const last = outbox.commits.at(-1);
+    if (
+      first === undefined ||
+      last === undefined ||
+      first.clientCommitId !== clientCommitId
+    ) {
+      throw new Error("outbox settlement rides the request's first commit");
+    }
+    const p = this.partition;
+    const [state] = await this.all<{
+      stored: number | null;
+      last_sequenceless: number;
+      result: string | null;
+      outbox_id: string | null;
+      client_seq: number | null;
+    }>(
+      `SELECT (SELECT through_seq FROM sync_push_watermarks
+                WHERE partition=?1 AND client_id=?2 AND outbox_id=?3) AS stored,
+              EXISTS (SELECT 1 FROM sync_push_results WHERE partition=?1
+                AND client_id=?2 AND client_commit_id=?5 AND outbox_id IS NULL) AS last_sequenceless,
+              r.result AS result, r.outbox_id AS outbox_id, r.client_seq AS client_seq
+         FROM (SELECT 1) LEFT JOIN sync_push_results AS r
+           ON r.partition=?1 AND r.client_id=?2 AND r.client_commit_id=?4`,
+      [p, clientId, outbox.outboxId, first.clientCommitId, last.clientCommitId],
+    );
+    const watermark = Math.max(state?.stored ?? 0, first.clientSeq);
+    const commits = JSON.stringify(
+      outbox.commits.map((commit) => [commit.clientCommitId, commit.clientSeq]),
+    );
+    // §9 (b), then (a): with no pre-upgrade result on the request's last
+    // commit, every remaining one outside the request left the outbox.
+    if (state?.last_sequenceless !== 1) {
+      this.run(
+        `DELETE FROM sync_push_results
+          WHERE partition=? AND client_id=? AND outbox_id IS NULL
+            AND client_commit_id NOT IN (SELECT json_extract(value, '$[0]') FROM json_each(?))`,
+        [p, clientId, commits],
+      );
+    }
+    this.run(
+      `UPDATE sync_push_results SET outbox_id=?3, client_seq=(
+         SELECT json_extract(c.value, '$[1]') FROM json_each(?4) AS c
+          WHERE json_extract(c.value, '$[0]')=sync_push_results.client_commit_id)
+        WHERE partition=?1 AND client_id=?2 AND outbox_id IS NULL
+          AND client_commit_id IN (SELECT json_extract(value, '$[0]') FROM json_each(?4))`,
+      [p, clientId, outbox.outboxId, commits],
+    );
+    // §6.3.2 steps 1 and 2.
+    this.run(
+      `INSERT INTO sync_push_watermarks(partition, client_id, outbox_id, through_seq) VALUES (?,?,?,?)
+       ON CONFLICT(partition, client_id, outbox_id) DO UPDATE SET through_seq=max(through_seq, excluded.through_seq)`,
+      [p, clientId, outbox.outboxId, watermark],
+    );
+    this.run(
+      'DELETE FROM sync_push_results WHERE partition=? AND client_id=? AND outbox_id=? AND client_seq<?',
+      [p, clientId, outbox.outboxId, watermark],
+    );
+    const deleted =
+      first.clientSeq < watermark &&
+      (state?.outbox_id === null ||
+        (state?.outbox_id === outbox.outboxId &&
+          (state.client_seq ?? 0) < watermark));
+    return {
+      watermark,
+      persisted:
+        state?.result === null || state?.result === undefined || deleted
+          ? undefined
+          : deserializePushResult(state.result),
+    };
   }
 
   async enqueueReactions(reactions: readonly NewReaction[]): Promise<void> {

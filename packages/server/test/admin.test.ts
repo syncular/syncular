@@ -4,7 +4,9 @@
  * what the console will show. No HTTP, no sockets.
  */
 import { describe, expect, test } from 'bun:test';
+import { registrationDigest, unitId } from '@syncular/core';
 import {
+  compileSchema,
   createRealtimeHub,
   type LeaseStore,
   type MemoryBlobStore,
@@ -13,7 +15,7 @@ import {
   S3SegmentStore,
   type SegmentMetadata,
   SqliteBlobStore,
-  type SqliteServerStorage,
+  SqliteServerStorage,
   SyncularAdmin,
 } from '@syncular/server';
 import {
@@ -26,6 +28,7 @@ import {
   sync,
   type TestContext,
   taskRow,
+  TEST_SCHEMA,
   upsert,
 } from './helpers';
 import { startS3Stub } from './s3-stub';
@@ -68,11 +71,58 @@ describe('listClients', () => {
     expect(client?.cursor).toBe(1);
     expect(client?.lag).toBe(0);
     expect(client?.active).toBe(true);
-    expect(client?.subscriptions[0]).toMatchObject({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
+    expect(client?.units).toEqual([
+      { id: unitId({ project_id: 'p1' }), scopes: { project_id: 'p1' } },
+    ]);
+  });
+
+  test('reports units with the cursors of those still catching up', async () => {
+    const storage = new SqliteServerStorage();
+    const units = [{ project_id: 'p1' }, { project_id: 'p2' }];
+    await storage.putClientRecord('part-1', {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 4,
+      cursor: 3,
+      updatedAtMs: 1_000,
+      schemaVersion: 2,
+      registration: { units, digest: registrationDigest(units) },
+      catchingUp: [{ id: unitId({ project_id: 'p2' }), cursor: 3 }],
     });
+    await storage.putClientRecord('part-1', {
+      clientId: 'client-2',
+      actorId: 'actor-1',
+      wireVersion: 3,
+      cursor: 1,
+      updatedAtMs: 1_000,
+      catchingUp: [],
+    });
+    const { clients } = await new SyncularAdmin({
+      storage,
+      clock: () => 1_000,
+    }).listClients('part-1');
+    expect(
+      clients.map(({ clientId, schemaVersion, units }) => ({
+        clientId,
+        schemaVersion,
+        units,
+      })),
+    ).toEqual([
+      {
+        clientId: 'client-1',
+        schemaVersion: 2,
+        units: [
+          { id: unitId({ project_id: 'p1' }), scopes: { project_id: 'p1' } },
+          {
+            id: unitId({ project_id: 'p2' }),
+            scopes: { project_id: 'p2' },
+            catchingUpCursor: 3,
+          },
+        ],
+      },
+      // §9: a record from before wire version 4 holds no list.
+      { clientId: 'client-2', schemaVersion: undefined, units: [] },
+    ]);
   });
 
   test('lag counts commits the client has not pulled', async () => {
@@ -521,8 +571,8 @@ describe('traceRow', () => {
     expect((await trace('t1')).verdict).toBe('delivered');
     const mismatch = await trace('t2');
     expect(mismatch.verdict).toBe('scope-mismatch');
-    expect(mismatch.subscriptions[0]?.mismatches).toEqual([
-      { variable: 'project_id', rowValue: 'p2', requested: ['p1'] },
+    expect(mismatch.units[0]?.mismatches).toEqual([
+      { variable: 'project_id', rowValue: 'p2', requested: 'p1' },
     ]);
 
     await sync(
@@ -548,7 +598,7 @@ describe('traceRow', () => {
     });
     expect(trace.verdict).toBe('scope-denied');
     expect(trace.allowed).toEqual({ project_id: ['p2'] });
-    expect(trace.subscriptions[0]).toMatchObject({
+    expect(trace.units[0]).toMatchObject({
       requestedMatch: true,
       effectiveMatch: false,
     });
@@ -854,6 +904,43 @@ describe('people, delivery, search', () => {
     expect(scoped.rows.map((row) => row.rowId)).toEqual(['t2']);
     expect(scoped.nextAfterRowId).toBeUndefined();
     expect((await admin.tableCounts('part-1')).tasks).toBe(2);
+  });
+
+  test('findWrite reports the watermark of a write whose result it deleted', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+    for (const [clientCommitId, clientSeq] of [
+      ['k1', 1],
+      ['k2', 2],
+    ] as const) {
+      const tx = await storage.begin('part-1');
+      await tx.preparePushApply('client-1', clientCommitId, 1, [], {
+        outboxId: 'o1',
+        commits: [{ clientCommitId, clientSeq }],
+      });
+      const commitSeq = await tx.appendCommit({
+        clientId: 'client-1',
+        clientCommitId,
+        actorId: 'actor-1',
+        createdAtMs: 1,
+        changes: [],
+      });
+      await tx.putPushResult(
+        'client-1',
+        clientCommitId,
+        { status: 'applied', commitSeq, results: [] },
+        { outboxId: 'o1', clientSeq },
+      );
+      await tx.commit();
+    }
+    const admin = new SyncularAdmin({ storage, clock: () => 1 });
+    expect(await admin.findWrite('part-1', 'k1')).toEqual({
+      clientCommitId: 'k1',
+      outcomes: [],
+      watermarks: [{ clientId: 'client-1', outboxId: 'o1', throughSeq: 2 }],
+      events: [],
+    });
+    expect((await admin.findWrite('part-1', 'k2')).watermarks).toEqual([]);
   });
 
   test('findWrite returns a rejected outcome with its per-operation code', async () => {

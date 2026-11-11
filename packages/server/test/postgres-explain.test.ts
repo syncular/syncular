@@ -1,10 +1,9 @@
 /**
  * The scan-before-LIMIT regression guard: scope fanout on Postgres must
  * never scan the commit log before applying LIMIT. This test asserts, via `EXPLAIN`, that the candidate-selection
- * queries behind `readCommitWindow` and `scanRows` are driven by the
- * inverted-scope-index PRIMARY KEY — an `Index`/`Index Only Scan` node, never
- * a `Seq Scan` on the scope tables — so the regression cannot silently
- * return.
+ * queries behind `readLiveWindow` and `scanRows` are driven by the
+ * inverted scope indexes — an `Index`/`Index Only Scan` node, never a
+ * `Seq Scan` on the scope tables — so the regression cannot silently return.
  *
  * We seed enough rows across enough scope values that the planner has a real
  * choice, and additionally pin the intent with `SET LOCAL enable_seqscan =
@@ -17,8 +16,6 @@ import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { encodeRow, type RowColumn } from '@syncular/core';
 import {
-  COMMIT_WINDOW_BATCH_SQL,
-  commitWindowPageSql,
   compileSchema,
   indexRowPageStatement,
   PostgresServerStorage,
@@ -113,22 +110,44 @@ async function explain(
   return result.rows.map((r) => r['QUERY PLAN']).join('\n');
 }
 
-test('readCommitWindow page scan is index-driven (no Seq Scan)', async () => {
+test('readLiveWindow ranges the key index once per unit (no Seq Scan)', async () => {
   const { db } = await seededStorage();
-  // The real page query (candidate subquery + commit-meta + changes LEFT
-  // JOINs): the candidate side must stay an index range on the
-  // sync_change_scopes PK, and both join sides must hit their (partition,
-  // commit_seq[, …]) indexes — never a scan of the log.
-  const plan = await explain(db, commitWindowPageSql(1, 'postgres'), [
+  // The real page query, captured from the storage: one index range of
+  // sync_change_scopes_by_key per unit key, and both join sides on their
+  // (partition, commit_seq[, …]) indexes, never a scan of the log.
+  const exec = pgliteExecutor(db);
+  const texts: string[] = [];
+  const storage = new PostgresServerStorage({
+    query: (text, params) => {
+      texts.push(text);
+      return exec.query(text, params);
+    },
+    transaction: (fn) => exec.transaction(fn),
+  });
+  const units = ['p3', 'p4', 'p5'].map((project) => ({
+    scopes: { project_id: project },
+    afterSeq: 0,
+    tables: new Map([['tasks', { project_id: [project] }]]),
+  }));
+  await storage.readLiveWindow(PARTITION, {
+    units,
+    throughSeq: ROWS,
+    limitChanges: 64,
+  });
+  expect(texts).toHaveLength(1);
+  const plan = await explain(db, texts[0]!, [
     PARTITION,
-    'tasks',
-    'project_id',
-    'p3',
-    0,
+    JSON.stringify(
+      units.map((unit) => ({
+        var: 'project_id',
+        value: unit.scopes.project_id,
+        after: 0,
+      })),
+    ),
     ROWS,
     64,
   ]);
-  expect(plan).toContain('Index');
+  expect(plan).toContain('Index Only Scan using sync_change_scopes_by_key');
   expect(plan).not.toContain('Seq Scan on sync_change_scopes');
   expect(plan).not.toContain('Seq Scan on sync_commits');
   expect(plan).not.toContain('Seq Scan on sync_changes');
@@ -153,38 +172,6 @@ test('scanRows page scan is index-driven (no Seq Scan)', async () => {
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');
   expect(plan).not.toContain('Seq Scan on tasks');
-  await db.close();
-});
-
-test('batched readCommitWindow pages stay index-driven per subscription', async () => {
-  const { db } = await seededStorage();
-  const plan = await explain(db, COMMIT_WINDOW_BATCH_SQL, [
-    PARTITION,
-    JSON.stringify([
-      {
-        i: 0,
-        tbl: 'tasks',
-        var: 'project_id',
-        vals: ['p3'],
-        after: 0,
-        through: ROWS,
-        lim: 64,
-      },
-      {
-        i: 1,
-        tbl: 'tasks',
-        var: 'project_id',
-        vals: ['p4', 'p5'],
-        after: 9,
-        through: ROWS,
-        lim: 64,
-      },
-    ]),
-  ]);
-  expect(plan).toContain('Index');
-  expect(plan).not.toContain('Seq Scan on sync_change_scopes');
-  expect(plan).not.toContain('Seq Scan on sync_commits');
-  expect(plan).not.toContain('Seq Scan on sync_changes');
   await db.close();
 });
 

@@ -78,9 +78,10 @@ import {
   type SqliteStatementSpec,
   SqliteFamilyStorage,
   SqliteFamilyTransaction,
-  SQLITE_ADDED_COLUMNS,
   type SqliteTombstoneRecord,
   sqliteDdlStatements,
+  SQLITE_UPGRADE_PROBE,
+  sqliteUpgradeDdl,
   toStoredRow,
   toTombstone,
 } from './sqlite-dialect';
@@ -93,6 +94,8 @@ import type {
   CommitPruneResult,
   IndexRowScanQuery,
   NewCommit,
+  OutboxSequence,
+  OutboxSettlement,
   PreparedPushApply,
   RowScanQuery,
   ScopeValueHistoryQuery,
@@ -528,6 +531,7 @@ class D1Transaction
       readonly table: string;
       readonly rowIds: readonly string[];
     }[] = [],
+    outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply> {
     this.assertOpen();
     if (!this.#pushApplySerialized) {
@@ -537,11 +541,17 @@ class D1Transaction
     }
     // D1 has no interactive lock. The caller explicitly asserted that every
     // write for this partition is already serialized (normally by its DO).
+    // The settlement's writes sit below the checkpoint, so a rejection keeps
+    // them.
+    const settled =
+      outbox === undefined
+        ? undefined
+        : await this.settleOutbox(clientId, clientCommitId, outbox);
     this.#pushApplyCheckpoint = this.#buffer.length;
-    return {
-      gate: await this.readServeGate(runningSchemaVersion),
-      persisted: await this.getPushResult(clientId, clientCommitId),
-    };
+    const gate = await this.readServeGate(runningSchemaVersion);
+    return settled === undefined
+      ? { gate, persisted: await this.getPushResult(clientId, clientCommitId) }
+      : { gate, ...settled };
   }
 
   advanceCheckpoint(
@@ -573,6 +583,7 @@ class D1Transaction
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<StoredPushResult> {
     this.assertOpen();
     const checkpoint = this.#pushApplyCheckpoint;
@@ -584,7 +595,7 @@ class D1Transaction
     this.#clearedTombstones.clear();
     this.#maxCommitSeq = undefined;
     this.#applicationOpIndexes.clear();
-    await this.putPushResult(clientId, clientCommitId, result);
+    await this.putPushResult(clientId, clientCommitId, result, sequence);
     await this.commit();
     // The idempotency re-check found no record under the serialized apply, so
     // the insert above is the canonical outcome.
@@ -794,6 +805,7 @@ const D1_CORE_TABLES = [
   'sync_changes',
   'sync_change_scopes',
   'sync_push_results',
+  'sync_push_watermarks',
   'sync_reactions',
   'sync_clients',
   'sync_blob_refs',
@@ -840,9 +852,9 @@ export class D1ServerStorage
   protected readonly maxBindParams = 100;
   /**
    * Page reads waiting for the end of the current microtask turn. A pull
-   * starts the window read (or first snapshot page) of every subscription
+   * starts the first snapshot page and scope pin of every bootstrapping unit
    * before awaiting any of them, so they leave as ONE `db.batch` round trip
-   * instead of one per subscription (SYNCULAR-PULL-ROUNDTRIPS-001).
+   * instead of one per unit (SYNCULAR-PULL-ROUNDTRIPS-001).
    */
   #pendingReads: PendingReads | undefined;
 
@@ -924,33 +936,18 @@ export class D1ServerStorage
     for (const statement of sqliteDdlStatements()) {
       await this.#db.exec(`${statement.replace(/\s+/g, ' ')};`);
     }
-    for (const sql of await this.#addedColumnDdl()) {
+    for (const sql of await this.#upgradeDdl()) {
       await this.#db.exec(`${sql};`);
     }
   }
 
-  /**
-   * `ALTER TABLE` statements for the `SQLITE_ADDED_COLUMNS` this database
-   * lacks, read in one statement.
-   */
-  async #addedColumnDdl(): Promise<string[]> {
+  /** `sqliteUpgradeDdl` for this database, read in one statement. */
+  async #upgradeDdl(): Promise<string[]> {
     const { results } = await this.#db
-      .prepare(
-        'SELECT t.value AS tbl, c.name AS name FROM json_each(?) AS t, pragma_table_info(t.value) AS c',
-      )
-      .bind(
-        JSON.stringify([
-          ...new Set(SQLITE_ADDED_COLUMNS.map(([table]) => table)),
-        ]),
-      )
+      .prepare(SQLITE_UPGRADE_PROBE.sql)
+      .bind(...SQLITE_UPGRADE_PROBE.params)
       .all<{ tbl: string; name: string }>();
-    return SQLITE_ADDED_COLUMNS.filter(
-      ([table, name]) =>
-        !results.some((column) => column.tbl === table && column.name === name),
-    ).map(
-      ([table, name, definition]) =>
-        `ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`,
-    );
+    return sqliteUpgradeDdl(results);
   }
 
   async ensureSchema(
@@ -1070,9 +1067,11 @@ export class D1ServerStorage
           'sqlite',
         );
       }
-      // A database from before a core-table column gains it in place.
+      // A database from an earlier release gains the core-table columns and
+      // indexes it lacks in place, and loses the columns wire version 4
+      // deleted.
       statementsExecuted++;
-      const added = await this.#addedColumnDdl();
+      const added = await this.#upgradeDdl();
       if (added.length > 0) {
         await batch(added.map((sql) => this.#db.prepare(sql)));
       }
@@ -1211,7 +1210,7 @@ export class D1ServerStorage
         // The column read, the checkpoint pair, and every missing column.
         if (remaining < 4) break;
         statementsExecuted++;
-        const added = await this.#addedColumnDdl();
+        const added = await this.#upgradeDdl();
         if (remaining < 3 + added.length) break;
         if (
           !(await save(

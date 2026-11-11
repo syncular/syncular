@@ -79,10 +79,10 @@ export async function runServerSqliteContract(runtime: Runtime): Promise<void> {
     await storage.putClientRecord('hospital', {
       clientId: 'worker',
       actorId: 'system',
-      wireVersion: 3,
+      wireVersion: 4,
       cursor: 0,
       updatedAtMs: 1,
-      subscriptions: [],
+      catchingUp: [],
     });
     await storage.advanceClientCursor(
       'hospital',

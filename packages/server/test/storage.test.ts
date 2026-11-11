@@ -6,14 +6,16 @@
  * reference key-for-key (index-first fanout, dense commitSeq, §4.6 horizon).
  */
 
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { PGlite } from '@electric-sql/pglite';
 import {
   decodeRow,
   decodeRowsSegment,
   encodeRow,
+  registrationDigest,
   type SegmentInlineFrame,
+  unitId,
 } from '@syncular/core';
 import {
   compileSchema,
@@ -35,6 +37,7 @@ import { pgliteExecutor } from '@syncular/server/pglite';
 import { BunSqliteDatabase, SqliteLeaseStore } from '@syncular/server/sqlite';
 import { StorageConstraintError } from '../src/storage-errors';
 import { D1DatabaseDouble } from './d1-double';
+import { BunSQL, bunSqlExecutor, PG_URL } from './pg-real';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
 import {
@@ -240,6 +243,27 @@ runStorageContract('postgres/pglite', async () => {
   await storage.migrate();
   return storage;
 });
+
+// A real PostgreSQL at SYNCULAR_PG_URL: one pool, the schema reset per test.
+const realPg =
+  PG_URL === undefined || BunSQL === undefined ? undefined : new BunSQL(PG_URL);
+async function resetRealPg(): Promise<PostgresServerStorage> {
+  await realPg.unsafe('DROP SCHEMA public CASCADE');
+  await realPg.unsafe('CREATE SCHEMA public');
+  return new PostgresServerStorage(bunSqlExecutor(realPg));
+}
+if (realPg !== undefined) {
+  // Leave the shared database empty for the next test file.
+  afterAll(async () => {
+    await resetRealPg();
+    await realPg.end();
+  });
+  runStorageContract('postgres/real', async () => {
+    const storage = await resetRealPg();
+    await storage.migrate();
+    return storage;
+  });
+}
 
 // D1 (Cloudflare Workers) against the local bun:sqlite-backed double
 // (test/d1-double.ts documents its fidelity limits). Same contract, so the
@@ -545,45 +569,204 @@ test('Postgres migrates legacy client records to wire version 1', async () => {
   await db.close();
 });
 
-for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+/**
+ * The 0.59.0 (wire version 3) shape of the tables wire version 4 changed;
+ * `BIGINT`/`JSON` become the 0.59.0 Postgres types, `INTEGER`/`TEXT` stay
+ * the SQLite ones.
+ */
+const wireV3Ddl = (bigint: string, json: string) => [
+  `CREATE TABLE sync_push_results(
+    partition TEXT NOT NULL, client_id TEXT NOT NULL,
+    client_commit_id TEXT NOT NULL, result ${json} NOT NULL,
+    PRIMARY KEY(partition, client_id, client_commit_id))`,
+  `CREATE TABLE sync_clients(
+    partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+    wire_version INTEGER NOT NULL DEFAULT 1,
+    cursor ${bigint} NOT NULL, subscriptions ${json} NOT NULL,
+    updated_at_ms ${bigint} NOT NULL,
+    last_round_at_ms ${bigint}, last_error_code TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(partition, client_id))`,
+];
+
+const WIRE_V3_ROWS = [
+  `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms)
+   VALUES ('part', 'c1', 'a1', 3, 7, '[{"id":"s1","table":"tasks","scopes":{"project_id":["p1"]}}]', 10)`,
+  `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result)
+   VALUES ('part', 'c1', 'k1', '{"status":"applied","commitSeq":1,"results":[]}')`,
+];
+
+/** Columns and indexes of every table, independent of column order. */
+async function catalog(
+  read: (sql: string) => Promise<readonly unknown[]>,
+  dialect: 'sqlite' | 'postgres',
+): Promise<unknown[]> {
+  return dialect === 'sqlite'
+    ? [
+        ...(await read(
+          `SELECT m.name AS tbl, c.name, c.type, c."notnull", c.dflt_value, c.pk
+             FROM sqlite_master AS m, pragma_table_info(m.name) AS c
+            WHERE m.type='table' ORDER BY m.name, c.name`,
+        )),
+        ...(await read(
+          `SELECT type, name, tbl_name, CASE WHEN type='index' THEN sql END AS sql
+             FROM sqlite_master WHERE type<>'table' ORDER BY name`,
+        )),
+      ]
+    : [
+        ...(await read(
+          `SELECT table_name, column_name, data_type, is_nullable, column_default
+             FROM information_schema.columns WHERE table_schema=current_schema()
+            ORDER BY table_name, column_name`,
+        )),
+        ...(await read(
+          `SELECT tablename, indexname, indexdef FROM pg_indexes
+            WHERE schemaname=current_schema() ORDER BY indexname`,
+        )),
+      ];
+}
+
+for (const backend of [
+  'sqlite',
+  'postgres',
+  'd1',
+  ...(realPg === undefined ? [] : (['postgres/real'] as const)),
+] as const) {
+  test(`${backend} migrates a wire version 3 database to the fresh schema`, async () => {
+    const open = async (seed: boolean) => {
+      if (backend === 'postgres/real') {
+        const storage = await resetRealPg();
+        if (seed) {
+          for (const sql of [...wireV3Ddl('BIGINT', 'JSONB'), ...WIRE_V3_ROWS])
+            await realPg.unsafe(sql);
+        }
+        await storage.migrate();
+        return {
+          storage,
+          read: async (sql: string) => realPg.unsafe(sql),
+          close: () => {},
+        };
+      }
+      if (backend === 'postgres') {
+        const db = await PGlite.create();
+        if (seed) {
+          for (const sql of [...wireV3Ddl('BIGINT', 'JSONB'), ...WIRE_V3_ROWS])
+            await db.exec(sql);
+        }
+        const storage = new PostgresServerStorage(pgliteExecutor(db));
+        await storage.migrate();
+        return {
+          storage,
+          read: async (sql: string) => (await db.query(sql)).rows,
+          close: () => db.close(),
+        };
+      }
+      if (backend === 'd1') {
+        const db = new D1DatabaseDouble();
+        if (seed) {
+          for (const sql of [...wireV3Ddl('INTEGER', 'TEXT'), ...WIRE_V3_ROWS])
+            await db.exec(sql);
+        }
+        const storage = new D1ServerStorage(db, { pushApplySerialized: true });
+        await storage.migrate();
+        await prepareD1(storage);
+        return {
+          storage,
+          read: async (sql: string) => (await db.prepare(sql).all()).results,
+          close: () => {},
+        };
+      }
+      const db = new BunSqliteDatabase();
+      if (seed) {
+        for (const sql of [...wireV3Ddl('INTEGER', 'TEXT'), ...WIRE_V3_ROWS])
+          db.exec(sql);
+      }
+      const storage = new SqliteServerStorage(db);
+      return {
+        storage,
+        read: async (sql: string) => db.query(sql).all(),
+        close: () => db.close(),
+      };
+    };
+    const dialect = backend.startsWith('postgres') ? 'postgres' : 'sqlite';
+    // The fresh catalog is read before the migrated database opens: the real
+    // Postgres lane resets one schema for both.
+    const fresh = await open(false);
+    const freshCatalog = await catalog(fresh.read, dialect);
+    await fresh.close();
+    const migrated = await open(true);
+    try {
+      expect(await catalog(migrated.read, dialect)).toEqual(freshCatalog);
+      // §9: the record keeps its actor binding and cursor and holds no list.
+      expect(await migrated.storage.getClientRecord('part', 'c1')).toEqual({
+        clientId: 'c1',
+        actorId: 'a1',
+        wireVersion: 3,
+        cursor: 7,
+        updatedAtMs: 10,
+        catchingUp: [],
+      });
+      // The result is kept as a pre-upgrade result: the client's first
+      // request that carries it assigns its sequence and replays it.
+      if (backend !== 'd1') {
+        await migrated.storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+      }
+      const tx = await migrated.storage.begin('part');
+      const prepared = await tx.preparePushApply('c1', 'k1', 1, [], {
+        outboxId: 'o1',
+        commits: [{ clientCommitId: 'k1', clientSeq: 3 }],
+      });
+      await tx.commit();
+      expect(prepared).toMatchObject({
+        watermark: 3,
+        persisted: { status: 'applied', commitSeq: 1 },
+      });
+    } finally {
+      await migrated.close();
+    }
+  });
+
   test(`${backend} putClientRecord upserts one row and writes the exact fields`, async () => {
     const pg = backend === 'postgres' ? await PGlite.create() : undefined;
     const sqlite = backend === 'sqlite' ? new BunSqliteDatabase() : undefined;
     const d1 = backend === 'd1' ? new D1DatabaseDouble() : undefined;
-    const storage: ServerStorage = pg
-      ? new PostgresServerStorage(pgliteExecutor(pg))
-      : sqlite
-        ? new SqliteServerStorage(sqlite)
-        : new D1ServerStorage(d1!, { pushApplySerialized: true });
+    const storage: ServerStorage =
+      backend === 'postgres/real'
+        ? await resetRealPg()
+        : pg
+          ? new PostgresServerStorage(pgliteExecutor(pg))
+          : sqlite
+            ? new SqliteServerStorage(sqlite)
+            : new D1ServerStorage(d1!, { pushApplySerialized: true });
     try {
       if (storage instanceof D1ServerStorage) await prepareD1(storage);
       await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
       const first = {
         clientId: 'client-1',
         actorId: 'actor-1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 5,
         updatedAtMs: 1_000,
-        subscriptions: [
-          {
-            id: 'docs',
-            table: 'docs',
-            scopes: { project_id: ['p1'] },
-            schemaVersion: 1,
-          },
-        ],
+        schemaVersion: 1,
+        registration: {
+          units: [{ project_id: 'p1' }],
+          digest: registrationDigest([{ project_id: 'p1' }]),
+        },
+        catchingUp: [{ id: unitId({ project_id: 'p1' }), cursor: 5 }],
       };
       await storage.putClientRecord('part', first);
       // A later round overwrites every non-key field, not only the cursor and
-      // liveness timestamp: the actor, wire version, and subscriptions move
-      // with it, and the client keeps a single row.
+      // liveness timestamp: the actor, wire version, schema version, list and
+      // catching-up units move with it, and the client keeps a single row.
+      const empty = { units: [], digest: registrationDigest([]) };
       await storage.putClientRecord('part', {
         ...first,
         actorId: 'actor-9',
-        wireVersion: 4,
         cursor: 9,
         updatedAtMs: 2_000,
-        subscriptions: [],
+        schemaVersion: 2,
+        registration: empty,
+        catchingUp: [],
       });
       expect(await storage.getClientRecord('part', 'client-1')).toEqual({
         clientId: 'client-1',
@@ -591,7 +774,9 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
         wireVersion: 4,
         cursor: 9,
         updatedAtMs: 2_000,
-        subscriptions: [],
+        schemaVersion: 2,
+        registration: empty,
+        catchingUp: [],
         lastRoundAtMs: 2_000,
       });
       expect(
@@ -1018,14 +1203,20 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
           : [],
       );
     }
-    const window = await storage.readCommitWindow('change-scopes', {
-      table: 'docs',
-      scopeFilter: { project_id: ['p\n1'], org_id: ["org's 雪"] },
-      afterSeq: 0,
+    const window = await storage.readLiveWindow('change-scopes', {
+      units: [
+        {
+          scopes: { project_id: 'p\n1' },
+          afterSeq: 0,
+          tables: new Map([
+            ['docs', { project_id: ['p\n1'], org_id: ["org's 雪"] }],
+          ]),
+        },
+      ],
       throughSeq: 1,
       limitChanges: 10,
     });
-    expect(window).toEqual([
+    expect(window.commits).toEqual([
       {
         commitSeq: 1,
         actorId: 'actor',
@@ -1228,14 +1419,18 @@ for (const backend of ['SQLite', 'Postgres', 'D1'] as const) {
         expect(await storage.getHorizonSeq('partition')).toBe(0);
         expect(
           (
-            await storage.readCommitWindow('partition', {
-              table: 'tasks',
-              scopeFilter: { project_id: ['p1'] },
-              afterSeq: 0,
+            await storage.readLiveWindow('partition', {
+              units: [
+                {
+                  scopes: { project_id: 'p1' },
+                  afterSeq: 0,
+                  tables: new Map([['tasks', { project_id: ['p1'] }]]),
+                },
+              ],
               throughSeq: 3,
               limitChanges: 100,
             })
-          ).map((commit) => commit.commitSeq),
+          ).commits.map((commit) => commit.commitSeq),
         ).toEqual([1, 2, 3]);
       }
       // Simulate the old setter succeeding before a historical delete failed.
@@ -1265,8 +1460,8 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double']) {
     let storage: ServerStorage;
     let close: () => void | Promise<void>;
     let plan: unknown;
-    const seed = `INSERT INTO sync_clients(partition,client_id,actor_id,wire_version,cursor,subscriptions,updated_at_ms)
-      SELECT 'part', CAST(n AS TEXT), 'actor', 2, CASE WHEN n=100001 THEN -1 ELSE n END, '[]', CASE WHEN n%2=0 THEN 99 ELSE 100 END FROM numbers`;
+    const seed = `INSERT INTO sync_clients(partition,client_id,actor_id,wire_version,cursor,updated_at_ms)
+      SELECT 'part', CAST(n AS TEXT), 'actor', 4, CASE WHEN n=100001 THEN -1 ELSE n END, CASE WHEN n%2=0 THEN 99 ELSE 100 END FROM numbers`;
     const sqliteSeed = `WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<100001) ${seed}`;
     const aggregate =
       'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=? AND cursor>=0';

@@ -40,11 +40,12 @@ import {
 } from './relational-rows';
 import type { CompiledSchema, CompiledTable } from './schema';
 import {
-  SQLITE_ADDED_COLUMNS,
   SQLITE_DDL,
+  SQLITE_UPGRADE_PROBE,
   SqliteFamilyStorage,
   SqliteFamilyTransaction,
   type SqliteStatementSpec,
+  sqliteUpgradeDdl,
 } from './sqlite-dialect';
 import {
   SqliteAdapterRequiredError,
@@ -58,6 +59,8 @@ import type {
   CheckpointDeclaration,
   IndexRowScanQuery,
   NewCommit,
+  OutboxSequence,
+  OutboxSettlement,
   PreparedPushApply,
   RowScanQuery,
   ServerStorage,
@@ -162,22 +165,31 @@ class SqliteTransaction
       readonly table: string;
       readonly rowIds: readonly string[];
     }[] = [],
+    outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply> {
     this.assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
+    // The settlement precedes the savepoint, so a rejection keeps it.
+    const settled =
+      outbox === undefined
+        ? undefined
+        : await this.settleOutbox(clientId, clientCommitId, outbox);
     this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
-    return {
-      gate: await this.#storage.readServeGate(
-        this.partition,
-        runningSchemaVersion,
-      ),
-      persisted: await this.#storage.getPushResult(
-        this.partition,
-        clientId,
-        clientCommitId,
-      ),
-    };
+    const gate = await this.#storage.readServeGate(
+      this.partition,
+      runningSchemaVersion,
+    );
+    return settled === undefined
+      ? {
+          gate,
+          persisted: await this.#storage.getPushResult(
+            this.partition,
+            clientId,
+            clientCommitId,
+          ),
+        }
+      : { gate, ...settled };
   }
 
   async lockPartition(): Promise<void> {
@@ -214,6 +226,7 @@ class SqliteTransaction
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<StoredPushResult> {
     this.assertOpen();
     if (!this.#pushApplySavepoint) {
@@ -222,7 +235,7 @@ class SqliteTransaction
     this.#storage.db.exec('ROLLBACK TO SAVEPOINT syncular_push_candidate');
     this.#storage.db.exec('RELEASE SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = false;
-    await this.putPushResult(clientId, clientCommitId, result);
+    await this.putPushResult(clientId, clientCommitId, result, sequence);
     await this.commit();
     // The idempotency re-check found no record under the writer lock, so the
     // insert above is the canonical outcome.
@@ -347,13 +360,14 @@ export class SqliteServerStorage
     super();
     this.db = db;
     this.db.exec(SQLITE_DDL);
-    for (const [table, name, definition] of SQLITE_ADDED_COLUMNS) {
-      const columns = this.db
-        .query<{ name: string }, []>(`PRAGMA table_info("${table}")`)
-        .all();
-      if (!columns.some((column) => column.name === name)) {
-        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
-      }
+    for (const statement of sqliteUpgradeDdl(
+      this.db
+        .query<{ tbl: string; name: string }, SqliteValue[]>(
+          SQLITE_UPGRADE_PROBE.sql,
+        )
+        .all(...SQLITE_UPGRADE_PROBE.params),
+    )) {
+      this.db.exec(statement);
     }
     const commitColumns = this.db
       .query<{ name: string }, []>('PRAGMA table_info("sync_commits")')

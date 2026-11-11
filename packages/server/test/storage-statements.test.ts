@@ -11,7 +11,6 @@ import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { encodeRow } from '@syncular/core';
 import {
-  commitWindowPageSql,
   compileSchema,
   D1ServerStorage,
   type D1PreparedStatement,
@@ -450,6 +449,62 @@ test('D1 prune batches the key-derived scope delete before the change delete (D9
   ).toContain('partition=? AND tbl=? AND var=? AND value=? AND commit_seq=?');
 });
 
+for (const kind of KINDS) {
+  test(`${kind} reads the live section of 13 units in one statement, one key range per unit (§4.5)`, async () => {
+    const { storage, drain, plan } = await backend(kind);
+    await seedCommits(storage, 40, (i) => ({ project_id: `p${i % 20}` }));
+    const units = Array.from({ length: 13 }, (_, i) => ({
+      scopes: { project_id: `p${i}` },
+      afterSeq: 0,
+      tables: new Map([['tasks', { project_id: [`p${i}`] }]]),
+    }));
+    drain();
+    const window = await storage.readLiveWindow(PARTITION, {
+      units,
+      throughSeq: 40,
+      limitChanges: 1000,
+    });
+    expect(window.commits.map((commit) => commit.commitSeq)).toEqual(
+      Array.from({ length: 40 }, (_, i) => i)
+        .filter((i) => i % 20 < 13)
+        .map((i) => i + 1),
+    );
+    const statements = drain();
+    // D1 runs the SQLite statement text behind its published-schema guard,
+    // one batch of two statements.
+    expect(statements).toHaveLength(kind === 'd1' ? 2 : 1);
+    if (kind === 'd1') return;
+    const lines = await plan(statements[0]!, [
+      PARTITION,
+      JSON.stringify(
+        units.map((unit) => ({
+          var: 'project_id',
+          value: unit.scopes.project_id,
+          after: 0,
+        })),
+      ),
+      40,
+      1000,
+    ]);
+    if (kind === 'sqlite') {
+      // The 13 keys drive the loop; each seeks one range of the key index.
+      expect(lines).toContain(
+        'SEARCH s USING COVERING INDEX sync_change_scopes_by_key (partition=? AND var=? AND value=? AND commit_seq>? AND commit_seq<?)',
+      );
+      expect(lines.some((line) => line.startsWith('SCAN s'))).toBe(false);
+    } else {
+      expect(
+        lines.some((line) =>
+          /Index Only Scan using sync_change_scopes_by_key on sync_change_scopes/.test(
+            line,
+          ),
+        ),
+      ).toBe(true);
+      expect(lines.some((line) => line.includes('Seq Scan'))).toBe(false);
+    }
+  });
+}
+
 test('SQLite-family scope scans seek the inverted index for 1, 2 and 5 values (D6)', async () => {
   const native = new Database(':memory:');
   const storage = new SqliteServerStorage(new BunSqliteDatabase(native));
@@ -475,40 +530,19 @@ test('SQLite-family scope scans seek the inverted index for 1, 2 and 5 values (D
     const values = JSON.stringify(
       Array.from({ length: count }, (_, i) => `p${i}`),
     );
-    const plans = [
-      native
-        .query<{ detail: string }, string[]>(
-          `EXPLAIN QUERY PLAN ${scanRowPageSql(table, count, 'sqlite')}`,
-        )
-        .all(PARTITION, 'tasks', 'project_id', values, '', '64', PARTITION),
-      native
-        .query<{ detail: string }, (string | number)[]>(
-          `EXPLAIN QUERY PLAN ${commitWindowPageSql(count, 'sqlite')}`,
-        )
-        .all(
-          PARTITION,
-          'tasks',
-          'project_id',
-          values,
-          0,
-          1000,
-          64,
-          PARTITION,
-          PARTITION,
-          'tasks',
-        ),
-    ];
-    for (const [plan, index] of [
-      [plans[0]!, 'sync_row_scopes'],
-      [plans[1]!, 'sync_change_scopes'],
-    ] as const) {
-      const search = plan.filter(({ detail }) => detail.includes(index));
-      expect(search).toHaveLength(1);
-      expect(search[0]?.detail).toContain(
-        `SEARCH ${index} USING COVERING INDEX sqlite_autoindex_${index}_1 (partition=? AND tbl=? AND var=? AND value=?`,
-      );
-      expect(plan.some(({ detail }) => detail.includes('_by_row'))).toBe(false);
-    }
+    const plan = native
+      .query<{ detail: string }, string[]>(
+        `EXPLAIN QUERY PLAN ${scanRowPageSql(table, count, 'sqlite')}`,
+      )
+      .all(PARTITION, 'tasks', 'project_id', values, '', '64', PARTITION);
+    const search = plan.filter(({ detail }) =>
+      detail.includes('sync_row_scopes'),
+    );
+    expect(search).toHaveLength(1);
+    expect(search[0]?.detail).toContain(
+      'SEARCH sync_row_scopes USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 (partition=? AND tbl=? AND var=? AND value=?',
+    );
+    expect(plan.some(({ detail }) => detail.includes('_by_row'))).toBe(false);
   }
   // The per-row scope replacement binds the full key.
   const replace = native
@@ -549,9 +583,6 @@ test('D1 scope scans bind scope values as one parameter (D4)', async () => {
   expect(scanRowPageSql(COMPILED.tables.get('tasks')!, 1, 'sqlite')).toBe(
     scanRowPageSql(COMPILED.tables.get('tasks')!, 150, 'sqlite'),
   );
-  expect(commitWindowPageSql(1, 'sqlite')).toBe(
-    commitWindowPageSql(150, 'sqlite'),
-  );
   const storage = new D1ServerStorage(new CappedD1(), {
     pushApplySerialized: true,
   });
@@ -590,14 +621,17 @@ test('D1 scope scans bind scope values as one parameter (D4)', async () => {
     limit: 500,
   });
   expect(rows).toHaveLength(150);
-  const commits = await storage.readCommitWindow(PARTITION, {
-    table: 'tasks',
-    scopeFilter: { project_id: projects },
-    afterSeq: 0,
+  // 150 units bind as one JSON parameter.
+  const window = await storage.readLiveWindow(PARTITION, {
+    units: projects.map((project) => ({
+      scopes: { project_id: project },
+      afterSeq: 0,
+      tables: new Map([['tasks', { project_id: [project] }]]),
+    })),
     throughSeq: 1,
     limitChanges: 500,
   });
-  expect(commits.flatMap((commit) => commit.changes)).toHaveLength(150);
+  expect(window.commits.flatMap((commit) => commit.changes)).toHaveLength(150);
   const reader = await storage.begin(PARTITION);
   const inTransaction = await reader.scanRows!({
     table: 'tasks',

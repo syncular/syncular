@@ -1,11 +1,16 @@
 import type { ScopeMap } from '@syncular/core';
 import type { CompiledTable, IndexSchema } from './schema';
+import { matchesEffective } from './scopes';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
   IndexRowScanQuery,
+  LiveWindow,
+  LiveWindowQuery,
   RowScanQuery,
   StorageTransaction,
+  StoredChange,
+  StoredCommit,
 } from './storage';
 import { StorageQueryError } from './storage-errors';
 
@@ -72,4 +77,101 @@ export async function transactionQuery(
     throw new StorageQueryError('sync.storage.transaction_query_unsupported');
   }
   return tx.queryAuthoritative(query);
+}
+
+/** One index range of the live scan: a unit key and its exclusive lower bound. */
+export interface LiveKey {
+  readonly var: string;
+  readonly value: string;
+  readonly after: number;
+}
+
+/**
+ * One row of a live-window page: a candidate commit joined to its metadata
+ * (absent when the commit vanished) and one of its changes (absent when it
+ * has none), in (commitSeq, change index) order.
+ */
+export interface LiveWindowRow {
+  readonly commitSeq: number;
+  readonly meta?: { readonly actorId: string; readonly createdAtMs: number };
+  readonly change?: StoredChange;
+}
+
+/**
+ * The §4.5 live scan over a backend's page read. Each distinct unit key
+ * (the first variable, keys sorted) becomes one index range starting at the
+ * lowest bound of the units that share it; `readPage` returns up to `limit`
+ * candidate commits above every range's bound. A change is kept when a unit
+ * covers its table, the pair's effective scopes match it, and its commit
+ * lies above that unit's own bound. Every candidate advances the scan, so a
+ * page of non-matching candidates never repeats.
+ */
+export async function readLiveWindowPages(
+  query: LiveWindowQuery,
+  readPage: (
+    keys: readonly LiveKey[],
+    limit: number,
+  ) => Promise<readonly LiveWindowRow[]>,
+): Promise<LiveWindow> {
+  const bounds = new Map<string, LiveKey>();
+  for (const unit of query.units) {
+    if (unit.tables.size === 0) continue;
+    const variable = Object.keys(unit.scopes).sort()[0];
+    const value = variable === undefined ? undefined : unit.scopes[variable];
+    if (variable === undefined || value === undefined) {
+      throw new StorageQueryError('sync.storage.scan_requires_scope');
+    }
+    const id = JSON.stringify([variable, value]);
+    const prior = bounds.get(id);
+    if (prior === undefined || unit.afterSeq < prior.after) {
+      bounds.set(id, { var: variable, value, after: unit.afterSeq });
+    }
+  }
+  const commits: StoredCommit[] = [];
+  const limit = Math.max(64, query.limitChanges);
+  let delivered = 0;
+  let scanned = -1;
+  while (bounds.size > 0) {
+    const rows = await readPage(
+      [...bounds.values()].map((key) => ({
+        ...key,
+        after: Math.max(key.after, scanned),
+      })),
+      limit,
+    );
+    let candidates = 0;
+    for (let i = 0; i < rows.length;) {
+      const head = rows[i];
+      if (head === undefined) break;
+      candidates += 1;
+      scanned = head.commitSeq;
+      const changes: StoredChange[] = [];
+      for (; rows[i]?.commitSeq === head.commitSeq; i++) {
+        const change = rows[i]?.change;
+        if (
+          change !== undefined &&
+          query.units.some((unit) => {
+            const effective: ScopeMap | undefined = unit.tables.get(
+              change.table,
+            );
+            return (
+              head.commitSeq > unit.afterSeq &&
+              effective !== undefined &&
+              matchesEffective(change.scopes, effective)
+            );
+          })
+        ) {
+          changes.push(change);
+        }
+      }
+      if (head.meta === undefined || changes.length === 0) continue;
+      commits.push({ commitSeq: head.commitSeq, ...head.meta, changes });
+      delivered += changes.length;
+      if (delivered >= query.limitChanges) {
+        return { commits, throughSeq: head.commitSeq };
+      }
+    }
+    if (candidates < limit) break;
+  }
+  return { commits, throughSeq: query.throughSeq };
 }

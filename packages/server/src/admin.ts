@@ -19,6 +19,8 @@ import {
   type PushOperationResult,
   renderRowValues,
   type ScopeMap,
+  unitId,
+  type UnitScopes,
 } from '@syncular/core';
 import type { BlobStore, BlobStoreStats } from './blob-store';
 import {
@@ -52,6 +54,7 @@ import type {
   CheckpointDeclaration,
   ClientRecord,
   CommitMetadata,
+  PushWatermark,
   ReactionStatus,
   StoredPushResult,
   StoredRow,
@@ -61,13 +64,22 @@ import type {
   StoredReaction,
 } from './storage';
 
+/** One registered unit of a client record. */
+export interface AdminClientUnit {
+  /** The unit id (§4.1). */
+  readonly id: string;
+  readonly scopes: UnitScopes;
+  /** The unit's cursor while it catches up; absent for a live unit. */
+  readonly catchingUpCursor?: number;
+}
+
 /** A connected/known client as the console sees it (§4.5, §8.1). */
 export interface AdminClient {
   readonly clientId: string;
   readonly actorId: string;
   /** SSP2 wire version last accepted from this client. */
   readonly wireVersion: number;
-  /** Highest codec schema version among its subscriptions, when recorded. */
+  /** Schema version of its latest completed round, when recorded. */
   readonly schemaVersion?: number;
   readonly cursor: number;
   /**
@@ -76,11 +88,8 @@ export interface AdminClient {
    */
   readonly lag: number;
   readonly updatedAtMs: number;
-  readonly subscriptions: readonly {
-    readonly id: string;
-    readonly table: string;
-    readonly scopes: Record<string, readonly string[]>;
-  }[];
+  /** The stored registration list (§4.1); empty when none is stored. */
+  readonly units: readonly AdminClientUnit[];
   /** True when the cursor record was touched within the active window. */
   readonly active: boolean;
   /**
@@ -265,11 +274,11 @@ export interface AdminCommitDetail extends CommitMetadata {
  * The trace verdict, evaluated in this order:
  * `client-unknown`: no client record for the id.
  * `row-missing`: no row and no retained change to it.
- * `no-subscription`: the client subscribes to nothing on the table.
+ * `no-unit`: no registered unit of the client covers the table.
  * `row-deleted`: the row's newest retained change is a delete the client
  * has pulled.
- * `scope-mismatch`: no subscription requests the row's stored scopes.
- * `scope-denied`: a subscription requests them, but the actor's allowed
+ * `scope-mismatch`: no covering unit requests the row's stored scopes.
+ * `scope-denied`: a covering unit requests them, but the actor's allowed
  * scopes (the host `resolveScopes`) exclude the row.
  * `pending-pull`: the client's cursor is below the row's newest change.
  * `delivered`: the client has pulled the row's newest change.
@@ -277,24 +286,24 @@ export interface AdminCommitDetail extends CommitMetadata {
 export type AdminTraceVerdict =
   | 'client-unknown'
   | 'row-missing'
-  | 'no-subscription'
+  | 'no-unit'
   | 'row-deleted'
   | 'scope-mismatch'
   | 'scope-denied'
   | 'pending-pull'
   | 'delivered';
 
-/** One of the client's subscriptions on the traced table. */
-export interface AdminTraceSubscription {
+/** One of the client's units covering the traced table. */
+export interface AdminTraceUnit {
   readonly id: string;
-  readonly scopes: Record<string, readonly string[]>;
-  /** The row's stored scopes satisfy the requested scopes. */
+  readonly scopes: UnitScopes;
+  /** The row's stored scopes carry the unit's values. */
   readonly requestedMatch: boolean;
-  /** Each requested variable the row's stored value fails. */
+  /** Each unit variable the row's stored value fails. */
   readonly mismatches: readonly {
     readonly variable: string;
     readonly rowValue: string | null;
-    readonly requested: readonly string[];
+    readonly requested: string;
   }[];
   /**
    * The row also satisfies requested ∩ allowed (§3.2). Absent when the
@@ -320,7 +329,7 @@ export interface AdminRowTrace {
    * when it returned the §7.3.3 outage sentinel. Absent without a resolver.
    */
   readonly allowed?: ScopeMap | 'outage';
-  readonly subscriptions: readonly AdminTraceSubscription[];
+  readonly units: readonly AdminTraceUnit[];
   /** The client's retained push rejections and conflicts, newest first. */
   readonly rejections: readonly SyncularServerEvent[];
 }
@@ -392,6 +401,13 @@ export interface AdminWriteLookup {
   readonly clientCommitId: string;
   /** One outcome per client that sent this clientCommitId. */
   readonly outcomes: readonly AdminWriteOutcome[];
+  /**
+   * With no stored outcome: the §6.3.2 watermarks of the clients whose
+   * retained commit log carries this clientCommitId. A commit below an
+   * outbox's `throughSeq` lost its result to the watermark ("expired below
+   * sequence N").
+   */
+  readonly watermarks: readonly PushWatermark[];
   /** Retained ring events carrying this clientCommitId, newest first. */
   readonly events: readonly SyncularServerEvent[];
 }
@@ -525,7 +541,7 @@ function required<T>(value: T | undefined, what: string): T {
 const VERDICT_ORDER: readonly AdminTraceVerdict[] = [
   'client-unknown',
   'row-missing',
-  'no-subscription',
+  'no-unit',
   'row-deleted',
   'scope-mismatch',
   'scope-denied',
@@ -533,7 +549,7 @@ const VERDICT_ORDER: readonly AdminTraceVerdict[] = [
   'delivered',
 ];
 
-/** One known client's subscriptions on the row's table and its verdict. */
+/** One known client's units covering the row's table and its verdict. */
 function traceVerdict(
   declared: ReadonlySet<string>,
   record: ClientRecord,
@@ -542,34 +558,40 @@ function traceVerdict(
   horizonSeq: number,
   allowed: ScopeMap | 'outage' | undefined,
 ): {
-  readonly subscriptions: AdminTraceSubscription[];
+  readonly units: AdminTraceUnit[];
   readonly verdict: AdminTraceVerdict;
 } {
   const rowScopes = row.scopes ?? {};
-  const subscriptions = record.subscriptions
-    .filter((sub) => sub.table === row.table)
-    .map((sub): AdminTraceSubscription => {
-      const mismatches = Object.entries(sub.scopes)
-        .filter(([variable, values]) => {
-          const value = rowScopes[variable];
-          return value === undefined || !values.includes(value);
-        })
-        .map(([variable, values]) => ({
+  // §4.1: a unit covers every table that declares all of its variables.
+  const units = (record.registration?.units ?? [])
+    .filter((scopes) =>
+      Object.keys(scopes).every((variable) => declared.has(variable)),
+    )
+    .map((scopes): AdminTraceUnit => {
+      const mismatches = Object.entries(scopes)
+        .filter(([variable, value]) => rowScopes[variable] !== value)
+        .map(([variable, value]) => ({
           variable,
           rowValue: rowScopes[variable] ?? null,
-          requested: values,
+          requested: value,
         }));
       const traced = {
-        id: sub.id,
-        scopes: sub.scopes,
+        id: unitId(scopes),
+        scopes,
         requestedMatch: mismatches.length === 0,
         mismatches,
       };
       if (allowed === undefined || allowed === 'outage') return traced;
-      const effective = computeEffective(declared, sub.scopes, {
-        ok: true,
-        allowed,
-      });
+      const effective = computeEffective(
+        declared,
+        Object.fromEntries(
+          Object.entries(scopes).map(([variable, value]) => [
+            variable,
+            [value],
+          ]),
+        ),
+        { ok: true, allowed },
+      );
       return {
         ...traced,
         effectiveMatch:
@@ -583,20 +605,20 @@ function traceVerdict(
   const verdict: AdminTraceVerdict =
     !row.exists && lastChange === undefined
       ? 'row-missing'
-      : subscriptions.length === 0
-        ? 'no-subscription'
+      : units.length === 0
+        ? 'no-unit'
         : !row.exists
           ? pulled
             ? 'row-deleted'
             : 'pending-pull'
-          : !subscriptions.some((sub) => sub.requestedMatch)
+          : !units.some((unit) => unit.requestedMatch)
             ? 'scope-mismatch'
-            : subscriptions.every((sub) => sub.effectiveMatch === false)
+            : units.every((unit) => unit.effectiveMatch === false)
               ? 'scope-denied'
               : pulled
                 ? 'delivered'
                 : 'pending-pull';
-  return { subscriptions, verdict };
+  return { units, verdict };
 }
 
 /** The console query surface plus its operator actions. One per process. */
@@ -870,7 +892,7 @@ export class SyncularAdmin {
 
   /**
    * Trace whether one client receives one row, combining the row's stored
-   * scopes and newest change with the client's subscriptions, cursor, the
+   * scopes and newest change with the client's units, cursor, the
    * actor's allowed scopes, and its retained push failures. See
    * `AdminTraceVerdict` for the verdict order.
    */
@@ -903,7 +925,7 @@ export class SyncularAdmin {
       ...(lastChange !== undefined ? { lastChange } : {}),
     };
     if (record === undefined) {
-      return { ...base, verdict: 'client-unknown', subscriptions: [] };
+      return { ...base, verdict: 'client-unknown', units: [] };
     }
     const allowed = await this.#allowedScopes(partition, record);
     return {
@@ -1134,7 +1156,14 @@ export class SyncularAdmin {
       (event) =>
         'clientCommitId' in event && event.clientCommitId === clientCommitId,
     );
-    return { clientCommitId, outcomes, events };
+    const watermarks =
+      outcomes.length > 0
+        ? []
+        : await required(
+            this.#storage.listPushWatermarks?.bind(this.#storage),
+            'storage',
+          )(partition, clientCommitId);
+    return { clientCommitId, outcomes, watermarks, events };
   }
 
   /**
@@ -1624,30 +1653,29 @@ export class SyncularAdmin {
       }
     }
     return (record) => {
-      let schemaVersion: number | undefined;
-      for (const sub of record.subscriptions) {
-        if (
-          sub.schemaVersion !== undefined &&
-          (schemaVersion === undefined || sub.schemaVersion > schemaVersion)
-        ) {
-          schemaVersion = sub.schemaVersion;
-        }
-      }
       const connectedSinceMs = connectedSince.get(record.clientId);
       return {
         clientId: record.clientId,
         actorId: record.actorId,
         wireVersion: record.wireVersion,
-        ...(schemaVersion !== undefined ? { schemaVersion } : {}),
+        ...(record.schemaVersion !== undefined
+          ? { schemaVersion: record.schemaVersion }
+          : {}),
         cursor: record.cursor,
         // A never-pulled cursor (-1) has seen nothing: it lags the whole log.
         lag: Math.max(0, maxCommitSeq - Math.max(0, record.cursor)),
         updatedAtMs: record.updatedAtMs,
-        subscriptions: record.subscriptions.map((sub) => ({
-          id: sub.id,
-          table: sub.table,
-          scopes: sub.scopes,
-        })),
+        units: (record.registration?.units ?? []).map((scopes) => {
+          const id = unitId(scopes);
+          const catchingUp = record.catchingUp.find((unit) => unit.id === id);
+          return {
+            id,
+            scopes,
+            ...(catchingUp !== undefined
+              ? { catchingUpCursor: catchingUp.cursor }
+              : {}),
+          };
+        }),
         active: record.updatedAtMs >= activeFloorMs,
         ...(sockets !== undefined
           ? { connected: connectedSinceMs !== undefined }

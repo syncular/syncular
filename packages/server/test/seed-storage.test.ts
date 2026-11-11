@@ -239,10 +239,14 @@ describe('a commit above the PostgreSQL bind-parameter limit', () => {
       const maxSeq = await storage.getMaxCommitSeq(partition);
       const windows = [];
       for (const project of projects) {
-        const commits = await storage.readCommitWindow(partition, {
-          table: 'tasks',
-          scopeFilter: { project_id: [project] },
-          afterSeq: 1,
+        const { commits } = await storage.readLiveWindow(partition, {
+          units: [
+            {
+              scopes: { project_id: project },
+              afterSeq: 1,
+              tables: new Map([['tasks', { project_id: [project] }]]),
+            },
+          ],
           throughSeq: maxSeq,
           limitChanges: 1_000_000,
         });

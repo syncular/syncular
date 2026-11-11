@@ -11,13 +11,19 @@ import type { AuthoritativeRelationPlan } from './authoritative-query';
  * - the pruning horizon per §4.6;
  * - current-row reads for write authorization (§3.4) and conflict handling
  *   (§6.2);
- * - per-(partition, clientId) cursor records + last subscription list
- *   (§4.5, §8.1).
+ * - the per-(partition, clientId) client record: registration list,
+ *   catching-up units and record cursor (§4.5, §8.1);
+ * - the per-outbox acknowledged watermark (§6.3.2).
  *
  * The interface is async throughout so a Postgres implementation slots in
  * without touching the core. All methods are partition-local (§2.1).
  */
-import type { PushOperationResult, RowValue, ScopeMap } from '@syncular/core';
+import type {
+  PushOperationResult,
+  RowValue,
+  ScopeMap,
+  UnitScopes,
+} from '@syncular/core';
 import type { CompiledSchema } from './schema';
 
 export interface CommitPruneQuery {
@@ -84,6 +90,32 @@ export interface PreparedPushApply {
   readonly gate: ServeGate;
   /** The already-persisted outcome for this key, or `undefined` on a miss. */
   readonly persisted: StoredPushResult | undefined;
+  /**
+   * The outbox watermark `W` after §6.3.2 step 1; present iff the call
+   * carried an {@link OutboxSettlement}. A commit of the request whose
+   * `persisted` is `undefined` and whose `clientSeq` is below `W` is
+   * expired (`sync.commit_expired`); at or above `W` it was never seen.
+   */
+  readonly watermark?: number;
+}
+
+/** The outbox position of one pushed commit (§6.3.2). */
+export interface OutboxSequence {
+  readonly outboxId: string;
+  readonly clientSeq: number;
+}
+
+/**
+ * One push request's outbox, for the §9 settlement of results stored before
+ * wire version 4 and §6.3.2 steps 1 and 2.
+ */
+export interface OutboxSettlement {
+  readonly outboxId: string;
+  /** Every `PUSH_COMMIT` of the request in frame order. */
+  readonly commits: readonly {
+    readonly clientCommitId: string;
+    readonly clientSeq: number;
+  }[];
 }
 
 /** Why `serveGate` refuses, or `undefined` when this request may serve. */
@@ -348,24 +380,45 @@ export interface StoredPushResult {
   readonly results: readonly PushOperationResult[];
 }
 
-export interface ClientSubscription {
-  /** Codec accepted by the last pull; absent on records written before schema windows. */
-  readonly schemaVersion?: number;
-  readonly id: string;
-  readonly table: string;
-  /** Requested scopes of the client's most recent pull (§8.1). */
-  readonly scopes: ScopeMap;
+/** The registration list a client last sent, with its digest (§4.1). */
+export interface ClientRegistration {
+  /** Scope maps in registration order. */
+  readonly units: readonly UnitScopes[];
+  /** The 32-byte registration digest. */
+  readonly digest: Uint8Array;
 }
 
+/** A unit still catching up after the client's last completed round (§4.1). */
+export interface CatchingUpUnit {
+  /** The unit id (§4.1). */
+  readonly id: string;
+  /** `-1`, the bootstrap pin, or the post-bootstrap cursor `P`. */
+  readonly cursor: number;
+}
+
+/** The §4.5 client record. */
 export interface ClientRecord {
   readonly clientId: string;
   readonly actorId: string;
-  /** SSP2 version last accepted from this client; selects realtime deltas. */
+  /** SSP2 version last accepted from this client. */
   readonly wireVersion: number;
-  /** Minimum `nextCursor` across the last pull's active subscriptions. */
+  /** The record cursor (§4.5); feeds the §4.6 retention watermark. */
   readonly cursor: number;
   readonly updatedAtMs: number;
-  readonly subscriptions: readonly ClientSubscription[];
+  /**
+   * Schema version of the latest completed round; realtime projects deltas
+   * through its codec. Absent on a record written before wire version 4.
+   */
+  readonly schemaVersion?: number;
+  /**
+   * The stored registration list; absent when none is stored (§9: a record
+   * written before wire version 4 holds none). On `putClientRecord`, absent
+   * keeps the stored list and digest: a round writes them only when its
+   * list traveled.
+   */
+  readonly registration?: ClientRegistration;
+  /** Catching-up units in registration order; the rest of the list is live. */
+  readonly catchingUp: readonly CatchingUpUnit[];
   /** When this client's last sync round finished, successfully or not. */
   readonly lastRoundAtMs?: number;
   /** Code of the last round when it failed; absent after a successful round. */
@@ -400,24 +453,45 @@ export function clientRoundState(
   };
 }
 
-export interface CommitWindowQuery {
-  readonly table: string;
-  /**
-   * Effective scopes (§3.2): a change matches iff, for every key, its
-   * stored value is in the list. Implementations MUST select candidates
-   * via the inverted scope index, never by scanning the log.
-   */
-  readonly scopeFilter: ScopeMap;
-  /** Window `afterSeq < commitSeq <= throughSeq`, oldest first (§4.5). */
+/** One unit of the §4.5 scan set. */
+export interface LiveScanUnit {
+  /** The unit's scope map; its first variable (keys sorted) is its index key. */
+  readonly scopes: UnitScopes;
+  /** Exclusive lower bound: `R`, the unit's cursor `P`, or its pin. */
   readonly afterSeq: number;
+  /**
+   * The unit's active (unit, table) pairs: covered table → effective scopes
+   * (§3.2). A change of table `t` matches iff its stored scopes satisfy the
+   * pair for `t` and its commit lies above `afterSeq`.
+   */
+  readonly tables: ReadonlyMap<string, ScopeMap>;
+}
+
+export interface LiveWindowQuery {
+  readonly units: readonly LiveScanUnit[];
+  /** `maxCommitSeq` read at the start of the pull. */
   readonly throughSeq: number;
-  /** Stop after accumulating at least this many matching changes. */
+  /** The `limitCommits` budget: stop after the commit that reaches it. */
   readonly limitChanges: number;
+}
+
+/** The commits of one live section (§4.5). */
+export interface LiveWindow {
+  /** Oldest first, each with its matching changes in change order. */
+  readonly commits: readonly StoredCommit[];
+  /**
+   * `T`: `query.throughSeq`, or the last delivered `commitSeq` when the
+   * budget cut the section.
+   */
+  readonly throughSeq: number;
 }
 
 export interface RowScanQuery {
   readonly table: string;
-  /** Same matching rule as `CommitWindowQuery.scopeFilter`, over rows. */
+  /**
+   * Effective scopes (§3.2): a row matches iff, for every key, its stored
+   * value is in the list. Candidates come from the inverted row-scope index.
+   */
   readonly scopeFilter: ScopeMap;
   /** Resume after this rowId (exclusive); `null` = start of table. */
   readonly afterRowId: string | null;
@@ -504,6 +578,14 @@ export interface RowListQuery {
   /** Resume after this rowId (exclusive); `null` = start of table. */
   readonly afterRowId: string | null;
   readonly limit: number;
+}
+
+/** One §6.3.2 watermark row. */
+export interface PushWatermark {
+  readonly clientId: string;
+  readonly outboxId: string;
+  /** `W`: results of this outbox below it are deleted. */
+  readonly throughSeq: number;
 }
 
 /** A stored push outcome with the client that sent it. */
@@ -663,6 +745,13 @@ export interface StorageTransaction {
    * are built; a storage with per-statement network cost folds that read-ahead
    * into the admission read and answers the following `getRow` calls from it.
    * Missing support fails closed before an app-row mutation.
+   *
+   * `outbox`, passed with the first commit of a request that carries an
+   * `outboxId`, settles the client's results stored before wire version 4
+   * (§9) and runs §6.3.2 steps 1 and 2 under the same lock, before the read
+   * of `persisted`. Those writes survive `commitRejectedPushResult`; the
+   * caller commits this transaction whatever the commit's outcome, so the
+   * settlement runs exactly once per request.
    */
   preparePushApply(
     clientId: string,
@@ -672,6 +761,7 @@ export interface StorageTransaction {
       readonly table: string;
       readonly rowIds: readonly string[];
     }[],
+    outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply>;
   /**
    * Rejection finalization while the push-apply serialization lock is still
@@ -685,6 +775,7 @@ export interface StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<StoredPushResult>;
   upsertRow(
     table: string,
@@ -702,12 +793,15 @@ export interface StorageTransaction {
   enqueueReactions?(reactions: readonly NewReaction[]): Promise<void>;
   /**
    * Persist an idempotency outcome only when the key is still absent. The
-   * first writer wins; callers read the canonical value after commit.
+   * first writer wins; callers read the canonical value after commit. A
+   * result without `sequence` (no `outboxId`, §6.10, §12.3) is never deleted
+   * by a watermark.
    */
   putPushResult(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<void>;
   /**
    * Advance this partition's checkpoint only while `owner_epoch` still
@@ -799,7 +893,10 @@ export interface ServerStorage {
     authenticatedAtMs: number,
     initialLogEpoch: string,
   ): Promise<PartitionRegistryEntry>;
-  /** Rotate log continuity after restore and discard stale cursor records. */
+  /**
+   * Rotate log continuity after restore and delete the partition's client
+   * records. Watermark rows stay (§6.3.2).
+   */
   rotatePartitionLogEpoch(
     partition: string,
     logEpoch: string,
@@ -988,26 +1085,29 @@ export interface ServerStorage {
   ): Promise<PrunedReactionCounts>;
 
   /**
-   * Matching commits in the window, oldest first, each carrying only its
-   * matching changes for `table`. Stops once accumulated matching changes
-   * reach `limitChanges` or the window is exhausted.
+   * The §4.5 live section: every commit in `(min afterSeq, throughSeq]`
+   * carrying a change that matches a unit of the scan set, oldest first,
+   * each with its matching changes once, in change order, across tables.
+   * Stops after the commit whose matching changes reach `limitChanges`
+   * (never splitting a commit). Candidates come from the change-scope key
+   * index, one index range per distinct unit key, never from a log scan.
    */
-  readCommitWindow(
+  readLiveWindow(
     partition: string,
-    query: CommitWindowQuery,
-  ): Promise<StoredCommit[]>;
+    query: LiveWindowQuery,
+  ): Promise<LiveWindow>;
 
   /**
-   * Newest commitSeq whose change to `query.table` carries a value of the
-   * filter's first variable (keys sorted) in the inverted change-scope index:
-   * the `readCommitWindow` candidate rule, so no change a window read would
-   * deliver for this filter sits above it. 0 when the index holds none (never
-   * written, or pruned). The §4.7 sqlite-lane bootstrap pin reads it; it MUST
-   * be an index lookup per value, independent of the table's history.
+   * Newest commitSeq whose change to `query.table` carries the unit's value
+   * of its first variable (keys sorted): the `readLiveWindow` candidate rule,
+   * so no change the unit would receive for the table sits above it. 0 when
+   * the index holds none (never written, or pruned). The §4.7 sqlite-lane
+   * scope pin reads it; it MUST be one index lookup, independent of the
+   * table's history.
    */
   latestScopedChangeSeq(
     partition: string,
-    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+    query: { readonly table: string; readonly scopes: UnitScopes },
   ): Promise<number>;
 
   /** Scope-filtered snapshot scan, ordered by rowId (bootstrap paging). */
@@ -1052,10 +1152,12 @@ export interface ServerStorage {
     clientId: string,
   ): Promise<ClientRecord | undefined>;
   /**
-   * Write the record for a completed round. The round-state fields reset: the
-   * stored last round is a success at `updatedAtMs` with no failures — unless
-   * `keepRoundOutcome` is set, which leaves the reported code and streak in
-   * place (the round carried a `ROUND_FAILURE` report, §1.5/§4.5).
+   * Write the record for a completed round (§4.5). A record without
+   * `registration` keeps the stored list and digest. The round-state fields
+   * reset: the stored last round is a success at `updatedAtMs` with no
+   * failures, unless `keepRoundOutcome` is set, which leaves the reported
+   * code and streak in place (the round carried a `ROUND_FAILURE` report,
+   * §1.5/§4.5).
    */
   putClientRecord(
     partition: string,
@@ -1076,23 +1178,17 @@ export interface ServerStorage {
     atMs: number,
   ): Promise<void>;
   /**
-   * Atomically advance an existing record's cursor and activity timestamp.
-   * Preserve registration fields; require matching actor and current log epoch.
-   * Missing records and mismatched identities are unchanged (§8.2).
+   * §8.2 ack: atomically raise an existing record's cursor to `cursor`,
+   * capped at the lowest non-negative cursor of its catching-up units, and
+   * its activity timestamp, both monotonically. Every other field stays;
+   * requires the matching actor and the current log epoch. A missing record
+   * or a mismatched identity is unchanged.
    */
   advanceClientCursor(
     partition: string,
     clientId: string,
     actorId: string,
     logEpoch: string,
-    cursor: number,
-    updatedAtMs: number,
-  ): Promise<void>;
-  /** Advance an existing client's ACK cursor and timestamp atomically,
-   * preserving actor, wire version, and subscriptions. Missing records stay absent. */
-  updateClientCursor(
-    partition: string,
-    clientId: string,
     cursor: number,
     updatedAtMs: number,
   ): Promise<void>;
@@ -1157,7 +1253,7 @@ export interface ServerStorage {
    * calls them.
    *
    * `listClientRecords`: every stored client record for the partition
-   * (cursor, last-seen, subscription list) — the "who's connected" view.
+   * (cursor, last-seen, registration list): the "who's connected" view.
    * `listCommitMetadata`: the commit log without payloads (metadata +
    * touched tables), the newest-oriented window an operator inspects.
    * `scopeActivity`: the recent commits touching one scope key, via the
@@ -1172,6 +1268,9 @@ export interface ServerStorage {
    * `listPushResults`: every stored idempotency outcome for one
    * clientCommitId across the partition's clients, scanning the retained
    * outcomes without a dedicated index.
+   * `listPushWatermarks`: the §6.3.2 watermark rows of every client whose
+   * retained commit log carries the clientCommitId; a commit whose result
+   * the watermark deleted reads as "expired below sequence `throughSeq`".
    * `listPartitions`: the partition-only compatibility view of
    * `listPartitionRegistry`, sorted.
    */
@@ -1198,6 +1297,10 @@ export interface ServerStorage {
     partition: string,
     clientCommitId: string,
   ): Promise<ClientPushResult[]>;
+  listPushWatermarks?(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<PushWatermark[]>;
   listPartitions(): Promise<string[]>;
 }
 
