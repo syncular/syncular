@@ -1,5 +1,31 @@
 # Syncular release notes
 
+## 0.65.1 release notes
+
+0.65.1 fixes a client behind a proxy that refuses WebSockets: it stopped
+syncing after one refused `/sync` request and stayed idle until a reload.
+SSP2 and the wire version are unchanged, and the Rust core is unchanged.
+
+A fetch refused with `causeKind` `network` or `connect` schedules no retry,
+and the realtime supervisor ran the next round only on an `online` report or
+after a socket connected. Such a proxy leaves the browser online and the
+socket never connects, so no round followed. The supervisor now runs
+`syncUntilIdle()` once over HTTP on each `online` report, on each failed
+connect attempt of its backoff schedule, and on each return to the foreground
+while its phase is `retrying` or `unsupported`. A host that suspends the
+supervisor (offline, background, protected preflight) gets no round. The
+Tauri and React Native hosts install the same supervisor and get the same
+behavior.
+
+SPEC §1.8 names the three drives and states that only phase `connected` means
+a socket carries the rounds; in every other phase the rounds go over HTTP. An
+`attempt` of 1 or more tells a host that the last socket attempt failed, so a
+status line can say that sync runs without realtime. See
+[Install the supervisor](https://syncular.dev/platform-web-realtime/#install-the-supervisor).
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. No API
+change.
+
 ## 0.65.0 release notes
 
 0.65.0 adds `@syncular/client/dev`, a development profiler that records what an
