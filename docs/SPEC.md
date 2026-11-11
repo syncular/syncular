@@ -1753,6 +1753,9 @@ entry renders as `{"scopes":{…},"status":"active"|"revoked","table":"<t>"}`
 in the order of the fenced records. Only the server computes the echo
 digest; a client stores and returns it without inspection. Two echo digests
 are equal exactly when the server would emit identical echoes for every unit.
+A unit the server answers with `reset` enters the digest with the status it
+has after the reset, `active` or `revoked`; `reset` is a section status and
+never a digest value.
 
 **`SUB_END`:**
 
@@ -1797,6 +1800,12 @@ matches one of the unit's active pairs, through the unit's bootstrap
 segments (which hold rows at least as new as its pin, §4.7) and the live
 sections applied since.
 
+**Section order.** A response carries `COMMIT` frames only between
+`LIVE_START` and `LIVE_END`. A `COMMIT` frame outside the live section, a
+`LIVE_END` without a preceding `LIVE_START`, a second live section, and a
+`PUSH_RESULT` frame after any unit or live section are decode errors, as are
+a segment frame or a `SUB_START` inside or after the live section (§1.6).
+
 **The scan set.** A pull whose live status is `active` scans the log for:
 every live unit with lower bound `R`; every post-bootstrap unit that the
 server does not answer `reset` or `revoked`, with lower bound `P`; and every
@@ -1815,6 +1824,32 @@ dictionary carries every table it names. `T` is `maxCommitSeq` read at the
 start of the pull, or the `commitSeq` of the last delivered commit when the
 `limitCommits` budget cut the section. With an empty scan set the section
 carries no commit and `T = maxCommitSeq`. `LIVE_END.throughSeq = T`.
+
+**`COMMIT` frame payload** (one frame per commit):
+
+| Field | Type | Semantics |
+|---|---|---|
+| `commitSeq` | `i64` | |
+| `createdAtMs` | `i64` | Server commit time |
+| `actorId` | `str` | Pushing actor |
+| `tables` | `list(str)` | Frame-local table dictionary |
+| `changes` | `u32` count × change record | |
+
+Change record:
+
+| Field | Type | Semantics |
+|---|---|---|
+| `tableIndex` | `u16` | Index into `tables`; out of range is a decode error |
+| `rowId` | `str` | |
+| `op` | `u8` | `1` = upsert, `2` = delete |
+| `rowVersion` | `opt(i64)` | Present for upsert, absent for delete |
+| `scopes` | `map` of `str` → `str` | Stored scopes (§3.1) |
+| `row` | `opt(bytes)` | Present for upsert: the row encoded with the generated row codec (§2.4) for the response's schema version. Absent for delete |
+
+Frames are self-contained (dictionary per frame, no cross-frame state) so
+a streaming reader can apply commit-by-commit — one representation,
+no cross-frame dictionaries, with transport compression absorbing the
+repetition.
 
 **Join rule J.** After processing `LIVE_END`, the client computes
 `R* = max(R, T)`. Every post-bootstrap unit of the scan set takes the cursor
@@ -7255,7 +7290,9 @@ silently).
    including the whole `SEGMENT_INLINE` frame payload, which renders as
    `{"type":"SEGMENT_INLINE","payload":"<base64>"}`, never as a nested
    rule-8 object) are standard **base64** strings; hashes and
-   `segmentId` stay in their native hex/string form.
+   `segmentId` stay in their native hex/string form. The 32-byte
+   `registrationDigest` and `echoDigest` are hashes: they render as 64
+   lowercase hex characters, and an empty digest renders as `""`.
 5. Enums render as their spec names (`"upsert"`, `"active"`,
    `"sqlite"`, …), not their byte values. Bitmask fields (`accept`) are
    not enums and render as their numeric value.
@@ -7480,7 +7517,7 @@ byte-identical output):
 | 32 | `response/unregistered` | `LIVE_START` status `unregistered`, `LIVE_END` with `throughSeq = -1` and an empty `echoDigest` (§4.1) |
 | 33 | `request/producer-push` | A database-less producer push: no `outboxId`, `clientSeq = 0` (§6.10) |
 | 34 | `response/realtime-delta` | A delta: `LIVE_START`, one `COMMIT` spanning three tables, `LIVE_END` with `throughSeq` = its `commitSeq` and an empty `echoDigest` (§8.2) |
-| 35 | `registration/digests` | JSON only: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4) |
+| 35 | `registration/digests` | JSON only, one object `{"units":[{"scopes","canonicalJson","id"}],"registrations":[{"units","canonicalJson","digest"}],"echoes":[{"units","canonicalJson","digest"}]}`: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4). Digests render as 64 lowercase hex characters |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1` |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
