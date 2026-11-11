@@ -1,8 +1,9 @@
 //! # ssp2 — Syncular v2 wire codec (Rust POC)
 //!
-//! A fresh implementation of the SSP2 envelope, the SSG2 rows-segment format,
-//! the §2.4 row codec, §8 realtime control messages, and the §11 canonical
-//! JSON debug rendering — built **from `SPEC.md` alone** (no reference to
+//! A fresh implementation of the SSP2 envelope (wire version 4), the SSG2
+//! rows-segment format, the §2.4 row codec, §8 realtime control messages, the
+//! §4.1 unit id and registration and echo digests, and the §11 canonical JSON
+//! debug rendering — built **from `SPEC.md` alone** (no reference to
 //! the v1 Rust tree or the v2 TypeScript implementations) to prove the
 //! written protocol contract is language-neutral. Conformance is pinned by
 //! the golden vectors in `spec/vectors/`.
@@ -18,6 +19,7 @@ pub mod error;
 pub mod model;
 pub mod primitives;
 pub mod realtime;
+pub mod registration;
 pub mod render;
 pub mod segment;
 pub mod stream;
@@ -34,6 +36,9 @@ pub use model::{Frame, Message, MsgKind};
 pub use realtime::{
     encode_presence_publish, parse_control, parse_control_value, render_control, ControlMessage,
     PresenceKind,
+};
+pub use registration::{
+    canonical_scope_json, canonical_unit_json, echo_digest, registration_digest, unit_id, UnitEcho,
 };
 pub use render::{render_message, render_rows_segment, render_sparse_row};
 pub use segment::{

@@ -1800,6 +1800,12 @@ matches one of the unit's active pairs, through the unit's bootstrap
 segments (which hold rows at least as new as its pin, §4.7) and the live
 sections applied since.
 
+**Server rules a decoder does not check.** `SUB_START.fenced` is empty when
+the unit's status is not `active`, and `LIVE_END` carries `throughSeq = -1`
+for `reset` and `unregistered` and an empty `echoDigest` for `unregistered`
+(§4.4). A server MUST emit these values. A decoder accepts a frame that
+breaks them, and a client ignores `fenced` and `throughSeq` in those cases.
+
 **Section order.** A response carries `COMMIT` frames only between
 `LIVE_START` and `LIVE_END`. A `COMMIT` frame outside the live section, a
 `LIVE_END` without a preceding `LIVE_START`, a second live section, and a

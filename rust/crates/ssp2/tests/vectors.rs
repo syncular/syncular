@@ -6,16 +6,21 @@
 //! 3. every `invalid/` case fails to decode with exactly the manifest's code.
 //!
 //! Realtime cases are `.json`-only: they must parse as §8 control messages
-//! and render back to a deep-equal JSON document.
+//! and render back to a deep-equal JSON document. The registration case is
+//! `.json`-only too: every unit id, registration digest and echo digest is
+//! recomputed from its inputs (§4.1, §4.4).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use ssp2::model::{EchoStatus, FencedRecord};
 use ssp2::segment::{decode_sparse_row, encode_sparse_row, Column, ColumnType};
+use ssp2::util::hex;
 use ssp2::{
-    decode_message, decode_rows_segment, encode_message, encode_rows_segment, parse_control_value,
-    render_control, render_message, render_rows_segment, render_sparse_row,
+    canonical_unit_json, decode_message, decode_rows_segment, echo_digest, encode_message,
+    encode_rows_segment, parse_control_value, registration_digest, render_control, render_message,
+    render_rows_segment, render_sparse_row, unit_id, UnitEcho,
 };
 
 fn vectors_dir() -> PathBuf {
@@ -252,5 +257,85 @@ fn realtime_vectors() {
                 e.detail
             ),
         }
+    }
+}
+
+#[test]
+fn registration_vectors() {
+    let kind = "registration";
+    let manifest = read_manifest(kind);
+    let valid = cases(&manifest, "cases");
+    assert_eq!(valid.len(), 1, "{kind}: one digests case");
+    let vector = read_json(kind, str_field(&valid[0], "json"));
+    let unit_scopes = |value: &Value| -> Vec<(String, String)> {
+        value
+            .as_object()
+            .expect("a scope map")
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().expect("a scope value").to_owned()))
+            .collect()
+    };
+    let status = |value: &Value| match value.as_str() {
+        Some("active") => EchoStatus::Active,
+        Some("revoked") => EchoStatus::Revoked,
+        other => panic!("unknown echo status {other:?}"),
+    };
+
+    for case in vector["units"].as_array().expect("units") {
+        let scopes = unit_scopes(&case["scopes"]);
+        assert_eq!(
+            canonical_unit_json(&scopes),
+            str_field(case, "canonicalJson")
+        );
+        assert_eq!(unit_id(&scopes), str_field(case, "id"));
+    }
+    for case in vector["registrations"].as_array().expect("registrations") {
+        let units: Vec<Vec<(String, String)>> = case["units"]
+            .as_array()
+            .expect("units")
+            .iter()
+            .map(unit_scopes)
+            .collect();
+        let digest = registration_digest(units.iter().map(Vec::as_slice));
+        assert_eq!(hex(&digest), str_field(case, "digest"), "{case}");
+    }
+    for case in vector["echoes"].as_array().expect("echoes") {
+        let units: Vec<(String, EchoStatus, Vec<FencedRecord>)> = case["units"]
+            .as_array()
+            .expect("units")
+            .iter()
+            .map(|unit| {
+                let fenced = unit["fenced"]
+                    .as_array()
+                    .expect("fenced")
+                    .iter()
+                    .map(|record| FencedRecord {
+                        table: str_field(record, "table").to_owned(),
+                        status: status(&record["status"]),
+                        scopes: record["scopes"]
+                            .as_object()
+                            .expect("fenced scopes")
+                            .iter()
+                            .map(|(k, v)| {
+                                let values = v.as_array().expect("a value list");
+                                let values = values.iter().map(|v| v.as_str().unwrap().to_owned());
+                                (k.clone(), values.collect())
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                (
+                    str_field(unit, "id").to_owned(),
+                    status(&unit["status"]),
+                    fenced,
+                )
+            })
+            .collect();
+        let digest = echo_digest(units.iter().map(|(id, status, fenced)| UnitEcho {
+            id,
+            status: *status,
+            fenced,
+        }));
+        assert_eq!(hex(&digest), str_field(case, "digest"), "{case}");
     }
 }

@@ -14,15 +14,16 @@ name = "ssp2"
 
 [dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
+# §4.1 unit ids and the registration and echo digests.
+sha2 = "0.11"
 
 # §5.11 client-side encryption (E2EE). Behind the `e2ee` feature so lean
 # builds skip the crypto crates entirely; the conformance shim enables it.
 aes-gcm = { version = "0.11", optional = true }
 x25519-dalek = { version = "3", features = ["getrandom", "static_secrets"], optional = true }
 hkdf = { version = "0.13", optional = true }
-sha2 = { version = "0.11", optional = true }
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 
 [features]
 default = []
-e2ee = ["dep:aes-gcm", "dep:x25519-dalek", "dep:hkdf", "dep:sha2", "dep:rand_core"]
+e2ee = ["dep:aes-gcm", "dep:x25519-dalek", "dep:hkdf", "dep:rand_core"]
