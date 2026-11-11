@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'The realtime supervisor syncs over HTTP when the socket is refused',
+    body: 'A fetch refused with `causeKind` `network` or `connect` schedules no retry, and the realtime supervisor ran the next round only on an `online` report or after a socket connected. Behind a proxy that refuses WebSockets the browser stays online, so after one refused `/sync` request no round followed until reload. The supervisor now also runs `syncUntilIdle()` once on each failed connect attempt of its retry schedule and on each return to the foreground while a retry is pending or realtime is unsupported. The Tauri and React Native hosts install the same supervisor. Only phase `connected` means a socket carries the rounds, and an `attempt` of 1 or more tells a host that the last socket attempt failed.',
+    links: [
+      {
+        href: '/platform-web-realtime/#install-the-supervisor',
+        label: 'Install the supervisor',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'A development profiler at `@syncular/client/dev`',
     body: '`createSyncProfiler()` wraps the database, transport, realtime connector and client an app already constructs. Its report holds runs, identical runs and triggering tables per live query, statements with their time, bytes per round, active units against the server limit, bootstrap bytes per unit, and single-operation write bursts. A worker entry posts its statements and rounds to the page profiler on a `BroadcastChannel`; `startSyncWorker({ createTransport })` now receives the current-headers reader for it. Tauri and React Native clients get the query, unit and write numbers. `@syncular/testkit` takes a profiler per client, and `assertBudgets(report, budgets)` fails a test with `client.profile_budget_exceeded`. `createSyncProfiler` refuses a build without a development or test signal with `client.profiler_in_production`, and no production entry bundles it.',
     links: [

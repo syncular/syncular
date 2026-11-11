@@ -58,10 +58,12 @@ browser connectivity stays connectable. Only host evidence suspends the
 supervisor: the connectivity signal, a closed
 [transport gate](#transport-gate), the protection signal, and a hidden page
 without `sharedTransport`. A sync round that failed because the server was
-unreachable leaves it running. Each `online` report runs `syncUntilIdle()`
-while nothing else suspends the supervisor, also when realtime is unsupported
-or disabled, so a commit written while the network was down pushes when it
-returns.
+unreachable leaves it running. While nothing suspends the supervisor, it runs
+`syncUntilIdle()` over HTTP on each `online` report, on each failed connect
+attempt of its retry schedule, and on each return to the foreground while a
+retry is pending or realtime is unsupported or disabled. A commit written while
+the network was down pushes when it returns, and a network that refuses
+WebSockets (a proxy without upgrade support) still syncs on the retry schedule.
 
 For an encrypted or locked app, also pass the host's protection signal. An
 explicit protection signal keeps the supervisor suspended until it reports
@@ -86,6 +88,9 @@ const state = realtimeSupervisorSnapshot(handle);
 
 The snapshot holds only the phase, the attempt count, and the library-owned
 retry delay. Transport errors, URLs, identities, and headers never reach it.
+Only `connected` means the socket carries the rounds; in every other phase
+they go over HTTP. An `attempt` of 1 or more means the last socket attempt
+failed, so a status line can say that sync runs without realtime.
 
 ::checkpoint[`renderConnectionState` fires on each change of the phase, the attempt count, or the retry delay; `realtimeSupervisorSnapshot(handle)` reads the current state.]
 ::::
@@ -179,8 +184,9 @@ React Native handles expose the same listener and snapshot methods.
 Keep calling `mutate` with the network gone: the outbox accumulates and local
 reads stay live. On reconnect, the next sync drains the outbox with
 [idempotent retry](/concepts-commits/). A round that fails because the server
-is unreachable schedules no retry; the supervisor's `online` report or a socket
-reconnect starts the next drive. A host without the supervisor calls
+is unreachable schedules no retry; the supervisor's next connect attempt, an
+`online` report, or a return to the foreground starts the next drive. A host
+without the supervisor calls
 `syncUntilIdle()` from its own connectivity handler. Applied commits leave the outbox;
 conflicts and rejections surface. The outbox is schema-agnostic and re-encodes
 at send time, so a schema upgrade loses nothing. Whole-origin deletion or

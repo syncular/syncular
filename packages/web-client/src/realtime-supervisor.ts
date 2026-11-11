@@ -214,9 +214,9 @@ export function documentLifecycleSignal(
  * Supported host policy for Syncular's explicit realtime transport. It owns
  * exactly one connect attempt, runs an explicit catch-up round before claiming
  * connected, retries transient loss with bounded exponential jitter, and
- * suspends across offline, background, or protected-preflight state. A host
- * `online` report also drives `syncUntilIdle` when realtime is unsupported
- * or disabled.
+ * suspends across offline, background, or protected-preflight state. Each
+ * failed attempt, each host `online` report, and each foreground return
+ * while no attempt starts at once drives one HTTP round (§1.8).
  */
 export class RealtimeSupervisor {
   readonly #client: RealtimeSupervisorClient;
@@ -285,20 +285,22 @@ export class RealtimeSupervisor {
     this.#unsubscribeDiagnostics = this.#client.onDiagnostics((snapshot) =>
       this.#observeDiagnostics(snapshot),
     );
-    this.#unsubscribeConnectivity = this.#connectivity?.subscribe(() => {
-      // §1.8: the host's connectivity signal re-arms the drive a failed
-      // round left behind. The drive does not wait for the socket, so a
-      // socket that cannot connect does not hold back an HTTP round.
-      if (this.#connectivity?.current() === 'online' && !this.#hostBlock()) {
-        void Promise.resolve()
-          .then(() => this.#client.syncUntilIdle())
-          .catch(() => undefined);
-      }
+    this.#unsubscribeConnectivity = this.#connectivity?.subscribe((state) => {
+      if (state === 'online') this.#drive();
       this.#reconcileHostState();
     });
-    this.#unsubscribeLifecycle = this.#lifecycle?.subscribe(() =>
-      this.#reconcileHostState(),
-    );
+    this.#unsubscribeLifecycle = this.#lifecycle?.subscribe((state) => {
+      this.#reconcileHostState();
+      // An immediate attempt brings its own round; a pending retry or an
+      // absent socket does not.
+      const phase = this.#snapshot.phase;
+      if (
+        state === 'active' &&
+        (phase === 'retrying' || phase === 'unsupported')
+      ) {
+        this.#drive();
+      }
+    });
     this.#unsubscribeProtection = this.#protection?.subscribe(() =>
       this.#reconcileHostState(),
     );
@@ -310,21 +312,12 @@ export class RealtimeSupervisor {
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
-    this.#generation += 1;
-    const disconnect =
-      this.#connected || this.#transportConnected || this.#connecting;
-    this.#connected = false;
-    this.#transportConnected = false;
-    this.#connecting = false;
-    this.#attempt = 0;
-    this.#clearRetry();
+    this.#suspend('stopped');
     this.#unsubscribeDiagnostics?.();
     this.#unsubscribeConnectivity?.();
     this.#unsubscribeLifecycle?.();
     this.#unsubscribeProtection?.();
-    this.#publish({ phase: 'stopped', attempt: 0 });
     this.#listeners.clear();
-    if (disconnect) this.#disconnect();
   }
 
   async #initialize(generation: number): Promise<void> {
@@ -361,6 +354,18 @@ export class RealtimeSupervisor {
     return undefined;
   }
 
+  /**
+   * §1.8: one HTTP round that re-arms the drive a refused fetch left behind.
+   * It does not wait for the socket, so a socket that cannot connect does not
+   * hold back the round.
+   */
+  #drive(): void {
+    if (this.#hostBlock()) return;
+    void Promise.resolve()
+      .then(() => this.#client.syncUntilIdle())
+      .catch(() => undefined);
+  }
+
   #canConnect(): boolean {
     return (
       this.#initialized &&
@@ -393,17 +398,31 @@ export class RealtimeSupervisor {
     this.#cancelRetry = undefined;
   }
 
-  #schedule(delayMs: number): void {
-    if (
-      !this.#canConnect() ||
-      this.#connected ||
-      this.#connecting ||
-      this.#cancelRetry
-    ) {
-      return;
+  /** A retry counts one attempt and backs off with bounded jitter. */
+  #schedule(retry: boolean): void {
+    if (!this.#canConnect()) return this.#reconcileHostState();
+    // Count an attempt only when this call actually schedules one. Repeated
+    // 'disconnected' diagnostics beside a pending retry keep the backoff and
+    // the worker-mode reconnect nudge intact.
+    if (this.#connected || this.#connecting || this.#cancelRetry) return;
+    let delayMs = 0;
+    if (retry) {
+      const exponential = Math.min(
+        this.#maximumDelayMs,
+        this.#initialDelayMs * 2 ** this.#attempt,
+      );
+      const random = this.#random();
+      const boundedRandom = Number.isFinite(random)
+        ? Math.max(0, Math.min(1, random))
+        : 0;
+      delayMs = Math.min(
+        this.#maximumDelayMs,
+        exponential + Math.floor(exponential * 0.25 * boundedRandom),
+      );
+      this.#attempt = Math.min(32, this.#attempt + 1);
     }
     this.#publish(
-      delayMs > 0
+      retry
         ? { phase: 'retrying', attempt: this.#attempt, retryDelayMs: delayMs }
         : { phase: 'connecting', attempt: this.#attempt },
     );
@@ -411,39 +430,6 @@ export class RealtimeSupervisor {
       this.#cancelRetry = undefined;
       void this.#connect();
     }, delayMs);
-  }
-
-  #retryDelay(): number {
-    const exponential = Math.min(
-      this.#maximumDelayMs,
-      this.#initialDelayMs * 2 ** this.#attempt,
-    );
-    const random = this.#random();
-    const boundedRandom = Number.isFinite(random)
-      ? Math.max(0, Math.min(1, random))
-      : 0;
-    const jitter = Math.floor(exponential * 0.25 * boundedRandom);
-    return Math.min(this.#maximumDelayMs, exponential + jitter);
-  }
-
-  #scheduleRetry(): void {
-    if (!this.#canConnect()) {
-      this.#reconcileHostState();
-      return;
-    }
-    // Count an attempt only when this call actually schedules one. Repeated
-    // 'disconnected' diagnostics beside a pending retry keep the backoff and
-    // the worker-mode reconnect nudge intact.
-    if (
-      this.#connected ||
-      this.#connecting ||
-      this.#cancelRetry !== undefined
-    ) {
-      return;
-    }
-    const delay = this.#retryDelay();
-    this.#attempt = Math.min(32, this.#attempt + 1);
-    this.#schedule(delay);
   }
 
   /**
@@ -496,7 +482,10 @@ export class RealtimeSupervisor {
       // A superseded attempt leaves the successor's in-flight state alone.
       if (generation === this.#generation) this.#connecting = false;
     }
-    if (failed && generation === this.#generation) this.#scheduleRetry();
+    if (failed && generation === this.#generation) {
+      this.#schedule(true);
+      this.#drive();
+    }
   }
 
   async #catchUpConnectedTransport(generation: number): Promise<void> {
@@ -538,7 +527,7 @@ export class RealtimeSupervisor {
       // A superseded adoption leaves the successor's in-flight state alone.
       if (generation === this.#generation) this.#connecting = false;
     }
-    if (failed && generation === this.#generation) this.#scheduleRetry();
+    if (failed && generation === this.#generation) this.#schedule(true);
   }
 
   #observeDiagnostics(
@@ -551,16 +540,8 @@ export class RealtimeSupervisor {
       snapshot.host.realtime === 'unsupported' ||
       snapshot.host.realtime === 'disabled'
     ) {
-      const disconnect =
-        this.#connected || this.#transportConnected || this.#connecting;
       this.#realtimeSupported = false;
-      this.#generation += 1;
-      this.#connected = false;
-      this.#transportConnected = false;
-      this.#attempt = 0;
-      this.#clearRetry();
-      this.#publish({ phase: 'unsupported', attempt: 0 });
-      if (disconnect) this.#disconnect();
+      this.#suspend('unsupported');
       return;
     }
     if (!this.#realtimeSupported) {
@@ -606,7 +587,7 @@ export class RealtimeSupervisor {
       this.#transportConnected = false;
       this.#connected = false;
       if (this.#connecting) return;
-      if (this.#initialized && !initial) this.#scheduleRetry();
+      if (this.#initialized && !initial) this.#schedule(true);
       return;
     }
     this.#reconcileHostState();
@@ -631,15 +612,16 @@ export class RealtimeSupervisor {
       this.#publish({ phase: 'connected', attempt: 0 });
       return;
     }
-    this.#schedule(0);
+    this.#schedule(false);
   }
 
-  #suspend(phase: RealtimeSuspendedPhase): void {
+  /** Cancel every attempt and release the socket, then publish `phase`. */
+  #suspend(phase: RealtimeSupervisorPhase): void {
     const disconnect =
       this.#connected || this.#transportConnected || this.#connecting;
-    const hadScheduledWork = this.#cancelRetry !== undefined;
-    const phaseChanged = this.#snapshot.phase !== phase;
-    if (!disconnect && !hadScheduledWork && !phaseChanged) return;
+    if (!disconnect && !this.#cancelRetry && this.#snapshot.phase === phase) {
+      return;
+    }
     this.#generation += 1;
     this.#connected = false;
     this.#transportConnected = false;

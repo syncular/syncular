@@ -232,14 +232,15 @@ describe('supported realtime host supervisor', () => {
     expect(timers.runNext()).toBe(1_000);
     await settle();
     expect(realtime.calls.connect).toBe(2);
-    expect(realtime.calls.catchUp).toBe(1);
+    // The failed first attempt drove one HTTP round, the connect a catch-up.
+    expect(realtime.calls.catchUp).toBe(2);
     expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
 
     realtime.emit('disconnected');
     expect(timers.runNext()).toBe(1_000);
     await settle();
     expect(realtime.calls.connect).toBe(3);
-    expect(realtime.calls.catchUp).toBe(2);
+    expect(realtime.calls.catchUp).toBe(3);
     supervisor.stop();
   });
 
@@ -679,6 +680,104 @@ describe('supported realtime host supervisor', () => {
     supervisor.stop();
     await a.client.close();
     await b.client.close();
+  });
+
+  test('a socket that never connects drives one HTTP round per attempt and on foreground', async () => {
+    const app = signal<RealtimeSupervisorLifecycleState>('active');
+    const timers = scheduler();
+    const realtime = fixture(['reject', 'reject', 'reject', 'reject']);
+    const supervisor = new RealtimeSupervisor(realtime.client, {
+      lifecycle: app.port,
+      sharedTransport: true,
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    expect(timers.runNext()).toBe(0);
+    await settle();
+    // §1.8: each failed attempt of the backoff schedule brings one round.
+    expect(realtime.calls).toMatchObject({ connect: 1, catchUp: 1 });
+    expect(supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+    });
+    expect(timers.runNext()).toBe(1_000);
+    await settle();
+    expect(realtime.calls).toMatchObject({ connect: 2, catchUp: 2 });
+    expect(supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 2,
+      retryDelayMs: 2_000,
+    });
+
+    // A return to the foreground brings one round without waiting for the
+    // pending attempt; the backoff schedule stays as it was.
+    app.emit('background');
+    await settle();
+    expect(realtime.calls.catchUp).toBe(2);
+    app.emit('active');
+    await settle();
+    expect(realtime.calls).toMatchObject({ connect: 2, catchUp: 3 });
+    expect(supervisor.snapshot().phase).toBe('retrying');
+    expect(timers.pending()).toBe(1);
+
+    supervisor.stop();
+    app.emit('active');
+    await settle();
+    expect(realtime.calls.catchUp).toBe(3);
+  });
+
+  test('a refused fetch behind a refused socket resumes on the next connect attempt', async () => {
+    const server = makeServer();
+    const writer = await makeClient(server, {
+      clientId: 'supervisor-socketless',
+    });
+    const refusedSocket: RealtimeSupervisorClient = {
+      connectRealtime: () => Promise.reject(new Error('socket refused')),
+      disconnectRealtime: () => writer.client.disconnectRealtime(),
+      syncUntilIdle: () => writer.client.syncUntilIdle(),
+      diagnosticsSnapshot: () => writer.client.diagnosticsSnapshot(),
+      onDiagnostics: (listener) => writer.client.onDiagnostics(listener),
+      close: () => writer.client.close(),
+    };
+    const network = signal<'online' | 'offline' | 'unknown'>('online');
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(refusedSocket, {
+      connectivity: network.port,
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+
+    writer.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('socketless-edit', 'p1', 'written behind a proxy'),
+      },
+    ]);
+    writer.faults.refuseConnectionOnce = true;
+    await expect(writer.client.syncUntilIdle()).rejects.toMatchObject({
+      details: { causeKind: 'connect' },
+    });
+    expect(writer.client.pendingCommits()).toHaveLength(1);
+
+    // The host stays online, so only the connect attempt can drive the round.
+    timers.runNext();
+    await waitFor(
+      () => writer.client.pendingCommits().length === 0,
+      (notify) => writer.client.onProgress(notify),
+      'the failed connect attempt pushes the pending edit',
+    );
+    expect(
+      await server.storage.getRow(PARTITION, 'tasks', 'socketless-edit'),
+    ).toBeDefined();
+    expect(supervisor.snapshot().phase).toBe('retrying');
+    supervisor.stop();
+    await writer.client.close();
   });
 
   test('an app-closed transport gate holds the supervisor offline without reconnecting', async () => {

@@ -801,8 +801,15 @@ the backoff; the host re-arms the drive on its own connectivity signal. The
 client keeps sync-needed raised after such a failure, so the re-armed drive has
 work. A failed round is not connectivity evidence for a host loop: the
 TypeScript realtime supervisor takes its `offline` state from the host's
-connectivity signal alone, and each `online` report from that signal drives
-`syncUntilIdle`, with or without realtime.
+connectivity signal alone. A network can refuse the socket while the host
+stays online (a proxy without WebSockets), so the supervisor re-arms the drive
+on three events, with or without realtime: each `online` report from the
+connectivity signal, each failed attempt of its realtime backoff schedule, and
+each return to the foreground while no attempt starts at once (phase
+`retrying` or `unsupported`). Each event drives `syncUntilIdle` once over
+HTTP while nothing suspends the supervisor. Only phase `connected` means a
+socket carries the rounds; in every other phase the rounds go over HTTP, and
+`attempt` 1 or more means the last socket attempt failed.
 `transport.redirect`, `transport.request_too_large`, and
 `transport.response_too_large` describe a configuration the client cannot
 repair by repeating the request, so they schedule no intent. A silence timeout of a segment fetch is retryable like any
