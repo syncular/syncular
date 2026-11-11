@@ -5,7 +5,7 @@
  */
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import { rawPull, responseLive } from '../raw';
 import type { Scenario } from '../scenario';
 import { seedTasks, syncIdle } from './util';
 
@@ -22,7 +22,7 @@ export const erasureScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: BOTH,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: BOTH });
+      await a.api.subscribeMany([{ project_id: 'p1' }, { project_id: 'p2' }]);
       await syncIdle(a);
       await seedTasks(ctx, [
         task('t1', 'p1', 'personal'),
@@ -56,7 +56,7 @@ export const erasureScenarios: readonly Scenario[] = [
         clientId: 'client-b',
         allowed: BOTH,
       });
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: BOTH });
+      await b.api.subscribeMany([{ project_id: 'p1' }, { project_id: 'p2' }]);
       await syncIdle(b);
       checkEqual(
         (await b.api.readRows('tasks')).map((row) => row.rowId),
@@ -68,16 +68,13 @@ export const erasureScenarios: readonly Scenario[] = [
       await ctx.server.setAllowedScopes('raw-actor', BOTH);
       const pull = await ctx.rawSync(
         'raw-actor',
-        [
-          rawPullHeader(),
-          rawSubscription('s1', 'tasks', { project_id: ['p1'] }, 0),
-        ],
+        [...rawPull([{ scopes: { project_id: 'p1' }, cursor: 0 }])],
         { clientId: 'raw-client' },
       );
       check(pull.ok, 'incremental pull succeeded');
       if (!pull.ok) return;
-      const changes = responseSection(pull.message, 's1').body.flatMap(
-        (frame) => (frame.type === 'COMMIT' ? frame.changes : []),
+      const changes = responseLive(pull.message).commits.flatMap(
+        (commit) => commit.changes,
       );
       checkEqual(
         changes.map((change) => `${change.op}:${change.rowId}`).sort(),

@@ -11,11 +11,12 @@
 import { REALTIME_TAG_ROUND } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import { rawPullHeader, rawRequestBytes, rawSubscription } from '../raw';
+import { rawRequestBytes, rawPull } from '../raw';
 import type { Scenario } from '../scenario';
-import { expectConverged, seedTasks, syncIdle } from './util';
+import { expectConverged, seedTasks, syncIdle, unitCursor } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 function tagged(bytes: Uint8Array): Uint8Array {
   const out = new Uint8Array(bytes.length + 1);
@@ -38,7 +39,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
 
       // Socket client: connects first, every round rides the socket.
@@ -53,7 +54,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
         true,
         'a never-synced client is told to run a round (§8.1)',
       );
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await b.api.subscribe(U1);
       await syncIdle(b);
       check(
         b.realtime.roundsCompleted >= 1,
@@ -81,11 +82,9 @@ export const wsRoundScenarios: readonly Scenario[] = [
         variable: 'project_id',
         values: ['p1'],
       });
-      const subA = await a.api.subscriptionState('tasks');
-      const subB = await b.api.subscriptionState('tasks');
       checkEqual(
-        subB?.cursor,
-        subA?.cursor,
+        await unitCursor(b, U1),
+        await unitCursor(a, U1),
         'both bindings advanced the same cursor — one handler, two framings',
       );
       checkEqual(
@@ -110,7 +109,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       await b.api.connectRealtime();
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await b.api.subscribe(U1);
       await syncIdle(b);
       check(
         b.realtime.roundsCompleted >= 1,
@@ -161,10 +160,9 @@ export const wsRoundScenarios: readonly Scenario[] = [
       check(result.ok, 'raw realtime connect failed');
       if (!result.ok) return;
       const request = tagged(
-        rawRequestBytes(
-          [rawPullHeader(), rawSubscription('s1', 'tasks', P1, -1)],
-          { clientId: 'client-raw' },
-        ),
+        rawRequestBytes([...rawPull([{ scopes: U1, cursor: -1 }])], {
+          clientId: 'client-raw',
+        }),
       );
       // First complete request starts a round; a second while its
       // response streams is pipelining — MUST NOT be processed, drops
@@ -187,7 +185,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       await b.api.connectRealtime();
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await b.api.subscribe(U1);
       await syncIdle(b); // registers this connection (§8.7)
 
       // b's own push fans out while its response is in flight. The server
@@ -236,7 +234,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
         clientId: 'reader',
         allowed: P1,
       });
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await b.api.subscribe(U1);
       await syncIdle(b);
       const original = ctx.server.connectRealtime.bind(ctx.server);
       const entered = Promise.withResolvers<void>();

@@ -12,10 +12,11 @@
  */
 import { check, checkEqual } from '../checks';
 import type { DriverAdminClient } from '../driver';
-import { rawPullHeader, rawSubscription } from '../raw';
+import { rawPullHeader, rawPull } from '../raw';
 import type { Scenario } from '../scenario';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 function clientOf(
   clients: readonly DriverAdminClient[],
@@ -31,10 +32,7 @@ export const roundFailureScenarios: readonly Scenario[] = [
     async run(ctx) {
       await ctx.server.setAllowedScopes('actor-1', P1);
       const clientId = 'reporting-client';
-      const pull = () => [
-        rawPullHeader(),
-        rawSubscription('s1', 'tasks', P1, 0),
-      ];
+      const pull = () => [...rawPull([{ scopes: U1, cursor: 0 }])];
       const report = (code: string) => [
         { type: 'ROUND_FAILURE' as const, code },
         ...pull(),

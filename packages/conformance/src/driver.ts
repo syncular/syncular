@@ -39,6 +39,9 @@ export type DriverRow = Readonly<Record<string, DriverRowValue>>;
 /** Scope map (§3.2): variable → list of values. Always lists (§0). */
 export type DriverScopeMap = Readonly<Record<string, readonly string[]>>;
 
+/** §4.1 unit: one value per requested variable. Its id is derived. */
+export type DriverUnitScopes = Readonly<Record<string, string>>;
+
 // ---------------------------------------------------------------------------
 // Schema IR (JSON-able, mirrors the §2.4 schema IR)
 // ---------------------------------------------------------------------------
@@ -156,6 +159,8 @@ export interface ServerLimitsOptions {
   readonly inlineSegmentMaxBytes?: number;
   /** §6.11 declared-reference cascade cap per commit (reference default 1,000). */
   readonly maxCascadeOperationsPerCommit?: number;
+  /** §1.7 `UNIT` frames per request (reference default 500). */
+  readonly maxSubscriptionsPerRequest?: number;
   readonly maxDeltaBytes?: number;
   readonly segmentTtlMs?: number;
   /** §8.6.2 presence document size cap (bytes). */
@@ -208,7 +213,14 @@ export interface ServerRowState {
 export interface DriverAdminClient {
   readonly clientId: string;
   readonly actorId: string;
+  /** The record cursor (§4.5). */
   readonly cursor: number;
+  /** The stored registration list; `catchingUpCursor` absent for a live unit. */
+  readonly units: readonly {
+    readonly id: string;
+    readonly scopes: DriverUnitScopes;
+    readonly catchingUpCursor?: number;
+  }[];
   /** When its last sync round finished, successfully or not. */
   readonly lastRoundAtMs?: number;
   /** Code of its last round; present only while that round failed. */
@@ -243,6 +255,10 @@ export type RealtimeConnectResult =
 export type ServerCapability =
   | 'backup-restore'
   | 'idempotency-fault'
+  /** §6.3.2 introspection: `idempotencyState`. */
+  | 'idempotency-state'
+  /** §9: `reopenAsVersion3Database`. */
+  | 'version3-database'
   | 'storage-fault'
   | 'concurrent-storage-faults'
   | 'signed-urls'
@@ -545,6 +561,32 @@ export interface ServerInstance {
   /** Hold two post-commit notifications, then deliver them in reverse sequence. */
   reverseNextCommitNotifications?(): Promise<void>;
 
+  /**
+   * `idempotency-state`: the §6.3.2 rows the server stores for the partition:
+   * every stored push result with its outbox position, and every watermark.
+   */
+  idempotencyState?(): Promise<{
+    readonly results: readonly {
+      readonly clientId: string;
+      readonly clientCommitId: string;
+      readonly outboxId?: string;
+      readonly clientSeq?: number;
+    }[];
+    readonly watermarks: readonly {
+      readonly clientId: string;
+      readonly outboxId: string;
+      readonly throughSeq: number;
+    }[];
+  }>;
+  /**
+   * `version3-database`: rewrite the partition's storage into the layout a
+   * wire version 3 server left (delete changes without a row version, no
+   * delete floor, client records without a registration list, results
+   * without an outbox position, no watermark table), then reopen it so the
+   * server's own upgrade runs (§9).
+   */
+  reopenAsVersion3Database?(): Promise<void>;
+
   close(): Promise<void>;
 }
 
@@ -803,33 +845,42 @@ export interface ClientRowState {
   readonly values: DriverRow;
 }
 
-export interface ClientSubscriptionState {
+/** §4.1 client state of one registered unit. */
+export interface ClientUnitState {
   readonly id: string;
-  readonly table: string;
+  readonly scopes: DriverUnitScopes;
+  /** An explicit `subscribe` holds the unit (window bases hold it too). */
+  readonly explicit: boolean;
   readonly status: 'active' | 'revoked' | 'failed';
-  readonly cursor: number;
+  /** Absent while the unit is live (§4.5); otherwise `-1`, the pin or `P`. */
+  readonly cursor?: number;
   readonly hasResumeToken: boolean;
-  readonly effectiveScopes?: DriverScopeMap;
+  /** The echo persisted at the unit's last `SUB_END` (§4.4). */
+  readonly echo?: readonly {
+    readonly table: string;
+    readonly status: 'active' | 'revoked';
+    readonly scopes: DriverScopeMap;
+  }[];
   readonly reasonCode?: string;
 }
 
 /**
- * §7.5 catch-up state as the sidecar/snapshot reports it. `unknown` means the
- * client does not currently hold the subscription (never registered, forgotten,
- * or removed) and carries no fabricated table or cursor.
+ * §7.5 catch-up state as the snapshot reports it. `unknown` means the client
+ * does not currently hold the unit (never registered, or removed) and carries
+ * no fabricated cursor.
  */
-export type DriverSubscriptionCatchup =
+export type DriverUnitCatchup =
   | { readonly state: 'unknown'; readonly id: string }
   | {
       readonly state: 'known';
       readonly id: string;
-      readonly table: string;
       readonly status: 'active' | 'revoked' | 'failed';
+      readonly live: boolean;
+      /** The unit's cursor while it catches up, the replica cursor while live. */
       readonly cursor: number;
       readonly hasResumeToken: boolean;
       readonly bootstrapComplete: boolean;
       readonly knownPendingPages: boolean;
-      readonly effectiveScopes?: DriverScopeMap;
       readonly reasonCode?: string;
     };
 
@@ -882,7 +933,7 @@ export interface DriverSnapshotRead {
       readonly unit: string;
     }[];
   };
-  readonly subscriptions: readonly DriverSubscriptionCatchup[];
+  readonly units: readonly DriverUnitCatchup[];
   readonly deliveries: readonly DriverCommitDelivery[];
 }
 
@@ -1056,12 +1107,11 @@ export interface ClientCreateOptions {
   readonly previousVersionContext?: ClientPreviousVersionContextOptions;
 }
 
-/** §4.8 window base a scenario windows on: table + variable + fixed scopes. */
+/** §4.8 window base: the variable whose values are the window units, plus
+ * one value per other variable shared by every unit. */
 export interface DriverWindowBase {
-  readonly table: string;
   readonly variable: string;
-  readonly fixedScopes?: DriverScopeMap;
-  readonly params?: string;
+  readonly fixedScopes?: DriverUnitScopes;
 }
 
 /** Exact client-local observation output. Revisions are decimal
@@ -1074,7 +1124,6 @@ export interface DriverChangeBatch {
   }[];
   readonly windows: readonly {
     readonly baseKey: string;
-    readonly table: string;
     readonly units: readonly string[];
   }[];
   readonly status?: {
@@ -1087,7 +1136,6 @@ export interface DriverChangeBatch {
   readonly rejectionsChanged: boolean;
   readonly outcomesChanged: boolean;
   readonly appliedCommits?: readonly {
-    readonly subscriptionId: string;
     readonly table: string;
     readonly commitSeq: number;
     readonly source: 'delta' | 'pull';
@@ -1130,12 +1178,11 @@ export interface ClientInstance {
   authoritySnapshot(): Promise<DriverAuthoritySnapshot>;
   beginSecurityPreflight(): Promise<void>;
   activateSecurity(): Promise<void>;
-  subscribe(input: {
-    readonly id: string;
-    readonly table: string;
-    readonly scopes: DriverScopeMap;
-    readonly params?: string;
-  }): Promise<void>;
+  /** §4.1: register one unit; returns its derived id. */
+  subscribe(scopes: DriverUnitScopes): Promise<string>;
+  /** Register several units in one local transaction; returns their ids. */
+  subscribeMany(units: readonly DriverUnitScopes[]): Promise<string[]>;
+  /** Release the explicit reference to a unit (§4.1). */
   unsubscribe(id: string): Promise<void>;
 
   /**
@@ -1192,6 +1239,19 @@ export interface ClientInstance {
     };
   }>;
   diagnosticsSnapshot?(): Promise<{
+    /** §4.5 replica cursor; `-1` while no unit is live. */
+    readonly replicaCursor: number;
+    /** Units the next registration list carries (§4.1). */
+    readonly activeUnits: number;
+    /** §7.6 registered units per state; no unit id appears. */
+    readonly units: {
+      readonly bootstrapping: number;
+      readonly complete: number;
+      readonly reset: number;
+      readonly revoked: number;
+      readonly failed: number;
+      readonly reasonCodes: readonly string[];
+    };
     readonly queryFailures: readonly DriverQueryFailure[];
     readonly host: DriverRealtimeAvailability;
     readonly lastRound?: {
@@ -1216,7 +1276,7 @@ export interface ClientInstance {
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[];
-    readonly subscriptions?: readonly string[];
+    readonly units?: readonly string[];
     readonly commitIds?: readonly string[];
     readonly owner?: {
       readonly id: string;
@@ -1274,7 +1334,12 @@ export interface ClientInstance {
    * FIFO — exactly what the next push round would put on the wire. Used by
    * B.21(h) to pin cross-core byte identity. */
   pendingPayloads?(): Promise<Uint8Array[]>;
-  subscriptionState(id: string): Promise<ClientSubscriptionState | undefined>;
+  /** §4.1 state of one registered unit; `undefined` when none holds `id`. */
+  unitState(id: string): Promise<ClientUnitState | undefined>;
+  /** Every registered unit in registration order. */
+  units(): Promise<readonly ClientUnitState[]>;
+  /** §4.5 replica cursor; `-1` while no unit is live. */
+  replicaCursor(): Promise<number>;
   schemaFloor(): Promise<
     | {
         readonly requiredSchemaVersion?: number;

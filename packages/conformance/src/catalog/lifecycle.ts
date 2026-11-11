@@ -2,20 +2,28 @@
  * Cursor expiry / pruning horizon (SPEC.md §4.6; Appendix B.8) and the
  * schema floor (§1.6, §2.4).
  */
+import { unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { FIXTURE_SCHEMA_V2, task } from '../fixture';
 import {
   rawDelete,
-  rawPullHeader,
   rawPushCommit,
-  rawSubscription,
+  rawPull,
   rawUpsert,
+  responseLive,
   responseSection,
 } from '../raw';
 import type { Scenario } from '../scenario';
-import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
+import {
+  expectConverged,
+  seedTasks,
+  syncIdle,
+  syncOk,
+  unitCursor,
+} from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 export const lifecycleScenarios: readonly Scenario[] = [
   {
@@ -41,7 +49,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         'unregistered coverage is explicit',
       );
       await seedTasks(ctx, [task('t1', 'p1', 'accepted')]);
-      await a.api.subscribe({ id: 'authority', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       checkEqual(
         (await a.api.authoritySnapshot()).tables[0]?.coverage,
         'pending',
@@ -174,7 +182,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         clientId: 'reader',
         allowed: P1,
       });
-      await client.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await client.api.subscribe(U1);
       await syncIdle(client);
       await seedTasks(ctx, [task('t2', 'p1', 'pruned')]);
       await ctx.server.pruneDuringNextCommitRead!();
@@ -185,13 +193,13 @@ export const lifecycleScenarios: readonly Scenario[] = [
         'an incomplete window applies no commits',
       );
       checkEqual(
-        (await client.api.subscriptionState('tasks'))?.cursor,
+        await unitCursor(client, U1),
         -1,
         'reset discards the expired cursor',
       );
       checkEqual(
         reset.resets,
-        ['tasks'],
+        [unitId(U1)],
         'the round reports required bootstrap recovery',
       );
       await syncIdle(client);
@@ -207,83 +215,6 @@ export const lifecycleScenarios: readonly Scenario[] = [
     },
   },
   {
-    name: 'subscription/identity-is-immutable-and-idempotent',
-    specRefs: ['§4.1', '§7.5'],
-    async run(ctx) {
-      const a = await ctx.newClient({
-        actorId: 'actor-a',
-        clientId: 'client-a',
-        allowed: { project_id: ['p1', 'p2'], org_id: ['o1'] },
-      });
-      await a.api.subscribe({
-        id: 'stable-subscription',
-        table: 'tasks',
-        scopes: { project_id: ['p2', 'p1'] },
-        params: '{"view":"v1"}',
-      });
-      await syncIdle(a);
-      const complete = await a.api.subscriptionState('stable-subscription');
-      check(
-        complete !== undefined && complete.cursor >= 0,
-        'the original subscription completed',
-      );
-
-      // Canonically identical values are one intent even if the host repeats
-      // or reorders them. Progress must not reset on a React remount/restart.
-      await a.api.subscribe({
-        id: 'stable-subscription',
-        table: 'tasks',
-        scopes: { project_id: ['p1', 'p2', 'p1'] },
-        params: '{"view":"v1"}',
-      });
-      checkEqual(
-        await a.api.subscriptionState('stable-subscription'),
-        complete,
-        'an identical re-declaration retains exact progress',
-      );
-
-      const mismatches = [
-        {
-          id: 'stable-subscription',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
-          params: '{"view":"v1"}',
-        },
-        {
-          id: 'stable-subscription',
-          table: 'tasks',
-          scopes: { project_id: ['p2', 'p1'] },
-          params: '{"view":"v2"}',
-        },
-        {
-          id: 'stable-subscription',
-          table: 'docs',
-          scopes: { org_id: ['o1'], projectId: ['p1'] },
-          params: '{"view":"v1"}',
-        },
-      ] as const;
-      for (const mismatch of mismatches) {
-        let code = '';
-        try {
-          await a.api.subscribe(mismatch);
-        } catch (error) {
-          code = (error as { code?: string }).code ?? '';
-        }
-        checkEqual(
-          code,
-          'client.subscription_intent_mismatch',
-          'a changed table, scope, or params fails with the stable client code',
-        );
-        checkEqual(
-          await a.api.subscriptionState('stable-subscription'),
-          complete,
-          'a rejected rebind cannot alter prior subscription evidence',
-        );
-      }
-    },
-  },
-
-  {
     name: 'cursor/horizon-reset-rebootstrap-and-boundary',
     specRefs: ['§4.6', '§4.7', '§5.6', 'B.8'],
     async run(ctx) {
@@ -294,7 +225,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       await seedTasks(ctx, [task('t1', 'p1', 'old'), task('t2', 'p1', 'old')]);
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
 
       await ctx.server.setAllowedScopes('seed-actor', {
@@ -330,7 +261,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
       // and the fresh bootstrap's first-page clear removes the locally
       // stale t1 (§5.6): reset is staleness, revoked is the only purge.
       const first = await syncOk(a);
-      check(first.resets.includes('tasks'), 'reset delivered (§4.6)');
+      check(first.resets.includes(unitId(U1)), 'reset delivered (§4.6)');
       await syncIdle(a);
       // Versions compare too: the re-bootstrap's segment row records
       // carry the rows' server_version (§5.2/§5.6).
@@ -354,19 +285,19 @@ export const lifecycleScenarios: readonly Scenario[] = [
       ]);
       const boundary = await ctx.rawSync(
         'bd-actor',
-        [rawPullHeader(), rawSubscription('s1', 'tasks', P1, horizon)],
+        [...rawPull([{ scopes: U1, cursor: horizon }])],
         { clientId: 'bd-client' },
       );
       check(boundary.ok, 'boundary pull succeeded');
       if (!boundary.ok) return;
-      const section = responseSection(boundary.message, 's1');
+      const section = responseSection(boundary.message, U1);
       checkEqual(
         section.start.status,
         'active',
         'cursor = horizon is servable',
       );
       checkEqual(
-        section.body.filter((frame) => frame.type === 'COMMIT').length,
+        responseLive(boundary.message).commits.length,
         1,
         'the post-horizon commit arrived incrementally',
       );
@@ -399,7 +330,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       const m1 = await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'held') },
       ]);
@@ -421,11 +352,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         [m1],
         'the outbox is preserved for replay after the upgrade',
       );
-      checkEqual(
-        (await a.api.subscriptionState('tasks'))?.cursor,
-        -1,
-        'no subscription was answered',
-      );
+      checkEqual(await unitCursor(a, U1), -1, 'no subscription was answered');
 
       // The client is stopped until an upgrade: further syncs are inert.
       const second = await syncOk(a);

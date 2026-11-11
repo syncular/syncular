@@ -4,14 +4,21 @@
  * §1.4; Appendix B.5).
  */
 
-import { canonicalScopeJson } from '@syncular/core';
+import { canonicalScopeJson, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import { rawPull, responseSection } from '../raw';
 import type { Scenario } from '../scenario';
-import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
+import {
+  expectConverged,
+  seedTasks,
+  syncIdle,
+  syncOk,
+  unitCursor,
+} from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 export const bootstrapScenarios: readonly Scenario[] = [
   ...[0b0011, 0b0111].map(
@@ -40,7 +47,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
         });
         // Establish the log epoch before measuring import revisions.
         await syncOk(a);
-        await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await a.api.subscribe(U1);
         await a.api.drainChangeBatches?.();
         await syncOk(a);
         const batches = await a.api.drainChangeBatches?.();
@@ -110,7 +117,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
         'no invented work before first attempt',
       );
       await syncOk(a);
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       a.faults.truncateNextSegmentDownload = true;
       const failed = await a.api.sync();
       check(!failed.ok, 'corrupt transfer fails');
@@ -168,7 +175,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       const first = await syncOk(a);
       checkEqual(first.segmentRowsApplied, 3, 'snapshot arrived as segments');
@@ -189,7 +196,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
       );
       const pin = await ctx.server.getMaxCommitSeq();
       checkEqual(
-        (await a.api.subscriptionState('tasks'))?.cursor,
+        await unitCursor(a, U1),
         pin,
         'SUB_END.nextCursor is the bootstrap pin (§4.7)',
       );
@@ -241,7 +248,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
         allowed: P1,
         limits,
       });
-      await control.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await control.api.subscribe(U1);
       await syncIdle(control);
 
       // Interrupted: lose a response mid-bootstrap, then resume.
@@ -251,11 +258,11 @@ export const bootstrapScenarios: readonly Scenario[] = [
         allowed: P1,
         limits,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       const page1 = await syncOk(a);
       checkEqual(page1.segmentRowsApplied, 2, 'first page applied');
       check(
-        (await a.api.subscriptionState('tasks'))?.hasResumeToken === true,
+        (await a.api.unitState(unitId(U1)))?.hasResumeToken === true,
         'the resume token was persisted at SUB_END',
       );
 
@@ -263,7 +270,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
       const lost = await a.api.sync();
       check(!lost.ok, 'the mid-bootstrap response was lost');
       check(
-        (await a.api.subscriptionState('tasks'))?.hasResumeToken === true,
+        (await a.api.unitState(unitId(U1)))?.hasResumeToken === true,
         'the lost round persisted nothing — the token still points at the last completed page (§1.4)',
       );
 
@@ -295,14 +302,14 @@ export const bootstrapScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // Byte truncation at the segment hop → content-address mismatch →
       // the segment is discarded, nothing persists.
       a.faults.truncateNextSegmentDownload = true;
       const result = await a.api.sync();
       check(!result.ok, 'the truncated segment failed the sync round');
-      const state = await a.api.subscriptionState('tasks');
+      const state = await a.api.unitState(unitId(U1));
       checkEqual(state?.cursor, -1, 'the cursor did not advance (§1.4 rule 5)');
       checkEqual(state?.hasResumeToken, false, 'no resume token persisted');
       checkEqual((await a.api.readRows('tasks')).length, 0, 'nothing applied');
@@ -325,9 +332,9 @@ export const bootstrapScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
-      const cursorBefore = (await a.api.subscriptionState('tasks'))?.cursor;
+      const cursorBefore = await unitCursor(a, U1);
 
       await seedTasks(ctx, [task('t1', 'p1', 'cut off')]);
       a.faults.truncateNextResponse = true;
@@ -341,7 +348,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
         );
       }
       checkEqual(
-        (await a.api.subscriptionState('tasks'))?.cursor,
+        await unitCursor(a, U1),
         cursorBefore,
         'the aborted round persisted no cursor (§1.4 rule 5)',
       );
@@ -372,7 +379,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       const first = await syncOk(a);
       checkEqual(first.segmentRowsApplied, 2, 'both rows arrived as segments');
       checkEqual(
@@ -483,17 +490,14 @@ export const bootstrapScenarios: readonly Scenario[] = [
       await ctx.server.setAllowedScopes('exp-actor', P1);
       await seedTasks(ctx, [task('t1', 'p1', 'ttl')]);
       const scopesHeader = canonicalScopeJson({ project_id: ['p1'] });
-      const pullFrames = [
-        rawPullHeader(),
-        rawSubscription('s1', 'tasks', P1, -1),
-      ];
+      const pullFrames = [...rawPull([{ scopes: U1, cursor: -1 }])];
 
       const pull = await ctx.rawSync('exp-actor', pullFrames, {
         clientId: 'exp-client',
       });
       check(pull.ok, 'bootstrap pull succeeded');
       if (!pull.ok) return;
-      const ref = responseSection(pull.message, 's1').body.find(
+      const ref = responseSection(pull.message, U1).body.find(
         (frame) => frame.type === 'SEGMENT_REF',
       );
       check(ref?.type === 'SEGMENT_REF', 'external segment reference issued');
@@ -522,7 +526,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
       });
       check(repull.ok, 're-pull mints fresh descriptors');
       if (!repull.ok) return;
-      const fresh = responseSection(repull.message, 's1').body.find(
+      const fresh = responseSection(repull.message, U1).body.find(
         (frame) => frame.type === 'SEGMENT_REF',
       );
       check(fresh?.type === 'SEGMENT_REF', 'fresh reference issued');

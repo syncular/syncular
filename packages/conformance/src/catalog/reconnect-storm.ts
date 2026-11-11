@@ -15,6 +15,7 @@ import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, seedTasks, syncIdle } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 const SESSION_COUNT = 20;
 
 async function connected(
@@ -26,7 +27,7 @@ async function connected(
     clientId: `client-${index}`,
     allowed: P1,
   });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await handle.api.connectRealtime();
   await syncIdle(handle);
   return handle;

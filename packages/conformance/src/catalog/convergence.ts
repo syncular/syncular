@@ -1,3 +1,4 @@
+import { unitId } from '@syncular/core';
 /**
  * Convergence scenarios (SPEC.md Appendix B.1): two clients through one
  * server end up row- and version-identical with the server.
@@ -8,6 +9,7 @@ import type { Scenario } from '../scenario';
 import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 export const convergenceScenarios: readonly Scenario[] = [
   {
@@ -25,7 +27,7 @@ export const convergenceScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       for (const c of [a, b]) {
-        await c.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await c.api.subscribe(U1);
         await syncIdle(c);
       }
 
@@ -83,7 +85,7 @@ export const convergenceScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       for (const c of [a, b]) {
-        await c.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await c.api.subscribe(U1);
         await syncIdle(c);
       }
 
@@ -114,9 +116,12 @@ export const convergenceScenarios: readonly Scenario[] = [
         ['t2', 't3'],
         'delete propagated, inserts survived',
       );
+      // t3's starting version depends on whether its commit's own delete of
+      // t1 already raised the delete floor; §2.2 fixes only that it is above
+      // the floor and equal on both sides (expectConverged above).
       checkEqual(
-        rows.map((row) => row.version),
-        [2, 1],
+        rows[0]?.version,
+        2,
         'upsert incremented server_version by exactly 1 (§2.2)',
       );
     },
@@ -131,7 +136,7 @@ export const convergenceScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
 
       // Commits the subscription cannot see (other scope).
@@ -140,11 +145,15 @@ export const convergenceScenarios: readonly Scenario[] = [
 
       const report = await syncOk(a);
       checkEqual(report.commitsApplied, 0, 'nothing matched the scope');
-      const state = await a.api.subscriptionState('tasks');
       checkEqual(
-        state?.cursor,
+        (await a.api.unitState(unitId(U1)))?.cursor,
+        undefined,
+        'the quiet unit stays live',
+      );
+      checkEqual(
+        await a.api.replicaCursor(),
         maxSeq,
-        'the cursor advances past unmatched commits — quiet subscriptions are cheap (§4.5)',
+        'the replica cursor advances past unmatched commits: a quiet replica is cheap (§4.5)',
       );
       checkEqual(
         (await a.api.readRows('tasks')).length,

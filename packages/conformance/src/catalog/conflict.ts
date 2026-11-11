@@ -21,6 +21,7 @@ import type { Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, seedRows, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 async function bootstrapped(
   ctx: ScenarioContext,
@@ -28,7 +29,7 @@ async function bootstrapped(
   clientId: string,
 ) {
   const handle = await ctx.newClient({ actorId, clientId, allowed: P1 });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -68,12 +69,8 @@ export const conflictScenarios: readonly Scenario[] = [
         allowed: { ...P1, org_id: ['o1'], projectId: ['p1'] },
         retainFailedCommits: true,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
-      await a.api.subscribe({
-        id: 'docs',
-        table: 'docs',
-        scopes: { org_id: ['o1'], projectId: ['p1'] },
-      });
+      await a.api.subscribe(U1);
+      await a.api.subscribe({ org_id: 'o1', projectId: 'p1' });
       await syncIdle(a);
       const unchanged = await a.api.readRows('docs');
       await a.api.executeStorageSql?.(
@@ -112,7 +109,7 @@ export const conflictScenarios: readonly Scenario[] = [
         retainFailedCommits: true,
       });
       for (const handle of [a, b]) {
-        await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await handle.api.subscribe(U1);
         await syncIdle(handle);
       }
       for (const resolution of ['server', 'mine', 'edit', 'revoke'] as const) {
@@ -314,7 +311,7 @@ export const conflictScenarios: readonly Scenario[] = [
           allowed: P1,
           limits: { maxPushCommitsPerRequest: 1 },
         });
-        await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await b.api.subscribe(U1);
         await syncIdle(b);
 
         const unrelated = await b.api.mutate([

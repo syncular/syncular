@@ -22,6 +22,7 @@ import {
 import { expectConverged, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /**
  * The fixture plus the two shapes §3.4 scope-column parity needs: a primary
@@ -70,7 +71,7 @@ async function bootstrapped(
   clientId: string,
 ) {
   const handle = await ctx.newClient({ actorId, clientId, allowed: P1 });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -88,7 +89,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
       const a = await ctx.newClient({
         actorId: 'actor-a',
         clientId: 'client-a',
-        allowed: { ...P1, org_id: ['o1'], projectId: ['p1'] },
+        allowed: { ...P1, org_id: ['o1'], projectId: ['*'] },
       });
       await syncOk(a);
       const ids: string[] = [];
@@ -113,12 +114,12 @@ export const sparseRowScenarios: readonly Scenario[] = [
         "CREATE TABLE ack_replay_writes(kind TEXT); CREATE TRIGGER count_ack_restore AFTER DELETE ON tasks BEGIN INSERT INTO ack_replay_writes VALUES('restore'); END; CREATE TRIGGER count_ack_replay AFTER INSERT ON tasks BEGIN INSERT INTO ack_replay_writes VALUES('replay'); END;",
       );
       for (const subscriptions of [2, 6, 12]) {
-        for (let index = 0; index < subscriptions; index += 1)
-          await a.api.subscribe({
-            id: `docs-${subscriptions}-${index}`,
-            table: 'docs',
-            scopes: { org_id: ['o1'], projectId: ['p1'] },
-          });
+        await a.api.subscribeMany(
+          Array.from({ length: subscriptions }, (_, index) => ({
+            org_id: 'o1',
+            projectId: `p-${subscriptions}-${index}`,
+          })),
+        );
         await syncOk(a);
         checkEqual(
           (
@@ -135,7 +136,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
           'unsubscribed intent stays visible',
         );
       }
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       checkEqual(
         await a.api.pendingCommitIds(),
@@ -302,7 +303,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
         clientId: 'client-b',
         allowed: { project_id: ['p1', 'p2'] },
       });
-      await moved.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await moved.api.subscribe(U1);
       await syncIdle(moved);
       await moved.api.mutate([
         {
@@ -349,7 +350,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
         allowed: P1,
         retainFailedCommits: true,
       });
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await b.api.subscribe(U1);
       await a.api.mutate(
         ['t1', 't2'].map((id) => ({
           op: 'upsert' as const,
@@ -544,7 +545,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
         allowed: P1,
         retainFailedCommits: true,
       });
-      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await b.api.subscribe(U1);
       await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'original') },
       ]);
@@ -808,8 +809,8 @@ export const sparseRowScenarios: readonly Scenario[] = [
         schema: CRDT_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'notes', table: 'notes', scopes: P1 });
-      await b.api.subscribe({ id: 'notes', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
       await syncIdle(a);
       await syncIdle(b);
 
@@ -1036,7 +1037,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
         schema: PATCH_SCOPE_SCHEMA,
         allowed: PATCH_SCOPE_ALLOWED,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'seed') },
@@ -1106,11 +1107,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
       );
 
       // A primary-key scope column also needs a local base.
-      await a.api.subscribe({
-        id: 'tenants',
-        table: 'tenants',
-        scopes: { tenant_id: ['t1'] },
-      });
+      await a.api.subscribe({ tenant_id: 't1' });
       await syncIdle(a);
       await a.api.mutate([
         {
@@ -1138,11 +1135,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
       // A supplied integer for a stored integer scope value: the value is
       // decoded through the column type before the comparison, so the two
       // equal values reach the same representation.
-      await a.api.subscribe({
-        id: 'buckets',
-        table: 'buckets',
-        scopes: { bucket: ['2'] },
-      });
+      await a.api.subscribe({ bucket: '2' });
       await syncIdle(a);
       await a.api.mutate([
         {

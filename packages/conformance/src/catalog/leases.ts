@@ -8,7 +8,7 @@
  */
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import { rawPullHeader, rawSubscription } from '../raw';
+import { rawPull } from '../raw';
 import type { Scenario } from '../scenario';
 import { seedTasks, syncIdle, syncOk } from './util';
 
@@ -27,11 +27,7 @@ export const leaseScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1'] },
       });
       await seedTasks(ctx, [task('t1', 'p1', 'one')]);
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
 
       // §7.3.2/§7.3.5: a LEASE frame was delivered and the client holds it.
@@ -82,11 +78,7 @@ export const leaseScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1'] },
       });
       await seedTasks(ctx, [task('t1', 'p1', 'one'), task('t2', 'p1', 'two')]);
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
       const held = await a.api.leaseState();
       check(held?.leaseId !== undefined, 'a lease was issued while online');
@@ -179,11 +171,7 @@ export const leaseScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1'] },
       });
       await seedTasks(ctx, [task('t1', 'p1', 'one')]);
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
       const held = await a.api.leaseState();
       const leaseId = held?.leaseId;
@@ -264,10 +252,7 @@ export const leaseScenarios: readonly Scenario[] = [
 
       const pull = await ctx.rawSync(
         'actor-a',
-        [
-          rawPullHeader(),
-          rawSubscription('tasks', 'tasks', { project_id: ['p1'] }, -1),
-        ],
+        [...rawPull([{ scopes: { project_id: 'p1' }, cursor: -1 }])],
         { clientId: 'client-a' },
       );
       check(pull.ok, 'the pull succeeded');
@@ -287,11 +272,7 @@ export const leaseScenarios: readonly Scenario[] = [
         clientId: 'client-a-2',
         allowed: { project_id: ['p1'] },
       });
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
       checkEqual(
         await a.api.leaseState(),

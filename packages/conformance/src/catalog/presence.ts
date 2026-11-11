@@ -9,11 +9,12 @@
  */
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
+import type { DriverUnitScopes } from '../driver';
 import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
 import { seedTasks, syncIdle } from './util';
 
-const P1 = { project_id: ['p1'] } as const;
-const P2 = { project_id: ['p2'] } as const;
+const P1 = { project_id: 'p1' } as const;
+const P2 = { project_id: 'p2' } as const;
 const KEY_P1 = 'project:p1';
 const KEY_P2 = 'project:p2';
 
@@ -21,18 +22,18 @@ async function connectedOn(
   ctx: ScenarioContext,
   actorId: string,
   clientId: string,
-  scopes: Record<string, readonly string[]>,
+  ...units: DriverUnitScopes[]
 ): Promise<ClientHandle> {
-  // The actor is allowed both scopes; the SUBSCRIPTION picks the key, so
+  // The actor is allowed both scopes; the unit picks the key, so
   // presence grants follow the registration (§8.6.3), not the actor.
   const handle = await ctx.newClient({
     actorId,
     clientId,
     allowed: { project_id: ['p1', 'p2'] },
   });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes });
+  await handle.api.subscribeMany(units);
   await handle.api.connectRealtime();
-  await syncIdle(handle); // §8.7: the first socket round registers the sub
+  await syncIdle(handle); // §8.7: the first socket round registers the unit
   return handle;
 }
 
@@ -241,9 +242,8 @@ export const presenceScenarios: readonly Scenario[] = [
     server: { limits: { maxPresenceBytes: 64 } },
     async run(ctx) {
       await seedTasks(ctx, [task('t1', 'p1', 'seed')]);
-      const both = { project_id: ['p1', 'p2'] };
-      const a = await connectedOn(ctx, 'actor-a', 'client-a', both);
-      const b = await connectedOn(ctx, 'actor-b', 'client-b', both);
+      const a = await connectedOn(ctx, 'actor-a', 'client-a', P1, P2);
+      const b = await connectedOn(ctx, 'actor-b', 'client-b', P1, P2);
 
       await a.api.setPresence?.(KEY_P1, { s: 'x'.repeat(20) });
       await b.realtime.waitForPresence(1);

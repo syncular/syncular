@@ -1,3 +1,4 @@
+import { unitId } from '@syncular/core';
 /**
  * Schema-bump flow (SPEC.md §7.4): NO client-side migration
  * engine. On a schema version increase the client keeps its (schema-agnostic)
@@ -18,12 +19,19 @@ import {
   FIXTURE_SCHEMA_V2_DROP_META,
   task,
 } from '../fixture';
-import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import { rawPull, responseSection } from '../raw';
 import type { DriverSchema, DriverTable } from '../driver';
 import type { Scenario } from '../scenario';
-import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
+import {
+  expectConverged,
+  seedTasks,
+  syncIdle,
+  syncOk,
+  unitProgress,
+} from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** Rows baseline + sqlite images (§5.3). */
 const WITH_SQLITE = 0b0111;
@@ -59,7 +67,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       // Queued at version 1: an insert of a new row and an update of a row
       // whose appended column the server already holds.
@@ -150,7 +158,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         schema,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       const commit = await a.api.mutate([
         {
@@ -167,7 +175,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         },
       ]);
       const rows = await a.api.readRows('tasks');
-      const subscription = await a.api.subscriptionState('tasks');
+      const subscription = await unitProgress(a, U1);
       let code: unknown;
       try {
         await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_META);
@@ -199,7 +207,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         '§7.4.2 preserves accepted and optimistic rows',
       );
       checkEqual(
-        await a.api.subscriptionState('tasks'),
+        await unitProgress(a, U1),
         subscription,
         '§7.4.2 preserves subscription cursors',
       );
@@ -226,13 +234,13 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         a.api.executeStorageSql !== undefined,
         'reference clients expose storage fault injection',
       );
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       const commit = await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('queued', 'p1') },
       ]);
       const rows = await a.api.readRows('tasks');
-      const subscription = await a.api.subscriptionState('tasks');
+      const subscription = await unitProgress(a, U1);
       await a.api.executeStorageSql(
         "DELETE FROM _syncular_meta WHERE key IN ('localSchemaVersion', 'localSchemaDescriptor')",
       );
@@ -248,7 +256,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         '§7.4.1 absent legacy markers preserve accepted rows',
       );
       checkEqual(
-        await a.api.subscriptionState('tasks'),
+        await unitProgress(a, U1),
         subscription,
         '§7.4.1 absent legacy markers preserve cursors',
       );
@@ -476,41 +484,35 @@ export const schemaBumpScenarios: readonly Scenario[] = [
             schema: oldSchema,
             allowed,
           });
-          const base = { table: 'tasks', variable: 'theatre_calendar_id' };
-          await a.api.subscribe({
-            id: 'old',
-            table: 'tasks',
-            scopes: { theatre_calendar_id: ['p1'] },
-          });
-          await a.api.subscribe({
-            id: 'compatible',
-            table: 'docs',
-            scopes: { org_id: ['o1'], projectId: ['p1'] },
-          });
+          const base = { variable: 'theatre_calendar_id' };
+          const old = { theatre_calendar_id: 'p1' };
+          const docs = { org_id: 'o1', projectId: 'p1' };
+          await a.api.subscribe(old);
+          await a.api.subscribe(docs);
           await a.api.setWindow?.(base, ['p1']);
           await a.api.executeStorageSql?.(
-            `INSERT INTO _syncular_window_pending_evict(sub_id,tbl,effective_scopes) VALUES ('removed-unit','tasks','{"theatre_calendar_id":["p1"]}')`,
+            `INSERT INTO _syncular_pending_evictions(unit_id,tbl,effective_scopes) VALUES ('removed-unit','tasks','{"theatre_calendar_id":["p1"]}')`,
           );
           await ctx.recreateClient(a, schema);
           if (a.api.querySnapshot)
             checkEqual(
               (
                 await a.api.querySnapshot(
-                  "SELECT count(*) AS n FROM _syncular_window_pending_evict WHERE sub_id='removed-unit'",
+                  "SELECT count(*) AS n FROM _syncular_pending_evictions WHERE unit_id='removed-unit'",
                 )
               ).rows,
               [{ n: change === 'compatible' ? 1 : 0 }],
               'orphaned pending window evictions obey the same compatibility fence',
             );
           checkEqual(
-            (await a.api.subscriptionState('compatible'))?.cursor,
+            (await a.api.unitState(unitId(docs)))?.cursor,
             -1,
-            'compatible registration must rebootstrap wiped rows',
+            'a compatible unit must rebootstrap wiped rows',
           );
           checkEqual(
-            (await a.api.subscriptionState('old')) !== undefined,
+            (await a.api.unitState(unitId(old))) !== undefined,
             change === 'compatible',
-            'only compatible scope declarations survive',
+            'only units compatible with the new declarations survive',
           );
           if (a.api.windowState)
             checkEqual(
@@ -518,22 +520,24 @@ export const schemaBumpScenarios: readonly Scenario[] = [
               change === 'compatible' ? ['p1'] : [],
               'incompatible window bookkeeping is removed',
             );
-          await a.api.subscribe({
-            id: 'current',
-            table: 'tasks',
-            scopes: {
-              [change === 'variable'
-                ? 'calendar_theatre_id'
-                : 'theatre_calendar_id']: ['p1'],
-            },
+          const current = await a.api.subscribe({
+            [change === 'variable'
+              ? 'calendar_theatre_id'
+              : 'theatre_calendar_id']: 'p1',
           });
           await syncIdle(a);
-          const cursor = (await a.api.subscriptionState('current'))?.cursor;
+          const progress = {
+            unit: await a.api.unitState(current),
+            replicaCursor: await a.api.replicaCursor(),
+          };
           await ctx.recreateClient(a, schema);
           checkEqual(
-            (await a.api.subscriptionState('current'))?.cursor,
-            cursor,
-            'same-version reopen keeps the cursor',
+            {
+              unit: await a.api.unitState(current),
+              replicaCursor: await a.api.replicaCursor(),
+            },
+            progress,
+            'same-version reopen keeps the unit and the replica cursor',
           );
           await syncIdle(a);
         },
@@ -557,7 +561,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         schema: FIXTURE_SCHEMA,
         allowed: P1,
       });
-      await old.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await old.api.subscribe(U1);
       await syncIdle(old);
       checkEqual(
         await old.api.schemaFloor(),
@@ -603,7 +607,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         schema: FIXTURE_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // The v1 client is below the server floor: its first sync stops.
       const stopped = await syncOk(a);
@@ -691,7 +695,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         schema: FIXTURE_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       const floored = await syncOk(a);
       checkEqual(
         floored.schemaFloor?.requiredSchemaVersion,
@@ -746,7 +750,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         schema: FIXTURE_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // Queue an upsert and delete for removed `docs`, plus a surviving task.
       const docsCommit = await a.api.mutate([
@@ -856,7 +860,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         schema: FIXTURE_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // Two offline commits under v1: an upsert (full-row, carries `meta`,
       // incompatible after the drop) and a delete (no row values, always
@@ -972,7 +976,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
           accept: WITH_SQLITE,
         },
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // Reference raw pull: the server offers the whole table as one sqlite
       // descriptor at the v2 codec — pinning the re-bootstrap lane.
@@ -980,14 +984,16 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       const raw = await ctx.rawSync(
         'raw-actor',
         [
-          rawPullHeader({ accept: WITH_SQLITE, limitSnapshotRows: 2 }),
-          rawSubscription('s1', 'tasks', P1, -1),
+          ...rawPull([{ scopes: U1, cursor: -1 }], {
+            accept: WITH_SQLITE,
+            limitSnapshotRows: 2,
+          }),
         ],
         { clientId: 'raw-client', schemaVersion: 2 },
       );
       check(raw.ok, 'raw v2 pull succeeded');
       if (raw.ok) {
-        const section = responseSection(raw.message, 's1');
+        const section = responseSection(raw.message, U1);
         const ref = section.body[0];
         checkEqual(section.body.length, 1, 'one segment covers the table');
         check(

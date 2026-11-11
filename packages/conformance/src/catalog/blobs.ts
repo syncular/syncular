@@ -14,6 +14,7 @@
  * owning row (§5.9.5). Both pairings run these (the Rust core bridges the
  * blob transport through the shim).
  */
+import { unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { DriverRow, DriverSchema } from '../driver';
 import {
@@ -25,6 +26,7 @@ import {
 import { syncFails, syncIdle } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 const P2 = { project_id: ['p2'] } as const;
 
 /** A schema with a blob_ref column (§2.4 tag 7), scoped by project. */
@@ -110,11 +112,7 @@ export const blobScenarios: readonly Scenario[] = [
         [],
         'cache and uncached refusal invoked no download endpoint',
       );
-      await owner.api.subscribe({
-        id: 'attachments',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await owner.api.subscribe(U1);
       await owner.api.mutate([
         {
           op: 'upsert',
@@ -260,7 +258,7 @@ export const blobScenarios: readonly Scenario[] = [
           api.recreateWithSchema !== undefined,
         'blob restart fault surfaces exist',
       );
-      await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await api.subscribe(U1);
       await syncIdle(owner);
       const ref = await api.uploadBlob(bytesOf('unacknowledged'));
       const commit = await api.mutate([
@@ -344,7 +342,7 @@ export const blobScenarios: readonly Scenario[] = [
         api.uploadBlob !== undefined && api.querySnapshot !== undefined,
         'blob storage surfaces exist',
       );
-      await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await api.subscribe(U1);
       await syncIdle(owner);
       const first = await api.uploadBlob(bytesOf('first'));
       const second = await api.uploadBlob(bytesOf('second'));
@@ -394,7 +392,7 @@ export const blobScenarios: readonly Scenario[] = [
         schema: BLOB_SCHEMA,
         allowed: P1,
       });
-      await owner.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
       const ref = await owner.api.uploadBlob?.(bytesOf('server resident'));
       check(ref !== undefined, 'owner stages the server-resident body');
@@ -531,7 +529,7 @@ export const blobScenarios: readonly Scenario[] = [
         api.uploadBlob !== undefined && api.querySnapshot !== undefined,
         'blob storage surfaces exist',
       );
-      await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await api.subscribe(U1);
       await syncIdle(owner);
       const ref = await api.uploadBlob(bytesOf('revoked pending'));
       await api.mutate([
@@ -545,7 +543,10 @@ export const blobScenarios: readonly Scenario[] = [
       const report = await api.sync();
       check(report.ok, 'revocation response applies');
       if (report.ok) {
-        check(report.report.revoked.includes('a'), 'subscription is revoked');
+        check(
+          report.report.revoked.includes(unitId(U1)),
+          'the unit is revoked',
+        );
       }
       checkEqual(await api.pendingCommitIds(), [], 'doomed commit is removed');
       checkEqual(
@@ -592,7 +593,7 @@ export const blobScenarios: readonly Scenario[] = [
             api.querySnapshot !== undefined,
           'blob storage surfaces exist',
         );
-        await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+        await api.subscribe(U1);
         await syncIdle(owner);
         const first = await api.uploadBlob(bytesOf('good'), {
           mediaType: 'text/plain',
@@ -730,7 +731,7 @@ export const blobScenarios: readonly Scenario[] = [
               api.recreateWithSchema !== undefined,
             'storage fault surfaces are required',
           );
-          await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+          await api.subscribe(U1);
           await syncIdle(owner);
           const bytes = bytesOf('durable upload');
           const ref = await api.uploadBlob(bytes, { mediaType: 'text/plain' });
@@ -1108,11 +1109,7 @@ export const blobScenarios: readonly Scenario[] = [
       });
       for (const client of [owner, reader]) {
         await requireBlobs(client);
-        await client.api.subscribe({
-          id: 'attachments',
-          table: 'attachments',
-          scopes: P1,
-        });
+        await client.api.subscribe(U1);
         await syncIdle(client);
       }
       const ref = await owner.api.uploadBlob?.(bytesOf('simultaneous'));
@@ -1168,11 +1165,7 @@ export const blobScenarios: readonly Scenario[] = [
       });
       for (const client of [owner, reader]) {
         await requireBlobs(client);
-        await client.api.subscribe({
-          id: 'attachments',
-          table: 'attachments',
-          scopes: P1,
-        });
+        await client.api.subscribe(U1);
         await syncIdle(client);
       }
       const ref = await owner.api.uploadBlob?.(bytesOf('retry download'));
@@ -1250,11 +1243,7 @@ export const blobScenarios: readonly Scenario[] = [
       });
       for (const client of [owner, reader]) {
         await requireBlobs(client);
-        await client.api.subscribe({
-          id: 'attachments',
-          table: 'attachments',
-          scopes: P1,
-        });
+        await client.api.subscribe(U1);
         await syncIdle(client);
       }
       const refs: string[] = [];
@@ -1342,11 +1331,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       await requireBlobs(author);
-      await author.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await author.api.subscribe(U1);
       await syncIdle(author);
 
       // Stage a blob, then reference it from a row (upload-before-push, B4).
@@ -1381,11 +1366,7 @@ export const blobScenarios: readonly Scenario[] = [
         schema: BLOB_SCHEMA,
         allowed: P1,
       });
-      await reader.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await reader.api.subscribe(U1);
       await syncIdle(reader);
       const localRows = await reader.api.readRows('attachments');
       checkEqual(localRows.length, 1, 'reader received the referencing row');
@@ -1451,11 +1432,7 @@ export const blobScenarios: readonly Scenario[] = [
         schema: BLOB_SCHEMA,
         allowed: P1,
       });
-      await author.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await author.api.subscribe(U1);
       await syncIdle(author);
 
       // Reference a fabricated blobId that was never uploaded.
@@ -1505,7 +1482,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       await requireBlobs(author);
-      await author.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await author.api.subscribe(U1);
       await syncIdle(author);
 
       const big = await author.api.uploadBlob?.(bytesOf('x'.repeat(32)));
@@ -1570,11 +1547,7 @@ export const blobScenarios: readonly Scenario[] = [
         schema: BLOB_SCHEMA,
         allowed: P1,
       });
-      await owner.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
       const secret = 'p1-only secret bytes';
       const ref = await owner.api.uploadBlob?.(bytesOf(secret));
@@ -1633,11 +1606,7 @@ export const blobScenarios: readonly Scenario[] = [
         schema: BLOB_SCHEMA,
         allowed: P1,
       });
-      await owner.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
       const ref = await owner.api.uploadBlob?.(bytesOf('revocable bytes'));
       await owner.api.mutate([
@@ -1656,11 +1625,7 @@ export const blobScenarios: readonly Scenario[] = [
         schema: BLOB_SCHEMA,
         allowed: P1,
       });
-      await reader.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await reader.api.subscribe(U1);
       await syncIdle(reader);
       const fileRef = (await reader.api.readRows('attachments'))[0]?.values
         .file as string;
@@ -1671,7 +1636,7 @@ export const blobScenarios: readonly Scenario[] = [
       await ctx.server.setAllowedScopes('reader', {});
       const report = await syncIdle(reader);
       check(
-        report.revoked.includes('a'),
+        report.revoked.includes(unitId(U1)),
         'the subscription was revoked (§3.3)',
       );
       checkEqual(
@@ -1716,7 +1681,7 @@ export const blobScenarios: readonly Scenario[] = [
         nowMs: DEFAULT_NOW_MS,
       });
       await requireBlobs(owner);
-      await owner.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
       const payload = 'presigned image bytes';
       const ref = await owner.api.uploadBlob?.(bytesOf(payload), {
@@ -1738,7 +1703,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
         nowMs: DEFAULT_NOW_MS,
       });
-      await reader.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await reader.api.subscribe(U1);
       await syncIdle(reader);
       const fileRef = (await reader.api.readRows('attachments'))[0]?.values
         .file as string;
@@ -1795,7 +1760,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
         nowMs: DEFAULT_NOW_MS,
       });
-      await owner.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
       const payload = 'expiring bytes';
       const ref = await owner.api.uploadBlob?.(bytesOf(payload));
@@ -1815,7 +1780,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
         nowMs: DEFAULT_NOW_MS,
       });
-      await reader.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await reader.api.subscribe(U1);
       await syncIdle(reader);
       const fileRef = (await reader.api.readRows('attachments'))[0]?.values
         .file as string;
@@ -1862,7 +1827,7 @@ export const blobScenarios: readonly Scenario[] = [
         // 900 s TTL + a margin: the minted url's urlExpiresAtMs < this clock.
         nowMs: DEFAULT_NOW_MS + 1_000_000,
       });
-      await late.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await late.api.subscribe(U1);
       await syncIdle(late);
       const lateRef = (await late.api.readRows('attachments'))[0]?.values
         .file as string;
@@ -1906,11 +1871,7 @@ export const blobScenarios: readonly Scenario[] = [
         nowMs: DEFAULT_NOW_MS,
       });
       await requireBlobs(author);
-      await author.api.subscribe({
-        id: 'a',
-        table: 'attachments',
-        scopes: P1,
-      });
+      await author.api.subscribe(U1);
       await syncIdle(author);
       const payload = 'direct-to-storage bytes';
       const ref = await author.api.uploadBlob?.(bytesOf(payload), {
@@ -1945,7 +1906,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
         nowMs: DEFAULT_NOW_MS,
       });
-      await reader.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await reader.api.subscribe(U1);
       await syncIdle(reader);
       const fileRef = (await reader.api.readRows('attachments'))[0]?.values
         .file as string;
@@ -1975,7 +1936,7 @@ export const blobScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       if (owner.api.recreateWithSchema === undefined) return; // driver predates it
-      await owner.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
       const payload = 'bytes that survive a reboot';
       const ref = await owner.api.uploadBlob?.(bytesOf(payload));
@@ -2028,7 +1989,7 @@ export const blobScenarios: readonly Scenario[] = [
         limits: { blobCacheMaxBytes: 300 },
       });
       await requireBlobs(owner);
-      await owner.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await owner.api.subscribe(U1);
       await syncIdle(owner);
 
       const body = (fill: string) => bytesOf(fill.repeat(100));

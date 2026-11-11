@@ -18,6 +18,7 @@ import type { Scenario, ScenarioContext } from '../scenario';
 import { syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** A table mixing an LWW `title` and a `crdt` `doc` column (§5.10.1). */
 export const CRDT_SCHEMA: DriverSchema = {
@@ -124,8 +125,8 @@ export const crdtScenarios: readonly Scenario[] = [
         schema: CRDT_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
-      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
       await syncIdle(a);
       await syncIdle(b);
 
@@ -234,8 +235,8 @@ export const crdtScenarios: readonly Scenario[] = [
       ) {
         return;
       }
-      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
-      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
       await syncIdle(a);
       await syncIdle(b);
 
@@ -385,7 +386,7 @@ export const crdtScenarios: readonly Scenario[] = [
         return;
       }
       const target = { table: 'notes', rowId: 'n1', column: 'doc' } as const;
-      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       await a.api.mutate([
         { op: 'upsert', table: 'notes', values: noteRow('n1', 't', null) },
@@ -440,8 +441,8 @@ export const crdtScenarios: readonly Scenario[] = [
         schema: CRDT_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
-      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
 
       // Seed row (version 1) and converge both.
       await a.api.mutate([
@@ -554,8 +555,8 @@ export const crdtScenarios: readonly Scenario[] = [
         schema: CRDT_SCHEMA,
         allowed: P1,
       });
-      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
-      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
       await a.api.mutate([
         {
           op: 'upsert',

@@ -143,6 +143,9 @@ export function toDriverError(error: SyncError): DriverError {
     category: error.category,
     retryable: error.retryable,
     recommendedAction: error.recommendedAction,
+    ...(error.details !== undefined
+      ? { details: JSON.parse(error.details) }
+      : {}),
   };
 }
 
@@ -420,6 +423,7 @@ class TsServerInstance implements ServerInstance {
     maxOperationsPerRequest: number;
     inlineSegmentMaxBytes: number;
     maxCascadeOperationsPerCommit: number;
+    maxSubscriptionsPerRequest: number;
   };
   readonly #maxBlobBytes: number | undefined;
   #resolverFailing = false;
@@ -464,6 +468,8 @@ class TsServerInstance implements ServerInstance {
         options.limits?.inlineSegmentMaxBytes ?? 256 * 1024,
       maxCascadeOperationsPerCommit:
         options.limits?.maxCascadeOperationsPerCommit ?? 1_000,
+      maxSubscriptionsPerRequest:
+        options.limits?.maxSubscriptionsPerRequest ?? 500,
     };
     this.#maxBlobBytes = options.limits?.maxBlobBytes;
     this.#segments = new MemorySegmentStore(
@@ -610,7 +616,7 @@ class TsServerInstance implements ServerInstance {
       getCommitSeqBefore: (p, t) => this.#storage.getCommitSeqBefore(p, t),
       getRow: (p, t, r) => this.#storage.getRow(p, t, r),
       getPushResult: (p, c, id) => this.#storage.getPushResult(p, c, id),
-      readCommitWindow: async (p, q) => {
+      readLiveWindow: async (p, q) => {
         if (this.#failNextCommitRead) {
           this.#failNextCommitRead = false;
           throw new Error(`injected storage failure ${STORAGE_FAULT_SECRET}`);
@@ -624,7 +630,7 @@ class TsServerInstance implements ServerInstance {
             throughSeq: q.throughSeq,
           });
         }
-        return this.#storage.readCommitWindow(p, q);
+        return this.#storage.readLiveWindow(p, q);
       },
       latestScopedChangeSeq: (p, q) =>
         this.#storage.latestScopedChangeSeq(p, q),
@@ -635,8 +641,6 @@ class TsServerInstance implements ServerInstance {
         this.#storage.recordClientRoundFailure(...args),
       advanceClientCursor: (...args) =>
         this.#storage.advanceClientCursor(...args),
-      updateClientCursor: (p, c, s, t) =>
-        this.#storage.updateClientCursor(p, c, s, t),
       getActiveClientCursorFloor: (p, cutoff) =>
         this.#storage.getActiveClientCursorFloor(p, cutoff),
       listClientCursors: (p) => this.#storage.listClientCursors(p),
@@ -1149,6 +1153,21 @@ class TsServerInstance implements ServerInstance {
     this.#storage = restored;
   }
 
+  async reopenAsVersion3Database(): Promise<void> {
+    const db = this.#storage.db;
+    db.exec(`UPDATE sync_changes SET row_version=NULL WHERE op=2;
+      DROP TABLE sync_push_watermarks;
+      DROP INDEX IF EXISTS sync_change_scopes_by_key;
+      ALTER TABLE sync_partitions DROP COLUMN delete_floor;
+      ALTER TABLE sync_push_results DROP COLUMN outbox_id;
+      ALTER TABLE sync_push_results DROP COLUMN client_seq;
+      ALTER TABLE sync_clients DROP COLUMN units;
+      ALTER TABLE sync_clients DROP COLUMN registration_digest;
+      ALTER TABLE sync_clients DROP COLUMN catching_up;
+      ALTER TABLE sync_clients ADD COLUMN subscriptions TEXT;`);
+    this.#storage = new SqliteServerStorage(db);
+  }
+
   async prune(retention?: RetentionOptions): Promise<number> {
     return pruneCommitLog({
       storage: this.#wrapped,
@@ -1176,6 +1195,33 @@ class TsServerInstance implements ServerInstance {
     return this.#storage.getHorizonSeq(this.#partition);
   }
 
+  async idempotencyState() {
+    const results = this.#storage.db
+      .query(
+        'SELECT client_id, client_commit_id, outbox_id, client_seq FROM sync_push_results WHERE partition=? ORDER BY client_id, client_commit_id',
+      )
+      .all(this.#partition)
+      .map((row) => ({
+        clientId: String(row.client_id),
+        clientCommitId: String(row.client_commit_id),
+        ...(row.outbox_id !== null ? { outboxId: String(row.outbox_id) } : {}),
+        ...(row.client_seq !== null
+          ? { clientSeq: Number(row.client_seq) }
+          : {}),
+      }));
+    const watermarks = this.#storage.db
+      .query(
+        'SELECT client_id, outbox_id, through_seq FROM sync_push_watermarks WHERE partition=? ORDER BY client_id, outbox_id',
+      )
+      .all(this.#partition)
+      .map((row) => ({
+        clientId: String(row.client_id),
+        outboxId: String(row.outbox_id),
+        throughSeq: Number(row.through_seq),
+      }));
+    return { results, watermarks };
+  }
+
   async listClients(): Promise<readonly DriverAdminClient[]> {
     const admin = new SyncularAdmin({
       storage: this.#storage,
@@ -1188,6 +1234,7 @@ class TsServerInstance implements ServerInstance {
       clientId: client.clientId,
       actorId: client.actorId,
       cursor: client.cursor,
+      units: client.units,
       ...(client.lastRoundAtMs !== undefined
         ? { lastRoundAtMs: client.lastRoundAtMs }
         : {}),
@@ -1383,6 +1430,8 @@ export const tsServerDriver: ServerDriver = {
   capabilities: [
     'backup-restore',
     'idempotency-fault',
+    'idempotency-state',
+    'version3-database',
     'storage-fault',
     'concurrent-storage-faults',
     'signed-urls',

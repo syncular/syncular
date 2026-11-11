@@ -32,8 +32,10 @@ import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
 import { sqliteImageScenarios } from './sqlite-image';
+import { unitScenarios } from './units';
 import { validatorScenarios } from './validators';
 import { vectorScenarios } from './vectors';
+import { watermarkScenarios } from './watermark';
 import { windowScenarios } from './window';
 import { wsRoundScenarios } from './ws-rounds';
 
@@ -44,6 +46,7 @@ export const CATALOG: readonly Scenario[] = [
   ...observationScenarios,
   ...conflictScenarios,
   ...scopeScenarios,
+  ...unitScenarios,
   ...bootstrapScenarios,
   ...sqliteImageScenarios,
   ...signedUrlScenarios,
@@ -64,6 +67,7 @@ export const CATALOG: readonly Scenario[] = [
   ...localAuthorityScenarios,
   ...roundFailureScenarios,
   ...deletePrecedenceScenarios,
+  ...watermarkScenarios,
   ...sparseRowScenarios,
   ...windowScenarios,
   ...validatorScenarios,

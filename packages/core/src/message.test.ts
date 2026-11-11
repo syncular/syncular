@@ -122,7 +122,7 @@ const subEnd = {
 describe('SSP2 envelope (SPEC.md §1.2)', () => {
   it('the kind-specific decoders reject the other message kind', () => {
     const request = envelope(1, [reqHeader, pullHeader]);
-    expect(decodeRequest(request)).toEqual(decodeMessage(request));
+    expect(decodeMessage(request)).toEqual(decodeRequest(request));
     expectDecodeError(() => decodeResponse(request));
     const response = encodeMessage({
       wireVersion: 4,
@@ -133,7 +133,7 @@ describe('SSP2 envelope (SPEC.md §1.2)', () => {
         { type: 'LIVE_END', throughSeq: 0, echoDigest: new Uint8Array() },
       ],
     });
-    expect(decodeResponse(response)).toEqual(decodeMessage(response));
+    expect(decodeMessage(response)).toEqual(decodeResponse(response));
     expectDecodeError(() => decodeRequest(response));
   });
 

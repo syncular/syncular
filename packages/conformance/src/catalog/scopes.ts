@@ -3,22 +3,23 @@
  * re-authorization (SPEC.md §3, §5.5; Appendix B.4). Scopes are the
  * crown jewels — these scenarios pin fail-loud and fail-closed behavior.
  */
-import { canonicalScopeJson } from '@syncular/core';
+import { canonicalScopeJson, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { ScenarioSkip } from '../scenario';
 import type { DriverRow, DriverSchema, DriverTable } from '../driver';
 import { ALL_SCOPES, doc, FIXTURE_SCHEMA, task } from '../fixture';
 import {
   rawDelete,
-  rawPullHeader,
   rawPushCommit,
-  rawSubscription,
+  rawPull,
   rawUpsert,
   responsePushResults,
   responseSection,
 } from '../raw';
 import type { Scenario } from '../scenario';
-import { seedRows, seedTasks, syncIdle, syncOk } from './util';
+import { expectConverged, seedRows, seedTasks, syncIdle, syncOk } from './util';
+
+const U1 = { project_id: 'p1' } as const;
 
 const ALTERNATIVE_WRITE_SCHEMA: DriverSchema = {
   version: 1,
@@ -122,36 +123,31 @@ export const scopeScenarios: readonly Scenario[] = [
         !intersection.api.setWindow
       )
         return;
-      for (const table of ['calendars', 'theatres']) {
-        const facility = { table, variable: 'org_id' };
-        const exact = { table, variable: 'projectId' };
-        const both = {
-          table,
-          variable: 'org_id',
-          fixedScopes: { projectId: ['old'] },
-        };
-        await host.api.setWindow(facility, ['o1']);
-        await reader.api.setWindow(exact, ['old']);
-        await intersection.api.setWindow(both, ['o1']);
-        const before = await host.api.snapshotRead({
-          statements: [],
-          coverage: [{ base: facility, units: ['o1'] }],
-        });
-        check(
-          !before.coverage.complete,
-          'an unbootstrapped facility window is incomplete',
-        );
-      }
+      // One window base covers both tables declaring its variables (§4.1).
+      const facility = { variable: 'org_id' };
+      await host.api.setWindow(facility, ['o1']);
+      await reader.api.setWindow({ variable: 'projectId' }, ['old']);
+      await intersection.api.setWindow(
+        { variable: 'org_id', fixedScopes: { projectId: 'old' } },
+        ['o1'],
+      );
+      const before = await host.api.snapshotRead({
+        statements: [],
+        coverage: [{ base: facility, units: ['o1'] }],
+      });
+      check(
+        !before.coverage.complete,
+        'an unbootstrapped facility window is incomplete',
+      );
       await syncIdle(host);
       await syncIdle(reader);
       await syncIdle(intersection);
+      const ready = await host.api.snapshotRead({
+        statements: [],
+        coverage: [{ base: facility, units: ['o1'] }],
+      });
+      check(ready.coverage.complete, 'the facility window becomes complete');
       for (const table of ['calendars', 'theatres']) {
-        const facility = { table, variable: 'org_id' };
-        const ready = await host.api.snapshotRead({
-          statements: [],
-          coverage: [{ base: facility, units: ['o1'] }],
-        });
-        check(ready.coverage.complete, 'the facility window becomes complete');
         checkEqual(
           (await host.api.readRows(table)).map((row) => row.rowId),
           ['old', 'other'],
@@ -197,9 +193,7 @@ export const scopeScenarios: readonly Scenario[] = [
       if (!host.api.snapshotRead) return;
       const revoked = await host.api.snapshotRead({
         statements: [],
-        coverage: [
-          { base: { table: 'calendars', variable: 'org_id' }, units: ['o1'] },
-        ],
+        coverage: [{ base: facility, units: ['o1'] }],
       });
       check(!revoked.coverage.complete, 'revoked coverage is incomplete');
       checkEqual(
@@ -267,23 +261,10 @@ export const scopeScenarios: readonly Scenario[] = [
         allowed: { org_id: ['o1'] },
         retainFailedCommits: true,
       });
-      for (const table of ['calendars', 'theatres']) {
-        await host.api.subscribe({
-          id: table,
-          table,
-          scopes: { org_id: ['o1'] },
-        });
-        await reader.api.subscribe({
-          id: table,
-          table,
-          scopes: { projectId: ['old'] },
-        });
-        await rival.api.subscribe({
-          id: table,
-          table,
-          scopes: { org_id: ['o1'] },
-        });
-      }
+      // One unit covers calendars and theatres (§4.1).
+      await host.api.subscribe({ org_id: 'o1' });
+      await reader.api.subscribe({ projectId: 'old' });
+      await rival.api.subscribe({ org_id: 'o1' });
       await syncIdle(host);
       await syncIdle(reader);
       await syncIdle(rival);
@@ -459,7 +440,7 @@ export const scopeScenarios: readonly Scenario[] = [
       ]);
       const revoked = await syncOk(host);
       check(
-        revoked.revoked.includes('calendars'),
+        revoked.revoked.includes(unitId({ org_id: 'o1' })),
         'facility subscription revoked',
       );
       check(
@@ -485,23 +466,25 @@ export const scopeScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1'] },
       });
       await seedTasks(ctx, [task('t1', 'p1'), task('t2', 'p2')]);
-      // Requested wider than allowed: the intersection filters delivery.
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1', 'p2'] },
-      });
+      // Requested wider than allowed: the unit outside the grant revokes.
+      await a.api.subscribeMany([U1, { project_id: 'p2' }]);
       await syncIdle(a);
       checkEqual(
         (await a.api.readRows('tasks')).map((row) => row.rowId),
         ['t1'],
         'only rows inside the effective grant were delivered',
       );
-      const state = await a.api.subscriptionState('tasks');
+      const inside = await a.api.unitState(unitId(U1));
       checkEqual(
-        state?.effectiveScopes,
-        { project_id: ['p1'] },
-        'the effective scopes were echoed and persisted (§3.2 rule 6)',
+        [inside?.status, inside?.echo],
+        ['active', []],
+        'the granted unit is active and its echo adds nothing (§3.2 rule 6, §4.4)',
+      );
+      const outside = await a.api.unitState(unitId({ project_id: 'p2' }));
+      checkEqual(
+        [outside?.status, outside?.reasonCode],
+        ['revoked', 'sync.scope_revoked'],
+        'a unit value missing from allowed revokes the unit (§3.2 rule 5)',
       );
     },
   },
@@ -521,11 +504,10 @@ export const scopeScenarios: readonly Scenario[] = [
         doc('outside-same-child', 'o2', 'p1', 'outside parent'),
         doc('inside-other-child', 'o1', 'p2', 'other child'),
       ]);
-      await a.api.subscribe({
-        id: 'docs',
-        table: 'docs',
-        scopes: { org_id: ['o1'], projectId: ['p1', 'p2'] },
-      });
+      await a.api.subscribeMany([
+        { org_id: 'o1', projectId: 'p1' },
+        { org_id: 'o1', projectId: 'p2' },
+      ]);
       await syncIdle(a);
       checkEqual(
         (await a.api.readRows('docs')).map((row) => row.rowId),
@@ -582,11 +564,10 @@ export const scopeScenarios: readonly Scenario[] = [
       });
       for (const client of [fenced, open]) {
         // The request names only the wildcard-granted child variable.
-        await client.api.subscribe({
-          id: 'docs',
-          table: 'docs',
-          scopes: { projectId: ['p1', 'p2'] },
-        });
+        await client.api.subscribeMany([
+          { projectId: 'p1' },
+          { projectId: 'p2' },
+        ]);
         await syncIdle(client);
       }
       checkEqual(
@@ -594,21 +575,23 @@ export const scopeScenarios: readonly Scenario[] = [
         ['inside', 'inside-other-child'],
         "the actor's org list fences a subscription that omits org_id (§3.2 rule 4)",
       );
-      checkEqual(
-        (await fenced.api.subscriptionState('docs'))?.effectiveScopes,
-        { org_id: ['o1'], projectId: ['p1', 'p2'] },
-        'the effective scopes echo the variable the fence added',
-      );
+      for (const projectId of ['p1', 'p2'])
+        checkEqual(
+          (await fenced.api.unitState(unitId({ projectId })))?.echo,
+          [{ table: 'docs', status: 'active', scopes: { org_id: ['o1'] } }],
+          'the echo carries the variable the fence added (§4.4)',
+        );
       checkEqual(
         (await open.api.readRows('docs')).map((row) => row.rowId).sort(),
         ['inside', 'inside-other-child', 'outside-same-child'],
         'an all-wildcard actor is not fenced',
       );
-      checkEqual(
-        (await open.api.subscriptionState('docs'))?.effectiveScopes,
-        { projectId: ['p1', 'p2'] },
-        'an all-wildcard actor keeps the requested scopes',
-      );
+      for (const projectId of ['p1', 'p2'])
+        checkEqual(
+          (await open.api.unitState(unitId({ projectId })))?.echo,
+          [],
+          'an all-wildcard actor keeps the requested scopes: an empty echo',
+        );
     },
   },
 
@@ -627,16 +610,8 @@ export const scopeScenarios: readonly Scenario[] = [
         task('t2', 'p1', 'two'),
         task('t3', 'p2', 'keep'),
       ]);
-      await a.api.subscribe({
-        id: 'sub-p1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
-      await a.api.subscribe({
-        id: 'sub-p2',
-        table: 'tasks',
-        scopes: { project_id: ['p2'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
+      await a.api.subscribe({ project_id: 'p2' });
       await syncIdle(a);
       checkEqual((await a.api.readRows('tasks')).length, 3, 'all rows synced');
 
@@ -646,14 +621,14 @@ export const scopeScenarios: readonly Scenario[] = [
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'doomed') },
       ]);
       const report = await syncOk(a);
-      check(report.revoked.includes('sub-p1'), 'sub-p1 was revoked');
+      checkEqual(report.revoked, [unitId(U1)], 'the p1 unit was revoked');
       checkEqual(
-        (await a.api.subscriptionState('sub-p1'))?.status,
+        (await a.api.unitState(unitId(U1)))?.status,
         'revoked',
-        'the client stopped pulling the subscription',
+        'the client stopped pulling the unit',
       );
       checkEqual(
-        (await a.api.subscriptionState('sub-p1'))?.reasonCode,
+        (await a.api.unitState(unitId(U1)))?.reasonCode,
         'sync.scope_revoked',
         'reason code delivered via SUB_START (§10.2)',
       );
@@ -696,16 +671,8 @@ export const scopeScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: { org_id: ['o1', 'o2'], projectId: ['p1'] },
       });
-      await a.api.subscribe({
-        id: 'org',
-        table: 'docs',
-        scopes: { org_id: ['o1'] },
-      });
-      await a.api.subscribe({
-        id: 'project',
-        table: 'docs',
-        scopes: { projectId: ['p1'] },
-      });
+      await a.api.subscribe({ org_id: 'o1' });
+      await a.api.subscribe({ projectId: 'p1' });
       await syncIdle(a);
       checkEqual(
         (await a.api.readRows('docs')).map((row) => row.rowId).sort(),
@@ -718,7 +685,11 @@ export const scopeScenarios: readonly Scenario[] = [
         projectId: ['p9'],
       });
       const report = await syncOk(a);
-      checkEqual(report.revoked, ['project'], 'only the project grant ended');
+      checkEqual(
+        report.revoked,
+        [unitId({ projectId: 'p1' })],
+        'only the project grant ended',
+      );
       checkEqual(
         (await a.api.readRows('docs')).map((row) => row.rowId),
         ['shared'],
@@ -747,16 +718,8 @@ export const scopeScenarios: readonly Scenario[] = [
         allowed: { org_id: ['o1', 'o2'], projectId: ['p1', 'p9'] },
         limits: { maxPushCommitsPerRequest: 1 },
       });
-      await a.api.subscribe({
-        id: 'org',
-        table: 'docs',
-        scopes: { org_id: ['o1'] },
-      });
-      await a.api.subscribe({
-        id: 'project',
-        table: 'docs',
-        scopes: { projectId: ['p1'] },
-      });
+      await a.api.subscribe({ org_id: 'o1' });
+      await a.api.subscribe({ projectId: 'p1' });
       await syncIdle(a);
 
       await ctx.server.setAllowedScopes('actor-a', {
@@ -770,7 +733,11 @@ export const scopeScenarios: readonly Scenario[] = [
       const lone = await upsert(doc('lone', 'o2', 'p1'));
       const report = await syncOk(a);
 
-      checkEqual(report.revoked, ['project'], 'only the project grant ended');
+      checkEqual(
+        report.revoked,
+        [unitId({ projectId: 'p1' })],
+        'only the project grant ended',
+      );
       checkEqual(
         await a.api.pendingCommitIds(),
         [shared],
@@ -813,13 +780,7 @@ export const scopeScenarios: readonly Scenario[] = [
         schema: INTEGER_SCOPE_SCHEMA,
         allowed: { bucket: ['7', '8'] },
       });
-      for (const bucket of ['7', '8']) {
-        await a.api.subscribe({
-          id: `bucket-${bucket}`,
-          table: 'buckets',
-          scopes: { bucket: [bucket] },
-        });
-      }
+      await a.api.subscribeMany([{ bucket: '7' }, { bucket: '8' }]);
       await syncIdle(a);
       checkEqual(
         (await a.api.readRows('buckets')).map((row) => row.rowId),
@@ -829,7 +790,11 @@ export const scopeScenarios: readonly Scenario[] = [
 
       await ctx.server.setAllowedScopes('actor-a', { bucket: ['8'] });
       const report = await syncOk(a);
-      checkEqual(report.revoked, ['bucket-7'], 'bucket 7 was revoked');
+      checkEqual(
+        report.revoked,
+        [unitId({ bucket: '7' })],
+        'bucket 7 was revoked',
+      );
       checkEqual(
         (await a.api.readRows('buckets')).map((row) => row.rowId),
         ['b8'],
@@ -850,17 +815,13 @@ export const scopeScenarios: readonly Scenario[] = [
       });
       await seedTasks(ctx, [task('t1', 'p1', 'granted later')]);
       // The app subscribes before the grant exists.
-      await a.api.subscribe({
-        id: 'sub-p1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       const revoked = await syncIdle(a);
-      check(revoked.revoked.includes('sub-p1'), 'sub-p1 was revoked');
+      checkEqual(revoked.revoked, [unitId(U1)], 'the p1 unit was revoked');
       checkEqual(
-        (await a.api.subscriptionState('sub-p1'))?.status,
+        (await a.api.unitState(unitId(U1)))?.status,
         'revoked',
-        'the client stopped pulling the subscription',
+        'the client stopped pulling the unit',
       );
       checkEqual(
         (await a.api.readRows('tasks')).length,
@@ -868,22 +829,18 @@ export const scopeScenarios: readonly Scenario[] = [
         'nothing was delivered before the grant',
       );
 
-      // The grant arrives; the app subscribes with the same id and intent.
+      // The grant arrives; the app registers the same scope map again.
       await ctx.server.setAllowedScopes('actor-a', {
         project_id: ['p1'],
       });
-      await a.api.subscribe({
-        id: 'sub-p1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
-      const rearmed = await a.api.subscriptionState('sub-p1');
+      await a.api.subscribe(U1);
+      const rearmed = await a.api.unitState(unitId(U1));
       checkEqual(rearmed?.status, 'active', 'the registration was re-armed');
       checkEqual(rearmed?.cursor, -1, 'its cursor starts over');
       checkEqual(
-        rearmed?.effectiveScopes,
+        rearmed?.echo,
         undefined,
-        'no effective scopes are carried into the new attempt',
+        'no echo is carried into the new attempt',
       );
       checkEqual(
         rearmed?.reasonCode,
@@ -898,9 +855,9 @@ export const scopeScenarios: readonly Scenario[] = [
         'the rows arrive once the grant exists',
       );
       checkEqual(
-        (await a.api.subscriptionState('sub-p1'))?.effectiveScopes,
-        { project_id: ['p1'] },
-        'the next pull resolved the scopes again',
+        (await a.api.unitState(unitId(U1)))?.echo,
+        [],
+        'the next pull resolved the scopes again and persisted the echo',
       );
     },
   },
@@ -908,9 +865,13 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/fail-closed-without-local-mapping',
     specRefs: ['§3.3', '§5.6'],
+    // The wildcard fence needs grants narrower than every value (§3.2).
+    requires: ['scope-authorization'],
     async run(ctx) {
       // A client whose generated schema lacks the projectId mapping for
-      // docs: precision or nothing — it must not clear-approximate.
+      // docs: the wildcard fence adds projectId to the unit's docs pair,
+      // which the client cannot apply locally. Precision or nothing: it must
+      // not clear-approximate.
       const brokenSchema: DriverSchema = {
         version: FIXTURE_SCHEMA.version,
         tables: FIXTURE_SCHEMA.tables.map((table) =>
@@ -923,23 +884,21 @@ export const scopeScenarios: readonly Scenario[] = [
         actorId: 'actor-a',
         clientId: 'client-a',
         schema: brokenSchema,
-        allowed: { projectId: ['p1'], org_id: ['o1'] },
+        allowed: { projectId: ['p1'], org_id: ['*'] },
       });
       await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
-      await a.api.subscribe({
-        id: 'docs',
-        table: 'docs',
-        scopes: { projectId: ['p1'] },
-      });
+      const unit = { org_id: 'o1' };
+      await a.api.subscribe(unit);
       const report = await syncOk(a);
-      check(
-        report.failed.includes('docs'),
-        'the subscription failed closed as a fatal configuration error',
+      checkEqual(
+        report.failed,
+        [unitId(unit)],
+        'the unit failed closed as a fatal configuration error',
       );
       checkEqual(
-        (await a.api.subscriptionState('docs'))?.status,
+        (await a.api.unitState(unitId(unit)))?.status,
         'failed',
-        'syncing the table stopped',
+        'syncing the unit stopped',
       );
       checkEqual(
         (await a.api.readRows('docs')).length,
@@ -948,15 +907,11 @@ export const scopeScenarios: readonly Scenario[] = [
       );
       // A failed registration is a configuration error, not a revocation:
       // subscribing again with the same intent leaves it failed.
-      await a.api.subscribe({
-        id: 'docs',
-        table: 'docs',
-        scopes: { projectId: ['p1'] },
-      });
+      await a.api.subscribe(unit);
       checkEqual(
-        (await a.api.subscriptionState('docs'))?.status,
+        (await a.api.unitState(unitId(unit)))?.status,
         'failed',
-        'a failed subscription is not re-armed',
+        'a failed unit is not re-armed',
       );
     },
   },
@@ -972,11 +927,7 @@ export const scopeScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1'] },
       });
       await seedTasks(ctx, [task('t1', 'p1')]);
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
 
       await ctx.server.setResolverFailing(true);
@@ -994,9 +945,10 @@ export const scopeScenarios: readonly Scenario[] = [
         'sync.forbidden',
         'the write rejects with sync.forbidden, never applies blind',
       );
-      check(
-        report.revoked.includes('tasks'),
-        'the subscription revokes — no data on resolver errors (§3.2 rule 5)',
+      checkEqual(
+        report.revoked,
+        [unitId(U1)],
+        'the unit revokes: no data on resolver errors (§3.2 rule 5)',
       );
       checkEqual(
         await ctx.server.getMaxCommitSeq(),
@@ -1006,11 +958,7 @@ export const scopeScenarios: readonly Scenario[] = [
 
       // Recovery: the host fixes the resolver; a fresh subscription syncs.
       await ctx.server.setResolverFailing(false);
-      await a.api.subscribe({
-        id: 'tasks-2',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
       checkEqual(
         (await a.api.readRows('tasks')).map((row) => row.rowId),
@@ -1030,11 +978,7 @@ export const scopeScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: { project_id: ['p1'] },
       });
-      await a.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
 
       // Insert outside the grant: denied.
@@ -1057,11 +1001,7 @@ export const scopeScenarios: readonly Scenario[] = [
         clientId: 'client-b',
         allowed: { project_id: ['p1', 'p2'] },
       });
-      await b.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1', 'p2'] },
-      });
+      await b.api.subscribeMany([{ project_id: 'p1' }, { project_id: 'p2' }]);
       await syncIdle(b);
       await b.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'home') },
@@ -1120,15 +1060,12 @@ export const scopeScenarios: readonly Scenario[] = [
 
       const pull = await ctx.rawSync(
         'dl-actor',
-        [
-          rawPullHeader(),
-          rawSubscription('s1', 'tasks', { project_id: ['p1'] }, -1),
-        ],
+        [...rawPull([{ scopes: { project_id: 'p1' }, cursor: -1 }])],
         { clientId: 'dl-client' },
       );
       check(pull.ok, 'bootstrap pull succeeded');
       if (!pull.ok) return;
-      const section = responseSection(pull.message, 's1');
+      const section = responseSection(pull.message, U1);
       const ref = section.body.find((frame) => frame.type === 'SEGMENT_REF');
       check(
         ref !== undefined && ref.type === 'SEGMENT_REF',
@@ -1218,13 +1155,10 @@ export const scopeScenarios: readonly Scenario[] = [
           clientId: `client-${label}`,
           allowed: { project_id: ['p1', 'p2'] },
         });
-        for (const [id, project] of order) {
-          await reader.api.subscribe({
-            id,
-            table: 'tasks',
-            scopes: { project_id: [project] },
-          });
-        }
+        // Registration order is the order of the unit sections (§4.1).
+        await reader.api.subscribeMany(
+          order.map(([, project]) => ({ project_id: project })),
+        );
         await syncIdle(reader);
         checkEqual(
           await reader.api.readRows('tasks'),
@@ -1263,17 +1197,12 @@ export const scopeScenarios: readonly Scenario[] = [
       for (const reader of readers) {
         await syncIdle(reader);
         checkEqual(
-          await reader.api.readRows('tasks'),
-          [
-            {
-              rowId: 't1',
-              version: 1,
-              values: task('t1', 'p2', 'after'),
-            },
-          ],
-          'the upsert wins over the move delete whatever order the sections arrive in',
+          (await reader.api.readRows('tasks')).map((row) => row.values),
+          [task('t1', 'p2', 'after')],
+          'the upsert wins over the move delete whatever the registration order',
         );
       }
+      await expectConverged(ctx, 'tasks', readers);
       checkEqual(
         (await ctx.server.readRows('tasks')).map(
           (row) => row.values.project_id,
@@ -1295,32 +1224,25 @@ export const scopeScenarios: readonly Scenario[] = [
       await seedTasks(ctx, [task('t1', 'p1', 'row')]);
       await seedTasks(ctx, [task('t1', 'p1', 'updated')]);
 
-      const oneSubscription = await ctx.newClient({
-        actorId: 'actor-one',
-        clientId: 'client-one',
+      const forward = await ctx.newClient({
+        actorId: 'actor-forward',
+        clientId: 'client-forward',
         allowed: { project_id: ['p1', 'p2'] },
       });
-      await oneSubscription.api.subscribe({
-        id: 'both',
-        table: 'tasks',
-        scopes: { project_id: ['p1', 'p2'] },
-      });
-      const twoSubscriptions = await ctx.newClient({
-        actorId: 'actor-two',
-        clientId: 'client-two',
+      await forward.api.subscribeMany([
+        { project_id: 'p1' },
+        { project_id: 'p2' },
+      ]);
+      const reverse = await ctx.newClient({
+        actorId: 'actor-reverse',
+        clientId: 'client-reverse',
         allowed: { project_id: ['p1', 'p2'] },
       });
-      for (const [id, project] of [
-        ['old', 'p1'],
-        ['new', 'p2'],
-      ] as const) {
-        await twoSubscriptions.api.subscribe({
-          id,
-          table: 'tasks',
-          scopes: { project_id: [project] },
-        });
-      }
-      const readers = [oneSubscription, twoSubscriptions];
+      await reverse.api.subscribeMany([
+        { project_id: 'p2' },
+        { project_id: 'p1' },
+      ]);
+      const readers = [forward, reverse];
       for (const reader of readers) {
         await syncIdle(reader);
         checkEqual(
@@ -1331,7 +1253,7 @@ export const scopeScenarios: readonly Scenario[] = [
       }
 
       await ctx.server.setAllowedScopes('mover', ALL_SCOPES);
-      for (const project of ['p2', 'p1', 'p2'] as const) {
+      for (const [move, project] of (['p2', 'p1', 'p2'] as const).entries()) {
         const moved = await rescope(
           'mover',
           'tasks',
@@ -1348,8 +1270,8 @@ export const scopeScenarios: readonly Scenario[] = [
         );
         checkEqual(
           serverRows[0]?.version,
-          2,
-          'the move keeps server_version instead of restarting at 1',
+          3 + move,
+          'every move advances server_version by exactly 1 (§2.2)',
         );
         for (const reader of readers) {
           await syncIdle(reader);

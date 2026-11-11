@@ -7,7 +7,7 @@
  * raw-driver read asserts the stored row carries the §5.11 envelope, not
  * plaintext. A wrong-key client surfaces `client.decrypt_failed` on apply.
  */
-import { decodeMessage, type PushCommitFrame } from '@syncular/core';
+import { decodeMessage, type PushCommitFrame, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { DriverEncryptionConfig, DriverSchema } from '../driver';
 import { bytesToHex } from '../raw';
@@ -15,6 +15,7 @@ import type { Scenario, ScenarioContext } from '../scenario';
 import { syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** A table with two encrypted columns: a string `note` and an integer `amount`. */
 export const E2EE_SCHEMA: DriverSchema = {
@@ -144,8 +145,8 @@ const SIDECAR_SCHEMA: DriverSchema = {
 };
 
 const SIDECAR_SERVER = { schema: SIDECAR_SCHEMA } as const;
-const PRIMARY_SCOPES = { project_id: ['p1'] } as const;
-const DETAIL_SCOPES = { detail_scope: ['d1'] } as const;
+const PRIMARY_UNIT = { project_id: 'p1' } as const;
+const DETAIL_UNIT = { detail_scope: 'd1' } as const;
 const SIDECAR_ALLOWED = { project_id: ['p1'], detail_scope: ['d1'] } as const;
 const PROTECTED_VALUE = 'patient declined to say';
 const writerKeys: DriverEncryptionConfig = {
@@ -319,8 +320,8 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: goodKeys,
       });
-      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
-      await b.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
       await syncIdle(a);
       await syncIdle(b);
 
@@ -401,8 +402,8 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: goodKeys,
       });
-      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
-      await b.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
       await syncIdle(a);
       await syncIdle(b);
 
@@ -520,7 +521,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: goodKeys,
       });
-      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       await a.api.mutate([
         {
@@ -543,7 +544,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: wrongKeys,
       });
-      await bad.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await bad.api.subscribe(U1);
       // The wrong-key apply fails; the sync surfaces client.decrypt_failed.
       await syncFails(
         bad,
@@ -567,7 +568,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: selectedKeys,
       });
-      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       await a.api.mutate([
         {
@@ -777,21 +778,8 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: SIDECAR_ALLOWED,
         encryption: writerKeys,
       });
-      await writer.api.subscribe({
-        id: 'primary',
-        table: 'records',
-        scopes: PRIMARY_SCOPES,
-      });
-      await writer.api.subscribe({
-        id: 'sidecar',
-        table: 'record_details',
-        scopes: DETAIL_SCOPES,
-      });
-      await writer.api.subscribe({
-        id: 'related',
-        table: 'notes',
-        scopes: PRIMARY_SCOPES,
-      });
+      await writer.api.subscribe(PRIMARY_UNIT);
+      await writer.api.subscribe(DETAIL_UNIT);
       await syncIdle(writer);
 
       // One commit carries both plaintext primary rows, the encrypted sidecar
@@ -874,16 +862,8 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: SIDECAR_ALLOWED,
         encryption: { keys: {} },
       });
-      await reader.api.subscribe({
-        id: 'primary',
-        table: 'records',
-        scopes: PRIMARY_SCOPES,
-      });
-      await reader.api.subscribe({
-        id: 'related',
-        table: 'notes',
-        scopes: PRIMARY_SCOPES,
-      });
+      // One unit covers records and notes; none covers the sidecar (§4.1).
+      await reader.api.subscribe(PRIMARY_UNIT);
       await syncIdle(reader);
 
       const primaryRow = (await reader.api.readRows('records')).find(
@@ -942,14 +922,9 @@ export const encryptionScenarios: readonly Scenario[] = [
         'the primary-only subscriber received no sidecar row',
       );
       checkEqual(
-        (await reader.api.subscriptionState('primary'))?.status,
+        (await reader.api.unitState(unitId(PRIMARY_UNIT)))?.status,
         'active',
-        'the primary subscription is active after the round',
-      );
-      checkEqual(
-        (await reader.api.subscriptionState('related'))?.status,
-        'active',
-        'the unrelated subscription is active after the round',
+        'the unit covering records and notes is active after the round',
       );
 
       // The no-key client cannot mutate the protected value: the encode seam
@@ -1011,16 +986,8 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: SIDECAR_ALLOWED,
         encryption: writerKeys,
       });
-      await writer.api.subscribe({
-        id: 'primary',
-        table: 'records',
-        scopes: PRIMARY_SCOPES,
-      });
-      await writer.api.subscribe({
-        id: 'sidecar',
-        table: 'record_details',
-        scopes: DETAIL_SCOPES,
-      });
+      await writer.api.subscribe(PRIMARY_UNIT);
+      await writer.api.subscribe(DETAIL_UNIT);
       await syncIdle(writer);
       await writer.api.mutate([
         {
@@ -1053,11 +1020,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: SIDECAR_ALLOWED,
         encryption: { keys: {} },
       });
-      await reader.api.subscribe({
-        id: 'sidecar',
-        table: 'record_details',
-        scopes: DETAIL_SCOPES,
-      });
+      await reader.api.subscribe(DETAIL_UNIT);
       await syncFails(
         reader,
         'client.decrypt_failed',
@@ -1091,7 +1054,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: goodKeys,
       });
-      await measured.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await measured.api.subscribe(U1);
       await syncIdle(measured);
       await measured.api.mutate([{ op: 'upsert', table: 'secrets', values }]);
       measured.sentRequests.length = 0;
@@ -1112,7 +1075,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         encryption: goodKeys,
         limits: { maxPushRequestBytes: requestBytes },
       });
-      await capped.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await capped.api.subscribe(U1);
       await syncIdle(capped);
       await capped.api.mutate([{ op: 'upsert', table: 'secrets', values }]);
       capped.sentRequests.length = 0;
@@ -1145,7 +1108,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         encryption: goodKeys,
         limits: { maxPushRequestBytes: requestBytes - 1 },
       });
-      await tight.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await tight.api.subscribe(U1);
       await syncIdle(tight);
       const id = await tight.api.mutate([
         { op: 'upsert', table: 'secrets', values },

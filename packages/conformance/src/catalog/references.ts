@@ -11,7 +11,6 @@ import type { Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, syncIdle, syncOk } from './util';
 
 const SCOPE = { project_id: ['*'] } as const;
-const SUBSCRIBE = { project_id: ['p1'] } as const;
 
 async function bootstrapped(
   ctx: ScenarioContext,
@@ -24,16 +23,8 @@ async function bootstrapped(
     allowed: SCOPE,
     schema: REFERENCE_FIXTURE_SCHEMA,
   });
-  await handle.api.subscribe({
-    id: 'projects',
-    table: 'projects',
-    scopes: SUBSCRIBE,
-  });
-  await handle.api.subscribe({
-    id: 'items',
-    table: 'items',
-    scopes: SUBSCRIBE,
-  });
+  // One unit covers both tables (§4.1).
+  await handle.api.subscribe({ project_id: 'p1' });
   await syncIdle(handle);
   return handle;
 }

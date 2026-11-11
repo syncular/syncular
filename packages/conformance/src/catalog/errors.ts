@@ -12,7 +12,7 @@ import {
   rawInvalidRequestBytes,
   rawPullHeader,
   rawPushCommit,
-  rawSubscription,
+  rawPull,
   rawUpsert,
   responsePushResults,
 } from '../raw';
@@ -101,6 +101,7 @@ async function expectRequestError(
 }
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 export const errorScenarios: readonly Scenario[] = [
   {
@@ -121,8 +122,7 @@ export const errorScenarios: readonly Scenario[] = [
       // and never carries the exception text.
       await fail.call(ctx.server);
       const raw = await ctx.rawSync('actor-1', [
-        rawPullHeader(),
-        rawSubscription('s1', 'tasks', P1, 0),
+        ...rawPull([{ scopes: U1, cursor: 0 }]),
       ]);
       check(!raw.ok, 'the failed pull is a request-level error');
       if (!raw.ok) {
@@ -147,7 +147,7 @@ export const errorScenarios: readonly Scenario[] = [
         clientId: 'client-1',
         allowed: P1,
       });
-      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await handle.api.subscribe(U1);
       await syncIdle(handle);
       const intents = handle.api.drainSyncIntents;
       check(intents !== undefined, 'sync intents are available');
@@ -231,14 +231,9 @@ export const errorScenarios: readonly Scenario[] = [
       );
 
       await expectRequestError(
-        'duplicate subscription id',
+        'a registration list repeats a scope map',
         'sync.invalid_subscription',
-        () =>
-          ctx.rawSync('actor-1', [
-            rawPullHeader(),
-            rawSubscription('dup', 'tasks', P1, 0),
-            rawSubscription('dup', 'tasks', P1, 0),
-          ]),
+        () => ctx.rawSync('actor-1', rawPull([{ scopes: U1 }, { scopes: U1 }])),
       );
 
       await expectRequestError(
@@ -246,8 +241,7 @@ export const errorScenarios: readonly Scenario[] = [
         'sync.invalid_subscription',
         () =>
           ctx.rawSync('actor-1', [
-            rawPullHeader(),
-            rawSubscription('s1', 'tasks', { bogus: ['x'] }, 0),
+            ...rawPull([{ scopes: { bogus: 'x' }, cursor: 0 }]),
           ]),
       );
 
@@ -256,19 +250,14 @@ export const errorScenarios: readonly Scenario[] = [
         'sync.invalid_subscription',
         () =>
           ctx.rawSync('actor-1', [
-            rawPullHeader(),
-            rawSubscription('s1', 'tasks', { project_id: ['*'] }, 0),
+            ...rawPull([{ scopes: { project_id: '*' }, cursor: 0 }]),
           ]),
       );
 
       await expectRequestError(
-        'subscription names an unknown table',
-        'sync.unknown_table',
-        () =>
-          ctx.rawSync('actor-1', [
-            rawPullHeader(),
-            rawSubscription('s1', 'nope', {}, -1),
-          ]),
+        'a unit with an empty scope map',
+        'sync.invalid_subscription',
+        () => ctx.rawSync('actor-1', rawPull([{ scopes: {}, cursor: -1 }])),
       );
 
       await expectRequestError(
@@ -296,8 +285,7 @@ export const errorScenarios: readonly Scenario[] = [
         'sync.invalid_request',
         () =>
           ctx.rawSync('actor-1', [
-            rawPullHeader({ accept: 0b0100 }),
-            rawSubscription('s1', 'tasks', P1, 0),
+            ...rawPull([{ scopes: U1, cursor: 0 }], { accept: 0b0100 }),
           ]),
       );
 
