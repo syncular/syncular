@@ -896,8 +896,11 @@ A commit contains one or more **changes**:
 
 Every synced row carries a **`server_version`** (`i64`, ≥ 1). An insert
 starts it one above the partition's **delete floor**: the highest
-`server_version` any applied delete in the partition recorded, `0` before
-the first. Every applied write to an existing row advances it by exactly 1:
+`server_version` recorded by any applied delete whose row was absent at the
+end of its commit, `0` before the first. A delete whose row the same commit
+writes again (a scope move's delete half, or a delete followed by a
+recreate) leaves the row live at a higher version and does not raise the
+floor. Every applied write to an existing row advances it by exactly 1:
 an upsert, a delete, and a scope move (below). Pruning never lowers the
 delete floor. A row id's versions therefore increase strictly across all of
 its writes and incarnations, and the client's version guard (§4.5) relies on
@@ -3902,10 +3905,12 @@ A registered command's `upsert` mutation is unversioned unless it sets
   is `sync.forbidden` — which necessarily reveals that the row exists,
   the accepted cost of fail-loud authorization. Every applied delete,
   including a §6.11 cascaded delete, advances the row's `server_version`
-  by 1, carries it as the change's `rowVersion`, raises the delete floor
-  to it and records a tombstone (§2.2), except the delete half of a §2.2
-  scope move: it carries the move's version, the same commit follows it
-  with an upsert for the row, so the row is live and no tombstone remains.
+  by 1 and carries it as the change's `rowVersion`. When the row is absent
+  at the end of the commit, the delete raises the delete floor to that
+  version and records a tombstone (§2.2). When the same commit writes the
+  row again (the delete half of a §2.2 scope move, which carries the move's
+  version, or a delete followed by a recreate), the row is live, no
+  tombstone remains and the floor is unchanged.
 
 ### 6.3 `PUSH_RESULT` frame
 
