@@ -1,6 +1,6 @@
 # RFC: Engine performance and repository-owned regression benchmarks
 
-- Status: implementation in progress
+- Status: done (§9.54, 2026-11-11)
 - Date: 2026-09-07
 - Review baseline: `f7b94e22764e8aec3d2528ec2858a37be65ca958` (0.16.1)
 - Scope: Syncular server, TS and Rust clients, command/FFI boundary, and `bench/`
@@ -3889,3 +3889,11 @@ Linux Bun 1.3.14: the parent reported 75,772 while the child's own peak represen
 1.4.0. Release jobs now pin 1.4.0, and repository benchmark documentation requires
 that runtime or newer. The source tag and published Rust artifacts remain immutable;
 the updated workflow on main resumes publication from the existing tag.
+
+### 9.54 Closure, 2026-11-11
+
+Local SQLite acceptance (§§9.49 and 9.50) and the hosted Postgres job (§9.53)
+completed in September 2026. The CI `postgres-performance` and
+`bench-budgets` lanes run on every push to main and every pull request.
+Dedicated-hardware calibration is cancelled: no dedicated hardware exists,
+and release-to-release comparisons run in offline-sync-bench.

@@ -1,6 +1,7 @@
 # RFC: Client performance tooling for app developers
 
-- Status: accepted with the decisions in §0; implementation on branch `perf-tooling`
+- Status: stage 1 shipped in 0.60.0; stage 2 built with budget assertions;
+  strict mode and stage 4 cancelled (§0, 2026-11-11)
 - Date: 2026-11-10
 - Review baseline: `806a45bc` (0.59.0 plus open items)
 - Scope: `packages/typegen`, `packages/web-client` (new `./dev` subpath),
@@ -31,6 +32,22 @@ text below where they differ.
 6. **A duplicate realtime delta gets a conformance scenario first**, before
    strict mode relies on it. If a core lacks the §8.2 duplicate rule, that
    core is fixed.
+
+On 2026-11-11 the lead settled the remaining stages:
+
+7. **Stage 1 shipped in 0.60.0**, and `allow plan` followed in 0.62.0.
+8. **Stage 2 is built**: `createSyncProfiler()` at `@syncular/client/dev`.
+9. **Stage 3's budget assertions are part of stage 2's report**:
+   `assertBudgets(report, budgets)` ships beside the profiler.
+10. **Stage 3's strict-mode perturbations are cancelled.** They exercise
+    protocol behavior the conformance catalog already pins in both cores
+    (`realtime/duplicate-delta-is-skipped-without-sync-needed` exists since
+    wire version 4). Turning them on by default would break app tests for a
+    narrow class of app bug at about 300 lines. Decision 3 lapses with them.
+11. **Stage 4, native counters, is cancelled.** No native app has asked for
+    them, and the Rust diagnostics snapshot already reports units and counts.
+    The cost spans the FFI, three bindings and the SPEC, unestimated.
+    Decision 5 lapses with it.
 
 ## 1. Decision asked
 

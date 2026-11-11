@@ -1,6 +1,6 @@
 # RFC: Local authority for serverless clients
 
-- Status: accepted 2026-10-29; phases 1, 1b and 2 implemented (Bun, Node,
+- Status: done; phases 1, 1b and 2 shipped by 0.49.0 (Bun, Node,
   browser worker, and the native cores through `syncular-authority`; SPEC
   §12, Appendix B.24)
 - Date: 2026-10-29

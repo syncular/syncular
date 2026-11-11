@@ -1,6 +1,6 @@
 # RFC: Core review findings and fix program
 
-- Status: shipped in 0.59.0 (pull request 122), including the rounds in §8, §9 and §10; the follow-up items at the end of §10 are on branch `open-items`
+- Status: shipped in 0.59.0 (pull request 122), including the rounds in §8, §9 and §10; the follow-up items at the end of §10 shipped in 0.60.0 (pull request 123)
 - Date: 2026-11-10
 - Review baseline: `a531dcea` (0.58.0)
 - Scope: `packages/core`, `packages/crypto`, `packages/server`,

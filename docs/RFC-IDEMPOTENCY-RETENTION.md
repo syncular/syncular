@@ -1,6 +1,6 @@
 # RFC: Bounding idempotency results with a per-outbox acknowledged watermark
 
-- Status: accepted with the decisions in §0; ships with wire version 4 on branch `wire-v4`
+- Status: accepted with the decisions in §0; shipped in 0.60.0 with wire version 4
 - Date: 2026-11-10
 - Review baseline: `3bb94ddc` (0.59.0)
 - Scope: SPEC §1.5, §2.3, §4.6, §6.3, §6.10, §10, §12.3; TS and Rust codecs;

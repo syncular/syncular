@@ -1,6 +1,6 @@
 # RFC: Unit subscriptions, one replica cursor, registration by reference
 
-- Status: accepted with the decisions in §0; implementation on branch `wire-v4`
+- Status: accepted with the decisions in §0; shipped in 0.60.0 with wire version 4
 - Date: 2026-11-10
 - Review baseline: `806a45bc` (0.59.0 plus docs)
 - Scope: SPEC §3.2, §3.3, §4.1 to §4.8, §5.4, §5.6, §8.1, §8.2, §8.7, §9,
