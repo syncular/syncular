@@ -14,8 +14,8 @@
  *               "dart": "./lib/syncular.generated.dart" },
  *   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
  *   "tables": [{ "name": "tasks", "scopes": ["project:{project_id}"] }],
- *   "subscriptions": [{ "name": "projectTasks", "table": "tasks",
- *                       "scopes": { "project_id": ["{projectId}"] } }],
+ *   "subscriptions": [{ "name": "projectTasks",
+ *                       "scopes": { "project_id": "{projectId}" } }],
  *   "extensions": {}
  * }
  * ```
@@ -24,8 +24,10 @@
  * - `schemaVersions` is the §1.5 version history: strictly increasing
  *   versions, each naming the last migration it includes (`through`); the
  *   final entry must cover the final migration.
- * - Subscription scope values are literals or whole-value `{param}`
- *   placeholders (partial templates are unsupported).
+ * - A subscription is a unit template (SPEC §4.1): one literal or
+ *   whole-value `{param}` placeholder per scope variable (partial templates
+ *   are unsupported), no table. The unit covers every table declaring all of
+ *   its variables; a template that covers no table is an error.
  * - `output.ir` / `output.module` are the always-emitted TS defaults;
  *   `output.queryIr` opts into the deterministic analyzed-query document.
  *   `output.swift` / `output.kotlin` / `output.dart` are OPT-IN native schema
@@ -68,8 +70,7 @@ export interface ManifestTable {
 
 export interface ManifestSubscription {
   readonly name: string;
-  readonly table: string;
-  readonly scopes: Readonly<Record<string, readonly string[]>>;
+  readonly scopes: Readonly<Record<string, string>>;
 }
 
 export interface ManifestSchemaVersion {
@@ -332,30 +333,33 @@ function parseSubscription(
 ): ManifestSubscription {
   const context = `subscriptions[${index}]`;
   const obj = asObject(value, context);
-  rejectUnknownKeys(obj, ['name', 'table', 'scopes'], context);
   const name = asString(obj.name, `${context}.name`);
   if (!IDENTIFIER_RE.test(name)) {
     fail(
       `subscription ${JSON.stringify(name)}: name must be a valid identifier`,
     );
   }
-  const table = asString(obj.table, `subscription ${name}: table`);
   const scopesObj = asObject(obj.scopes, `subscription ${name}: scopes`);
-  const scopes: Record<string, readonly string[]> = {};
-  for (const [variable, values] of Object.entries(scopesObj)) {
-    if (!Array.isArray(values) || values.length === 0) {
-      fail(
-        `subscription ${name}: scopes.${variable} must be a non-empty array`,
-      );
-    }
-    scopes[variable] = values.map((v, i) =>
-      asString(v, `subscription ${name}: scopes.${variable}[${i}]`),
+  if ('table' in obj || Object.values(scopesObj).some(Array.isArray)) {
+    throw new TypegenError(
+      SOURCE,
+      'a subscription is a unit template { "name", "scopes": { "<variable>": "<value or {param}>" } } with one value per scope variable and no table (SPEC §4.1); several values are several templates',
+      'typegen.subscription_legacy_shape',
+      { subscription: name },
+    );
+  }
+  rejectUnknownKeys(obj, ['name', 'scopes'], context);
+  const scopes: Record<string, string> = {};
+  for (const [variable, scope] of Object.entries(scopesObj)) {
+    scopes[variable] = asString(
+      scope,
+      `subscription ${name}: scopes.${variable}`,
     );
   }
   if (Object.keys(scopes).length === 0) {
     fail(`subscription ${name}: scopes must not be empty`);
   }
-  return { name, table, scopes };
+  return { name, scopes };
 }
 
 function parseSchemaVersion(

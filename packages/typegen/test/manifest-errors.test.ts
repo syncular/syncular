@@ -144,9 +144,7 @@ describe('parseManifest', () => {
     expectFail(
       () =>
         manifest({
-          subscriptions: [
-            { name: 'my-tasks', table: 'tasks', scopes: { a: ['b'] } },
-          ],
+          subscriptions: [{ name: 'my-tasks', scopes: { a: 'b' } }],
         }),
       /must be a valid identifier/,
     );
@@ -268,66 +266,108 @@ describe('buildIr cross-checks', () => {
     );
   });
 
-  test('subscription referencing an unknown table', () => {
-    expectFail(
-      () =>
-        buildIr(
-          manifest({
-            subscriptions: [{ name: 'x', table: 'nope', scopes: { a: ['b'] } }],
-          }),
-          MIGRATIONS,
-        ),
-      /subscription x: unknown table "nope"/,
-    );
+  test('a version 3 subscription names the unit template shape', () => {
+    for (const legacy of [
+      { name: 'x', table: 'tasks', scopes: { project_id: 'p1' } },
+      { name: 'x', scopes: { project_id: ['p1'] } },
+    ]) {
+      let error: unknown;
+      try {
+        manifest({ subscriptions: [legacy] });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TypegenError);
+      expect(error).toMatchObject({
+        code: 'typegen.subscription_legacy_shape',
+        details: { subscription: 'x' },
+      });
+      expect((error as TypegenError).message).toContain(
+        '"scopes": { "<variable>": "<value or {param}>" }',
+      );
+    }
   });
 
-  test('subscription referencing an undeclared scope variable', () => {
-    expectFail(
-      () =>
-        buildIr(
-          manifest({
-            subscriptions: [
-              { name: 'x', table: 'tasks', scopes: { org_id: ['o1'] } },
-            ],
-          }),
-          MIGRATIONS,
-        ),
-      /"org_id" is not a scope variable of table tasks/,
+  test('a unit template covers every table declaring all its variables', () => {
+    const tables = [
+      { name: 'tasks', scopes: ['project:{project_id}'] },
+      { name: 'notes', scopes: ['project:{project_id}', 'org:{org_id}'] },
+    ];
+    const ir = buildIr(
+      manifest({
+        tables,
+        subscriptions: [
+          { name: 'project', scopes: { project_id: '{projectId}' } },
+          { name: 'orgProject', scopes: { project_id: 'p1', org_id: 'o1' } },
+        ],
+      }),
+      [
+        {
+          name: '0001_initial',
+          sql: `${MIGRATIONS[0]?.sql};
+            CREATE TABLE notes (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, org_id TEXT NOT NULL)`,
+        },
+      ],
     );
+    expect(ir.subscriptions).toEqual([
+      {
+        name: 'project',
+        scopes: [
+          {
+            variable: 'project_id',
+            value: { kind: 'parameter', name: 'projectId' },
+          },
+        ],
+      },
+      {
+        name: 'orgProject',
+        scopes: [
+          { variable: 'org_id', value: { kind: 'literal', value: 'o1' } },
+          { variable: 'project_id', value: { kind: 'literal', value: 'p1' } },
+        ],
+      },
+    ]);
   });
 
-  test('partial placeholder templates are rejected', () => {
-    expectFail(
-      () =>
+  test('a unit template whose variables cover no table', () => {
+    for (const scopes of [
+      { org_id: 'o1' },
+      { project_id: 'p1', org_id: 'o1' },
+    ]) {
+      let error: unknown;
+      try {
         buildIr(
-          manifest({
-            subscriptions: [
-              {
-                name: 'x',
-                table: 'tasks',
-                scopes: { project_id: ['p-{projectId}'] },
-              },
-            ],
-          }),
+          manifest({ subscriptions: [{ name: 'x', scopes }] }),
           MIGRATIONS,
-        ),
-      /mixes literals and placeholders/,
-    );
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({
+        code: 'typegen.subscription_uncovered',
+        details: { subscription: 'x', variables: Object.keys(scopes).sort() },
+      });
+    }
   });
 
-  test("requested '*' is rejected (§3.2)", () => {
-    expectFail(
-      () =>
+  test("partial placeholders and a requested '*' are rejected (§3.2)", () => {
+    for (const value of ['p-{projectId}', '*']) {
+      let error: unknown;
+      try {
         buildIr(
           manifest({
-            subscriptions: [
-              { name: 'x', table: 'tasks', scopes: { project_id: ['*'] } },
-            ],
+            subscriptions: [{ name: 'x', scopes: { project_id: value } }],
           }),
           MIGRATIONS,
-        ),
-      /'\*' is rejected in requested scopes/,
-    );
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({
+        code: 'typegen.subscription_invalid_value',
+        details: { subscription: 'x', variable: 'project_id', value },
+      });
+    }
   });
 
   test('schema versions must cover every migration', () => {

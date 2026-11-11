@@ -27,11 +27,7 @@ const STARTER_MANIFEST = `{
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
   "tables": [{ "name": "notes", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
-    {
-      "name": "notesInList",
-      "table": "notes",
-      "scopes": { "list_id": ["{listId}"] }
-    }
+    { "name": "notesInList", "scopes": { "list_id": "{listId}" } }
   ]
 }
 `;

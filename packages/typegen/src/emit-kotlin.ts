@@ -6,7 +6,7 @@
  *   from a raw string (fed straight into `SyncularClient.create(schema = …)`),
  * - one `data class` per table with typed properties (per the six §2.4 column
  *   types + blob_ref/crdt) and a `fromRow(row: JsonValue)` companion factory,
- * - a `Subscriptions` object of typed requested-scope builders.
+ * - a `Subscriptions` object of typed unit-template builders (SPEC §4.1).
  *
  * The row shape is `JsonValue` — the exact type the Kotlin wrapper's
  * `query`/`readRows` return (each row a `JsonValue.Obj`). The header carries
@@ -89,39 +89,26 @@ function emitDataClass(table: IrTable): string[] {
 }
 
 function emitSubscription(sub: IrSubscription): string[] {
-  const params: string[] = [];
-  for (const scope of sub.scopes) {
-    for (const value of scope.values) {
-      if (value.kind === 'parameter' && !params.includes(value.name)) {
-        params.push(value.name);
-      }
-    }
-  }
+  const params = [
+    ...new Set(
+      sub.scopes.flatMap(({ value }) =>
+        value.kind === 'parameter' ? [value.name] : [],
+      ),
+    ),
+  ];
   const lines: string[] = [];
   lines.push(
-    `        /** Requested-scope template for the ${stringLiteral(sub.name, 'kotlin')} subscription. */`,
+    `        /** Unit template for the ${stringLiteral(sub.name, 'kotlin')} subscription (SPEC §4.1). */`,
   );
   lines.push(`        object ${pascalCase(sub.name)} {`);
   lines.push(
     `            const val name = ${stringLiteral(sub.name, 'kotlin')}`,
   );
-  lines.push(
-    `            const val table = ${stringLiteral(sub.table, 'kotlin')}`,
-  );
   const args = params.map((p) => `${snakeToCamel(p)}: String`).join(', ');
-  lines.push(
-    `            fun scopes(${args}): Map<String, List<String>> = mapOf(`,
-  );
-  for (const scope of sub.scopes) {
-    const values = scope.values
-      .map((value) =>
-        value.kind === 'literal'
-          ? stringLiteral(value.value, 'kotlin')
-          : snakeToCamel(value.name),
-      )
-      .join(', ');
+  lines.push(`            fun scopes(${args}): Map<String, String> = mapOf(`);
+  for (const { variable, value } of sub.scopes) {
     lines.push(
-      `                ${stringLiteral(scope.variable, 'kotlin')} to listOf(${values}),`,
+      `                ${stringLiteral(variable, 'kotlin')} to ${value.kind === 'literal' ? stringLiteral(value.value, 'kotlin') : snakeToCamel(value.name)},`,
     );
   }
   lines.push('            )');
@@ -166,7 +153,7 @@ export function emitKotlinModule(
   schemaLines.push('    )');
   schemaLines.push('');
   schemaLines.push(
-    '    /** Typed requested-scope builders per subscription. */',
+    '    /** Typed unit-template builders per subscription (SPEC §4.1). */',
   );
   schemaLines.push('    object Subscriptions {');
   if (ir.subscriptions.length === 0) {

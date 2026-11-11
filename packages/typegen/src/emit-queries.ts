@@ -23,6 +23,7 @@ import {
   type QueryParam,
   type QuerySyqlPlanBind,
   syqlInput,
+  windowBases,
 } from './query';
 
 const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -96,6 +97,24 @@ function reactiveParam(query: AnalyzedQuery, name: string): string {
   const param = query.params.find((candidate) => candidate.name === name);
   if (param === undefined) throw new Error(`unknown reactive param ${name}`);
   return `String(params.${propertyKey(param.langName)})`;
+}
+
+/** The `coverage` member's opening line and one line per window base. */
+function emitCoverage(query: AnalyzedQuery): string[] {
+  const coverage = windowBases(query.reactive.coverage);
+  return [
+    `  coverage: (${coverage.length > 0 ? 'params' : ''}) => [`,
+    ...coverage.map((entry) => {
+      const fixed = entry.fixedScopes
+        .map(
+          (scope) =>
+            `${propertyKey(scope.variable)}: ${reactiveParam(query, scope.param)}`,
+        )
+        .join(', ');
+      const fixedPart = fixed.length > 0 ? `, fixedScopes: { ${fixed} }` : '';
+      return `    { base: { variable: ${quote(entry.variable)}${fixedPart} }, units: [${entry.units.map((param) => reactiveParam(query, param)).join(', ')}] },`;
+    }),
+  ];
 }
 
 function syqlTsValueType(type: IrColumnType, nullable: boolean): string {
@@ -412,23 +431,7 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
     );
   }
   lines.push('  ],');
-  const coverageUsesParams = query.reactive.coverage.some(
-    (coverage) =>
-      coverage.units.length > 0 ||
-      coverage.fixedScopes.some((scope) => scope.params.length > 0),
-  );
-  lines.push(`  coverage: (${coverageUsesParams ? 'params' : ''}) => [`);
-  for (const coverage of query.reactive.coverage) {
-    const fixed = coverage.fixedScopes
-      .map(
-        (scope) =>
-          `${propertyKey(scope.variable)}: [${scope.params.map((param) => reactiveParam(query, param)).join(', ')}]`,
-      )
-      .join(', ');
-    lines.push(
-      `    { base: { table: ${quote(coverage.table)}, variable: ${quote(coverage.variable)}${fixed.length > 0 ? `, fixedScopes: { ${fixed} }` : ''} }, units: [${coverage.units.map((param) => reactiveParam(query, param)).join(', ')}] },`,
-    );
-  }
+  lines.push(...emitCoverage(query));
   lines.push(
     '  ],',
     hasParams
@@ -556,24 +559,7 @@ function emitQuery(query: AnalyzedQuery, hash: string): string {
     );
   }
   lines.push('  ],');
-  const coverageUsesParams = query.reactive.coverage.some(
-    (coverage) =>
-      coverage.units.length > 0 ||
-      coverage.fixedScopes.some((scope) => scope.params.length > 0),
-  );
-  lines.push(`  coverage: (${coverageUsesParams ? 'params' : ''}) => [`);
-  for (const coverage of query.reactive.coverage) {
-    const fixed = coverage.fixedScopes
-      .map(
-        (scope) =>
-          `${propertyKey(scope.variable)}: [${scope.params.map((param) => reactiveParam(query, param)).join(', ')}]`,
-      )
-      .join(', ');
-    const fixedPart = fixed.length > 0 ? `, fixedScopes: { ${fixed} }` : '';
-    lines.push(
-      `    { base: { table: ${quote(coverage.table)}, variable: ${quote(coverage.variable)}${fixedPart} }, units: [${coverage.units.map((param) => reactiveParam(query, param)).join(', ')}] },`,
-    );
-  }
+  lines.push(...emitCoverage(query));
   lines.push('  ],');
   if (hasParams) {
     lines.push(`  bind: (params: ${Params}) => ${positional},`);
@@ -714,12 +700,11 @@ export function emitQueriesModule(
       '  readonly nullable: boolean;',
       '}',
       '',
+      '/** A window base (SPEC §4.8) and the unit values a query reads. */',
       'export interface WindowCoverage {',
       '  readonly base: {',
-      '    readonly table: string;',
       '    readonly variable: string;',
-      '    readonly fixedScopes?: Readonly<Record<string, readonly string[]>>;',
-      '    readonly params?: string;',
+      '    readonly fixedScopes?: Readonly<Record<string, string>>;',
       '  };',
       '  readonly units: readonly string[];',
       '}',

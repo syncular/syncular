@@ -144,6 +144,38 @@ export interface QueryCoverageBinding {
   }[];
 }
 
+/** The window bases (SPEC §4.8) a query's coverage needs, for generated
+ * descriptors. A base names no table, so tables proven by the same base share
+ * one entry; a fixed scope bound to several params yields one base per value
+ * combination, since a base holds one value per fixed variable. Ordered by
+ * code point of the JSON so emitted metadata is byte-identical across
+ * locales. */
+export function windowBases(coverage: readonly QueryCoverageBinding[]): {
+  readonly variable: string;
+  readonly units: readonly string[];
+  readonly fixedScopes: readonly { variable: string; param: string }[];
+}[] {
+  const bases = coverage.flatMap((entry) => {
+    let combinations: { variable: string; param: string }[][] = [[]];
+    for (const scope of entry.fixedScopes) {
+      combinations = combinations.flatMap((combination) =>
+        scope.params.map((param) => [
+          ...combination,
+          { variable: scope.variable, param },
+        ]),
+      );
+    }
+    return combinations.map((fixedScopes) => ({
+      variable: entry.variable,
+      units: entry.units,
+      fixedScopes,
+    }));
+  });
+  return [...new Map(bases.map((base) => [JSON.stringify(base), base]))]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, base]) => base);
+}
+
 export interface QueryReactiveMetadata {
   readonly dependencies: readonly {
     readonly table: string;

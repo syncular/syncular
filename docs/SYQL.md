@@ -432,9 +432,13 @@ Coverage MUST resolve every read schema table and bind at least one declared
 scope of every table instance through required, non-null equality or `IN`
 predicates. A multi-scope query MUST explicitly select its unit dimension with
 `by`. The descriptor includes the selected scope and every other proven scope;
-an unbound scope is omitted from the subscription request. The result
-descriptor contains one coverage entry per read table; a client may report the
-query complete only when all entries are complete.
+an unbound scope is omitted from the window base. The QueryIR contains one
+coverage entry per read table; a client may report the query complete only when
+all entries are complete. A generated descriptor's `coverage(params)` returns
+the window bases of those entries ([SPEC.md §4.8](./SPEC.md#48-windowed-subscriptions)),
+`{ base: { variable, fixedScopes? }, units }`. A base names no table, so
+entries of tables proven by the same base are emitted once, and each fixed
+scope holds one value.
 
 A scope proof may propagate between qualified scope columns joined by a
 required outer `WHERE` equality or by a simple mandatory `ON` equality. Either

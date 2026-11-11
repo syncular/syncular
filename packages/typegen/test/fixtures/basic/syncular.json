@@ -50,15 +50,10 @@
     }
   ],
   "subscriptions": [
-    {
-      "name": "projectTasks",
-      "table": "tasks",
-      "scopes": { "project_id": ["{projectId}"] }
-    },
+    { "name": "projectTasks", "scopes": { "project_id": "{projectId}" } },
     {
       "name": "acmeDocs",
-      "table": "docs",
-      "scopes": { "org_id": ["acme"], "projectId": ["{projectId}"] }
+      "scopes": { "org_id": "acme", "projectId": "{projectId}" }
     }
   ]
 }

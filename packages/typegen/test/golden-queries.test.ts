@@ -49,7 +49,7 @@ describe('named-query emitter goldens', () => {
   test('an independent scope emits a facility-only window and dependency', () => {
     expect(facilityDocsQuery.coverage({ orgId: 'host' })).toEqual([
       {
-        base: { table: 'docs', variable: 'org_id' },
+        base: { variable: 'org_id' },
         units: ['host'],
       },
     ]);
@@ -150,17 +150,10 @@ describe('named-query emitter goldens', () => {
       joinedSyncCoverageQuery.coverage({ orgId: 'o1', projectId: 'p1' }),
     ).toEqual([
       {
-        base: {
-          table: 'docs',
-          variable: 'projectId',
-          fixedScopes: { org_id: ['o1'] },
-        },
+        base: { variable: 'projectId', fixedScopes: { org_id: 'o1' } },
         units: ['p1'],
       },
-      {
-        base: { table: 'tasks', variable: 'project_id' },
-        units: ['p1'],
-      },
+      { base: { variable: 'project_id' }, units: ['p1'] },
     ]);
   });
 

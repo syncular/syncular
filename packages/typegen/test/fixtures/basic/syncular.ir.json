@@ -234,40 +234,32 @@
   "subscriptions": [
     {
       "name": "projectTasks",
-      "table": "tasks",
       "scopes": [
         {
           "variable": "project_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "projectId"
-            }
-          ]
+          "value": {
+            "kind": "parameter",
+            "name": "projectId"
+          }
         }
       ]
     },
     {
       "name": "acmeDocs",
-      "table": "docs",
       "scopes": [
         {
           "variable": "org_id",
-          "values": [
-            {
-              "kind": "literal",
-              "value": "acme"
-            }
-          ]
+          "value": {
+            "kind": "literal",
+            "value": "acme"
+          }
         },
         {
           "variable": "projectId",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "projectId"
-            }
-          ]
+          "value": {
+            "kind": "parameter",
+            "name": "projectId"
+          }
         }
       ]
     }

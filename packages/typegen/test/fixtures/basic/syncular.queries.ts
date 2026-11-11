@@ -98,12 +98,11 @@ export interface QueryResultColumn {
   readonly nullable: boolean;
 }
 
+/** A window base (SPEC §4.8) and the unit values a query reads. */
 export interface WindowCoverage {
   readonly base: {
-    readonly table: string;
     readonly variable: string;
-    readonly fixedScopes?: Readonly<Record<string, readonly string[]>>;
-    readonly params?: string;
+    readonly fixedScopes?: Readonly<Record<string, string>>;
   };
   readonly units: readonly string[];
 }
@@ -332,7 +331,7 @@ export const docsInProjectQuery: NamedQuery<DocsInProjectRow, DocsInProjectParam
     { table: 'docs', scopeKeys: ['org:' + String(params.orgId) + '', 'project:' + String(params.projectId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'docs', variable: 'org_id', fixedScopes: { projectId: [String(params.projectId)] } }, units: [String(params.orgId)] },
+    { base: { variable: 'org_id', fixedScopes: { projectId: String(params.projectId) } }, units: [String(params.orgId)] },
   ],
   bind: (params: DocsInProjectParams) => [params.orgId, params.projectId],
   rowKey: (row) => [row.id],
@@ -381,7 +380,7 @@ export const hostBooleanQuery: NamedQuery<HostBooleanRow, HostBooleanParams> = {
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'tasks', variable: 'project_id' }, units: [String(params.projectId)] },
+    { base: { variable: 'project_id' }, units: [String(params.projectId)] },
   ],
   bind: (params: HostBooleanParams) => [params.projectId],
   rowKey: (row) => [row.id],
@@ -433,7 +432,7 @@ export const listProjectTasksQuery: NamedQuery<ListProjectTasksRow, ListProjectT
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'tasks', variable: 'project_id' }, units: [String(params.projectId)] },
+    { base: { variable: 'project_id' }, units: [String(params.projectId)] },
   ],
   bind: (params: ListProjectTasksParams) => [params.projectId],
   rowKey: (row) => [row.id],
@@ -614,7 +613,7 @@ export const reportOpenTasksQuery: NamedQuery<ReportOpenTasksRow, ReportOpenTask
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'tasks', variable: 'project_id' }, units: [String(params.projectId)] },
+    { base: { variable: 'project_id' }, units: [String(params.projectId)] },
   ],
   bind: (params: ReportOpenTasksParams) => [params.projectId],
   rowKey: (row) => [row.id],
@@ -798,7 +797,7 @@ export const tasksInProjectsQuery: NamedQuery<TasksInProjectsRow, TasksInProject
     { table: 'tasks', scopeKeys: ['project:' + String(params.first) + '', 'project:' + String(params.second) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'tasks', variable: 'project_id' }, units: [String(params.first), String(params.second)] },
+    { base: { variable: 'project_id' }, units: [String(params.first), String(params.second)] },
   ],
   bind: (params: TasksInProjectsParams) => [params.first, params.second],
   rowKey: (row) => [row.id],
@@ -913,7 +912,7 @@ export const facilityDocsQuery: NamedQuery<FacilityDocsRow, FacilityDocsParams> 
     { table: 'docs', scopeKeys: ['org:' + String(params.orgId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'docs', variable: 'org_id' }, units: [String(params.orgId)] },
+    { base: { variable: 'org_id' }, units: [String(params.orgId)] },
   ],
   bind: (params: FacilityDocsParams) => facilityDocsSelect(params).bind,
   rowKey: (row) => [row.id],
@@ -986,8 +985,8 @@ export const joinedSyncCoverageQuery: NamedQuery<JoinedSyncCoverageRow, JoinedSy
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'docs', variable: 'projectId', fixedScopes: { org_id: [String(params.orgId)] } }, units: [String(params.projectId)] },
-    { base: { table: 'tasks', variable: 'project_id' }, units: [String(params.projectId)] },
+    { base: { variable: 'projectId', fixedScopes: { org_id: String(params.orgId) } }, units: [String(params.projectId)] },
+    { base: { variable: 'project_id' }, units: [String(params.projectId)] },
   ],
   bind: (params: JoinedSyncCoverageParams) => joinedSyncCoverageSelect(params).bind,
   rowKey: (row) => [row.taskId, row.docId],
@@ -1056,7 +1055,7 @@ export const taskPriorityPeersQuery: NamedQuery<TaskPriorityPeersRow, TaskPriori
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
   coverage: (params) => [
-    { base: { table: 'tasks', variable: 'project_id' }, units: [String(params.projectId)] },
+    { base: { variable: 'project_id' }, units: [String(params.projectId)] },
   ],
   bind: (params: TaskPriorityPeersParams) => taskPriorityPeersSelect(params).bind,
 };

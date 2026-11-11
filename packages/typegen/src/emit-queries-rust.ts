@@ -13,6 +13,7 @@ import {
   type QuerySyqlPlanBind,
   type QuerySyqlPublicInput,
   syqlInput,
+  windowBases,
 } from './query';
 
 const RUST_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -526,32 +527,33 @@ function emitDependencies(query: AnalyzedQuery): string[] {
 }
 
 function emitCoverage(query: AnalyzedQuery): string[] {
-  const usesParams = query.reactive.coverage.some(
-    (coverage) =>
-      coverage.units.length > 0 ||
-      coverage.fixedScopes.some((scope) => scope.params.length > 0),
-  );
+  const coverage = windowBases(query.reactive.coverage);
   const lines = [
-    `    pub fn coverage(${usesParams ? 'params' : '_params'}: &Params) -> Vec<WindowCoverage> {`,
+    `    pub fn coverage(${coverage.length > 0 ? 'params' : '_params'}: &Params) -> Vec<WindowCoverage> {`,
     '        vec![',
   ];
-  for (const coverage of query.reactive.coverage) {
-    const fixed = coverage.fixedScopes.map((scope) => {
-      const values = scope.params
-        .map((param) => reactiveParam(query, param))
-        .join(', ');
-      return `(${quote(scope.variable)}.to_owned(), vec![${values}])`;
-    });
-    const units = coverage.units
+  for (const entry of coverage) {
+    const fixed = entry.fixedScopes.map(
+      (scope) =>
+        `(${quote(scope.variable)}.to_owned(), ${reactiveParam(query, scope.param)})`,
+    );
+    const units = entry.units
       .map((param) => reactiveParam(query, param))
       .join(', ');
+    const fixedLine = `                    fixed_scopes: UnitScopes::from([${fixed.join(', ')}]),`;
     lines.push(
       '            WindowCoverage {',
       '                base: WindowBase {',
-      `                    table: ${quote(coverage.table)}.to_owned(),`,
-      `                    variable: ${quote(coverage.variable)}.to_owned(),`,
-      `                    fixed_scopes: vec![${fixed.join(', ')}],`,
-      '                    params: None,',
+      `                    variable: ${quote(entry.variable)}.to_owned(),`,
+      ...(fixed.length === 0
+        ? ['                    fixed_scopes: UnitScopes::new(),']
+        : fixedLine.length <= 100
+          ? [fixedLine]
+          : [
+              '                    fixed_scopes: UnitScopes::from([',
+              ...fixed.map((pair) => `                        ${pair},`),
+              '                    ]),',
+            ]),
       '                },',
       `                units: vec![${units}],`,
       '            },',
@@ -715,7 +717,8 @@ function emitSupport(clientCrate: string): string {
     'use std::error::Error;',
     'use std::fmt;',
     `use ${clientCrate}::{`,
-    '    CoverageSnapshot, QueryOwner, QueryRow, QueryValue, SyncClient, WindowBase, WindowCoverage,',
+    '    CoverageSnapshot, QueryOwner, QueryRow, QueryValue, SyncClient, UnitScopes, WindowBase,',
+    '    WindowCoverage,',
     '};',
     '',
     '#[derive(Debug, Clone, PartialEq, Eq, Default)]',

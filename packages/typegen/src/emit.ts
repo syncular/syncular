@@ -6,8 +6,8 @@
  * - a `<Table>Row` interface per table,
  * - `<Table>Insert` / `<Table>Update` mutation-input shapes honoring
  *   nullability,
- * - a `<name>Subscription` helper constant per manifest subscription with
- *   a typed requested-scopes builder.
+ * - a `<name>Subscription` helper constant per manifest unit template with
+ *   a typed builder of its unit scope map (SPEC §4.1).
  *
  * The header carries the IR hash so `--check` verifies freshness
  * byte-exactly.
@@ -117,14 +117,13 @@ function emitTableDescriptor(table: IrTable, naming: NamingMode): string {
 }
 
 function emitSubscription(sub: IrSubscription): string {
-  const params: string[] = [];
-  for (const scope of sub.scopes) {
-    for (const value of scope.values) {
-      if (value.kind === 'parameter' && !params.includes(value.name)) {
-        params.push(value.name);
-      }
-    }
-  }
+  const params = [
+    ...new Set(
+      sub.scopes.flatMap(({ value }) =>
+        value.kind === 'parameter' ? [value.name] : [],
+      ),
+    ),
+  ];
   const lines: string[] = [];
   const paramsType = `${pascalCase(sub.name)}Params`;
   if (params.length > 0) {
@@ -136,22 +135,16 @@ function emitSubscription(sub: IrSubscription): string {
     lines.push('');
   }
   lines.push(
-    `/** Requested-scope template for the ${stringLiteral(sub.name, 'ts')} subscription. */`,
+    `/** Unit template for the ${stringLiteral(sub.name, 'ts')} subscription (SPEC §4.1). */`,
   );
   lines.push(`export const ${sub.name}Subscription = {`);
   lines.push(`  name: ${stringLiteral(sub.name, 'ts')},`);
-  lines.push(`  table: ${stringLiteral(sub.table, 'ts')},`);
   const args = params.length > 0 ? `params: ${paramsType}` : '';
-  lines.push(`  scopes: (${args}): Record<string, string[]> => ({`);
-  for (const scope of sub.scopes) {
-    const values = scope.values
-      .map((value) =>
-        value.kind === 'literal'
-          ? stringLiteral(value.value, 'ts')
-          : `params.${propertyKey(value.name)}`,
-      )
-      .join(', ');
-    lines.push(`    ${propertyKey(scope.variable)}: [${values}],`);
+  lines.push(`  scopes: (${args}): Record<string, string> => ({`);
+  for (const { variable, value } of sub.scopes) {
+    lines.push(
+      `    ${propertyKey(variable)}: ${value.kind === 'literal' ? stringLiteral(value.value, 'ts') : `params.${propertyKey(value.name)}`},`,
+    );
   }
   lines.push('  }),');
   lines.push('} as const;');

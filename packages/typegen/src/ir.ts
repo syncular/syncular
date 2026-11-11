@@ -116,12 +116,13 @@ export type IrScopeValue =
 
 export interface IrSubscriptionScope {
   readonly variable: string;
-  readonly values: readonly IrScopeValue[];
+  readonly value: IrScopeValue;
 }
 
+/** A unit template (SPEC §4.1): one value per scope variable. The unit
+ * covers every table that declares all of its variables. */
 export interface IrSubscription {
   readonly name: string;
-  readonly table: string;
   /** Sorted by variable for stable diffs. */
   readonly scopes: readonly IrSubscriptionScope[];
 }
@@ -233,10 +234,9 @@ export function serializeIr(ir: IrDocument): string {
     })),
     subscriptions: ir.subscriptions.map((sub) => ({
       name: sub.name,
-      table: sub.table,
       scopes: sub.scopes.map((scope) => ({
         variable: scope.variable,
-        values: scope.values.map(canonicalScopeValue),
+        value: canonicalScopeValue(scope.value),
       })),
     })),
     extensions: canonicalizeExtensions(ir.extensions),

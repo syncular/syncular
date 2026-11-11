@@ -98,40 +98,29 @@ function emitClass(table: IrTable): string[] {
 }
 
 function emitSubscription(sub: IrSubscription): string[] {
-  const params: string[] = [];
-  for (const scope of sub.scopes) {
-    for (const value of scope.values) {
-      if (value.kind === 'parameter' && !params.includes(value.name)) {
-        params.push(value.name);
-      }
-    }
-  }
+  const params = [
+    ...new Set(
+      sub.scopes.flatMap(({ value }) =>
+        value.kind === 'parameter' ? [value.name] : [],
+      ),
+    ),
+  ];
   const lines: string[] = [];
   lines.push(
-    `/// Requested-scope template for the ${stringLiteral(sub.name, 'dart')} subscription.`,
+    `/// Unit template for the ${stringLiteral(sub.name, 'dart')} subscription (SPEC §4.1).`,
   );
   lines.push(`class Syncular${pascalCase(sub.name)}Subscription {`);
   lines.push(
     `  static const String name = ${stringLiteral(sub.name, 'dart')};`,
   );
-  lines.push(
-    `  static const String table = ${stringLiteral(sub.table, 'dart')};`,
-  );
   const args = params
     .map((p) => `required String ${snakeToCamel(p)}`)
     .join(', ');
   const argsClause = args.length > 0 ? `{${args}}` : '';
-  lines.push(`  static Map<String, List<String>> scopes(${argsClause}) => {`);
-  for (const scope of sub.scopes) {
-    const values = scope.values
-      .map((value) =>
-        value.kind === 'literal'
-          ? stringLiteral(value.value, 'dart')
-          : snakeToCamel(value.name),
-      )
-      .join(', ');
+  lines.push(`  static Map<String, String> scopes(${argsClause}) => {`);
+  for (const { variable, value } of sub.scopes) {
     lines.push(
-      `        ${stringLiteral(scope.variable, 'dart')}: [${values}],`,
+      `        ${stringLiteral(variable, 'dart')}: ${value.kind === 'literal' ? stringLiteral(value.value, 'dart') : snakeToCamel(value.name)},`,
     );
   }
   lines.push('      };');

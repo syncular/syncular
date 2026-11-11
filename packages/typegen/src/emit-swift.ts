@@ -8,7 +8,7 @@
  *   types, plus blob_ref/crdt in their honest Swift shapes) and a
  *   `init?(row:)` from a `[String: JSONValue]` (the shape `query`/`readRows`
  *   return),
- * - a `subscriptions` namespace of typed requested-scope builders.
+ * - a `subscriptions` namespace of typed unit-template builders (SPEC §4.1).
  *
  * The file imports only `Syncular` (for `JSONValue`). The header carries the
  * IR hash so `--check` verifies freshness byte-exactly, exactly like the TS
@@ -113,40 +113,29 @@ function emitStruct(table: IrTable): string[] {
 }
 
 function emitSubscription(sub: IrSubscription): string[] {
-  const params: string[] = [];
-  for (const scope of sub.scopes) {
-    for (const value of scope.values) {
-      if (value.kind === 'parameter' && !params.includes(value.name)) {
-        params.push(value.name);
-      }
-    }
-  }
+  const params = [
+    ...new Set(
+      sub.scopes.flatMap(({ value }) =>
+        value.kind === 'parameter' ? [value.name] : [],
+      ),
+    ),
+  ];
   const lines: string[] = [];
   lines.push(
-    `        /// Requested-scope template for the ${stringLiteral(sub.name, 'swift')} subscription.`,
+    `        /// Unit template for the ${stringLiteral(sub.name, 'swift')} subscription (SPEC §4.1).`,
   );
   lines.push(`        public enum ${pascalCase(sub.name)} {`);
   lines.push(
     `            public static let name = ${stringLiteral(sub.name, 'swift')}`,
   );
-  lines.push(
-    `            public static let table = ${stringLiteral(sub.table, 'swift')}`,
-  );
   const args = params.map((p) => `${snakeToCamel(p)}: String`).join(', ');
   lines.push(
-    `            public static func scopes(${args}) -> [String: [String]] {`,
+    `            public static func scopes(${args}) -> [String: String] {`,
   );
   lines.push('                [');
-  for (const scope of sub.scopes) {
-    const values = scope.values
-      .map((value) =>
-        value.kind === 'literal'
-          ? stringLiteral(value.value, 'swift')
-          : snakeToCamel(value.name),
-      )
-      .join(', ');
+  for (const { variable, value } of sub.scopes) {
     lines.push(
-      `                    ${stringLiteral(scope.variable, 'swift')}: [${values}],`,
+      `                    ${stringLiteral(variable, 'swift')}: ${value.kind === 'literal' ? stringLiteral(value.value, 'swift') : snakeToCamel(value.name)},`,
     );
   }
   lines.push('                ]');
@@ -194,7 +183,9 @@ export function emitSwiftModule(
   schemaLines.push('        """)');
   schemaLines.push('');
   // Subscriptions namespace nested in the schema enum.
-  schemaLines.push('    /// Typed requested-scope builders per subscription.');
+  schemaLines.push(
+    '    /// Typed unit-template builders per subscription (SPEC §4.1).',
+  );
   schemaLines.push('    public enum subscriptions {');
   if (ir.subscriptions.length === 0) {
     schemaLines.push('        // (no subscriptions declared)');
