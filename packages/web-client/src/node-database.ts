@@ -15,7 +15,7 @@ import {
   type SqlValue,
 } from './database';
 import { ClientSyncError, STORAGE_UNAVAILABLE_CODE } from './errors';
-import { prepareReadOnly, refuseRawSql } from './query-guard';
+import { prepareReadOnly, runReadOnly } from './query-guard';
 
 function coerceParams(params: readonly SqlValue[]): SQLInputValue[] {
   return params.map((value): SQLInputValue => {
@@ -40,6 +40,7 @@ function normalizeRow(row: Record<string, unknown>): SqlRow {
 export class NodeClientDatabase implements ClientDatabase {
   readonly db: DatabaseSync;
   readonly #path: string;
+  readonly #proven = new Set<string>();
   #tx = { depth: 0 };
 
   constructor(path = ':memory:') {
@@ -81,18 +82,14 @@ export class NodeClientDatabase implements ClientDatabase {
         prepared.columns().length > 0,
       ] as const;
     });
-    // node:sqlite exposes no `sqlite3_stmt_readonly`, so SQLite refuses a
-    // write when the statement runs: under `query_only` a write transaction
-    // fails (SQLITE_READONLY) before it changes anything.
-    this.db.exec('PRAGMA query_only = ON');
-    try {
-      return statement.all(...coerceParams(params)).map(normalizeRow);
-    } catch (error) {
-      if ((error as { errcode?: unknown }).errcode === 8) refuseRawSql();
-      throw error;
-    } finally {
-      this.db.exec('PRAGMA query_only = OFF');
-    }
+    return runReadOnly(
+      this.#proven,
+      sql,
+      (pragma) => this.db.exec(pragma),
+      // SQLITE_READONLY
+      (error) => (error as { errcode?: unknown }).errcode === 8,
+      () => statement.all(...coerceParams(params)).map(normalizeRow),
+    );
   }
 
   /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */
