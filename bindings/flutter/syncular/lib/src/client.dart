@@ -337,20 +337,62 @@ class SyncularClient {
     return id;
   }
 
-  /// Register a subscription (table + scope map). Local; sync fills it.
-  void subscribe(
-    String id,
-    String table, {
-    Map<String, List<String>> scopes = const {},
-    String? params,
-  }) {
-    final p = <String, Object?>{'id': id, 'table': table, 'scopes': scopes};
-    if (params != null) p['params'] = params;
-    command('subscribe', p);
+  /// Register one unit (SPEC §4.1): one value per scope variable. Returns
+  /// the unit id derived from the scope map. Local; sync fills it.
+  String subscribe(Map<String, String> scopes) {
+    final id = command('subscribe', {'scopes': scopes})['id'];
+    if (id is! String) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'subscribe returned no id');
+    }
+    return id;
   }
 
-  /// Remove a subscription.
+  /// Register several units in one local transaction; returns their ids.
+  List<String> subscribeMany(List<Map<String, String>> units) =>
+      _strings(command('subscribeMany', {'units': units})['ids'],
+          'subscribeMany ids');
+
+  /// Release the explicit reference to a unit; its rows stay.
   void unsubscribe(String id) => command('unsubscribe', {'id': id});
+
+  /// Every registered unit record in registration order (SPEC §4.1).
+  List<Map<String, Object?>> units() {
+    final units = command('units', const {})['units'];
+    if (units is! List ||
+        units.any((entry) => entry is! Map<String, Object?>)) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'invalid units');
+    }
+    return units.cast<Map<String, Object?>>();
+  }
+
+  /// One unit record, or null when the id is not registered.
+  Map<String, Object?>? unit(String id) {
+    final result = command('unit', {'id': id});
+    final unit = result['unit'];
+    if (!result.containsKey('unit') ||
+        (unit != null && unit is! Map<String, Object?>)) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'invalid unit');
+    }
+    return unit as Map<String, Object?>?;
+  }
+
+  /// One unit's persisted catch-up state (SPEC §7.5): `known` or `unknown`.
+  Map<String, Object?> unitCatchup(String id) {
+    final units = command('snapshotRead', {
+      'statements': const [],
+      'units': [id],
+    })['units'];
+    if (units is! List ||
+        units.length != 1 ||
+        units[0] is! Map<String, Object?>) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'unit catch-up missing');
+    }
+    return units[0] as Map<String, Object?>;
+  }
 
   /// Replace the full native transport header set. Subsequent HTTP requests
   /// use it immediately; reconnect realtime to apply it to the handshake.
@@ -421,10 +463,8 @@ class SyncularClient {
   /// Pending client commit ids (the offline outbox — non-empty after a local
   /// [mutate] until sync drains it). The honest "unsynced work" signal.
   List<String> pendingCommitIds() {
-    final result = command('pendingCommitIds', const {});
-    final ids = result['ids'];
-    if (ids is List) return ids.whereType<String>().toList();
-    return const [];
+    return _strings(
+        command('pendingCommitIds', const {})['ids'], 'commit ids');
   }
 
   /// Atomically read rows, coverage, and the local revision.
@@ -437,9 +477,9 @@ class SyncularClient {
   /// One read for outbox count, upgrade state, lease, schema floor, and sync-needed state.
   Map<String, Object?> statusSnapshot() => command('statusSnapshot', const {});
 
-  Map<String, Object?> diagnosticsSnapshot(
-          [Map<String, Object?> request = const {}]) =>
-      command('diagnosticsSnapshot', request);
+  /// The version 2 privacy-safe diagnostics snapshot (SPEC §7.6).
+  Map<String, Object?> diagnosticsSnapshot() =>
+      command('diagnosticsSnapshot', const {});
 
   Map<String, Object?>? commitOutcome(String clientCommitId) {
     final result = command('commitOutcome', {'clientCommitId': clientCommitId});
@@ -487,14 +527,6 @@ class SyncularClient {
     return rejections.cast<Map<String, Object?>>();
   }
 
-  /// A subscription's status string (`active`/`revoked`/`failed`).
-  String? subscriptionState(String id) {
-    final result = command('subscriptionState', {'id': id});
-    final state = result['state'];
-    if (state is Map) return state['status'] as String?;
-    return null;
-  }
-
   /// Current conflicts (§6).
   List<Map<String, Object?>> conflicts() {
     final result = command('conflicts', const {});
@@ -519,24 +551,37 @@ class SyncularClient {
   void setPresence(String scopeKey, Object? doc) =>
       command('setPresence', {'scopeKey': scopeKey, 'doc': doc});
 
-  /// §4.8 windowed sync: set the active window (a base descriptor + the value
-  /// set). Widening bootstraps the new units; narrowing evicts the removed ones.
-  void setWindow(Map<String, Object?> base, List<String> units) =>
-      command('setWindow', {'base': base, 'units': units});
+  /// §4.8 windowed sync: set the windowed-in values of a window base, one
+  /// unit per value of [variable], each sharing [fixedScopes]. Widening
+  /// bootstraps the new units; narrowing evicts the removed ones.
+  void setWindow(String variable, List<String> units,
+          {Map<String, String> fixedScopes = const {}}) =>
+      command('setWindow', {
+        'base': {'variable': variable, 'fixedScopes': fixedScopes},
+        'units': units,
+      });
 
-  /// §4.8 windowed sync: the completeness oracle for a base descriptor —
-  /// the windowed-in units plus the subset whose bootstrap has not yet
+  /// §4.8 windowed sync: the completeness oracle for a window base — the
+  /// windowed-in units plus the subset whose bootstrap has not yet
   /// completed. Registration alone is not completeness: render a
   /// [WindowState.pending] unit as loading/partial, never as complete.
-  WindowState windowState(Map<String, Object?> base) {
-    final result = command('windowState', {'base': base});
-    final units = result['units'];
-    final pending = result['pending'];
+  WindowState windowState(String variable,
+      {Map<String, String> fixedScopes = const {}}) {
+    final result = command('windowState', {
+      'base': {'variable': variable, 'fixedScopes': fixedScopes},
+    });
     return WindowState(
-      units: units is List ? units.whereType<String>().toList() : const [],
-      pending:
-          pending is List ? pending.whereType<String>().toList() : const [],
+      units: _strings(result['units'], 'window units'),
+      pending: _strings(result['pending'], 'window pending'),
     );
+  }
+
+  /// A host string list; anything else is `client.invalid_host_response`.
+  static List<String> _strings(Object? value, String field) {
+    if (value is! List || value.any((entry) => entry is! String)) {
+      throw SyncularError('client.invalid_host_response', '$field invalid');
+    }
+    return value.cast<String>();
   }
 
   /// Open the realtime socket (needs `native-transport`).

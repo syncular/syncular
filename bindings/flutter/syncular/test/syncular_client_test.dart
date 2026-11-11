@@ -20,7 +20,9 @@ Map<String, Object?> todoSchema() => {
         {
           'name': 'todo',
           'primaryKey': 'id',
-          'scopes': <Object?>[],
+          'scopes': [
+            {'pattern': 'todo:{id}'},
+          ],
           'columns': [
             {'name': 'id', 'type': 'string', 'nullable': false},
             {'name': 'title', 'type': 'string', 'nullable': false},
@@ -42,8 +44,39 @@ void main() {
   test('init creates a client and subscribe reports active', () {
     final client = makeClient();
     addTearDown(client.close);
-    client.subscribe('s1', 'todo');
-    expect(client.subscriptionState('s1'), equals('active'));
+    final id = client.subscribe({'id': 't1'});
+    expect(client.unit(id)?['status'], equals('active'));
+    expect(client.unit(id)?['scopes'], equals({'id': 't1'}));
+  });
+
+  test('units, windows and catch-up cross the command surface', () {
+    final client = makeClient();
+    addTearDown(client.close);
+    final ids = client.subscribeMany([
+      {'id': 'a'},
+      {'id': 'b'},
+    ]);
+    expect(ids, hasLength(2));
+    expect(client.subscribe({'id': 'a'}), equals(ids[0]));
+    expect(client.units(), hasLength(2));
+    final catchup = client.unitCatchup(ids[0]);
+    expect(catchup['state'], equals('known'));
+    expect(catchup['bootstrapComplete'], isFalse);
+    expect(client.unitCatchup('absent')['state'], equals('unknown'));
+    client.unsubscribe(ids[1]);
+    expect(client.unit(ids[1]), isNull);
+
+    client.setWindow('id', ['c', 'd']);
+    final window = client.windowState('id');
+    expect(window.units, equals(['c', 'd']));
+    expect(window.pending, equals(['c', 'd']));
+    client.setWindow('id', const []);
+    expect(client.windowState('id').units, isEmpty);
+    expect(
+      () => client.subscribe({'id': '*'}),
+      throwsA(isA<SyncularError>().having(
+          (error) => error.code, 'code', 'sync.invalid_subscription')),
+    );
   });
 
   test('native transport policy reaches the core config', () {
@@ -60,8 +93,8 @@ void main() {
       ),
     );
     addTearDown(client.close);
-    client.subscribe('s1', 'todo');
-    expect(client.subscriptionState('s1'), equals('active'));
+    final id = client.subscribe({'id': 't1'});
+    expect(client.unit(id)?['status'], equals('active'));
 
     // A zero deadline is rejected by the core's config validation, proving
     // the field is serialized into the config JSON.
@@ -176,9 +209,7 @@ void main() {
     );
     addTearDown(client.close);
     expect(client.localAuthorityState(), equals('local'));
-    client.subscribe('s1', 'todo', scopes: {
-      'list_id': ['l1'],
-    });
+    client.subscribe({'list_id': 'l1'});
     client.mutate([
       {
         'op': 'upsert',
@@ -195,7 +226,7 @@ void main() {
   test('mutate then readRows shows the optimistic row', () {
     final client = makeClient();
     addTearDown(client.close);
-    client.subscribe('s1', 'todo');
+    client.subscribe({'id': 't1'});
     final commitId = client.mutate([upsert('t1', 'hello')]);
     expect(commitId, isNotEmpty);
 
@@ -210,7 +241,7 @@ void main() {
   test('query fast path returns flat columns', () {
     final client = makeClient();
     addTearDown(client.close);
-    client.subscribe('s1', 'todo');
+    client.subscribe({'id': 't1'});
     client.mutate([upsert('t1', 'world')]);
     final rows =
         client.query('SELECT title FROM todo WHERE id = ?', params: ['t1']);
@@ -222,19 +253,17 @@ void main() {
     final client = makeClient();
     addTearDown(client.close);
     final result = client.command('subscribe', {
-      'id': 's2',
-      'table': 'todo',
-      'scopes': <String, Object?>{},
+      'scopes': {'id': 't2'},
     });
-    expect(result, isA<Map<String, Object?>>());
+    expect(result['id'], isA<String>());
   });
 
   test('rotates transport headers without recreating the client', () {
     final client = makeClient();
     addTearDown(client.close);
     client.setHeaders({'authorization': 'Bearer fresh'});
-    client.subscribe('after-rotation', 'todo');
-    expect(client.subscriptionState('after-rotation'), equals('active'));
+    final id = client.subscribe({'id': 'after-rotation'});
+    expect(client.unit(id)?['status'], equals('active'));
   });
 
   test('connectivity adapter pauses, resumes, and detaches', () async {
@@ -248,7 +277,7 @@ void main() {
     expect(changes.hasListener, isTrue);
     changes.add(true);
     await Future<void>.value();
-    client.subscribe('after-connectivity', 'todo');
+    client.subscribe({'id': 'after-connectivity'});
     await adapter.close();
     expect(changes.hasListener, isFalse);
     await changes.close();
@@ -264,7 +293,7 @@ void main() {
   test('snapshots and pending outcomes after an offline mutate', () {
     final client = makeClient();
     addTearDown(client.close);
-    client.subscribe('s1', 'todo');
+    client.subscribe({'id': 't1'});
     final id = client.mutate([upsert('t1', 'x')]);
     expect(client.pendingCommitIds(), [id]);
     expect(client.statusSnapshot()['outbox'], 1);
@@ -334,7 +363,7 @@ void main() {
     addTearDown(client.close);
     client.pause();
     client.resume();
-    client.subscribe('s1', 'todo');
-    expect(client.subscriptionState('s1'), equals('active'));
+    final id = client.subscribe({'id': 't1'});
+    expect(client.unit(id)?['status'], equals('active'));
   });
 }

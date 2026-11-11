@@ -45,7 +45,9 @@ val client = SyncularClient.create(
     ),
 )
 
-client.subscribe(id = "s1", table = "todo", scopes = mapOf("project" to listOf("p1")))
+val unit = client.subscribe(mapOf("project_id" to "p1"))       // unit id
+client.setWindow("project_id", listOf("p1", "p2"))
+val window = client.windowState("project_id")                  // WindowState(units, pending)
 val commit = client.mutate(listOf(/* driver upsert/delete ops as JsonValue */))
 val rows   = client.readRows("todo")          // RowState objects
 val hits   = client.query("SELECT * FROM todo WHERE done = ?", listOf(JsonValue.of(false)))
@@ -186,7 +188,9 @@ downcalls against the real native core.
 
 Use `querySnapshot` for rows, coverage, and revision from one local read.
 `statusSnapshot` returns scheduling, schema, lease, and outbox state;
-`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+`diagnosticsSnapshot` adds bounded version 2 support evidence: units counted
+per state, `activeUnits` and the `replicaCursor`. `units`, `unit(id)` and
+`unitCatchup(id)` read the registered units and one unit's catch-up state. `commitOutcome` looks up
 one terminal result by commit ID. `commitOutcomes` lists the durable journal,
 and `resolveCommitOutcome` records an explicit resolution. A pending commit
 has no terminal outcome. `rejections` lists rejected commits.

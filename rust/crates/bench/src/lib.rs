@@ -315,6 +315,7 @@ impl BenchTransport {
                 if let ssp2::Frame::PushCommit {
                     client_commit_id,
                     operations,
+                    ..
                 } = frame
                 {
                     Some((client_commit_id, operations.len()))
@@ -996,8 +997,11 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                     if statements.is_empty()
                         || statements.len()
                             > (if surface == "snapshot" { 4 } else { 1 })
+                                // The FFI host's per-command diagnostics
+                                // snapshot: the unit scan, two meta reads,
+                                // two page pragmas and two storage sums.
                                 + if mode == "ffi" && surface != "database" {
-                                    5
+                                    7
                                 } else {
                                     0
                                 }
@@ -1896,14 +1900,14 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .len(),
-                6
+                8
             );
             assert_eq!(
                 query["work"]["snapshot"]["statements"]
                     .as_array()
                     .unwrap()
                     .len(),
-                9
+                11
             );
             for surface in ["query", "snapshot"] {
                 assert_eq!(

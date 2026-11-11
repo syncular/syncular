@@ -134,7 +134,6 @@ fn generated_self_join_sync_query_runs_with_one_coalesced_coverage_entry() {
     );
     let coverage = generated::task_priority_peers::coverage(&params);
     assert_eq!(coverage.len(), 1);
-    assert_eq!(coverage[0].base.table, "tasks");
     assert_eq!(coverage[0].base.variable, "project_id");
     assert_eq!(coverage[0].units, ["p1"]);
     assert!(generated::task_priority_peers::DESCRIPTOR.row_key.is_none());
@@ -281,7 +280,6 @@ fn generated_descriptors_expose_scope_coverage_and_row_identity() {
         Some(["project:project-1".to_owned()].as_slice())
     );
     let coverage = generated::list_project_tasks::coverage(&params);
-    assert_eq!(coverage[0].base.table, "tasks");
     assert_eq!(coverage[0].units, ["project-1"]);
 
     let docs = generated::docs_in_project::Params::new("org-1".to_owned(), "project-1".to_owned());

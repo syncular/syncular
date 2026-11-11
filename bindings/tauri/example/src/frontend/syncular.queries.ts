@@ -98,12 +98,11 @@ export interface QueryResultColumn {
   readonly nullable: boolean;
 }
 
+/** A window base (SPEC §4.8) and the unit values a query reads. */
 export interface WindowCoverage {
   readonly base: {
-    readonly table: string;
     readonly variable: string;
-    readonly fixedScopes?: Readonly<Record<string, readonly string[]>>;
-    readonly params?: string;
+    readonly fixedScopes?: Readonly<Record<string, string>>;
   };
   readonly units: readonly string[];
 }

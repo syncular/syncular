@@ -50,8 +50,7 @@ pub mod transport;
 
 use core::SyncularCore;
 use syncular_client::{
-    FileQuerySnapshotReader, QueryReadFailure, WindowBase, WindowCoverage,
-    MAX_DIAGNOSTIC_QUERY_FAILURES,
+    FileQuerySnapshotReader, QueryReadFailure, WindowCoverage, MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 
 /// Plugin configuration. Passed to [`init`]; every field is optional except a
@@ -232,7 +231,7 @@ enum ReadRequest {
     SnapshotRead {
         statements: Vec<(String, Vec<Value>)>,
         coverage: Vec<WindowCoverage>,
-        subscriptions: Vec<String>,
+        units: Vec<String>,
         commit_ids: Vec<String>,
         owner: Option<(String, Vec<String>)>,
         reply: Sender<Value>,
@@ -486,7 +485,7 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
             ReadRequest::SnapshotRead {
                 statements,
                 coverage,
-                subscriptions,
+                units,
                 commit_ids,
                 owner,
                 reply,
@@ -497,7 +496,7 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
                         .map(|(sql, params)| syncular_client::SnapshotStatement { sql, params })
                         .collect(),
                     coverage: &coverage,
-                    subscriptions,
+                    units,
                     commit_ids,
                 };
                 let result = reader.snapshot_read(&request);
@@ -927,67 +926,6 @@ fn security_preflight_error() -> Value {
     })
 }
 
-fn parse_window_base(value: Option<&Value>) -> Result<WindowBase, String> {
-    let object = value
-        .and_then(Value::as_object)
-        .ok_or_else(|| "querySnapshot coverage missing base object".to_owned())?;
-    let table = object
-        .get("table")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "window base missing table".to_owned())?
-        .to_owned();
-    let variable = object
-        .get("variable")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "window base missing variable".to_owned())?
-        .to_owned();
-    let fixed_scopes = match object.get("fixedScopes") {
-        Some(value) => syncular_client::values::json_to_scope_map(value)?,
-        None => Vec::new(),
-    };
-    let params = object
-        .get("params")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    Ok(WindowBase {
-        table,
-        variable,
-        fixed_scopes,
-        params,
-    })
-}
-
-fn parse_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage>, String> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    let entries = value
-        .as_array()
-        .ok_or_else(|| "querySnapshot coverage must be a list".to_owned())?;
-    entries
-        .iter()
-        .map(|entry| {
-            let units = entry
-                .get("units")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(WindowCoverage {
-                base: parse_window_base(entry.get("base"))?,
-                units,
-            })
-        })
-        .collect()
-}
-
 fn pump_events<F: Fn(&Value)>(core: &mut SyncularCore, emit: &F) {
     for event in core.drain_events() {
         emit(&event.json);
@@ -1046,7 +984,7 @@ async fn syncular_command<R: Runtime>(
             app,
             statements,
             params.get("coverage").cloned(),
-            params.get("subscriptions").cloned(),
+            params.get("units").cloned(),
             params.get("commitIds").cloned(),
             params.get("owner").cloned(),
         )
@@ -1280,9 +1218,9 @@ async fn syncular_query_snapshot<R: Runtime>(
             Some(values) => values.clone(),
             None => return Ok(client_error("querySnapshot params must be a list")),
         };
-        let parsed_coverage = match parse_coverage(Some(&coverage_value)) {
+        let parsed_coverage = match syncular_command::parse_window_coverage(Some(&coverage_value)) {
             Ok(value) => value,
-            Err(message) => return Ok(client_error(message)),
+            Err(message) => return Ok(invalid_request(&message)),
         };
         // §7.5 owner: the same `{id, tables}` contract the command router parses.
         let parsed_owner = match parse_owner(owner.as_ref()) {
@@ -1365,15 +1303,15 @@ fn parse_string_list(value: Option<&Value>) -> Result<Vec<String>, String> {
 
 /// §7.5: one atomic read over the file-backed sidecar, or the owner command
 /// for an in-memory replica (SQLite cannot share an anonymous database across
-/// connections). `statements` is a list of `{sql, params?}`; `subscriptions`
-/// and `commitIds` name the catch-up and delivery reads. All results share one
+/// connections). `statements` is a list of `{sql, params?}`; `units` and
+/// `commitIds` name the catch-up and delivery reads. All results share one
 /// revision and one read transaction. The webview reaches it as the
 /// `snapshotRead` method of `syncular_command`.
 async fn syncular_snapshot_read<R: Runtime>(
     app: tauri::AppHandle<R>,
     statements: Value,
     coverage: Option<Value>,
-    subscriptions: Option<Value>,
+    units: Option<Value>,
     commit_ids: Option<Value>,
     owner: Option<Value>,
 ) -> Result<Value, String> {
@@ -1407,11 +1345,11 @@ async fn syncular_snapshot_read<R: Runtime>(
         parsed_statements.push((sql.to_owned(), params));
     }
     let coverage_value = coverage.clone().unwrap_or(Value::Null);
-    let parsed_coverage = match parse_coverage(coverage.as_ref()) {
+    let parsed_coverage = match syncular_command::parse_window_coverage(coverage.as_ref()) {
         Ok(value) => value,
-        Err(message) => return Ok(invalid_request(&format!("sync.invalid_request: {message}"))),
+        Err(message) => return Ok(invalid_request(&message)),
     };
-    let parsed_subscriptions = match parse_string_list(subscriptions.as_ref()) {
+    let parsed_units = match parse_string_list(units.as_ref()) {
         Ok(value) => value,
         Err(message) => return Ok(invalid_request(&format!("sync.invalid_request: {message}"))),
     };
@@ -1430,7 +1368,7 @@ async fn syncular_snapshot_read<R: Runtime>(
             .send(ReadRequest::SnapshotRead {
                 statements: parsed_statements,
                 coverage: parsed_coverage,
-                subscriptions: parsed_subscriptions,
+                units: parsed_units,
                 commit_ids: parsed_commit_ids,
                 owner: parsed_owner,
                 reply: reply_tx,
@@ -1451,7 +1389,7 @@ async fn syncular_snapshot_read<R: Runtime>(
                     .map(|(sql, params)| json!({ "sql": sql, "params": params }))
                     .collect::<Vec<_>>(),
                 "coverage": coverage_value,
-                "subscriptions": parsed_subscriptions,
+                "units": parsed_units,
                 "commitIds": parsed_commit_ids,
                 "owner": parsed_owner.map_or(Value::Null, |(id, tables)| json!({
                     "id": id,
@@ -1857,12 +1795,12 @@ mod tests {
         let conn = rusqlite::Connection::open(&path).expect("fixture db");
         conn.execute_batch("INSERT INTO _syncular_base_authority(id,actor_id,role,secret,_syncular_version)VALUES('one','a','accepted','clinical plaintext',7); INSERT INTO authority SELECT * FROM _syncular_base_authority;").expect("fixture base");
         for actor in ["a", "b"] {
-            let state = json!({"requested": {"actor_id": [actor]}, "effectiveScopes": {"actor_id": [actor]}, "status": "active", "cursor": 7});
+            let echo = json!([{"table": "authority", "status": "active", "scopes": {"actor_id": [actor]}}]);
             conn.execute(
-                "INSERT INTO _syncular_subscriptions(id,tbl,state_json)VALUES(?1,'authority',?2)",
-                rusqlite::params![actor, state.to_string()],
+                "INSERT INTO _syncular_units(id,scopes,explicit,cursor,echo)VALUES(?1,?2,1,NULL,?3)",
+                rusqlite::params![actor, json!({"actor_id": actor}).to_string(), echo.to_string()],
             )
-            .expect("fixture subscription");
+            .expect("fixture unit");
         }
         let snapshot = command(json!({"method": "authoritySnapshot", "params": {}}));
         assert_eq!(snapshot["result"]["complete"], true, "{snapshot}");
@@ -1943,19 +1881,19 @@ mod tests {
             command(json!({"method": "authoritySnapshot", "params": {}}))["result"]["revision"],
             before
         );
-        conn.execute("UPDATE _syncular_subscriptions SET state_json=?1 WHERE id='b'", [json!({"requested": {"actor_id": ["b"]}, "effectiveScopes": {"actor_id": ["b"]}, "status": "active", "cursor": 7, "bootstrapState": "credential-do-not-expose"}).to_string()]).unwrap();
+        conn.execute("UPDATE _syncular_units SET cursor=7, bootstrap_state='credential-do-not-expose' WHERE id='b'", []).unwrap();
         let partial = command(json!({"method": "authoritySnapshot", "params": {}}));
         assert_eq!(partial["result"]["complete"], false);
         assert!(!partial.to_string().contains("credential-do-not-expose"));
         conn.execute(
-            "UPDATE _syncular_subscriptions SET state_json='credential-do-not-expose' WHERE id='b'",
+            "UPDATE _syncular_units SET echo='credential-do-not-expose' WHERE id='b'",
             [],
         )
         .unwrap();
         let corrupt = command(json!({"method": "authoritySnapshot", "params": {}}));
         assert_eq!(corrupt["error"]["code"], "sync.local_corrupt");
         assert!(!corrupt.to_string().contains("credential-do-not-expose"));
-        conn.execute("DELETE FROM _syncular_subscriptions WHERE id='b'", [])
+        conn.execute("DELETE FROM _syncular_units WHERE id='b'", [])
             .unwrap();
         command(json!({"method": "beginSecurityPreflight", "params": {}}));
         assert!(
@@ -2147,33 +2085,6 @@ mod tests {
         );
         command(json!({ "method": "shutdown" }));
         std::fs::remove_dir_all(dir).expect("remove temp directory");
-    }
-
-    #[test]
-    fn snapshot_coverage_parser_preserves_the_generated_window_descriptor() {
-        let parsed = parse_coverage(Some(&json!([{
-            "base": {
-                "table": "tasks",
-                "variable": "project_id",
-                "fixedScopes": { "tenant_id": ["one", "two"] },
-                "params": "opaque"
-            },
-            "units": ["a", "b"]
-        }])))
-        .expect("parse coverage");
-        assert_eq!(parsed.len(), 1);
-        let entry = &parsed[0];
-        assert_eq!(entry.base.table, "tasks");
-        assert_eq!(entry.base.variable, "project_id");
-        assert_eq!(
-            entry.base.fixed_scopes,
-            vec![(
-                "tenant_id".to_owned(),
-                vec!["one".to_owned(), "two".to_owned()]
-            )]
-        );
-        assert_eq!(entry.base.params.as_deref(), Some("opaque"));
-        assert_eq!(entry.units, vec!["a".to_owned(), "b".to_owned()]);
     }
 
     /// Sync events reach only the webview that created the client. An app-wide
@@ -2413,10 +2324,66 @@ mod tests {
         assert!(kinds.iter().any(|k| k == "change"), "kinds: {kinds:?}");
     }
 
+    /// The scripted server's sections for one non-reset round (SPEC §4.3):
+    /// an empty bootstrap pinned at 0 answering the `{id: "one"}` unit's
+    /// `PROGRESS`, then the live section with `commits` through `through_seq`.
+    #[cfg(feature = "native-transport")]
+    fn scripted_sections(
+        request: &ssp2::model::Message,
+        through_seq: i64,
+        commits: Vec<ssp2::model::Frame>,
+    ) -> Vec<ssp2::model::Frame> {
+        use ssp2::model::{Frame, LiveStatus, SubStatus};
+        use ssp2::segment::{Column, ColumnType, RowsSegment};
+        let unit = ssp2::registration::unit_id(&[("id".into(), "one".into())]);
+        let mut frames = Vec::new();
+        if request
+            .frames
+            .iter()
+            .any(|frame| matches!(frame, Frame::Progress { id, .. } if *id == unit))
+        {
+            frames.push(Frame::SubStart {
+                id: unit,
+                status: SubStatus::Active,
+                reason_code: String::new(),
+                bootstrap: true,
+                fenced: vec![],
+            });
+            frames.push(Frame::SegmentInline {
+                payload: ssp2::segment::encode_rows_segment(&RowsSegment {
+                    table: "todo".into(),
+                    schema_version: 1,
+                    columns: ["id", "title"]
+                        .map(|name| Column {
+                            name: name.into(),
+                            ty: ColumnType::String,
+                            nullable: false,
+                        })
+                        .into(),
+                    blocks: vec![],
+                }),
+            });
+            frames.push(Frame::SubEnd {
+                next_cursor: 0,
+                bootstrap_state: None,
+            });
+        }
+        frames.push(Frame::LiveStart {
+            status: LiveStatus::Active,
+            reason_code: String::new(),
+        });
+        frames.extend(commits);
+        frames.push(Frame::LiveEnd {
+            through_seq,
+            echo_digest: Some([7; 32]),
+        });
+        frames
+    }
+
     #[cfg(feature = "native-transport")]
     #[test]
     fn pending_network_round_keeps_local_mutations_and_queries_responsive() {
-        use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
+        use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus};
         use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -2482,6 +2449,7 @@ mod tests {
                             if let Frame::PushCommit {
                                 client_commit_id,
                                 operations,
+                                ..
                             } = frame
                             {
                                 Some((client_commit_id.clone(), operations.len()))
@@ -2506,19 +2474,8 @@ mod tests {
                         });
                     }
                 }
-                if !reset
-                    && request
-                        .frames
-                        .iter()
-                        .any(|frame| matches!(frame, Frame::Subscription { id, .. } if id == "own"))
-                {
-                    frames.push(Frame::SubStart {
-                        id: "own".into(),
-                        status: SubStatus::Active,
-                        reason_code: String::new(),
-                        effective_scopes: vec![("id".into(), vec!["one".into()])],
-                        bootstrap: false,
-                    });
+                if !reset {
+                    let mut commits = Vec::new();
                     if deliver {
                         assert!(request
                             .frames
@@ -2542,7 +2499,7 @@ mod tests {
                                 Some(ColumnValue::String("300/v3".into())),
                             ],
                         );
-                        frames.push(Frame::Commit {
+                        commits.push(Frame::Commit {
                             commit_seq: 3,
                             created_at_ms: 0,
                             actor_id: "actor".into(),
@@ -2551,17 +2508,18 @@ mod tests {
                                 table_index: 0,
                                 row_id: "one".into(),
                                 op: Op::Upsert,
-                                row_version: Some(3),
+                                row_version: 3,
                                 scopes: vec![("id".into(), "one".into())],
                                 row: Some(row.into_bytes()),
                             }],
                         });
                         server_image_sent.store(true, Ordering::SeqCst);
                     }
-                    frames.push(Frame::SubEnd {
-                        next_cursor: if deliver { 3 } else { 0 },
-                        bootstrap_state: None,
-                    });
+                    frames.extend(scripted_sections(
+                        &request,
+                        if deliver { 3 } else { 0 },
+                        commits,
+                    ));
                 }
                 let response = ssp2::encode_message(&Message {
                     wire_version: ssp2::decode::WIRE_VERSION,
@@ -2621,7 +2579,13 @@ mod tests {
             .unwrap()
             .get("error")
             .is_none());
-        assert!(call(json!({ "method": "subscribe", "params": { "id": "own", "table": "todo", "scopes": { "id": ["one"] } } })).recv().unwrap().get("error").is_none());
+        assert!(
+            call(json!({ "method": "subscribe", "params": { "scopes": { "id": "one" } } }))
+                .recv()
+                .unwrap()
+                .get("error")
+                .is_none()
+        );
         let first = call(json!({ "method": "mutate", "params": { "mutations": [{
             "op": "upsert", "table": "todo", "values": { "id": "one", "title": "100/v1" }
         }] } }))
@@ -2913,7 +2877,7 @@ mod tests {
     #[cfg(feature = "native-transport")]
     #[test]
     fn owner_thread_sync_until_idle_reports_budget_exhaustion_with_the_report() {
-        use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
+        use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus};
         use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
         use std::io::{ErrorKind, Read, Write};
         use std::net::TcpListener;
@@ -2996,19 +2960,7 @@ mod tests {
                         }
                     }
                 }
-                if !reset
-                    && request
-                        .frames
-                        .iter()
-                        .any(|frame| matches!(frame, Frame::Subscription { id, .. } if id == "own"))
-                {
-                    frames.push(Frame::SubStart {
-                        id: "own".into(),
-                        status: SubStatus::Active,
-                        reason_code: String::new(),
-                        effective_scopes: vec![("id".into(), vec!["one".into()])],
-                        bootstrap: false,
-                    });
+                if !reset {
                     let mut row = ssp2::primitives::Writer::new();
                     encode_row(
                         &mut row,
@@ -3018,7 +2970,7 @@ mod tests {
                             Some(ColumnValue::String(format!("v{round}"))),
                         ],
                     );
-                    frames.push(Frame::Commit {
+                    let commit = Frame::Commit {
                         commit_seq: round as i64,
                         created_at_ms: 0,
                         actor_id: "actor".into(),
@@ -3027,15 +2979,12 @@ mod tests {
                             table_index: 0,
                             row_id: "one".into(),
                             op: Op::Upsert,
-                            row_version: Some(round as i64),
+                            row_version: round as i64,
                             scopes: vec![("id".into(), "one".into())],
                             row: Some(row.into_bytes()),
                         }],
-                    });
-                    frames.push(Frame::SubEnd {
-                        next_cursor: round as i64,
-                        bootstrap_state: None,
-                    });
+                    };
+                    frames.extend(scripted_sections(&request, round as i64, vec![commit]));
                 }
                 let response = ssp2::encode_message(&Message {
                     wire_version: ssp2::decode::WIRE_VERSION,
@@ -3084,7 +3033,7 @@ mod tests {
         } }));
         assert!(created.get("error").is_none(), "{created}");
         assert!(
-            call(json!({ "method": "subscribe", "params": { "id": "own", "table": "todo", "scopes": { "id": ["one"] } } }))
+            call(json!({ "method": "subscribe", "params": { "scopes": { "id": "one" } } }))
                 .get("error")
                 .is_none()
         );
@@ -3715,7 +3664,7 @@ mod tests {
                 .send(ReadRequest::SnapshotRead {
                     statements: vec![(sql.to_owned(), Vec::<syncular_client::QueryValue>::new())],
                     coverage: Vec::new(),
-                    subscriptions: Vec::new(),
+                    units: Vec::new(),
                     commit_ids: Vec::new(),
                     owner,
                     reply,

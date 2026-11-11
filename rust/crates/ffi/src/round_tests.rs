@@ -132,6 +132,7 @@ fn request_bytes() -> Vec<u8> {
             client_id: "c1".to_owned(),
             schema_version: 1,
             log_epoch: None,
+            outbox_id: None,
         }],
     })
 }
@@ -205,6 +206,7 @@ fn round_chunked_response_reassembles() {
             client_id: "c1".to_owned(),
             schema_version: 1,
             log_epoch: None,
+            outbox_id: None,
         }],
     });
     let got = transport.realtime_sync(&request).expect("round ok");
@@ -250,6 +252,7 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
             client_id: "c1".to_owned(),
             schema_version: 1,
             log_epoch: None,
+            outbox_id: None,
         }],
     });
     let got = transport.realtime_sync(&request).expect("round ok");
@@ -298,6 +301,7 @@ fn mid_round_socket_drop_fails_the_round() {
             client_id: "c1".to_owned(),
             schema_version: 1,
             log_epoch: None,
+            outbox_id: None,
         }],
     });
     let outcome = transport.realtime_sync(&request);
@@ -424,9 +428,9 @@ fn ffi_realtime_client(port: u16) -> *mut crate::Handle {
     let subscribed = command(
         handle,
         "subscribe",
-        json!({ "id": "s1", "table": "todo", "scopes": {} }),
+        json!({ "scopes": { "list_id": "l1" } }),
     );
-    assert_eq!(subscribed["result"], json!({}), "{subscribed}");
+    assert!(subscribed["result"]["id"].is_string(), "{subscribed}");
     let connected = command(handle, "connectRealtime", json!({}));
     assert_eq!(connected["result"], json!({}), "{connected}");
     handle
@@ -450,36 +454,59 @@ fn section_response(frames: Vec<Frame>) -> Vec<u8> {
 #[test]
 fn an_idle_ffi_host_is_woken_for_a_delta_and_applies_it_on_drain_realtime() {
     use crate::tests::{command, simple_schema};
-    use ssp2::model::{Change, Op, SubStatus};
+    use ssp2::model::{Change, LiveStatus, Op, SubStatus};
     let schema = syncular_client::parse_schema_json(&simple_schema()).unwrap();
     let row = syncular_client::values::encode_row_json(
         schema.table("todo").unwrap(),
         "t1",
         &serde_json::Map::from_iter([
             ("id".to_owned(), json!("t1")),
+            ("list_id".to_owned(), json!("l1")),
             ("title".to_owned(), json!("from a delta")),
             ("done".to_owned(), json!(false)),
         ]),
         &Default::default(),
     )
     .unwrap();
-    let sub_start = || Frame::SubStart {
-        id: "s1".to_owned(),
-        status: SubStatus::Active,
-        reason_code: String::new(),
-        effective_scopes: vec![],
-        bootstrap: false,
+    let segment = Frame::SegmentInline {
+        payload: ssp2::segment::encode_rows_segment(&ssp2::segment::RowsSegment {
+            table: "todo".to_owned(),
+            schema_version: 1,
+            columns: schema.table("todo").unwrap().wire_columns.clone(),
+            blocks: Vec::new(),
+        }),
     };
-    let synced = section_response(vec![
-        sub_start(),
+    let live = |through_seq: i64, commits: Vec<Frame>| {
+        let mut frames = vec![Frame::LiveStart {
+            status: LiveStatus::Active,
+            reason_code: String::new(),
+        }];
+        frames.extend(commits);
+        frames.push(Frame::LiveEnd {
+            through_seq,
+            echo_digest: Some([7; 32]),
+        });
+        frames
+    };
+    let mut bootstrap = vec![
+        Frame::SubStart {
+            id: ssp2::registration::unit_id(&[("list_id".to_owned(), "l1".to_owned())]),
+            status: SubStatus::Active,
+            reason_code: String::new(),
+            bootstrap: true,
+            fenced: vec![],
+        },
+        segment,
         Frame::SubEnd {
             next_cursor: 0,
             bootstrap_state: None,
         },
-    ]);
-    let delta = section_response(vec![
-        sub_start(),
-        Frame::Commit {
+    ];
+    bootstrap.extend(live(0, vec![]));
+    let synced = section_response(bootstrap);
+    let delta = section_response(live(
+        1,
+        vec![Frame::Commit {
             commit_seq: 1,
             actor_id: "writer".to_owned(),
             created_at_ms: 1,
@@ -488,16 +515,12 @@ fn an_idle_ffi_host_is_woken_for_a_delta_and_applies_it_on_drain_realtime() {
                 table_index: 0,
                 row_id: "t1".to_owned(),
                 op: Op::Upsert,
-                row_version: Some(1),
-                scopes: vec![],
+                row_version: 1,
+                scopes: vec![("list_id".to_owned(), "l1".to_owned())],
                 row: Some(row),
             }],
-        },
-        Frame::SubEnd {
-            next_cursor: 1,
-            bootstrap_state: None,
-        },
-    ]);
+        }],
+    ));
     let (send_delta, delta_requested) = mpsc::channel::<()>();
     let reset = encode_message(&Message {
         wire_version: ssp2::decode::WIRE_VERSION,
@@ -510,7 +533,7 @@ fn an_idle_ffi_host_is_woken_for_a_delta_and_applies_it_on_drain_realtime() {
         }],
     });
     let (port, server) = spawn_ws_server(move |ws| {
-        // The first round adopts the log epoch; the second activates s1.
+        // The first round adopts the log epoch; the second bootstraps the unit.
         for response in [reset, synced] {
             let _request = read_round_request(ws);
             let mut framed = vec![REALTIME_TAG_ROUND];

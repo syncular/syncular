@@ -24,6 +24,9 @@ fun interface SyncularEventListener {
  */
 class SyncularException(val code: String, message: String, val details: JsonValue? = null) : RuntimeException(message)
 
+/** A window base's units and the subset whose bootstrap is still pending (SPEC §4.8). */
+data class WindowState(val units: List<String>, val pending: List<String>)
+
 /**
  * Configuration for a [SyncularClient]. [baseUrl] engages the native HTTP+WS
  * transport (only in a `native-transport` core build); omit it for the
@@ -255,26 +258,68 @@ class SyncularClient private constructor(
             ?: throw SyncularException("client.failed", "$method returned no clientCommitId")
     }
 
-    /** Register a subscription (table + scope map). Local; sync fills it. */
-    @JvmOverloads
-    fun subscribe(
-        id: String,
-        table: String,
-        scopes: Map<String, List<String>> = emptyMap(),
-        params: String? = null,
-    ) {
-        val p = LinkedHashMap<String, JsonValue>()
-        p["id"] = JsonValue.of(id)
-        p["table"] = JsonValue.of(table)
-        p["scopes"] = JsonValue.Obj(scopes.mapValues { (_, v) -> JsonValue.arr(v.map(JsonValue::of)) })
-        params?.let { p["params"] = JsonValue.of(it) }
-        command("subscribe", JsonValue.Obj(p))
-    }
+    /** Register one unit (SPEC §4.1): one value per scope variable. Returns
+     *  the unit id derived from the scope map. Local; sync fills it. */
+    fun subscribe(scopes: Map<String, String>): String =
+        command("subscribe", JsonValue.obj("scopes" to scopeMap(scopes)))["id"]?.string
+            ?: throw SyncularException("client.invalid_host_response", "subscribe returned no id")
 
-    /** Remove a subscription. */
+    /** Register several units in one local transaction; returns their ids. */
+    fun subscribeMany(units: List<Map<String, String>>): List<String> =
+        strings(command("subscribeMany", JsonValue.obj("units" to JsonValue.arr(units.map(::scopeMap))))["ids"], "subscribeMany ids")
+
+    /** Release the explicit reference to a unit; its rows stay. */
     fun unsubscribe(id: String) {
         command("unsubscribe", JsonValue.obj("id" to JsonValue.of(id)))
     }
+
+    /** Every registered unit record in registration order (SPEC §4.1). */
+    fun units(): List<JsonValue> =
+        command("units", JsonValue.Obj(emptyMap()))["units"]?.array
+            ?: throw SyncularException("client.invalid_host_response", "units missing")
+
+    /** One unit record, or null when the id is not registered. */
+    fun unit(id: String): JsonValue? {
+        val unit = command("unit", JsonValue.obj("id" to JsonValue.of(id)))["unit"]
+            ?: throw SyncularException("client.invalid_host_response", "unit missing")
+        return if (unit is JsonValue.Null) null else unit
+    }
+
+    /** One unit's persisted catch-up state (SPEC §7.5): `known` or `unknown`. */
+    fun unitCatchup(id: String): JsonValue =
+        command(
+            "snapshotRead",
+            JsonValue.obj("statements" to JsonValue.arr(emptyList()), "units" to JsonValue.arr(listOf(JsonValue.of(id)))),
+        )["units"]?.array?.firstOrNull()
+            ?: throw SyncularException("client.invalid_host_response", "unit catch-up missing")
+
+    /** Set the windowed-in values of a window base (SPEC §4.8), one unit per
+     *  value of [variable], each sharing [fixedScopes]. */
+    @JvmOverloads
+    fun setWindow(variable: String, units: List<String>, fixedScopes: Map<String, String> = emptyMap()) {
+        command(
+            "setWindow",
+            JsonValue.obj("base" to windowBase(variable, fixedScopes), "units" to JsonValue.arr(units.map(JsonValue::of))),
+        )
+    }
+
+    /** The window's units and the subset whose bootstrap is still pending. */
+    @JvmOverloads
+    fun windowState(variable: String, fixedScopes: Map<String, String> = emptyMap()): WindowState {
+        val result = command("windowState", JsonValue.obj("base" to windowBase(variable, fixedScopes)))
+        return WindowState(strings(result["units"], "window units"), strings(result["pending"], "window pending"))
+    }
+
+    private fun scopeMap(scopes: Map<String, String>): JsonValue = JsonValue.Obj(scopes.mapValues { JsonValue.of(it.value) })
+
+    private fun windowBase(variable: String, fixedScopes: Map<String, String>): JsonValue =
+        JsonValue.obj("variable" to JsonValue.of(variable), "fixedScopes" to scopeMap(fixedScopes))
+
+    /** A host string list; anything else is `client.invalid_host_response`. */
+    private fun strings(value: JsonValue?, field: String): List<String> =
+        (value?.array ?: throw SyncularException("client.invalid_host_response", "$field missing")).map {
+            it.string ?: throw SyncularException("client.invalid_host_response", "$field entry is not a string")
+        }
 
     /** Replace the full native transport header set. Subsequent HTTP requests
      * use it immediately; reconnect realtime to apply it to the handshake. */
@@ -362,10 +407,8 @@ class SyncularClient private constructor(
 
     /** Pending client commit ids (the offline outbox — non-empty after a local
      *  mutate until sync drains it). The honest "unsynced work" signal. */
-    fun pendingCommitIds(): List<String> {
-        val result = command("pendingCommitIds", JsonValue.Obj(emptyMap()))
-        return result["ids"]?.array?.mapNotNull { it.string } ?: emptyList()
-    }
+    fun pendingCommitIds(): List<String> =
+        strings(command("pendingCommitIds", JsonValue.Obj(emptyMap()))["ids"], "commit ids")
 
     /** Atomically read rows, coverage, and the local revision. */
     fun querySnapshot(sql: String, params: List<JsonValue> = emptyList(), coverage: List<JsonValue> = emptyList()): JsonValue =
@@ -374,8 +417,8 @@ class SyncularClient private constructor(
     /** One read for outbox count, upgrade state, lease, schema floor, and sync-needed state. */
     fun statusSnapshot(): JsonValue = command("statusSnapshot", JsonValue.Obj(emptyMap()))
 
-    fun diagnosticsSnapshot(request: JsonValue = JsonValue.Obj(emptyMap())): JsonValue =
-        command("diagnosticsSnapshot", request)
+    /** The version 2 privacy-safe diagnostics snapshot (SPEC §7.6). */
+    fun diagnosticsSnapshot(): JsonValue = command("diagnosticsSnapshot", JsonValue.Obj(emptyMap()))
 
     fun commitOutcome(clientCommitId: String): JsonValue? {
         val outcome = command("commitOutcome", JsonValue.obj("clientCommitId" to JsonValue.of(clientCommitId)))["outcome"]
@@ -394,11 +437,6 @@ class SyncularClient private constructor(
     fun rejections(): List<JsonValue> =
         command("rejections", JsonValue.Obj(emptyMap()))["rejections"]?.array
             ?: throw SyncularException("client.invalid_host_response", "rejections missing")
-
-    /** A subscription's status string (active/revoked/failed) — the status
-     *  surface. Lifted from the `{state: {…, status}}` view. */
-    fun subscriptionState(id: String): String? =
-        command("subscriptionState", JsonValue.obj("id" to JsonValue.of(id)))["state"]?.get("status")?.string
 
     /** Current conflicts (§6). */
     fun conflicts(): List<JsonValue> =

@@ -138,10 +138,8 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
     );
     let coverage = syncular_client::WindowCoverage {
         base: syncular_client::WindowBase {
-            table: "todo".to_owned(),
             variable: "bucket".to_owned(),
-            fixed_scopes: Vec::new(),
-            params: None,
+            fixed_scopes: Default::default(),
         },
         units: vec!["missing".to_owned()],
     };
@@ -157,7 +155,7 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
     assert_eq!(expected["coverage"]["complete"], false);
     let result = handle.command(&json!({"method": "querySnapshot", "params": {
         "sql": "SELECT 1 AS id WHERE 0", "params": null,
-        "coverage": [{"base": {"table": "todo", "variable": "bucket", "fixedScopes": {}}, "units": ["missing"]}]
+        "coverage": [{"base": {"variable": "bucket", "fixedScopes": {}}, "units": ["missing"]}]
     }}));
     assert_eq!(result["result"], expected);
     for method in ["query", "querySnapshot"] {
@@ -214,10 +212,11 @@ pub(crate) fn simple_schema() -> Value {
             "primaryKey": "id",
             "columns": [
                 { "name": "id", "type": "string", "nullable": false },
+                { "name": "list_id", "type": "string", "nullable": false },
                 { "name": "title", "type": "string", "nullable": false },
                 { "name": "done", "type": "boolean", "nullable": false }
             ],
-            "scopes": []
+            "scopes": [{ "pattern": "list:{list_id}" }]
         }]
     })
 }
@@ -240,9 +239,12 @@ fn new_command_readrows_close_roundtrips() {
     let sub = command(
         handle,
         "subscribe",
-        json!({ "id": "s1", "table": "todo", "scopes": {} }),
+        json!({ "scopes": { "list_id": "l1" } }),
     );
-    assert_eq!(sub["result"], json!({}));
+    assert!(
+        sub["result"]["id"].is_string(),
+        "subscribe returns the unit id: {sub}"
+    );
 
     // mutate — an optimistic local upsert
     let mutate = command(
@@ -251,7 +253,7 @@ fn new_command_readrows_close_roundtrips() {
         json!({ "mutations": [{
             "op": "upsert",
             "table": "todo",
-            "values": { "id": "t1", "title": "hello", "done": false }
+            "values": { "id": "t1", "list_id": "l1", "title": "hello", "done": false }
         }] }),
     );
     assert!(
@@ -320,7 +322,7 @@ fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_ev
 
     let changed = handle.command(&json!({"method": "mutate", "params": {
         "mutations": [{"op": "upsert", "table": "todo", "values": {
-            "id": "first", "title": "private value", "done": false
+            "id": "first", "list_id": "l1", "title": "private value", "done": false
         }}]
     }}));
     assert!(changed.get("error").is_none(), "{changed}");
@@ -329,7 +331,7 @@ fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_ev
             .client
             .as_ref()
             .unwrap()
-            .diagnostics_snapshot(&Default::default())
+            .diagnostics_snapshot()
             .unwrap(),
     )
     .unwrap();
@@ -358,7 +360,7 @@ fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_ev
             .client
             .as_ref()
             .unwrap()
-            .diagnostics_snapshot(&Default::default())
+            .diagnostics_snapshot()
             .unwrap(),
     )
     .unwrap();
@@ -500,7 +502,7 @@ fn poll_event_nonblocking_returns_null_when_empty() {
     // Active creation publishes the initial diagnostics snapshot exactly once.
     let initial = poll_event(handle).expect("initial diagnostics event");
     assert_eq!(initial["type"], "diagnostics");
-    assert_eq!(initial["snapshot"]["version"], 1);
+    assert_eq!(initial["snapshot"]["version"], 2);
     // Non-blocking poll after the queue is drained → null.
     let ev = syncular_client_poll_event(handle, 0);
     assert!(ev.is_null());
@@ -522,7 +524,7 @@ fn poll_event_forwards_exact_change_batches_and_sync_intents() {
         json!({ "mutations": [{
             "op": "upsert",
             "table": "todo",
-            "values": { "id": "t1", "title": "hello", "done": false }
+            "values": { "id": "t1", "list_id": "l1", "title": "hello", "done": false }
         }] }),
     );
 
@@ -546,14 +548,14 @@ fn poll_event_forwards_exact_change_batches_and_sync_intents() {
         .iter()
         .rfind(|event| event["type"] == "diagnostics")
         .expect("mutation publishes changed diagnostics");
-    assert_eq!(diagnostics["snapshot"]["version"], 1);
+    assert_eq!(diagnostics["snapshot"]["version"], 2);
     assert_eq!(diagnostics["snapshot"]["replica"]["pendingOutbox"], 1);
 
     syncular_client_close(handle);
 }
 
 #[test]
-fn diagnostics_command_reports_expected_intent_without_private_payloads() {
+fn diagnostics_command_reports_unit_counts_without_private_payloads() {
     let config = CString::new("{}").unwrap();
     let handle = syncular_client_new(config.as_ptr());
     command(
@@ -561,19 +563,19 @@ fn diagnostics_command_reports_expected_intent_without_private_payloads() {
         "create",
         json!({ "clientId": "private-client", "schema": simple_schema() }),
     );
-    let reply = command(
+    command(
         handle,
-        "diagnosticsSnapshot",
-        json!({
-            "expectedSubscriptions": [{ "id": "membership", "table": "todo" }]
-        }),
+        "subscribe",
+        json!({ "scopes": { "list_id": "private-list" } }),
     );
-    assert_eq!(
-        reply["result"]["subscriptions"][0]["state"], "unregistered",
-        "diagnostics reply: {reply}"
-    );
+    let reply = command(handle, "diagnosticsSnapshot", json!({}));
+    assert_eq!(reply["result"]["version"], 2, "diagnostics reply: {reply}");
+    assert_eq!(reply["result"]["units"]["bootstrapping"], 1);
+    assert_eq!(reply["result"]["activeUnits"], 1);
+    assert_eq!(reply["result"]["replicaCursor"], -1);
     let encoded = reply.to_string();
     assert!(!encoded.contains("private-client"));
+    assert!(!encoded.contains("private-list"));
     assert!(!encoded.contains("operations"));
     syncular_client_close(handle);
 }
@@ -779,7 +781,7 @@ fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
         "mutate",
         json!({ "mutations": [{
             "op": "upsert", "table": "todo",
-            "values": { "id": "secret", "title": "classified", "done": false }
+            "values": { "id": "secret", "list_id": "l1", "title": "classified", "done": false }
         }] }),
     );
     assert!(

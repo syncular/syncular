@@ -24,7 +24,9 @@ let client = try SyncularClient(
 )
 
 // Typed conveniences mirror the command surface:
-try client.subscribe(id: "s1", table: "todo", scopes: ["project": ["p1"]])
+let unit   = try client.subscribe(scopes: ["project_id": "p1"])   // unit id
+try client.setWindow(variable: "project_id", units: ["p1", "p2"])
+let window = try client.windowState(variable: "project_id")      // (units, pending)
 let commit = try client.mutate([/* driver upsert/delete ops */])
 let rows   = try client.readRows(table: "todo")          // RowState objects
 let hits   = try client.query("SELECT * FROM todo WHERE done = ?", params: [.bool(false)])
@@ -195,7 +197,9 @@ to compile-check on an Ubuntu runner; see [`../kotlin`](../kotlin) and the
 
 Use `querySnapshot` for rows, coverage, and revision from one local read.
 `statusSnapshot` returns scheduling, schema, lease, and outbox state;
-`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+`diagnosticsSnapshot` adds bounded version 2 support evidence: units counted
+per state, `activeUnits` and the `replicaCursor`. `units`, `unit(id:)` and
+`unitCatchup(id:)` read the registered units and one unit's catch-up state. `commitOutcome` looks up
 one terminal result by commit ID. `commitOutcomes` lists the durable journal,
 and `resolveCommitOutcome` records an explicit resolution. A pending commit
 has no terminal outcome. `rejections` lists rejected commits.

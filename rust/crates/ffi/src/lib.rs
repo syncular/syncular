@@ -56,7 +56,7 @@ use std::os::raw::c_longlong;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use serde_json::{json, Value};
-use syncular_client::{ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, SyncClient};
+use syncular_client::{ClientDiagnosticsSnapshot, SyncClient};
 use syncular_command::{dispatch, parse_headers, CreateEffects};
 
 pub mod transport;
@@ -363,7 +363,7 @@ impl Core {
         if client.security_preflight() {
             return;
         }
-        let Ok(snapshot) = client.diagnostics_snapshot(&ClientDiagnosticsRequest::default()) else {
+        let Ok(snapshot) = client.diagnostics_snapshot() else {
             return;
         };
         if let Some(previous) = &mut self.last_diagnostics_snapshot {

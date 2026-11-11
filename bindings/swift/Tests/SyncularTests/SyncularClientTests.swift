@@ -24,7 +24,7 @@ private func todoSchema() -> JSONValue {
             .object([
                 "name": .string("todo"),
                 "primaryKey": .string("id"),
-                "scopes": .array([]),
+                "scopes": .array([.object(["pattern": .string("todo:{id}")])]),
                 "columns": .array([
                     .object([
                         "name": .string("id"),
@@ -67,8 +67,34 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
 @Test func initCreatesClient() throws {
     let client = try makeClient()
     defer { client.close() }
-    try client.subscribe(id: "s1", table: "todo")
-    #expect(try client.subscriptionState(id: "s1") == "active")
+    let id = try client.subscribe(scopes: ["id": "t1"])
+    #expect(try client.unit(id: id)?["status"]?.stringValue == "active")
+    #expect(try client.unit(id: id)?["scopes"] == .object(["id": .string("t1")]))
+}
+
+@Test func unitsWindowsAndCatchupCrossTheCommandSurface() throws {
+    let client = try makeClient()
+    defer { client.close() }
+    let ids = try client.subscribeMany(units: [["id": "a"], ["id": "b"]])
+    #expect(ids.count == 2)
+    #expect(try client.subscribe(scopes: ["id": "a"]) == ids[0])
+    #expect(try client.units().count == 2)
+    let catchup = try client.unitCatchup(id: ids[0])
+    #expect(catchup["state"]?.stringValue == "known")
+    #expect(catchup["bootstrapComplete"]?.boolValue == false)
+    #expect(try client.unitCatchup(id: "absent")["state"]?.stringValue == "unknown")
+    try client.unsubscribe(id: ids[1])
+    #expect(try client.unit(id: ids[1]) == nil)
+
+    try client.setWindow(variable: "id", units: ["c", "d"])
+    let window = try client.windowState(variable: "id")
+    #expect(window.units == ["c", "d"])
+    #expect(window.pending == ["c", "d"])
+    try client.setWindow(variable: "id", units: [])
+    #expect(try client.windowState(variable: "id").units.isEmpty)
+    #expect(throws: SyncularError.self) {
+        try client.subscribe(scopes: ["id": "*"])
+    }
 }
 
 @Test func originalConfigLabelsStillConstruct() {
@@ -184,7 +210,7 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     )
     defer { client.close() }
     #expect(try client.localAuthorityState() == .local)
-    try client.subscribe(id: "s1", table: "todo", scopes: ["list_id": ["l1"]])
+    try client.subscribe(scopes: ["list_id": "l1"])
     _ = try client.mutate([
         .object([
             "op": .string("upsert"),
@@ -207,7 +233,7 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
 @Test func mutateThenReadRowsShowsOptimisticRow() throws {
     let client = try makeClient()
     defer { client.close() }
-    try client.subscribe(id: "s1", table: "todo")
+    try client.subscribe(scopes: ["id": "t1"])
 
     let commitId = try client.mutate([upsert(id: "t1", title: "hello")])
     #expect(!commitId.isEmpty)
@@ -224,7 +250,7 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
 @Test func queryFastPath() throws {
     let client = try makeClient()
     defer { client.close() }
-    try client.subscribe(id: "s1", table: "todo")
+    try client.subscribe(scopes: ["id": "t1"])
     _ = try client.mutate([upsert(id: "t1", title: "world")])
     let rows = try client.query("SELECT title FROM todo WHERE id = ?", params: [.string("t1")])
     #expect(rows.count == 1)
@@ -236,17 +262,17 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     defer { client.close() }
     let result = try client.command(
         method: "subscribe",
-        params: .object(["id": .string("s2"), "table": .string("todo"), "scopes": .object([:])])
+        params: .object(["scopes": .object(["id": .string("t2")])])
     )
-    #expect(result.objectValue != nil)
+    #expect(result["id"]?.stringValue != nil)
 }
 
 @Test func rotatesTransportHeadersWithoutRecreatingTheClient() throws {
     let client = try makeClient()
     defer { client.close() }
     try client.setHeaders(["authorization": "Bearer fresh"])
-    try client.subscribe(id: "after-rotation", table: "todo")
-    #expect(try client.subscriptionState(id: "after-rotation") == "active")
+    let id = try client.subscribe(scopes: ["id": "after-rotation"])
+    #expect(try client.unit(id: id)?["status"]?.stringValue == "active")
 }
 
 @Test func connectivityAdapterPausesResumesAndDetaches() throws {
@@ -256,7 +282,7 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     let adapter = SyncularConnectivityAdapter(client: client, signal: signal)
     #expect(signal.listener != nil)
     signal.listener?(true)
-    try client.subscribe(id: "after-connectivity", table: "todo")
+    try client.subscribe(scopes: ["id": "after-connectivity"])
     adapter.stop()
     #expect(signal.listener == nil)
 }
@@ -316,7 +342,7 @@ private final class StubbedReplyClient: SyncularClient {
 @Test func snapshotsAndPendingOutcomesAfterOfflineMutate() throws {
     let client = try makeClient()
     defer { client.close() }
-    try client.subscribe(id: "s1", table: "todo")
+    try client.subscribe(scopes: ["id": "t1"])
     let id = try client.mutate([upsert(id: "t1", title: "x")])
     #expect(try client.pendingCommitIds() == [id])
     #expect(try client.statusSnapshot()["outbox"]?.numberValue == 1)
@@ -382,6 +408,6 @@ private final class StubbedReplyClient: SyncularClient {
     client.pause()  // stops the loop; disconnectRealtime best-effort no-ops
     client.resume() // restarts the loop
     // Still functional after a pause/resume cycle.
-    try client.subscribe(id: "s1", table: "todo")
-    #expect(try client.subscriptionState(id: "s1") == "active")
+    let id = try client.subscribe(scopes: ["id": "t1"])
+    #expect(try client.unit(id: id)?["status"]?.stringValue == "active")
 }

@@ -2,7 +2,7 @@
  * C smoke test for the Syncular v2 FFI native core.
  *
  * Proves the C ABI end-to-end against the real dylib/so: new -> command(create)
- * -> command(readRows) -> command(status via subscriptionState) -> close, with
+ * -> command(subscribe) -> command(readRows) -> command(units) -> close, with
  * every returned string freed through syncular_free_string. No server needed —
  * these are client-local commands (the default build has no native transport).
  *
@@ -45,38 +45,41 @@ int main(void) {
   const char *create =
       "{\"method\":\"create\",\"params\":{"
       "\"clientId\":\"c-smoke\",\"schema\":{\"version\":1,\"tables\":[{"
-      "\"name\":\"todo\",\"primaryKey\":\"id\",\"scopes\":[],\"columns\":["
+      "\"name\":\"todo\",\"primaryKey\":\"id\","
+      "\"scopes\":[{\"pattern\":\"list:{list_id}\"}],\"columns\":["
       "{\"name\":\"id\",\"type\":\"string\",\"nullable\":false},"
+      "{\"name\":\"list_id\",\"type\":\"string\",\"nullable\":false},"
       "{\"name\":\"title\",\"type\":\"string\",\"nullable\":false}]}]}}}";
   expect("create", syncular_client_command(client, create), "\"result\"");
 
   const char *subscribe =
-      "{\"method\":\"subscribe\",\"params\":{\"id\":\"s1\",\"table\":\"todo\","
-      "\"scopes\":{}}}";
-  expect("subscribe", syncular_client_command(client, subscribe), "\"result\"");
+      "{\"method\":\"subscribe\",\"params\":{\"scopes\":{\"list_id\":\"l1\"}}}";
+  expect("subscribe", syncular_client_command(client, subscribe), "\"id\"");
 
   const char *mutate =
       "{\"method\":\"mutate\",\"params\":{\"mutations\":[{\"op\":\"upsert\","
-      "\"table\":\"todo\",\"values\":{\"id\":\"t1\",\"title\":\"hello\"}}]}}";
+      "\"table\":\"todo\",\"values\":{\"id\":\"t1\",\"list_id\":\"l1\","
+      "\"title\":\"hello\"}}]}}";
   expect("mutate", syncular_client_command(client, mutate), "clientCommitId");
 
   const char *read =
       "{\"method\":\"readRows\",\"params\":{\"table\":\"todo\"}}";
   expect("readRows", syncular_client_command(client, read), "hello");
 
-  /* status-equivalent: the subscription's local state. */
-  const char *state =
-      "{\"method\":\"subscriptionState\",\"params\":{\"id\":\"s1\"}}";
-  expect("subscriptionState", syncular_client_command(client, state), "active");
+  /* status-equivalent: the registered unit's local state. */
+  const char *units = "{\"method\":\"units\",\"params\":{}}";
+  expect("units", syncular_client_command(client, units), "\"status\":\"active\"");
 
-  /* A non-blocking poll with nothing queued returns NULL. */
-  char *ev = syncular_client_poll_event(client, 0);
-  if (ev != NULL) {
-    fprintf(stderr, "  FAIL poll_event: expected null, got %s\n", ev);
+  /* The commands queued diagnostics, change and sync-intent events; drain
+   * them, then a non-blocking poll with nothing queued returns NULL. */
+  int events = 0;
+  for (char *ev; (ev = syncular_client_poll_event(client, 0)) != NULL; events++)
     syncular_free_string(ev);
+  if (events == 0) {
+    fprintf(stderr, "  FAIL poll_event: expected queued events\n");
     failures++;
   } else {
-    fprintf(stdout, "  ok   poll_event(0) -> null (no events)\n");
+    fprintf(stdout, "  ok   poll_event(0) drained %d events, then null\n", events);
   }
 
   syncular_client_close(client);

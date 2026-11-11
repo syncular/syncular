@@ -15,8 +15,7 @@
   "subscriptions": [
     {
       "name": "listNotes",
-      "table": "notes",
-      "scopes": { "list_id": ["{listId}"] }
+      "scopes": { "list_id": "{listId}" }
     }
   ]
 }

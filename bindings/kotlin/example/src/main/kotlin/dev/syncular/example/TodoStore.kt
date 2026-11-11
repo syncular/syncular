@@ -34,11 +34,7 @@ class TodoStore(clientId: String, baseUrl: String?) : AutoCloseable {
     )
 
     init {
-        client.subscribe(
-            id = "todos",
-            table = SyncularSchema.Subscriptions.TodosInList.table,
-            scopes = SyncularSchema.Subscriptions.TodosInList.scopes(listId = DEMO_LIST_ID),
-        )
+        client.subscribe(SyncularSchema.Subscriptions.TodosInList.scopes(listId = DEMO_LIST_ID))
     }
 
     /** All todos in the list, id-ordered (the live-query fast path). This is a

@@ -73,13 +73,13 @@ The bridge also exposes `purgeLocalData({ purgeId, targets })` with the same
 idempotent transaction as the browser worker: exact synced-row and generated
 FTS deletion, whole-commit outbox rejection, optimistic replay, blob-reference
 reconciliation, and counts-only acknowledgement. The app remains responsible
-for validating the server-authoritative directive, gating subscriptions before
+for validating the server-authoritative directive, gating units before
 the purge, deleting app-owned drafts/files, and removing the corresponding key
 from the OS secure store after SQLite cleanup succeeds.
 
 For support-directed projection recovery, the bridge also exposes
 `rebootstrapLocalData({ rebootstrapId })`. It atomically recreates only synced
-projection tables, rewinds retained subscriptions, replays the complete
+projection tables, rewinds every registered unit, replays the complete
 outbox, and requests a fresh bootstrap while preserving device identity,
 lease state, outcomes, and protected bookkeeping. The result contains only
 `alreadyApplied`, `retainedCommits`, and `resetSubscriptions`. It is blocked
@@ -157,7 +157,7 @@ opening a socket.
 Create with `securityPreflight: true` when authentication, signed device
 quarantine, or crash-resumed cleanup must finish before clinical data is
 available. The native database opens and migrates, but query/snapshot, mutation,
-subscription, sync, realtime, presence, blob, and automatic retry work fails
+unit registration, sync, realtime, presence, blob, and automatic retry work fails
 with `client.security_preflight_required`. Status, local revision, lifecycle,
 and `purgeLocalData` remain available. A creation-time `defineAuthorityReads`
 policy on `createTauriAuthoritySyncClient` enables the read-only
@@ -240,15 +240,15 @@ still fail with `client.security_preflight_required`.
 The result contains `revision: bigint`, `complete`, and `tables`. Every table
 contains accepted `rows` (`values`, server `version`, `hasLocalIntent`), scoped
 `localIntentRowIds`, the declared `scopes`, `coverage`, and sanitized
-`persisted` subscription evidence (`requestedScopes`, `effectiveScopes`,
-`cursor`, `status`, `complete`). It exposes no intended values, bootstrap
-tokens, subscription parameters or keys. Both cores read rows, revision and
+`persisted` unit evidence (`requestedScopes`, `effectiveScopes`, `cursor`,
+`status`, `complete`). It exposes no intended values, bootstrap tokens or
+keys. Both cores read rows, revision and
 coverage in one SQLite snapshot. The native authority read runs on the mutable
 owner; it does not use the ordinary query sidecar or its latency contract.
 
 `coverage` is `complete`, `pending` or `missing`. Complete coverage requires
-completed unfiltered subscriptions for every requested scope tuple. Several
-subscriptions can cover the selection together. Scope loss and an unfinished
+a completed unit for every requested scope tuple. Several units can cover the
+selection together. Scope loss and an unfinished
 bootstrap invalidate completeness. Completed empty coverage has an empty row
 set. The application must reject admission when an expected authority row is
 absent, even when the set is complete.
@@ -258,7 +258,7 @@ A local-only creation appears only in `localIntentRowIds`. The application
 validates the complete chain against independently accepted authority evidence,
 actor/device identity, signed lease and trusted time before installing keys.
 The SDK does not authorize the application. The read changes no lifecycle,
-transport, keyring, subscriptions or rows.
+transport, keyring, units or rows.
 
 The direct Bun/SQLite client and worker handle expose the same policy and
 snapshot shape. Importing the policy is opt-in; ordinary clients do not ship
@@ -266,17 +266,17 @@ its reader. Update npm packages and native crates together and rebuild the app.
 
 ## Privacy-safe diagnostics
 
-`diagnosticsSnapshot({ expectedSubscriptions })` and `onDiagnostics(listener)`
-carry the native Rust core's versioned support evidence through the Tauri event
-channel. The bridge marks the host as `{ kind: 'tauri', role: 'single' }`; it
-does not infer state from IPC commands. Expected subscriptions accept only
-stable PHI-free ids and generated table names, never scope values.
+`diagnosticsSnapshot()` and `onDiagnostics(listener)` carry the native Rust
+core's version 2 support evidence through the Tauri event channel: registered
+units counted per state (`units`), `activeUnits` and the `replicaCursor`. A unit
+id never enters the snapshot. The bridge marks the host as
+`{ kind: 'tauri', role: 'single' }`; it does not infer state from IPC commands.
 
 The snapshot is suitable for a redacted “copy diagnostics” workflow: it omits
 rows, clinical row counts, scopes, SQL, paths, client/actor/lease ids, auth,
 keys, mutations, stack traces, and arbitrary prose. Do not supplement it with
 the SQLite file, WebView console dump, or application state. Diagnostics stays
-blocked during security preflight because subscription/table evidence is
+blocked during security preflight because unit and table evidence is
 protected. See SPEC §7.6 and `@syncular/react`'s `useDiagnostics`.
 
 ## React availability guard
