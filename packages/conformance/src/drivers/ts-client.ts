@@ -31,7 +31,11 @@ import {
   last,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { MessageStreamScanner, type RowValue } from '@syncular/core';
+import {
+  DecryptError,
+  MessageStreamScanner,
+  type RowValue,
+} from '@syncular/core';
 import { YjsColumn } from '@syncular/crdt-yjs';
 import type {
   ClientCommitOutcome,
@@ -243,6 +247,17 @@ function errorCodeOf(error: unknown): { code: string; message: string } {
     };
   }
   return { code: 'transport.failed', message: String(error) };
+}
+
+/** The structured details of a `ClientSyncError` or a core error (§5.11). */
+function detailsOf(error: unknown): {
+  readonly details?: Readonly<Record<string, unknown>>;
+} {
+  return error instanceof ClientSyncError && error.details !== undefined
+    ? { details: error.details }
+    : error instanceof DecryptError && error.details !== undefined
+      ? { details: error.details }
+      : {};
 }
 
 /** SPEC §8.8: the typed evidence a `required` refusal carries. */
@@ -819,9 +834,7 @@ class TsClientInstance implements ClientInstance {
         ok: false,
         errorCode: code,
         message,
-        ...(error instanceof ClientSyncError && error.details !== undefined
-          ? { details: error.details }
-          : {}),
+        ...detailsOf(error),
         ...realtimeRefusal(error),
       };
     }
@@ -841,9 +854,7 @@ class TsClientInstance implements ClientInstance {
         ok: false,
         errorCode: code,
         message,
-        ...(error instanceof ClientSyncError && error.details !== undefined
-          ? { details: error.details }
-          : {}),
+        ...detailsOf(error),
         ...realtimeRefusal(error),
       };
     }

@@ -1,4 +1,6 @@
+import { DecryptError } from '@syncular/core';
 import type { RealtimeState } from './diagnostics';
+import { WORKER_FAILED_CODE, type WorkerErrorShape } from './worker-protocol';
 
 /** A persistent local store is temporarily owned by another live engine. */
 export const STORAGE_BUSY_CODE = 'client.storage_busy';
@@ -234,4 +236,42 @@ export function classifySqliteFailure(error: unknown): {
   );
   Object.defineProperty(failure, 'cause', { value: error });
   return { sqliteCode, code, error: failure };
+}
+
+/** A stable error identity: lowercase dotted segments, at most 96 chars. */
+export function isStableCode(code: string): boolean {
+  return code.length <= 96 && /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/.test(code);
+}
+
+/**
+ * The structured-clone form of a failure that crosses a Worker or tab
+ * boundary. Any error carrying a stable `code` (a `ClientSyncError` or a
+ * `@syncular/core` error such as `DecryptError`) keeps its
+ * code, `retryable` and details (SPEC §5.11); only an uncoded failure
+ * becomes `client.worker_failed`.
+ */
+export function toErrorShape(caught: unknown): WorkerErrorShape {
+  const error = classifySqliteFailure(caught).error;
+  if (
+    error instanceof Error &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    isStableCode(error.code)
+  ) {
+    const details =
+      error instanceof ClientSyncError || error instanceof DecryptError
+        ? error.details
+        : undefined;
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: 'retryable' in error && error.retryable === true,
+      ...(details !== undefined ? { details } : {}),
+    };
+  }
+  return {
+    code: WORKER_FAILED_CODE,
+    message: error instanceof Error ? error.message : String(error),
+    retryable: false,
+  };
 }

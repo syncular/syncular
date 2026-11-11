@@ -5,7 +5,8 @@
  * — whichever core is on each side of the pairing (TS writes / Rust reads and
  * vice versa via the same key bytes). The server holds only ciphertext: a
  * raw-driver read asserts the stored row carries the §5.11 envelope, not
- * plaintext. A wrong-key client surfaces `client.decrypt_failed` on apply.
+ * plaintext. A wrong-key client surfaces `client.decrypt_failed` on apply and
+ * a client without the key surfaces `client.encryption_key_missing`.
  */
 import { decodeMessage, type PushCommitFrame, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
@@ -554,6 +555,76 @@ export const encryptionScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §5.11: a reader whose keyring lacks the envelope's keyId fails the
+    // round with `client.encryption_key_missing`. The code reaches the sync
+    // result, progress and the last round; the details name table and keyId.
+    name: 'encryption/missing-key-fails-with-details',
+    specRefs: ['§5.11', '§10.3'],
+    server: SELECTED_SERVER,
+    async run(ctx: ScenarioContext) {
+      const writer = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-key-writer',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: selectedKeys,
+      });
+      await writer.api.subscribe(U1);
+      await syncIdle(writer);
+      await writer.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            encryption_key_id: SELECTED_KEY_ID,
+            note: 'confidential',
+          },
+        },
+      ]);
+      await syncIdle(writer);
+
+      const reader = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-key-missing',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: {
+          keys: {},
+          keyIdColumns: { secrets: 'encryption_key_id' },
+        },
+      });
+      await reader.api.subscribe(U1);
+      const result = await reader.api.syncUntilIdle();
+      checkEqual(
+        result.ok
+          ? undefined
+          : { code: result.errorCode, details: result.details },
+        {
+          code: 'client.encryption_key_missing',
+          details: { table: 'secrets', keyId: SELECTED_KEY_ID },
+        },
+        'the missing-key round fails with the code, table and keyId',
+      );
+      checkEqual(
+        (await reader.api.progressSnapshot?.())?.errorCode,
+        'client.encryption_key_missing',
+        'failed progress carries the code',
+      );
+      checkEqual(
+        (await reader.api.diagnosticsSnapshot?.())?.lastRound?.errorCode,
+        'client.encryption_key_missing',
+        'the last round carries the code',
+      );
+      checkEqual(
+        await reader.api.readRows('secrets'),
+        [],
+        'the undecryptable row is not applied',
+      );
+    },
+  },
+  {
     // §5.11: a sparse patch that omits the key-id selector resolves it from
     // the stored local row; an unresolvable key id is a durable
     // `client.encrypt_failed` rejection instead of a sync() abort.
@@ -971,7 +1042,7 @@ export const encryptionScenarios: readonly Scenario[] = [
   },
   {
     // §5.11 sidecar negative case: a no-key client that DOES subscribe to the
-    // encrypted sidecar must fail closed with `client.decrypt_failed` and must
+    // encrypted sidecar must fail closed with `client.encryption_key_missing` and must
     // not apply the protected row. This is what proves the value is neither
     // NULL-masked nor stored as envelope bytes: a NULL-mask implementation
     // would apply a row and raise nothing.
@@ -1023,7 +1094,7 @@ export const encryptionScenarios: readonly Scenario[] = [
       await reader.api.subscribe(DETAIL_UNIT);
       await syncFails(
         reader,
-        'client.decrypt_failed',
+        'client.encryption_key_missing',
         'a no-key client subscribed to the encrypted sidecar fails closed',
       );
       checkEqual(

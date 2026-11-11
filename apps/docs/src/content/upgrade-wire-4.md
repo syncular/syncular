@@ -30,6 +30,8 @@ The server reads wire version 4 only, and the clients write version 4 only. A ve
 
 A unit has no table list. An app that held only some of the tables of one scope variable on a device gives those tables their own scope variable before it upgrades.
 
+Check encrypted tables first. A table encrypted with a key that not every reader holds needs its own scope variable. Under version 3 a reader without the key subscribed only the plaintext tables of the variable; under version 4 every unit on that variable delivers the encrypted rows as well, and each round of that reader fails with `client.encryption_key_missing`, whose details name the table and the key id. Give the encrypted table its own variable and register units on it only on devices that hold its key ([A protected value shares a row with shared data](/concepts-encryption/#a-protected-value-shares-a-row-with-shared-data)).
+
 An app that upgrades from a release before 0.59 also receives 0.59's authoring checks. Since 0.59 `mutate` and `patch` refuse a value that push admission would reject before they record anything: a `json` value that does not parse as a JSON document, a `blob_ref` that is not canonical, a non-finite `float`, and a `string` that contains U+0000. The call throws `sync.invalid_request` with the message `the authoring request is invalid` and the cause in `details.legacyCause`, and appends no outbox commit. Before 0.59 the client queued such a write and the server refused it with a `rejected` commit outcome. A write to a table the client schema does not declare throws `sync.unknown_table`. Move tests and error handling that read these refusals from `commitOutcome` to the `mutate` call.
 
 ## Deploy server and clients together

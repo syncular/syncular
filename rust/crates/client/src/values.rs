@@ -12,6 +12,7 @@ use ssp2::segment::{
 };
 
 use crate::schema::TableSchema;
+use crate::TransportError;
 
 /// §5.11 client-side encryption keys (`keyId → 32-byte key`) plus optional
 /// key selection. Empty ⇒ E2EE off. `key_id_for` defaults to per-table
@@ -473,21 +474,19 @@ pub fn decode_row_bytes(
     table: &TableSchema,
     payload: &[u8],
     encryption: &EncryptionConfig,
-) -> Result<Row, String> {
+) -> Result<Row, TransportError> {
     let mut r = Reader::new(payload);
     // Decode with the WIRE columns (encrypted columns arrive as `bytes`).
-    let mut row = decode_row(&mut r, &table.wire_columns).map_err(|e| e.to_string())?;
+    let mut row = decode_row(&mut r, &table.wire_columns)
+        .map_err(|e| TransportError::new("sync.invalid_request", e.to_string()))?;
     if !r.is_empty() {
-        return Err("row payload has trailing bytes".to_owned());
+        return Err(TransportError::new(
+            "sync.invalid_request",
+            "row payload has trailing bytes",
+        ));
     }
     if table.has_encrypted_columns() {
-        decrypt_row(table, &mut row, encryption).map_err(|message| {
-            if message.starts_with("client.decrypt_failed") {
-                message
-            } else {
-                format!("client.decrypt_failed: {message}")
-            }
-        })?;
+        decrypt_row(table, &mut row, encryption)?;
     }
     Ok(row)
 }
@@ -499,7 +498,7 @@ pub fn decrypt_segment_row(
     table: &TableSchema,
     row: &mut Row,
     encryption: &EncryptionConfig,
-) -> Result<(), String> {
+) -> Result<(), TransportError> {
     decrypt_row(table, row, encryption)
 }
 
@@ -620,28 +619,41 @@ fn encrypt_sparse_row(
     ))
 }
 
+/// §5.11 apply seam: an unknown `keyId` is `client.encryption_key_missing`
+/// with `{ table, keyId }` details; every other failure is
+/// `client.decrypt_failed`.
 #[cfg(feature = "e2ee")]
 fn decrypt_row(
     table: &TableSchema,
     row: &mut Row,
     encryption: &EncryptionConfig,
-) -> Result<(), String> {
-    use ssp2::crypto::{decrypt_value, DeclaredType};
+) -> Result<(), TransportError> {
+    use ssp2::crypto::{decrypt_value, DeclaredType, DecryptValueError};
+    let failed = |message: String| TransportError::new("client.decrypt_failed", message);
     for enc in &table.encrypted_columns {
         let Some(value) = row.get(enc.index).and_then(|v| v.as_ref()) else {
             continue;
         };
         let ColumnValue::Bytes(envelope) = value else {
-            return Err(format!(
-                "client.decrypt_failed: encrypted column at index {} is not bytes",
+            return Err(failed(format!(
+                "encrypted column at index {} is not bytes",
                 enc.index
-            ));
+            )));
         };
         let declared = DeclaredType::from_name(&enc.declared_type)
-            .ok_or_else(|| format!("unknown declaredType {:?}", enc.declared_type))?;
+            .ok_or_else(|| failed(format!("unknown declaredType {:?}", enc.declared_type)))?;
         let keys = &encryption.keys;
-        let plain = decrypt_value(declared, envelope, |id| keys.get(id).cloned())
-            .map_err(|e| e.to_string())?;
+        let plain =
+            decrypt_value(declared, envelope, |id| keys.get(id).cloned()).map_err(|error| {
+                match error {
+                    DecryptValueError::KeyMissing { key_id } => TransportError {
+                        code: "client.encryption_key_missing".to_owned(),
+                        message: "no key for the envelope keyId".to_owned(),
+                        details: Some(serde_json::json!({ "table": table.name, "keyId": key_id })),
+                    },
+                    DecryptValueError::Failed(error) => failed(error.0),
+                }
+            })?;
         row[enc.index] = Some(plain_to_column_value(plain));
     }
     Ok(())
@@ -667,10 +679,13 @@ fn decrypt_row(
     table: &TableSchema,
     _row: &mut Row,
     _encryption: &EncryptionConfig,
-) -> Result<(), String> {
-    Err(format!(
-        "table {:?} has encrypted columns but this build lacks the e2ee feature (§5.11)",
-        table.name
+) -> Result<(), TransportError> {
+    Err(TransportError::new(
+        "client.decrypt_failed",
+        format!(
+            "table {:?} has encrypted columns but this build lacks the e2ee feature (§5.11)",
+            table.name
+        ),
     ))
 }
 

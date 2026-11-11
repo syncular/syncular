@@ -682,7 +682,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
       await locked.api.subscribe(U1);
       await syncFails(
         locked,
-        'client.decrypt_failed',
+        'client.encryption_key_missing',
         'a client without the key',
       );
       checkEqual(

@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'A row without its key fails the round with a code',
+    body: 'A row whose envelope names a key id the keyring does not hold now fails the round with `client.encryption_key_missing`, with the table and the key id in `details`, in the TypeScript and the Rust client. The code reaches the rejected `sync()` call, the failed progress snapshot and `lastRound.errorCode`. Before, the round failed with `client.decrypt_failed`, and a worker handle rejected with an uncoded `client.worker_failed`, because the worker forwarded only `ClientSyncError` codes. The worker and the tab relay now forward the code, `retryable` and details of every error that carries a stable code. A wrong key or a corrupt envelope still fails with `client.decrypt_failed`. A table encrypted with a key not every reader holds needs its own scope variable, since a unit covers every table of its variables.',
+    links: [
+      {
+        href: '/concepts-encryption/#encryption-keys',
+        label: 'Encryption keys',
+      },
+      {
+        href: '/upgrade-wire-4/#what-breaks',
+        label: 'Upgrade to wire version 4',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'The server refuses a changed scope pattern',
     body: "Stored rows keep the scope variables they were written under, and no schema change re-keys them, so a changed pattern left existing rows invisible to units of the new variable without an error. Server storage now records every table's scope patterns and refuses to open with `sync.storage.scope_patterns_changed` when a table declares other ones, at the same schema version and across a bump, on SQLite, D1 and Postgres.",
     links: [

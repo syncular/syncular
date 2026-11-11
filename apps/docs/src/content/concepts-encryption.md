@@ -166,7 +166,7 @@ const client = new SyncClient({
 });
 ```
 
-The key id travels inside the envelope, so rotation and per-scope keys need no schema change. On decrypt, the client reads the key id from the envelope and asks the keyring for it. A missing or wrong key surfaces as `client.decrypt_failed` (local to the client, non-retryable) at the apply seam, and your app decides whether to skip the row, halt, or prompt for a re-key.
+The key id travels inside the envelope, so rotation and per-scope keys need no schema change. On decrypt, the client reads the key id from the envelope and asks the keyring for it. A key id the keyring does not hold fails the round with `client.encryption_key_missing`; `details.table` and `details.keyId` name the table and the key id. A wrong key or a corrupt envelope fails it with `client.decrypt_failed`. Both codes are local to the client and not retryable. The code reaches the rejected `sync()` call, the failed progress snapshot and `lastRound.errorCode` in diagnostics, on a worker handle as on a direct client. Install the key, or keep the table out of that client's units ([A protected value shares a row with shared data](#a-protected-value-shares-a-row-with-shared-data)).
 
 Functions do not cross a Web Worker or a native command bridge. The browser worker, Tauri, and React Native hosts therefore accept a portable keyring: raw keys plus an optional map from table to a plaintext string column that holds the active key id. The example in step 2 uses it; keep old keys in the ring while old envelopes remain.
 
@@ -276,7 +276,7 @@ Put a signal for no-key clients in the plaintext primary or in another plaintext
 
 ### A no-key client holds a sidecar unit
 
-An undecryptable row aborts the rest of the sync round and starves unrelated frames in the same response. Register units on the sidecar's scope variable only on clients that hold the sidecar key.
+An undecryptable row fails the round with `client.encryption_key_missing` and starves unrelated frames in the same response. Register units on the sidecar's scope variable only on clients that hold the sidecar key.
 
 ### Codegen gives no warning
 

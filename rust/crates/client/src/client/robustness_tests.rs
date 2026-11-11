@@ -433,10 +433,15 @@ fn a_commit_frame_decrypt_failure_keeps_its_identity() {
         scopes: Vec::new(),
         row: Some(payload),
     };
-    let (code, _) = client
+    let error = client
         .apply_commit_changes(&["patients".to_owned()], &[change])
         .expect_err("the envelope cannot be decrypted");
-    assert_eq!(code, "client.decrypt_failed");
+    assert_eq!(error.code, "client.encryption_key_missing");
+    assert_eq!(error.message, "no key for the envelope keyId");
+    assert_eq!(
+        error.details,
+        Some(json!({ "table": "patients", "keyId": "k1" }))
+    );
 }
 
 // R11

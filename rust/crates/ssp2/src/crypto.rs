@@ -74,6 +74,34 @@ impl std::fmt::Display for DecryptError {
 }
 impl std::error::Error for DecryptError {}
 
+/// Why [`decrypt_value`] failed (§5.11): the keyring holds no key for the
+/// envelope's `keyId` (`client.encryption_key_missing`), or any other decrypt
+/// failure (`client.decrypt_failed`).
+#[derive(Debug, Clone)]
+pub enum DecryptValueError {
+    KeyMissing { key_id: String },
+    Failed(DecryptError),
+}
+
+impl From<DecryptError> for DecryptValueError {
+    fn from(error: DecryptError) -> Self {
+        DecryptValueError::Failed(error)
+    }
+}
+
+impl std::fmt::Display for DecryptValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecryptValueError::KeyMissing { .. } => write!(
+                f,
+                "client.encryption_key_missing: no key for the envelope keyId"
+            ),
+            DecryptValueError::Failed(error) => error.fmt(f),
+        }
+    }
+}
+impl std::error::Error for DecryptValueError {}
+
 // -- value serializer: declared type ⇄ canonical plaintext bytes (§5.11) -----
 
 /// Serialize a declared-type value to the canonical plaintext bytes fed to
@@ -234,16 +262,18 @@ pub fn encrypt_value(
 }
 
 /// Decrypt a §5.11 envelope back to a declared-type value. `key_provider`
-/// resolves the envelope's `keyId`; a missing key or GCM tag mismatch is a
-/// `DecryptError` (`client.decrypt_failed`).
+/// resolves the envelope's `keyId`; a missing key is
+/// [`DecryptValueError::KeyMissing`] and a GCM tag mismatch is
+/// [`DecryptValueError::Failed`] (`client.decrypt_failed`).
 pub fn decrypt_value(
     declared: DeclaredType,
     envelope_bytes: &[u8],
     key_provider: impl Fn(&str) -> Option<Vec<u8>>,
-) -> Result<PlainValue, DecryptError> {
+) -> Result<PlainValue, DecryptValueError> {
     let env = decode_envelope(envelope_bytes)?;
-    let key = key_provider(&env.key_id)
-        .ok_or_else(|| DecryptError(format!("no key for keyId {:?}", env.key_id)))?;
+    let key = key_provider(&env.key_id).ok_or_else(|| DecryptValueError::KeyMissing {
+        key_id: env.key_id.clone(),
+    })?;
     let c = cipher(&key).map_err(DecryptError)?;
     let plaintext = c
         .decrypt(
@@ -259,7 +289,7 @@ pub fn decrypt_value(
                 env.key_id
             ))
         })?;
-    deserialize_plain(declared, &plaintext)
+    Ok(deserialize_plain(declared, &plaintext)?)
 }
 
 #[cfg(test)]
@@ -331,7 +361,17 @@ mod tests {
                 None
             }
         });
-        assert!(bad.is_err());
+        assert!(matches!(bad, Err(DecryptValueError::Failed(_))));
+    }
+
+    #[test]
+    fn unknown_key_id_is_key_missing() {
+        let env = encrypt_value(&PlainValue::String("s".to_owned()), "k1", &KEY, NONCE).unwrap();
+        let missing = decrypt_value(DeclaredType::String, &env, |_| None);
+        assert!(
+            matches!(&missing, Err(DecryptValueError::KeyMissing { key_id }) if key_id == "k1"),
+            "{missing:?}"
+        );
     }
 
     #[test]

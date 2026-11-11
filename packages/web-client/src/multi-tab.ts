@@ -70,7 +70,7 @@
  * state waits on that lock for each tab that called it; the grant means the
  * tab is gone.
  */
-import { ClientSyncError } from './errors';
+import { ClientSyncError, toErrorShape } from './errors';
 import {
   type LeaderLease,
   type LeaderLock,
@@ -410,22 +410,7 @@ export class LeaderBridge<E = SyncWorkerEvent> {
       },
       (error: unknown) => {
         if (this.#closed) return;
-        const shape =
-          error instanceof ClientSyncError
-            ? {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-                ...(error.details !== undefined
-                  ? { details: error.details }
-                  : {}),
-              }
-            : {
-                code: WORKER_FAILED_CODE,
-                message:
-                  error instanceof Error ? error.message : 'unknown error',
-                retryable: false,
-              };
+        const shape = toErrorShape(error);
         this.#channel.postMessage({
           t: 'res',
           epoch: this.#epoch,
