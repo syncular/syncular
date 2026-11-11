@@ -4077,11 +4077,14 @@ other copy passed are refused the same way. An app that restores or copies a
 replica onto a second device MUST reset that replica: a new `clientId`, a new
 `outboxId` and an empty outbox.
 
-The server keeps one watermark row per (client, outbox) for as long as it
-keeps the client record (§4.5) and deletes the rows with the record. The
+The server keeps one watermark row per (client, outbox) for as long as the
+partition exists. A watermark row is the only proof that a commit below it
+was settled, so no rule deletes it: the row count is bounded by the number
+of outboxes that ever pushed. The
 reference server's `admin.findWrite` reports, for a commit whose result the
 watermark deleted, the outbox's watermark (`expired below sequence N`). A
-`logEpoch` rotation (§2.1) leaves watermark rows in place. A database-less
+`logEpoch` rotation (§2.1) deletes client records and leaves watermark rows
+in place. A database-less
 producer (§6.10) and an attach upload (§12.3) send no `outboxId`, so their
 results stay until their partition is reset.
 
