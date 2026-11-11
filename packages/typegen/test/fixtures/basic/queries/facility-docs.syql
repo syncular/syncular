@@ -1,3 +1,4 @@
+allow scan docs 'the fixture schema is shared with client, server and Rust tests and keeps docs without secondary indexes'
 sync query facilityDocs(orgId) by docs.org_id {
   select docs.id, docs.org_id, docs.project_id, docs.body
   from docs

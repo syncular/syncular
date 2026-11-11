@@ -97,7 +97,8 @@ describe('§5.11 encryptedColumns → IR', () => {
     const [query] = analyzeQueries(ir, [
       {
         file: 'encrypted-note-lookup.sql',
-        sql: 'SELECT id FROM notes WHERE body = :body AND amount = :amount',
+        sql: `-- allow scan notes: an encrypted column cannot carry an index
+SELECT id FROM notes WHERE body = :body AND amount = :amount`,
       },
     ]);
     expect(query?.params).toMatchObject([

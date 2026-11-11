@@ -15,6 +15,7 @@ import {
   queryNameFromFile,
   queryNameFromPath,
   scanTableRefs,
+  makeQueryDb,
   synthesizeDdl,
   toPositionalSql,
   TypegenError,
@@ -64,26 +65,7 @@ const IR: IrDocument = {
   extensions: {},
 };
 
-function makeDb(): QueryDb {
-  const sqlite = new Database(':memory:');
-  sqlite.run(synthesizeDdl(IR));
-  return {
-    analyze(sql: string) {
-      const stmt = sqlite.prepare(sql);
-      const columnNames = stmt.columnNames;
-      (stmt as unknown as { all: () => unknown[] }).all();
-      const declaredTypes = (
-        stmt as unknown as { declaredTypes: (string | null)[] }
-      ).declaredTypes;
-      const paramsCount = (stmt as unknown as { paramsCount: number })
-        .paramsCount;
-      stmt.finalize();
-      return { columnNames, declaredTypes, paramsCount };
-    },
-  };
-}
-
-const db = makeDb();
+const db = makeQueryDb(IR).db;
 const analyze = (file: string, sql: string) => analyzeQuery(file, sql, IR, db);
 
 describe('query filename → name', () => {
@@ -680,6 +662,7 @@ describe('emitted SQL is the SQL SQLite checked', () => {
         prepared.push(sql);
         return db.analyze(sql);
       },
+      plan: db.plan,
     };
     const query = analyzeQuery(
       'q.sql',

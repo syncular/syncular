@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'Generation fails on query plan findings',
+    body: "`syncular generate` runs `EXPLAIN QUERY PLAN` on every statement it emits and fails on four findings: a scan an index on one column would remove (`typegen.query_scan`), an automatic index (`typegen.query_automatic_index`), a read with no `WHERE` and no `LIMIT` (`typegen.query_unbounded`), and a query over more than four tables (`typegen.query_many_tables`). Before upgrading, run `generate` once per manifest and, for each finding, declare the index in a new migration, bound the query, or acknowledge the finding with a reason: `-- allow scan todos: <reason>` in a `.sql` statement's leading comments, `allow scan todos '<reason>'` above a `.syql` query. An acknowledgement that matches no finding fails with `typegen.query_acknowledgement_unused`.",
+    links: [
+      {
+        href: '/tooling-queries/#query-plan-check',
+        label: 'Query plan check',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'Diagnostics report the active subscription count',
     body: "`diagnosticsSnapshot().activeSubscriptions` reports how many subscriptions the next pull sends, in the TypeScript and Rust clients and through every binding. The server refuses a request with more than `limits.maxSubscriptionsPerRequest` subscriptions (default 500) with `sync.limit_exceeded`, and the client does not retry it. Keep tables with rows times open scope units under that budget, and assert the count in the app's own tests.",
     links: [

@@ -5,7 +5,6 @@
  * (AS-aliasing, star expansion, author-alias respect).
  */
 
-import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
   analyzeQuery,
@@ -14,12 +13,11 @@ import {
   buildRustNamingMap,
   type IrDocument,
   parseManifest,
-  type QueryDb,
   rustPascalCase,
   rustSnakeCase,
   serializeQueryIr,
   snakeToCamel,
-  synthesizeDdl,
+  makeQueryDb,
   validateSchemaIdentifiers,
 } from '../src';
 
@@ -270,26 +268,7 @@ const IR: IrDocument = {
   extensions: {},
 };
 
-function makeDb(): QueryDb {
-  const sqlite = new Database(':memory:');
-  sqlite.run(synthesizeDdl(IR));
-  return {
-    analyze(sql: string) {
-      const stmt = sqlite.prepare(sql);
-      const columnNames = stmt.columnNames;
-      (stmt as unknown as { all: () => unknown[] }).all();
-      const declaredTypes = (
-        stmt as unknown as { declaredTypes: (string | null)[] }
-      ).declaredTypes;
-      const paramsCount = (stmt as unknown as { paramsCount: number })
-        .paramsCount;
-      stmt.finalize();
-      return { columnNames, declaredTypes, paramsCount };
-    },
-  };
-}
-
-const db = makeDb();
+const db = makeQueryDb(IR).db;
 const camel = (sql: string) =>
   analyzeQuery('q.sql', sql, IR, db, { naming: 'camel', targets: ['ts'] });
 const preserve = (sql: string) =>

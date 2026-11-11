@@ -138,7 +138,23 @@
         },
         "statement": { "$ref": "#/$defs/template" },
         "sort": { "$ref": "#/$defs/sort" },
-        "limit": { "$ref": "#/$defs/limit" }
+        "limit": { "$ref": "#/$defs/limit" },
+        "acknowledgements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["finding", "reason"],
+            "properties": {
+              "finding": {
+                "enum": ["scan", "automatic_index", "unbounded", "many_tables"]
+              },
+              "table": { "type": "string" },
+              "reason": { "type": "string", "pattern": "\\S" }
+            }
+          }
+        }
       }
     },
     "queryParameter": {

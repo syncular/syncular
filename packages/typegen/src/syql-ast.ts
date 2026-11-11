@@ -1,4 +1,5 @@
 /** Stable, span-free semantic AST used by revision-1 conformance fixtures. */
+import type { QueryAcknowledgement } from './query';
 import { isSyqlTrivia, type SyqlToken } from './syql-lexer';
 import type {
   SyqlDeclaration,
@@ -99,6 +100,7 @@ export type SyqlSemanticDeclaration =
         readonly defaultSize: number;
         readonly maxSize: number;
       };
+      readonly acknowledgements?: readonly QueryAcknowledgement[];
     };
 
 export interface SyqlSemanticFile {
@@ -260,6 +262,13 @@ function semanticDeclaration(
             defaultSize: declaration.limit.defaultSize,
             maxSize: declaration.limit.maxSize,
           },
+        }),
+    ...(declaration.acknowledgements.length === 0
+      ? {}
+      : {
+          acknowledgements: declaration.acknowledgements.map((ack) => ({
+            ...ack,
+          })),
         }),
   };
 }

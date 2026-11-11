@@ -668,6 +668,7 @@ export function lowerSyqlQuery(
     file: logical.module.file,
     reactive: validated.reactive,
     syql: metadata,
+    acknowledgements: logical.declaration.acknowledgements,
   };
   return {
     validated,

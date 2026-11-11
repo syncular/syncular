@@ -11,6 +11,11 @@
       "name": "atomic-sql-and-comment",
       "input": "-- retain\nquery q(label: string){SELECT \"odd name\",'  x  '||:label AS value FROM todos;}",
       "output": "-- retain\nquery q(label: string) {\n  select \"odd name\", '  x  ' || :label as value\n  from todos;\n}\n"
+    },
+    {
+      "name": "acknowledgements-above-their-query",
+      "input": "predicate p(x){id=:x}\nallow scan todos 'it''s small'   allow   unbounded todos 'every row'\nquery q(){SELECT id FROM todos;}",
+      "output": "predicate p(x) {\n  id = :x\n}\n\nallow scan todos 'it''s small'\nallow unbounded todos 'every row'\nquery q() {\n  select id\n  from todos;\n}\n"
     }
   ]
 }

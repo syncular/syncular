@@ -1,7 +1,6 @@
-import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import type { IrDocument } from '../src/ir';
-import { type QueryDb, synthesizeDdl } from '../src/query';
+import { makeQueryDb } from '../src/generate';
 import { compileSyqlSource, formatSyqlSource } from '../src/syql-browser';
 import { SyqlFrontendError } from '../src/syql-lexer';
 
@@ -24,7 +23,9 @@ const IR: IrDocument = {
         { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
       ],
       references: [],
-      indexes: [],
+      indexes: [
+        { name: 'idx_todos_list', columns: ['list_id'], unique: false },
+      ],
       ftsIndexes: [],
       extensions: {},
     },
@@ -33,39 +34,9 @@ const IR: IrDocument = {
   extensions: {},
 };
 
-function makeDb(): { readonly db: QueryDb; readonly close: () => void } {
-  const sqlite = new Database(':memory:');
-  sqlite.run(synthesizeDdl(IR));
-  return {
-    db: {
-      analyze(sql) {
-        const statement = sqlite.prepare(sql);
-        try {
-          const columnNames = statement.columnNames;
-          const paramsCount = (
-            statement as unknown as { readonly paramsCount: number }
-          ).paramsCount;
-          (
-            statement as unknown as { all: (...params: number[]) => unknown[] }
-          ).all(...Array.from({ length: paramsCount }, () => 1));
-          const declaredTypes = (
-            statement as unknown as {
-              readonly declaredTypes: readonly (string | null)[];
-            }
-          ).declaredTypes;
-          return { columnNames, declaredTypes, paramsCount };
-        } finally {
-          statement.finalize();
-        }
-      },
-    },
-    close: () => sqlite.close(),
-  };
-}
-
 describe('browser-safe SYQL source compiler', () => {
   test('compiles local predicates and multiple queries with the real plan', () => {
-    const { db, close } = makeDb();
+    const { db, close } = makeQueryDb(IR);
     try {
       const result = compileSyqlSource(
         `predicate hasStatus(value: string | null) {
@@ -100,7 +71,7 @@ sync query coveredTodos(listId) {
   });
 
   test('rejects imports with a source-spanned playground diagnostic', () => {
-    const { db, close } = makeDb();
+    const { db, close } = makeQueryDb(IR);
     try {
       expect(() =>
         compileSyqlSource(
