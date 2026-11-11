@@ -1,5 +1,65 @@
 # Syncular release notes
 
+## 0.60.0 release notes
+
+0.60.0 moves SSP2 to wire version 4 (`docs/RFC-REPLICA-SUBSCRIPTIONS.md`,
+`docs/RFC-IDEMPOTENCY-RETENTION.md`). The server reads version 4 only and the
+clients write version 4 only: a version 3 request receives
+`sync.invalid_request`. Deploy the server and the clients together; the
+[upgrade guide](https://syncular.dev/upgrade-wire-4/) lists every change per
+SDK.
+
+**Units.** A subscription is a unit: a scope map with one value per scope
+variable, covering every table that declares those variables.
+`subscribe(scopes)` returns the derived unit id; `subscribeMany`,
+`unsubscribe(id)`, `units()`, `unit(id)` and `unitCatchup(id)` replace the
+per-table subscription API in TypeScript, Rust, Swift, Kotlin, Flutter, React
+Native and Tauri. A replica holds one cursor, and a pull sends the
+registration list only when it changed. `maxSubscriptionsPerRequest` counts
+units (default 500); `maxScopeValuesPerSubscription` is removed.
+Manifest subscriptions are unit templates (`{ name, scopes: { v: "{p}" } }`).
+`diagnosticsSnapshot()` returns version 2, with `units`, `activeUnits` and
+`replicaCursor`.
+
+**Row versions.** Every applied write advances a row's `server_version` by 1,
+including a delete and a scope move, and an insert starts above the
+partition's delete floor. Both clients apply a delivered change only when its
+version exceeds the local row's.
+
+**Idempotency.** Each push carries the replica's outbox id and a sequence per
+commit. The server keeps one watermark per outbox and deletes stored results
+below it. A commit below the watermark without a stored result receives
+`sync.commit_expired`; `admin.findWrite` reports the watermark. A copied or
+restored replica is refused with `sync.commit_expired`; reset it.
+
+**Typegen.** `syncular generate` runs `EXPLAIN QUERY PLAN` on every emitted
+statement and fails on `typegen.query_scan`, `typegen.query_automatic_index`,
+`typegen.query_unbounded` and `typegen.query_many_tables` unless the query
+acknowledges the finding. A computed result column takes its type from a
+whole-expression `CAST` or `count()`, otherwise generation fails with
+`typegen.computed_column_type`.
+
+**Performance.** `client.query()` on Bun and Node runs a text that completed
+once under `PRAGMA query_only` without the pragma, so prepared writes survive
+a raw query. A presigned blob upload takes its checksum from the blob id. `BlobTransport.uploadToUrl` takes the blob id as its first
+parameter: `(blobId, url, bytes, mediaType?, signal?)`.
+Both regressions were measured in 0.59.0.
+
+**Minimums.** The Node client adapter needs Node 22.16 (the server's
+`node:sqlite` storage still runs on 22.13). The Kotlin binding needs JDK 22
+and drops the preview flags.
+
+**Correction to 0.59.0.** Since 0.59.0 the Rust client's `query()` drops an
+unaliased `_sync_version` column from its results. Alias the column to read
+the row version.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together, deploy
+the server first and release the clients in the same window. The server's
+storage migrates in place. A replica written under version 3 keeps its
+outbox, rows and row versions, drops its version 3 subscription records, and
+bootstraps each registered unit once. Run `syncular generate` once per
+manifest before upgrading and index or acknowledge every query plan finding.
+
 ## 0.59.0 release notes
 
 0.59.0 ships the core review recorded in `docs/RFC-CORE-REVIEW.md`: fixes to
