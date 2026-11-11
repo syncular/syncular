@@ -41,12 +41,14 @@ import { BunSQL, bunSqlExecutor, PG_URL } from './pg-real';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
 import {
+  live,
   makeContext,
   pullFrames,
   pushCommit,
   pushResults,
   section,
   sync,
+  TEST_LOG_EPOCH,
   taskRow,
   upsert,
 } from './helpers';
@@ -614,11 +616,29 @@ test('Postgres migrates legacy client records to wire version 1', async () => {
 });
 
 /**
- * The 0.59.0 (wire version 3) shape of the tables wire version 4 changed;
- * `BIGINT`/`JSON` become the 0.59.0 Postgres types, `INTEGER`/`TEXT` stay
- * the SQLite ones.
+ * The 0.59.0 (wire version 3) shape of the tables wire version 4 changed,
+ * and the commit log that holds its history; `BIGINT`/`JSON`/`BYTEA` become
+ * the 0.59.0 Postgres types, `INTEGER`/`TEXT`/`BLOB` stay the SQLite ones.
  */
-const wireV3Ddl = (bigint: string, json: string) => [
+const wireV3Ddl = (bigint: string, json: string, bytes: string) => [
+  `CREATE TABLE sync_partitions(
+    partition TEXT PRIMARY KEY, max_commit_seq ${bigint} NOT NULL DEFAULT 0,
+    horizon_seq ${bigint} NOT NULL DEFAULT 0)`,
+  `CREATE TABLE sync_commits(
+    partition TEXT NOT NULL, commit_seq ${bigint} NOT NULL,
+    client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL, created_at_ms ${bigint} NOT NULL,
+    writer_version ${bigint}, PRIMARY KEY(partition, commit_seq))`,
+  `CREATE TABLE sync_changes(
+    partition TEXT NOT NULL, commit_seq ${bigint} NOT NULL, idx INTEGER NOT NULL,
+    tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+    op ${bigint === 'BIGINT' ? 'SMALLINT' : 'INTEGER'} NOT NULL,
+    row_version ${bigint}, scopes ${json} NOT NULL, payload ${bytes},
+    PRIMARY KEY(partition, commit_seq, idx))`,
+  `CREATE TABLE sync_change_scopes(
+    partition TEXT NOT NULL, tbl TEXT NOT NULL,
+    var TEXT NOT NULL, value TEXT NOT NULL, commit_seq ${bigint} NOT NULL,
+    PRIMARY KEY(partition, tbl, var, value, commit_seq))`,
   `CREATE TABLE sync_push_results(
     partition TEXT NOT NULL, client_id TEXT NOT NULL,
     client_commit_id TEXT NOT NULL, result ${json} NOT NULL,
@@ -633,7 +653,14 @@ const wireV3Ddl = (bigint: string, json: string) => [
     PRIMARY KEY(partition, client_id))`,
 ];
 
+/** Commit 2 deletes a row without a row version, as releases before wire version 4 wrote it. */
 const WIRE_V3_ROWS = [
+  "INSERT INTO sync_partitions VALUES ('part', 2, 0)",
+  `INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms)
+   VALUES ('part', 1, 'c1', 'k1', 'a1', 1), ('part', 2, 'c1', 'k2', 'a1', 2)`,
+  `INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes)
+   VALUES ('part', 2, 0, 'tasks', 't1', 2, NULL, '{"project_id":"p1"}')`,
+  "INSERT INTO sync_change_scopes VALUES ('part', 'tasks', 'project_id', 'p1', 2)",
   `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms)
    VALUES ('part', 'c1', 'a1', 3, 7, '[{"id":"s1","table":"tasks","scopes":{"project_id":["p1"]}}]', 10)`,
   `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result)
@@ -681,7 +708,10 @@ for (const backend of [
       if (backend === 'postgres/real') {
         const storage = await resetRealPg();
         if (seed) {
-          for (const sql of [...wireV3Ddl('BIGINT', 'JSONB'), ...WIRE_V3_ROWS])
+          for (const sql of [
+            ...wireV3Ddl('BIGINT', 'JSONB', 'BYTEA'),
+            ...WIRE_V3_ROWS,
+          ])
             await realPg.unsafe(sql);
         }
         await storage.migrate();
@@ -694,7 +724,10 @@ for (const backend of [
       if (backend === 'postgres') {
         const db = await PGlite.create();
         if (seed) {
-          for (const sql of [...wireV3Ddl('BIGINT', 'JSONB'), ...WIRE_V3_ROWS])
+          for (const sql of [
+            ...wireV3Ddl('BIGINT', 'JSONB', 'BYTEA'),
+            ...WIRE_V3_ROWS,
+          ])
             await db.exec(sql);
         }
         const storage = new PostgresServerStorage(pgliteExecutor(db));
@@ -708,7 +741,10 @@ for (const backend of [
       if (backend === 'd1') {
         const db = new D1DatabaseDouble();
         if (seed) {
-          for (const sql of [...wireV3Ddl('INTEGER', 'TEXT'), ...WIRE_V3_ROWS])
+          for (const sql of [
+            ...wireV3Ddl('INTEGER', 'TEXT', 'BLOB'),
+            ...WIRE_V3_ROWS,
+          ])
             await db.exec(sql);
         }
         const storage = new D1ServerStorage(db, { pushApplySerialized: true });
@@ -722,7 +758,10 @@ for (const backend of [
       }
       const db = new BunSqliteDatabase();
       if (seed) {
-        for (const sql of [...wireV3Ddl('INTEGER', 'TEXT'), ...WIRE_V3_ROWS])
+        for (const sql of [
+          ...wireV3Ddl('INTEGER', 'TEXT', 'BLOB'),
+          ...WIRE_V3_ROWS,
+        ])
           db.exec(sql);
       }
       const storage = new SqliteServerStorage(db);
@@ -764,6 +803,28 @@ for (const backend of [
       expect(prepared).toMatchObject({
         watermark: 3,
         persisted: { status: 'applied', commitSeq: 1 },
+      });
+      // §9: the horizon starts at the last commit before the upgrade, so a
+      // cursor into that history is reset instead of reaching the delete
+      // that carries no row version.
+      expect(await migrated.storage.getHorizonSeq('part')).toBe(2);
+      const t = makeContext({
+        storage: migrated.storage,
+        schema: CONTRACT_SCHEMA,
+        partition: 'part',
+        actorId: 'a1',
+        resolveScopes: () => ({ project_id: ['p1'] }),
+      });
+      await migrated.storage.touchPartition('part', t.now.ms, TEST_LOG_EPOCH);
+      const message = await sync(
+        t,
+        pullFrames([{ project_id: 'p1' }], { cursor: 1, progress: [] }),
+        { clientId: 'c1' },
+      );
+      expect(live(message).start).toEqual({
+        type: 'LIVE_START',
+        status: 'reset',
+        reasonCode: 'sync.cursor_expired',
       });
     } finally {
       await migrated.close();

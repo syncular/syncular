@@ -1137,6 +1137,38 @@ fn a_delta_applies_like_a_live_section_advances_the_replica_cursor_and_acks_it()
 }
 
 #[test]
+fn a_delta_whose_resp_header_carries_a_schema_floor_records_it_and_applies_nothing() {
+    let mut h = Harness::new();
+    h.client.subscribe(p1()).unwrap();
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    h.client.connect_realtime(&mut h.transport).unwrap();
+    h.transport.sent.clear();
+    h.client.sync_needed = false;
+    // RESP_HEADER {required 3, latest 3, logEpoch e1}, LIVE_START active,
+    // LIVE_END throughSeq 4; the TS client test applies the same bytes.
+    let hex = "5353503204000200101100000001030000000103000000020000006531001c0500000001000000001d0c0000000400000000000000000000000000000000";
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    h.client.on_realtime_binary(&mut h.transport, &bytes);
+    assert_eq!(
+        h.client.schema_floor(),
+        Some(&SchemaFloor {
+            required_schema_version: Some(3),
+            latest_schema_version: Some(3),
+        })
+    );
+    assert_eq!(h.client.diagnostics_snapshot().unwrap().replica_cursor, 3);
+    assert!(h.transport.sent.is_empty());
+    assert!(!h.client.sync_needed());
+}
+
+#[test]
 fn a_delta_while_no_unit_is_live_is_a_drop() {
     let mut h = Harness::new();
     h.client.subscribe(p1()).unwrap();

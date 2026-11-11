@@ -24,6 +24,7 @@ import {
 } from '@syncular/core';
 import { type ClientSchema, SyncClient } from '../src';
 import { BunClientDatabase } from '../src/bun-database';
+import type { SqlRow, SqlValue } from '../src/database';
 import type { RealtimeHandlers } from '../src/transport';
 
 const TASKS: readonly RowColumn[] = [
@@ -230,9 +231,12 @@ async function scripted(db = new BunClientDatabase()) {
       .query(`SELECT id FROM ${table} ORDER BY id`)
       .map((row) => String(row.id));
   /** Deliver one delta (§8.2) and wait for its serialized apply. */
-  const delta = async (frames: ResponseFrame[]) => {
+  const delta = async (frames: ResponseFrame[] | Uint8Array) => {
     handlers[handlers.length - 1]!.onBinary(
-      new Uint8Array([0x00, ...encode(frames)]),
+      new Uint8Array([
+        0x00,
+        ...(frames instanceof Uint8Array ? frames : encode(frames)),
+      ]),
     );
     await settle();
     // The window edit runs after the delta on the operation chain.
@@ -910,6 +914,29 @@ describe('§8.2 deltas', () => {
     expect(client.statusSnapshot().syncNeeded).toBe(false);
   });
 
+  test('a delta whose RESP_HEADER carries a schema floor records it and applies nothing', async () => {
+    const { client, round, delta, acks } = await scripted();
+    client.subscribe(P1);
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks')]),
+      ...live(3),
+    );
+    await client.connectRealtime();
+    // RESP_HEADER {required 3, latest 3, logEpoch e1}, LIVE_START active,
+    // LIVE_END throughSeq 4; the Rust client test applies the same bytes.
+    await delta(
+      Uint8Array.fromHex(
+        '5353503204000200101100000001030000000103000000020000006531001c0500000001000000001d0c0000000400000000000000000000000000000000',
+      ),
+    );
+    expect(client.statusSnapshot()).toMatchObject({
+      schemaFloor: { requiredSchemaVersion: 3, latestSchemaVersion: 3 },
+      syncNeeded: false,
+    });
+    expect(client.diagnosticsSnapshot().replicaCursor).toBe(3);
+    expect(acks).toEqual([]);
+  });
+
   test('a delta while no unit is live is a drop', async () => {
     const { client, delta, ids } = await scripted();
     client.subscribe(P1);
@@ -924,6 +951,23 @@ describe('§8.2 deltas', () => {
 });
 
 describe('§7.6 diagnostics', () => {
+  test('a snapshot runs seven statements, as before wire version 4', async () => {
+    let statements = 0;
+    class Counting extends BunClientDatabase {
+      override query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
+        statements += 1;
+        return super.query(sql, params);
+      }
+    }
+    const { client } = await scripted(new Counting());
+    client.subscribe(P1);
+    statements = 0;
+    client.diagnosticsSnapshot();
+    // Units, local revision, outbox count, replica cursor, two page
+    // pragmas and one storage aggregate.
+    expect(statements).toBe(7);
+  });
+
   test('units appear as counts and reason codes, never ids', async () => {
     const { client, round } = await scripted();
     client.subscribe(P1);

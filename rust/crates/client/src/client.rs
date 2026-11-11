@@ -2687,6 +2687,20 @@ impl SyncClient {
 
     pub fn diagnostics_snapshot(&self) -> Result<ClientDiagnosticsSnapshot, String> {
         let registered = self.stored(load_units(&self.conn))?;
+        // Both meta values in one statement: the FFI host recomputes
+        // diagnostics after every command.
+        let (local_revision, replica_cursor): (Option<String>, Option<String>) = self.stored(
+            self.conn
+                .prepare_cached(
+                    "SELECT (SELECT value FROM _syncular_meta WHERE key = ?1),
+                            (SELECT value FROM _syncular_meta WHERE key = ?2)",
+                )
+                .and_then(|mut statement| {
+                    statement.query_row([LOCAL_REVISION_KEY, REPLICA_CURSOR_KEY], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })
+                }),
+        )?;
         let mut units = DiagnosticUnits::default();
         for unit in &registered {
             *match unit.status {
@@ -2785,7 +2799,10 @@ impl SyncClient {
                     .and_then(|floor| floor.latest_schema_version),
             },
             replica: ClientDiagnosticsReplica {
-                local_revision: self.local_revision()?.to_string(),
+                local_revision: local_revision
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    .to_string(),
                 sync_needed: self.sync_needed,
                 pending_outbox: self.outbox.len(),
             },
@@ -2795,7 +2812,10 @@ impl SyncClient {
                 .filter(|unit| unit.status == UnitStatus::Active)
                 .count(),
             units,
-            replica_cursor: self.stored(replica_cursor(&self.conn))?,
+            replica_cursor: replica_cursor.map_or(Ok(-1), |raw| {
+                raw.parse()
+                    .map_err(|_| "sync.local_corrupt: persisted unit state is invalid".to_owned())
+            })?,
             last_round: self.last_round.clone(),
             last_change: self.last_change.clone(),
             storage: self.diagnostics_storage(),
@@ -2811,14 +2831,16 @@ impl SyncClient {
             let page_size: i64 = self
                 .conn
                 .query_row("PRAGMA page_size", [], |row| row.get(0))?;
-            // Reuse compiled aggregates; every invocation still reads current storage.
-            let outbox_bytes: i64 = self
+            // One cached aggregate, since the FFI host recomputes diagnostics
+            // after every command; every invocation still reads current storage.
+            let (outbox_bytes, outcome_entries, outcome_bytes): (i64, i64, i64) = self
                 .conn
-                .prepare_cached("SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox")?
-                .query_row([], |row| row.get(0))?;
-            let (outcome_entries, outcome_bytes): (i64, i64) = self.conn.prepare_cached(
-                "SELECT COUNT(*), COALESCE(SUM(LENGTH(results_json) + COALESCE(LENGTH(operations_json), 0)), 0) FROM _syncular_commit_outcomes",
-            )?.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                .prepare_cached(
+                    "SELECT (SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox),
+                            COUNT(*), COALESCE(SUM(LENGTH(results_json) + COALESCE(LENGTH(operations_json), 0)), 0)
+                       FROM _syncular_commit_outcomes",
+                )?
+                .query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
             let blob_bytes = if self.schema_has_blobs() {
                 self.conn
                     .prepare_cached("SELECT COALESCE(SUM(byte_length), 0) FROM _syncular_blobs")?
@@ -11824,13 +11846,29 @@ impl SyncClient {
         };
         #[cfg(feature = "bench-internals")]
         drop(decode_phase);
+        // §8.2: a delta's header means what a pull response's header means. A
+        // schema floor (§1.6) is recorded, stops syncing and applies nothing.
+        if let Some(Frame::RespHeader {
+            required_schema_version: Some(required),
+            latest_schema_version,
+            ..
+        }) = message.frames.first()
+        {
+            let floor = SchemaFloor {
+                required_schema_version: Some(*required),
+                latest_schema_version: *latest_schema_version,
+            };
+            if self.set_schema_floor(Some(floor)).is_err() {
+                self.set_sync_needed(true, true);
+            }
+            return;
+        }
         let through = message.frames.iter().find_map(|frame| match frame {
             Frame::LiveEnd { through_seq, .. } => Some(*through_seq),
             _ => None,
         });
         let epoch = self.get_meta(LOG_EPOCH_KEY).ok().flatten();
         let mut dropped = !matches!(message.frames.first(), Some(Frame::RespHeader {
-                required_schema_version: None,
                 reset_required: false,
                 log_epoch,
                 ..

@@ -994,11 +994,12 @@ pub(crate) fn migrate(conn: &Connection, schema: &Schema) -> Result<(), Authorit
                 "ALTER TABLE {table} ADD COLUMN {column} {definition}"
             ))
             .db()?;
-            // §2.2: a store from before the delete floor starts it at the
-            // highest version its tombstones recorded.
+            // A store from before wire version 4 (and the delete floor)
+            // starts the delete floor at the highest version its tombstones
+            // recorded (§2.2) and the horizon at its last commit (§9).
             if column == "delete_floor" {
                 conn.execute_batch(
-                    "UPDATE sync_log SET delete_floor=coalesce((SELECT max(server_version) FROM sync_tombstones), 0)",
+                    "UPDATE sync_log SET horizon_seq=max_commit_seq, delete_floor=coalesce((SELECT max(server_version) FROM sync_tombstones), 0)",
                 )
                 .db()?;
             }

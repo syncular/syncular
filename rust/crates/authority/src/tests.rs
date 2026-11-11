@@ -2690,6 +2690,28 @@ fn a_commit_below_the_watermark_without_a_result_answers_commit_expired_unpersis
 }
 
 #[test]
+fn a_reused_commit_id_above_its_stored_sequence_is_processed_not_replayed() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let push = |authority: &mut LocalAuthority, seq| {
+        outbox_push(
+            &client,
+            authority,
+            Some("outbox-1"),
+            vec![("a", seq, vec![task(&s, "a", None, None)])],
+        )
+    };
+    push(&mut authority, 1);
+    // Step 2 deletes a's result (sequence 1 < W = 3), so step 3 processes it.
+    assert_eq!(push(&mut authority, 3)[0].1, PushStatus::Applied);
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![("a".to_owned(), Some("outbox-1".to_owned()), Some(3))]
+    );
+}
+
+#[test]
 fn a_first_commit_that_rejects_still_settles_the_watermark() {
     let mut authority = memory();
     let s = authority.schema.clone();
@@ -2910,20 +2932,14 @@ fn a_store_from_0_59_migrates_to_the_fresh_schema() {
     );
     client.push(&mut authority, "k3", vec![task(&s, "t8", None, None)]);
     assert_eq!(stored(&authority, "tasks", "t8").map(|row| row.0), Some(6));
-    // A delete logged before wire version 4 carries no version, and a live
-    // section that reaches it fails loud. A replica upgrading from version 3
-    // bootstraps every unit at a pin above it (§9).
+    // §9: the horizon starts at the last commit before the upgrade, so a
+    // cursor into that history, which holds a delete without a row version,
+    // receives the §4.6 replica reset.
+    assert_eq!(store::log_state(&authority.conn).unwrap().horizon, 2);
     let mut frames = vec![pull_header(1, &[org("o1")], None, 0, 0)];
     frames.extend(unit_frames(&[org("o1")]));
-    let request = encode_request("c1", 1, Some(client.epoch.clone()), None, frames);
-    let error = authority.sync(&request).unwrap_err();
-    assert_eq!(
-        (error.code.as_str(), error.details),
-        (
-            "sync.internal_error",
-            Some(json!({ "what": "change row version" }))
-        )
-    );
+    let (status, through, _, commits) = live(&client.round(&mut authority, frames));
+    assert_eq!((status, through, commits.len()), (LiveStatus::Reset, -1, 0));
     drop(authority);
     let _ = std::fs::remove_file(&path);
 }

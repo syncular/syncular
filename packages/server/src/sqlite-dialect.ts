@@ -315,12 +315,13 @@ export function sqliteUpgradeDdl(
       ([table, name, definition]) =>
         `ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`,
     ),
-    // §2.2: a database from before the delete floor starts it at the highest
-    // version its tombstones recorded.
+    // A database from before wire version 4 (and the delete floor) starts
+    // the delete floor at the highest version its tombstones recorded
+    // (§2.2) and the horizon at its last commit (§9).
     ...(has('sync_partitions', 'delete_floor')
       ? []
       : [
-          `UPDATE sync_partitions SET delete_floor=coalesce((SELECT max(server_version) FROM sync_tombstones t WHERE t.partition=sync_partitions.partition),0)`,
+          `UPDATE sync_partitions SET horizon_seq=max_commit_seq, delete_floor=coalesce((SELECT max(server_version) FROM sync_tombstones t WHERE t.partition=sync_partitions.partition),0)`,
         ]),
     ...SQLITE_DROPPED_COLUMNS.filter(([table, name]) => has(table, name)).map(
       ([table, name]) => `ALTER TABLE ${table} DROP COLUMN ${name}`,
@@ -2081,11 +2082,13 @@ export abstract class SqliteFamilyTransaction {
       'DELETE FROM sync_push_results WHERE partition=? AND client_id=? AND outbox_id=? AND client_seq<?',
       [p, clientId, outbox.outboxId, watermark],
     );
+    // The sequence step 2 sees: (a) gives a pre-upgrade result the first
+    // commit's sequence; a result of this outbox keeps its stored one.
     const deleted =
-      first.clientSeq < watermark &&
-      (state?.outbox_id === null ||
-        (state?.outbox_id === outbox.outboxId &&
-          (state.client_seq ?? 0) < watermark));
+      state?.outbox_id === null
+        ? first.clientSeq < watermark
+        : state?.outbox_id === outbox.outboxId &&
+          (state.client_seq ?? 0) < watermark;
     return {
       watermark,
       persisted:

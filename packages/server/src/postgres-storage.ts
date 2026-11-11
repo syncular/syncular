@@ -290,6 +290,13 @@ ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS units JSONB;
 ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS registration_digest BYTEA;
 ALTER TABLE sync_clients
   ADD COLUMN IF NOT EXISTS catching_up JSONB NOT NULL DEFAULT '[]';
+-- §9: a database from before wire version 4 (its client records still hold
+-- subscriptions) starts the horizon at its last commit.
+UPDATE sync_partitions SET horizon_seq = max_commit_seq
+ WHERE EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'sync_clients'
+                  AND column_name = 'subscriptions');
 ALTER TABLE sync_clients DROP COLUMN IF EXISTS subscriptions;
 CREATE TABLE IF NOT EXISTS sync_blob_refs(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,

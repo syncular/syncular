@@ -2326,13 +2326,10 @@ export class SyncClient {
       const pageSize = Number(
         this.#db.query('PRAGMA page_size')[0]?.page_size ?? 0,
       );
-      const outboxBytes = Number(
-        this.#db.query(
-          `SELECT COALESCE(SUM(LENGTH(operations)),0)AS bytes FROM ${OUTBOX_TABLE}`,
-        )[0]?.bytes ?? 0,
-      );
-      const outcome = this.#db.query(
-        `SELECT COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM ${OUTCOMES_TABLE}`,
+      // One statement for the outbox and outcome-journal sums keeps the
+      // snapshot at its pre-version-4 statement count.
+      const sums = this.#db.query(
+        `SELECT (SELECT COALESCE(SUM(LENGTH(operations)),0) FROM ${OUTBOX_TABLE})AS outbox,COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM ${OUTCOMES_TABLE}`,
       )[0];
       const blobBytes = this.#hasBlobs
         ? Number(
@@ -2347,9 +2344,9 @@ export class SyncClient {
       return {
         status: pressure ? 'pressure' : 'healthy',
         databaseBytesApprox: Math.max(0, pageCount * pageSize),
-        pendingOutboxBytesApprox: Math.max(0, outboxBytes),
-        retainedOutcomeBytesApprox: Math.max(0, Number(outcome?.bytes ?? 0)),
-        retainedOutcomeEntries: Math.max(0, Number(outcome?.entries ?? 0)),
+        pendingOutboxBytesApprox: Math.max(0, Number(sums?.outbox ?? 0)),
+        retainedOutcomeBytesApprox: Math.max(0, Number(sums?.bytes ?? 0)),
+        retainedOutcomeEntries: Math.max(0, Number(sums?.entries ?? 0)),
         blobCacheBytesApprox: Math.max(0, blobBytes),
         ...(pressure
           ? { pressureReasonCode: 'client.blob_cache_over_limit' as const }
@@ -2736,7 +2733,13 @@ export class SyncClient {
           grant.urlExpiresAtMs > this.#now()
         ) {
           try {
-            await transport.uploadToUrl(grant.url, bytes, mediaType, signal);
+            await transport.uploadToUrl(
+              blobId,
+              grant.url,
+              bytes,
+              mediaType,
+              signal,
+            );
             return;
           } catch {
             // Grant PUT failed — stream through the direct endpoint below.

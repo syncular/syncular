@@ -3001,7 +3001,8 @@ The grant flow, three hops, no new trust model:
    `{"present":true}` for the idempotent-skip case.
 3. **PUT direct.** The client `PUT`s the raw bytes to `url` with **no host
    authentication attached** and with the `x-amz-checksum-sha256` header
-   (the base64 SHA-256 of the body; `Content-Length` comes from the body)
+   (the `{blobId}` digest in the step 2 encoding, taken from the blob id
+   without hashing the body again; `Content-Length` comes from the body)
    — the presigned URL is the entire grant, the
    §5.4 rule verbatim: a signed URL points at an object host that must never
    see host auth. All §5.4 client URL MUSTs apply: no `PUT` at or past
@@ -6410,7 +6411,10 @@ socket for continuity.
   a pull in flight over the same database, a decode or apply failure) is a
   **drop**. The client MUST treat every drop as a wake-up (§8.3: run a pull
   soon). A server without a replay buffer never resends, and later deltas
-  would otherwise apply over the gap silently.
+  would otherwise apply over the gap silently. A delta's `RESP_HEADER` means
+  what a pull response's header means (§1.6): with `requiredSchemaVersion`
+  present the client records the floor, applies nothing and stops syncing,
+  and the delta is not a drop.
 - **Ack points.** After applying a delta, the client acks its
   `throughSeq`. After a pull round — a socket round (§8.7) or an HTTP pull
   — while the connection is live, the client acks the replica cursor when
@@ -7103,6 +7107,11 @@ version 3 peer or state written before the upgrade:
   server answers a pull that refers to a list for it `unregistered` (§4.1)
   and registers no realtime delivery for it until a version 4 round writes
   the record.
+- A delete logged before version 4 carries no row version, so no `COMMIT`
+  frame (§4.5) can carry it. The storage migration to version 4 sets each
+  partition's `horizonSeq` (§4.6) to its last commit at the upgrade, so a
+  cursor into that history receives the §4.6 reset and the next pruning pass
+  deletes it.
 - An idempotency result stored under version 3 carries no outbox sequence.
   When a request with `outboxId = o` carries `PUSH_COMMIT` frames and client
   `c` holds such results, the server, inside the serialization of §6.3.2 and

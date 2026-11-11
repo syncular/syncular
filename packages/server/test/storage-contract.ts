@@ -1364,6 +1364,20 @@ export function runStorageContract(
       expect(await storage.getPushResult(PARTITION, 'c1', 'X')).toBeUndefined();
     });
 
+    test('a reused commit id above its stored sequence is processed, never replayed from a deleted result', async () => {
+      const storage = await make();
+      await push(storage, 'o1', [['A', 1]]);
+      // Step 2 deletes A's result (sequence 1 < W = 3); step 3 finds no
+      // retained result and processes the commit.
+      expect(await push(storage, 'o1', [['A', 3]])).toEqual({
+        watermark: 3,
+        outcomes: ['applied:2'],
+      });
+      expect(
+        (await storage.getPushResult(PARTITION, 'c1', 'A'))?.commitSeq,
+      ).toBe(2);
+    });
+
     test('the settlement survives a rejected first commit', async () => {
       const storage = await make();
       await push(storage, 'o1', [['A', 1]]);
