@@ -6,6 +6,7 @@ import {
   type SyqlSourceSpan,
   type SyqlToken,
 } from './syql-lexer';
+import { QUERY_PLAN_FINDINGS, type QueryAcknowledgement } from './query';
 import {
   parseSyqlEmbeddedTemplate,
   type SyqlEmbeddedTemplate,
@@ -151,6 +152,8 @@ export interface SyqlQueryDeclaration {
   readonly statement: SyqlTemplate;
   readonly sort?: SyqlSortSection;
   readonly limit?: SyqlLimitDeclaration;
+  /** Query plan findings acknowledged before the declaration (§14.5). */
+  readonly acknowledgements: readonly QueryAcknowledgement[];
   readonly span: SyqlSourceSpan;
   readonly nameSpan: SyqlSourceSpan;
 }
@@ -181,7 +184,8 @@ export type SyqlParseErrorCode =
   | 'SYQL2009_INVALID_INTEGER'
   | 'SYQL2010_INVALID_PAGE_RANGE'
   | 'SYQL2011_INVALID_PARAMETER'
-  | 'SYQL2012_INVALID_QUERY_BODY';
+  | 'SYQL2012_INVALID_QUERY_BODY'
+  | 'SYQL2013_INVALID_ACKNOWLEDGEMENT';
 
 const CAMEL_IDENT_RE = /^[a-z][A-Za-z0-9]*$/;
 const INTEGER_LITERAL_RE = /^(?:0|[1-9][0-9]*)$/;
@@ -298,7 +302,9 @@ class Parser {
       }
 
       sawDeclaration = true;
-      if (keyword.text === 'predicate') {
+      const acknowledgements = this.#parseAcknowledgements();
+      const next = this.#peek();
+      if (acknowledgements.length === 0 && next.text === 'predicate') {
         const declaration = this.#parsePredicate();
         this.#claimName(
           fileNames,
@@ -308,8 +314,11 @@ class Parser {
         );
         declarations.push(declaration);
         predicates.push(declaration);
-      } else if (keyword.text === 'query' || keyword.text === 'sync') {
-        const declaration = this.#parseQuery(keyword.text === 'sync');
+      } else if (next.text === 'query' || next.text === 'sync') {
+        const declaration = this.#parseQuery(
+          next.text === 'sync',
+          acknowledgements,
+        );
         this.#claimName(
           fileNames,
           declaration.name,
@@ -320,9 +329,13 @@ class Parser {
         queries.push(declaration);
       } else {
         this.#fail(
-          'SYQL2008_INVALID_MEMBER',
-          keyword,
-          `expected import, predicate, query, or sync query; found ${JSON.stringify(keyword.text)}`,
+          acknowledgements.length > 0
+            ? 'SYQL2013_INVALID_ACKNOWLEDGEMENT'
+            : 'SYQL2008_INVALID_MEMBER',
+          next,
+          acknowledgements.length > 0
+            ? `a query plan acknowledgement precedes a query declaration; found ${JSON.stringify(next.text || 'end of file')}`
+            : `expected import, predicate, query, or sync query; found ${JSON.stringify(next.text)}`,
         );
       }
     }
@@ -469,7 +482,58 @@ class Parser {
     };
   }
 
-  #parseQuery(sync: boolean): SyqlQueryDeclaration {
+  #parseAcknowledgements(): QueryAcknowledgement[] {
+    const out: QueryAcknowledgement[] = [];
+    while (this.#peek().text === 'allow') {
+      const start = this.#take();
+      const kind = this.#take();
+      const finding = QUERY_PLAN_FINDINGS.find((name) => name === kind.text);
+      if (finding === undefined) {
+        this.#fail(
+          'SYQL2013_INVALID_ACKNOWLEDGEMENT',
+          kind,
+          `expected a query plan finding (${QUERY_PLAN_FINDINGS.join(', ')}), found ${JSON.stringify(kind.text || 'end of file')}`,
+        );
+      }
+      const table = finding === 'many_tables' ? undefined : this.#take();
+      if (table !== undefined && table.kind !== 'identifier') {
+        this.#fail(
+          'SYQL2013_INVALID_ACKNOWLEDGEMENT',
+          table,
+          `expected the table the finding names, found ${JSON.stringify(table.text || 'end of file')}`,
+        );
+      }
+      const reason = this.#take();
+      const text = reason.text.slice(1, -1).split("''").join("'");
+      if (reason.kind !== 'string' || text.trim() === '') {
+        this.#fail(
+          'SYQL2013_INVALID_ACKNOWLEDGEMENT',
+          reason,
+          'a query plan acknowledgement ends with a non-blank reason string',
+        );
+      }
+      if (
+        out.some((ack) => ack.finding === finding && ack.table === table?.text)
+      ) {
+        this.#fail(
+          'SYQL2013_INVALID_ACKNOWLEDGEMENT',
+          start,
+          'the query already acknowledges this finding',
+        );
+      }
+      out.push({
+        finding,
+        ...(table === undefined ? {} : { table: table.text }),
+        reason: text,
+      });
+    }
+    return out;
+  }
+
+  #parseQuery(
+    sync: boolean,
+    acknowledgements: readonly QueryAcknowledgement[],
+  ): SyqlQueryDeclaration {
     const start = sync ? this.#expectText('sync') : this.#peek();
     this.#expectText('query');
     const name = this.#parseCamelName('query name');
@@ -551,6 +615,7 @@ class Parser {
       statement: body.statement,
       ...(body.sort === undefined ? {} : { sort: body.sort }),
       ...(body.limit === undefined ? {} : { limit: body.limit }),
+      acknowledgements,
       span: spanBetween(start, body.close),
       nameSpan: name.span,
     };

@@ -267,6 +267,7 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
   let importList = false;
   let justClosedImportList = false;
   let seenTopLevel = false;
+  let acknowledging = false;
   let pendingBetween = 0;
   let inlineParameterRecord = false;
   let justClosedInlineParameterRecord = false;
@@ -284,10 +285,17 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
       (lower === 'import' ||
         lower === 'predicate' ||
         lower === 'query' ||
-        lower === 'sync') &&
+        lower === 'sync' ||
+        (lower === 'allow' &&
+          (previous === undefined ||
+            previous.kind === 'string' ||
+            previous.text === '}'))) &&
       !(lower === 'query' && previous?.text === 'sync');
     if (topLevelDeclaration) {
-      if (seenTopLevel) writer.blankline();
+      // Acknowledgements sit on their own lines directly above their query.
+      if (acknowledging) writer.newline();
+      else if (seenTopLevel) writer.blankline();
+      acknowledging = lower === 'allow';
       seenTopLevel = true;
       previous = undefined;
       awaitsDeclarationParameters = lower === 'predicate' || lower === 'query';

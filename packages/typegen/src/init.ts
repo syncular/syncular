@@ -44,6 +44,9 @@ CREATE TABLE notes (
   body TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
+
+-- The starter query reads one list; this index lets SQLite search it.
+CREATE INDEX idx_notes_list ON notes (list_id);
 `;
 
 // A starter NAMED query (the typed .sql read tier). typegen type-checks it

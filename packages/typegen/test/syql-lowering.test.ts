@@ -65,6 +65,12 @@ const db: QueryDb = {
       statement.finalize();
     }
   },
+  plan: (sql: string) =>
+    sqlite
+      .query<{ id: number; parent: number; detail: string }, []>(
+        `EXPLAIN QUERY PLAN ${sql}`,
+      )
+      .all(),
 };
 
 sqlite.run(`

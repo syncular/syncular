@@ -7,7 +7,10 @@
     "queryIr": "./syncular.queries.ir.json",
     "queries": "./src/frontend/syncular.queries.ts"
   },
-  "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
+  "schemaVersions": [
+    { "version": 1, "through": "0001_initial" },
+    { "version": 2, "through": "0002_index_todos_list" }
+  ],
   "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
     {

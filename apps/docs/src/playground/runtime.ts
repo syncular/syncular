@@ -8,6 +8,7 @@ import {
   type QueryDb,
   synthesizeDdl,
 } from '../../../../packages/typegen/src/query';
+import { TypegenError } from '../../../../packages/typegen/src/errors';
 import { SYQL_DIAGNOSTIC_REMEDIES } from '../../../../packages/typegen/src/syql-diagnostics';
 import { SyqlFrontendError } from '../../../../packages/typegen/src/syql-lexer';
 import type { SyqlLoweredQuery } from '../../../../packages/typegen/src/syql-lowering';
@@ -113,6 +114,23 @@ export function openPlaygroundDatabase(
           };
         } finally {
           statement.finalize();
+        }
+      },
+      plan(sql, index) {
+        if (index !== undefined)
+          database.exec(`savepoint plan_probe; ${index}`);
+        try {
+          return database
+            .selectArrays(`explain query plan ${sql}`)
+            .map(([id, parent, , detail]) => ({
+              id: Number(id),
+              parent: Number(parent),
+              detail: String(detail),
+            }));
+        } finally {
+          if (index !== undefined) {
+            database.exec('rollback to plan_probe; release plan_probe');
+          }
         }
       },
     },
@@ -335,7 +353,7 @@ export function serializeQuery(lowered: SyqlLoweredQuery): PlaygroundQuery {
 export function playgroundDiagnostic(error: unknown): PlaygroundDiagnostic {
   const message = error instanceof Error ? error.message : String(error);
   const code =
-    error instanceof SyqlFrontendError
+    error instanceof TypegenError && error.code !== undefined
       ? error.code
       : (/\b(?:SYQL\d{4}\w*|PLAYGROUND_[A-Z_]+)\b/.exec(message)?.[0] ??
         'PLAYGROUND_COMPILE_ERROR');

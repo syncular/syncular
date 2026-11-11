@@ -149,7 +149,9 @@ The common two-bound case is shorter:
 ```syql
 query createdBetween(range?) {
   select id, created_at from events
-  where when(range) created_at between :range;
+  where when(range) created_at between :range
+  order by created_at desc, id desc
+  limit pageSize default 100 max 500;
 }
 ```
 

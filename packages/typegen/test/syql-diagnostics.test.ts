@@ -7,7 +7,7 @@ import {
 
 test('generates a stable sorted code-to-remedy catalog', () => {
   const catalog = generateSyqlDiagnosticCatalog();
-  expect(catalog).toHaveLength(58);
+  expect(catalog).toHaveLength(59);
   expect(catalog.map<string>(({ code }) => code)).toEqual(
     Object.keys(SYQL_DIAGNOSTIC_REMEDIES).sort(),
   );

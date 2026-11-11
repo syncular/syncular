@@ -299,6 +299,82 @@
           }
         ]
       }
+    },
+    {
+      "name": "query-plan-acknowledgements",
+      "source": "allow scan todos 'a list holds at most 200 todos'\nallow many_tables 'the board view joins five tables'\nquery listTodos(listId) {\n  select id from todos where list_id = :listId;\n}",
+      "ast": {
+        "kind": "syql-file",
+        "revision": 1,
+        "imports": [],
+        "declarations": [
+          {
+            "kind": "query",
+            "name": "listTodos",
+            "sync": false,
+            "parameters": [
+              {
+                "kind": "value",
+                "name": "listId",
+                "optional": false
+              }
+            ],
+            "statement": {
+              "mode": "statement",
+              "nodes": [
+                {
+                  "kind": "sql",
+                  "tokens": [
+                    {
+                      "kind": "identifier",
+                      "text": "select"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "id"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "from"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "todos"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "where"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "list_id"
+                    },
+                    {
+                      "kind": "operator",
+                      "text": "="
+                    },
+                    {
+                      "kind": "bind",
+                      "text": ":listId"
+                    }
+                  ]
+                }
+              ]
+            },
+            "acknowledgements": [
+              {
+                "finding": "scan",
+                "table": "todos",
+                "reason": "a list holds at most 200 todos"
+              },
+              {
+                "finding": "many_tables",
+                "reason": "the board view joins five tables"
+              }
+            ]
+          }
+        ]
+      }
     }
   ],
   "invalid": [
@@ -323,6 +399,66 @@
           "offset": 41,
           "line": 1,
           "column": 42
+        }
+      }
+    },
+    {
+      "name": "acknowledgement-without-reason",
+      "source": "allow scan todos\nquery q() { select id from todos; }",
+      "diagnostic": {
+        "code": "SYQL2013_INVALID_ACKNOWLEDGEMENT",
+        "start": {
+          "offset": 17,
+          "line": 2,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "acknowledgement-blank-reason",
+      "source": "allow unbounded todos '  '\nquery q() { select id from todos; }",
+      "diagnostic": {
+        "code": "SYQL2013_INVALID_ACKNOWLEDGEMENT",
+        "start": {
+          "offset": 22,
+          "line": 1,
+          "column": 23
+        }
+      }
+    },
+    {
+      "name": "acknowledgement-unknown-finding",
+      "source": "allow sort todos 'reason'\nquery q() { select id from todos; }",
+      "diagnostic": {
+        "code": "SYQL2013_INVALID_ACKNOWLEDGEMENT",
+        "start": {
+          "offset": 6,
+          "line": 1,
+          "column": 7
+        }
+      }
+    },
+    {
+      "name": "acknowledgement-before-predicate",
+      "source": "allow scan todos 'reason'\npredicate p() { id = 1 }",
+      "diagnostic": {
+        "code": "SYQL2013_INVALID_ACKNOWLEDGEMENT",
+        "start": {
+          "offset": 26,
+          "line": 2,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "duplicate-acknowledgement",
+      "source": "allow scan todos 'one'\nallow scan todos 'two'\nquery q() { select id from todos; }",
+      "diagnostic": {
+        "code": "SYQL2013_INVALID_ACKNOWLEDGEMENT",
+        "start": {
+          "offset": 23,
+          "line": 2,
+          "column": 1
         }
       }
     }

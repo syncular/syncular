@@ -8,7 +8,7 @@ import { buildIr, loadMigrations, loadQueries, makeQueryDb } from './generate';
 import type { IrDocument } from './ir';
 import { MANIFEST_FILENAME, parseManifest } from './manifest';
 import { lockedMigrationNames, readMigrationLock } from './migration-lock';
-import type { QueryDb, QueryNamingOptions } from './query';
+import { checkQueryPlan, type QueryDb, type QueryNamingOptions } from './query';
 import { syqlDiagnosticRemedy } from './syql-diagnostics';
 import { SyqlFrontendError, type SyqlSourceSpan } from './syql-lexer';
 import type { SyqlLoweredQuery } from './syql-lowering';
@@ -356,9 +356,16 @@ export class SyqlLanguageServer {
             project.ir,
             project.db,
             project.naming,
-          ).queries.map((query) =>
-            lowerSyqlQuery(query, project.ir, project.db, project.naming),
-          );
+          ).queries.map((query) => {
+            const result = lowerSyqlQuery(
+              query,
+              project.ir,
+              project.db,
+              project.naming,
+            );
+            checkQueryPlan(result.analysis, project.ir, project.db);
+            return result;
+          });
     return { root, file, module, semantic, lowered };
   }
 

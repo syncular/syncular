@@ -58,6 +58,8 @@ export const SYQL_DIAGNOSTIC_REMEDIES = {
     'Rewrite the parameter using a supported value, optional, range, group, sort, or limit form.',
   SYQL2012_INVALID_QUERY_BODY:
     'Rewrite the query body using the clause order and forms defined by the SYQL grammar.',
+  SYQL2013_INVALID_ACKNOWLEDGEMENT:
+    "Write the acknowledgement as allow <finding> <table> '<reason>' directly above a query, once per finding.",
   SYQL3001_EXPECTED_EMBEDDED_TOKEN:
     'Insert the required token in the embedded SQL construct.',
   SYQL3002_INVALID_BIND:
