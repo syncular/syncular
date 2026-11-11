@@ -8,7 +8,7 @@ Build the sync server your clients connect to: a schema, a database, an `authent
 - **Host**: Your process. It owns the HTTP listener, authentication, and scope resolution.
 - **Actor**: The identity `authenticate` returns for a request.
 - **Partition**: The isolation boundary `authenticate` assigns to a request, such as a tenant ([Partitions](/server-partitions/)).
-- **Segment**: A cached bootstrap snapshot of one subscription's rows ([Bootstrap & segments](/concepts-bootstrap/)).
+- **Segment**: A cached bootstrap snapshot of one table's rows for one unit ([Bootstrap & segments](/concepts-bootstrap/)).
 :::
 
 :::figure{title="What you assemble" note="Two callbacks hold all of the security" ticks}
@@ -116,7 +116,7 @@ bun run src/server.ts
 ::::
 
 ::::step{title="Point a client at it" time="2 min"}
-Give a client `httpSyncTransport('http://localhost:8787/sync')` and a subscription. The [quickstart](/quickstart/) runs this exact pairing with two clients.
+Give a client `httpSyncTransport('http://localhost:8787/sync')` and a unit. The [quickstart](/quickstart/) runs this exact pairing with two clients.
 
 ::checkpoint[A row written on one client appears on the other.]
 ::::
@@ -152,14 +152,13 @@ The `limits` field of the sync config caps what one request or watch session may
 | Limit | Default | Applies to |
 |---|---|---|
 | `maxRequestBytes` | 16 MiB | Decoded bytes of a `POST /sync` or `POST /operations` body after gzip decoding, and of a socket round's assembled request |
-| `maxSubscriptionsPerRequest` | 500 | `SUBSCRIPTION` frames in one request |
-| `maxScopeValuesPerSubscription` | 1,000 | Requested scope values, summed over one subscription's keys |
+| `maxSubscriptionsPerRequest` | 500 | `UNIT` frames in a request that carries the registration list |
 | `maxWatchesPerSession` | 100 | Registered-query watches open on one `RemoteOperationWatchHub` session |
 | `maxOperationsPerRequest` | 500 | Push operations in one request (`sync.too_many_operations`) |
 
-A request past one of the first three limits fails with HTTP 413 `sync.limit_exceeded`; `details.limit` names the limit and `details.max` holds its value. The adapter stops decoding a gzip body when it reaches `maxRequestBytes`, so a small compressed body never inflates past the cap. A socket round that grows past `maxRequestBytes` closes the connection. A watch past `maxWatchesPerSession` receives a `watch_error` with `sync.limit_exceeded`; the session's other watches keep running, and each commit reruns a session's affected watches one at a time.
+A request past one of the first two limits fails with HTTP 413 `sync.limit_exceeded`; `details.limit` names the limit and `details.max` holds its value. The adapter stops decoding a gzip body when it reaches `maxRequestBytes`, so a small compressed body never inflates past the cap. A socket round that grows past `maxRequestBytes` closes the connection. A watch past `maxWatchesPerSession` receives a `watch_error` with `sync.limit_exceeded`; the session's other watches keep running, and each commit reruns a session's affected watches one at a time.
 
-Treat 500 subscriptions per request as a budget the app designs to. A client sends its complete subscription list on every pull ([Subscriptions](/concepts-subscriptions/)), and a client above the limit cannot pull until the list shrinks. Keep tables with rows times open units under 500 by subscribing lazily ([Pitfalls](/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front)). Raise `maxSubscriptionsPerRequest` only when an app cannot stay under it. Every extra subscription is sent and answered in every round: measured in one app on a dev API, about 150 bytes each way and 0.4 ms of server time per subscription, whether or not a row changed.
+`maxSubscriptionsPerRequest` counts units, one per scope map, whatever the number of tables a unit covers. A client sends its registration list when the list changed and otherwise a 32-byte digest of it ([Subscriptions](/concepts-subscriptions/#what-a-round-sends-for-the-list)), so the limit bounds a round that changes the list and the first round of a new client. A client above the limit cannot pull until its list shrinks ([Pitfalls](/pitfalls/#do-keep-the-unit-count-under-the-server-limit)). Raise the limit when the app's heaviest account registers more units; each live unit adds one range of the scope index to the server's live scan.
 
 ```ts
 const config: SyncServerConfig = {

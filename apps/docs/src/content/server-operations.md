@@ -44,7 +44,7 @@ const config: SyncServerConfig = {
 
 The sink is part of `SyncServerConfig`, so adapters pass it through without extra wiring. The realtime hub and `pruneCommitLog` take the same sink in their own options. The server has no logger dependency; a Sentry or metrics adapter is a `emit` implementation of about 20 lines. The event catalog is `request.handled`, `push.applied`, `push.rejected`, `push.conflicted`, `pull.served`, `segment.downloaded`, `blob.swept`, `reaction.*`, `realtime.*`, `prune.completed`, and `scopes.resolve_failed`, documented in the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md). Reaction lifecycle events are on [Durable server reactions](/server-reactions/#observe-and-inspect-reactions).
 
-`pull.served` carries the request's accepted push sequence and storage maximum. Each subscription in it lists requested and effective scopes, cursors before and after, and the first and last delivered commit sequence. Compare these fields with `push.applied.commitSeq` to tell a missing wake from a scope exclusion or a stale storage read. Hash subscription IDs and scope values in your sink before sending diagnostic evidence outside the application.
+`pull.served` carries the request's accepted push sequence and storage maximum, `registrationTraveled` (the request carried its registration list), one entry per unit and one `live` summary. A unit entry holds the unit id, its scope map, its status (`active`, `revoked` or `reset`), its mode (`live`, `catching-up`, `bootstrap` or `none`), whether the response carried a section for it, its echo, the cursor the request held for it, and its segments. `live` holds the section status (`active`, `reset` or `unregistered`), the replica cursor the request carried, `throughSeq`, and the count and first and last sequence of the delivered commits. Compare these fields with `push.applied.commitSeq` to tell a missing wake from a scope exclusion or a stale storage read. `request.handled.units` counts the units of the request's effective list. Hash unit ids and scope values in your sink before sending diagnostic evidence outside the application.
 
 ### What to alert on
 
@@ -53,7 +53,7 @@ The sink is part of `SyncServerConfig`, so adapters pass it through without extr
 | `push.rejected` rate by `code` | A rising `sync.forbidden` share usually marks an authorization regression in your host; check it before you suspect clients. `push.conflicted` is normal offline-first traffic. |
 | `scopes.resolve_failed` | Any nonzero rate. This is the fail-loud path, and it is almost always a host bug or a dead resolver dependency. |
 | `request.handled` with `outcome: "error"` and `errorCode: "internal"` | Storage failures that surface mid-stream. |
-| `pull.served` with `status: "reset"` | Spikes relative to fleet size ([Commit-log pruning](#commit-log-pruning)). |
+| `pull.served` with `live.status: "reset"` or a unit with `status: "reset"` | Spikes relative to fleet size ([Commit-log pruning](#commit-log-pruning)). |
 | `prune.completed` with `advanced: false` | Many consecutive passes while the log grows. One lagging cursor inside the active window pins retention; the floors bound the damage to `ageForceMs`. |
 | `reaction.prune_completed` with `mayHaveMore: true` | After every scheduled batch: terminal rows accumulate faster than cleanup removes them. Raise the batch count or run passes more often. |
 | `realtime.wake` with `reason: "delta-too-large"` | Sustained occurrences: commits routinely exceed the delta limit and clients fall back to HTTP pulls. Raise the limit or shrink commits. |
@@ -162,7 +162,7 @@ Pruning commits the horizon and the history deletion atomically. Concurrent pass
 ::caption[The defaults are conservative. Lowering them causes more client resets.]
 :::
 
-A client whose cursor fell behind the horizon receives a reset and re-bootstraps from scratch. That behavior is expected, and its rate is your pruning health signal. Devices returning from long absences produce a low steady rate. A rising rate means the horizon passed cursors the fleet still uses, and each affected client pays a full re-bootstrap. Observe it through `pull.served` subscriptions with `status: "reset"`.
+A client whose cursor fell behind the horizon receives a reset and re-bootstraps from scratch. That behavior is expected, and its rate is your pruning health signal. Devices returning from long absences produce a low steady rate. A rising rate means the horizon passed cursors the fleet still uses, and each affected client pays a full re-bootstrap. Observe it through `pull.served` events whose `live.status` or unit `status` is `"reset"`.
 
 ### Reaction retention
 
@@ -322,9 +322,9 @@ Start the server, then restart maintenance and the reaction runners.
 
 ### Client behavior after traffic resumes
 
-A replica without a stored log epoch acquires it in its first round. The client persists the epoch and schedules the next round without raising `upgrading`, dropping tables, or resetting subscription progress. Local outbox rows stay visible throughout acquisition.
+A replica without a stored log epoch acquires it in its first round. The client persists the epoch and schedules the next round without raising `upgrading`, dropping tables, or resetting unit progress. Local outbox rows stay visible throughout acquisition.
 
-A client sends its stored partition log epoch on every round. A differing stored epoch resets the replica: the server answers with a header-only response that carries the current epoch and `resetRequired: true`. The client clears server rows, subscription cursors, bootstrap state, and downloaded segment metadata. It keeps the client ID, subscriptions, local-only tables, and the durable outbox. The next rounds bootstrap the current server state and replay pending outbox commits against it.
+A client sends its stored partition log epoch on every round. A differing stored epoch resets the replica: the server answers with a header-only response that carries the current epoch and `resetRequired: true`. The client clears server rows, the replica cursor, every unit's cursor and bootstrap state, and downloaded segment metadata. It keeps the client ID, the registration list, local-only tables, and the durable outbox, and it sends the registration list in its next round. The next rounds bootstrap the current server state and replay pending outbox commits against it.
 
 The reset stops a cursor from the abandoned timeline from crossing the restore boundary. It also preserves offline writes made before the client learned about the restore. Every durable replica resets exactly once per rotation, with no manual step.
 

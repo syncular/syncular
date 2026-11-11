@@ -1,15 +1,14 @@
 # Windowed sync
 
-Use windowed sync when a client should hold only part of a table, such as the busy lists or the last three months, while the server keeps the full history. A window is the set of scope values a client currently holds locally. Changing it transfers only the difference, evicted rows leave no tombstones, and every local query can ask whether its window is complete. This page is for developers whose data outgrows a full local copy; it assumes [Scopes](/concepts-scopes/) and [Subscriptions](/concepts-subscriptions/).
+Use windowed sync when a client should hold only part of its data, such as the busy lists or the last three months, while the server keeps the full history. A window is the set of values of one scope variable that a client currently holds locally. Changing it transfers only the difference, evicted rows leave no tombstones, and every local query can ask whether its window is complete. This page is for developers whose data outgrows a full local copy; it assumes [Scopes](/concepts-scopes/) and [Subscriptions](/concepts-subscriptions/).
 
 ::meta{for="App developers who need a partial local replica" time="12 minutes" first="concepts-scopes" spec="4.8"}
 
 :::terms
-- **Window**: The set of scope values for one scope variable of a table that a client holds locally.
-- **Window unit**: One scope value, the atom of eviction and re-entry.
-- **Window base**: A table, the scope variable whose values are the units, and any fixed scopes every unit shares.
-- **Family**: The subscriptions a window manages, one per live unit, with deterministic ids.
-- **Pending unit**: A registered unit whose bootstrap has not finished. Its local rows may be empty or partial.
+- **Window**: The set of values of one scope variable that a client holds locally.
+- **Window base**: The scope variable whose values the window selects, plus any fixed scopes every unit of the window shares: `{ variable, fixedScopes? }`.
+- **Family**: The [units](/concepts-subscriptions/#a-unit) a window manages, one per selected value. Each unit is the base's fixed scopes plus `{ variable: value }`, and it covers every table that declares those variables.
+- **Pending unit**: A unit of the family whose bootstrap has not finished. Its local rows may be empty or partial.
 - **Completeness oracle**: The window registry's verdict on whether a local query is answerable in full.
 :::
 
@@ -29,21 +28,21 @@ Use windowed sync when a client should hold only part of a table, such as the bu
 </div>
 </div>
 
-::caption[Each unit is its own subscription. Lists A and D are not held, so a query that touches them is partial.]
+::caption[Each value is its own unit. Lists A and D are not held, so a query that touches them is partial.]
 :::
 
 ## A window is a set of scope values
 
-You already scope your tables ([Scopes](/concepts-scopes/)). A window reuses that machinery: subscribe to lists `A` and `B` now and `B` and `C` later, or to month buckets (`2026-05`, `2026-06`, `2026-07`) and slide them. The scope column is already the authorization boundary, the fanout index, and the segment cache key, so windowing by it adds nothing to the wire. The server is unchanged: windowing reuses the existing frames, fields, and codes.
+You already scope your tables ([Scopes](/concepts-scopes/)). A window reuses that machinery: hold lists `A` and `B` now and `B` and `C` later, or hold month buckets (`2026-05`, `2026-06`, `2026-07`) and slide them. The scope column is already the authorization boundary, the fanout index, and the segment cache key. Windowing adds no frame, field or error code; the server receives the family's units like any other units. A base names no table, because each unit covers every table that declares the base's variables.
 
 ## Changing the window is a set difference
 
-A window change is a set difference on the family of subscriptions, one per live unit.
+A window change is a set difference on the family's unit ids. A registered unit never changes.
 
 :::figure{title="Widen, shrink, replace"}
 <div class="d-cols-3">
-<div class="node ok"><span class="t">Widen {A,B} → {A,B,C}</span>C gets a fresh subscription and bootstraps. A and B keep their cursors.</div>
-<div class="node bad"><span class="t">Shrink {A,B,C} → {B,C}</span>A's subscription is dropped and its rows are evicted.</div>
+<div class="node ok"><span class="t">Widen {A,B} → {A,B,C}</span>C's unit registers and bootstraps. A and B stay live.</div>
+<div class="node bad"><span class="t">Shrink {A,B,C} → {B,C}</span>A's unit leaves the registration list and its rows are evicted.</div>
 <div class="node hot"><span class="t">Replace {A,B} → {B,C}</span>Shrink A plus widen C. B stays cached and is neither re-downloaded nor evicted.</div>
 </div>
 
@@ -51,15 +50,15 @@ A window change is a set difference on the family of subscriptions, one per live
 :::
 
 - **Widen**: the new unit [bootstraps](/concepts-bootstrap/) through the image lane.
-- **Shrink**: the client drops the unit's subscription and evicts its rows in chunks of at most 1,024 unpinned rows. The first chunk and the unsubscription commit together, and coverage becomes missing immediately.
+- **Shrink**: the window releases its reference to the unit. When no explicit `subscribe` holds the unit either, it leaves the registration list and the client evicts its rows in chunks of at most 1,024 unpinned rows. The first chunk and the unregistration commit together, and coverage becomes missing immediately.
 
-Choose the unit to trade subscription count against re-entry granularity. One unit per list or per month bucket is exact. One subscription for a 500-value set re-bootstraps the whole set on any change. Value-sharding works comfortably to a few hundred units; beyond that, group values into coarser units. Each unit counts against the server's 500 subscriptions per request ([Pitfalls](/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front)).
+Each selected value is one unit, and each unit counts against the server's 500 units per request ([Pitfalls](/pitfalls/#do-keep-the-unit-count-under-the-server-limit)). A unit that stays live costs nothing in a round where none of its rows changed. Choose the scope variable by the unit of eviction and re-entry: a month bucket evicts and re-downloads one month, a list one list. When the selected values of a window approach the limit, scope the rows by a coarser value.
 
 ## Eviction is a local storage decision
 
 Eviction is a voluntary local delete driven by your retention policy. The server retains the evicted rows and creates no tombstones; re-entering the window re-delivers them. A [scope revocation](/concepts-scopes/) purge differs because lost authorization forces it. Four rules make eviction correct:
 
-- **Shared rows stay**: a row that another active subscription on the same table still covers stays local, so that subscription's cursor keeps describing the rows it holds. The revocation purge and the first-page clear of a fresh bootstrap apply the same rule. A subscription at cursor -1 (never synced, or reset) covers nothing.
+- **Shared rows stay**: a row that another active unit covering the same table still owns stays local, so that unit's progress keeps describing the rows it holds. The revocation purge and the first-page clear of a fresh bootstrap apply the same rule. A unit at cursor -1 (never synced, or reset) owns nothing in a table its bootstrap has not reached.
 - **Outbox pin**: a row with a pending offline write stays local until the write drains, since replaying the write would otherwise resurrect an orphan.
 - **Version state dies with the row**: a re-entered row's optimistic-write version comes only from its re-delivery, so no stale version cache exists.
 - **Re-entry is a fresh bootstrap**: it snapshots current server state and works at any distance, however much log the server pruned since the eviction. A re-entered row is writable immediately.
@@ -72,7 +71,7 @@ The window registry also answers whether a local query is complete. A query is a
 
 ## Set a window
 
-Store an immutable UTC month bucket when each row is created, derive it from the creation timestamp, and use the same column as the scope variable. `creationTimeBucket(ms, 'month')` returns `YYYY-MM` for timestamps from 1970 through year 9999. `last(count, 'month', nowMs)` returns the current UTC month and the preceding `count - 1` months, oldest first, for a `count` from 1 through 1200; pass an explicit `nowMs` in jobs and tests that need a pinned boundary. `month` is the only unit.
+Store an immutable UTC month bucket when each row is created, derive it from the creation timestamp, and use the same column as the scope variable. `creationTimeBucket(ms, 'month')` returns `YYYY-MM` for timestamps from 1970 through year 9999. `last(count, 'month', nowMs)` returns the current UTC month and the preceding `count - 1` months, oldest first, for a `count` from 1 through 1200; pass an explicit `nowMs` in jobs and tests that need a pinned boundary. `month` is the only bucket size.
 
 Do not recompute `created_month` as time passes. The bucket records creation time, so a rolling window changes only its set of live scope values, and no timer mutates stored rows.
 
@@ -87,71 +86,55 @@ const row = {
   created_month: creationTimeBucket(createdAtMs, 'month'),
 };
 
-await client.setWindow(
-  { table: 'messages', variable: 'created_month' },
-  last(3, 'month'),
-);
+await client.setWindow({ variable: 'created_month' }, last(3, 'month'));
 ```
 ```tsx sdk=react title="src/Messages.tsx"
 // Generated named queries claim their own units. The explicit hook is for
 // prefetching and retention policies.
 const retention = useRetainedWindow(
-  { table: 'messages', variable: 'created_month' },
+  { variable: 'created_month' },
   last(3, 'month'),
 );
 ```
 ```dart sdk=flutter title="lib/sync.dart"
-client.setWindow(
-  {'table': 'messages', 'variable': 'created_month'},
-  ['2026-06', '2026-07', '2026-08'],
-);
-final state = client.windowState({'table': 'messages', 'variable': 'created_month'});
+client.setWindow('created_month', ['2026-06', '2026-07', '2026-08']);
+final state = client.windowState('created_month');
 // state.units, state.pending, state.complete('2026-07')
 ```
 ```swift sdk=swift title="Sync.swift"
-_ = try client.command(method: "setWindow", params: .object([
-    "base": .object(["table": .string("messages"),
-                     "variable": .string("created_month")]),
-    "units": .array([.string("2026-06"), .string("2026-07")]),
-]))
+try client.setWindow(variable: "created_month", units: ["2026-06", "2026-07"])
+let state = try client.windowState(variable: "created_month")
+// state.units, state.pending
 ```
 ```kotlin sdk=kotlin title="Sync.kt"
-client.command("setWindow", JsonValue.obj(
-    "base" to JsonValue.obj(
-        "table" to JsonValue.of("messages"),
-        "variable" to JsonValue.of("created_month"),
-    ),
-    "units" to JsonValue.arr(listOf(JsonValue.of("2026-06"), JsonValue.of("2026-07"))),
-))
+client.setWindow("created_month", listOf("2026-06", "2026-07"))
+val state = client.windowState("created_month") // state.units, state.pending
 ```
 ```ts sdk=react-native title="src/sync.ts"
-await client.setWindow(
-  { table: 'messages', variable: 'created_month' },
-  ['2026-06', '2026-07', '2026-08'],
-);
-const state = await client.windowState({ table: 'messages', variable: 'created_month' });
+await client.setWindow({ variable: 'created_month' }, ['2026-06', '2026-07', '2026-08']);
+const state = await client.windowState({ variable: 'created_month' });
 ```
 ```ts sdk=tauri title="src/sync.ts"
-await client.setWindow(
-  { table: 'messages', variable: 'created_month' },
-  ['2026-06', '2026-07', '2026-08'],
-);
+await client.setWindow({ variable: 'created_month' }, ['2026-06', '2026-07', '2026-08']);
 ```
 ```rust sdk=rust title="src/sync.rs"
 use syncular_client::{last, TimeBucketUnit, WindowBase};
 
 let base = WindowBase {
-    table: "messages".into(),
     variable: "created_month".into(),
-    fixed_scopes: vec![],
-    params: None,
+    fixed_scopes: Default::default(),
 };
 client.set_window(&base, &last(3, TimeBucketUnit::Month, now_ms)?)?;
-let state = client.window_state(&base); // state.units, state.pending
+let state = client.window_state(&base)?; // state.units, state.pending
 ```
 :::
 
-Native hosts that pass raw units, as the Swift and Kotlin samples do, can derive the buckets with the `timeWindowSugar` command, which returns `bucket` and `units` for a `createdAtMs`, `count`, `nowMs`, and `unit: "month"`. Widening bootstraps the new units and narrowing evicts the removed ones. Render a pending unit as loading.
+A base with `fixedScopes` shares those values across its family. With
+`comments` scoped by `workspace_id` and `month`, the base
+`{ variable: 'month', fixedScopes: { workspace_id: 'w1' } }` registers one
+unit per month of workspace `w1`.
+
+Native hosts that pass raw values, as the Swift and Kotlin samples do, can derive the buckets with the `timeWindowSugar` command, which returns `bucket` and `units` for a `createdAtMs`, `count`, `nowMs`, and `unit: "month"`. Widening bootstraps the new units and narrowing evicts the removed ones. Render a pending unit as loading.
 
 ## Read completeness in your UI
 
@@ -181,10 +164,10 @@ The lower-level API serves prefetching, retention policies, and runtime-built qu
 
 ```ts title="src/prefetch.ts"
 const store = useReactiveStore();
-const retention = store.retainWindow(
-  { table: 'todos', variable: 'list_id' },
-  ['groceries', 'work'],
-);
+const retention = store.retainWindow({ variable: 'list_id' }, [
+  'groceries',
+  'work',
+]);
 await retention.ready;
 
 // Later, release only this owner's claim.
@@ -194,10 +177,10 @@ retention.release();
 React applications use the lifecycle-safe adapter for a known working set:
 
 ```tsx title="src/Todos.tsx"
-const retention = useRetainedWindow(
-  { table: 'todos', variable: 'list_id' },
-  ['groceries', 'work'],
-);
+const retention = useRetainedWindow({ variable: 'list_id' }, [
+  'groceries',
+  'work',
+]);
 ```
 
 It composes with generated query claims, normalizes duplicate units, cleans up on unmount, and surfaces registration through `isPending` and `error`. Handle `error` even when another query already renders cached rows. `setWindow`, `windowState`, and React's `useWindow` remain explicit primitives that feed the same union coordinator; generated queries do not need their coverage repeated by hand.

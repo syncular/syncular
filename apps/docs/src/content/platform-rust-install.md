@@ -96,13 +96,13 @@ Use a file path in an app. An in-memory replica loses the outbox on exit.
 
 :::::step{title="Write and sync" time="3 min"}
 ```rust title="src/main.rs"
+use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 use syncular_client::native_transport::HostTransport;
 use syncular_client::{Mutation, SyncOutcome};
 
 let mut transport = HostTransport::from_config(&json!({"baseUrl": "http://localhost:8787"}))?;
-client.subscribe("todos".to_owned(), "todos".to_owned(),
-    vec![("list_id".to_owned(), vec!["groceries".to_owned()])], None)?;
+client.subscribe(BTreeMap::from([("list_id".to_owned(), "groceries".to_owned())]))?;
 
 let mut values = Map::new();
 values.insert("id".to_owned(), Value::from("t1"));

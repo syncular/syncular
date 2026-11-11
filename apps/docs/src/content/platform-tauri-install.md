@@ -137,7 +137,7 @@ import { schema } from './syncular.generated';
 
 export const client = await createTauriSyncClient({ schema });
 
-await client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await client.subscribe({ list_id: 'groceries' });
 await client.syncUntilIdle();
 console.log(await client.query('SELECT id, title FROM todos ORDER BY id'));
 ```

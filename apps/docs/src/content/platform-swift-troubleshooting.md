@@ -17,4 +17,4 @@ Match a symptom to its cause and fix.
 | Client stays paused after the app foregrounds | A connectivity adapter and a scene-phase handler fight over the lifecycle | Use one lifecycle owner; see [Realtime & lifecycle](/platform-swift-realtime/) |
 | `mutate` throws `sync.invalid_request` | An unknown column, a wrong value type, or a missing required column | Match the generated row struct; nothing is recorded |
 
-For protocol-level failures (`sync.*` codes, revoked subscriptions, conflicts) see [Troubleshooting](/troubleshooting/).
+For protocol-level failures (`sync.*` codes, revoked units, conflicts) see [Troubleshooting](/troubleshooting/).

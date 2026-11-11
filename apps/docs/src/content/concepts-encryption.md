@@ -9,7 +9,7 @@ Use client-side encryption when a column holds data the server must never read, 
 - **Envelope**: The self-describing ciphertext blob an encrypted value becomes on the wire.
 - **Key id**: The name of the key that sealed an envelope. It travels inside the envelope.
 - **Keyring**: The keys a client holds, by key id.
-- **Sidecar table**: A separate synced table that holds an optional protected value under its own scope, key, and subscription.
+- **Sidecar table**: A separate synced table that holds an optional protected value under its own scope variable, key, and unit.
 :::
 
 :::figure{title="Plaintext on devices, ciphertext on the server" note="Encryption applies at the wire boundary" ticks}
@@ -234,7 +234,7 @@ Each limitation below comes from the whole-row decrypt boundary or from the rece
 |---|---|---|
 | A client without the key cannot apply any column of a row | A non-`NULL` protected value shares a row with shared data | [Move the protected value to a sidecar table](#a-protected-value-shares-a-row-with-shared-data) |
 | A no-key client cannot tell whether a protected value exists | The presence marker sits inside the encrypted row | [Put the marker on the plaintext primary](#a-no-key-client-needs-a-presence-signal) |
-| The sync round aborts and unrelated frames starve | A no-key client subscribed to the sidecar | [Subscribe only keyholders to the sidecar](#a-no-key-client-is-subscribed-to-the-sidecar) |
+| The sync round aborts and unrelated frames starve | A no-key client registered a unit that covers the sidecar | [Register sidecar units only on keyholders](#a-no-key-client-holds-a-sidecar-unit) |
 | Codegen printed no warning for a mixed table | No diagnostic exists for the mixed shape | [Choose the shape in the schema](#codegen-gives-no-warning) |
 | Garbled or failing values on one peer only | Peers disagree on `encryptedColumns` | [Align the manifest](#peers-disagree-on-encryptedcolumns) |
 
@@ -242,7 +242,7 @@ Each limitation below comes from the whole-row decrypt boundary or from the rece
 
 A non-`NULL` protected value in a row that also holds shared operational data blocks a client without the key: that client cannot apply any column of the row, and the failed apply aborts the rest of the sync round, even though the client is authorized for the shared columns.
 
-Keep the shared row key-free and move the protected value into a sidecar table. The sidecar holds the value under its own `encryptedColumns` entry, its own scope, and its own subscription, keyed by the primary row id. It resolves its key by the normal selection: the per-table default (key id equals the table name) is enough, and `keyIdColumns` selects per-scope keys or rotation.
+Keep the shared row key-free and move the protected value into a sidecar table. The sidecar holds the value under its own `encryptedColumns` entry and its own scope variable, keyed by the primary row id. A unit covers every table that declares all of its variables, so the sidecar's own variable keeps it out of the units that fill the primary table. It resolves its key by the normal selection: the per-table default (key id equals the table name) is enough, and `keyIdColumns` selects per-scope keys or rotation.
 
 ```jsonc title="syncular.json"
 {
@@ -260,7 +260,7 @@ Keep the shared row key-free and move the protected value into a sidecar table. 
 }
 ```
 
-`records` is the plaintext primary and lists no `encryptedColumns`. `record_details` is the sidecar. A client without the sidecar key subscribes to `records` and reads every primary column; the server never delivers the protected value to it.
+`records` is the plaintext primary and lists no `encryptedColumns`. `record_details` is the sidecar. A client without the sidecar key registers `{ project_id }` units, which cover `records` and not `record_details`, and reads every primary column; the server never delivers the protected value to it.
 
 ### A no-key client needs a presence signal
 
@@ -274,9 +274,9 @@ Put a signal for no-key clients in the plaintext primary or in another plaintext
 | Disclosure authorized, value recorded | The primary row's plaintext marker says a protected value exists; the value is not delivered |
 | Disclosure not authorized | `unknown`, with no claim either way |
 
-### A no-key client is subscribed to the sidecar
+### A no-key client holds a sidecar unit
 
-An undecryptable row aborts the rest of the sync round and starves unrelated frames in the same response. Subscribe a client without the sidecar key to the primary only. The sidecar subscription belongs to clients that hold the sidecar key.
+An undecryptable row aborts the rest of the sync round and starves unrelated frames in the same response. Register units on the sidecar's scope variable only on clients that hold the sidecar key.
 
 ### Codegen gives no warning
 

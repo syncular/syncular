@@ -10,7 +10,7 @@ tables.
 
 :::terms
 - **Migration**: A `migrations/NNNN_name/up.sql` file that declares table shape. Typegen reads it and never runs it.
-- **Manifest**: `syncular.json`, which names the synced tables, their scopes, subscription templates, and schema versions.
+- **Manifest**: `syncular.json`, which names the synced tables, their scopes, unit templates, and schema versions.
 - **Migration lock**: `syncular.migrations.lock.json`, the committed baseline that makes deployed history immutable.
 - **Schema IR**: The neutral JSON description of the head schema that every generated output derives from.
 - **Typegen**: The `syncular` CLI in `@syncular/typegen` that turns migrations into the IR and typed code.
@@ -50,7 +50,7 @@ fourth.
 | File | Holds |
 |---|---|
 | `migrations/NNNN_name/up.sql` | Table shape, one directory per migration |
-| `syncular.json` | Synced tables, scope patterns, subscription templates, schema versions, output paths |
+| `syncular.json` | Synced tables, scope patterns, unit templates, schema versions, output paths |
 | `syncular.migrations.lock.json` | Checksums of deployed migration history |
 | Generated outputs | The IR, the schema module, and named-query modules, each stamped with the IR hash |
 
@@ -109,7 +109,7 @@ Three value rules apply to every table:
 
 ::::step{title="Write the manifest" time="2 min"}
 `syncular.json` lists every synced table with its scope patterns, the
-subscription templates, and the schema-version history:
+unit templates, and the schema-version history:
 
 ```json title="syncular.json"
 {
@@ -122,10 +122,14 @@ subscription templates, and the schema-version history:
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
   "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
-    { "name": "todosInList", "table": "todos", "scopes": { "list_id": ["{listId}"] } }
+    { "name": "todosInList", "scopes": { "list_id": "{listId}" } }
   ]
 }
 ```
+
+Each entry of `subscriptions` is a unit template: one value per scope
+variable, either a literal or a `{param}` placeholder. A template names no
+table; the unit covers every table that declares its variables.
 
 The `tables` array order is the bootstrap order: parents before children. List
 every table present at the head of migration history; omit a table that
@@ -195,9 +199,13 @@ For a table `todos`, the generated module exports:
   primary key and makes the rest optional. A `patch` records the supplied
   columns as a sparse push operation.
 
-For a subscription template `todosInList`, the module exports
-`todosInListSubscription`, with a `scopes(params)` builder and a typed `params`
-interface.
+For a unit template `todosInList`, the module exports
+`todosInListSubscription`, with a `scopes(params)` builder that returns the
+unit's scope map, and a `TodosInListParams` interface:
+
+```ts title="src/sync.ts"
+const unitId = client.subscribe(todosInListSubscription.scopes({ listId }));
+```
 
 Configured `.sql` and `.syql` named queries add typed inputs, projection rows,
 physical-plan selection, and proven reactive metadata. TypeScript, Swift,

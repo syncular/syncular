@@ -17,4 +17,4 @@ Match a symptom to its cause and fix.
 | Commands throw `client.closed` | The client was closed, possibly by `use { }` | Keep one client for the app's lifetime |
 | Android: library not found at runtime | The `.so` is missing for the device ABI | Build `arm64-v8a` and `x86_64` with `build-native.sh` (it needs `cargo-ndk`) into `jniLibs/` |
 
-For protocol-level failures (`sync.*` codes, revoked subscriptions, conflicts) see [Troubleshooting](/troubleshooting/).
+For protocol-level failures (`sync.*` codes, revoked units, conflicts) see [Troubleshooting](/troubleshooting/).

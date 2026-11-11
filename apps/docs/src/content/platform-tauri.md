@@ -26,7 +26,7 @@ how the pieces connect and the calls of a first sync.
 <p class="d-label">Host process · Rust</p>
 <div class="d-stack">
 <div class="node"><span class="t">Plugin</span><code>syncular-command</code> router, the same one the C FFI uses</div>
-<div class="node hot"><span class="t">Mutable owner</span>Outbox, subscriptions, sync rounds</div>
+<div class="node hot"><span class="t">Mutable owner</span>Outbox, units, sync rounds</div>
 <div class="node ok"><span class="t">Read owner</span>Read-only SQLite connection for query snapshots</div>
 </div>
 </div>
@@ -50,7 +50,7 @@ import { schema } from './syncular.generated';
 export const client = await createTauriSyncClient({ schema });
 
 // 2. Subscribe: which rows this device receives.
-await client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await client.subscribe({ list_id: 'groceries' });
 
 // 3. Write: visible to local reads at once, queued in the outbox.
 await client.mutate([
@@ -72,7 +72,7 @@ independent read owner.
 | Page | Type | You get |
 |---|---|---|
 | [Install & first sync](/platform-tauri-install/) | How-to | The npm and crate dependencies, plugin registration, the capability, and a first round. |
-| [Reads & writes](/platform-tauri-reads-writes/) | How-to | Subscriptions, queries, change events, mutations, durable outcomes, and CRDT text. |
+| [Reads & writes](/platform-tauri-reads-writes/) | How-to | Units, queries, change events, mutations, durable outcomes, and CRDT text. |
 | [Realtime & lifecycle](/platform-tauri-realtime/) | How-to | The realtime supervisor, credential rotation, one replica per actor, and closing. |
 | [Platform specifics](/platform-tauri-specifics/) | Reference, advanced | Threading, the command surface, the performance contract, authority evidence, local activation. |
 | [Troubleshooting](/platform-tauri-troubleshooting/) | Reference | Slow or partial views, identity and database-name errors, closed-client errors. |

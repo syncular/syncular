@@ -30,8 +30,8 @@ unit-tests off-device. In an app, both auto-resolve.
 
 ## Atomic snapshot reads
 
-`client.snapshotRead({ statements, subscriptions, commitIds, owner })` reads
-several SQL statements, window coverage, subscription bootstrap progress, and
+`client.snapshotRead({ statements, coverage, units, commitIds, owner })` reads
+several SQL statements, window coverage, unit catch-up state, and
 commit delivery status in one native transaction. The result carries one
 `bigint` revision, and the bridge decodes binary and large-integer query cells.
 Owned read failures appear in diagnostics and clear after a successful read.

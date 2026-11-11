@@ -40,7 +40,7 @@ bun install
 The scaffolder writes the project this page walks through:
 
 ```tree title="my-app/"
-syncular.json                     # tables, scopes, subscriptions
+syncular.json                     # tables, scopes, unit templates
 migrations/
   0001_initial/
     up.sql                        # the todos table
@@ -77,7 +77,7 @@ CREATE TABLE todos (
 );
 ```
 
-The manifest names the synced tables, their **scopes**, and any subscription
+The manifest names the synced tables, their **scopes**, and any unit
 templates:
 
 ```json title="syncular.json"
@@ -91,11 +91,7 @@ templates:
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
   "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
-    {
-      "name": "todosInList",
-      "table": "todos",
-      "scopes": { "list_id": ["{listId}"] }
-    }
+    { "name": "todosInList", "scopes": { "list_id": "{listId}" } }
   ]
 }
 ```
@@ -199,9 +195,10 @@ const b = makeClient(BASE_URL, 'client-b');
 await a.start();
 await b.start();
 
-const sub = { id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } };
-a.subscribe(sub);
-b.subscribe(sub);
+// One unit per list: it covers every table scoped by `list_id`.
+const list = todosInListSubscription.scopes({ listId: 'groceries' });
+a.subscribe(list);
+b.subscribe(list);
 
 a.mutate([
   {
@@ -261,7 +258,7 @@ B sees: [
 <div class="node ok"><span class="t">5 · B</span>A local query returns the row</div>
 </div>
 
-::caption[Both subscriptions ask for the same list, so B receives what A wrote. [Subscriptions & the outbox](/concepts-subscriptions/) explains each move.]
+::caption[Both clients register the same unit, so B receives what A wrote. [Subscriptions & the outbox](/concepts-subscriptions/) explains each move.]
 :::
 
 ## Shortcuts this page took

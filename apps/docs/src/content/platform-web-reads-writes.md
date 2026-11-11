@@ -7,7 +7,7 @@ before it records anything.
 ::meta{for="Web developers using the handle directly" time="6 minutes" first="platform-web-install concepts-subscriptions"}
 
 :::terms
-- **Subscription**: A table plus the scope values this device receives.
+- **Unit**: One value per scope variable; the device receives the rows of every table that declares those variables.
 - **Outbox**: The local queue of commits waiting to be sent.
 - **Authored value**: A value you pass to `mutate` or `patch`.
 :::
@@ -37,7 +37,7 @@ Reads are SQL against your own tables. `subscribe` declares which rows the
 device receives; `syncUntilIdle` runs rounds until the local tables are filled.
 
 ```ts title="src/todos.ts"
-await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await handle.subscribe({ list_id: 'groceries' });
 await handle.syncUntilIdle();
 
 const rows = await handle.query('SELECT id, title FROM todos ORDER BY id');
@@ -133,7 +133,7 @@ over unheld data as partial. See [Windowed sync](/concepts-windowing/).
 
 `purgeLocalData({ purgeId, targets })` removes matching rows, FTS documents,
 unsafe pending commits, and blob references atomically. Call it only after you
-validate a server-authoritative revocation directive and gate any subscription
+validate a server-authoritative revocation directive and gate any unit
 that could download the rows again. For quarantine before data, create the
 handle with `securityPreflight: true`. A follower's request applies to the one
 shared origin leader. The lifecycle is defined in

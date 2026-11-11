@@ -67,7 +67,7 @@ final client = SyncularClient.create(
 
 :::::step{title="Write and sync" time="2 min"}
 ```dart title="lib/sync.dart"
-client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
+client.subscribe({'list_id': 'groceries'});
 client.mutate([
   {
     'op': 'upsert',

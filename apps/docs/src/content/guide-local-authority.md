@@ -38,7 +38,7 @@ const client = new SyncClient({
 });
 
 await client.start();
-client.subscribe({ id: 'entries', table: 'entries', scopes: { budget_id: ['b1'] } });
+client.subscribe({ budget_id: 'b1' });
 await client.syncUntilIdle();
 ```
 

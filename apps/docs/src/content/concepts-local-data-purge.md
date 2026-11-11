@@ -15,7 +15,7 @@ Use `purgeLocalData()` when your application has validated a server-authoritativ
 <div class="d-row">
 <div class="node hot"><span class="t">01 · Application</span>Validates the directive: device, subject, key version, expiry, replay id</div>
 <span class="d-arrow"></span>
-<div class="node hot"><span class="t">02 · Application</span>Gates features and subscriptions that could re-download the rows</div>
+<div class="node hot"><span class="t">02 · Application</span>Gates features and units that could re-download the rows</div>
 <span class="d-arrow"></span>
 <div class="node ok"><span class="t">03 · Client</span>purgeLocalData(): one atomic SQLite transaction</div>
 <span class="d-arrow"></span>
@@ -33,10 +33,10 @@ Authenticate a fresh directive and check its device, subject, key version, expir
 
 ::checkpoint[Your validator rejects an expired or replayed directive and accepts a fresh one.]
 :::
-:::step{title="Gate the subscriptions" time="3 min"}
-Quarantine the affected feature and remove or gate every subscription that could download the protected rows again. Purging while the old subscription is active is temporary, because the next sync may download the rows again.
+:::step{title="Gate the units" time="3 min"}
+Quarantine the affected feature and remove or gate every unit that could download the protected rows again. Purging while the old unit is registered is temporary, because the next sync may download the rows again.
 
-::checkpoint[No active subscription covers the rows you are about to purge.]
+::checkpoint[No registered unit covers the rows you are about to purge.]
 :::
 :::step{title="Call the client" time="3 min"}
 Pass a `purgeId` and exact plaintext routing selectors:
@@ -113,6 +113,6 @@ await client.purgeLocalData(directive.plan);
 await client.activateSecurity({ encryption: acceptedKeyring });
 ```
 
-Preflight permits lifecycle, status, and local-revision inspection plus the exact purge. Queries, mutations, subscription changes, outbox access, sync, realtime and presence, blobs, and automatic host-loop work fail with `client.security_preflight_required`. `securityPreflight` and `encryption` in one create config are mutually exclusive.
+Preflight permits lifecycle, status, and local-revision inspection plus the exact purge. Queries, mutations, unit registration changes, outbox access, sync, realtime and presence, blobs, and automatic host-loop work fail with `client.security_preflight_required`. `securityPreflight` and `encryption` in one create config are mutually exclusive.
 
 `beginSecurityPreflight()` provides the same barrier for a live revocation. It gates new work immediately and waits for already-started database, network, and native-sidecar work before it releases the old keyring. Activation cannot overtake that barrier.

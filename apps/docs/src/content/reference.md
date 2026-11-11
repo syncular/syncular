@@ -51,7 +51,7 @@ implementer needs no access to any existing source tree.
 | [§1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#1-transport-bindings-and-envelope) | Transport bindings, the SSP2 envelope, framing, streaming, decode versus validation |
 | [§2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#2-data-model-and-identity) | Commits, changes, versions, idempotency, the schema IR and row codec |
 | [§3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#3-scopes-and-authorization) | Scopes: patterns, requested, allowed, and effective scopes, revocation, write-path authorization |
-| [§4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#4-subscriptions-cursors-pull) | Subscriptions, cursors, pull, the pruning horizon, the bootstrap state machine, windowed subscriptions (§4.8) |
+| [§4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#4-subscriptions-cursors-pull) | Units and the registration list, the replica cursor and the live section, the pruning horizon, the bootstrap state machine, windows (§4.8) |
 | [§5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments) | Bootstrap segments, the download endpoint, signed URLs, sqlite images (§5.3), blobs (§5.9), CRDT columns (§5.10), client-side encryption (§5.11) |
 | [§6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-conflicts-results) | Push and commit application, conflicts, atomicity, write-validation hooks (§6.7), durable server reactions (§6.9), declared references (§6.11) |
 | [§7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#7-offline-writes-and-replay) | The client outbox, replay, auth leases (§7.3), the schema-bump flow (§7.4), local observation (§7.5) |

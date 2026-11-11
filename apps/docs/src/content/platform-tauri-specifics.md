@@ -92,7 +92,7 @@ fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe SQLite integers use
 `{ "$bigint": "<decimal>" }`.
 
 The `snapshotRead` method of `syncular_command` reads several statements plus
-coverage, subscription progress, and delivery state in one read transaction.
+coverage, unit catch-up state, and delivery state in one read transaction.
 `syncular_command` routes `querySnapshot` through the same handler as
 `syncular_query_snapshot`. Both reads return structured read errors with
 `code`, `retryable`, and `details`. Owned reads report failures
@@ -177,15 +177,14 @@ holds:
 | `localIntentRowIds` | Scoped ids of rows with local intent. |
 | `scopes` | The declared scopes. |
 | `coverage` | `complete`, `pending`, or `missing`. |
-| `persisted` | Sanitized subscription evidence: `requestedScopes`, `effectiveScopes`, `cursor`, `status`, `complete`. |
+| `persisted` | Sanitized evidence per covering unit: `requestedScopes`, `effectiveScopes`, `cursor`, `status`, `complete`. |
 
-The result exposes no intended values, bootstrap tokens, subscription
-parameters, or keys. Both cores read rows, revision, and coverage in one SQLite
+The result exposes no intended values, bootstrap tokens, unit ids, or keys. Both cores read rows, revision, and coverage in one SQLite
 snapshot. The native authority read runs on the mutable owner and uses neither
 the ordinary query read owner nor its latency contract.
 
-`complete` coverage requires completed unfiltered subscriptions for every
-requested scope tuple; several subscriptions can cover a selection together.
+`complete` coverage requires a completed unit for every requested scope tuple;
+several units can cover a selection together.
 Scope loss and an unfinished bootstrap invalidate completeness. Completed empty
 coverage has an empty row set. The application rejects admission when an
 expected authority row is absent, even when the set is complete.
@@ -195,7 +194,7 @@ local-only creation appears only in `localIntentRowIds`. The application
 validates the complete chain against independently accepted authority evidence,
 actor and device identity, a signed lease, and trusted time before it installs
 keys. The SDK does not authorize the application, and the read changes no
-lifecycle, transport, keyring, subscriptions, or rows.
+lifecycle, transport, keyring, units, or rows.
 
 The direct Bun and SQLite client and the worker handle expose the same policy
 and snapshot shape. Update npm packages and native crates together, and rebuild

@@ -15,9 +15,9 @@ Add a local full-text projection when users must search synced text while offlin
 <div class="d-box">
 <p class="d-label">Client · local SQLite</p>
 <div class="d-stack">
-<div class="node ok"><span class="t">Owner table</span>patient_notes<br>synced, scoped, subscribed</div>
+<div class="node ok"><span class="t">Owner table</span>patient_notes<br>synced, scoped, covered by units</div>
 <div class="d-down"><small>triggers keep it aligned in the same transaction</small></div>
-<div class="node hot"><span class="t">FTS5 projection</span>patient_notes_fts<br>never subscribed, mutated, or uploaded</div>
+<div class="node hot"><span class="t">FTS5 projection</span>patient_notes_fts<br>never synced, mutated, or uploaded</div>
 </div>
 </div>
 <div class="d-box">
@@ -112,7 +112,7 @@ An [encrypted column](/concepts-encryption/) is eligible when its declared appli
 ## Boundaries
 
 - FTS is local search. No server-side search service exists.
-- A projection cannot be subscribed or written through `mutate()`.
+- A projection is never synced and cannot be written through `mutate()`.
 - Rank is local presentation data. Do not treat it as a cross-database protocol value.
 - The application primary key is the durable identity. Syncular does not rely on SQLite `rowid`, including for `WITHOUT ROWID` tables.
 

@@ -68,7 +68,7 @@ val client = SyncularClient.create(
 
 :::::step{title="Write and sync" time="3 min"}
 ```kotlin title="Sync.kt"
-client.subscribe("todos", "todos", mapOf("list_id" to listOf("groceries")))
+client.subscribe(mapOf("list_id" to "groceries"))
 client.mutate(listOf(JsonValue.obj(
     "table" to JsonValue.of("todos"), "op" to JsonValue.of("upsert"),
     "values" to JsonValue.obj(

@@ -6,7 +6,7 @@ Choose how a backend process talks to a Syncular server, then set up the local-r
 
 :::terms
 - **Headless client**: A `SyncClient` that runs in a process with no UI, such as a CLI, a background worker, or a long-running Node or Bun service. It is the same client a browser runs and has no DOM dependency when given a native SQLite backend.
-- **Local replica**: The SQLite database a `SyncClient` keeps, holding subscribed rows and the outbox.
+- **Local replica**: The SQLite database a `SyncClient` keeps, holding the rows of its units and the outbox.
 - **Remote client**: A `SyncRemoteClient`. It talks to the server over HTTP and keeps no local database.
 - **Scheduler**: The host code that decides when a round runs. A `SyncClient` never starts one by itself.
 :::
@@ -17,7 +17,7 @@ Choose how a backend process talks to a Syncular server, then set up the local-r
 <div class="d-stack">
 <div class="node"><span class="t">Question</span>Local SQL, an offline outbox, or realtime convergence?</div>
 <div class="d-down ok">Yes</div>
-<div class="node ok"><span class="t">Local replica</span><b>SyncClient</b><br>SQLite file, outbox, subscriptions<br><span class="chip ok">This page</span></div>
+<div class="node ok"><span class="t">Local replica</span><b>SyncClient</b><br>SQLite file, outbox, units<br><span class="chip ok">This page</span></div>
 </div>
 <div class="d-stack">
 <div class="node"><span class="t">Question</span>Only commits, registered queries, or commands?</div>
@@ -46,7 +46,7 @@ Application intent that must be durable and queryable belongs in immutable [doma
 
 ## Set up a local replica
 
-Use a persistent database path. An in-memory database loses rows, subscription cursors, client identity, and the outbox on restart.
+Use a persistent database path. An in-memory database loses rows, cursors, client identity, and the outbox on restart.
 
 :::::steps
 ::::step{title="Open the local replica" time="4 min"}
@@ -77,15 +77,11 @@ const client = new SyncClient({
 });
 
 await client.start();
-client.subscribe({
-  id: 'clinic-42-appointments',
-  table: 'appointments',
-  scopes: { clinic_id: ['clinic-42'] },
-});
+client.subscribe({ clinic_id: 'clinic-42' });
 await client.syncUntilIdle();
 ```
 
-This is a complete client for batch-style work. `syncUntilIdle()` runs sync rounds until the outbox is pushed and the subscription has caught up. A CLI or cron worker calls it explicitly, once after start and again after writing. The [quickstart](/quickstart/) runs this shape in a terminal.
+This is a complete client for batch-style work. `syncUntilIdle()` runs sync rounds until the outbox is pushed and the unit is live. A CLI or cron worker calls it explicitly, once after start and again after writing. The [quickstart](/quickstart/) runs this shape in a terminal.
 
 The bearer token is application auth: the server's `authenticate` callback maps it to an actor and partition. The client ID identifies the replica and is no authentication credential. `openSqliteDatabase()` selects `bun:sqlite` on Bun and built-in `node:sqlite` on Node 22.16 or newer, so no SQLite package or native addon is needed. Runtime-specific code can import `openBunDatabase()` from `@syncular/client/bun` or `openNodeDatabase()` from `@syncular/client/node`.
 
@@ -129,11 +125,7 @@ await client.start();
 const scheduler = installSyncScheduler(client, {
   onError: (error) => console.error('sync failed', error),
 });
-client.subscribe({
-  id: 'clinic-42-appointments',
-  table: 'appointments',
-  scopes: { clinic_id: ['clinic-42'] },
-});
+client.subscribe({ clinic_id: 'clinic-42' });
 installRealtimeSupervisor(client);
 ```
 

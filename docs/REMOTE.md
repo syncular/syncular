@@ -73,11 +73,13 @@ the query with `LIMIT maxRows + 1`. A larger result fails as
 
 Every query uses one registration mode:
 
-- `scoped`: generated coverage must contain exactly one record for every table
-  read by the query and cover every scope variable declared by that table. The
-  server resolves the actor's allowed scopes and verifies every covered value
-  before SQL execution. Empty, duplicate, extra, or incomplete coverage fails
-  closed. SYQL emits this proof only for a valid `sync query`.
+- `scoped`: generated coverage is a list of records `{ base: { variable,
+  fixedScopes? }, units }`. For every table the query reads, one record's
+  base must name exactly the scope variables the table declares, and every
+  record must match such a table. The server resolves the actor's allowed
+  scopes and verifies every covered value before SQL execution. An empty
+  `units` list, a `fixedScopes` key equal to `variable`, and extra or
+  incomplete coverage fail closed. SYQL emits this proof only for a valid `sync query`.
 - `privileged`: registration supplies a query-specific `authorize` callback.
   A false result fails with `operation.forbidden`.
 
@@ -126,15 +128,16 @@ constraints, commit log, idempotency record, and realtime notifier.
 A `rescope` mutation takes the complete row with its new scope values and
 moves one stored row between scopes (SPEC.md §2.2). The server emits one
 commit containing the delete under the old scopes and the upsert under the
-new ones, keeps the row's `server_version`, and leaves no tombstone behind
-the live row, so the row can move again. Only scope columns may differ from
+new ones, advances the row's `server_version` by 1, and leaves no tombstone
+behind the live row, so the row can move again. Only scope columns may differ from
 the stored row; the server authorizes both the old and the new values.
 
 An `upsert` mutation is unversioned by default, so SPEC.md §6.2 refuses it
 with `sync.row_deleted` when the row was deleted inside the tombstone horizon.
 `insert: true` makes it an explicit insert (`baseVersion = 0`): it recreates
-the deleted row one above the tombstone's `server_version` and clears the
-tombstone, and an
+the deleted row one above the partition's delete floor (SPEC.md §2.2), which
+lies at or above the tombstone's `server_version`, and clears the tombstone,
+and an
 existing row answers `sync.version_conflict`. A command that reads the row
 first with `getRow` sets `insert: true` when the row is absent.
 

@@ -454,6 +454,11 @@ export const nav: readonly NavGroup[] = [
       },
       { slug: 'troubleshooting', title: 'Troubleshooting', kind: 'reference' },
       { slug: 'pitfalls', title: "Do's and Don'ts", kind: 'reference' },
+      {
+        slug: 'upgrade-wire-4',
+        title: 'Upgrade to wire version 4',
+        kind: 'how-to',
+      },
     ],
   },
   {

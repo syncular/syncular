@@ -53,26 +53,26 @@ The find box (`/`) takes the id a support ticket carries: a client id, an actor 
 
 ### A change did not sync
 
-Search the `clientCommitId` of the write, which the device's outbox holds. The write view lists each stored outcome: `applied` with the commit it became, or `rejected` with the result code and message of each operation. Below the outcomes, the events of the requests that carried the write show how each request ended. No outcome means that the server never received the write, or that the database was restored to a point before it arrived.
+Search the `clientCommitId` of the write, which the device's outbox holds. The write view lists each stored outcome: `applied` with the commit it became, or `rejected` with the result code and message of each operation. Below the outcomes, the events of the requests that carried the write show how each request ended. The server deletes a result once the device's outbox has moved past the commit (the per-outbox watermark). For a write whose result is gone, the view shows the watermark of each outbox that sent it, read as "expired below sequence N". No outcome and no watermark means that the server never received the write, or that the database was restored to a point before it arrived.
 
 ### A device does not see a row
 
-Search the row id, or open Data, pick the table, and open the row. The row page shows the row's values, scopes, and retained history, and lists every client of the partition with its delivery verdict. Open a client's verdict for the trace: the client's subscriptions on the table, the scope values each one requests, the scopes `resolveScopes` allows the actor, and the client's cursor against the row's last change.
+Search the row id, or open Data, pick the table, and open the row. The row page shows the row's values, scopes, and retained history, and lists every client of the partition with its delivery verdict. Open a client's verdict for the trace: the client's units that cover the table, the scope values each one requests, the scopes `resolveScopes` allows the actor, and the client's cursor against the row's last change.
 
 | Verdict | Meaning | Next step |
 |---|---|---|
-| `delivered` | A subscription matches and the client's cursor has passed the row's last change. | Look on the device: its local query or a [local data purge](/concepts-local-data-purge/) hides the row. |
-| `pending-pull` | A subscription matches, and the client has not pulled since the row changed. | The client's next pull delivers it. A client that stays here has stopped syncing; check its client page. |
-| `scope-mismatch` | The client subscribes to the table, and no subscription requests the row's scope values. | Fix the scopes the app subscribes with. |
-| `scope-denied` | A subscription requests the row's scopes, and `resolveScopes` excludes them for the actor. | Fix `resolveScopes` or the actor's membership ([Scopes](/concepts-scopes/)). |
-| `no-subscription` | The client has no subscription on the table. | Write-only clients, such as a seeding script, are expected here. |
+| `delivered` | A unit matches and the client's cursor has passed the row's last change. | Look on the device: its local query or a [local data purge](/concepts-local-data-purge/) hides the row. |
+| `pending-pull` | A unit matches, and the client has not pulled since the row changed. | The client's next pull delivers it. A client that stays here has stopped syncing; check its client page. |
+| `scope-mismatch` | A unit of the client covers the table, and no covering unit requests the row's scope values. | Fix the scope maps the app subscribes with. |
+| `scope-denied` | A covering unit requests the row's scopes, and `resolveScopes` excludes them for the actor. | Fix `resolveScopes` or the actor's membership ([Scopes](/concepts-scopes/)). |
+| `no-unit` | No registered unit of the client covers the table. | Write-only clients, such as a seeding script, are expected here. |
 | `row-deleted` | The row's last change is a delete. | The client drops the row on its next pull. |
 | `client-unknown` | The partition has no cursor record for the client. | Check the partition: the client syncs in another one or has never synced. |
 | `row-missing` | The partition holds no row with this id in the table. | Check the table and the id. |
 
 ### A person's requests fail
 
-People lists every actor with its devices, open sockets, worst cursor lag, and failures in the last 5 minutes. Open an actor, or its failure count, for its failed and warned requests. A request opens its events in order: the outcome, the error code, and, for a rejected or conflicted push, the row it hit. A device opens its client page with its connection, lease, subscriptions, failures, and recent events. The client record also stores the last round per client: `lastRoundAtMs`, and, while the last round failed, `lastErrorCode` and `consecutiveFailures`. `listClients` returns them, so a client whose cursor stays fixed while the log head moves shows the code it fails with and how many rounds in a row. A failure the client observed and reported on its next request (a response that timed out on a slow link, a lost socket) appears there too, as the client's own code such as `transport.timeout`; the next request that reports nothing clears it.
+People lists every actor with its devices, open sockets, worst cursor lag, and failures in the last 5 minutes. Open an actor, or its failure count, for its failed and warned requests. A request opens its events in order: the outcome, the error code, and, for a rejected or conflicted push, the row it hit. A device opens its client page with its connection, lease, registered units, failures, and recent events. The client record also stores the last round per client: `lastRoundAtMs`, and, while the last round failed, `lastErrorCode` and `consecutiveFailures`. `listClients` returns them, so a client whose cursor stays fixed while the log head moves shows the code it fails with and how many rounds in a row. A failure the client observed and reported on its next request (a response that timed out on a slow link, a lost socket) appears there too, as the client's own code such as `transport.timeout`; the next request that reports nothing clears it.
 
 ### A schema rollout stalls
 

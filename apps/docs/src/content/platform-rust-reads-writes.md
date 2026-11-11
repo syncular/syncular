@@ -1,6 +1,6 @@
 # Reads & writes (Rust)
 
-Subscribe, write optimistically, read rows and SQL, and follow each commit to its outcome.
+Register units, write optimistically, read rows and SQL, and follow each commit to its outcome.
 
 ::meta{for="Rust developers building on a SyncClient" time="8 minutes"}
 
@@ -19,12 +19,11 @@ Subscribe, write optimistically, read rows and SQL, and follow each commit to it
 ## Subscribe, mutate, read
 
 ```rust title="src/main.rs"
-client.subscribe(
-    "todos".to_owned(),                                    // subscription id
-    "todos".to_owned(),                                    // table
-    vec![("list_id".to_owned(), vec!["groceries".to_owned()])],
-    None,                                                  // params
-)?;
+// One unit: one value per scope variable; it covers every table scoped by
+// `list_id`. The returned id is a hash of the scope map.
+let unit_id = client.subscribe(BTreeMap::from([
+    ("list_id".to_owned(), "groceries".to_owned()),
+]))?;
 
 let commit_id = client.mutate(vec![Mutation::Upsert {
     table: "todos".to_owned(),

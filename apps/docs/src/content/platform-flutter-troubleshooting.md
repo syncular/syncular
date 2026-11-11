@@ -17,4 +17,4 @@ Match a symptom to its cause and fix.
 | Commands throw `client.closed` | The client was closed | Keep one client for the app's lifetime |
 | Release build cannot find the library on macOS | The dylib is not in the bundle | Copy it into `.app/Contents/Frameworks` |
 
-For protocol-level failures (`sync.*` codes, revoked subscriptions, conflicts) see [Troubleshooting](/troubleshooting/).
+For protocol-level failures (`sync.*` codes, revoked units, conflicts) see [Troubleshooting](/troubleshooting/).

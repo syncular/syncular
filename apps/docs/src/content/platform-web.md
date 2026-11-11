@@ -26,7 +26,7 @@ task.
 <div class="d-box">
 <p class="d-label">Leader tab · Web Worker</p>
 <div class="d-stack">
-<div class="node hot"><span class="t">SyncClient</span>Outbox, subscriptions, sync rounds</div>
+<div class="node hot"><span class="t">SyncClient</span>Outbox, units, sync rounds</div>
 <div class="node ok"><span class="t">SQLite WASM</span><code>opfs-sahpool</code> file: rows, cursors, outbox</div>
 </div>
 </div>
@@ -60,7 +60,7 @@ const handle = await createSyncClientHandle({
 });
 
 // 2. Subscribe: which rows this device receives.
-await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await handle.subscribe({ list_id: 'groceries' });
 
 // 3. Write: visible to local reads at once, queued in the outbox.
 await handle.mutate([
@@ -83,7 +83,7 @@ covers the check and the request.
 | Page | Type | You get |
 |---|---|---|
 | [Install & first sync](/platform-web-install/) | How-to | The package, the worker, the Vite config, and a first round against a server. |
-| [Reads & writes](/platform-web-reads-writes/) | How-to | Subscriptions, local SQL reads, `mutate`, and the validation rules for authored values. |
+| [Reads & writes](/platform-web-reads-writes/) | How-to | Units, local SQL reads, `mutate`, and the validation rules for authored values. |
 | [Realtime & lifecycle](/platform-web-realtime/) | How-to | The realtime supervisor, the transport gate, sync progress, offline replay, and HMR handoff. |
 | [Platform specifics](/platform-web-specifics/) | Reference | Persistent worker lifecycle, eviction-resistant storage, multi-tab, support floor, ephemeral and Node modes. |
 | [Troubleshooting](/platform-web-troubleshooting/) | Reference | Segment transport failures, storage failures, and links to the shared failure catalog. |

@@ -408,7 +408,7 @@ must enumerate every row in one Workspace. Syncular does not currently expose
 trusted prefix or range scans.
 
 This is a trusted `@syncular/server` storage capability, not SSP2: it creates no
-scope variable, named-query obligation, subscription descriptor, or client
+scope variable, named-query obligation, unit, or client
 authority. Never expose table/index/value selection through a client-controlled
 route. Custom adapters may omit the additive method; authoritative commands
 must check for it and fail closed. See the public
@@ -571,7 +571,7 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 
 | Event | When | Key fields |
 | --- | --- | --- |
-| `request.handled` | Once per `POST /sync`, after the response bytes are fully produced (or the request was rejected up front) | `kind` (`sync`), `partition`, `actorId`, `durationMs`, `bytesIn`, `bytesOut`, `outcome` (`ok` \| `schema_floor` \| `epoch_acquired` \| `reset` \| `rejected` \| `error`; `epoch_acquired` answers a first round without `logEpoch`, `reset` a `logEpoch` the log no longer matches), `errorCode?`, `clientId?` (absent when the request did not decode), `pushCommits`, `pulled`, `subscriptions` |
+| `request.handled` | Once per `POST /sync`, after the response bytes are fully produced (or the request was rejected up front) | `kind` (`sync`), `partition`, `actorId`, `durationMs`, `bytesIn`, `bytesOut`, `outcome` (`ok` \| `schema_floor` \| `epoch_acquired` \| `reset` \| `rejected` \| `error`; `epoch_acquired` answers a first round without `logEpoch`, `reset` a `logEpoch` the log no longer matches), `errorCode?`, `clientId?` (absent when the request did not decode), `pushCommits`, `pulled`, `units` (units of the request's effective list, 0 without one) |
 | `push.applied` | A `PUSH_COMMIT` applied, or replayed from the idempotency cache (§2.3) | `clientId`, `clientCommitId`, `operations`, `commitSeq?`, `replay` |
 | `push.rejected` | A commit rejected (§6.3) | `clientId`, `clientCommitId`, `operations`, `code` (§10.2), `opIndex`, `table?` and `rowId?` of the terminating operation |
 | `push.conflicted` | A commit terminated by a version conflict (§6.2) | `clientId`, `clientCommitId`, `operations`, `opIndex`, `table?` and `rowId?` of the conflicting operation |
@@ -581,7 +581,7 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 | `reaction.completed` | A handler finished and its owner acknowledged | started fields |
 | `reaction.dead_lettered` | A permanent or exhausted failure was recorded | started fields plus `errorCode` |
 | `reaction.prune_completed` | One bounded terminal-reaction retention pass finished | `completedBeforeMs`, `deadLetterBeforeMs`, `limit`, `removedCompleted`, `removedDeadLetter`, `mayHaveMore` |
-| `pull.served` | Once per served pull half, after all sections streamed | `clientId`, `subscriptions[]`: `{id, table, status, mode` (`bootstrap` \| `incremental` \| `none`)`, fromCursor, nextCursor, commits, changes, segments[]}`; each segment: `{mediaType` (`rows` \| `sqlite`)`, delivery` (`inline` \| `ref`)`, origin` (`built` \| `reused`)`, bytes, rows}` |
+| `pull.served` | Once per served pull half, after all sections streamed | `clientId`, `acceptedThrough`, `storageMaxCommitSeq`, `registrationTraveled` (the request carried its registration list), `units[]`: `{id, scopes, status` (`active` \| `revoked` \| `reset`)`, mode` (`live` \| `catching-up` \| `bootstrap` \| `none`)`, section` (the response carried a unit section)`, fenced, fromCursor, segments[]}`; each segment: `{mediaType` (`rows` \| `sqlite`)`, delivery` (`inline` \| `ref`)`, origin` (`built` \| `reused`)`, bytes, rows}`; `live`: `{status` (`active` \| `reset` \| `unregistered`)`, fromCursor` (the replica cursor)`, throughSeq, commits, changes, firstCommitSeq?, lastCommitSeq?}` |
 | `segment.downloaded` | Every direct segment download (§5.5), success or failure | `segmentId`, `outcome` (`ok` \| `error`), `errorCode?`, `mediaType?`, `bytes?`, `durationMs` |
 | `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (old candidates still referenced), `graceMs` |
 | `realtime.opened` | A socket registered with the hub and got `hello` (§8.1) | `sessionId`, `clientId`, `registrations`, `cursor`, `latestSeq` |
@@ -645,14 +645,14 @@ design. Row reads need the server `schema` (`fromConfig` passes it).
 | `tableCounts(partition)` | Row count per schema table. |
 | `listRows(partition, table, {afterRowId?, limit?, scope?})` | One page of decoded rows ordered by rowId, optionally only rows whose stored `scope` (`{variable, value}`) matches, read through the scope index; `nextAfterRowId` continues. |
 | `rowDelivery(partition, table, rowId)` | The trace verdict for every known client on one row, sorted by verdict then last seen: who has the row and who does not. |
-| `findWrite(partition, clientCommitId)` | Every stored idempotency outcome for that clientCommitId (applied with `commitSeq`, or rejected with per-operation results; conflict bytes as base64) and the ring events that carry it. |
-| `listClients(partition, {limit?, sort?})` | `{clients, total}`. Each client: `clientId`, `actorId`, `wireVersion`, `schemaVersion?` (highest among its subscriptions), `cursor`, `lag` (`maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, `active` (touched within the §4.6 active window), `connected?` and `connectedSinceMs?` (open realtime sockets on this process; present when a hub is wired, which `fromConfig` does when `config.realtime` is a `RealtimeHub`). `sort`: `seen` (default) or `lag`; `limit` default 200. |
+| `findWrite(partition, clientCommitId)` | Every stored idempotency outcome for that clientCommitId (applied with `commitSeq`, or rejected with per-operation results; conflict bytes as base64), the ring events that carry it, and, when no outcome is stored, the §6.3.2 `watermarks[]` (`clientId`, `outboxId`, `throughSeq`) of the clients whose retained log carries the commit: a commit below `throughSeq` lost its result to the watermark ("expired below sequence N"). |
+| `listClients(partition, {limit?, sort?})` | `{clients, total}`. Each client: `clientId`, `actorId`, `wireVersion`, `schemaVersion?` (of its latest completed round), `cursor`, `lag` (`maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `units[]` (the stored registration list: `id`, `scopes`, `catchingUpCursor?` for a unit still catching up), `active` (touched within the §4.6 active window), `connected?` and `connectedSinceMs?` (open realtime sockets on this process; present when a hub is wired, which `fromConfig` does when `config.realtime` is a `RealtimeHub`). `sort`: `seen` (default) or `lag`; `limit` default 200. |
 | `clientDetail(partition, clientId, {eventLimit?})` | `{exists, client?, lease?, events}`: the record, its §7.3 lease when a lease store is wired, and its slice of the event tail. |
 | `listCommits(partition, {afterSeq?, beforeSeq?, limit?, table?, changeSample?})` | Commit metadata, newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`, and with `changeSample` the first N changes as `sample[]` (`table`, `rowId`, `op`). Pass the oldest `commitSeq` of a page as `beforeSeq` for the next older page. |
 | `commitDetail(partition, commitSeq)` | The commit's metadata plus `changes[]` (`table`, `rowId`, `op`, `rowVersion?`, `scopes`, `values?` rendered per SPEC §11, `undecodable?` for a payload written under an older column set). Throws `sync.not_found` for a missing or pruned commit. |
 | `listReactions(partition, {statuses?, types?, limit?})` | Durable reaction lifecycle rows, newest first, including source commit, attempts, lease, completion, and bounded failure information. |
 | `inspectRow(partition, table, rowId, {historyLimit?})` | `{exists, serverVersion?, scopes?, values?, history}`: the row decoded per SPEC §11 and its retained changes, newest first (`commitSeq`, `op`, `rowVersion?`, `actorId`, `clientId`, `createdAtMs`). Throws `sync.unknown_table` for a table outside the schema. |
-| `traceRow(partition, {table, rowId, clientId})` | Whether the client receives the row: a `verdict` (`client-unknown`, `row-missing`, `no-subscription`, `row-deleted`, `scope-mismatch`, `scope-denied`, `pending-pull`, `delivered`, evaluated in that order) with the row, its newest change, the horizon, the client, the actor's `allowed` scopes from `resolveScopes` (`outage` for the §7.3.3 sentinel), each subscription on the table with `requestedMatch`, `mismatches[]` and `effectiveMatch` (requested ∩ allowed, §3.2), and the client's retained push rejections. |
+| `traceRow(partition, {table, rowId, clientId})` | Whether the client receives the row: a `verdict` (`client-unknown`, `row-missing`, `no-unit`, `row-deleted`, `scope-mismatch`, `scope-denied`, `pending-pull`, `delivered`, evaluated in that order) with the row, its newest change, the horizon, the client, the actor's `allowed` scopes from `resolveScopes` (`outage` for the §7.3.3 sentinel), each of the client's units that covers the table with `requestedMatch`, `mismatches[]` and `effectiveMatch` (requested ∩ allowed, §3.2), and the client's retained push rejections. |
 | `scopeActivity(partition, {variable, value}, {limit?})` | Recent commits touching one scope key, via the §3.1 change-scope index (never a log scan). |
 | `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}`: the horizon a prune pass would reach now (§4.6) and `up-to-date` / `prune-recommended`. |
 | `stats(partition)` | `{segments?, blobs?}` counts/bytes where the stores expose them (segments split rows/sqlite). |
@@ -1151,14 +1151,16 @@ regardless, and at least the newest `minRetainedCommits` (default 1000)
 commits are always kept. Raise the defaults freely, lower them with care.
 
 **What `sync.cursor_expired` means operationally.** A client whose
-cursor fell behind the horizon gets `SUB_START.status = reset` and
-re-bootstraps from scratch (§4.7). That is correct behavior, not an
+replica cursor fell behind the horizon gets `LIVE_START.status = reset`
+(a post-bootstrap unit behind it gets `SUB_START.status = reset`) and
+re-bootstraps the affected units from scratch (§4.6, §4.7). That is correct behavior, not an
 error — but its *rate* is your pruning health signal. A steady trickle
 means devices returning from >30-day absences (expected). A spike means
 you pruned faster than your fleet syncs: `ageForceMs` or
 `activeWindowMs` is too tight for real usage, and you are paying for it
 in bootstrap load (full re-scans + segment builds), not just in resets.
-Observe it via `pull.served` subscriptions with `status: "reset"`.
+Observe it via `pull.served` events whose `live.status` or unit `status`
+is `"reset"`.
 
 **Segment TTL interplay.** Segments are cache entries, not durable state
 (§5.1; default TTL 24 h). A bootstrap that resumes past segment expiry
@@ -1178,7 +1180,7 @@ same table+scope during a storm, your TTL is shorter than the storm.
   (`push.conflicted` is normal offline-first traffic; alert only on
   gross shifts.)
 - `scopes.resolve_failed` — any nonzero rate. This is the fail-loud
-  path: every occurrence revokes subscriptions or rejects writes for a
+  path: every occurrence revokes units or rejects writes for a
   real request, and it is almost always a host bug or a dead dependency
   of the resolver.
 - `request.handled` with `outcome: "error"` and `errorCode: "internal"`
@@ -1399,10 +1401,12 @@ rows. The image database and serialized output still consume memory.
 Realtime acknowledgements call `advanceClientCursor(partition, clientId,
 actorId, logEpoch, cursor, updatedAtMs)`. Custom storage adapters must implement
 this atomic update: advance the cursor and activity timestamp to their respective
-maxima, preserve registration fields, and require a matching actor and current
-partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1
-perform one update without reading or serializing the subscription list. HTTP
-registration keeps its existing cursor and subscription replacement rules.
+maxima, cap the cursor at the lowest non-negative cursor of the record's
+catching-up units, preserve registration fields, and require a matching actor and
+current partition log epoch. Leave missing records unchanged. SQLite, Postgres,
+and D1 perform one update without reading or serializing the registration list.
+A completed sync round writes the record through `putClientRecord`, which keeps
+the stored registration list unless the round's list traveled.
 
 ## Reviewed schema windows
 

@@ -313,7 +313,7 @@ unchanged, and the correction applies to existing replicas as well as new ones.
 
 Browser regression tests interrupt image bootstrap during download, before
 import, during a physical database write, after import, and after the
-subscription checkpoint. They reload within the same browser session and check
+unit checkpoint. They reload within the same browser session and check
 SQLite integrity, FTS integrity, rows, and checkpoint recovery. Separate
 contention tests require a successful startup when another owner closes during
 retry, and a bounded `client.storage_busy` failure while that owner stays live.

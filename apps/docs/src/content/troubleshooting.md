@@ -31,7 +31,7 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 |---|---|---|
 | `sync.invalid_request` naming `_sync_*` | A write carried an engine-owned column | [below](#syncinvalid_request-naming-an-_sync_-column) |
 | `sync.outbox_incompatible` | A pending commit references a dropped column | [below](#syncoutbox_incompatible-rejections-after-a-schema-bump) |
-| `sync.unknown_table` | A subscription names a table the schema retired | [Schema upgrades](/concepts-schema-upgrades/) |
+| `sync.unknown_table` | A push operation names a table the schema retired | [Schema upgrades](/concepts-schema-upgrades/) |
 | `sync.schema_not_ready` | The server booted without a readiness check | [Server setup](/guide-server/) |
 | `sync.internal_error` | A storage, network, or host-code exception reached the server adapter; the client retries | [Reporting server errors](/guide-server/#reporting-server-errors) |
 | `sync.idle_timeout` | One `syncUntilIdle` drive exceeded its total deadline; the transport did not answer | [Running rounds until idle](/concepts-bootstrap/#running-rounds-until-idle) |
@@ -157,7 +157,7 @@ Two config changes fix both: add `@sqlite.org/sqlite-wasm` plus `SYNCULAR_VITE_O
 
 ## `client.worker_restart_required` after a package upgrade
 
-The page tried to start a worker graph that still referred to a retired Vite optimizer chunk. This is a development-host identity mismatch, and the replica is intact. Stop Vite, reinstall from the lockfile, restart once with `--force`, and reload every open app tab. Do not clear OPFS: device identity, subscription progress, and an unsynced outbox may live there.
+The page tried to start a worker graph that still referred to a retired Vite optimizer chunk. This is a development-host identity mismatch, and the replica is intact. Stop Vite, reinstall from the lockfile, restart once with `--force`, and reload every open app tab. Do not clear OPFS: device identity, unit progress, and an unsynced outbox may live there.
 
 Use `SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE` from `@syncular/react/vite` and the schema-and-runtime-aware `createViteSyncClientResource` recipe in [Keep one owner during HMR](/platform-web-realtime/#keep-one-owner-during-hmr). The client sanitizes the original bundler text and URL before it surfaces this code, so support diagnostics retain no local paths or chunk names.
 
@@ -217,7 +217,7 @@ const client = new SyncClient({
 
 ```js title="browser console"
 await __SYNCULAR__.snapshot();
-// [{ clientId, role, outbox, subscriptions, conflicts, rejections,
+// [{ kind, clientId, role, outbox, units, conflicts, rejections,
 //    syncNeeded, upgrading, lastInvalidation }]
 
 __SYNCULAR__.clients[0].ref; // the client itself: query it, sync it

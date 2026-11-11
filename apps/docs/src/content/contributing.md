@@ -219,10 +219,10 @@ fenced code; each fence needs `sdk` or `label`, and ids cannot repeat.
 ````md
 :::tabs
 ```ts sdk=web title="src/sync.ts"
-client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+client.subscribe({ list_id: 'groceries' });
 ```
 ```swift sdk=swift title="Sync.swift"
-try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["groceries"]])
+try client.subscribe(scopes: ["list_id": "groceries"])
 ```
 :::
 ````
@@ -238,7 +238,7 @@ unless you give it a `title`.
 ```
 
 ```tree title="my-app/"
-syncular.json        # tables, scopes, subscriptions
+syncular.json        # tables, scopes, unit templates
 src/
   server.ts          # the server
 ```
@@ -256,7 +256,7 @@ on phones it is a collapsed block under the lede.
 
 ```md
 :::terms
-- **Cursor**: The last commit a subscription has applied.
+- **Replica cursor**: The last commit the replica has applied for every live unit.
 - **Outbox**: The local queue of commits waiting to be sent.
 :::
 ```

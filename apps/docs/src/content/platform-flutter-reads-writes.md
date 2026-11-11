@@ -1,6 +1,6 @@
 # Reads & writes (Flutter)
 
-Subscribe to data, write it optimistically, and read it back with `readRows`, `query`, or `querySnapshot`.
+Register units, write optimistically, and read it back with `readRows`, `query`, or `querySnapshot`.
 
 ::meta{for="Flutter developers building screens on a synced table" time="6 minutes"}
 
@@ -16,14 +16,15 @@ Subscribe to data, write it optimistically, and read it back with `readRows`, `q
 
 ## Subscribe
 
-A subscription is an id, a table, and a scope map. It is local; the next sync round fills it. [Scopes & authorization](/concepts-scopes/) defines the scope vocabulary.
+A unit is a scope map with one value per scope variable; it covers every table that declares those variables. Registering it is local; the next sync round fills it. [Subscriptions & the outbox](/concepts-subscriptions/#a-unit) defines the unit, and [Scopes & authorization](/concepts-scopes/) the scope vocabulary.
 
 ```dart title="subscribe.dart"
-client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
-client.unsubscribe('todos');
+final unitId = client.subscribe({'list_id': 'groceries'});
+final ids = client.subscribeMany([{'list_id': 'work'}, {'list_id': 'home'}]);
+client.unsubscribe(unitId);
 ```
 
-`subscriptionState(id)` returns `active`, `revoked`, or `failed`. Repeating a subscribe with the same definition is a no-op; a different definition under an existing id throws. The generated `syncular.generated.dart` carries a typed row class per table and a subscription helper per subscription declared in `syncular.json`.
+`subscribe` returns the unit id, a hash of the scope map. `units()` lists every registered unit, `unit(id)` reads one with its `status` (`active`, `revoked`, or `failed`), and `unitCatchup(id)` reports whether its bootstrap has completed. Registering an active unit again is a no-op. The generated `syncular.generated.dart` carries a typed row class per table and a builder per unit template declared in `syncular.json`: `client.subscribe(SyncularTodosInListSubscription.scopes(listId: id))`.
 
 ## Write
 
@@ -61,7 +62,7 @@ Generated named queries (`syncular generate` with a `queriesPath` output) give t
 
 ## Windows
 
-`setWindow(base, units)` sets the active window of a windowed table; widening bootstraps the new units and narrowing evicts the removed ones. `windowState(base)` returns a `WindowState` with `units`, `pending`, and `complete(unit)`. Render a pending unit as loading, because registration alone does not mean the unit has its rows. [Windowed sync](/concepts-windowing/) defines the base descriptor. Swift and Kotlin reach the same commands through `command("setWindow", ...)`.
+`setWindow(variable, units, fixedScopes: ...)` sets the values of a window base, one unit per value; widening bootstraps the new units and narrowing evicts the removed ones. `windowState(variable, fixedScopes: ...)` returns a `WindowState` with `units`, `pending`, and `complete(unit)`. Render a pending unit as loading, because registration alone does not mean the unit has its rows. [Windowed sync](/concepts-windowing/) defines the window base. Swift and Kotlin expose the same typed `setWindow` and `windowState`.
 
 ## Collaborative text
 

@@ -75,13 +75,13 @@ Without a `baseUrl`, attach and abandon fail with `client.local_authority_unconf
 
 `syncular_client_command` takes `{"method": "...", "params": {...}}` and returns `{"result": ...}` or `{"error": {"code": "...", "message": "..."}}`, where details such as `retryable` and `details` ride on the error object. Bytes travel inside the JSON as `{"$bytes": "<lowercase-hex>"}`, so a binding marshals plain strings. A command string that is not valid UTF-8 JSON returns `client.failed`.
 
-The methods the router executes:
+The methods the router executes. `subscribe` takes `{"scopes": {"list_id": "groceries"}}` and returns `{"id": "<unit id>"}`; `subscribeMany` takes `{"units": [...]}` and returns `{"ids": [...]}`; `setWindow` takes `{"base": {"variable": "...", "fixedScopes": {...}}, "units": [...]}`. A unit's catch-up state is a `snapshotRead` with `{"statements": [], "units": [id]}`.
 
 | Group | Methods |
 |---|---|
 | Lifecycle | `create`, `shutdown`, `recreateWithSchema` |
 | Security | `securityLifecycle`, `beginSecurityPreflight`, `activateSecurity`, `authoritySnapshot` |
-| Subscriptions | `subscribe`, `unsubscribe`, `subscriptionState`, `setWindow`, `windowState` |
+| Units | `subscribe`, `subscribeMany`, `unsubscribe`, `units`, `unit`, `setWindow`, `windowState` |
 | Writes & reads | `mutate`, `patch`, `readRows`, `query`, `querySnapshot`, `snapshotRead`, `pendingCommitIds`, `pendingPayloads` |
 | Authorized local purge | `purgeLocalData`, `rebootstrapLocalData` |
 | Sync | `sync`, `syncUntilIdle` |
@@ -97,7 +97,7 @@ The methods the router executes:
 
 The router no longer has `schemaFloor`, `leaseState`, `upgrading`, or `syncNeeded`; `statusSnapshot` returns those fields. [Native client API](/native-client-api/#snapshot-and-outcome-methods) lists them.
 
-`purgeLocalData` is a local security primitive: a binding validates the directive and gates the affected subscriptions before forwarding it ([Authorized local purge](/concepts-local-data-purge/)). A host can `create` with `securityPreflight: true`, run the validated purge, and call `activateSecurity` with the portable keyring. Until activation the router rejects every other protected command with `client.security_preflight_required`. `beginSecurityPreflight` disconnects realtime and replaces the Rust keyring with an empty one; `shutdown` drops the client. The core overwrites owned native key buffers on replacement and drop.
+`purgeLocalData` is a local security primitive: a binding validates the directive and gates the affected units before forwarding it ([Authorized local purge](/concepts-local-data-purge/)). A host can `create` with `securityPreflight: true`, run the validated purge, and call `activateSecurity` with the portable keyring. Until activation the router rejects every other protected command with `client.security_preflight_required`. `beginSecurityPreflight` disconnects realtime and replaces the Rust keyring with an empty one; `shutdown` drops the client. The core overwrites owned native key buffers on replacement and drop.
 
 ## Events
 
@@ -133,7 +133,7 @@ The script builds every target whose toolchain exists on the machine and skips t
 
 On macOS arm64 (release, stripped) the library measured 2.5 MB lean and 4.6 MB with the native transport.
 
-[`rust/ffi-smoke/run.sh`](https://github.com/syncular/syncular/blob/main/rust/ffi-smoke/run.sh) proves the ABI end to end on your machine. It builds the library, compiles `main.c` against it, and runs `new`, then `command` for create, subscribe, mutate, readRows, and subscriptionState, then `poll_event` and `close`, freeing every returned string. It needs no server, since those are client-local commands.
+[`rust/ffi-smoke/run.sh`](https://github.com/syncular/syncular/blob/main/rust/ffi-smoke/run.sh) proves the ABI end to end on your machine. It builds the library, compiles `main.c` against it, and runs `new`, then `command` for create, subscribe, mutate, readRows, and units, then `poll_event` and `close`, freeing every returned string. It needs no server, since those are client-local commands.
 
 ## How the shipped bindings consume it
 

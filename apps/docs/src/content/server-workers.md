@@ -197,7 +197,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
 }
 ```
 
-Every statement a round issues is a network round trip from the Durable Object to the database. A new storage instance on a ready database costs two statements, and a catch-up pull costs the same statement count for any number of subscribed tables ([Postgres storage](/server-storage-reference/#postgres)).
+Every statement a round issues is a network round trip from the Durable Object to the database. A new storage instance on a ready database costs two statements, and a catch-up pull costs the same statement count for any number of covered tables ([Postgres storage](/server-storage-reference/#postgres)).
 
 The package declares the platform types (`DurableObjectState`, `WebSocket`, `D1Database`) structurally, so it takes no `@cloudflare/workers-types` dependency. Your Worker's own types are structurally compatible.
 
@@ -313,7 +313,7 @@ Two timestamps refresh on a caught-up client that polls on a fixed interval, and
 - The partition registry refreshes `last_authenticated_at_ms`, the partition's activity time, at most once per `PARTITION_TOUCH_INTERVAL_MS` (60 seconds). Hosts can use it to exclude long-inactive partitions from maintenance.
 - The client record refreshes `updated_at_ms`, the per-client liveness time that the active-client retention floor reads, on every round.
 
-The client record updates in place instead of deleting and reinserting, so an established round writes one client row. The actor comes from the authenticated context, the wire version and subscription list from the request, the cursor from the read, and `updated_at_ms` from the server clock.
+The client record updates in place instead of deleting and reinserting, so an established round writes one client row. The actor comes from the authenticated context, the wire version and registration list from the request, the cursor from the read, and `updated_at_ms` from the server clock.
 
 A push that changes no value still applies: the server increments `server_version`, records the change, and stores the new payload. A row update whose scope map is unchanged leaves the scope-index entries in place. The replacement deletes only keys the new map drops, and the insert ignores keys already present.
 
