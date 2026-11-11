@@ -89,8 +89,8 @@ pub trait Transport {
     /// The client calls this instead of `sync` whenever realtime is
     /// connected (the socket IS the sync-round
     /// transport, not a fallback pair); the server registers the round's
-    /// subscriptions on the connection at round end, so no reconnect is
-    /// needed after subscription changes.
+    /// live units on the connection at round end, so no reconnect is
+    /// needed after registration changes (§8.7).
     fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>;
     /// Segment download via the direct endpoint (§5.5).
     fn download_segment(

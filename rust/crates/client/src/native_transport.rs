@@ -3772,12 +3772,16 @@ mod tests {
                             client_id: "detached-round".into(),
                             schema_version: 1,
                             log_epoch: None,
+                            outbox_id: None,
                         },
                         Frame::PullHeader {
                             limit_commits: 0,
                             limit_snapshot_rows: 0,
                             max_snapshot_pages: 0,
                             accept: 3,
+                            cursor: -1,
+                            registration_digest: ssp2::registration::registration_digest([]),
+                            echo_digest: None,
                         },
                     ],
                 });
@@ -4528,8 +4532,8 @@ mod local_authority_tests {
 
         use super::super::{HostTransport, LocalAuthorityTransport};
         use crate::{
-            ClientLimits, Mutation, SegmentFetch, SegmentRequest, SubscriptionRequest, SyncClient,
-            SyncOutcome, Transport, TransportError,
+            ClientLimits, Mutation, SegmentFetch, SegmentRequest, SyncClient, SyncOutcome,
+            Transport, TransportError, UnitScopes,
         };
 
         fn schema() -> Value {
@@ -4653,12 +4657,7 @@ mod local_authority_tests {
             )
             .expect("client");
             client
-                .subscribe_many(vec![SubscriptionRequest {
-                    id: "notes".to_owned(),
-                    table: "notes".to_owned(),
-                    scopes: vec![("list_id".to_owned(), vec!["l1".to_owned()])],
-                    params: None,
-                }])
+                .subscribe(UnitScopes::from([("list_id".to_owned(), "l1".to_owned())]))
                 .expect("subscribe");
             client
                 .mutate(vec![Mutation::Upsert {
@@ -4725,12 +4724,7 @@ mod local_authority_tests {
             )
             .expect("client");
             client
-                .subscribe_many(vec![SubscriptionRequest {
-                    id: "todos".to_owned(),
-                    table: "todos".to_owned(),
-                    scopes: vec![("list_id".to_owned(), vec!["l1".to_owned()])],
-                    params: None,
-                }])
+                .subscribe(UnitScopes::from([("list_id".to_owned(), "l1".to_owned())]))
                 .expect("subscribe");
             client
                 .mutate(vec![Mutation::Upsert {

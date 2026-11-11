@@ -11,7 +11,7 @@ pub struct SyncProgress {
     pub state: ProgressState,
     pub phase: ProgressPhase,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subscription_id: Option<String>,
+    pub unit_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,7 +126,7 @@ impl ProgressObserver {
             attempt,
             state: ProgressState::Running,
             phase: ProgressPhase::Request,
-            subscription_id: None,
+            unit_id: None,
             table: None,
             segment_id: None,
             bytes_received: 0,

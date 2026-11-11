@@ -286,9 +286,12 @@ impl SyncRemoteClient {
                     client_id: self.client_id.clone(),
                     schema_version: schema.version,
                     log_epoch: self.log_epoch.clone(),
+                    // §6.10: a database-less producer has no outbox.
+                    outbox_id: None,
                 },
                 Frame::PushCommit {
                     client_commit_id: input.request_id.clone(),
+                    client_seq: 0,
                     operations,
                 },
             ],

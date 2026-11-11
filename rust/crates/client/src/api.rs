@@ -1,6 +1,6 @@
 //! Driver-facing API shapes (JSON-able), mirroring the conformance
 //! `ClientInstance` contract: sync reports, conflicts, rejections, row
-//! states, subscription states. Serialized as camelCase to cross the shim
+//! states, unit states. Serialized as camelCase to cross the shim
 //! boundary unchanged.
 
 use std::collections::BTreeMap;
@@ -94,33 +94,89 @@ pub fn last(count: usize, unit: TimeBucketUnit, now_ms: i64) -> Result<Vec<Strin
     }
 }
 
-/// One registration of `SyncClient::subscribe_many`: the arguments of
-/// `SyncClient::subscribe`.
-#[derive(Debug, Clone)]
-pub struct SubscriptionRequest {
-    pub id: String,
-    pub table: String,
-    pub scopes: Vec<(String, Vec<String>)>,
-    pub params: Option<String>,
+/// §4.1: a unit's scope map, one value per requested scope variable.
+pub type UnitScopes = BTreeMap<String, String>;
+
+/// §4.1 persisted unit status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UnitStatus {
+    Active,
+    Revoked,
+    Failed,
 }
 
-/// §4.8 window base: one table, the scope variable whose values are the
-/// window units, any fixed scopes shared by every unit, and host-opaque
-/// `params` carried onto each unit's subscription.
-#[derive(Debug, Clone)]
-pub struct WindowBase {
+impl UnitStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            UnitStatus::Active => "active",
+            UnitStatus::Revoked => "revoked",
+            UnitStatus::Failed => "failed",
+        }
+    }
+}
+
+/// §4.4 one fenced record of a persisted echo: the effective lists the
+/// wildcard fence added for a covered table, or its revocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EchoRecord {
     pub table: String,
+    /// `active` or `revoked`.
+    pub status: String,
+    pub scopes: BTreeMap<String, Vec<String>>,
+}
+
+/// §4.1 one registered unit as the client persists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitRecord {
+    /// §4.1: derived from the scope map.
+    pub id: String,
+    pub scopes: UnitScopes,
+    /// An explicit `subscribe` holds the unit; window bases hold it through
+    /// the window registry (§4.1 references).
+    pub explicit: bool,
+    pub status: UnitStatus,
+    /// §10 code when not active, or `sync.cursor_expired` after a reset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    /// Absent while the unit is live (§4.5); otherwise `-1`, the pin, or the
+    /// post-bootstrap cursor `P`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<i64>,
+    /// Opaque resume token from `SUB_END` (§4.7); present mid-bootstrap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_state: Option<String>,
+    /// Tables that received a segment in the current bootstrap (§5.6).
+    pub seeded: Vec<String>,
+    /// The echo persisted at the last `SUB_END` (§4.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub echo: Option<Vec<EchoRecord>>,
+}
+
+impl UnitRecord {
+    /// §4.1: a catching-up unit holding cursor `-1` or a resume token.
+    pub fn bootstrapping(&self) -> bool {
+        self.cursor
+            .is_some_and(|cursor| cursor < 0 || self.bootstrap_state.is_some())
+    }
+}
+
+/// §4.8 window base: the selected scope variable plus the fixed scope values
+/// every unit of its family shares. A base names no table: each unit covers
+/// every table declaring its variables (§4.1).
+#[derive(Debug, Clone, Default)]
+pub struct WindowBase {
     pub variable: String,
-    /// Scopes shared by every unit (other variables), if any.
-    pub fixed_scopes: Vec<(String, Vec<String>)>,
-    pub params: Option<String>,
+    /// One value per other variable, shared by every unit.
+    pub fixed_scopes: UnitScopes,
 }
 
 /// §4.8 completeness oracle (I3): the windowed-in units for a base, plus
 /// the subset whose bootstrap has not yet completed. Registration alone is
 /// not completeness — a `pending` unit's local replica may be empty or
-/// partial (its subscription still has `cursor: -1` or holds a resume
-/// token), and MUST NOT be rendered as complete. A unit with zero server
+/// partial (it still has `cursor: -1` or holds a resume token), and MUST NOT
+/// be rendered as complete. A unit with zero server
 /// rows still completes once its bootstrap round finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -169,7 +225,7 @@ pub struct TableChange {
 #[serde(rename_all = "camelCase")]
 pub struct WindowChange {
     pub base_key: String,
-    pub table: String,
+    /// Changed values of the base.
     pub units: Vec<String>,
 }
 
@@ -198,8 +254,7 @@ pub struct PreviousVersionStatus {
     pub created_at_ms: Option<i64>,
 }
 
-pub const CLIENT_DIAGNOSTICS_VERSION: u8 = 1;
-pub const MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS: usize = 256;
+pub const CLIENT_DIAGNOSTICS_VERSION: u8 = 2;
 pub const MAX_DIAGNOSTIC_QUERY_FAILURES: usize = 256;
 
 /// §8.8 client-local code: the `required` policy refused a sync round because
@@ -212,20 +267,6 @@ pub const REALTIME_LOST_CODE: &str = "client.realtime_lost";
 /// has no local authority (the build lacks the `local-authority` feature, the
 /// config names no `localAuthorityPath`, or attach has no remote server).
 pub const LOCAL_AUTHORITY_UNCONFIGURED_CODE: &str = "client.local_authority_unconfigured";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExpectedDiagnosticSubscription {
-    pub id: String,
-    pub table: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ClientDiagnosticsRequest {
-    #[serde(default)]
-    pub expected_subscriptions: Vec<ExpectedDiagnosticSubscription>,
-}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -241,17 +282,17 @@ pub struct ClientDiagnosticsHost {
     pub realtime_retry_delay_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// §7.6: registered units per state; a unit id never enters diagnostics.
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct DiagnosticSubscription {
-    pub id: String,
-    pub table: String,
-    pub state: String,
-    pub complete: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason_code: Option<String>,
+pub struct DiagnosticUnits {
+    pub bootstrapping: usize,
+    pub complete: usize,
+    pub reset: usize,
+    pub revoked: usize,
+    pub failed: usize,
+    /// Distinct stable reason codes of registered units, ascending.
+    pub reason_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
@@ -365,10 +406,12 @@ pub struct ClientDiagnosticsSnapshot {
     pub schema: ClientDiagnosticsSchema,
     pub replica: ClientDiagnosticsReplica,
     pub lease: ClientDiagnosticsLease,
-    pub subscriptions: Vec<DiagnosticSubscription>,
-    pub subscriptions_truncated: bool,
-    /// Registrations the next pull sends; the server limit counts these.
-    pub active_subscriptions: usize,
+    pub units: DiagnosticUnits,
+    /// Units the next registration list carries; the server limit counts
+    /// these (§4.1).
+    pub active_units: usize,
+    /// §4.5 replica cursor; `-1` while no unit is live.
+    pub replica_cursor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_round: Option<DiagnosticLastRound>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -447,7 +490,6 @@ pub struct ClientDiagnosticsLease {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedServerCommit {
-    pub subscription_id: String,
     pub table: String,
     pub commit_seq: i64,
     pub source: AppliedServerCommitSource,
@@ -1240,41 +1282,30 @@ pub struct CommitOutcomeQuery {
     pub active_only: bool,
 }
 
-/// §7.5: the catch-up state of one subscription, read from the persisted
-/// subscription record inside the snapshot transaction (never the mutable
-/// owner cache). `Unknown` means the client does not currently hold the
-/// subscription (it was never registered, or it was forgotten or removed); it
-/// carries no fabricated table or cursor. A known state carries the persisted
-/// `status` (`active`, `revoked`, or `failed`), the cursor, and whether a
-/// resume token is held. A reset subscription stays `active` with
-/// `cursor < 0`; it is not a fourth status.
+/// §7.5: the catch-up state of one unit as persisted in the snapshot, never
+/// the mutable owner cache. `Unknown` means the client does not currently
+/// hold the unit (never registered, released, or removed).
 #[derive(Debug, Clone, Serialize)]
 #[serde(
     tag = "state",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum SubscriptionCatchup {
-    /// The client does not currently hold this subscription id.
-    Unknown { id: String },
+pub enum UnitCatchup {
+    Unknown {
+        id: String,
+    },
     Known {
         id: String,
-        table: String,
-        /// The persisted status name: `active`, `revoked`, or `failed`.
-        status: String,
+        status: UnitStatus,
+        live: bool,
+        /// The unit's cursor while it catches up, the replica cursor while live.
         cursor: i64,
         has_resume_token: bool,
-        /// True only for an `active` subscription with `cursor >= 0` and no
-        /// resume token. Never true for a failed, revoked, or reset
-        /// subscription.
+        /// True only for an `active` unit that is live or post-bootstrap.
         bootstrap_complete: bool,
-        /// True only for an `active` subscription while a resume token remains
-        /// or `cursor < 0`. A reset subscription stays `active` with
-        /// `cursor < 0`, so it reads true while it bootstraps; a failed or
-        /// revoked subscription reads false.
+        /// True only for an `active` unit with cursor `-1` or a resume token.
         known_pending_pages: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        effective_scopes: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason_code: Option<String>,
     },
@@ -1308,15 +1339,15 @@ pub enum CommitDelivery {
 
 /// §7.5: the result of one atomic snapshot read over a single SQLite read
 /// transaction: one revision, every requested read-only statement's rows,
-/// requested window coverage, requested subscription catch-up states, and
-/// requested commit deliveries.
+/// requested window coverage, requested unit catch-up states, and requested
+/// commit deliveries.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotRead {
     pub revision: String,
     pub queries: Vec<Vec<QueryRow>>,
     pub coverage: CoverageSnapshot,
-    pub subscriptions: Vec<SubscriptionCatchup>,
+    pub units: Vec<UnitCatchup>,
     pub deliveries: Vec<CommitDelivery>,
 }
 
@@ -1336,21 +1367,6 @@ pub struct RowState {
     /// (from a `COMMIT` change or a segment row record, §5.2/§5.6).
     pub version: i64,
     pub values: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionStateView {
-    pub id: String,
-    pub table: String,
-    /// `active` | `revoked` | `failed`.
-    pub status: String,
-    pub cursor: i64,
-    pub has_resume_token: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effective_scopes: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason_code: Option<String>,
 }
 
 /// One AND-combined application-authorized local purge target. Targets in
@@ -1422,7 +1438,7 @@ pub struct ClientLimits {
     /// queued.
     pub max_push_operations_per_request: Option<usize>,
     /// §7.1: maximum bytes of the complete encoded SSP2 request (8-byte
-    /// envelope, request header, push commits, pull header, subscriptions,
+    /// envelope, request header, push commits, pull header, units and progress frames,
     /// framing, and any §5.11 ciphertext). `None` is unbounded. A request whose
     /// fixed frames alone exceed it, or whose first commit alone does not fit,
     /// fails with `client.push_request_too_large` and keeps its intent.

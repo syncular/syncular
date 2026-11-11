@@ -296,7 +296,7 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
                 w.u16(change.table_index);
                 w.str(&change.row_id);
                 w.u8(op_byte(change.op));
-                w.opt(&change.row_version, |w, v| w.i64(*v));
+                w.i64(change.row_version);
                 w.str_map(&change.scopes);
                 w.opt(&change.row, |w, row| w.bytes(row));
             }

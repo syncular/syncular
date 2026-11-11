@@ -54,19 +54,34 @@ fn recapture_previous_version(client: &SyncClient) {
     ));
 }
 
-fn subscription(state: SubState, cursor: i64, bootstrap_state: Option<&str>) -> Subscription {
-    Subscription {
-        id: "wiring-sub".to_owned(),
-        table: "tasks".to_owned(),
-        requested: Vec::new(),
-        params: None,
-        cursor,
-        bootstrap_state: bootstrap_state.map(str::to_owned),
-        state,
-        reason_code: None,
-        effective: None,
-        synced_once: false,
-    }
+/// Replace the registered units with one unit in the given state.
+fn store_unit(client: &SyncClient, status: UnitStatus, bootstrap_state: Option<&str>) {
+    client
+        .conn
+        .execute("DELETE FROM _syncular_units", [])
+        .unwrap();
+    save_unit(
+        &client.conn,
+        &UnitRecord {
+            id: "wiring-unit".to_owned(),
+            scopes: UnitScopes::from([("project_id".to_owned(), "p1".to_owned())]),
+            explicit: true,
+            status,
+            reason_code: None,
+            cursor: Some(0),
+            bootstrap_state: bootstrap_state.map(str::to_owned),
+            seeded: Vec::new(),
+            echo: None,
+        },
+    )
+    .unwrap();
+}
+
+fn clear_units(client: &SyncClient) {
+    client
+        .conn
+        .execute("DELETE FROM _syncular_units", [])
+        .unwrap();
 }
 
 #[test]
@@ -823,7 +838,7 @@ fn a_failed_outer_commit_restores_every_reset_side_effect() {
         )
         .expect("column count");
     let rebuilds = client.overlay_rebuild_count.get();
-    let prior_subs = client.subs.len();
+    let prior_units = client.units().unwrap().len();
     let prior_changes = client.change_queue.len();
     let prior_intents = client.sync_intent_queue.len();
     let prior_last_change = client.last_change.clone();
@@ -878,7 +893,7 @@ fn a_failed_outer_commit_restores_every_reset_side_effect() {
     // Memory: every side effect of the successful reset is restored with
     // the rolled-back database.
     assert_eq!(client.schema.version, 1, "compiled schema");
-    assert_eq!(client.subs.len(), prior_subs);
+    assert_eq!(client.units().unwrap().len(), prior_units);
     assert_eq!(client.change_queue.len(), prior_changes);
     assert_eq!(client.sync_intent_queue.len(), prior_intents);
     assert_eq!(client.last_change, prior_last_change);
@@ -1274,39 +1289,37 @@ fn previous_version_read_reasons_come_from_live_client_state() {
     assert!(!std::path::Path::new(&container).exists());
     client.lease_state = None;
 
-    // A revoked subscription ⇒ scope-revoked.
+    // A revoked unit ⇒ scope-revoked.
     recapture_previous_version(&client);
-    client.subs.push(subscription(SubState::Revoked, 0, None));
+    store_unit(&client, UnitStatus::Revoked, None);
     let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
     assert_eq!(snapshot.reason, Some(PreviousVersionReason::ScopeRevoked));
     assert!(!std::path::Path::new(&container).exists());
-    client.subs.clear();
+    clear_units(&client);
 
-    // Coverage completion: every ACTIVE subscription has a cursor and no
-    // resume token — a still-resuming subscription is not completion.
+    // Coverage completion: no ACTIVE unit is bootstrapping — a unit still
+    // holding a resume token is not completion.
     recapture_previous_version(&client);
-    client
-        .subs
-        .push(subscription(SubState::Active, 0, Some("resume")));
-    assert!(!client.previous_version_coverage_complete());
+    store_unit(&client, UnitStatus::Active, Some("resume"));
+    assert!(!client.previous_version_coverage_complete().unwrap());
     let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
     assert!(snapshot.available);
     assert_eq!(snapshot.previous_version, Some(2));
     assert_eq!(snapshot.rows.len(), 1);
 
     recapture_previous_version(&client);
-    client.subs[0].bootstrap_state = None;
-    assert!(client.previous_version_coverage_complete());
+    store_unit(&client, UnitStatus::Active, None);
+    assert!(client.previous_version_coverage_complete().unwrap());
     let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
     assert_eq!(
         snapshot.reason,
         Some(PreviousVersionReason::CoverageComplete)
     );
     assert!(!std::path::Path::new(&container).exists());
-    client.subs.clear();
+    clear_units(&client);
 
-    // With no active subscription at all, coverage is NOT complete.
-    assert!(!client.previous_version_coverage_complete());
+    // With no active unit at all, coverage is NOT complete.
+    assert!(!client.previous_version_coverage_complete().unwrap());
 
     drop(client);
     let _ = std::fs::remove_file(&path);
@@ -1370,30 +1383,27 @@ fn previous_version_lifetime_check_drops_on_lease_coverage_and_revocation() {
     assert!(!exists());
     client.lease_state = None;
 
-    // §7.4.5 coverage completion (every active sub has a cursor and no
-    // resume token) ⇒ drop.
+    // §7.4.5 coverage completion (no active unit is bootstrapping) ⇒ drop.
     recapture_previous_version(&client);
-    client.subs.push(subscription(SubState::Active, 0, None));
+    store_unit(&client, UnitStatus::Active, None);
     client.previous_version_lifetime_check();
     assert!(!exists());
-    client.subs.clear();
+    clear_units(&client);
 
     // §3.3 scope revocation ⇒ drop.
     recapture_previous_version(&client);
-    client.subs.push(subscription(SubState::Revoked, 0, None));
+    store_unit(&client, UnitStatus::Revoked, None);
     client.previous_version_lifetime_check();
     assert!(!exists());
-    client.subs.clear();
+    clear_units(&client);
 
-    // Negative control: a still-resuming active subscription is NOT
+    // Negative control: a still-resuming active unit is NOT
     // coverage completion, so the container survives the same call.
     recapture_previous_version(&client);
-    client
-        .subs
-        .push(subscription(SubState::Active, 0, Some("resume")));
+    store_unit(&client, UnitStatus::Active, Some("resume"));
     client.previous_version_lifetime_check();
     assert!(exists());
-    client.subs.clear();
+    clear_units(&client);
 
     drop(client);
     let _ = std::fs::remove_file(&path);

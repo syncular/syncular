@@ -222,7 +222,8 @@ pub struct Change {
     pub table_index: u16,
     pub row_id: String,
     pub op: Op,
-    pub row_version: Option<i64>,
+    /// The row's `server_version` after the write, deletes included (§2.2).
+    pub row_version: i64,
     pub scopes: Vec<(String, String)>,
     /// Row-codec bytes, opaque at the envelope layer.
     pub row: Option<Vec<u8>>,

@@ -1025,25 +1025,20 @@ fn decode_commit(payload: &[u8]) -> Result<Frame> {
             }
             let row_id = r.str("rowId")?;
             let op = decode_op(r)?;
-            let row_version = if r.presence("rowVersion")? {
-                Some(r.i64("rowVersion")?)
-            } else {
-                None
-            };
+            let row_version = r.i64("rowVersion")?;
+            if row_version < 1 {
+                return Err(DecodeError::invalid("change rowVersion must be at least 1"));
+            }
             let scopes = r.str_map("change scopes")?;
             let row = if r.presence("row")? {
                 Some(r.bytes("row")?)
             } else {
                 None
             };
-            // §4.5 presence ties: rowVersion and row present iff upsert.
-            let ok = match op {
-                Op::Upsert => row_version.is_some() && row.is_some(),
-                Op::Delete => row_version.is_none() && row.is_none(),
-            };
-            if !ok {
+            // §4.5 presence tie: row present iff upsert.
+            if row.is_some() != (op == Op::Upsert) {
                 return Err(DecodeError::invalid(
-                    "change rowVersion/row presence does not match op (presence invariant)",
+                    "change row presence does not match op (presence invariant)",
                 ));
             }
             changes.push(Change {

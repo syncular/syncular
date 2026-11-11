@@ -280,10 +280,8 @@ fn render_frame(frame: &Frame) -> Value {
                         ("tableIndex", Value::from(c.table_index)),
                         ("rowId", Value::from(c.row_id.clone())),
                         ("op", Value::from(c.op.name())),
+                        ("rowVersion", Value::from(c.row_version)),
                     ];
-                    if let Some(v) = c.row_version {
-                        e.push(("rowVersion", Value::from(v)));
-                    }
                     e.push(("scopes", str_map_value(&c.scopes)));
                     if let Some(row) = &c.row {
                         // Rule 4: binary fields render as base64.
