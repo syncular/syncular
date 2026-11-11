@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title:
+      'Server indexes reach a Postgres table that has only its primary key',
+    body: 'At an unchanged schema version, `PostgresServerStorage` created a newly declared `serverIndexes` entry only on a table that already had another index; on a table with only its primary key the index was never created on an existing database. The reconcile now treats a table without indexes as having none. SQLite and D1 were not affected.',
+    links: [
+      {
+        href: '/server-storage-reference/#query-the-projection',
+        label: 'Query the projection',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'Raw queries keep prepared writes, and presigned uploads hash once',
     body: 'On Bun and Node, `client.query()` ran every SQL text between `PRAGMA query_only` ON and OFF, which made SQLite expire every prepared statement of the connection, so the next mutation prepared its statements again. The client now runs a text that completed once under `query_only` without the pragma. Query-then-mutate on a file database takes 0.11 ms, down from 0.182 ms on 0.59.0. A presigned blob upload derived `x-amz-checksum-sha256` by hashing the body a second time; both clients now derive it from the `blobId`, the SHA-256 of the body. A custom transport receives the blob id as the first argument of `uploadToUrl` in TypeScript and `blob_put_url` in Rust.',
     links: [

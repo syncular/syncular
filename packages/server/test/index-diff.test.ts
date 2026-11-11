@@ -308,6 +308,19 @@ describe('schema bump index diff', () => {
     });
   }
 
+  for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+    test(`${backend}: a server index declared at the same version reaches a table with only its primary key`, async () => {
+      const db = await harness(backend);
+      const lookup = { name: 'lookup', columns: ['_sync_partition', 'title'] };
+      await db.ensure(schema(1, []));
+      expect(await db.owned()).toEqual([]);
+
+      db.reopen();
+      await db.ensure(schema(1, [], [lookup]));
+      expect(await db.owned()).toEqual([physicalServerIndexName(lookup)]);
+    });
+  }
+
   test('a server index leaves a plain SQLite lookup without a partition on an index', async () => {
     const native = new BunSqliteDatabase();
     const storage = new SqliteServerStorage(native);

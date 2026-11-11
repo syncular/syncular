@@ -1165,8 +1165,10 @@ export function serverIndexDdl(
   const drops: string[] = [];
   const creates: string[] = [];
   for (const table of schema.tables.values()) {
-    const existing = existingIndexesByTable.get(table.name);
-    if (existing === undefined) continue;
+    // Every table exists at the current version; a table the introspection
+    // reported no index for (Postgres lists none for a primary-key-only
+    // table) has none.
+    const existing = existingIndexesByTable.get(table.name) ?? new Map();
     const desired = desiredIndexes(table);
     for (const indexName of existing.keys()) {
       if (
