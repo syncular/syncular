@@ -33,6 +33,9 @@ pub(crate) const PARTITION: &str = "local";
 /// Stored scopes (§3.1): variable → value.
 pub(crate) type Scopes = BTreeMap<String, String>;
 
+/// A unit's scope map (§4.1), in its wire order.
+pub(crate) type UnitScopes = Vec<(String, String)>;
+
 pub(crate) const STATE_TABLE: &str = "sync_local_authority";
 
 const INTERNAL_DDL: &str = "
@@ -44,7 +47,8 @@ CREATE TABLE IF NOT EXISTS sync_log(
   id INTEGER PRIMARY KEY CHECK (id = 1),
   log_epoch TEXT NOT NULL,
   max_commit_seq INTEGER NOT NULL,
-  horizon_seq INTEGER NOT NULL);
+  horizon_seq INTEGER NOT NULL,
+  delete_floor INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS sync_commits(
   commit_seq INTEGER PRIMARY KEY,
   client_id TEXT NOT NULL,
@@ -61,7 +65,6 @@ CREATE TABLE IF NOT EXISTS sync_changes(
   scopes TEXT NOT NULL,
   payload BLOB,
   PRIMARY KEY (commit_seq, idx));
-CREATE INDEX IF NOT EXISTS sync_changes_by_table ON sync_changes(tbl, commit_seq, idx);
 CREATE TABLE IF NOT EXISTS sync_tombstones(
   tbl TEXT NOT NULL,
   row_id TEXT NOT NULL,
@@ -74,14 +77,24 @@ CREATE TABLE IF NOT EXISTS sync_push_results(
   client_id TEXT NOT NULL,
   client_commit_id TEXT NOT NULL,
   result TEXT NOT NULL,
+  outbox_id TEXT,
+  client_seq INTEGER,
   PRIMARY KEY (client_id, client_commit_id));
+CREATE TABLE IF NOT EXISTS sync_push_watermarks(
+  client_id TEXT NOT NULL,
+  outbox_id TEXT NOT NULL,
+  through_seq INTEGER NOT NULL,
+  PRIMARY KEY (client_id, outbox_id));
 CREATE TABLE IF NOT EXISTS sync_clients(
   client_id TEXT PRIMARY KEY,
   cursor INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
   last_round_at_ms INTEGER NOT NULL,
   last_error_code TEXT,
-  consecutive_failures INTEGER NOT NULL DEFAULT 0);
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  units TEXT,
+  registration_digest BLOB,
+  catching_up TEXT NOT NULL DEFAULT '[]');
 ";
 
 pub(crate) fn quote(name: &str) -> String {
@@ -419,9 +432,9 @@ pub(crate) struct NewChange {
     pub table: String,
     pub row_id: String,
     pub upsert: bool,
-    /// An upsert's version after the write. A delete's is the deleted row's
-    /// last version, which only its tombstone records (§2.2).
-    pub row_version: Option<i64>,
+    /// The row's version after the write; a delete's is the version its
+    /// tombstone records (§2.2).
+    pub row_version: i64,
     pub scopes: Scopes,
     pub payload: Option<Vec<u8>>,
 }
@@ -430,17 +443,19 @@ pub(crate) struct LogState {
     pub log_epoch: String,
     pub max_seq: i64,
     pub horizon: i64,
+    pub delete_floor: i64,
 }
 
 pub(crate) fn log_state(conn: &Connection) -> Result<LogState, AuthorityError> {
     conn.query_row(
-        "SELECT log_epoch, max_commit_seq, horizon_seq FROM sync_log WHERE id=1",
+        "SELECT log_epoch, max_commit_seq, horizon_seq, delete_floor FROM sync_log WHERE id=1",
         [],
         |row| {
             Ok(LogState {
                 log_epoch: row.get(0)?,
                 max_seq: row.get(1)?,
                 horizon: row.get(2)?,
+                delete_floor: row.get(3)?,
             })
         },
     )
@@ -448,7 +463,8 @@ pub(crate) fn log_state(conn: &Connection) -> Result<LogState, AuthorityError> {
 }
 
 /// Append an applied commit and its changes; every delete the same commit
-/// does not follow with an upsert of the row leaves a tombstone (§2.2).
+/// does not follow with an upsert of the row leaves a tombstone and raises
+/// the delete floor to its version (§2.2).
 pub(crate) fn append_commit(
     conn: &Connection,
     client_id: &str,
@@ -457,17 +473,6 @@ pub(crate) fn append_commit(
     changes: &[NewChange],
 ) -> Result<i64, AuthorityError> {
     let commit_seq = log_state(conn)?.max_seq + 1;
-    conn.execute(
-        "UPDATE sync_log SET max_commit_seq=?1 WHERE id=1",
-        [commit_seq],
-    )
-    .db()?;
-    // §12.2: every request authenticates as actor `local`.
-    conn.execute(
-        "INSERT INTO sync_commits(commit_seq, client_id, client_commit_id, actor_id, created_at_ms) VALUES (?1,?2,?3,'local',?4)",
-        params![commit_seq, client_id, client_commit_id, created_at_ms],
-    )
-    .db()?;
     // The reference `rowsLiveAfterDelete`.
     let key = |change: &NewChange| (change.table.clone(), change.row_id.clone());
     let mut deleted = std::collections::HashSet::new();
@@ -482,6 +487,24 @@ pub(crate) fn append_commit(
         last.insert(key(change), change.upsert);
     }
     live.retain(|k| last.get(k) == Some(&true));
+    let leaves_tombstone = |change: &&NewChange| !change.upsert && !live.contains(&key(change));
+    let floor = changes
+        .iter()
+        .filter(leaves_tombstone)
+        .map(|change| change.row_version)
+        .max()
+        .unwrap_or(0);
+    conn.execute(
+        "UPDATE sync_log SET max_commit_seq=?1, delete_floor=max(delete_floor, ?2) WHERE id=1",
+        [commit_seq, floor],
+    )
+    .db()?;
+    // §12.2: every request authenticates as actor `local`.
+    conn.execute(
+        "INSERT INTO sync_commits(commit_seq, client_id, client_commit_id, actor_id, created_at_ms) VALUES (?1,?2,?3,'local',?4)",
+        params![commit_seq, client_id, client_commit_id, created_at_ms],
+    )
+    .db()?;
     for (idx, change) in changes.iter().enumerate() {
         conn.prepare_cached(
             "INSERT INTO sync_changes(commit_seq, idx, tbl, row_id, op, row_version, scopes, payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -493,13 +516,13 @@ pub(crate) fn append_commit(
                 change.table,
                 change.row_id,
                 if change.upsert { 1 } else { 2 },
-                change.row_version.filter(|_| change.upsert),
+                change.row_version,
                 scopes_json(&change.scopes),
                 change.payload,
             ])
         })
         .db()?;
-        if !change.upsert && !live.contains(&key(change)) {
+        if leaves_tombstone(&change) {
             conn.prepare_cached(
                 "INSERT INTO sync_tombstones(tbl, row_id, commit_seq, server_version, scopes) VALUES (?1,?2,?3,?4,?5)
                  ON CONFLICT(tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq,
@@ -520,19 +543,15 @@ pub(crate) fn append_commit(
     Ok(commit_seq)
 }
 
-/// The row's tombstone (§2.2): `Some` with the deleted row's last version,
-/// `None` inside when the tombstone predates recorded versions.
-pub(crate) fn tombstone(
+/// Does the row hold a tombstone within the horizon (§2.2)? Every scope
+/// value is granted, so its stored scopes never hide it.
+pub(crate) fn tombstoned(
     conn: &Connection,
     table: &str,
     row_id: &str,
-) -> Result<Option<Option<i64>>, AuthorityError> {
-    conn.prepare_cached("SELECT server_version FROM sync_tombstones WHERE tbl=?1 AND row_id=?2")
-        .and_then(|mut statement| {
-            statement
-                .query_row(params![table, row_id], |row| row.get(0))
-                .optional()
-        })
+) -> Result<bool, AuthorityError> {
+    conn.prepare_cached("SELECT 1 FROM sync_tombstones WHERE tbl=?1 AND row_id=?2")
+        .and_then(|mut statement| statement.exists(params![table, row_id]))
         .db()
 }
 
@@ -563,123 +582,283 @@ pub(crate) fn push_result(
     .db()
 }
 
+/// Persist a result; `sequence` is its outbox and `clientSeq` (§6.3.2).
 pub(crate) fn put_push_result(
     conn: &Connection,
     client_id: &str,
     client_commit_id: &str,
     result: &str,
+    sequence: Option<(&str, i64)>,
 ) -> Result<(), AuthorityError> {
-    conn.prepare_cached("INSERT OR IGNORE INTO sync_push_results(client_id, client_commit_id, result) VALUES (?1,?2,?3)")
-        .and_then(|mut statement| statement.execute(params![client_id, client_commit_id, result]))
+    conn.prepare_cached("INSERT OR IGNORE INTO sync_push_results(client_id, client_commit_id, result, outbox_id, client_seq) VALUES (?1,?2,?3,?4,?5)")
+        .and_then(|mut statement| {
+            statement.execute(params![
+                client_id,
+                client_commit_id,
+                result,
+                sequence.map(|(outbox_id, _)| outbox_id),
+                sequence.map(|(_, client_seq)| client_seq),
+            ])
+        })
         .db()?;
     Ok(())
 }
 
-/// One commit of the §4.5 window, with only its matching changes.
-pub(crate) struct WindowCommit {
+/// The §9 settlement and §6.3.2 steps 1 and 2 for a request whose commits
+/// are `commits` (`clientCommitId`, `clientSeq`), in frame order; returns the
+/// watermark `W`.
+pub(crate) fn settle_outbox(
+    conn: &Connection,
+    client_id: &str,
+    outbox_id: &str,
+    commits: &[(&str, i64)],
+) -> Result<i64, AuthorityError> {
+    let (Some((_, first)), Some((last, _))) = (commits.first(), commits.last()) else {
+        return Err(corrupt("outbox settlement without commits"));
+    };
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT through_seq FROM sync_push_watermarks WHERE client_id=?1 AND outbox_id=?2",
+            params![client_id, outbox_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .db()?;
+    let watermark = stored.unwrap_or(0).max(*first);
+    let ids = Value::from(commits.iter().map(|(id, _)| *id).collect::<Vec<_>>()).to_string();
+    // §9 (b), then (a): with no pre-upgrade result on the request's last
+    // commit, every remaining one outside the request left the outbox.
+    let last_sequenceless = conn
+        .prepare("SELECT 1 FROM sync_push_results WHERE client_id=?1 AND client_commit_id=?2 AND outbox_id IS NULL")
+        .and_then(|mut statement| statement.exists(params![client_id, last]))
+        .db()?;
+    if !last_sequenceless {
+        conn.execute(
+            "DELETE FROM sync_push_results WHERE client_id=?1 AND outbox_id IS NULL
+               AND client_commit_id NOT IN (SELECT value FROM json_each(?2))",
+            params![client_id, ids],
+        )
+        .db()?;
+    }
+    for (client_commit_id, client_seq) in commits {
+        conn.execute(
+            "UPDATE sync_push_results SET outbox_id=?3, client_seq=?4
+              WHERE client_id=?1 AND client_commit_id=?2 AND outbox_id IS NULL",
+            params![client_id, client_commit_id, outbox_id, client_seq],
+        )
+        .db()?;
+    }
+    conn.execute(
+        "INSERT INTO sync_push_watermarks(client_id, outbox_id, through_seq) VALUES (?1,?2,?3)
+         ON CONFLICT(client_id, outbox_id) DO UPDATE SET through_seq=max(through_seq, excluded.through_seq)",
+        params![client_id, outbox_id, watermark],
+    )
+    .db()?;
+    conn.execute(
+        "DELETE FROM sync_push_results WHERE client_id=?1 AND outbox_id=?2 AND client_seq<?3",
+        params![client_id, outbox_id, watermark],
+    )
+    .db()?;
+    Ok(watermark)
+}
+
+/// One commit of a live section, with only its matching changes.
+pub(crate) struct LiveCommit {
     pub commit_seq: i64,
     pub created_at_ms: i64,
     pub actor_id: String,
     pub changes: Vec<NewChange>,
 }
 
-/// The reference `readCommitWindow`: commits in `(after, through]` with
-/// changes of `table` matching `effective`, oldest first, stopping after the
-/// commit that reaches `limit_changes` matching changes.
-pub(crate) fn commit_window(
+/// The §4.5 live section from one scan of the log: commits in
+/// `(min bound, through]` with the changes `matches` admits (given the commit
+/// sequence), oldest first, stopping after the commit that reaches
+/// `limit_changes` matching changes. Returns the commits and `T`.
+pub(crate) fn live_window(
     conn: &Connection,
-    table: &str,
-    effective: &[(String, Vec<String>)],
     after: i64,
     through: i64,
     limit_changes: usize,
-) -> Result<Vec<WindowCommit>, AuthorityError> {
+    matches: impl Fn(i64, &str, &Scopes) -> bool,
+) -> Result<(Vec<LiveCommit>, i64), AuthorityError> {
     let mut statement = conn
         .prepare_cached(
-            "SELECT ch.commit_seq, c.created_at_ms, c.actor_id, ch.row_id, ch.op, ch.row_version, ch.scopes, ch.payload
+            "SELECT ch.commit_seq, c.created_at_ms, c.actor_id, ch.tbl, ch.row_id, ch.op, ch.row_version, ch.scopes, ch.payload
                FROM sync_changes ch JOIN sync_commits c ON c.commit_seq = ch.commit_seq
-              WHERE ch.tbl=?1 AND ch.commit_seq>?2 AND ch.commit_seq<=?3
+              WHERE ch.commit_seq>?1 AND ch.commit_seq<=?2
               ORDER BY ch.commit_seq, ch.idx",
         )
         .db()?;
-    let mut rows = statement.query(params![table, after, through]).db()?;
-    let mut commits: Vec<WindowCommit> = Vec::new();
+    let mut rows = statement.query(params![after, through]).db()?;
+    let mut commits: Vec<LiveCommit> = Vec::new();
     let mut delivered = 0;
-    let mut current: Option<WindowCommit> = None;
     while let Some(row) = rows.next().db()? {
         let seq: i64 = row.get(0).db()?;
-        if current.as_ref().is_some_and(|c| c.commit_seq != seq) {
-            let done = current.take().expect("checked above");
-            if !done.changes.is_empty() {
-                delivered += done.changes.len();
-                commits.push(done);
-                if delivered >= limit_changes {
-                    return Ok(commits);
-                }
+        if commits.last().is_none_or(|commit| commit.commit_seq != seq) {
+            if delivered >= limit_changes {
+                let cut = commits.last().map_or(through, |commit| commit.commit_seq);
+                return Ok((commits, cut));
             }
-        }
-        if current.is_none() {
-            current = Some(WindowCommit {
+            if commits
+                .last()
+                .is_some_and(|commit| commit.changes.is_empty())
+            {
+                commits.pop();
+            }
+            commits.push(LiveCommit {
                 commit_seq: seq,
                 created_at_ms: row.get(1).db()?,
                 actor_id: row.get(2).db()?,
                 changes: Vec::new(),
             });
         }
-        let commit = current.as_mut().expect("set above");
-        let scopes: Scopes = serde_json::from_str(&row.get::<_, String>(6).db()?)
+        let table: String = row.get(3).db()?;
+        let scopes: Scopes = serde_json::from_str(&row.get::<_, String>(7).db()?)
             .map_err(|_| corrupt("stored scopes"))?;
-        if matches_effective(&scopes, effective) {
-            commit.changes.push(NewChange {
-                table: table.to_owned(),
-                row_id: row.get(3).db()?,
-                upsert: row.get::<_, i64>(4).db()? == 1,
-                row_version: row.get(5).db()?,
-                scopes,
-                payload: row.get(7).db()?,
-            });
+        if !matches(seq, &table, &scopes) {
+            continue;
         }
+        // §4.5: apply is version-guarded, so a change logged without a
+        // version (a delete from before wire version 4) cannot be served.
+        let row_version: Option<i64> = row.get(6).db()?;
+        let commit = commits.last_mut().expect("pushed above");
+        commit.changes.push(NewChange {
+            table,
+            row_id: row.get(4).db()?,
+            upsert: row.get::<_, i64>(5).db()? == 1,
+            row_version: row_version.ok_or_else(|| corrupt("change row version"))?,
+            scopes,
+            payload: row.get(8).db()?,
+        });
+        delivered += 1;
     }
-    if let Some(done) = current {
-        if !done.changes.is_empty() {
-            commits.push(done);
-        }
+    if commits
+        .last()
+        .is_some_and(|commit| commit.changes.is_empty())
+    {
+        commits.pop();
     }
-    Ok(commits)
+    let cut = if delivered >= limit_changes {
+        commits.last().map_or(through, |commit| commit.commit_seq)
+    } else {
+        through
+    };
+    Ok((commits, cut))
 }
 
-pub(crate) fn client_cursor(
+/// The client record (§4.5): the stored registration list when its digest
+/// is `digest`.
+pub(crate) fn client_registration(
     conn: &Connection,
     client_id: &str,
-) -> Result<Option<i64>, AuthorityError> {
-    conn.prepare_cached("SELECT cursor FROM sync_clients WHERE client_id=?1")
+    digest: &[u8; 32],
+) -> Result<Option<Vec<UnitScopes>>, AuthorityError> {
+    let units: Option<String> = conn
+        .prepare_cached(
+            "SELECT units FROM sync_clients WHERE client_id=?1 AND registration_digest=?2",
+        )
         .and_then(|mut statement| {
             statement
-                .query_row([client_id], |row| row.get(0))
+                .query_row(params![client_id, digest.as_slice()], |row| row.get(0))
                 .optional()
         })
-        .db()
+        .db()?;
+    units
+        .map(|units| {
+            let units: Vec<BTreeMap<String, String>> =
+                serde_json::from_str(&units).map_err(|_| corrupt("registration list"))?;
+            Ok(units
+                .into_iter()
+                .map(|unit| unit.into_iter().collect())
+                .collect())
+        })
+        .transpose()
 }
 
-/// §4.5: a completed round stores the cursor and clears the failure streak,
-/// unless the round carried a `ROUND_FAILURE` report (`keep_outcome`).
+/// §4.5: a completed round stores the record cursor, the catching-up units
+/// and, when the list traveled, the registration list and its digest; it
+/// clears the failure streak unless the round carried a `ROUND_FAILURE`
+/// report (`keep_outcome`). `None` keeps the stored cursor and states (a
+/// push-only round).
 pub(crate) fn put_client(
     conn: &Connection,
     client_id: &str,
-    cursor: i64,
+    round: Option<(i64, &[(String, i64)])>,
+    registration: Option<(&[UnitScopes], &[u8; 32])>,
     now: i64,
     keep_outcome: bool,
 ) -> Result<(), AuthorityError> {
-    conn.prepare_cached(if keep_outcome {
-        "INSERT INTO sync_clients(client_id, cursor, updated_at_ms, last_round_at_ms) VALUES (?1,?2,?3,?3)
-         ON CONFLICT(client_id) DO UPDATE SET cursor=excluded.cursor, updated_at_ms=excluded.updated_at_ms,
-           last_round_at_ms=excluded.last_round_at_ms"
-    } else {
-        "INSERT INTO sync_clients(client_id, cursor, updated_at_ms, last_round_at_ms) VALUES (?1,?2,?3,?3)
-         ON CONFLICT(client_id) DO UPDATE SET cursor=excluded.cursor, updated_at_ms=excluded.updated_at_ms,
-           last_round_at_ms=excluded.last_round_at_ms, last_error_code=NULL, consecutive_failures=0"
-    })
-    .and_then(|mut statement| statement.execute(params![client_id, cursor, now]))
+    let catching_up = round.map(|(_, units)| {
+        Value::from(
+            units
+                .iter()
+                .map(|(id, cursor)| json!({ "id": id, "cursor": cursor }))
+                .collect::<Vec<_>>(),
+        )
+        .to_string()
+    });
+    let units = registration.map(|(units, _)| {
+        Value::from(
+            units
+                .iter()
+                .map(|unit| {
+                    Value::from(
+                        unit.iter()
+                            .map(|(key, value)| (key.clone(), Value::from(value.as_str())))
+                            .collect::<serde_json::Map<_, _>>(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .to_string()
+    });
+    let sql = format!(
+        "INSERT INTO sync_clients(client_id, cursor, updated_at_ms, last_round_at_ms, units, registration_digest, catching_up)
+         VALUES (?1, coalesce(?2, -1), ?3, ?3, ?4, ?5, coalesce(?6, '[]'))
+         ON CONFLICT(client_id) DO UPDATE SET cursor=coalesce(?2, cursor), updated_at_ms=?3,
+           last_round_at_ms=?3, catching_up=coalesce(?6, catching_up){}{}",
+        if registration.is_some() {
+            ", units=?4, registration_digest=?5"
+        } else {
+            ""
+        },
+        if keep_outcome {
+            ""
+        } else {
+            ", last_error_code=NULL, consecutive_failures=0"
+        },
+    );
+    conn.execute(
+        &sql,
+        params![
+            client_id,
+            round.map(|(cursor, _)| cursor),
+            now,
+            units,
+            registration.map(|(_, digest)| digest.as_slice()),
+            catching_up,
+        ],
+    )
+    .db()?;
+    Ok(())
+}
+
+/// §4.5: a round answered `unregistered` writes only its outcome on the
+/// existing record.
+pub(crate) fn record_round(
+    conn: &Connection,
+    client_id: &str,
+    now: i64,
+    keep_outcome: bool,
+) -> Result<(), AuthorityError> {
+    conn.execute(
+        if keep_outcome {
+            "UPDATE sync_clients SET last_round_at_ms=?1 WHERE client_id=?2"
+        } else {
+            "UPDATE sync_clients SET last_round_at_ms=?1, last_error_code=NULL, consecutive_failures=0 WHERE client_id=?2"
+        },
+        params![now, client_id],
+    )
     .db()?;
     Ok(())
 }
@@ -702,8 +881,9 @@ pub(crate) fn record_round_failure(
     Ok(())
 }
 
-/// The reference `pruneCommitLog`: the horizon never passes the oldest
-/// cursor a client touched within the active window, except past commits
+/// The reference `pruneCommitLog`: the horizon never passes the lowest
+/// record cursor (`-1` holds nothing) a client touched within the active
+/// window, except past commits
 /// older than the age-force limit, and the newest `min_retained_commits`
 /// always stay. Tombstones prune with the log.
 pub(crate) fn prune(
@@ -714,7 +894,7 @@ pub(crate) fn prune(
     let state = log_state(conn)?;
     let cursor_floor: Option<i64> = conn
         .query_row(
-            "SELECT MIN(cursor) FROM sync_clients WHERE updated_at_ms>=?1",
+            "SELECT MIN(cursor) FROM sync_clients WHERE updated_at_ms>=?1 AND cursor>=0",
             [now - retention.active_window_ms],
             |row| row.get(0),
         )
@@ -788,18 +968,44 @@ fn column_ddl_type(column: &Column) -> &'static str {
 pub(crate) fn migrate(conn: &Connection, schema: &Schema) -> Result<(), AuthorityError> {
     transaction(conn, || {
         conn.execute_batch(INTERNAL_DDL).db()?;
-        // A database from before tombstones recorded version and scopes.
-        let recorded = conn
-            .prepare("SELECT 1 FROM pragma_table_info('sync_tombstones') WHERE name='scopes'")
-            .and_then(|mut statement| statement.exists([]))
+        // Columns added after the internal tables' first release: a tombstone
+        // from before recorded versions carries neither its version nor its
+        // scopes (§2.2), a client record from before wire version 4 holds no
+        // registration list and a push result from before it no outbox
+        // sequence (§9).
+        for (table, column, definition) in [
+            ("sync_tombstones", "server_version", "INTEGER"),
+            ("sync_tombstones", "scopes", "TEXT"),
+            ("sync_log", "delete_floor", "INTEGER NOT NULL DEFAULT 0"),
+            ("sync_push_results", "outbox_id", "TEXT"),
+            ("sync_push_results", "client_seq", "INTEGER"),
+            ("sync_clients", "units", "TEXT"),
+            ("sync_clients", "registration_digest", "BLOB"),
+            ("sync_clients", "catching_up", "TEXT NOT NULL DEFAULT '[]'"),
+        ] {
+            let present = conn
+                .prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name=?2")
+                .and_then(|mut statement| statement.exists([table, column]))
+                .db()?;
+            if present {
+                continue;
+            }
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))
             .db()?;
-        if !recorded {
-            conn.execute_batch(
-                "ALTER TABLE sync_tombstones ADD COLUMN server_version INTEGER;
-                 ALTER TABLE sync_tombstones ADD COLUMN scopes TEXT;",
-            )
-            .db()?;
+            // §2.2: a store from before the delete floor starts it at the
+            // highest version its tombstones recorded.
+            if column == "delete_floor" {
+                conn.execute_batch(
+                    "UPDATE sync_log SET delete_floor=coalesce((SELECT max(server_version) FROM sync_tombstones), 0)",
+                )
+                .db()?;
+            }
         }
+        // Wire version 4 scans the log by commit, never by table (§4.5).
+        conn.execute_batch("DROP INDEX IF EXISTS sync_changes_by_table")
+            .db()?;
         let layouts: serde_json::Map<String, Value> = schema
             .tables
             .iter()

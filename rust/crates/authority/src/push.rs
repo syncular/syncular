@@ -270,6 +270,7 @@ fn apply_operation(
     schema: &Schema,
     op: &Operation,
     op_index: i32,
+    delete_floor: i64,
 ) -> Result<(Vec<NewChange>, Staged), Fail> {
     let Some(table) = schema.table(&op.table) else {
         return Err(error(
@@ -308,11 +309,12 @@ fn apply_operation(
             ));
         }
         store::delete_row(conn, &table.name, &op.row_id)?;
+        // §2.2: a delete advances the version; its tombstone records it.
         let change = NewChange {
             table: table.name.clone(),
             row_id: op.row_id.clone(),
             upsert: false,
-            row_version: Some(stored.version),
+            row_version: stored.version + 1,
             scopes: stored.scopes,
             payload: None,
         };
@@ -446,7 +448,7 @@ fn apply_operation(
             table: table.name.clone(),
             row_id: op.row_id.clone(),
             upsert: true,
-            row_version: Some(version),
+            row_version: version,
             scopes: stored.scopes,
             payload: Some(payload),
         };
@@ -486,8 +488,8 @@ fn apply_operation(
     {
         return Err(insert_denied());
     }
-    let tombstone = store::tombstone(conn, &table.name, &op.row_id)?;
-    if op.base_version.is_none() && tombstone.is_some() {
+    let tombstone = store::tombstoned(conn, &table.name, &op.row_id)?;
+    if op.base_version.is_none() && tombstone {
         return Err(error(
             op_index,
             "sync.row_deleted",
@@ -507,12 +509,12 @@ fn apply_operation(
     merge_crdt(table, &mut values, None, &present, op_index)?;
     let payload = store::encode_payload(&table.columns, &values);
     check_blobs(table, &values, op_index)?;
-    // §6.2: a recreate starts above the deleted row's version; without
-    // column versions every column sits at that version.
-    if tombstone.is_some() {
+    // §2.2, §6.2: every insert starts one above the delete floor, over a
+    // tombstone or not; without column versions every column sits there.
+    if tombstone {
         store::clear_tombstone(conn, &table.name, &op.row_id)?;
     }
-    let version = tombstone.flatten().unwrap_or(0) + 1;
+    let version = delete_floor + 1;
     let row = StoredRow {
         row_id: op.row_id.clone(),
         version,
@@ -525,7 +527,7 @@ fn apply_operation(
         table: table.name.clone(),
         row_id: op.row_id.clone(),
         upsert: true,
-        row_version: Some(version),
+        row_version: version,
         scopes,
         payload: Some(payload),
     };
@@ -685,7 +687,7 @@ fn enforce_references(
                             table: child.name.clone(),
                             row_id: row.row_id.clone(),
                             upsert: false,
-                            row_version: Some(row.version),
+                            row_version: row.version + 1,
                             scopes: row.scopes,
                             payload: None,
                         });
@@ -728,7 +730,7 @@ fn enforce_references(
                             table: child.name.clone(),
                             row_id: row.row_id,
                             upsert: true,
-                            row_version: Some(version),
+                            row_version: version,
                             scopes: row.scopes,
                             payload: Some(payload),
                         });
@@ -751,8 +753,14 @@ fn apply_commit(
 ) -> Result<Vec<NewChange>, Fail> {
     let mut changes = Vec::new();
     let mut staged = Vec::with_capacity(operations.len());
+    // §2.2: inserts start above the floor, which this commit's deletes raise
+    // as they stage.
+    let mut delete_floor = store::log_state(conn)?.delete_floor;
     for (index, op) in operations.iter().enumerate() {
-        let (op_changes, write) = apply_operation(conn, schema, op, index as i32)?;
+        let (op_changes, write) = apply_operation(conn, schema, op, index as i32, delete_floor)?;
+        for change in op_changes.iter().filter(|change| !change.upsert) {
+            delete_floor = delete_floor.max(change.row_version);
+        }
         changes.extend(op_changes);
         staged.push(write);
     }
@@ -762,16 +770,26 @@ fn apply_commit(
 
 /// Process one `PUSH_COMMIT` in its own transaction and answer its frames;
 /// the idempotency record persists with the commit's writes, a rejection
-/// with none of them.
+/// with none of them. `outbox` is the request's `outboxId` and the commit's
+/// `clientSeq` (§6.3.2); `settlement` carries every commit of the request
+/// with its first, which settles the outbox and sets `watermark` in the same
+/// transaction, whatever the commit's outcome.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_commit(
     conn: &Connection,
     schema: &Schema,
     client_id: &str,
     client_commit_id: &str,
     operations: &[Operation],
+    outbox: Option<(&str, i64)>,
+    settlement: Option<&[(&str, i64)]>,
+    watermark: &mut i64,
     created_at_ms: i64,
 ) -> Result<Vec<Frame>, AuthorityError> {
     store::transaction(conn, || {
+        if let (Some((outbox_id, _)), Some(commits)) = (outbox, settlement) {
+            *watermark = store::settle_outbox(conn, client_id, outbox_id, commits)?;
+        }
         if let Some(text) = store::push_result(conn, client_id, client_commit_id)? {
             // §6.3: an unreadable record answers this commit with the
             // retryable cache miss, never persisted, and never re-applies it.
@@ -819,6 +837,23 @@ pub(crate) fn process_commit(
                 }
             }
             return Ok(stored.frames(client_commit_id, true));
+        }
+        // §6.3.2 step 3: below the watermark without a retained result; the
+        // refusal is never persisted.
+        if outbox.is_some_and(|(_, client_seq)| client_seq < *watermark) {
+            return Ok(StoredResult {
+                applied: false,
+                commit_seq: None,
+                results: vec![StoredOp::Error {
+                    op_index: 0,
+                    code: "sync.commit_expired".to_owned(),
+                    message: "the commit lies below its outbox watermark (§6.3.2)".to_owned(),
+                    retryable: false,
+                    details: None,
+                }],
+                conflict_authorization: None,
+            }
+            .frames(client_commit_id, false));
         }
         conn.execute_batch("SAVEPOINT syncular_push_candidate")
             .db()?;
@@ -899,7 +934,7 @@ pub(crate) fn process_commit(
             Err(Fail::Storage(error)) => return Err(error),
         };
         let text = serde_json::to_string(&result).expect("a push result serializes");
-        store::put_push_result(conn, client_id, client_commit_id, &text)?;
+        store::put_push_result(conn, client_id, client_commit_id, &text, outbox)?;
         Ok(result.frames(client_commit_id, false))
     })
 }

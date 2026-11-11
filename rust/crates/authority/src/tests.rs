@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use ssp2::decode::WIRE_VERSION;
-use ssp2::model::{Frame, Message, MsgKind, Op, OpResult, Operation, PushStatus, SubStatus};
+use ssp2::model::{
+    Change, Frame, LiveStatus, Message, MsgKind, Op, OpResult, Operation, PushStatus, SubStatus,
+};
 use ssp2::primitives::RawJson;
 use ssp2::segment::{decode_rows_segment, encode_sparse_row, ColumnValue, SparseSlot};
 use ssp2::{decode_message, encode_message};
@@ -125,12 +127,50 @@ fn decode(bytes: &[u8]) -> Vec<Frame> {
     message.frames
 }
 
-fn empty_pull() -> Frame {
+/// A unit on the one scope variable every test table declares (§4.1).
+fn org(value: &str) -> Vec<(String, String)> {
+    vec![("org".to_owned(), value.to_owned())]
+}
+
+/// `PULL_HEADER` with replica cursor `cursor`, the digest of `units` and the
+/// last echo digest; `pages = 0` takes the default of 4 pages.
+fn pull_header(
+    cursor: i64,
+    units: &[Vec<(String, String)>],
+    echo: Option<[u8; 32]>,
+    rows: i32,
+    pages: i32,
+) -> Frame {
     Frame::PullHeader {
         limit_commits: 0,
-        limit_snapshot_rows: 0,
-        max_snapshot_pages: 0,
+        limit_snapshot_rows: rows,
+        max_snapshot_pages: pages,
         accept: 0b0011,
+        cursor,
+        registration_digest: ssp2::registration_digest(units.iter().map(Vec::as_slice)),
+        echo_digest: echo,
+    }
+}
+
+/// A pull of the empty traveling list.
+fn empty_pull() -> Frame {
+    pull_header(-1, &[], None, 0, 0)
+}
+
+fn unit_frames(units: &[Vec<(String, String)>]) -> Vec<Frame> {
+    units
+        .iter()
+        .map(|scopes| Frame::Unit {
+            scopes: scopes.clone(),
+        })
+        .collect()
+}
+
+fn progress(unit: &[(String, String)], cursor: i64, token: Option<String>) -> Frame {
+    Frame::Progress {
+        id: ssp2::unit_id(unit),
+        cursor,
+        bootstrap_state: token.map(RawJson),
     }
 }
 
@@ -138,6 +178,7 @@ fn encode_request(
     client_id: &str,
     schema_version: i32,
     log_epoch: Option<String>,
+    outbox_id: Option<&str>,
     mut frames: Vec<Frame>,
 ) -> Vec<u8> {
     frames.insert(
@@ -146,6 +187,7 @@ fn encode_request(
             client_id: client_id.to_owned(),
             schema_version,
             log_epoch,
+            outbox_id: outbox_id.map(str::to_owned),
         },
     );
     encode_message(&Message {
@@ -171,6 +213,7 @@ impl Session {
                     client_id,
                     version,
                     None,
+                    None,
                     vec![empty_pull()],
                 ))
                 .expect("acquire"),
@@ -192,16 +235,27 @@ impl Session {
     }
 
     fn round(&self, authority: &mut LocalAuthority, frames: Vec<Frame>) -> Vec<Frame> {
+        self.outbox_round(authority, None, frames)
+    }
+
+    fn outbox_round(
+        &self,
+        authority: &mut LocalAuthority,
+        outbox_id: Option<&str>,
+        frames: Vec<Frame>,
+    ) -> Vec<Frame> {
         let request = encode_request(
             &self.client_id,
             self.version,
             Some(self.epoch.clone()),
+            outbox_id,
             frames,
         );
         decode(&authority.sync(&request).expect("round"))
     }
 
-    /// Push one commit; its status, results and §6.3.1 details.
+    /// Push one commit without an outbox; its status, results and §6.3.1
+    /// details.
     fn push(
         &self,
         authority: &mut LocalAuthority,
@@ -212,6 +266,7 @@ impl Session {
             authority,
             vec![Frame::PushCommit {
                 client_commit_id: id.to_owned(),
+                client_seq: 0,
                 operations,
             }],
         );
@@ -228,32 +283,17 @@ impl Session {
         (*status, results.clone(), details)
     }
 
-    fn pull(
+    /// Register `units` (the list travels) with every unit catching up from
+    /// cursor `-1`, and pull every table of each unit in one section.
+    fn register(
         &self,
         authority: &mut LocalAuthority,
-        subscriptions: Vec<Frame>,
-        rows: i32,
-        pages: i32,
+        units: &[Vec<(String, String)>],
     ) -> Vec<Frame> {
-        let mut frames = vec![Frame::PullHeader {
-            limit_commits: 0,
-            limit_snapshot_rows: rows,
-            max_snapshot_pages: pages,
-            accept: 0b0011,
-        }];
-        frames.extend(subscriptions);
+        let mut frames = vec![pull_header(-1, units, None, 0, 50)];
+        frames.extend(unit_frames(units));
+        frames.extend(units.iter().map(|unit| progress(unit, -1, None)));
         self.round(authority, frames)
-    }
-}
-
-fn subscription(table: &str, cursor: i64, token: Option<String>) -> Frame {
-    Frame::Subscription {
-        id: format!("sub-{table}"),
-        table: table.to_owned(),
-        scopes: vec![("org".to_owned(), vec!["o1".to_owned()])],
-        params: None,
-        cursor,
-        bootstrap_state: token.map(RawJson),
     }
 }
 
@@ -345,20 +385,113 @@ fn segment_rows(frames: &[Frame]) -> Vec<(String, i64)> {
         .collect()
 }
 
-fn sub_end(frames: &[Frame]) -> (i64, Option<String>) {
-    frames
-        .iter()
-        .find_map(|frame| match frame {
+/// Every unit section: `SUB_START` id, status and bootstrap flag, and its
+/// `SUB_END` cursor and token.
+type Section = (String, SubStatus, bool, i64, Option<String>);
+
+fn sections(frames: &[Frame]) -> Vec<Section> {
+    let mut sections = Vec::new();
+    let mut start = None;
+    for frame in frames {
+        match frame {
+            Frame::SubStart {
+                id,
+                status,
+                bootstrap,
+                fenced,
+                ..
+            } => {
+                assert!(fenced.is_empty(), "every scope value is granted");
+                start = Some((id.clone(), *status, *bootstrap));
+            }
             Frame::SubEnd {
                 next_cursor,
                 bootstrap_state,
-            } => Some((
-                *next_cursor,
-                bootstrap_state.as_ref().map(|raw| raw.0.clone()),
-            )),
+            } => {
+                let (id, status, bootstrap) = start.take().expect("SUB_START before SUB_END");
+                sections.push((
+                    id,
+                    status,
+                    bootstrap,
+                    *next_cursor,
+                    bootstrap_state.as_ref().map(|raw| raw.0.clone()),
+                ));
+            }
+            _ => {}
+        }
+    }
+    sections
+}
+
+/// The live section: `LIVE_START` status, `LIVE_END.throughSeq` and echo
+/// digest, and every `COMMIT` as its sequence and changes.
+type Live = (
+    LiveStatus,
+    i64,
+    Option<[u8; 32]>,
+    Vec<(i64, Vec<String>, Vec<Change>)>,
+);
+
+fn live(frames: &[Frame]) -> Live {
+    let status = frames
+        .iter()
+        .find_map(|frame| match frame {
+            Frame::LiveStart { status, .. } => Some(*status),
             _ => None,
         })
-        .expect("a SUB_END")
+        .expect("a LIVE_START");
+    let commits = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            Frame::Commit {
+                commit_seq,
+                tables,
+                changes,
+                ..
+            } => Some((*commit_seq, tables.clone(), changes.clone())),
+            _ => None,
+        })
+        .collect();
+    let Some(Frame::LiveEnd {
+        through_seq,
+        echo_digest,
+    }) = frames.last()
+    else {
+        panic!("LIVE_END closes the response: {frames:?}");
+    };
+    (status, *through_seq, *echo_digest, commits)
+}
+
+/// The changes of every live-section commit: table, row id, op and version.
+fn changes(frames: &[Frame]) -> Vec<(i64, String, String, Op, i64)> {
+    live(frames)
+        .3
+        .into_iter()
+        .flat_map(|(seq, tables, changes)| {
+            changes.into_iter().map(move |change| {
+                (
+                    seq,
+                    tables[change.table_index as usize].clone(),
+                    change.row_id,
+                    change.op,
+                    change.row_version,
+                )
+            })
+        })
+        .collect()
+}
+
+/// The row's tombstone: `Some` with its recorded version.
+fn tombstone(authority: &LocalAuthority, table: &str, row_id: &str) -> Option<Option<i64>> {
+    authority
+        .conn
+        .query_row(
+            "SELECT server_version FROM sync_tombstones WHERE tbl=?1 AND row_id=?2",
+            [table, row_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("read")
 }
 
 fn count(authority: &LocalAuthority, table: &str) -> i64 {
@@ -428,14 +561,29 @@ fn push_pull_round_trip() {
         ]
     );
 
-    let frames = client.pull(&mut authority, vec![subscription("tasks", -1, None)], 0, 0);
-    assert!(matches!(
-        &frames[1],
-        Frame::SubStart { status: SubStatus::Active, bootstrap: true, effective_scopes, .. }
-            if effective_scopes == &vec![("org".to_owned(), vec!["o1".to_owned()])]
-    ));
-    assert_eq!(segment_rows(&frames), vec![("t1".to_owned(), 1)]);
-    assert_eq!(sub_end(&frames), (1, None));
+    // §4.1: the unit covers every table declaring `org`; it bootstraps at
+    // pin 1 and joins the scan set of the same response.
+    let o1 = org("o1");
+    let frames = client.register(&mut authority, std::slice::from_ref(&o1));
+    assert_eq!(
+        sections(&frames),
+        vec![(ssp2::unit_id(&o1), SubStatus::Active, true, 1, None)]
+    );
+    assert_eq!(
+        segment_rows(&frames),
+        vec![("p1".to_owned(), 1), ("t1".to_owned(), 1)]
+    );
+    let (status, through, echo, commits) = live(&frames);
+    assert_eq!((status, through, commits.len()), (LiveStatus::Active, 1, 0));
+    let echo = echo.expect("an echo digest");
+    assert_eq!(
+        echo,
+        ssp2::echo_digest([ssp2::UnitEcho {
+            id: &ssp2::unit_id(&o1),
+            status: ssp2::model::EchoStatus::Active,
+            fenced: &[],
+        }])
+    );
 
     let update = upsert(
         &s,
@@ -450,6 +598,7 @@ fn push_pull_round_trip() {
         &mut authority,
         vec![Frame::PushCommit {
             client_commit_id: "c1:1".to_owned(),
+            client_seq: 0,
             operations: vec![update],
         }],
     );
@@ -462,7 +611,12 @@ fn push_pull_round_trip() {
         }
     ));
 
-    let frames = client.pull(&mut authority, vec![subscription("tasks", 1, None)], 0, 0);
+    // A live unit referred to by digest: no unit section, one COMMIT.
+    let frames = client.round(
+        &mut authority,
+        vec![pull_header(1, std::slice::from_ref(&o1), Some(echo), 0, 0)],
+    );
+    assert_eq!(sections(&frames), vec![]);
     let Frame::Commit {
         commit_seq,
         changes,
@@ -471,15 +625,15 @@ fn push_pull_round_trip() {
         ..
     } = &frames[2]
     else {
-        panic!("an incremental COMMIT: {frames:?}");
+        panic!("a live-section COMMIT: {frames:?}");
     };
     assert_eq!(
         (*commit_seq, actor_id.as_str(), tables.clone()),
         (2, "local", vec!["tasks".to_owned()])
     );
-    assert_eq!(changes[0].row_version, Some(2));
+    assert_eq!(changes[0].row_version, 2);
     assert_eq!(changes[0].scopes, vec![("org".to_owned(), "o1".to_owned())]);
-    assert_eq!(sub_end(&frames), (2, None));
+    assert_eq!(live(&frames).1, 2);
 
     // The conformance reader's view: the reference server row-table layout.
     let (version, scopes): (i64, String) = authority
@@ -588,15 +742,14 @@ fn a_tombstone_beats_an_unversioned_upsert_and_an_insert_recreates() {
         client.push(&mut authority, "d", vec![recreate]).0,
         PushStatus::Applied
     );
-    // §6.2: the recreate starts above the deleted version, so a baseVersion
-    // held from the previous incarnation conflicts.
+    // §2.2, §6.2: the delete wrote version 2 and the recreate starts above
+    // the delete floor, so a baseVersion held from the previous incarnation
+    // conflicts.
     assert_eq!(
         stored(&authority, "tasks", "t1").map(|(version, _)| version),
-        Some(2)
+        Some(3)
     );
-    assert!(store::tombstone(&authority.conn, "tasks", "t1")
-        .unwrap()
-        .is_none());
+    assert_eq!(tombstone(&authority, "tasks", "t1"), None);
     let stale = upsert(
         &s,
         "tasks",
@@ -608,7 +761,7 @@ fn a_tombstone_beats_an_unversioned_upsert_and_an_insert_recreates() {
         matches!(
             &results[0],
             OpResult::Conflict {
-                server_version: 2,
+                server_version: 3,
                 ..
             }
         ),
@@ -641,19 +794,17 @@ fn an_unreadable_idempotency_record_answers_a_retryable_cache_miss_for_its_commi
         vec![
             Frame::PushCommit {
                 client_commit_id: "a".to_owned(),
+                client_seq: 0,
                 operations: vec![task(&s, "t1", None, None)],
             },
             Frame::PushCommit {
                 client_commit_id: "b".to_owned(),
+                client_seq: 0,
                 operations: vec![task(&s, "t2", None, None)],
             },
-            Frame::PullHeader {
-                limit_commits: 0,
-                limit_snapshot_rows: 0,
-                max_snapshot_pages: 0,
-                accept: 0b0011,
-            },
-            subscription("tasks", -1, None),
+            pull_header(-1, &[org("o1")], None, 0, 50),
+            Frame::Unit { scopes: org("o1") },
+            progress(&org("o1"), -1, None),
         ],
     );
     let results: Vec<_> = frames
@@ -762,21 +913,28 @@ fn declared_references_cascade_set_null_and_restrict() {
     assert!(stored(&authority, "tasks", "t1").is_none());
     let (version, values) = stored(&authority, "notes", "n1").expect("the SET NULL child stays");
     assert_eq!((version, values[2].clone()), (2, None));
-    let frames = client.pull(&mut authority, vec![subscription("notes", 1, None)], 0, 0);
-    let Frame::Commit { changes, .. } = &frames[2] else {
-        panic!("{frames:?}")
+    // A live unit at R = 1 receives the delete, its cascade and its SET NULL
+    // in one COMMIT; every delete advances the version (§2.2).
+    let mut frames = vec![pull_header(1, &[org("o1")], None, 0, 0)];
+    frames.extend(unit_frames(&[org("o1")]));
+    let frames = client.round(&mut authority, frames);
+    let row = |seq: i64, table: &str, row_id: &str, op, version| {
+        (seq, table.to_owned(), row_id.to_owned(), op, version)
     };
     assert_eq!(
-        (changes[0].op, changes[0].row_version),
-        (Op::Upsert, Some(2))
+        changes(&frames),
+        vec![
+            row(2, "projects", "p1", Op::Delete, 2),
+            row(2, "tasks", "t1", Op::Delete, 2),
+            row(2, "notes", "n1", Op::Upsert, 2),
+        ]
     );
-    assert!(store::tombstone(&authority.conn, "tasks", "t1")
-        .unwrap()
-        .is_some());
+    assert_eq!(tombstone(&authority, "tasks", "t1"), Some(Some(2)));
+    assert_eq!(store::log_state(&authority.conn).unwrap().delete_floor, 2);
 }
 
 #[test]
-fn a_tombstone_from_before_recorded_versions_recreates_at_one() {
+fn a_tombstone_from_before_recorded_versions_recreates_above_the_floor() {
     let path = temp_path();
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
@@ -790,10 +948,7 @@ fn a_tombstone_from_before_recorded_versions_recreates_at_one() {
     let mut authority = LocalAuthority::open(&path, &schema_json(1)).expect("open");
     let s = authority.schema.clone();
     let client = Session::new(&mut authority, "c1");
-    assert_eq!(
-        store::tombstone(&authority.conn, "tasks", "t1").unwrap(),
-        Some(None)
-    );
+    assert_eq!(tombstone(&authority, "tasks", "t1"), Some(None));
     let (_, results, _) = client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
     assert_eq!(error_code(&results), (0, "sync.row_deleted".to_owned()));
     let recreate = upsert(
@@ -811,10 +966,7 @@ fn a_tombstone_from_before_recorded_versions_recreates_at_one() {
         Some(1)
     );
     client.push(&mut authority, "c", vec![delete("tasks", "t1")]);
-    assert_eq!(
-        store::tombstone(&authority.conn, "tasks", "t1").unwrap(),
-        Some(Some(1))
-    );
+    assert_eq!(tombstone(&authority, "tasks", "t1"), Some(Some(2)));
     drop(authority);
     let _ = std::fs::remove_file(&path);
 }
@@ -1054,31 +1206,72 @@ fn bootstrap_pages_resume_through_the_token() {
         .map(|id| task(&s, id, None, None))
         .collect();
     client.push(&mut authority, "a", operations);
-    let mut token = None;
-    let mut seen = Vec::new();
-    for expected in [vec!["t1", "t2"], vec!["t3", "t4"], vec!["t5"]] {
-        let frames = client.pull(
-            &mut authority,
-            vec![subscription("tasks", -1, token.clone())],
-            2,
-            1,
-        );
-        let rows: Vec<String> = segment_rows(&frames)
+    let o1 = org("o1");
+    let units = std::slice::from_ref(&o1);
+    let tables = r#"["projects","tasks","notes","pins","nodes","docs"]"#;
+    // §4.7: every covered table delivers at least one segment, an empty one
+    // for a table without rows, and each segment counts as one page.
+    let mut frames = vec![pull_header(-1, units, None, 2, 3)];
+    frames.extend(unit_frames(units));
+    frames.push(progress(&o1, -1, None));
+    let mut echo = None;
+    for (expected, next) in [
+        (
+            vec!["t1", "t2", "t3", "t4"],
+            Some(format!(
+                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":1,"rowCursor":"t4"}}"#
+            )),
+        ),
+        (
+            vec!["t5"],
+            Some(format!(
+                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":4,"rowCursor":null}}"#
+            )),
+        ),
+        (vec![], None),
+    ] {
+        let response = client.round(&mut authority, frames);
+        let rows: Vec<String> = segment_rows(&response)
             .into_iter()
             .map(|(id, _)| id)
             .collect();
         assert_eq!(rows, expected);
-        seen.extend(rows);
-        let (cursor, next) = sub_end(&frames);
-        assert_eq!(cursor, 1);
-        token = next;
+        let [(_, SubStatus::Active, true, 1, token)] = &sections(&response)[..] else {
+            panic!("one bootstrap section at pin 1: {response:?}");
+        };
+        assert_eq!(token, &next);
+        echo = live(&response).2;
+        // Later rounds refer to the stored list by its digest (§4.1).
+        frames = vec![
+            pull_header(-1, units, echo, 2, 3),
+            progress(&o1, 1, token.clone()),
+        ];
     }
-    assert!(token.is_none(), "the last page completes the bootstrap");
-    assert_eq!(seen.len(), 5);
-    let frames = client.pull(&mut authority, vec![subscription("tasks", -1, None)], 2, 1);
+    // The completed bootstrap joined: the unit is live at R = 1.
+    let quiet = client.round(&mut authority, vec![pull_header(1, units, echo, 0, 0)]);
+    assert_eq!(sections(&quiet), vec![]);
+    assert_eq!(live(&quiet).1, 1);
+    // §4.7: a token naming other tables restarts the bootstrap at a fresh pin.
+    let restarted = client.round(
+        &mut authority,
+        vec![
+            pull_header(-1, units, echo, 2, 3),
+            progress(
+                &o1,
+                1,
+                Some(
+                    r#"{"asOfCommitSeq":1,"tables":["tasks"],"tableIndex":0,"rowCursor":"t4"}"#
+                        .to_owned(),
+                ),
+            ),
+        ],
+    );
     assert_eq!(
-        sub_end(&frames).1.as_deref(),
-        Some(r#"{"asOfCommitSeq":1,"tables":["tasks"],"tableIndex":0,"rowCursor":"t2"}"#)
+        segment_rows(&restarted)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        vec!["t1", "t2", "t3", "t4"]
     );
 }
 
@@ -1102,20 +1295,48 @@ fn a_cursor_behind_the_horizon_resets() {
     )
     .unwrap();
     assert_eq!(horizon, 3);
-    assert!(
-        store::tombstone(&authority.conn, "tasks", "t1")
-            .unwrap()
-            .is_some(),
+    assert_eq!(
+        tombstone(&authority, "tasks", "t1"),
+        Some(Some(2)),
         "seq 4 survives"
     );
-    let frames = client.pull(&mut authority, vec![subscription("tasks", 1, None)], 0, 0);
+    let o1 = org("o1");
+    let units = std::slice::from_ref(&o1);
+    let pull = |cursor: i64, unit_cursor: Option<i64>| {
+        let mut frames = vec![pull_header(cursor, units, None, 0, 0)];
+        frames.extend(unit_frames(units));
+        frames.extend(unit_cursor.map(|unit_cursor| progress(&o1, unit_cursor, None)));
+        frames
+    };
+    // §4.6 unit reset: a post-bootstrap cursor below the horizon.
+    let frames = client.round(&mut authority, pull(-1, Some(1)));
+    assert_eq!(
+        sections(&frames),
+        vec![(ssp2::unit_id(&o1), SubStatus::Reset, false, 1, None)]
+    );
     assert!(matches!(
-        &frames[1],
-        Frame::SubStart { status: SubStatus::Reset, reason_code, .. } if reason_code == "sync.cursor_expired"
+        frames.iter().find(|frame| matches!(frame, Frame::SubStart { .. })),
+        Some(Frame::SubStart { reason_code, .. }) if reason_code == "sync.cursor_expired"
     ));
-    assert_eq!(sub_end(&frames), (1, None));
-    let frames = client.pull(&mut authority, vec![subscription("tasks", 3, None)], 0, 0);
-    assert!(matches!(&frames[2], Frame::Commit { commit_seq: 4, .. }));
+    assert_eq!(live(&frames).1, 4);
+    // §4.6 replica reset: a live unit with R below the horizon, or above
+    // maxCommitSeq.
+    for cursor in [1, 5] {
+        let frames = client.round(&mut authority, pull(cursor, None));
+        let (status, through, _, commits) = live(&frames);
+        assert_eq!((status, through, commits.len()), (LiveStatus::Reset, -1, 0));
+        assert!(matches!(
+            frames.iter().find(|frame| matches!(frame, Frame::LiveStart { .. })),
+            Some(Frame::LiveStart { reason_code, .. }) if reason_code == "sync.cursor_expired"
+        ));
+    }
+    // At the horizon the log still answers: the delete carries the version
+    // its tombstone records.
+    let frames = client.round(&mut authority, pull(3, None));
+    assert_eq!(
+        changes(&frames),
+        vec![(4, "tasks".to_owned(), "t1".to_owned(), Op::Delete, 2)]
+    );
 }
 
 /// An authority whose clock the test moves.
@@ -1160,13 +1381,16 @@ fn the_client_record_carries_the_last_round_outcome() {
         "c1",
         client.version + 1,
         Some(client.epoch.clone()),
+        None,
         vec![report("sync.transport_failed"), empty_pull()],
     );
     authority.sync(&floor).expect("floor round");
     assert_eq!(client_record(&authority, "c1"), None);
 
     client.push(&mut authority, "c1", vec![task(&s, "t1", None, None)]);
-    client.pull(&mut authority, vec![subscription("tasks", -1, None)], 0, 0);
+    let o1 = org("o1");
+    let units = std::slice::from_ref(&o1);
+    let echo = live(&client.register(&mut authority, units)).2;
     assert_eq!(
         client_record(&authority, "c1"),
         Some((1, 1_000, 1_000, None, 0))
@@ -1174,9 +1398,10 @@ fn the_client_record_carries_the_last_round_outcome() {
 
     // The report lands before the round, whose completion keeps it.
     now.store(2_000, Ordering::SeqCst);
-    let mut frames = vec![report("sync.timeout"), empty_pull()];
-    frames.push(subscription("tasks", 1, None));
-    client.round(&mut authority, frames);
+    client.round(
+        &mut authority,
+        vec![report("sync.timeout"), pull_header(1, units, echo, 0, 0)],
+    );
     assert_eq!(
         client_record(&authority, "c1"),
         Some((1, 2_000, 2_000, Some("sync.timeout".to_owned()), 1))
@@ -1185,15 +1410,15 @@ fn the_client_record_carries_the_last_round_outcome() {
     // A refused round extends the streak and leaves the cursor and the
     // retention timestamp alone.
     now.store(3_000, Ordering::SeqCst);
+    let twice = [o1.clone(), o1.clone()];
+    let mut frames = vec![pull_header(1, &twice, echo, 0, 0)];
+    frames.extend(unit_frames(&twice));
     let duplicate = encode_request(
         "c1",
         client.version,
         Some(client.epoch.clone()),
-        vec![
-            empty_pull(),
-            subscription("tasks", 1, None),
-            subscription("tasks", 1, None),
-        ],
+        None,
+        frames,
     );
     assert_eq!(
         authority.sync(&duplicate).unwrap_err().code,
@@ -1210,17 +1435,57 @@ fn the_client_record_carries_the_last_round_outcome() {
         ))
     );
     // A refused round never creates a record.
-    let stranger = encode_request("c2", client.version, Some(client.epoch.clone()), vec![]);
+    let stranger = encode_request(
+        "c2",
+        client.version,
+        Some(client.epoch.clone()),
+        None,
+        vec![],
+    );
     assert!(authority.sync(&stranger).is_err());
     assert_eq!(client_record(&authority, "c2"), None);
 
     // The next round without a report clears the outcome.
     now.store(4_000, Ordering::SeqCst);
-    client.pull(&mut authority, vec![subscription("tasks", 1, None)], 0, 0);
+    client.round(&mut authority, vec![pull_header(1, units, echo, 0, 0)]);
     assert_eq!(
         client_record(&authority, "c1"),
         Some((1, 4_000, 4_000, None, 0))
     );
+
+    // §4.1: a digest the record does not hold answers `unregistered`, and
+    // the round writes only its outcome (§4.5).
+    now.store(5_000, Ordering::SeqCst);
+    let frames = client.round(
+        &mut authority,
+        vec![
+            report("sync.timeout"),
+            pull_header(1, &[org("o2")], echo, 0, 0),
+            progress(&o1, -1, None),
+        ],
+    );
+    assert_eq!(
+        frames[1..],
+        [
+            Frame::LiveStart {
+                status: LiveStatus::Unregistered,
+                reason_code: String::new(),
+            },
+            Frame::LiveEnd {
+                through_seq: -1,
+                echo_digest: None,
+            },
+        ]
+    );
+    assert_eq!(
+        client_record(&authority, "c1"),
+        Some((1, 4_000, 5_000, Some("sync.timeout".to_owned()), 1))
+    );
+    // A client with no record is `unregistered` too, and gains none.
+    let stranger = Session::new(&mut authority, "c3");
+    let frames = stranger.round(&mut authority, vec![pull_header(-1, units, None, 0, 0)]);
+    assert_eq!(live(&frames).0, LiveStatus::Unregistered);
+    assert_eq!(client_record(&authority, "c3"), None);
 }
 
 #[test]
@@ -1229,6 +1494,8 @@ fn the_clock_stamps_commits_and_prune_takes_the_host_floors() {
     let s = authority.schema.clone();
     let client = Session::new(&mut authority, "c1");
     client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    // The record cursor joins at 1 (§4.5).
+    client.register(&mut authority, &[org("o1")]);
     client.push(&mut authority, "b", vec![task(&s, "t2", None, None)]);
     let stamps: Vec<i64> = authority
         .conn
@@ -1245,12 +1512,22 @@ fn the_clock_stamps_commits_and_prune_takes_the_host_floors() {
         min_retained_commits: 0,
         ..Retention::default()
     };
-    // The client's cursor (-1, push-only rounds) holds the horizon while its
-    // record is inside the active window on the authority's clock...
-    assert_eq!(authority.prune(&floors(5_000)).unwrap(), 0);
+    // The record cursor holds the horizon while the record is inside the
+    // active window on the authority's clock...
+    assert_eq!(authority.prune(&floors(5_000)).unwrap(), 1);
     // ...and stops holding it once the window no longer reaches it.
     assert_eq!(authority.prune(&floors(500)).unwrap(), 2);
     assert_eq!(store::log_state(&authority.conn).unwrap().horizon, 2);
+    // §4.6: a record cursor of -1 holds nothing.
+    let (mut authority, now) = clocked();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    now.store(2_000, Ordering::SeqCst);
+    assert_eq!(
+        client_record(&authority, "c1").map(|record| record.0),
+        Some(-1)
+    );
+    assert_eq!(authority.prune(&floors(5_000)).unwrap(), 1);
 }
 
 #[test]
@@ -1265,21 +1542,24 @@ fn a_schema_bump_appends_a_nullable_column_and_keeps_rows() {
     let mut authority = LocalAuthority::open(&path, &schema_json(2)).unwrap();
     let s = authority.schema.clone();
     let mut client = Session::new(&mut authority, "c1");
-    let frames = client.pull(&mut authority, vec![subscription("tasks", -1, None)], 0, 0);
+    let frames = client.register(&mut authority, &[org("o1")]);
     let segment = frames
         .iter()
         .find_map(|frame| match frame {
-            Frame::SegmentInline { payload } => Some(decode_rows_segment(payload).unwrap()),
+            Frame::SegmentInline { payload } => Some(decode_rows_segment(payload).unwrap())
+                .filter(|segment| segment.table == "tasks"),
             _ => None,
         })
         .unwrap();
     assert_eq!((segment.schema_version, segment.columns.len()), (2, 6));
     assert_eq!(segment.blocks[0][0].values[5], None);
     // The logged change was re-encoded to the new layout too.
-    let frames = client.pull(&mut authority, vec![subscription("tasks", 0, None)], 0, 0);
-    let Frame::Commit { changes, .. } = &frames[2] else {
-        panic!("{frames:?}")
-    };
+    let frames = client.round(&mut authority, {
+        let mut frames = vec![pull_header(0, &[org("o1")], None, 0, 0)];
+        frames.extend(unit_frames(&[org("o1")]));
+        frames
+    });
+    let changes = &live(&frames).3[0].2;
     let row = store::decode_payload(
         &authority.schema.table("tasks").unwrap().columns,
         changes[0].row.as_ref().unwrap(),
@@ -1312,13 +1592,16 @@ fn a_schema_bump_appends_a_nullable_column_and_keeps_rows() {
 #[test]
 fn request_validation_fails_before_any_byte() {
     let mut authority = memory();
+    let s = authority.schema.clone();
     let client = Session::new(&mut authority, "c1");
     let epochless = encode_request(
         "c1",
         1,
         None,
+        None,
         vec![Frame::PushCommit {
             client_commit_id: "a".to_owned(),
+            client_seq: 0,
             operations: vec![delete("tasks", "t1")],
         }],
     );
@@ -1326,25 +1609,94 @@ fn request_validation_fails_before_any_byte() {
         authority.sync(&epochless).unwrap_err().code,
         "sync.invalid_request"
     );
-    let unknown = encode_request(
-        "c1",
-        1,
-        Some(client.epoch.clone()),
+    let refused = |authority: &mut LocalAuthority, outbox_id: Option<&str>, frames: Vec<Frame>| {
+        let request = encode_request("c1", 1, Some(client.epoch.clone()), outbox_id, frames);
+        authority.sync(&request).unwrap_err()
+    };
+    // §4.1 unit validation, with the reason in the details.
+    let unit = |scopes: Vec<(String, String)>| {
         vec![
-            Frame::PullHeader {
-                limit_commits: 0,
-                limit_snapshot_rows: 0,
-                max_snapshot_pages: 0,
-                accept: 3,
-            },
-            subscription("missing", -1, None),
-        ],
-    );
+            pull_header(-1, std::slice::from_ref(&scopes), None, 0, 0),
+            Frame::Unit { scopes },
+        ]
+    };
+    for (scopes, reason) in [
+        (vec![], "empty_scope_map"),
+        (org("*"), "wildcard_value"),
+        (
+            vec![("missing".to_owned(), "x".to_owned())],
+            "undeclared_variable",
+        ),
+    ] {
+        let error = refused(&mut authority, None, unit(scopes));
+        assert_eq!(
+            (error.code.as_str(), &error.details.unwrap()["reason"]),
+            ("sync.invalid_subscription", &json!(reason))
+        );
+    }
+    // A digest that differs from the traveling list.
+    let mut frames = vec![pull_header(-1, &[org("o2")], None, 0, 0)];
+    frames.extend(unit_frames(&[org("o1")]));
+    let error = refused(&mut authority, None, frames);
     assert_eq!(
-        authority.sync(&unknown).unwrap_err().code,
-        "sync.unknown_table"
+        (error.code.as_str(), error.details),
+        (
+            "sync.invalid_subscription",
+            Some(json!({ "reason": "registration_digest" }))
+        )
     );
-    let stale = encode_request("c1", 1, Some("other".to_owned()), vec![empty_pull()]);
+    // A PROGRESS id outside the list, or twice.
+    for (progressed, reason) in [
+        (vec![progress(&org("o2"), -1, None)], "unknown_unit"),
+        (
+            vec![
+                progress(&org("o1"), -1, None),
+                progress(&org("o1"), -1, None),
+            ],
+            "duplicate_progress",
+        ),
+    ] {
+        let mut frames = unit(org("o1"));
+        frames.extend(progressed);
+        let error = refused(&mut authority, None, frames);
+        assert_eq!(error.details.unwrap()["reason"], json!(reason));
+    }
+    // §6.1 sequence rules: with an outbox every clientSeq is ≥ 1 and strictly
+    // increasing; without one every clientSeq is 0. Nothing applies.
+    for (outbox_id, seqs) in [
+        (Some("outbox-1"), vec![0]),
+        (Some("outbox-1"), vec![2, 2]),
+        (Some("outbox-1"), vec![3, 1]),
+        (None, vec![1]),
+    ] {
+        let frames = seqs
+            .iter()
+            .enumerate()
+            .map(|(index, seq)| Frame::PushCommit {
+                client_commit_id: format!("c{index}"),
+                client_seq: *seq,
+                operations: vec![task(&s, &format!("t{index}"), None, None)],
+            })
+            .collect();
+        let error = refused(&mut authority, outbox_id, frames);
+        assert_eq!(
+            (error.code.as_str(), error.details),
+            (
+                "sync.invalid_request",
+                Some(json!({ "outbox": outbox_id.is_some(), "clientSeqs": seqs }))
+            )
+        );
+    }
+    assert!(stored(&authority, "tasks", "t0").is_none());
+    // §1.7: more UNIT frames than the reference cap.
+    let many: Vec<_> = (0..501).map(|i| org(&format!("o{i}"))).collect();
+    let mut frames = vec![pull_header(-1, &many, None, 0, 0)];
+    frames.extend(unit_frames(&many));
+    assert_eq!(
+        refused(&mut authority, None, frames).details,
+        Some(json!({ "limit": "maxSubscriptionsPerRequest", "max": 500, "actual": 501 }))
+    );
+    let stale = encode_request("c1", 1, Some("other".to_owned()), None, vec![empty_pull()]);
     let frames = decode(&authority.sync(&stale).unwrap());
     assert!(matches!(
         &frames[..],
@@ -1657,6 +2009,7 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
                 if let Frame::PushCommit {
                     client_commit_id,
                     operations,
+                    ..
                 } = frame
                 {
                     if client_commit_id.contains(":undo:") {
@@ -1700,9 +2053,7 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
         1,
         "only the remote's own row remains"
     );
-    assert!(store::tombstone(&remote.conn, "tasks", "t0000")
-        .unwrap()
-        .is_some());
+    assert_eq!(tombstone(&remote, "tasks", "t0000"), Some(Some(2)));
     assert_eq!(local.state(), AuthorityState::Local);
     assert_eq!(count(&local, "tasks"), 501);
 }
@@ -1801,8 +2152,8 @@ fn a_lost_undo_response_blocks_attach_until_a_retried_abandon_completes() {
     assert_eq!(local.state(), AuthorityState::Attached);
     assert_eq!(
         stored(&remote, "tasks", "t1").map(|(version, _)| version),
-        Some(2),
-        "the fresh attach recreates the row above the undo's tombstone"
+        Some(3),
+        "the undo delete wrote version 2; the fresh attach recreates above the delete floor"
     );
 }
 
@@ -1946,5 +2297,633 @@ fn a_retired_authority_reopens_attached_and_refuses_everything() {
         "sync.authority_unavailable"
     );
     drop(local);
+    let _ = std::fs::remove_file(&path);
+}
+
+fn org_task(s: &schema::Schema, id: &str, org: &str) -> Operation {
+    upsert(
+        s,
+        "tasks",
+        &[Some(id), Some(org), None, Some("title"), None],
+        None,
+    )
+}
+
+/// The stored client record's catching-up units and registration list.
+fn registration(authority: &LocalAuthority, client_id: &str) -> (Value, Option<Value>) {
+    let (catching_up, units): (String, Option<String>) = authority
+        .conn
+        .query_row(
+            "SELECT catching_up, units FROM sync_clients WHERE client_id=?1",
+            [client_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read");
+    (
+        serde_json::from_str(&catching_up).unwrap(),
+        units.map(|units| serde_json::from_str(&units).unwrap()),
+    )
+}
+
+#[test]
+fn a_pull_carries_a_bootstrapping_unit_and_a_live_unit() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![org_task(&s, "t1", "o1")]);
+    let (o1, o2) = (org("o1"), org("o2"));
+    let echo = live(&client.register(&mut authority, std::slice::from_ref(&o1))).2;
+    client.push(&mut authority, "b", vec![org_task(&s, "t2", "o1")]);
+    client.push(&mut authority, "c", vec![org_task(&s, "t3", "o2")]);
+
+    // o1 is live at R = 1; o2 joins the list and bootstraps at pin 3.
+    let both = [o1.clone(), o2.clone()];
+    let mut frames = vec![pull_header(1, &both, echo, 0, 50)];
+    frames.extend(unit_frames(&both));
+    frames.push(progress(&o2, -1, None));
+    let frames = client.round(&mut authority, frames);
+    assert_eq!(
+        sections(&frames),
+        vec![
+            (ssp2::unit_id(&o1), SubStatus::Active, false, 1, None),
+            (ssp2::unit_id(&o2), SubStatus::Active, true, 3, None),
+        ]
+    );
+    assert_eq!(segment_rows(&frames), vec![("t3".to_owned(), 1)]);
+    // The live unit scans from R; the completed bootstrap from its pin.
+    assert_eq!(
+        changes(&frames),
+        vec![(2, "tasks".to_owned(), "t2".to_owned(), Op::Upsert, 1)]
+    );
+    let (status, through, echo, _) = live(&frames);
+    assert_eq!((status, through), (LiveStatus::Active, 3));
+    // Join rule J: both units are live at R* = 3, and the record holds the
+    // traveled list.
+    assert_eq!(
+        client_record(&authority, "c1").map(|record| record.0),
+        Some(3)
+    );
+    assert_eq!(
+        registration(&authority, "c1"),
+        (json!([]), Some(json!([{ "org": "o1" }, { "org": "o2" }])))
+    );
+
+    // §4.5: a cut section stops after the commit that reaches the budget;
+    // a post-bootstrap unit whose scan the cut stops below R stays catching
+    // up and joins in a later round.
+    for (id, org) in [("d", "o1"), ("e", "o1"), ("f", "o2"), ("g", "o2")] {
+        client.push(
+            &mut authority,
+            id,
+            vec![org_task(&s, &format!("t-{id}"), org)],
+        );
+    }
+    let cut = |cursor, unit_cursor| {
+        let mut frames = vec![Frame::PullHeader {
+            limit_commits: 1,
+            limit_snapshot_rows: 0,
+            max_snapshot_pages: 0,
+            accept: 0b0011,
+            cursor,
+            registration_digest: ssp2::registration_digest(both.iter().map(Vec::as_slice)),
+            echo_digest: echo,
+        }];
+        frames.push(progress(&o2, unit_cursor, None));
+        frames
+    };
+    let frames = client.round(&mut authority, cut(7, 5));
+    assert_eq!(sections(&frames), vec![]);
+    assert_eq!(
+        changes(&frames),
+        vec![(6, "tasks".to_owned(), "t-f".to_owned(), Op::Upsert, 1)]
+    );
+    assert_eq!(live(&frames).1, 6);
+    assert_eq!(
+        client_record(&authority, "c1").map(|record| record.0),
+        Some(6)
+    );
+    assert_eq!(
+        registration(&authority, "c1").0,
+        json!([{ "id": ssp2::unit_id(&o2), "cursor": 6 }])
+    );
+    let frames = client.round(&mut authority, cut(7, 6));
+    assert_eq!(
+        changes(&frames),
+        vec![(7, "tasks".to_owned(), "t-g".to_owned(), Op::Upsert, 1)]
+    );
+    assert_eq!(
+        client_record(&authority, "c1").map(|record| record.0),
+        Some(7)
+    );
+    assert_eq!(registration(&authority, "c1").0, json!([]));
+}
+
+#[test]
+fn a_recreate_starts_above_the_delete_floor_so_a_stale_base_version_conflicts() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let titled = |title: &str, base| {
+        upsert(
+            &s,
+            "tasks",
+            &[Some("t1"), Some("o1"), None, Some(title), None],
+            base,
+        )
+    };
+    client.push(&mut authority, "c1", vec![titled("v1", None)]);
+    for title in ["v2", "v3"] {
+        client.push(&mut authority, title, vec![titled(title, None)]);
+    }
+    // The delete advances 3 to 4; the tombstone and the floor record 4.
+    client.push(&mut authority, "delete", vec![delete("tasks", "t1")]);
+    assert_eq!(tombstone(&authority, "tasks", "t1"), Some(Some(4)));
+    assert_eq!(store::log_state(&authority.conn).unwrap().delete_floor, 4);
+    let (status, ..) = client.push(&mut authority, "recreate", vec![titled("new", Some(0))]);
+    assert_eq!(status, PushStatus::Applied);
+    assert_eq!(stored(&authority, "tasks", "t1").map(|row| row.0), Some(5));
+    let (_, results, _) = client.push(&mut authority, "stale", vec![titled("stale", Some(3))]);
+    let OpResult::Conflict {
+        server_version,
+        server_row,
+        ..
+    } = &results[0]
+    else {
+        panic!("a conflict: {results:?}");
+    };
+    assert_eq!(*server_version, 5);
+    let row = store::decode_payload(&s.table("tasks").unwrap().columns, server_row).unwrap();
+    assert_eq!(row[3], text("new"));
+}
+
+#[test]
+fn every_insert_starts_above_the_floor_and_a_pruned_tombstone_leaves_it() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let version = |authority: &LocalAuthority, id| stored(authority, "tasks", id).map(|row| row.0);
+    client.push(&mut authority, "c1", vec![task(&s, "fresh", None, None)]);
+    assert_eq!(version(&authority, "fresh"), Some(1));
+    client.push(&mut authority, "c2", vec![task(&s, "gone", None, None)]);
+    client.push(&mut authority, "c3", vec![delete("tasks", "gone")]);
+    // Another row id starts above the floor too.
+    client.push(&mut authority, "c4", vec![task(&s, "other", None, None)]);
+    assert_eq!(version(&authority, "other"), Some(3));
+    let recreate = upsert(
+        &s,
+        "tasks",
+        &[Some("gone"), Some("o1"), None, Some("x"), None],
+        Some(0),
+    );
+    client.push(&mut authority, "c5", vec![recreate]);
+    assert_eq!(version(&authority, "gone"), Some(3));
+    assert_eq!(tombstone(&authority, "tasks", "gone"), None);
+    client.push(&mut authority, "c6", vec![delete("tasks", "gone")]);
+    let horizon = store::prune(
+        &authority.conn,
+        store::now_ms() + 31 * 24 * 60 * 60 * 1000,
+        &Retention {
+            min_retained_commits: 0,
+            ..Retention::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(horizon, 6);
+    assert_eq!(tombstone(&authority, "tasks", "gone"), None);
+    // Past the horizon an unversioned insert applies, still above the floor.
+    let (status, ..) = client.push(&mut authority, "c7", vec![task(&s, "gone", None, None)]);
+    assert_eq!(status, PushStatus::Applied);
+    assert_eq!(version(&authority, "gone"), Some(5));
+}
+
+#[test]
+fn a_delete_and_a_recreate_in_one_commit_advance_past_each_other() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "c1", vec![task(&s, "t1", None, None)]);
+    let recreate = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some("o1"), None, Some("again"), None],
+        Some(0),
+    );
+    let (status, ..) = client.push(&mut authority, "c2", vec![delete("tasks", "t1"), recreate]);
+    assert_eq!(status, PushStatus::Applied);
+    assert_eq!(stored(&authority, "tasks", "t1").map(|row| row.0), Some(3));
+    assert_eq!(tombstone(&authority, "tasks", "t1"), None);
+}
+
+#[test]
+fn a_tombstone_without_a_stored_version_still_recreates_above_the_floor() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "c1", vec![task(&s, "t1", None, None)]);
+    client.push(&mut authority, "delete", vec![delete("tasks", "t1")]);
+    authority
+        .conn
+        .execute_batch("UPDATE sync_tombstones SET server_version = NULL, scopes = NULL")
+        .unwrap();
+    let recreate = upsert(
+        &s,
+        "tasks",
+        &[Some("t1"), Some("o1"), None, Some("again"), None],
+        Some(0),
+    );
+    client.push(&mut authority, "recreate", vec![recreate]);
+    assert_eq!(stored(&authority, "tasks", "t1").map(|row| row.0), Some(3));
+}
+
+/// One push request under `outbox_id`: each commit's id, status and records.
+fn outbox_push(
+    client: &Session,
+    authority: &mut LocalAuthority,
+    outbox_id: Option<&str>,
+    commits: Vec<(&str, i64, Vec<Operation>)>,
+) -> Vec<(String, PushStatus, Vec<OpResult>)> {
+    let frames = commits
+        .into_iter()
+        .map(|(id, client_seq, operations)| Frame::PushCommit {
+            client_commit_id: id.to_owned(),
+            client_seq,
+            operations,
+        })
+        .collect();
+    client
+        .outbox_round(authority, outbox_id, frames)
+        .into_iter()
+        .filter_map(|frame| match frame {
+            Frame::PushResult {
+                client_commit_id,
+                status,
+                results,
+                ..
+            } => Some((client_commit_id, status, results)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `clientCommitId` and outbox sequence of every stored result of a client.
+fn results(
+    authority: &LocalAuthority,
+    client_id: &str,
+) -> Vec<(String, Option<String>, Option<i64>)> {
+    authority
+        .conn
+        .prepare("SELECT client_commit_id, outbox_id, client_seq FROM sync_push_results WHERE client_id=?1 ORDER BY client_commit_id")
+        .and_then(|mut statement| {
+            statement
+                .query_map([client_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect()
+        })
+        .expect("read")
+}
+
+fn expired(id: &str) -> (String, PushStatus, Vec<OpResult>) {
+    (
+        id.to_owned(),
+        PushStatus::Rejected,
+        vec![OpResult::Error {
+            op_index: 0,
+            code: "sync.commit_expired".to_owned(),
+            message: "the commit lies below its outbox watermark (§6.3.2)".to_owned(),
+            retryable: false,
+        }],
+    )
+}
+
+#[test]
+fn a_request_raises_the_watermark_to_its_first_client_seq_and_deletes_the_results_below_it() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let push = |authority: &mut LocalAuthority, id: &str, seq| {
+        outbox_push(
+            &client,
+            authority,
+            Some("outbox-1"),
+            vec![(id, seq, vec![task(&s, id, None, None)])],
+        )
+    };
+    push(&mut authority, "c1", 1);
+    push(&mut authority, "c2", 2);
+    // A lost-ack retry of a commit still in the outbox replays its result.
+    let retry = client.outbox_round(
+        &mut authority,
+        Some("outbox-1"),
+        vec![Frame::PushCommit {
+            client_commit_id: "c2".to_owned(),
+            client_seq: 2,
+            operations: vec![task(&s, "c2", None, None)],
+        }],
+    );
+    assert!(matches!(
+        &retry[1],
+        Frame::PushResult {
+            status: PushStatus::Cached,
+            commit_seq: Some(2),
+            ..
+        }
+    ));
+    push(&mut authority, "c3", 3);
+    // §12.2: the replica keeps the results of at most one request.
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![("c3".to_owned(), Some("outbox-1".to_owned()), Some(3))]
+    );
+    let watermarks: Vec<(String, String, i64)> = authority
+        .conn
+        .prepare("SELECT client_id, outbox_id, through_seq FROM sync_push_watermarks")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect()
+        })
+        .unwrap();
+    assert_eq!(
+        watermarks,
+        vec![("c1".to_owned(), "outbox-1".to_owned(), 3)]
+    );
+    assert_eq!(push(&mut authority, "c1", 1), vec![expired("c1")]);
+}
+
+#[test]
+fn a_commit_below_the_watermark_without_a_result_answers_commit_expired_unpersisted() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let commit = |id: &'static str, seq| (id, seq, vec![task(&s, id, None, None)]);
+    outbox_push(
+        &client,
+        &mut authority,
+        Some("outbox-1"),
+        vec![commit("t1", 1)],
+    );
+    outbox_push(
+        &client,
+        &mut authority,
+        Some("outbox-1"),
+        vec![commit("t3", 3)],
+    );
+    // A delayed copy of an abandoned request: t1's result was deleted, t2
+    // never applied.
+    let delayed = outbox_push(
+        &client,
+        &mut authority,
+        Some("outbox-1"),
+        vec![commit("t1", 1), commit("t2", 2), commit("t4", 4)],
+    );
+    assert_eq!(delayed[..2], [expired("t1"), expired("t2")]);
+    assert_eq!(delayed[2].1, PushStatus::Applied);
+    assert!(stored(&authority, "tasks", "t2").is_none());
+    assert_eq!(stored(&authority, "tasks", "t1").map(|row| row.0), Some(1));
+    // The lower first sequence did not lower W: t3 keeps its result.
+    assert_eq!(
+        results(&authority, "c1")
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect::<Vec<_>>(),
+        vec!["t3", "t4"]
+    );
+}
+
+#[test]
+fn a_first_commit_that_rejects_still_settles_the_watermark() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![("c1", 1, vec![task(&s, "t1", None, None)])],
+    );
+    let rejected = outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![("c2", 2, vec![delete("nope", "x")])],
+    );
+    assert_eq!(rejected[0].1, PushStatus::Rejected);
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![("c2".to_owned(), Some("o1".to_owned()), Some(2))]
+    );
+    assert_eq!(
+        outbox_push(
+            &client,
+            &mut authority,
+            Some("o1"),
+            vec![("c1", 1, vec![task(&s, "t1", None, None)])]
+        ),
+        vec![expired("c1")]
+    );
+}
+
+#[test]
+fn results_without_an_outbox_stay_and_a_replica_settles_its_pre_upgrade_results() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "client-1");
+    let commit = |id: &'static str, seq| (id, seq, vec![task(&s, id, None, None)]);
+    for id in ["old-1", "old-2", "service"] {
+        outbox_push(&client, &mut authority, None, vec![commit(id, 0)]);
+    }
+    // The first request with an outbox carries the surviving prefix [old-2].
+    let upgraded = outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![commit("old-2", 5), commit("new-1", 6)],
+    );
+    assert_eq!(
+        upgraded.iter().map(|result| result.1).collect::<Vec<_>>(),
+        vec![PushStatus::Cached, PushStatus::Applied]
+    );
+    assert_eq!(
+        results(&authority, "client-1"),
+        vec![
+            ("new-1".to_owned(), Some("o1".to_owned()), Some(6)),
+            ("old-2".to_owned(), Some("o1".to_owned()), Some(5)),
+        ]
+    );
+    outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![commit("new-2", 7)],
+    );
+    assert_eq!(
+        results(&authority, "client-1")
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect::<Vec<_>>(),
+        vec!["new-2"]
+    );
+    // Another client's results are never touched.
+    let other = Session::new(&mut authority, "client-2");
+    outbox_push(&other, &mut authority, None, vec![commit("other", 0)]);
+    outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![commit("new-3", 8)],
+    );
+    assert_eq!(results(&authority, "client-2").len(), 1);
+}
+
+#[test]
+fn pre_upgrade_results_are_sequenced_by_their_request_and_deleted_once_the_last_commit_holds_none()
+{
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let commit = |id: &'static str, seq| (id, seq, vec![task(&s, id, None, None)]);
+    for id in ["X", "Y", "Z"] {
+        outbox_push(&client, &mut authority, None, vec![commit(id, 0)]);
+    }
+    // X left the outbox; a push budget cut the request after Y. Y's commit
+    // holds a pre-upgrade result, so X and Z stay.
+    assert_eq!(
+        outbox_push(&client, &mut authority, Some("o1"), vec![commit("Y", 5)])[0].1,
+        PushStatus::Cached
+    );
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![
+            ("X".to_owned(), None, None),
+            ("Y".to_owned(), Some("o1".to_owned()), Some(5)),
+            ("Z".to_owned(), None, None),
+        ]
+    );
+    // The next request ends with a new commit: X is deleted, Z takes its
+    // sequence and replays, and the watermark deletes Y.
+    let statuses = outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![commit("Z", 6), commit("N", 7)],
+    );
+    assert_eq!(
+        statuses.iter().map(|result| result.1).collect::<Vec<_>>(),
+        vec![PushStatus::Cached, PushStatus::Applied]
+    );
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![
+            ("N".to_owned(), Some("o1".to_owned()), Some(7)),
+            ("Z".to_owned(), Some("o1".to_owned()), Some(6)),
+        ]
+    );
+    // A late request built before Y's sequences a result below W: expired.
+    let mut authority = memory();
+    let client = Session::new(&mut authority, "c1");
+    for id in ["X", "Y"] {
+        outbox_push(&client, &mut authority, None, vec![commit(id, 0)]);
+    }
+    outbox_push(&client, &mut authority, Some("o1"), vec![commit("Y", 4)]);
+    let late = outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![commit("X", 2), commit("Y", 4)],
+    );
+    assert_eq!(late[0], expired("X"));
+    assert_eq!(late[1].1, PushStatus::Cached);
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![("Y".to_owned(), Some("o1".to_owned()), Some(4))]
+    );
+}
+
+/// The internal tables of the 0.59.0 authority (wire version 3).
+const STORE_0_59: &str = "
+CREATE TABLE sync_schema_meta(id INTEGER PRIMARY KEY CHECK (id = 1), schema_version INTEGER NOT NULL, layouts TEXT NOT NULL);
+CREATE TABLE sync_log(id INTEGER PRIMARY KEY CHECK (id = 1), log_epoch TEXT NOT NULL, max_commit_seq INTEGER NOT NULL, horizon_seq INTEGER NOT NULL);
+CREATE TABLE sync_commits(commit_seq INTEGER PRIMARY KEY, client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL, actor_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+CREATE TABLE sync_changes(commit_seq INTEGER NOT NULL, idx INTEGER NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL, op INTEGER NOT NULL, row_version INTEGER, scopes TEXT NOT NULL, payload BLOB, PRIMARY KEY (commit_seq, idx));
+CREATE INDEX sync_changes_by_table ON sync_changes(tbl, commit_seq, idx);
+CREATE TABLE sync_tombstones(tbl TEXT NOT NULL, row_id TEXT NOT NULL, commit_seq INTEGER NOT NULL, server_version INTEGER, scopes TEXT, PRIMARY KEY (tbl, row_id));
+CREATE INDEX sync_tombstones_by_seq ON sync_tombstones(commit_seq);
+CREATE TABLE sync_push_results(client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY (client_id, client_commit_id));
+CREATE TABLE sync_clients(client_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, last_round_at_ms INTEGER NOT NULL, last_error_code TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0);
+INSERT INTO sync_log VALUES (1, 'epoch-0', 2, 0);
+INSERT INTO sync_commits VALUES (1, 'c1', 'k1', 'local', 10), (2, 'c1', 'k2', 'local', 10);
+INSERT INTO sync_changes VALUES (2, 0, 'tasks', 't9', 2, NULL, '{\"org\":\"o1\"}', NULL);
+INSERT INTO sync_tombstones VALUES ('tasks', 't9', 2, 5, '{\"org\":\"o1\"}');
+INSERT INTO sync_clients VALUES ('c1', 2, 10, 10, NULL, 0);
+INSERT INTO sync_push_results VALUES ('c1', 'k1', '{\"applied\":true,\"commitSeq\":1,\"results\":[{\"status\":\"applied\",\"opIndex\":0}]}');
+";
+
+#[test]
+fn a_store_from_0_59_migrates_to_the_fresh_schema() {
+    let catalog = |authority: &LocalAuthority| -> Vec<String> {
+        authority
+            .conn
+            .prepare(
+                "SELECT m.name || '.' || c.name || ' ' || c.type || ' ' || c.\"notnull\" || ' ' || coalesce(c.dflt_value, '') || ' ' || c.pk
+                   FROM sqlite_master AS m, pragma_table_info(m.name) AS c WHERE m.type='table'
+                 UNION ALL
+                 SELECT type || ' ' || name || ' ' || tbl_name || ' ' || coalesce(sql, '') FROM sqlite_master WHERE type<>'table'
+                 ORDER BY 1",
+            )
+            .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+            .expect("catalog")
+    };
+    let path = temp_path();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(STORE_0_59)
+        .unwrap();
+    let mut authority = LocalAuthority::open(&path, &schema_json(1)).expect("migrate");
+    assert_eq!(catalog(&authority), catalog(&memory()));
+    // §2.2: the delete floor starts at the highest tombstone version.
+    assert_eq!(store::log_state(&authority.conn).unwrap().delete_floor, 5);
+    // §9: the record keeps its cursor and holds no list, so a pull that
+    // refers to one is `unregistered`.
+    assert_eq!(
+        client_record(&authority, "c1").map(|record| record.0),
+        Some(2)
+    );
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    assert_eq!(client.epoch, "epoch-0");
+    let frames = client.round(
+        &mut authority,
+        vec![pull_header(2, &[org("o1")], None, 0, 0)],
+    );
+    assert_eq!(live(&frames).0, LiveStatus::Unregistered);
+    // §9: the first request with an outbox sequences the pre-upgrade result
+    // it carries and replays it.
+    let settled = outbox_push(
+        &client,
+        &mut authority,
+        Some("o1"),
+        vec![("k1", 3, vec![task(&s, "t8", None, None)])],
+    );
+    assert_eq!(settled[0].1, PushStatus::Cached);
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![("k1".to_owned(), Some("o1".to_owned()), Some(3))]
+    );
+    client.push(&mut authority, "k3", vec![task(&s, "t8", None, None)]);
+    assert_eq!(stored(&authority, "tasks", "t8").map(|row| row.0), Some(6));
+    // A delete logged before wire version 4 carries no version, and a live
+    // section that reaches it fails loud. A replica upgrading from version 3
+    // bootstraps every unit at a pin above it (§9).
+    let mut frames = vec![pull_header(1, &[org("o1")], None, 0, 0)];
+    frames.extend(unit_frames(&[org("o1")]));
+    let request = encode_request("c1", 1, Some(client.epoch.clone()), None, frames);
+    let error = authority.sync(&request).unwrap_err();
+    assert_eq!(
+        (error.code.as_str(), error.details),
+        (
+            "sync.internal_error",
+            Some(json!({ "what": "change row version" }))
+        )
+    );
+    drop(authority);
     let _ = std::fs::remove_file(&path);
 }
