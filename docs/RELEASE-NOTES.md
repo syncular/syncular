@@ -1,5 +1,25 @@
 # Syncular release notes
 
+## 0.62.1 release notes
+
+0.62.1 fixes a browser tab that won the leader lock while its own worker
+started. The tab's follower link re-armed its follower deadlines while the
+worker opened the database, so a start longer than `followerCallTimeoutMs`
+(10 s by default) blocked the link with `leader-unreachable`:
+`createSyncClientHandle` returned a blocked follower whose calls rejected with
+`client.follower_timeout`, and with `securityPreflight: true` the handle failed
+to start. A full navigation to another page of the same replica reaches this
+path: the new page waits for the old page's lock, and the OPFS drain after the
+navigation lengthens the start. The link now runs no follower deadline until
+its own core starts or fails; after a failed or lost start it waits for another
+leader under the deadlines again. Listeners registered on a follower handle
+keep receiving progress, diagnostics and change events after promotion; new
+multi-tab and Chromium tests pin both. SSP2, the storage layout, and the wire
+version are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. The
+Rust crates are unchanged apart from the version.
+
 ## 0.62.0 release notes
 
 0.62.0 lets a query that only the server runs leave the client plan check.
