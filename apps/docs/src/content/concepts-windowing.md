@@ -53,7 +53,7 @@ A window change is a set difference on the family of subscriptions, one per live
 - **Widen**: the new unit [bootstraps](/concepts-bootstrap/) through the image lane.
 - **Shrink**: the client drops the unit's subscription and evicts its rows in chunks of at most 1,024 unpinned rows. The first chunk and the unsubscription commit together, and coverage becomes missing immediately.
 
-Choose the unit to trade subscription count against re-entry granularity. One unit per list or per month bucket is exact. One subscription for a 500-value set re-bootstraps the whole set on any change. Value-sharding works comfortably to a few hundred units; beyond that, group values into coarser units.
+Choose the unit to trade subscription count against re-entry granularity. One unit per list or per month bucket is exact. One subscription for a 500-value set re-bootstraps the whole set on any change. Value-sharding works comfortably to a few hundred units; beyond that, group values into coarser units. Each unit counts against the server's 500 subscriptions per request ([Pitfalls](/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front)).
 
 ## Eviction is a local storage decision
 

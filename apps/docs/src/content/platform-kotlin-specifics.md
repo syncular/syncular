@@ -23,10 +23,9 @@ The wrapper compiles JVM-neutral with no Android SDK dependency, so it drops int
 
 | Flag | Needed when |
 |---|---|
-| `--enable-preview` | JDK 21 (FFM is a preview API there); harmless on JDK 22 and newer |
 | `--enable-native-access=ALL-UNNAMED` | Always, to allow the downcalls without a warning |
 
-The Gradle build uses `jvmToolchain(21)` and passes `-Xjvm-enable-preview` to the Kotlin compiler.
+The Gradle build compiles against the JDK 22 API (`-Xjdk-release=22`) and emits JDK 22 bytecode on any newer JDK.
 
 ## Threading
 

@@ -2,7 +2,7 @@
  * `ClientDatabase` on Node's built-in `node:sqlite`. Semantics mirror the Bun
  * adapter: synchronous queries, nested transactions, and SQLite image attach.
  */
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { DatabaseSync, type SQLInputValue, StatementSync } from 'node:sqlite';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,8 @@ import {
   type SqlRow,
   type SqlValue,
 } from './database';
-import { prepareReadOnly, SQL_BLANK } from './query-guard';
+import { ClientSyncError, STORAGE_UNAVAILABLE_CODE } from './errors';
+import { prepareReadOnly, refuseRawSql } from './query-guard';
 
 function coerceParams(params: readonly SqlValue[]): SQLInputValue[] {
   return params.map((value): SQLInputValue => {
@@ -42,6 +43,15 @@ export class NodeClientDatabase implements ClientDatabase {
   #tx = { depth: 0 };
 
   constructor(path = ':memory:') {
+    // The raw-SQL tier reads result columns through `columns()` (Node 22.16).
+    if (typeof StatementSync.prototype.columns !== 'function') {
+      throw new ClientSyncError(
+        STORAGE_UNAVAILABLE_CODE,
+        'The node:sqlite adapter needs Node 22.16 or newer.',
+        false,
+        { runtime: 'node', version: process.versions.node, minimum: '22.16.0' },
+      );
+    }
     this.#path = path;
     this.db = new DatabaseSync(path);
     try {
@@ -65,32 +75,24 @@ export class NodeClientDatabase implements ClientDatabase {
   queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     const statement = prepareReadOnly(sql, () => {
       const prepared = this.db.prepare(sql);
-      // node:sqlite exposes no `sqlite3_stmt_readonly` (and no column count
-      // before Node 22.16), so the verb decides: SELECT, VALUES, EXPLAIN, or
-      // a WITH clause whose first keyword outside parentheses is SELECT or
-      // VALUES.
-      const body = prepared.sourceSQL.replace(SQL_BLANK, '');
-      const verb = /^[a-z]+/i.exec(body)?.[0].toLowerCase();
-      let reads = verb === 'select' || verb === 'values' || verb === 'explain';
-      if (verb === 'with') {
-        let depth = 0;
-        for (const [token] of body.matchAll(
-          /'[^']*'|"[^"]*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$)|[\w$\u0080-\uffff]+|[\s\S]/g,
-        )) {
-          if (token === '(') depth += 1;
-          else if (token === ')') depth -= 1;
-          else if (
-            depth === 0 &&
-            /^(?:select|values|insert|update|delete|replace)$/i.test(token)
-          ) {
-            reads = /^(?:select|values)$/i.test(token);
-            break;
-          }
-        }
-      }
-      return [prepared, prepared.sourceSQL, reads] as const;
+      return [
+        prepared,
+        prepared.sourceSQL,
+        prepared.columns().length > 0,
+      ] as const;
     });
-    return statement.all(...coerceParams(params)).map(normalizeRow);
+    // node:sqlite exposes no `sqlite3_stmt_readonly`, so SQLite refuses a
+    // write when the statement runs: under `query_only` a write transaction
+    // fails (SQLITE_READONLY) before it changes anything.
+    this.db.exec('PRAGMA query_only = ON');
+    try {
+      return statement.all(...coerceParams(params)).map(normalizeRow);
+    } catch (error) {
+      if ((error as { errcode?: unknown }).errcode === 8) refuseRawSql();
+      throw error;
+    } finally {
+      this.db.exec('PRAGMA query_only = OFF');
+    }
   }
 
   /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */

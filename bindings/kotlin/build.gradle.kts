@@ -1,5 +1,5 @@
 // The Kotlin/JVM syncular bindings — an idiomatic wrapper over the syncular-ffi
-// C core via FFM (java.lang.foreign, JDK 21+): ZERO native-glue code, no JNI C
+// C core via FFM (java.lang.foreign, JDK 22+): ZERO native-glue code, no JNI C
 // shim. This is a SEPARATE Gradle project, isolated from the main workspaces
 // exactly like bindings/tauri — it never joins `bun run check` / the main cargo
 // gate. Its own gate is `./check.sh`.
@@ -16,8 +16,17 @@ repositories {
     mavenCentral()
 }
 
+// The stable FFM API (java.lang.foreign) is JDK 22+. Any newer JDK builds the
+// wrapper; kotlinc compiles against the JDK 22 API and emits JDK 22 bytecode.
 kotlin {
-    jvmToolchain(21) // FFM (java.lang.foreign) is stable from JDK 22, preview in 21.
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_22)
+        freeCompilerArgs.add("-Xjdk-release=22")
+    }
+}
+
+java {
+    targetCompatibility = JavaVersion.VERSION_22
 }
 
 dependencies {
@@ -41,14 +50,5 @@ tasks.test {
     useJUnitPlatform()
     // FFM downcalls require native access to be enabled on the module/classpath.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
-    // On JDK 21 FFM is a preview feature; on 22+ these flags are ignored/benign.
-    jvmArgs("--enable-preview")
     vendoredLib?.let { systemProperty("syncular.library.path", it) }
-}
-
-// FFM preview needs the flag at compile time on JDK 21; harmless on 22+.
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    compilerOptions {
-        freeCompilerArgs.add("-Xjvm-enable-preview")
-    }
 }

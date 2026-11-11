@@ -30,7 +30,7 @@ runs even without a JDK) before the JVM steps.
 
 ## Run it
 
-Needs a JDK 21+ and Gradle (the wrapper's gate detect-and-skips without them —
+Needs a JDK 22+ and Gradle (the wrapper's gate detect-and-skips without them;
 see [`../README.md`](../README.md)) and `bun` for the quickstart server.
 
 ```sh

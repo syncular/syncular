@@ -159,7 +159,7 @@ The `limits` field of the sync config caps what one request or watch session may
 
 A request past one of the first three limits fails with HTTP 413 `sync.limit_exceeded`; `details.limit` names the limit and `details.max` holds its value. The adapter stops decoding a gzip body when it reaches `maxRequestBytes`, so a small compressed body never inflates past the cap. A socket round that grows past `maxRequestBytes` closes the connection. A watch past `maxWatchesPerSession` receives a `watch_error` with `sync.limit_exceeded`; the session's other watches keep running, and each commit reruns a session's affected watches one at a time.
 
-Raise `maxSubscriptionsPerRequest` before an app holds more subscriptions than the default. A client sends its complete subscription list on every pull ([Subscriptions](/concepts-subscriptions/)), so a client above the cap cannot pull until the server accepts the list.
+Treat 500 subscriptions per request as a budget the app designs to. A client sends its complete subscription list on every pull ([Subscriptions](/concepts-subscriptions/)), and a client above the limit cannot pull until the list shrinks. Keep tables with rows times open units under 500 by subscribing lazily ([Pitfalls](/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front)). Raise `maxSubscriptionsPerRequest` only when an app cannot stay under it. Every extra subscription is sent and answered in every round: measured in one app on a dev API, about 150 bytes each way and 0.4 ms of server time per subscription, whether or not a row changed.
 
 ```ts
 const config: SyncServerConfig = {

@@ -10,7 +10,7 @@ A local authority runs the Syncular server inside your app's process over its ow
 - **Remote server**: The server the client syncs with after attach.
 :::
 
-The local authority ships in `@syncular/server` for Bun, Node 22.13 or newer, and the browser worker, and in the `syncular-authority` Rust crate for the native cores (Tauri, Swift, Kotlin, Flutter, React Native, the C FFI).
+The local authority ships in `@syncular/server` for Bun, Node 22.16 or newer (the minimum of the client's Node adapter), and the browser worker, and in the `syncular-authority` Rust crate for the native cores (Tauri, Swift, Kotlin, Flutter, React Native, the C FFI).
 
 ## Open the authority and the client
 

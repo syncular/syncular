@@ -151,24 +151,27 @@ cd bindings/flutter && ./check.sh
 
 `check.sh` **detects and skips** cleanly when no Dart SDK is present (never
 fails the run) — mirroring build-native.sh and the Swift/Kotlin gates. With a
-Dart SDK it: builds the lean `libsyncular` for this machine, vendors it, points
-`SYNCULAR_LIBRARY_PATH` at it, then `dart analyze` + `dart test` the binding
-against the **real native core**.
+Dart SDK it parses the typegen Dart goldens, builds the lean `libsyncular` for
+this machine, vendors it, points `SYNCULAR_LIBRARY_PATH` at it, runs
+`dart analyze` + `dart test` on the binding against the real native core, and
+analyzes the example lib when `flutter` is on PATH.
 
 ### What CI proves vs. what needs a local Flutter run
 
 Per the [bindings conformance doctrine](../README.md), wrappers are
 protocol-thin, so they earn a thin bar: an **offline hermetic smoke** against
 the real core. The CI lane (`.github/workflows/ci.yml`, `flutter-bindings` job,
-Ubuntu) does exactly that:
+Ubuntu) provisions Flutter (which bundles Dart), Rust and bun and runs
+`check.sh`:
 
-- `cargo build -p syncular-ffi` → the real cdylib;
-- `subosito/flutter-action` provisions Flutter (which bundles Dart);
-- `dart analyze` (binding + example lib) + `dart test` with
-  `SYNCULAR_LIBRARY_PATH` at the built `.so` — **the strong proof**: the actual
-  `dart:ffi` boundary exercised against the real Rust core (mutate → readRows
-  optimistic row, query, outbox, `transport.unavailable`, close idempotence,
-  pause/resume).
+- `syncular generate --check` on the example schema, and `dart format` parses
+  every typegen Dart golden;
+- `cargo build -p syncular-ffi` builds the real cdylib;
+- `dart analyze` + `dart test` on the binding with `SYNCULAR_LIBRARY_PATH` at
+  the built `.so` exercise the actual `dart:ffi` boundary against the real Rust
+  core (mutate → readRows optimistic row, query, outbox,
+  `transport.unavailable`, close idempotence, pause/resume);
+- `flutter analyze lib` on the example.
 
 What CI does **not** do, and why it's honest to skip:
 

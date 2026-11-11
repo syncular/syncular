@@ -6,7 +6,7 @@
 
 | Property | Value |
 |---|---|
-| **Runs on** | JDK 21 or newer on desktop and server JVMs; Android through an AAR with `jniLibs` |
+| **Runs on** | JDK 22 or newer on desktop and server JVMs; Android through an AAR with `jniLibs` |
 | **Package** | `dev.syncular`, a Gradle project in [`bindings/kotlin`](https://github.com/syncular/syncular/tree/main/bindings/kotlin) (`kotlin("jvm")`, Kotlin 2.4.20) |
 | **Core** | Rust core through the C ABI, bound with FFM (`java.lang.foreign`); no JNI glue |
 | **Threading** | Call from any thread; an internal lock serializes commands. Events arrive on the `syncular-poll` thread |

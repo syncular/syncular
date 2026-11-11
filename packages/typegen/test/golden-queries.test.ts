@@ -373,8 +373,6 @@ describe('native toolchains accept the committed goldens', () => {
       try {
         accepts([
           'kotlinc',
-          // The binding uses the JDK 21 preview FFM API, as its Gradle build does.
-          '-Xjvm-enable-preview',
           ...goldens('.kt'),
           ...readdirSync(binding).map((name) => join(binding, name)),
           '-d',

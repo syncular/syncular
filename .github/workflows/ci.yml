@@ -471,7 +471,7 @@ jobs:
         if: steps.changed.outputs.run == 'true'
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         if: steps.changed.outputs.run == 'true'
@@ -518,13 +518,11 @@ jobs:
         if: steps.changed.outputs.run == 'true'
         run: echo "Swift bindings gate runs locally via bindings/swift/check.sh (macOS runner is out of scope for CI)."
 
-  # The Flutter/Dart FFI binding (bindings/flutter) — its own isolated build.
-  # This job runs on Ubuntu: cargo-build the real cdylib, provision Flutter (which
-  # bundles Dart), then `dart analyze` + `dart test` the binding against the REAL
-  # native core with SYNCULAR_LIBRARY_PATH at the built .so. That dart:ffi-boundary
-  # test IS the strong proof; the example APP build is a documented local
-  # `flutter run` (flutter build web is N/A for dart:ffi; flutter build linux
-  # needs GTK deps) — the same honest scoping as the tauri/RN jobs.
+  # The Flutter/Dart FFI binding (bindings/flutter): its own isolated build.
+  # This job provisions Flutter (which bundles Dart), Rust and bun on Ubuntu and
+  # runs bindings/flutter/check.sh, the same gate a local run uses. The example
+  # app build is a documented local `flutter run` (flutter build web is N/A for
+  # dart:ffi; flutter build linux needs GTK deps).
   flutter-bindings:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -580,27 +578,19 @@ jobs:
         with:
           channel: stable
 
-      # Build the real lean cdylib and point the dart:ffi loader at it.
-      - name: Build libsyncular (lean cdylib)
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         if: steps.changed.outputs.run == 'true'
-        working-directory: rust
-        run: cargo build -p syncular-ffi
+        with:
+          bun-version: latest
 
-      - name: dart analyze + test (binding, against the real core)
+      - name: Install dependencies (typegen for the schema and golden checks)
         if: steps.changed.outputs.run == 'true'
-        working-directory: bindings/flutter/syncular
-        env:
-          SYNCULAR_LIBRARY_PATH: ${{ github.workspace }}/rust/target/debug/libsyncular.so
-        run: |
-          dart pub get
-          dart analyze
-          dart test
+        run: bun install --frozen-lockfile
 
-      # The example app shares the binding's lib; analyze it too (a build would
-      # need the GTK desktop toolchain / a device — a documented local step).
-      - name: dart analyze (example lib)
+      # check.sh checks the generated schema, parses the typegen Dart goldens,
+      # builds and vendors the lean cdylib, runs dart analyze + dart test on the
+      # binding against the real core, and analyzes the example lib.
+      - name: Flutter bindings gate
         if: steps.changed.outputs.run == 'true'
-        working-directory: bindings/flutter/example
-        run: |
-          flutter pub get
-          flutter analyze lib
+        working-directory: bindings/flutter
+        run: ./check.sh

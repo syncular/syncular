@@ -10,10 +10,9 @@
 #   2. `gradle test` (offline-first hermetic suite) against it.
 #
 # Detect-and-skip (mirroring build-native.sh / the Swift gate): the wrapper uses
-# FFM (java.lang.foreign), which needs a JDK 21+ AND a Gradle to drive the
-# build. On a machine without a JDK or Gradle this gate SKIPS cleanly (exit 0)
-# and prints why — it never fails the run. FFM (not JNA) is the primary path;
-# JNA is a documented fallback for JDK < 21 (README.md).
+# the stable FFM API (java.lang.foreign), which needs a JDK 22+ AND a Gradle to
+# drive the build. On a machine without a JDK or Gradle this gate SKIPS cleanly
+# (exit 0) and prints why; it never fails the run.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -42,10 +41,10 @@ fi
 # NOTE: macOS ships a /usr/bin/java STUB that exists but has no runtime, so we
 # must actually RUN `java -version` (not just `command -v java`) to detect a
 # real JDK.
-# When PATH only has the stub, look for a keg-only Homebrew JDK (openjdk@21 is
-# not linked onto PATH) and export JAVA_HOME so Gradle uses the same JDK.
+# When PATH only has the stub, look for Homebrew's keg-only JDK (openjdk is not
+# linked onto PATH) and export JAVA_HOME so Gradle uses the same JDK.
 if ! java -version >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
-  BREW_JDK="$(brew --prefix openjdk@21 2>/dev/null || true)"
+  BREW_JDK="$(brew --prefix openjdk 2>/dev/null || true)"
   if [ -n "${BREW_JDK}" ] && [ -x "${BREW_JDK}/bin/java" ]; then
     export JAVA_HOME="${BREW_JDK}"
     export PATH="${JAVA_HOME}/bin:${PATH}"
@@ -53,16 +52,15 @@ if ! java -version >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
 fi
 JAVA_VERSION_OUT="$(java -version 2>&1 || true)"
 if ! printf '%s' "${JAVA_VERSION_OUT}" | grep -qE 'version "[0-9]'; then
-  echo "SKIP: no working JDK. The Kotlin/FFM bindings need JDK 21+."
-  echo "      (Install a JDK 21+ and a Gradle, then re-run ./check.sh.)"
+  echo "SKIP: no working JDK. The Kotlin/FFM bindings need JDK 22+."
+  echo "      (Install a JDK 22+ and a Gradle, then re-run ./check.sh.)"
   exit 0
 fi
 
-# Require JDK 21+ (FFM: preview in 21, stable in 22).
+# Require JDK 22+ (the stable FFM API).
 JAVA_MAJOR="$(printf '%s' "${JAVA_VERSION_OUT}" | awk -F'"' '/version/ {print $2}' | awk -F. '{print ($1=="1")?$2:$1}')"
-if [ -n "${JAVA_MAJOR}" ] && [ "${JAVA_MAJOR}" -lt 21 ] 2>/dev/null; then
-  echo "SKIP: JDK ${JAVA_MAJOR} found, but FFM needs JDK 21+."
-  echo "      (Use JDK 21+, or the JNA fallback documented in README.md.)"
+if [ -n "${JAVA_MAJOR}" ] && [ "${JAVA_MAJOR}" -lt 22 ] 2>/dev/null; then
+  echo "SKIP: JDK ${JAVA_MAJOR} found, but the stable FFM API needs JDK 22+."
   exit 0
 fi
 

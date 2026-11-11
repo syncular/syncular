@@ -203,6 +203,8 @@ export interface ClientDiagnosticsSnapshot {
   };
   readonly subscriptions: readonly DiagnosticSubscription[];
   readonly subscriptionsTruncated: boolean;
+  /** Registrations the next pull sends; the server limit counts these (SPEC §4.1). */
+  readonly activeSubscriptions: number;
   readonly lastRound?: DiagnosticLastRound;
   readonly lastChange?: DiagnosticLastChange;
   readonly storage: ClientDiagnosticsStorage;

@@ -107,6 +107,9 @@ export async function runAdapterContract(
   }
   for (const sql of [
     "INSERT INTO t (id) VALUES ('w')",
+    "INSERT INTO t (id) VALUES ('w') RETURNING id",
+    "UPDATE t SET n = 1 WHERE id = 'a' RETURNING id",
+    'WITH x AS (SELECT 1) DELETE FROM t RETURNING id',
     "UPDATE t SET n = 1 WHERE id = 'a'",
     "DELETE FROM t WHERE id = 'a'",
     "REPLACE INTO t (id) VALUES ('w')",

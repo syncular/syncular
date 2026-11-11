@@ -5,7 +5,7 @@
 # independent verify), and asserts the todo landed on the server.
 #
 # This is the full native-transport-to-real-server proof for Kotlin. It is
-# deterministic under piped stdin. Requires: a JDK 21+ + Gradle (the CI job
+# deterministic under piped stdin. Requires: a JDK 22+ + Gradle (the CI job
 # provisions them), bun (for the quickstart server), and the rust toolchain.
 # Run from the kotlin bindings dir's example/ (the workflow cds here) or invoke
 # with an absolute path; it cds to its own dir.

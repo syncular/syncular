@@ -710,7 +710,8 @@ const client = new SyncClient({ database, schema, /* … */ });
 ```
 
 The export selects `bun:sqlite` on Bun and the built-in `node:sqlite` module on
-Node 22.13 or newer. No SQLite package or native addon is required. Both
+Node 22.16 or newer. On an older Node, `openNodeDatabase()` throws
+`client.storage_unavailable`. No SQLite package or native addon is required. Both
 adapters support synchronous `exec`, `query`, nested transactions, boolean
 bindings, `null`, `Uint8Array` BLOB values, and §5.3 SQLite-image attachment.
 

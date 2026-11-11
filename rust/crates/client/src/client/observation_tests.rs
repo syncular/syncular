@@ -11216,3 +11216,72 @@ fn failed_operations_restore_every_mirror_through_one_rollback() {
         rows
     );
 }
+
+#[test]
+fn a_subscription_limit_refusal_reaches_the_app_with_its_details_and_is_not_retried() {
+    // The error the native transport builds from the server's HTTP 413 body.
+    let mut refusal = TransportError::new(
+        "sync.limit_exceeded",
+        "request carries more subscriptions than the server accepts (§1.7)",
+    );
+    refusal.details = Some(json!({
+        "category": "invalid-request",
+        "recommendedAction": "fixRequest",
+        "retryable": false,
+        "limit": "maxSubscriptionsPerRequest",
+        "max": 1,
+        "actual": 2,
+        "causeKind": "status",
+        "httpStatus": 413,
+    }));
+    let mut transport = failure_transport([Err(refusal)]);
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    client
+        .subscribe_many(
+            ["a", "b"]
+                .map(|id| SubscriptionRequest {
+                    id: id.to_owned(),
+                    table: "tasks".to_owned(),
+                    scopes: vec![("project_id".to_owned(), vec![id.to_owned()])],
+                    params: None,
+                })
+                .to_vec(),
+        )
+        .unwrap();
+    assert_eq!(
+        client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .unwrap()
+            .active_subscriptions,
+        2
+    );
+    client.drain_sync_intents();
+    let outcome = client.sync(&mut transport);
+    let SyncOutcome::Failed {
+        error_code,
+        details,
+        recommended_action,
+        ..
+    } = outcome
+    else {
+        panic!("expected a failed round, got {outcome:?}");
+    };
+    assert_eq!(error_code, "sync.limit_exceeded");
+    assert_eq!(recommended_action.as_deref(), Some("fixRequest"));
+    let details = details.unwrap();
+    assert_eq!(details["limit"], "maxSubscriptionsPerRequest");
+    assert_eq!(details["max"], 1);
+    assert_eq!(details["actual"], 2);
+    assert_eq!(details["retryable"], false);
+    assert_eq!(details["httpStatus"], 413);
+    assert!(client.drain_sync_intents().is_empty());
+    assert_eq!(client.progress().snapshot().unwrap().retry_delay_ms, None);
+    let snapshot = client
+        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+        .unwrap();
+    assert_eq!(
+        snapshot.last_round.unwrap().error_code.as_deref(),
+        Some("sync.limit_exceeded")
+    );
+}

@@ -25,10 +25,6 @@ export class RawSqlError extends Error {
   override readonly name = 'RawSqlError';
 }
 
-/** Leading whitespace, comments and empty statements. */
-export const SQL_BLANK =
-  /^(?:[\s;]|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$))*/;
-
 /** Refuse a statement the raw-SQL tier does not run. */
 export function refuseRawSql(): never {
   throw new RawSqlError(
@@ -53,7 +49,14 @@ export function prepareReadOnly<S>(
     refuseRawSql();
   }
   const [statement, first, reads] = prepare();
-  if (sql.slice(first.length).replace(SQL_BLANK, '') !== '') {
+  if (
+    sql
+      .slice(first.length)
+      .replace(
+        /^(?:[\s;]|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$))*/,
+        '',
+      ) !== ''
+  ) {
     throw new RawSqlError('client.query() runs one statement per call.');
   }
   if (!reads) refuseRawSql();

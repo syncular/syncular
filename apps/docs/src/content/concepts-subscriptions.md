@@ -116,7 +116,9 @@ Each pull sends the client's complete subscription list, and that list
 replaces the stored one. A subscription missing from the list stops receiving
 changes and its cursor is forgotten. [Windowed sync](/concepts-windowing/)
 builds on this rule: it keeps one subscription per window unit and turns a
-window change into including or omitting subscriptions.
+window change into including or omitting subscriptions. The server accepts
+500 subscriptions per request, so keep tables with rows times open units under
+that budget ([Pitfalls](/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front)).
 :::
 
 :::warning{title="An id is bound to its query"}

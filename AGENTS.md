@@ -142,7 +142,7 @@ instruction, or consequence. Then check the survivors against the tells.
 - `rust/` is its own cargo workspace: `ssp2`, `client`, `command`, `ffi`
   (C-ABI `libsyncular`), `syncular` (stub crate).
 - `bindings/`: `tauri/` (plugin + example; **separate cargo workspace**,
-  deliberately outside the main cargo gate), `kotlin/` (Gradle, FFM/JDK21+),
+  deliberately outside the main cargo gate), `kotlin/` (Gradle, FFM/JDK22+),
   `flutter/`, `react-native/` (bun workspace member), `swift/` (local-only
   gate, needs macOS). Each has its own `check.sh`.
 - `apps/docs`, `apps/demo*`, `examples/quickstart`, `bench/`, `load/`.
