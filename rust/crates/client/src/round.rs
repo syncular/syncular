@@ -38,6 +38,7 @@ pub enum RoundOperation<'a> {
     /// `PUT` the presigned upload url the grant returned. A failure falls back
     /// to [`RoundOperation::Upload`] with the same body.
     UploadPut {
+        blob_id: &'a str,
         url: &'a str,
         bytes: &'a [u8],
         media_type: Option<&'a str>,
@@ -218,10 +219,13 @@ impl PreparedSyncRound {
                         media_type,
                     )),
                     RoundOperation::UploadPut {
+                        blob_id,
                         url,
                         bytes,
                         media_type,
-                    } => RoundReply::Upload(transport.blob_put_url(url, bytes, media_type)),
+                    } => {
+                        RoundReply::Upload(transport.blob_put_url(blob_id, url, bytes, media_type))
+                    }
                     RoundOperation::Upload {
                         blob_id,
                         bytes,
@@ -675,6 +679,7 @@ impl PreparedSyncRound {
                     .as_ref()
                     .expect("a staged body that failed to read has no operation");
                 Some(RoundOperation::UploadPut {
+                    blob_id: &upload.id,
                     url,
                     bytes,
                     media_type: upload.media_type.as_deref(),
@@ -821,10 +826,11 @@ pub(crate) mod test_support {
                     media_type,
                 )),
                 RoundOperation::UploadPut {
+                    blob_id,
                     url,
                     bytes,
                     media_type,
-                } => RoundReply::Upload(transport.blob_put_url(url, bytes, media_type)),
+                } => RoundReply::Upload(transport.blob_put_url(blob_id, url, bytes, media_type)),
                 RoundOperation::Upload {
                     blob_id,
                     bytes,
@@ -884,6 +890,7 @@ mod tests {
         }
         fn blob_put_url(
             &mut self,
+            _: &str,
             _: &str,
             _: &[u8],
             _: Option<&str>,
@@ -946,12 +953,13 @@ mod tests {
                     ))
                 }
                 RoundOperation::UploadPut {
+                    blob_id,
                     url,
                     bytes,
                     media_type,
                 } => {
                     steps.push("put");
-                    RoundReply::Upload(transport.blob_put_url(url, bytes, media_type))
+                    RoundReply::Upload(transport.blob_put_url(blob_id, url, bytes, media_type))
                 }
                 RoundOperation::Upload {
                     blob_id,

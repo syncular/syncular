@@ -7,6 +7,7 @@
 import type { BlobTransport } from './blob';
 import { SSP2_CONTENT_TYPE } from './content-type';
 import { ClientSyncError, transportFailed } from './errors';
+import { hexToBytes } from './schema';
 import type {
   RealtimeConnector,
   RemoteOperationTransport,
@@ -470,15 +471,19 @@ export function httpBlobTransport(
       return { kind: 'none' };
     },
     // §5.9.3: direct-to-storage PUT — no host auth (the URL is the grant).
-    uploadToUrl: async (url, bytes, mediaType, signal) => {
+    uploadToUrl: async (blobId, url, bytes, mediaType, signal) => {
+      // The grant signs content-length (set by fetch from the body) and the
+      // checksum, the blob id's digest, so the object store rejects any other
+      // bytes without the client hashing the body again (§5.9.3).
+      const hex = /^sha256:([0-9a-f]{64})$/.exec(blobId)?.[1];
+      if (hex === undefined) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'the blob id is not a sha256 blob id (§5.9.1)',
+        );
+      }
+      const checksum = btoa(String.fromCharCode(...hexToBytes(hex)));
       const body = bytes.slice().buffer as ArrayBuffer;
-      // The grant signs content-length (set by fetch from the body) and this
-      // checksum, so the object store rejects any other bytes (§5.9.3).
-      const checksum = btoa(
-        String.fromCharCode(
-          ...new Uint8Array(await crypto.subtle.digest('SHA-256', body)),
-        ),
-      );
       const response = await transfer('signed blob upload failed', () =>
         doFetch(url, {
           method: 'PUT',

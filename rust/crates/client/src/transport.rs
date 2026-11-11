@@ -220,11 +220,12 @@ pub trait Transport {
     /// called when `blob_upload_grant` returned a `Url` arm.
     fn blob_put_url(
         &mut self,
+        blob_id: &str,
         url: &str,
         bytes: &[u8],
         media_type: Option<&str>,
     ) -> Result<(), TransportError> {
-        let _ = (url, bytes, media_type);
+        let _ = (blob_id, url, bytes, media_type);
         Err(TransportError::new(
             "sync.invalid_request",
             "this transport has no blob put url (§5.9.3)",

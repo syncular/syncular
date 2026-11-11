@@ -345,6 +345,7 @@ impl Transport for HostIo {
 
     fn blob_put_url(
         &mut self,
+        _blob_id: &str,
         url: &str,
         bytes: &[u8],
         media_type: Option<&str>,
