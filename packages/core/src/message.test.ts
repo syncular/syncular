@@ -3,6 +3,8 @@ import {
   ByteWriter,
   DecodeError,
   decodeMessage,
+  decodeRequest,
+  decodeResponse,
   encodeMessage,
   FrameType,
   type PullHeaderFrame,
@@ -118,6 +120,23 @@ const subEnd = {
 };
 
 describe('SSP2 envelope (SPEC.md §1.2)', () => {
+  it('the kind-specific decoders reject the other message kind', () => {
+    const request = envelope(1, [reqHeader, pullHeader]);
+    expect(decodeRequest(request)).toEqual(decodeMessage(request));
+    expectDecodeError(() => decodeResponse(request));
+    const response = encodeMessage({
+      wireVersion: 4,
+      msgKind: 'response',
+      frames: [
+        { type: 'RESP_HEADER', logEpoch: 'e', resetRequired: false },
+        { type: 'LIVE_START', status: 'active', reasonCode: '' },
+        { type: 'LIVE_END', throughSeq: 0, echoDigest: new Uint8Array() },
+      ],
+    });
+    expect(decodeResponse(response)).toEqual(decodeMessage(response));
+    expectDecodeError(() => decodeRequest(response));
+  });
+
   it('rejects an unknown msgKind byte', () => {
     expectDecodeError(() =>
       decodeMessage(envelope(3, [reqHeader, pullHeader])),

@@ -3,10 +3,10 @@
  * through the existing push path without creating a local replica or outbox.
  */
 import {
-  decodeMessage,
+  decodeResponse,
   decodeRemoteOperationResponse,
   decodeRemoteOperationRealtimeMessage,
-  encodeMessage,
+  encodeRequest,
   encodeRemoteOperationRequest,
   encodeRemoteOperationRealtimeMessage,
   encodeSparseRow,
@@ -281,9 +281,9 @@ export class SyncRemoteClient {
           'SyncRemoteClient has no sync transport for ordinary commits',
         );
       }
-      const acquisition = decodeMessage(
+      const acquisition = decodeResponse(
         await this.#transport(
-          encodeMessage({
+          encodeRequest({
             wireVersion: PROTOCOL_WIRE_VERSION,
             msgKind: 'request',
             frames: [
@@ -308,10 +308,7 @@ export class SyncRemoteClient {
         ),
       );
       const acquisitionHeader = acquisition.frames[0];
-      if (
-        acquisition.msgKind !== 'response' ||
-        acquisitionHeader?.type !== 'RESP_HEADER'
-      ) {
+      if (acquisitionHeader?.type !== 'RESP_HEADER') {
         throw new ClientSyncError(
           'client.invalid_host_response',
           'remote epoch acquisition returned an invalid response',
@@ -378,7 +375,7 @@ export class SyncRemoteClient {
     }
     return {
       requestId: input.requestId,
-      bytes: encodeMessage({
+      bytes: encodeRequest({
         wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'request',
         frames: [
@@ -408,13 +405,7 @@ export class SyncRemoteClient {
         'SyncRemoteClient has no sync transport for ordinary commits',
       );
     }
-    const response = decodeMessage(await this.#transport(prepared.bytes));
-    if (response.msgKind !== 'response') {
-      throw new ClientSyncError(
-        'client.invalid_host_response',
-        'remote commit transport returned a non-response SSP2 message',
-      );
-    }
+    const response = decodeResponse(await this.#transport(prepared.bytes));
     const error = response.frames.find((frame) => frame.type === 'ERROR');
     if (error?.type === 'ERROR') {
       throw new ClientSyncError(error.code, error.message, error.retryable);

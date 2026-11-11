@@ -92,6 +92,14 @@ function start(
 }
 
 function rows(table: string, ...values: RowValue[][]): ResponseFrame {
+  return rowsAt(table, 1, ...values);
+}
+
+function rowsAt(
+  table: string,
+  serverVersion: number,
+  ...values: RowValue[][]
+): ResponseFrame {
   return {
     type: 'SEGMENT_INLINE',
     payload: encodeRowsSegment({
@@ -101,7 +109,7 @@ function rows(table: string, ...values: RowValue[][]): ResponseFrame {
       blocks:
         values.length === 0
           ? []
-          : [values.map((row) => ({ serverVersion: 1, values: row }))],
+          : [values.map((row) => ({ serverVersion, values: row }))],
     }),
   };
 }
@@ -120,10 +128,12 @@ function bootstrap(
   ];
 }
 
+/** A change at `rowVersion`; segment rows (`rows`) stand at version 1. */
 function change(
   table: string,
   op: 'upsert' | 'delete',
   values: RowValue[],
+  rowVersion = 2,
 ): Omit<CommitChange, 'tableIndex'> & { table: string } {
   const scopes: Record<string, string> = { project_id: String(values[1]) };
   if (table === 'notes') scopes.org_id = String(values[2]);
@@ -131,10 +141,9 @@ function change(
     table,
     rowId: String(values[0]),
     op,
+    rowVersion,
     scopes,
-    ...(op === 'upsert'
-      ? { rowVersion: 1, row: encodeRow(COLUMNS[table]!, values) }
-      : {}),
+    ...(op === 'upsert' ? { row: encodeRow(COLUMNS[table]!, values) } : {}),
   };
 }
 
@@ -547,7 +556,10 @@ describe('§5.6 fail closed at the first-page clear', () => {
   });
 });
 
-describe('§2.2 scope move under the version 4 apply order', () => {
+describe('§4.5 version guard', () => {
+  const tasks = (client: SyncClient) =>
+    client.query('SELECT id,project_id,title FROM tasks');
+
   test('a live delete of the old scope keeps the row another unit already holds at its new scope', async () => {
     const { client, round, ids } = await scripted();
     client.subscribe(P1);
@@ -556,21 +568,158 @@ describe('§2.2 scope move under the version 4 apply order', () => {
       ...live(5),
     );
     client.subscribe(P2);
-    // Commit 8 moved x from p1 to p2. P2's segment (pin 9) holds x at p2,
-    // and the live section from R = 5 carries the delete tagged p1: the
-    // upsert tagged p2 lies at or below P2's pin, so the server filters it.
+    // Commit 8 moved x from p1 to p2 at version 2 (§2.2). P2's segment (pin
+    // 9) holds x at p2, and the live section from R = 5 carries the delete
+    // half tagged p1: the upsert half lies at or below P2's pin.
     await round(
-      ...bootstrap(P2, 9, [rows('notes'), rows('tasks', ['x', 'p2', 'moved'])]),
-      ...live(9, commit(8, change('tasks', 'delete', ['x', 'p1', 'old']))),
+      ...bootstrap(P2, 9, [
+        rows('notes'),
+        rowsAt('tasks', 2, ['x', 'p2', 'moved']),
+      ]),
+      ...live(9, commit(8, change('tasks', 'delete', ['x', 'p1', 'old'], 2))),
     );
-    expect(client.query('SELECT id,project_id,title FROM tasks')).toEqual([
+    expect(tasks(client)).toEqual([
       { id: 'x', project_id: 'p2', title: 'moved' },
     ]);
-    // A delete of the row where it lies still applies.
+    // A delete above the row's version applies.
     await round(
-      ...live(10, commit(10, change('tasks', 'delete', ['x', 'p2', '']))),
+      ...live(10, commit(10, change('tasks', 'delete', ['x', 'p2', ''], 3))),
     );
     expect(ids('tasks')).toEqual([]);
+  });
+
+  test('a move pair keeps the upsert in either change order', async () => {
+    const { client, round } = await scripted();
+    client.subscribe(P1);
+    client.subscribe(P2);
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks', ['x', 'p1', 'a'])]),
+      ...bootstrap(P2, 3, [rows('notes'), rows('tasks')]),
+      ...live(
+        5,
+        commit(
+          4,
+          change('tasks', 'upsert', ['x', 'p2', 'b'], 2),
+          change('tasks', 'delete', ['x', 'p1', 'a'], 2),
+        ),
+        commit(
+          5,
+          change('tasks', 'delete', ['x', 'p2', 'b'], 3),
+          change('tasks', 'upsert', ['x', 'p1', 'c'], 3),
+        ),
+      ),
+    );
+    expect(tasks(client)).toEqual([{ id: 'x', project_id: 'p1', title: 'c' }]);
+  });
+
+  test("a lagging unit's older segment row, upsert and delete leave the newer row in place", async () => {
+    const { client, round } = await scripted();
+    client.subscribe(P2);
+    // x was created at p1 (commit 4, version 1), moved to p2 (commit 8,
+    // version 2) and edited (commit 9, version 3).
+    await round(
+      ...bootstrap(P2, 9, [
+        rows('notes'),
+        rowsAt('tasks', 3, ['x', 'p2', 'c']),
+      ]),
+      ...live(9),
+    );
+    client.subscribe(P1);
+    // P1's bootstrap pinned at 3 and served x from an earlier page; its scan
+    // from 3 re-delivers the history tagged p1. Applied unconditionally it
+    // would rewind x to p1 and then delete it.
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks', ['x', 'p1', 'a'])]),
+      ...live(
+        9,
+        commit(4, change('tasks', 'upsert', ['x', 'p1', 'a'], 1)),
+        commit(8, change('tasks', 'delete', ['x', 'p1', 'a'], 2)),
+      ),
+    );
+    expect(tasks(client)).toEqual([{ id: 'x', project_id: 'p2', title: 'c' }]);
+  });
+
+  test('an older upsert of a deleted row returns until the same scan removes it again', async () => {
+    const { client, round, ids } = await scripted();
+    const org = { org_id: 'o1' };
+    client.subscribe(P1);
+    await round(
+      ...bootstrap(P1, 5, [
+        rows('notes', ['n', 'p1', 'o1', 'a']),
+        rows('tasks'),
+      ]),
+      ...live(
+        6,
+        commit(6, change('notes', 'delete', ['n', 'p1', 'o1', 'a'], 2)),
+      ),
+    );
+    expect(ids('notes')).toEqual([]);
+    // The org unit's scan starts at its pin 3 and is cut at 4: it re-delivers
+    // the insert the replica already saw deleted.
+    client.subscribe(org);
+    await round(
+      ...bootstrap(org, 3, [rows('notes')]),
+      ...live(
+        4,
+        commit(4, change('notes', 'upsert', ['n', 'p1', 'o1', 'a'], 1)),
+      ),
+    );
+    expect(ids('notes')).toEqual(['n']);
+    await round(
+      { type: 'LIVE_START', status: 'active', reasonCode: '' },
+      commit(6, change('notes', 'delete', ['n', 'p1', 'o1', 'a'], 2)),
+      { type: 'LIVE_END', throughSeq: 6, echoDigest: ECHO },
+    );
+    expect(ids('notes')).toEqual([]);
+  });
+
+  test('a skipped change leaves the optimistic overlay and its rollback base intact', async () => {
+    const { client, round, delta } = await scripted();
+    client.subscribe(P1);
+    await round(
+      ...bootstrap(P1, 3, [
+        rows('notes'),
+        rowsAt('tasks', 3, ['x', 'p1', 'base']),
+      ]),
+      ...live(3),
+    );
+    await client.connectRealtime();
+    const pending = client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: { id: 'x', project_id: 'p1', title: 'mine' },
+      },
+    ]);
+    // An older version arrives while the commit is pending: the overlay and
+    // the before-image the rollback restores stay as they were.
+    await delta(
+      live(4, commit(4, change('tasks', 'upsert', ['x', 'p1', 'stale'], 2))),
+    );
+    expect(tasks(client)).toEqual([
+      { id: 'x', project_id: 'p1', title: 'mine' },
+    ]);
+    client.disconnectRealtime();
+    await round(
+      {
+        type: 'PUSH_RESULT',
+        clientCommitId: pending,
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 0,
+            status: 'error',
+            code: 'app.refused',
+            message: 'refused',
+            retryable: false,
+          },
+        ],
+      },
+      ...live(4),
+    );
+    expect(tasks(client)).toEqual([
+      { id: 'x', project_id: 'p1', title: 'base' },
+    ]);
   });
 });
 
@@ -638,6 +787,51 @@ describe('§4.8 windows as sets of units', () => {
       { type: 'LIVE_END', throughSeq: -1, echoDigest: new Uint8Array() },
     );
     expect(ids('tasks')).toEqual([]);
+  });
+
+  test('a deferred eviction chunk keeps the pages a bootstrapping unit already applied', async () => {
+    const { client, round, ids } = await scripted();
+    const base = { variable: 'project_id' };
+    const org = { org_id: 'o1' };
+    await client.setWindow(base, ['p1']);
+    await round(
+      ...bootstrap(P1, 3, [
+        rows('notes', ['n1', 'p1', 'o1', 'a']),
+        rows('tasks'),
+      ]),
+      ...live(3),
+    );
+    const pending = client.mutate([
+      {
+        table: 'notes',
+        op: 'upsert',
+        values: { id: 'n1', project_id: 'p1', org_id: 'o1', body: 'mine' },
+      },
+    ]);
+    // n1 is pinned, so the eviction of p1 stays pending.
+    await client.setWindow(base, []);
+    expect(ids('notes')).toEqual(['n1']);
+    client.subscribe(org);
+    // The push drains n1's pin in the same round in which the org unit's
+    // first page delivers n1 and n2; its bootstrap is not complete yet.
+    await round(
+      {
+        type: 'PUSH_RESULT',
+        clientCommitId: pending,
+        status: 'applied',
+        commitSeq: 4,
+        results: [{ opIndex: 0, status: 'applied' }],
+      },
+      start(unitId(org), { bootstrap: true }),
+      rowsAt('notes', 2, ['n1', 'p1', 'o1', 'mine'], ['n2', 'p1', 'o1', 'b']),
+      {
+        type: 'SUB_END',
+        nextCursor: 4,
+        bootstrapState: '{"tableIndex":0,"rowCursor":"n2"}',
+      },
+      ...live(4),
+    );
+    expect(ids('notes')).toEqual(['n1', 'n2']);
   });
 });
 

@@ -38,6 +38,7 @@
           "tableIndex": 2,
           "rowId": "task-3",
           "op": "delete",
+          "rowVersion": 5,
           "scopes": {
             "assignee": "u2",
             "project": "p1"
@@ -47,6 +48,7 @@
           "tableIndex": 0,
           "rowId": "p1",
           "op": "delete",
+          "rowVersion": 2,
           "scopes": {
             "project": "p1"
           }

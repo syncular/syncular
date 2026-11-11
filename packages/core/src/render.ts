@@ -130,9 +130,7 @@ function renderChange(change: CommitChange): JsonValue {
     tableIndex: change.tableIndex,
     rowId: change.rowId,
     op: change.op,
-    ...(change.rowVersion !== undefined
-      ? { rowVersion: change.rowVersion }
-      : {}),
+    rowVersion: change.rowVersion,
     scopes: renderStringMap(change.scopes),
     ...(change.row !== undefined ? { row: bytesToBase64(change.row) } : {}),
   };

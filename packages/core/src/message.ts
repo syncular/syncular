@@ -228,8 +228,9 @@ export interface CommitChange {
   tableIndex: number;
   rowId: string;
   op: 'upsert' | 'delete';
-  /** Present iff `op` is `upsert` (§4.5). */
-  rowVersion?: number;
+  /** The row's `server_version` after the write, ≥ 1; a delete's is the
+   * version its tombstone records (§2.2, §4.5). */
+  rowVersion: number;
   scopes: Record<string, string>;
   /** Generated-row-codec bytes; present iff `op` is `upsert` (§4.5). */
   row?: Uint8Array;
@@ -706,24 +707,15 @@ function decodeCommit(r: ByteReader): CommitFrame {
     if (opByte === 1) op = 'upsert';
     else if (opByte === 2) op = 'delete';
     else invalid(`invalid change op byte ${opByte}`);
-    const rowVersion = r.opt(() => r.i64());
+    const rowVersion = r.i64();
+    if (rowVersion < 1) invalid('change rowVersion must be at least 1');
     const scopes = readStringMap(r);
     const row = r.opt(() => r.bytes());
-    if (op === 'upsert' && (rowVersion === undefined || row === undefined)) {
-      invalid('upsert change requires rowVersion and row');
-    }
-    if (op === 'delete' && (rowVersion !== undefined || row !== undefined)) {
-      invalid('delete change must not carry rowVersion or row');
+    if ((op === 'upsert') !== (row !== undefined)) {
+      invalid('change row must be present iff op is upsert');
     }
     changes.push(
-      definedObject({
-        tableIndex,
-        rowId,
-        op,
-        rowVersion: rowVersion,
-        scopes,
-        row: row,
-      }),
+      definedObject({ tableIndex, rowId, op, rowVersion, scopes, row }),
     );
   }
   return { type: 'COMMIT', commitSeq, createdAtMs, actorId, tables, changes };
@@ -1061,11 +1053,6 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
   }
 }
 
-export function validateFrameSequence(message: SyncMessage): void {
-  if (message.msgKind === 'request') validateRequestSequence(message.frames);
-  else validateResponseSequence(message.frames);
-}
-
 // ---------------------------------------------------------------------------
 // Frame payload encoders
 // ---------------------------------------------------------------------------
@@ -1080,11 +1067,23 @@ function encodeInvalid(message: string): never {
   throw new Error(message);
 }
 
-function encodeFrame(frame: RequestFrame | ResponseFrame): {
-  frameType: number;
-  payload: Uint8Array;
-} {
-  const w = new ByteWriter();
+function encodeUnknown(frame: UnknownFrame, w: ByteWriter): number {
+  if (
+    !Number.isInteger(frame.frameType) ||
+    frame.frameType < 0 ||
+    frame.frameType > 0xff ||
+    KNOWN_FRAME_TYPES.has(frame.frameType)
+  ) {
+    encodeInvalid(
+      `UNKNOWN frame type ${frame.frameType} collides with a defined frame type`,
+    );
+  }
+  w.raw(frame.payload);
+  return frame.frameType;
+}
+
+/** Writes the payload; returns the frame type byte. */
+function encodeRequestFrame(frame: RequestFrame, w: ByteWriter): number {
   switch (frame.type) {
     case 'REQ_HEADER': {
       if (frame.clientId.length === 0) {
@@ -1170,6 +1169,15 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       w.opt(frame.bootstrapState, (v) => w.str(v));
       break;
     }
+    case 'UNKNOWN':
+      return encodeUnknown(frame, w);
+  }
+  return FrameType[frame.type];
+}
+
+/** Writes the payload; returns the frame type byte. */
+function encodeResponseFrame(frame: ResponseFrame, w: ByteWriter): number {
+  switch (frame.type) {
     case 'RESP_HEADER': {
       w.opt(frame.requiredSchemaVersion, (v) => w.i32(v));
       w.opt(frame.latestSchemaVersion, (v) => w.i32(v));
@@ -1279,22 +1287,16 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
         if (change.tableIndex >= frame.tables.length) {
           encodeInvalid(`change tableIndex ${change.tableIndex} out of range`);
         }
-        if (
-          change.op === 'upsert' &&
-          (change.rowVersion === undefined || change.row === undefined)
-        ) {
-          encodeInvalid('upsert change requires rowVersion and row');
+        if ((change.op === 'upsert') !== (change.row !== undefined)) {
+          encodeInvalid('change row must be present iff op is upsert');
         }
-        if (
-          change.op === 'delete' &&
-          (change.rowVersion !== undefined || change.row !== undefined)
-        ) {
-          encodeInvalid('delete change must not carry rowVersion or row');
+        if (change.rowVersion < 1) {
+          encodeInvalid('change rowVersion must be at least 1');
         }
         w.u16(change.tableIndex);
         w.str(change.rowId);
         w.u8(OP_BYTES[change.op]);
-        w.opt(change.rowVersion, (v) => w.i64(v));
+        w.i64(change.rowVersion);
         writeStringMap(w, change.scopes);
         w.opt(change.row, (v) => w.bytes(v));
       }
@@ -1318,7 +1320,8 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       break;
     }
     case 'SEGMENT_INLINE': {
-      return { frameType: FrameType.SEGMENT_INLINE, payload: frame.payload };
+      w.raw(frame.payload);
+      break;
     }
     case 'SUB_END': {
       w.i64(frame.nextCursor);
@@ -1334,39 +1337,37 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       w.opt(frame.details, (v) => w.str(v));
       break;
     }
-    case 'UNKNOWN': {
-      if (
-        !Number.isInteger(frame.frameType) ||
-        frame.frameType < 0 ||
-        frame.frameType > 0xff ||
-        KNOWN_FRAME_TYPES.has(frame.frameType)
-      ) {
-        encodeInvalid(
-          `UNKNOWN frame type ${frame.frameType} collides with a defined frame type`,
-        );
-      }
-      return { frameType: frame.frameType, payload: frame.payload };
-    }
+    case 'UNKNOWN':
+      return encodeUnknown(frame, w);
   }
-  return { frameType: FrameType[frame.type], payload: w.finish() };
+  return FrameType[frame.type];
 }
 
 // ---------------------------------------------------------------------------
-// Envelope
+// Envelope. The kind-specific codecs let a peer bundle only the direction it
+// speaks; `encodeMessage` and `decodeMessage` dispatch on the kind.
 // ---------------------------------------------------------------------------
 
-export function encodeMessage(message: SyncMessage): Uint8Array {
-  if (!isSupportedProtocolWireVersion(message.wireVersion)) {
-    encodeInvalid(`unsupported wireVersion ${message.wireVersion}`);
+function encodeEnvelope<F extends RequestFrame | ResponseFrame>(
+  wireVersion: number,
+  kindByte: number,
+  frames: readonly F[],
+  validate: (frames: readonly F[]) => void,
+  encode: (frame: F, w: ByteWriter) => number,
+): Uint8Array {
+  if (!isSupportedProtocolWireVersion(wireVersion)) {
+    encodeInvalid(`unsupported wireVersion ${wireVersion}`);
   }
-  validateFrameSequence(message);
+  validate(frames);
   const w = new ByteWriter();
   w.raw(MAGIC_BYTES);
-  w.u16(message.wireVersion);
-  w.u8(message.msgKind === 'request' ? 0x01 : 0x02);
+  w.u16(wireVersion);
+  w.u8(kindByte);
   w.u8(0x00);
-  for (const frame of message.frames) {
-    const { frameType, payload } = encodeFrame(frame);
+  for (const frame of frames) {
+    const p = new ByteWriter();
+    const frameType = encode(frame, p);
+    const payload = p.finish();
     w.u8(frameType);
     w.u32(payload.length);
     w.raw(payload);
@@ -1374,6 +1375,32 @@ export function encodeMessage(message: SyncMessage): Uint8Array {
   w.u8(FrameType.END);
   w.u32(0);
   return w.finish();
+}
+
+export function encodeRequest(message: RequestMessage): Uint8Array {
+  return encodeEnvelope(
+    message.wireVersion,
+    0x01,
+    message.frames,
+    validateRequestSequence,
+    encodeRequestFrame,
+  );
+}
+
+export function encodeResponse(message: ResponseMessage): Uint8Array {
+  return encodeEnvelope(
+    message.wireVersion,
+    0x02,
+    message.frames,
+    validateResponseSequence,
+    encodeResponseFrame,
+  );
+}
+
+export function encodeMessage(message: SyncMessage): Uint8Array {
+  return message.msgKind === 'request'
+    ? encodeRequest(message)
+    : encodeResponse(message);
 }
 
 function readFrames<T>(
@@ -1402,7 +1429,11 @@ function readFrames<T>(
   }
 }
 
-export function decodeMessage(bytes: Uint8Array): SyncMessage {
+function decodeEnvelope(bytes: Uint8Array): {
+  r: ByteReader;
+  wireVersion: number;
+  request: boolean;
+} {
   const r = new ByteReader(bytes);
   if (r.remaining < 8) invalid('truncated envelope header');
   const magic = r.raw(4);
@@ -1424,24 +1455,34 @@ export function decodeMessage(bytes: Uint8Array): SyncMessage {
   }
   const flags = r.u8();
   if (flags !== 0) invalid(`non-zero envelope flags 0x${flags.toString(16)}`);
-  if (kindByte === 0x01) {
-    const message: RequestMessage = {
-      wireVersion,
-      msgKind: 'request',
-      frames: readFrames(r, (frameType, payload) =>
-        decodeRequestFrame(frameType, payload),
-      ),
-    };
-    validateRequestSequence(message.frames);
-    return message;
-  }
-  const message: ResponseMessage = {
-    wireVersion,
-    msgKind: 'response',
-    frames: readFrames(r, (frameType, payload) =>
-      decodeResponseFrame(frameType, payload),
-    ),
-  };
-  validateResponseSequence(message.frames);
-  return message;
+  return { r, wireVersion, request: kindByte === 0x01 };
+}
+
+function requestBody(r: ByteReader, wireVersion: number): RequestMessage {
+  const frames = readFrames(r, decodeRequestFrame);
+  validateRequestSequence(frames);
+  return { wireVersion, msgKind: 'request', frames };
+}
+
+function responseBody(r: ByteReader, wireVersion: number): ResponseMessage {
+  const frames = readFrames(r, decodeResponseFrame);
+  validateResponseSequence(frames);
+  return { wireVersion, msgKind: 'response', frames };
+}
+
+export function decodeRequest(bytes: Uint8Array): RequestMessage {
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  if (!request) invalid('expected a request message');
+  return requestBody(r, wireVersion);
+}
+
+export function decodeResponse(bytes: Uint8Array): ResponseMessage {
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  if (request) invalid('expected a response message');
+  return responseBody(r, wireVersion);
+}
+
+export function decodeMessage(bytes: Uint8Array): SyncMessage {
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  return request ? requestBody(r, wireVersion) : responseBody(r, wireVersion);
 }

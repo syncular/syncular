@@ -528,6 +528,7 @@ const commitsIncremental: ResponseMessage = {
             tableIndex: 1,
             rowId: 'task-9',
             op: 'delete',
+            rowVersion: 3,
             scopes: { assignee: 'u1', project: 'p1' },
           },
         ],
@@ -861,12 +862,14 @@ const realtimeDelta: ResponseMessage = {
               tableIndex: 2,
               rowId: 'task-3',
               op: 'delete',
+              rowVersion: 5,
               scopes: { assignee: 'u2', project: 'p1' },
             },
             {
               tableIndex: 0,
               rowId: 'p1',
               op: 'delete',
+              rowVersion: 2,
               scopes: { project: 'p1' },
             },
           ],
@@ -1119,6 +1122,25 @@ const rawCommit: RawFrame = [
     p.str('actor-1');
     p.u32(0); // no table
     p.u32(0); // no change
+  },
+];
+
+// A delete change whose rowVersion is 0 (§4.5: at least 1).
+const rawCommitRowVersionZero: RawFrame = [
+  FrameType.COMMIT,
+  (p) => {
+    p.i64(43);
+    p.i64(FIXED_TIME_MS);
+    p.str('actor-1');
+    p.u32(1);
+    p.str('notes');
+    p.u32(1);
+    p.u16(0);
+    p.str('n-1');
+    p.u8(2); // delete
+    p.i64(0); // rowVersion
+    p.u32(0); // no scope
+    p.u8(0); // row absent
   },
 ];
 
@@ -2001,6 +2023,17 @@ total += emitKind(
       ]),
       error: 'sync.invalid_request',
       covers: 'COMMIT inside a unit section (§1.6)',
+    },
+    {
+      name: 'commit-row-version-zero',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawLiveStart,
+        rawCommitRowVersionZero,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'A COMMIT delete change with rowVersion 0 (§4.5: at least 1)',
     },
     {
       name: 'sub-start-after-live-start',

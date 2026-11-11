@@ -84,7 +84,7 @@ field's presence to another field's value (e.g. `row` present iff
 `op` = upsert), a violation is likewise a decode error. Wire version 4
 has exactly four such ties, all enforced by the envelope codec: push
 operation `payload` present iff `op` = upsert (§6.1); change
-`rowVersion` and `row` each present iff `op` = upsert (§4.5);
+`row` present iff `op` = upsert (§4.5);
 `PUSH_RESULT.commitSeq` present iff `status` is `applied` or `cached`
 (§6.3); `urlExpiresAtMs` present iff `url` is (§5.4).
 
@@ -891,16 +891,18 @@ A commit contains one or more **changes**:
 | `rowId` | Primary key rendered as a string (§2.4 primary-key eligibility) |
 | `op` | `upsert` or `delete` — the only two operations |
 | `row` | The full row payload after the write (absent for `delete`) |
-| `rowVersion` | The row's `server_version` after the write (absent for `delete`) |
+| `rowVersion` | The row's `server_version` after the write; for a `delete`, the version its tombstone records |
 | `scopes` | The stored scope values extracted from the row (§3.1) |
 
-Every synced row carries a **`server_version`** (`i64`, ≥ 1): starts at 1
-on insert, or one above its tombstone's `server_version` when the insert
-recreates a deleted row (§6.2), and increments by exactly 1 on every
-applied upsert. A §2.2 scope
-move keeps the stored `server_version` unchanged: it re-homes the row, it
-does not write a new row version. `server_version` is the
-optimistic-concurrency token for `baseVersion` conflict detection (§6.2).
+Every synced row carries a **`server_version`** (`i64`, ≥ 1). An insert
+starts it one above the partition's **delete floor**: the highest
+`server_version` any applied delete in the partition recorded, `0` before
+the first. Every applied write to an existing row advances it by exactly 1:
+an upsert, a delete, and a scope move (below). Pruning never lowers the
+delete floor. A row id's versions therefore increase strictly across all of
+its writes and incarnations, and the client's version guard (§4.5) relies on
+that. `server_version` is the optimistic-concurrency token for `baseVersion`
+conflict detection (§6.2).
 
 Every stored column carries a **`column_version`**: the row's
 `server_version` at the column's last write. An insert sets every column to
@@ -915,10 +917,10 @@ row's current `server_version`.
 
 Every applied delete — including a §6.11 cascaded delete — records a
 **tombstone** `(partition, tbl, row_id, commit_seq, server_version,
-scopes)` in a server-side tombstone table: `server_version` and `scopes`
-are the deleted row's last `server_version` and stored scopes. A tombstone
-written before servers recorded them carries neither and keeps the rules
-that predate them (§6.2). The delete half of a §2.2 scope move records no tombstone:
+scopes)` in a server-side tombstone table: `server_version` is the version
+the delete wrote, one above the row's last, and `scopes` are the deleted
+row's stored scopes. A tombstone written before servers recorded them
+carries neither and keeps the rules that predate them (§6.2). The delete half of a §2.2 scope move records no tombstone:
 the same commit keeps the row live. An upsert consults the table only when
 its stored row is absent (§6.2 delete precedence); pruning removes
 tombstones with `commit_seq ≤ horizonSeq` in the same pass as the commit
@@ -930,18 +932,21 @@ values and an `upsert` tagged with the new ones, so subscribers of the
 old scope remove the row and subscribers of the new scope receive it.
 A registered command emits a move with the `rescope` mutation (§3.4,
 [REMOTE.md](./REMOTE.md) §3). The server rewrites the stored row under the
-new scope values in place, emits the change pair, and keeps the row's
-`server_version`. Only scope columns may differ from the stored row; a
-different non-scope value is `sync.invalid_request`. Both the old and the
-new scope values MUST pass §3.4 authorization. The upsert half carries the
-unchanged `server_version`. The delete half leaves no tombstone, so the
-same row can move again with no `baseVersion = 0` insert.
+new scope values in place, emits the change pair, and advances the row's
+`server_version` by 1; the moved scope columns take the new version as their
+`column_version` and every other column keeps its own. Only scope columns may
+differ from the stored row; a different non-scope value is
+`sync.invalid_request`. Both the old and the new scope values MUST pass §3.4
+authorization. Both halves carry the new `server_version`. The delete half
+leaves no tombstone, so the same row can move again with no
+`baseVersion = 0` insert.
 
 The delete and the upsert are one logical change. A live section carries
 every change of a commit that it delivers in one `COMMIT` frame (§4.5). A
-client that receives both for the same `(commitSeq, table, rowId)` MUST
-apply the row with the upsert's values and MUST NOT let the delete remove
-it, in either change order.
+client that receives both keeps the row with the upsert's values in either
+change order, through the version guard alone: a delete after the upsert
+finds the row at its own version and is skipped, and an upsert after the
+delete re-creates the row.
 
 ### 2.3 Idempotency identity
 
@@ -1407,9 +1412,9 @@ table of a revoked fenced record.
   rows outside it are not the server's to destroy. The purge keeps every
   row another unit owns (row ownership, below).
 - A revoked unit leaves the registration list, so the next pull carries the
-  changed list (§4.1); the client keeps it as a local registration with
-  status `revoked` until the app registers its scope map again or releases
-  it.
+  changed list (§4.1); the client clears its persisted echo after the purge
+  and keeps it as a local registration with status `revoked` until the app
+  registers its scope map again or releases it.
 - When a later echo turns a revoked fenced record of an active unit back to
   `active`, the client MUST move the unit to catching up with cursor `-1`:
   the purge removed rows its cursor would otherwise claim (§4.5 C1).
@@ -1436,13 +1441,16 @@ table of a revoked fenced record.
 eviction, the §5.6 first-page clear) removes a row only when it matches
 the departing or bootstrapping pair's effective scopes and no **owner**
 matches it. An owner is any other unit that covers the same table with an
-active pair, is live or post-bootstrap (§4.1), and has a persisted echo for
-the table; it owns the rows that echo matches. A bootstrapping unit
-(cursor `-1` or a resume token: never synced, reset, or rebootstrapped)
-owns nothing: it fresh-bootstraps and runs its own first-page clear.
-Without this rule a revoked or evicted unit deletes rows a surviving unit
-still claims to hold, and the survivor's cursor over-asserts possession
-(§4.5 C1, C2).
+active pair and has a persisted echo, and that is live or post-bootstrap
+(§4.1) or is bootstrapping and has received a segment of the table in its
+current bootstrap (the §5.6 first-page record persisted at its last
+`SUB_END`); it owns the rows that echo matches. A bootstrapping unit (cursor
+`-1` or a resume token: never synced, reset, or rebootstrapped) owns nothing
+in a table its bootstrap has not reached: its own first-page clear runs
+there. Without this rule a revoked or evicted unit deletes rows a surviving
+unit still claims to hold, and the survivor's cursor over-asserts possession
+(§4.5 C1, C2); a deferred eviction chunk (§4.8) would delete the pages a
+bootstrapping unit applied, and the unit would complete without them.
 
 **Matching.** Scope values are text on the wire. A client matches them
 against a local scope column by the column's declared type: a `string`
@@ -1466,7 +1474,8 @@ by an eventual revocation.
 **Re-arming a revoked unit.** Registering the scope map of a unit whose
 status is `revoked` starts it fresh: the client sets it back to `active`,
 catching up with cursor `-1`, no bootstrap state, no persisted echo and no
-reason code, puts it back on the registration list, and raises sync-needed
+reason code, puts it back on the registration list at the position it held
+in the registration order, and raises sync-needed
 so the next pull resolves its scopes again. An app that registers a unit
 before a grant exists, gets revoked, and registers it again once the grant
 arrives receives its rows. A unit whose status is `failed` is a
@@ -1768,7 +1777,9 @@ The client persists a unit's `nextCursor`, `bootstrapState` and echo only on
 processing its `SUB_END` (§1.4), and only into a unit that is still
 registered. A section for a unit the app unregistered while the round was in
 flight (`unsubscribe`, a window shrink) is skipped: its `SUB_END` never
-re-registers the unit.
+re-registers the unit. A unit the app released and registered again before
+the section's `SUB_END` is registered when the client processes it, so the
+section applies to the new registration.
 
 **`LIVE_START`** (`0x1C`):
 
@@ -1848,7 +1859,7 @@ Change record:
 | `tableIndex` | `u16` | Index into `tables`; out of range is a decode error |
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
-| `rowVersion` | `opt(i64)` | Present for upsert, absent for delete |
+| `rowVersion` | `i64` | The row's `server_version` after the write (§2.2): for an upsert the written row's, for a delete the version its tombstone records. A value below 1 is a decode error |
 | `scopes` | `map` of `str` → `str` | Stored scopes (§3.1) |
 | `row` | `opt(bytes)` | Present for upsert: the row encoded with the generated row codec (§2.4) for the response's schema version. Absent for delete |
 
@@ -1874,23 +1885,36 @@ it holds every change through `T = R*`. A joining unit with `P > T` holds
 every change through `P ≥ R*`. A live unit held every change through `R` and
 received every matching change in `(R, T]`. C1 therefore holds for `R*`.
 
-**No change is applied out of order.** Within one response the unit
-sections precede the live section, and the live section is one stream in
-`commitSeq` order that carries each change once. A row that two units reach
-therefore receives each of its changes once, in commit order, after any
-segment that wrote it. A segment holds rows at least as new as its pin
-(§4.7), and the live section re-applies every later change, so when the
-section is not cut every row ends the response at its state as of
-`maxCommitSeq`. When it is cut, a row can show a state older than its
-segment until the next round. The client applies a `COMMIT` change as an
-unconditional upsert or delete, so apply order alone decides which state of
-a row survives.
+**Version guard.** The client applies a change of a live section, of a
+realtime delta (§8.2) and a segment row (§5.6) only when its version exceeds
+the `server_version` of the local row: an upsert or a delete at an equal or
+lower version is skipped, and a delete of an absent row is a no-op. An
+optimistic row the server never confirmed holds no server version (§7.1) and
+takes every change. A row's versions increase strictly across its writes and
+incarnations (§2.2), so the newest state the replica received survives in
+any delivery order, and applying a change, a segment block or a delta a
+second time changes nothing.
+
+**No state is lost to delivery order.** Units reach a row through scans with
+different lower bounds, so one unit can deliver a change older than one
+another unit already delivered. The guard skips an older upsert or delete
+of a row the replica holds. The client keeps no version for a deleted row,
+so an older upsert of a row a delete removed re-creates it. That upsert came
+from the scan of a unit whose pair matched the row at that version, and every
+later write of the row matches the same pair until a write takes the row out
+of it: a delete carries the row's stored scopes, and a scope move's delete
+half carries the old ones. The same scan therefore carries the write that
+removes the row again, at a higher version, before the unit's cursor passes
+it. Within an uncut live section that happens in the same response; a cut
+section shows the row until a later round of the scan reaches the removing
+write.
 
 **Client application.** The client applies a change of a live section only
 when it matches the persisted echo of a unit that is still registered and
 live, post-bootstrap, or completed its bootstrap in this response; it skips
 every other change of the frame. A change for a unit the app unregistered
-while the round was in flight therefore never re-creates its rows.
+while the round was in flight therefore never re-creates its rows. A change
+that passes this rule then goes through the version guard.
 
 **Cursor advancement.** `T` advances even when no change in `(L, T]`
 matches, which makes a quiet replica cheap: its pull carries no `UNIT`
@@ -1964,7 +1988,10 @@ Servers prune the commit log. The contract:
 - **Unit reset.** A post-bootstrap unit with `0 ≤ P < horizonSeq` gets
   `SUB_START.status = reset` with `reasonCode = "sync.cursor_expired"`, no
   segments, and its request cursor echoed in `SUB_END`. On `reset` the client
-  MUST discard the unit's cursor and resume token and send cursor `-1` next.
+  MUST discard the unit's cursor, resume token and first-page record and
+  send cursor `-1` next. It keeps the unit's persisted echo: a revocation or
+  eviction before the next bootstrap completes still matches the rows the
+  unit held.
 - A reset unit SHOULD keep its local rows until bootstrap application
   replaces them (§5.6): `reset` is a staleness signal, not a purge signal;
   only `revoked` purges (§3.3).
@@ -1972,13 +1999,9 @@ Servers prune the commit log. The contract:
   tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
   precedence rule of §6.2 no longer sees the delete, and the ordinary insert
   rule applies. Retention defaults therefore bound how long a delete beats a
-  concurrent unversioned upsert. A row recreated after its tombstone is
-  pruned starts at `server_version = 1`, so a `baseVersion` from the previous
-  incarnation can again match it. Such a `baseVersion` comes from an outbox
-  entry that stayed unpushed for the whole retention window, the same window
-  that bounds delete precedence; the replica cursor is then below
-  `horizonSeq`, so its next pull answers `sync.cursor_expired` and the client
-  re-bootstraps.
+  concurrent unversioned upsert. Pruning leaves the delete floor (§2.2) in
+  place, so a row recreated after its tombstone is pruned still starts above
+  every version of its previous incarnation.
 - Compaction (dropping superseded intermediate changes for the same
   (table, rowId, scope) older than a host-configured full-history window)
   is allowed and invisible to correct clients: any replica whose cursors are
@@ -2128,8 +2151,8 @@ Bootstrap is **resumable, pinned, and paged**:
   Nothing is lost between the pin and the join: the live section delivers
   the unit's changes after the pin. A sqlite image whose scope pin lies
   below the unit's pin already holds the table's state at `maxCommitSeq`; for
-  one whose scope pin lies above it, the live section re-applies changes the
-  image already holds, and re-applying a change converges (§5.6).
+  one whose scope pin lies above it, the live section delivers changes the
+  image already holds, and the version guard skips them (§4.5).
 
 **Phases.** SSP2 does not encode bootstrap phases (critical / interactive /
 background) in the protocol: registration order is the priority order, and
@@ -2207,6 +2230,8 @@ unregistration in **one atomic local transaction** (E3):
   does: its `SUB_END` would otherwise mark a re-added unit complete
   without the rows this eviction removed.
 
+A unit without a persisted echo (no `SUB_END` processed since it was
+registered) evicts nothing: the client never recorded which rows it holds.
 If matching rows remain, that same transaction MUST persist the unit's
 per-table echo in the pending-eviction registry. Later chunks delete at most
 1,024 rows and publish independent revisions. The host yields between
@@ -2687,8 +2712,10 @@ for clients without signed-URL support.
 
 ### 5.6 Segment application contract (client)
 
-- Segments for a table upsert by primary key: an existing row with the same
-  primary key is updated and an absent row is inserted. Constraints outside
+- Segments for a table upsert by primary key under the §4.5 version guard:
+  an absent row is inserted, an existing row with the same primary key is
+  updated when the segment row's `serverVersion` exceeds the local row's
+  `server_version`, and skipped otherwise. Constraints outside
   the primary key retain their ordinary database semantics. In particular, a
   client MUST NOT use replace-style conflict handling that can delete a
   different row after a secondary unique-index collision; the colliding
@@ -2698,8 +2725,9 @@ for clients without signed-URL support.
   purge contract, §3.3, against the effective scopes of the unit's echo for
   the table, §4.4) so removed rows don't survive re-bootstrap. The clear
   keeps rows another unit owns (§3.3 row ownership): that owner holds a
-  cursor, so live sections deliver every change to those rows, and a row
-  it owns is current whether or not this bootstrap delivers it.
+  cursor, or joins the scan at its pin when its bootstrap completes, so
+  live sections deliver every change to those rows, and a row it owns is
+  current whether or not this bootstrap delivers it.
 - **First-page detection.** The client records, with the unit's resume
   token at each `SUB_END`, the tables that have received a segment in the
   current bootstrap; a bootstrap that starts from cursor `-1` begins with
@@ -2720,7 +2748,7 @@ for clients without signed-URL support.
 - Rows-segment blocks are applied transactionally per §1.4/§5.2; a
   SQLite image applies in committed chunks (§5.3). The resume token is
   persisted only at `SUB_END`, so a crash mid-segment resumes
-  conservatively (re-applying a block is safe by upsert idempotency).
+  conservatively (the version guard skips every row of a re-applied block).
 - **Segment rows carry their server version** (per-row `serverVersion`
   in SSG2, §5.2; the `_syncular_version` column in sqlite images, §5.3).
   A client MUST store it as the row's last-known `server_version`,
@@ -3826,7 +3854,7 @@ For an upsert against an **absent** row, the tombstone table decides
 
 | `baseVersion` | Tombstone within horizon | Outcome |
 |---|---|---|
-| `0` | any | insert — explicit intent recreates, with `server_version` one above the tombstone's (below) |
+| `0` | any | insert — explicit intent recreates, with `server_version` one above the delete floor (§2.2) |
 | `> 0` | any | error `sync.row_missing` (after payload authorization, so absence is not disclosed to an actor without the scope) |
 | absent | yes | reject `sync.row_deleted` — a delete beats a concurrent unversioned upsert (after payload authorization when the payload presents every scope column, below) |
 | absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
@@ -3846,18 +3874,18 @@ then authorizes the actor against the tombstone's stored scopes (§3.4 step
 3). A tombstone the actor fails is treated as absent: the operation takes
 the "absent, no tombstone" row, so a payload that omits a scope column gets
 the same `sync.row_missing` as for a row id that never existed, and a full
-payload inserts at `server_version = 1`. A tombstone without stored scopes
+payload inserts. A tombstone without stored scopes
 (written before servers recorded them) answers `sync.row_deleted` to any
 actor, and a partial upsert against it tells any actor that the row id was
 deleted within the horizon.
 
-An insert over a tombstone the actor passes starts at the tombstone's
-`server_version + 1`, and every column's `column_version` starts there too,
-so a `baseVersion` held from the previous incarnation is below every column
-of the new one and yields the ordinary conflict. A tombstone without a
-stored `server_version` recreates at 1. A recreated row clears its
-tombstone. Beyond the pruning horizon the tombstone is gone, the insert
-rule applies, and a recreate starts at 1 again (§4.6).
+Every insert starts one above the delete floor (§2.2), and every column's
+`column_version` starts there too, so a `baseVersion` held from a previous
+incarnation is below every column of the new one and yields the ordinary
+conflict, whether or not the actor passes the tombstone and after the
+tombstone is pruned. The start version discloses nothing about a row id: two
+inserts in one partition with no delete between them start at the same
+version. A recreated row clears its tombstone.
 
 A registered command's `upsert` mutation is unversioned unless it sets
 `insert`, which sends `baseVersion = 0` ([REMOTE.md](./REMOTE.md) §3).
@@ -3873,9 +3901,11 @@ A registered command's `upsert` mutation is unversioned unless it sets
   **existing** row authorizes against the stored row per §3.4; denial
   is `sync.forbidden` — which necessarily reveals that the row exists,
   the accepted cost of fail-loud authorization. Every applied delete,
-  including a §6.11 cascaded delete, records a tombstone (§2.2), except
-  the delete half of a §2.2 scope move: the same commit follows it with an
-  upsert for the row, so the row is live and no tombstone remains.
+  including a §6.11 cascaded delete, advances the row's `server_version`
+  by 1, carries it as the change's `rowVersion`, raises the delete floor
+  to it and records a tombstone (§2.2), except the delete half of a §2.2
+  scope move: it carries the move's version, the same commit follows it
+  with an upsert for the row, so the row is live and no tombstone remains.
 
 ### 6.3 `PUSH_RESULT` frame
 
@@ -5964,7 +5994,8 @@ one batch carrying its revision and the domains changed by that transaction:
 
 - table changes associate every optional `prefix:value` scope key with its
   table; an omitted scope-key set means honestly table-wide;
-- window changes identify canonical base, table, and changed unit(s);
+- window changes identify the canonical base and the changed unit values;
+  a base names no table (§4.8);
 - status carries the complete post-commit client status when status changed;
 - conflict/rejection flags identify their collection domains;
 - `outcomesChanged` identifies durable journal insertion, resolution, or
@@ -6019,7 +6050,7 @@ for observability until the application runs sync.
 This section specifies a client-local support contract. It adds no SSP2 frame,
 server authority, telemetry upload, or permission to inspect application rows.
 Every direct, Worker leader/follower, Tauri, and React Native host MUST expose
-`diagnosticsSnapshot(request?)` with `version: 1` and an `onDiagnostics`
+`diagnosticsSnapshot()` with `version: 2` and an `onDiagnostics`
 change signal. React integrations SHOULD expose the same evidence through a
 hook. A host wrapper changes only topology facts (`kind`, `role`, connectivity,
 realtime); the underlying evidence remains equivalent.
@@ -6043,12 +6074,12 @@ The snapshot is one bounded observation containing:
 - decimal local revision, sync-needed state, and pending outbox commit count;
 - lease health (`none`, `active`, `expired`, or `stopped`), expiry, and a
   stable error code, never the lease id;
-- the registered units as counts per state (`bootstrapping`, `complete`,
-  `reset`, `revoked`, or `failed`) with the stable reason codes present,
-  `activeUnits` (every unit the registration list carries; the §1.7
-  `maxSubscriptionsPerRequest` limit applies to this count), and the
-  replica cursor. A unit id is derived from scope values (§4.1), so no unit
-  id enters diagnostics;
+- `units`: the registered units as counts per state (`bootstrapping`,
+  `complete`, `reset`, `revoked`, or `failed`) with the stable reason codes
+  present, ascending; `activeUnits`: every unit the registration list
+  carries (the §1.7 `maxSubscriptionsPerRequest` limit applies to this
+  count); and `replicaCursor` (§4.5). A unit id is derived from scope values
+  (§4.1), so no unit id enters diagnostics;
 - the last sync round as bounded counters or a stable failure code with the
   optional transport evidence below, and the last revisioned change as
   generated table/window names plus changed-domain booleans;
@@ -6327,8 +6358,8 @@ socket for continuity.
   the client's last delivered cursor is forbidden — the server sends a
   wake-up (§8.3) instead when it cannot bridge the gap. The other
   direction is harmless: a delta whose `LIVE_END.throughSeq` is ≤ the
-  replica cursor is a duplicate and is idempotently skipped (or re-applied
-  — upserts and deletes are idempotent, §5.6); it advances nothing and is
+  replica cursor is a duplicate and is skipped (re-applying it changes
+  nothing under the §4.5 version guard); it advances nothing and is
   **not** a drop, so it MUST NOT set the sync-needed signal. A per-connection
   replay buffer is an OPTIONAL optimization; the reference server keeps
   **none**: a session that is behind at connect
@@ -7054,7 +7085,12 @@ version 3 peer or state written before the upgrade:
   echoes, resume tokens and window registry entries in the same
   transaction. Its replica cursor is `-1`. The app registers its units, and
   each unit bootstraps once; its first-page clears (§5.6) replace the rows
-  of its scope.
+  of its scope. Units left from an earlier version 4 life of the replica
+  (opened by a version 4 build, then by a version 3 build) restart in the
+  same transaction: each becomes `active` without a reason code and catches
+  up from cursor `-1` with no resume token, first-page record or echo, and
+  the replica cursor, echo digest and stored registration digest are
+  cleared.
 - A client record written under version 3 holds no registration list. The
   server answers a pull that refers to a list for it `unregistered` (§4.1)
   and registers no realtime delivery for it until a version 4 round writes
@@ -7494,7 +7530,7 @@ byte-identical output):
 | 3 | `request/push-multi-commit` | `outboxId` + two commits with increasing `clientSeq`: upsert with `baseVersion`, delete, sparse-row payload edge cases (presence and NULL bitmaps, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
 | 4 | `request/combined` | Push + pull in one envelope (§1.5 ordering) |
 | 5 | `response/pull-empty` | Quiet replica: `LIVE_START` active, no `COMMIT`, `LIVE_END` with `throughSeq` advanced (§4.5) |
-| 6 | `response/commits-incremental` | A live section of two `COMMIT` frames, one spanning two tables; row codec exercising every column type incl. NULLs, `bytes`, non-BMP strings; scope map on changes |
+| 6 | `response/commits-incremental` | A live section of two `COMMIT` frames, one spanning two tables; row codec exercising every column type incl. NULLs, `bytes`, non-BMP strings; scope map on changes; a delete carrying its `rowVersion` (§4.5) |
 | 7 | `response/bootstrap-segments` | One unit section with `SEGMENT_REF` (sqlite, with signed URL) + `SEGMENT_REF` (rows, no URL) + `SEGMENT_INLINE` across two tables; incomplete `bootstrapState` in `SUB_END`; then an empty live section |
 | 8 | `response/push-applied` | All-applied result with `commitSeq` |
 | 9 | `response/push-conflict` | `rejected` commit; conflict record with `serverVersion`, full-row `serverRow`, and the `conflictColumns` bitmap (§6.3) |
@@ -7525,7 +7561,7 @@ byte-identical output):
 | 34 | `response/realtime-delta` | A delta: `LIVE_START`, one `COMMIT` spanning three tables, `LIVE_END` with `throughSeq` = its `commitSeq` and an empty `echoDigest` (§8.2) |
 | 35 | `registration/digests` | JSON only, one object `{"units":[{"scopes","canonicalJson","id"}],"registrations":[{"units","canonicalJson","digest"}],"echoes":[{"units","canonicalJson","digest"}]}`: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4). Digests render as 64 lowercase hex characters |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1` |
-| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest` |
+| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
 | — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key, and `1e999`, an unpaired surrogate, a `\u0000` escape, nesting 65 deep or nesting 128 deep inside a value that a later duplicate key shadows; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |

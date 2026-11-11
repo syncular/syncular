@@ -29,11 +29,11 @@ import {
 import {
   type CommitFrame,
   canonicalScopeJson,
-  decodeMessage,
+  decodeResponse,
   DecodeError,
   decodeRow,
   decodeRowsSegment,
-  encodeMessage,
+  encodeRequest,
   encodeRow,
   encodeSparseRow,
   encodePresencePublish,
@@ -3977,7 +3977,7 @@ export class SyncClient {
     const baseBytes =
       byteCap === undefined
         ? 0
-        : encodeMessage({
+        : encodeRequest({
             wireVersion: PROTOCOL_WIRE_VERSION,
             msgKind: 'request',
             frames: [header, pull],
@@ -4070,7 +4070,7 @@ export class SyncClient {
       const frame =
         byteCap === undefined
           ? 0
-          : encodeMessage({
+          : encodeRequest({
               wireVersion: PROTOCOL_WIRE_VERSION,
               msgKind: 'request',
               frames: [header, pushFrame, pull],
@@ -4449,7 +4449,7 @@ export class SyncClient {
         // The fixed frames encode as envelope + fixed frames + END; each
         // admitted push frame adds its own (5 + payload). Trimming the tail
         // re-fits the request to the final registration state.
-        const fixedBytes = encodeMessage({
+        const fixedBytes = encodeRequest({
           wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'request',
           frames: fixedFrames,
@@ -4479,16 +4479,13 @@ export class SyncClient {
         ...pushFrames,
         ...fixedFrames.slice(lead.length),
       ];
-      const requestBytes = encodeMessage({
+      const requestBytes = encodeRequest({
         wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'request',
         frames,
       });
       const responseBytes = await this.#roundTrip(requestBytes, signal);
-      const message = decodeMessage(responseBytes);
-      if (message.msgKind !== 'response') {
-        throw invalidRequest('transport returned a non-response message');
-      }
+      const message = decodeResponse(responseBytes);
       // §1.5: a complete, decodable response ends the report obligation.
       this.#roundFailureCode = undefined;
       const summary = await this.#processResponse(
@@ -5153,8 +5150,7 @@ export class SyncClient {
         return;
       }
       try {
-        const message = decodeMessage(bytes);
-        if (message.msgKind !== 'response') return;
+        const message = decodeResponse(bytes);
         // §8.2: deltas apply like pull responses; ack after apply.
         await this.#processResponse(message, [], undefined, 'delta');
       } catch {

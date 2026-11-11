@@ -90,7 +90,8 @@ export function pairScopes(
   return effective;
 }
 
-/** §3.3 row ownership: the pair scopes of every owner of `table` but one. */
+/** §3.3 row ownership: the pair scopes of every owner of `table` but one.
+ * A bootstrapping unit owns the tables its current bootstrap seeded. */
 export function unitOwners(
   units: readonly UnitRecord[],
   table: CompiledClientTable,
@@ -98,7 +99,12 @@ export function unitOwners(
 ): ScopeMap[] {
   return units.flatMap((unit) => {
     const scopes =
-      unit.id !== exceptId && owning(unit) && covers(table, unit.scopes)
+      unit.id !== exceptId &&
+      (owning(unit) ||
+        (unit.status === 'active' &&
+          unit.echo !== undefined &&
+          unit.seeded.includes(table.name))) &&
+      covers(table, unit.scopes)
         ? pairScopes(unit.scopes, table.name, unit.echo)
         : undefined;
     return scopes === undefined ? [] : [scopes];
