@@ -38,6 +38,20 @@ A unit has no table list. An app that held only some of the tables of one scope 
 
 A client record written under version 3 holds no registration list. The server answers the first referring pull of such a client `unregistered`, the client sends its list in the next round, and realtime delivers no delta to it until that round completes.
 
+## Plan a rollback before you deploy
+
+The storage migration to version 4 runs one way. On every backend it drops the version 3 column `sync_clients.subscriptions`, adds the unit columns and the partition's `delete_floor`, and sets each partition's `horizonSeq` to its last commit. A version 3 server build reads and writes `sync_clients.subscriptions` and does not run on a migrated database. On first launch the client rewrites a version 3 replica in place, and a version 3 client build does not open the rewritten replica.
+
+Take a restore point immediately before the server deploy:
+
+| Storage | Restore point |
+|---|---|
+| `SqliteServerStorage` | A copy of the database file and its `-wal` taken with the server stopped, or `VACUUM INTO` |
+| `D1ServerStorage` | `wrangler d1 time-travel info <database>`; record the bookmark |
+| `PostgresServerStorage` | Your provider's point-in-time restore (for example a Neon restore point), or `pg_dump` |
+
+To roll back, restore the database to that point and deploy the version 3 server and clients together. Writes accepted after the restore point are lost. Reset every replica that a version 4 client already opened before the version 3 client syncs again: delete the database file and open a fresh one ([Restored and copied replicas](#restored-and-copied-replicas)). Its pending writes leave with the reset.
+
 ## What a user sees on first launch
 
 A replica written under version 3 keeps its outbox, outcome journal, rows, row versions, `clientId`, log epoch and pending evictions. In the same transaction the client deletes the version 3 subscription records, cursors, effective-scope echoes, resume tokens and window registry entries, creates its outbox id, and sets the replica cursor to `-1`.
