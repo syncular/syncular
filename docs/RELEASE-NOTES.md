@@ -1,5 +1,74 @@
 # Syncular release notes
 
+## 0.65.0 release notes
+
+0.65.0 adds `@syncular/client/dev`, a development profiler that records what an
+app's Syncular usage costs, and budget assertions that fail a test when a
+number regresses. SSP2 and the wire version are unchanged.
+
+**The profiler.** `createSyncProfiler()` wraps the database, the sync
+transport, the realtime connector and the client (a `SyncClient`, a worker
+handle or a native handle) an app already constructs. `profiler.report()`
+returns:
+- `queries`: per live query, `runs`, `identicalRuns` (a run whose rows equal
+  the previous run's), `totalMs`, `maxMs`, the rows of the last run and the
+  runs per triggering table, plus `mount` and `refresh`;
+- `statements`: per SQL text, `runs`, `totalMs`, `maxMs` and `rows`;
+- `rounds`: the last 256 rounds with `via`, `requestBytes`, `responseBytes`
+  and `ms`, and `deltas` with the count and bytes of realtime deltas;
+- `units`: active, peak and limit (`unitLimit`, 500 by default, the server's
+  `maxSubscriptionsPerRequest`), and the bootstrap bytes, rows and time per
+  unit;
+- `writes`: `mutateCalls`, `operations` and the single-operation write bursts
+  that could have been one commit (`burstWindowMs`, 16 ms by default).
+
+`profiler.reset()` starts a fresh measurement. The profiler keeps SQL text in
+memory, so `createSyncProfiler` throws `client.profiler_in_production` unless
+the build carries a development or test signal (`import.meta.env.DEV`, or
+`NODE_ENV` set to `development` or `test`) and no production one, the signals
+the `__SYNCULAR__` registry reads. No production entry imports the module; the
+bundle tests assert that the production client, worker and native graphs
+exclude it.
+
+**Budget assertions.** `assertBudgets(report, budgets)` checks
+`maxActiveUnits`, `maxRoundBytes`, `maxRunsPerQuery`, `maxIdenticalRuns` and
+`maxWriteBurst`. It throws `client.profile_budget_exceeded` with every
+exceeded budget in `details.exceeded`, each with `budget`, `limit` and
+`measured`.
+
+**Testkit.** `createTestSync(...).client(id, { profiler })` and
+`buildTestClient({ profiler })` in `@syncular/testkit` wrap that client's
+database, loopback transport, realtime connector and `api` in the profiler.
+Pass `now: () => sync.clock.now()` to the profiler for deterministic times.
+
+**Worker handles.** A development worker entry wraps its database and
+transport in a profiler created with a `BroadcastChannel`; the page creates a
+profiler on the channel of the same name and wraps the handle. The page's
+report merges the worker's `statements` and `rounds`, and `reset()` on the page
+resets the worker's profiler.
+
+**Tauri and React Native.** `profiler.client()` fills `queries`, `units` and
+`writes` for these clients, with query times that include the IPC hop. The
+Rust core executes statements and rounds natively, so `statements`, `rounds`
+and `deltas` stay empty. Swift, Kotlin and Flutter have no profiler.
+
+**Public signature change.** `SyncWorkerOverrides.createTransport` receives a
+second argument, `http`, the reader of the host's current auth headers
+(`http.headers()`), the one the default transport uses. A token set with
+`setHeaders` reaches the requests of a profiled or custom transport. An
+existing one-argument override compiles and runs unchanged.
+
+**Shorter custom-mode message.** The error the worker raises for
+`database.mode: 'custom'` without an `openDatabase` override now reads
+`database mode 'custom' requires startSyncWorker({ openDatabase })`. Its code,
+`client.worker_failed`, is unchanged; an app that matched the old text
+matches the code.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A custom
+`createTransport` override may now read `http.headers()`. Import
+`@syncular/client/dev` only in development builds; see
+[Profiling your app](https://syncular.dev/tooling-profiler/).
+
 ## 0.64.0 release notes
 
 0.64.0 supports a scope pattern change in a schema-version bump and gives a
