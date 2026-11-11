@@ -9,7 +9,7 @@ import { encodeMessage } from './message';
 import { MessageStreamScanner } from './stream';
 
 const REQUEST = encodeMessage({
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'c1', schemaVersion: 1 },
@@ -19,6 +19,9 @@ const REQUEST = encodeMessage({
       limitSnapshotRows: 0,
       maxSnapshotPages: 0,
       accept: 0b0011,
+      cursor: -1,
+      registrationDigest: new Uint8Array(32),
+      echoDigest: new Uint8Array(0),
     },
   ],
 });

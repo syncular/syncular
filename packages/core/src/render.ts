@@ -80,6 +80,13 @@ function renderStringMap(map: Readonly<Record<string, string>>): JsonValue {
   return { ...map };
 }
 
+/** Digest fields render as lowercase hex (Conventions: hashes are hex). */
+function renderDigest(digest: Uint8Array): string {
+  let hex = '';
+  for (const byte of digest) hex += byte.toString(16).padStart(2, '0');
+  return hex;
+}
+
 function renderOperation(operation: PushOperation): JsonValue {
   return {
     table: operation.table,
@@ -139,6 +146,7 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
         clientId: frame.clientId,
         schemaVersion: frame.schemaVersion,
         ...(frame.logEpoch !== undefined ? { logEpoch: frame.logEpoch } : {}),
+        ...(frame.outboxId !== undefined ? { outboxId: frame.outboxId } : {}),
       };
     case 'ROUND_FAILURE':
       return { type: 'ROUND_FAILURE', code: frame.code };
@@ -146,6 +154,7 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
       return {
         type: 'PUSH_COMMIT',
         clientCommitId: frame.clientCommitId,
+        clientSeq: frame.clientSeq,
         operations: frame.operations.map(renderOperation),
       };
     case 'PULL_HEADER':
@@ -155,16 +164,16 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
         limitSnapshotRows: frame.limitSnapshotRows,
         maxSnapshotPages: frame.maxSnapshotPages,
         accept: frame.accept,
+        cursor: frame.cursor,
+        registrationDigest: renderDigest(frame.registrationDigest),
+        echoDigest: renderDigest(frame.echoDigest),
       };
-    case 'SUBSCRIPTION':
+    case 'UNIT':
+      return { type: 'UNIT', scopes: renderStringMap(frame.scopes) };
+    case 'PROGRESS':
       return {
-        type: 'SUBSCRIPTION',
+        type: 'PROGRESS',
         id: frame.id,
-        table: frame.table,
-        scopes: renderScopeLists(frame.scopes),
-        ...(frame.params !== undefined
-          ? { params: parseJson(frame.params) }
-          : {}),
         cursor: frame.cursor,
         ...(frame.bootstrapState !== undefined
           ? { bootstrapState: parseJson(frame.bootstrapState) }
@@ -228,8 +237,24 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
         id: frame.id,
         status: frame.status,
         reasonCode: frame.reasonCode,
-        effectiveScopes: renderScopeLists(frame.effectiveScopes),
         bootstrap: frame.bootstrap,
+        fenced: frame.fenced.map((record) => ({
+          table: record.table,
+          status: record.status,
+          scopes: renderScopeLists(record.scopes),
+        })),
+      };
+    case 'LIVE_START':
+      return {
+        type: 'LIVE_START',
+        status: frame.status,
+        reasonCode: frame.reasonCode,
+      };
+    case 'LIVE_END':
+      return {
+        type: 'LIVE_END',
+        throughSeq: frame.throughSeq,
+        echoDigest: renderDigest(frame.echoDigest),
       };
     case 'COMMIT':
       return {

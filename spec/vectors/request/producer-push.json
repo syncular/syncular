@@ -1,0 +1,27 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "producer-ingest",
+      "schemaVersion": 1,
+      "logEpoch": "epoch-2026-07-02-a"
+    },
+    {
+      "type": "PUSH_COMMIT",
+      "clientCommitId": "ingest-0001",
+      "clientSeq": 0,
+      "operations": [
+        {
+          "table": "notes",
+          "rowId": "n-9",
+          "op": "upsert",
+          "baseVersion": 0,
+          "payload": "/wIDAAAAbi0yCgAAAHBsYWluIGJvZHn5/////////wAAAAAAAMA/AAoAAAB7ImsiOnRydWV9BQAAAAABAv7/"
+        }
+      ]
+    }
+  ]
+}

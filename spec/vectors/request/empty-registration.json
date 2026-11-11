@@ -1,0 +1,24 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "client-a",
+      "schemaVersion": 1,
+      "logEpoch": "epoch-2026-07-02-a",
+      "outboxId": "outbox-7d1c"
+    },
+    {
+      "type": "PULL_HEADER",
+      "limitCommits": 0,
+      "limitSnapshotRows": 0,
+      "maxSnapshotPages": 0,
+      "accept": 3,
+      "cursor": -1,
+      "registrationDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "echoDigest": ""
+    }
+  ]
+}

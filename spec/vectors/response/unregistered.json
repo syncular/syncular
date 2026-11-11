@@ -1,0 +1,22 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-a",
+      "resetRequired": false
+    },
+    {
+      "type": "LIVE_START",
+      "status": "unregistered",
+      "reasonCode": ""
+    },
+    {
+      "type": "LIVE_END",
+      "throughSeq": -1,
+      "echoDigest": ""
+    }
+  ]
+}

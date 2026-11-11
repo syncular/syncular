@@ -1,16 +1,19 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "request",
   "frames": [
     {
       "type": "REQ_HEADER",
       "clientId": "client-a",
-      "schemaVersion": 1
+      "schemaVersion": 1,
+      "logEpoch": "epoch-2026-07-02-a",
+      "outboxId": "outbox-7d1c"
     },
     {
       "type": "PUSH_COMMIT",
       "clientCommitId": "c-0003",
+      "clientSeq": 9,
       "operations": [
         {
           "table": "notes",
@@ -26,18 +29,15 @@
       "limitCommits": 0,
       "limitSnapshotRows": 0,
       "maxSnapshotPages": 0,
-      "accept": 7
+      "accept": 7,
+      "cursor": 42,
+      "registrationDigest": "0b82baefa2615ac28662263c22e429dc2667d9d85e0c69d4c90d2f6d34e50bcf",
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
     },
     {
-      "type": "SUBSCRIPTION",
-      "id": "sub-notes",
-      "table": "notes",
-      "scopes": {
-        "project": [
-          "p1"
-        ]
-      },
-      "cursor": 42
+      "type": "PROGRESS",
+      "id": "7229e751d6a9ec99dfbcb011ed895d52",
+      "cursor": 30
     }
   ]
 }

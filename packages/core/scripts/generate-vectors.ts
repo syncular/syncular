@@ -14,13 +14,21 @@ import { join, resolve } from 'node:path';
 import {
   ByteWriter,
   canonicalScopeJson,
+  canonicalUnitJson,
+  type CommitFrame,
+  echoDigest,
   encodeMessage,
   encodeRow,
   encodeRowsSegment,
   encodeSparseRow,
+  type FencedRecord,
   FrameType,
   type JsonValue,
+  type PullHeaderFrame,
+  registrationDigest,
   type RequestMessage,
+  type RespHeaderFrame,
+  type ResponseFrame,
   type ResponseMessage,
   type RowColumn,
   type RowValue,
@@ -28,8 +36,11 @@ import {
   renderRowsSegment,
   renderSparseRowValue,
   type SparseRowValue,
+  type UnitEcho,
+  type UnitScopes,
   decodeSparseRow,
   serializeBlobRef,
+  unitId,
   utf8Encode,
 } from '../src/index';
 
@@ -204,56 +215,97 @@ function signedUrl(segmentId: string): {
 }
 
 // ---------------------------------------------------------------------------
+// Units, registration and echo (§4.1, §4.4)
+// ---------------------------------------------------------------------------
+
+const UNIT_NOTES = { project: 'p1' };
+const UNIT_TEAM = { project: 'p1', team: 't9' };
+const NOTES_ID = unitId(UNIT_NOTES);
+const TEAM_ID = unitId(UNIT_TEAM);
+const REGISTRATION = registrationDigest([UNIT_NOTES, UNIT_TEAM]);
+/** The echo of both units: the wildcard fence added `assignee` to the notes
+ * unit on `tasks` (§3.2 rule 4). */
+const NOTES_ECHO: FencedRecord[] = [
+  { table: 'tasks', status: 'active', scopes: { assignee: ['u1', 'u2'] } },
+];
+const ECHO = echoDigest([
+  { id: NOTES_ID, status: 'active', fenced: NOTES_ECHO },
+  { id: TEAM_ID, status: 'active', fenced: [] },
+]);
+const NO_DIGEST = new Uint8Array(0);
+
+function pullHeader(fields: Partial<PullHeaderFrame> = {}): PullHeaderFrame {
+  return {
+    type: 'PULL_HEADER',
+    limitCommits: 0,
+    limitSnapshotRows: 0,
+    maxSnapshotPages: 0,
+    accept: 0b0011,
+    cursor: 42,
+    registrationDigest: REGISTRATION,
+    echoDigest: ECHO,
+    ...fields,
+  };
+}
+
+const RESP_HEADER: RespHeaderFrame = {
+  type: 'RESP_HEADER',
+  logEpoch: 'epoch-2026-07-02-a',
+  resetRequired: false,
+};
+
+/** A whole live section (§4.4, §4.5). */
+function live(
+  throughSeq: number,
+  commits: CommitFrame[] = [],
+  echo: Uint8Array = ECHO,
+): ResponseFrame[] {
+  return [
+    { type: 'LIVE_START', status: 'active', reasonCode: '' },
+    ...commits,
+    { type: 'LIVE_END', throughSeq, echoDigest: echo },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Valid request vectors
 // ---------------------------------------------------------------------------
 
+// Steady state: the list is referenced by digest, every unit is live.
 const pullMinimal: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
-    {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0011,
-    },
-    {
-      type: 'SUBSCRIPTION',
-      id: 'sub-notes',
-      table: 'notes',
-      scopes: { project: ['p1'] },
-      cursor: 42,
-    },
+    pullHeader(),
   ],
 };
 
+// The list travels: a fresh bootstrap and a resumed one.
 const pullBootstrap: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
-    { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 2 },
     {
-      type: 'PULL_HEADER',
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 2,
+      outboxId: 'outbox-7d1c',
+    },
+    pullHeader({
       limitCommits: 500,
       limitSnapshotRows: 2000,
       maxSnapshotPages: 8,
       accept: 0b1111,
-    },
-    {
-      type: 'SUBSCRIPTION',
-      id: 'sub-notes',
-      table: 'notes',
-      scopes: { project: ['p1', 'p2'], team: ['t9'] },
-      params: '{"includeArchived": false}',
       cursor: -1,
-    },
+      echoDigest: NO_DIGEST,
+    }),
+    { type: 'UNIT', scopes: UNIT_NOTES },
+    { type: 'UNIT', scopes: UNIT_TEAM },
+    { type: 'PROGRESS', id: NOTES_ID, cursor: -1 },
     {
-      type: 'SUBSCRIPTION',
-      id: 'sub-tasks',
-      table: 'tasks',
-      scopes: { project: ['p1'] },
+      type: 'PROGRESS',
+      id: TEAM_ID,
       cursor: 100,
       bootstrapState:
         '{"asOfCommitSeq":100,"tables":["projects","tasks"],"tableIndex":1,"rowCursor":"task-0500"}',
@@ -262,13 +314,20 @@ const pullBootstrap: RequestMessage = {
 };
 
 const pushMultiCommit: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
-    { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
+    {
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 1,
+      logEpoch: 'epoch-2026-07-02-a',
+      outboxId: 'outbox-7d1c',
+    },
     {
       type: 'PUSH_COMMIT',
       clientCommitId: 'c-0001',
+      clientSeq: 7,
       operations: [
         {
           table: 'notes',
@@ -288,19 +347,28 @@ const pushMultiCommit: RequestMessage = {
     {
       type: 'PUSH_COMMIT',
       clientCommitId: 'c-0002',
+      clientSeq: 8,
       operations: [{ table: 'notes', rowId: 'n-3', op: 'delete' }],
     },
   ],
 };
 
+// Push plus a referenced list with one post-bootstrap unit catching up.
 const combined: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
-    { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
+    {
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 1,
+      logEpoch: 'epoch-2026-07-02-a',
+      outboxId: 'outbox-7d1c',
+    },
     {
       type: 'PUSH_COMMIT',
       clientCommitId: 'c-0003',
+      clientSeq: 9,
       operations: [
         {
           table: 'notes',
@@ -311,25 +379,13 @@ const combined: RequestMessage = {
         },
       ],
     },
-    {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0111,
-    },
-    {
-      type: 'SUBSCRIPTION',
-      id: 'sub-notes',
-      table: 'notes',
-      scopes: { project: ['p1'] },
-      cursor: 42,
-    },
+    pullHeader({ accept: 0b0111 }),
+    { type: 'PROGRESS', id: TEAM_ID, cursor: 30 },
   ],
 };
 
 const epochBound: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
     {
@@ -337,45 +393,73 @@ const epochBound: RequestMessage = {
       clientId: 'client-a',
       schemaVersion: 2,
       logEpoch: 'epoch-2026-07-02-a',
+      outboxId: 'outbox-7d1c',
     },
-    {
-      type: 'PULL_HEADER',
+    pullHeader({
       limitCommits: 500,
       limitSnapshotRows: 2000,
       maxSnapshotPages: 8,
       accept: 0b1111,
-    },
-    {
-      type: 'SUBSCRIPTION',
-      id: 'sub-notes',
-      table: 'notes',
-      scopes: { project: ['p1'] },
-      cursor: 42,
-    },
+    }),
   ],
 };
 
 // §1.5: a request reporting the code of a round the server could not see
 // fail. The frame sits immediately after REQ_HEADER.
 const roundFailureReport: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
     { type: 'ROUND_FAILURE', code: 'sync.transport_failed' },
+    pullHeader(),
+  ],
+};
+
+// §4.1: the empty list's digest carries the empty list.
+const emptyRegistration: RequestMessage = {
+  wireVersion: 4,
+  msgKind: 'request',
+  frames: [
     {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0011,
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 1,
+      logEpoch: 'epoch-2026-07-02-a',
+      outboxId: 'outbox-7d1c',
+    },
+    pullHeader({
+      cursor: -1,
+      registrationDigest: registrationDigest([]),
+      echoDigest: NO_DIGEST,
+    }),
+  ],
+};
+
+// §6.10: a database-less producer has no outbox.
+const producerPush: RequestMessage = {
+  wireVersion: 4,
+  msgKind: 'request',
+  frames: [
+    {
+      type: 'REQ_HEADER',
+      clientId: 'producer-ingest',
+      schemaVersion: 1,
+      logEpoch: 'epoch-2026-07-02-a',
     },
     {
-      type: 'SUBSCRIPTION',
-      id: 'sub-notes',
-      table: 'notes',
-      scopes: { project: ['p1'] },
-      cursor: 42,
+      type: 'PUSH_COMMIT',
+      clientCommitId: 'ingest-0001',
+      clientSeq: 0,
+      operations: [
+        {
+          table: 'notes',
+          rowId: 'n-9',
+          op: 'upsert',
+          baseVersion: 0,
+          payload: rowFullSparseBytes,
+        },
+      ],
     },
   ],
 };
@@ -385,28 +469,13 @@ const roundFailureReport: RequestMessage = {
 // ---------------------------------------------------------------------------
 
 const pullEmpty: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
-  frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
-    {
-      type: 'SUB_START',
-      id: 'sub-notes',
-      status: 'active',
-      reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
-      bootstrap: false,
-    },
-    { type: 'SUB_END', nextCursor: 57 },
-  ],
+  frames: [RESP_HEADER, ...live(57)],
 };
 
 const epochReset: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
     {
@@ -418,63 +487,52 @@ const epochReset: ResponseMessage = {
 };
 
 const commitsIncremental: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
-    {
-      type: 'SUB_START',
-      id: 'sub-notes',
-      status: 'active',
-      reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
-      bootstrap: false,
-    },
-    {
-      type: 'COMMIT',
-      commitSeq: 43,
-      createdAtMs: FIXED_TIME_MS,
-      actorId: 'actor-1',
-      tables: ['notes'],
-      changes: [
-        {
-          tableIndex: 0,
-          rowId: 'n-2',
-          op: 'upsert',
-          rowVersion: 1,
-          scopes: { project: 'p1' },
-          row: rowFullBytes,
-        },
-      ],
-    },
-    {
-      type: 'COMMIT',
-      commitSeq: 44,
-      createdAtMs: FIXED_TIME_MS + 1000,
-      actorId: 'actor-2',
-      tables: ['notes', 'tasks'],
-      changes: [
-        {
-          tableIndex: 0,
-          rowId: 'n-1',
-          op: 'upsert',
-          rowVersion: 4,
-          scopes: { project: 'p1' },
-          row: rowEdgeBytes,
-        },
-        {
-          tableIndex: 1,
-          rowId: 'task-9',
-          op: 'delete',
-          scopes: { project: 'p1' },
-        },
-      ],
-    },
-    { type: 'SUB_END', nextCursor: 44 },
+    RESP_HEADER,
+    ...live(44, [
+      {
+        type: 'COMMIT',
+        commitSeq: 43,
+        createdAtMs: FIXED_TIME_MS,
+        actorId: 'actor-1',
+        tables: ['notes'],
+        changes: [
+          {
+            tableIndex: 0,
+            rowId: 'n-2',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project: 'p1' },
+            row: rowFullBytes,
+          },
+        ],
+      },
+      {
+        type: 'COMMIT',
+        commitSeq: 44,
+        createdAtMs: FIXED_TIME_MS + 1000,
+        actorId: 'actor-2',
+        tables: ['notes', 'tasks'],
+        changes: [
+          {
+            tableIndex: 0,
+            rowId: 'n-1',
+            op: 'upsert',
+            rowVersion: 4,
+            scopes: { project: 'p1' },
+            row: rowEdgeBytes,
+          },
+          {
+            tableIndex: 1,
+            rowId: 'task-9',
+            op: 'delete',
+            scopes: { assignee: 'u1', project: 'p1' },
+          },
+        ],
+      },
+    ]),
   ],
 };
 
@@ -489,33 +547,30 @@ const sqliteSegmentId = `sha256:${sha256Hex('syncular-vector:sqlite-segment')}`;
 const rowsSegmentId = `sha256:${sha256Hex(inlineSegment)}`;
 const sqliteUrl = signedUrl(sqliteSegmentId);
 
+// A catching-up unit's bootstrap section across two tables, then the live
+// section of the replica's live units.
 const bootstrapSegments: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'SUB_START',
-      id: 'sub-notes',
+      id: NOTES_ID,
       status: 'active',
       reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
       bootstrap: true,
+      fenced: NOTES_ECHO,
     },
     {
       type: 'SEGMENT_REF',
       segmentId: sqliteSegmentId,
       mediaType: 'sqlite',
-      table: 'notes',
+      table: 'projects',
       byteLength: 8192,
       rowCount: 250,
-      asOfCommitSeq: 100,
+      asOfCommitSeq: 96,
       scopeDigest,
-      nextRowCursor: 'n-0250',
       url: sqliteUrl.url,
       urlExpiresAtMs: sqliteUrl.urlExpiresAtMs,
     },
@@ -528,27 +583,24 @@ const bootstrapSegments: ResponseMessage = {
       rowCount: 1,
       asOfCommitSeq: 100,
       scopeDigest,
-      rowCursor: 'n-0250',
+      nextRowCursor: 'n-0001',
     },
     { type: 'SEGMENT_INLINE', payload: inlineSegment },
     {
       type: 'SUB_END',
       nextCursor: 100,
       bootstrapState:
-        '{"asOfCommitSeq":100,"tables":["notes"],"tableIndex":0,"rowCursor":"n-0251"}',
+        '{"asOfCommitSeq":100,"tables":["projects","notes","tasks"],"tableIndex":1,"rowCursor":"n-0251"}',
     },
+    ...live(100),
   ],
 };
 
 const pushApplied: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'PUSH_RESULT',
       clientCommitId: 'c-0001',
@@ -563,14 +615,10 @@ const pushApplied: ResponseMessage = {
 };
 
 const pushConflict: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'PUSH_RESULT',
       clientCommitId: 'c-0002',
@@ -591,14 +639,10 @@ const pushConflict: ResponseMessage = {
 };
 
 const pushCached: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'PUSH_RESULT',
       clientCommitId: 'c-0001',
@@ -612,64 +656,81 @@ const pushCached: ResponseMessage = {
   ],
 };
 
-const subscriptionRevoked: ResponseMessage = {
-  wireVersion: 3,
+const unitRevoked: ResponseMessage = {
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'SUB_START',
-      id: 'sub-notes',
+      id: NOTES_ID,
       status: 'revoked',
       reasonCode: 'sync.scope_revoked',
-      effectiveScopes: {},
       bootstrap: false,
+      fenced: [],
     },
     { type: 'SUB_END', nextCursor: 42 },
+    {
+      type: 'SUB_START',
+      id: TEAM_ID,
+      status: 'active',
+      reasonCode: '',
+      bootstrap: false,
+      fenced: [
+        { table: 'notes', status: 'revoked', scopes: {} },
+        { table: 'tasks', status: 'active', scopes: { assignee: ['u1'] } },
+      ],
+    },
+    { type: 'SUB_END', nextCursor: 42 },
+    ...live(
+      57,
+      [],
+      echoDigest([
+        { id: NOTES_ID, status: 'revoked', fenced: [] },
+        {
+          id: TEAM_ID,
+          status: 'active',
+          fenced: [
+            { table: 'notes', status: 'revoked', scopes: {} },
+            { table: 'tasks', status: 'active', scopes: { assignee: ['u1'] } },
+          ],
+        },
+      ]),
+    ),
   ],
 };
 
 const cursorReset: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'SUB_START',
-      id: 'sub-notes',
+      id: TEAM_ID,
       status: 'reset',
       reasonCode: 'sync.cursor_expired',
-      effectiveScopes: {},
       bootstrap: false,
+      fenced: [],
     },
-    { type: 'SUB_END', nextCursor: 42 },
+    { type: 'SUB_END', nextCursor: 30 },
+    { type: 'LIVE_START', status: 'reset', reasonCode: 'sync.cursor_expired' },
+    { type: 'LIVE_END', throughSeq: -1, echoDigest: ECHO },
   ],
 };
 
 const errorMidStream: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'SUB_START',
-      id: 'sub-notes',
+      id: NOTES_ID,
       status: 'active',
       reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
-      bootstrap: false,
+      bootstrap: true,
+      fenced: [],
     },
     {
       type: 'ERROR',
@@ -684,35 +745,24 @@ const errorMidStream: ResponseMessage = {
 };
 
 const unknownFrameSkip: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
+    RESP_HEADER,
+    { type: 'LIVE_START', status: 'active', reasonCode: '' },
     {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
-    {
-      type: 'SUB_START',
-      id: 'sub-notes',
-      status: 'active',
-      reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
-      bootstrap: false,
-    },
-    {
-      // 0x17 is reserved (commit-chain integrity, SPEC.md §0); a wire-v1
-      // reader must skip it via the length prefix (§1.2 rule 2, §9).
+      // 0x17 is reserved (commit-chain integrity, SPEC.md §0); a reader must
+      // skip it via the length prefix (§1.2 rule 2, §9).
       type: 'UNKNOWN',
       frameType: 0x17,
       payload: utf8Encode('reserved-frame-payload'),
     },
-    { type: 'SUB_END', nextCursor: 45 },
+    { type: 'LIVE_END', throughSeq: 45, echoDigest: ECHO },
   ],
 };
 
 const schemaFloor: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
     {
@@ -729,71 +779,103 @@ const schemaFloor: ResponseMessage = {
 // no CRDT-specific frame. The merged bytes are just the row's `crdt` column
 // (tag 8, bytes machinery) in the change payload.
 const commitCrdtMerge: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
-    {
-      type: 'SUB_START',
-      id: 'sub-docs',
-      status: 'active',
-      reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
-      bootstrap: false,
-    },
-    {
-      type: 'COMMIT',
-      commitSeq: 71,
-      createdAtMs: FIXED_TIME_MS,
-      actorId: 'actor-1',
-      tables: ['docs'],
-      changes: [
-        {
-          tableIndex: 0,
-          rowId: 'd-1',
-          op: 'upsert',
-          rowVersion: 3,
-          scopes: { project: 'p1' },
-          row: docMergedBytes,
-        },
-      ],
-    },
-    { type: 'SUB_END', nextCursor: 71 },
+    RESP_HEADER,
+    ...live(71, [
+      {
+        type: 'COMMIT',
+        commitSeq: 71,
+        createdAtMs: FIXED_TIME_MS,
+        actorId: 'actor-1',
+        tables: ['docs'],
+        changes: [
+          {
+            tableIndex: 0,
+            rowId: 'd-1',
+            op: 'upsert',
+            rowVersion: 3,
+            scopes: { project: 'p1' },
+            row: docMergedBytes,
+          },
+        ],
+      },
+    ]),
   ],
 };
 
-// §7.3.2: a LEASE frame immediately after RESP_HEADER, then an active
-// subscription section — pins the new 0x19 frame in its grammar position.
+// §7.3.2: a LEASE frame immediately after RESP_HEADER, then an empty live
+// section — pins the 0x19 frame in its grammar position.
 const leaseIssued: ResponseMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'response',
   frames: [
-    {
-      type: 'RESP_HEADER',
-      logEpoch: 'epoch-2026-07-02-a',
-      resetRequired: false,
-    },
+    RESP_HEADER,
     {
       type: 'LEASE',
       leaseId: 'lease_9f8e7d6c-5b4a-3210-fedc-ba9876543210',
       expiresAtMs: FIXED_TIME_MS + 900_000,
     },
-    {
-      type: 'SUB_START',
-      id: 'sub-notes',
-      status: 'active',
-      reasonCode: '',
-      effectiveScopes: EFFECTIVE_SCOPES,
-      bootstrap: false,
-    },
-    { type: 'SUB_END', nextCursor: 57 },
+    ...live(57),
   ],
 };
 
+// §4.1: the server stores no list or a different digest.
+const unregistered: ResponseMessage = {
+  wireVersion: 4,
+  msgKind: 'response',
+  frames: [
+    RESP_HEADER,
+    { type: 'LIVE_START', status: 'unregistered', reasonCode: '' },
+    { type: 'LIVE_END', throughSeq: -1, echoDigest: NO_DIGEST },
+  ],
+};
+
+// §8.2: a realtime delta holds every matching change of one commit in one
+// COMMIT frame; LIVE_END names the commit and carries no echo digest.
+const realtimeDelta: ResponseMessage = {
+  wireVersion: 4,
+  msgKind: 'response',
+  frames: [
+    RESP_HEADER,
+    ...live(
+      80,
+      [
+        {
+          type: 'COMMIT',
+          commitSeq: 80,
+          createdAtMs: FIXED_TIME_MS + 2000,
+          actorId: 'actor-2',
+          tables: ['projects', 'notes', 'tasks'],
+          changes: [
+            {
+              tableIndex: 1,
+              rowId: 'n-2',
+              op: 'upsert',
+              rowVersion: 2,
+              scopes: { project: 'p1' },
+              row: rowFullBytes,
+            },
+            {
+              tableIndex: 2,
+              rowId: 'task-3',
+              op: 'delete',
+              scopes: { assignee: 'u2', project: 'p1' },
+            },
+            {
+              tableIndex: 0,
+              rowId: 'p1',
+              op: 'delete',
+              scopes: { project: 'p1' },
+            },
+          ],
+        },
+      ],
+      NO_DIGEST,
+    ),
+  ],
+};
 // ---------------------------------------------------------------------------
 // Valid segment vector
 // ---------------------------------------------------------------------------
@@ -883,30 +965,162 @@ const realtimePresenceFanout = {
 // of valid codec output (never hand-hexed).
 // ---------------------------------------------------------------------------
 
-function frameInto(
-  w: ByteWriter,
-  frameType: number,
-  build: (p: ByteWriter) => void,
-): void {
-  const p = new ByteWriter();
-  build(p);
-  const payload = p.finish();
-  w.u8(frameType);
-  w.u32(payload.length);
-  w.raw(payload);
-}
+type RawFrame = [frameType: number, build: (p: ByteWriter) => void];
 
-function envelopeHeader(w: ByteWriter, msgKind: number): void {
+/** An envelope from raw frame payloads, for bytes the encoder refuses. */
+function rawMessage(msgKind: 1 | 2, frames: RawFrame[]): Uint8Array {
+  const w = new ByteWriter();
   w.raw(utf8Encode('SSP2'));
-  w.u16(3);
+  w.u16(4);
   w.u8(msgKind);
   w.u8(0);
-}
-
-function endFrame(w: ByteWriter): void {
+  for (const [frameType, build] of frames) {
+    const p = new ByteWriter();
+    build(p);
+    const payload = p.finish();
+    w.u8(frameType);
+    w.u32(payload.length);
+    w.raw(payload);
+  }
   w.u8(FrameType.END);
   w.u32(0);
+  return w.finish();
 }
+
+const rawReqHeader = (outboxId?: string): RawFrame => [
+  FrameType.REQ_HEADER,
+  (p) => {
+    p.str('client-a');
+    p.i32(1);
+    p.u8(0); // logEpoch absent
+    p.u8(outboxId === undefined ? 0 : 1);
+    if (outboxId !== undefined) p.str(outboxId);
+  },
+];
+
+const rawPullHeader = (fields: Partial<PullHeaderFrame> = {}): RawFrame => [
+  FrameType.PULL_HEADER,
+  (p) => {
+    const frame = pullHeader(fields);
+    p.i32(frame.limitCommits);
+    p.i32(frame.limitSnapshotRows);
+    p.i32(frame.maxSnapshotPages);
+    p.u8(frame.accept);
+    p.i64(frame.cursor);
+    p.bytes(frame.registrationDigest);
+    p.bytes(frame.echoDigest);
+  },
+];
+
+/** A one-operation PUSH_COMMIT; `op` and `payload` default to a delete. */
+const rawPushCommit = (
+  clientSeq: number,
+  op = 2,
+  payload?: Uint8Array,
+): RawFrame => [
+  FrameType.PUSH_COMMIT,
+  (p) => {
+    p.str('c-1');
+    p.i64(clientSeq);
+    p.u32(1);
+    p.str('notes');
+    p.str('n-1');
+    p.u8(op);
+    p.u8(0); // baseVersion absent
+    p.u8(payload === undefined ? 0 : 1);
+    if (payload !== undefined) p.bytes(payload);
+  },
+];
+
+const rawUnit: RawFrame = [
+  FrameType.UNIT,
+  (p) => {
+    p.u32(1);
+    p.str('project');
+    p.str('p1');
+  },
+];
+
+const rawProgress = (
+  id: string,
+  cursor: number,
+  bootstrapState?: string,
+): RawFrame => [
+  FrameType.PROGRESS,
+  (p) => {
+    p.str(id);
+    p.i64(cursor);
+    p.u8(bootstrapState === undefined ? 0 : 1);
+    if (bootstrapState !== undefined) p.str(bootstrapState);
+  },
+];
+
+const rawRoundFailure = (code: string): RawFrame => [
+  FrameType.ROUND_FAILURE,
+  (p) => p.str(code),
+];
+
+const rawRespHeader: RawFrame = [
+  FrameType.RESP_HEADER,
+  (p) => {
+    p.u8(0); // requiredSchemaVersion absent
+    p.u8(0); // latestSchemaVersion absent
+    p.str('epoch-2026-07-02-a');
+    p.u8(0); // resetRequired false
+  },
+];
+
+const rawSubStart = (fencedTables: string[] = [], bootstrap = 0): RawFrame => [
+  FrameType.SUB_START,
+  (p) => {
+    p.str(NOTES_ID);
+    p.u8(1); // active
+    p.str('');
+    p.u8(bootstrap);
+    p.u32(fencedTables.length);
+    for (const table of fencedTables) {
+      p.str(table);
+      p.u8(1); // active
+      p.u32(0); // no added variable
+    }
+  },
+];
+
+const rawSubEnd = (bootstrapState?: string): RawFrame => [
+  FrameType.SUB_END,
+  (p) => {
+    p.i64(42);
+    p.u8(bootstrapState === undefined ? 0 : 1);
+    if (bootstrapState !== undefined) p.str(bootstrapState);
+  },
+];
+
+const rawLiveStart: RawFrame = [
+  FrameType.LIVE_START,
+  (p) => {
+    p.u8(1); // active
+    p.str('');
+  },
+];
+
+const rawLiveEnd = (echo: Uint8Array = ECHO): RawFrame => [
+  FrameType.LIVE_END,
+  (p) => {
+    p.i64(57);
+    p.bytes(echo);
+  },
+];
+
+const rawCommit: RawFrame = [
+  FrameType.COMMIT,
+  (p) => {
+    p.i64(43);
+    p.i64(FIXED_TIME_MS);
+    p.str('actor-1');
+    p.u32(0); // no table
+    p.u32(0); // no change
+  },
+];
 
 const pullMinimalBytes = encodeMessage(pullMinimal);
 
@@ -920,9 +1134,9 @@ const invalidTruncatedNoEnd = pullMinimalBytes.slice(
 const invalidBadMagic = pullMinimalBytes.slice();
 invalidBadMagic[3] = 0x31;
 
-// Unsupported wireVersion 999.
+// Wire version 3 is rejected as unknown (§9 migration).
 const invalidWireVersion = pullMinimalBytes.slice();
-new DataView(invalidWireVersion.buffer).setUint16(4, 999, true);
+new DataView(invalidWireVersion.buffer).setUint16(4, 3, true);
 
 // Non-zero envelope flags.
 const invalidFlags = pullMinimalBytes.slice();
@@ -931,76 +1145,10 @@ invalidFlags[7] = 0x01;
 // Frame length exceeding the remaining bytes.
 const invalidOverlongFrame = (() => {
   const w = new ByteWriter();
-  envelopeHeader(w, 0x01);
+  w.raw(pullMinimalBytes.subarray(0, 8));
   w.u8(FrameType.REQ_HEADER);
   w.u32(4096);
   w.raw(new Uint8Array([0x00, 0x01, 0x02, 0x03]));
-  return w.finish();
-})();
-
-// Push operation op byte 3 (only 1 = upsert, 2 = delete are defined).
-const invalidOpEnum = (() => {
-  const w = new ByteWriter();
-  envelopeHeader(w, 0x01);
-  frameInto(w, FrameType.REQ_HEADER, (p) => {
-    p.str('client-a');
-    p.i32(1);
-    p.u8(0); // logEpoch absent
-  });
-  frameInto(w, FrameType.PUSH_COMMIT, (p) => {
-    p.str('c-bad');
-    p.u32(1);
-    p.str('notes');
-    p.str('n-1');
-    p.u8(3); // invalid op enum byte
-    p.u8(0); // baseVersion absent
-    p.u8(1); // payload present
-    p.bytes(rowFullSparseBytes);
-  });
-  endFrame(w);
-  return w.finish();
-})();
-
-// Upsert operation with the payload option absent (§6.1 presence invariant).
-const invalidUpsertNoPayload = (() => {
-  const w = new ByteWriter();
-  envelopeHeader(w, 0x01);
-  frameInto(w, FrameType.REQ_HEADER, (p) => {
-    p.str('client-a');
-    p.i32(1);
-    p.u8(0); // logEpoch absent
-  });
-  frameInto(w, FrameType.PUSH_COMMIT, (p) => {
-    p.str('c-bad');
-    p.u32(1);
-    p.str('notes');
-    p.str('n-1');
-    p.u8(1); // upsert
-    p.u8(0); // baseVersion absent
-    p.u8(0); // payload absent — violation
-  });
-  endFrame(w);
-  return w.finish();
-})();
-
-// SUB_START.bootstrap bool byte 0x02 (only 0x00 / 0x01 are legal).
-const invalidBoolByte = (() => {
-  const w = new ByteWriter();
-  envelopeHeader(w, 0x02);
-  frameInto(w, FrameType.RESP_HEADER, (p) => {
-    p.u8(0);
-    p.u8(0);
-    p.str('epoch-2026-07-02-a');
-    p.u8(0); // resetRequired false
-  });
-  frameInto(w, FrameType.SUB_START, (p) => {
-    p.str('sub-notes');
-    p.u8(1); // active
-    p.str('');
-    p.u32(0); // empty effectiveScopes map
-    p.u8(2); // invalid bool byte
-  });
-  endFrame(w);
   return w.finish();
 })();
 
@@ -1087,72 +1235,6 @@ const invalidServerVersionZero = (() => {
   w.u32(rowBytes.length);
   w.raw(rowBytes);
   w.u32(0);
-  return w.finish();
-})();
-
-// §1.5 ROUND_FAILURE grammar violations the reference encoder refuses to
-// produce (its validation mirrors the decoder's), so the bytes are built by
-// hand: the frame may appear at most once, immediately after REQ_HEADER, with
-// a lowercase dotted code.
-const invalidRoundFailureDuplicate = (() => {
-  const w = new ByteWriter();
-  envelopeHeader(w, 0x01);
-  frameInto(w, FrameType.REQ_HEADER, (p) => {
-    p.str('client-a');
-    p.i32(1);
-    p.u8(0); // logEpoch absent
-  });
-  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport_failed'));
-  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport_failed'));
-  frameInto(w, FrameType.PULL_HEADER, (p) => {
-    p.i32(0);
-    p.i32(0);
-    p.i32(0);
-    p.u8(0b0011);
-  });
-  endFrame(w);
-  return w.finish();
-})();
-
-const invalidRoundFailureAfterPush = (() => {
-  const w = new ByteWriter();
-  envelopeHeader(w, 0x01);
-  frameInto(w, FrameType.REQ_HEADER, (p) => {
-    p.str('client-a');
-    p.i32(1);
-    p.u8(0); // logEpoch absent
-  });
-  frameInto(w, FrameType.PUSH_COMMIT, (p) => {
-    p.str('c-1');
-    p.u32(1);
-    p.str('notes');
-    p.str('n-1');
-    p.u8(2); // delete
-    p.u8(0); // baseVersion absent
-    p.u8(0); // payload absent
-  });
-  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport_failed'));
-  endFrame(w);
-  return w.finish();
-})();
-
-// A hyphen is not a legal code segment separator (§1.5).
-const invalidRoundFailureCode = (() => {
-  const w = new ByteWriter();
-  envelopeHeader(w, 0x01);
-  frameInto(w, FrameType.REQ_HEADER, (p) => {
-    p.str('client-a');
-    p.i32(1);
-    p.u8(0); // logEpoch absent
-  });
-  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport-failed'));
-  frameInto(w, FrameType.PULL_HEADER, (p) => {
-    p.i32(0);
-    p.i32(0);
-    p.i32(0);
-    p.u8(0b0011);
-  });
-  endFrame(w);
   return w.finish();
 })();
 
@@ -1309,70 +1391,30 @@ function filesSegment(values: readonly RowValue[]): Uint8Array {
 }
 
 const jsonBoundaries: RequestMessage = {
-  wireVersion: 3,
+  wireVersion: 4,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
+    pullHeader(),
     {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0011,
+      type: 'PROGRESS',
+      id: NOTES_ID,
+      cursor: 100,
+      bootstrapState: jsonDepth(64),
     },
     {
-      type: 'SUBSCRIPTION',
-      id: 'sub-notes',
-      table: 'notes',
-      scopes: { project: ['p1'] },
-      params: jsonDepth(64),
-      cursor: -1,
+      type: 'PROGRESS',
+      id: TEAM_ID,
+      cursor: 100,
       bootstrapState: JSON_HOST_OPAQUE,
     },
   ],
 };
 
-function pullWithSubscriptionJson(
-  field: 'params' | 'bootstrapState',
-  raw: string,
-): Uint8Array {
-  return encodeMessage({
-    wireVersion: 3,
-    msgKind: 'request',
-    frames: [
-      { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
-      {
-        type: 'PULL_HEADER',
-        limitCommits: 0,
-        limitSnapshotRows: 0,
-        maxSnapshotPages: 0,
-        accept: 0b0011,
-      },
-      {
-        type: 'SUBSCRIPTION',
-        id: 'sub-notes',
-        table: 'notes',
-        scopes: { project: ['p1'] },
-        cursor: -1,
-        [field]: raw,
-      },
-    ],
-  });
-}
-
 const invalidErrorDetailsNulKey = encodeMessage({
   ...errorMidStream,
   frames: errorMidStream.frames.map((frame) =>
     frame.type === 'ERROR' ? { ...frame, details: '{"\\u0000":1}' } : frame,
-  ),
-});
-
-const invalidSubEndLoneSurrogate = encodeMessage({
-  ...pullEmpty,
-  frames: pullEmpty.frames.map((frame) =>
-    frame.type === 'SUB_END'
-      ? { ...frame, bootstrapState: '"\\udc00"' }
-      : frame,
   ),
 });
 
@@ -1581,40 +1623,42 @@ total += emitKind(
       bytes: pullMinimalBytes,
       render: renderMessage,
       covers:
-        'Smallest legal request: header + pull + one caught-up subscription',
+        'Smallest legal pull: PULL_HEADER refers to the list by digest, with a replica cursor and an echo digest; no UNIT frame (§4.1, §4.2)',
     },
     {
       name: 'pull-bootstrap',
       bytes: encodeMessage(pullBootstrap),
       render: renderMessage,
       covers:
-        'cursor = -1, accept bits incl. sqlite + signed URLs, params, resumed bootstrapState round-trip',
+        'A traveling list of two units + two PROGRESS frames: a fresh bootstrap (cursor = -1) and a resumed bootstrap (cursor at the §4.7 pin, bootstrapState round-trip); accept bits incl. sqlite + signed URLs; empty echoDigest',
     },
     {
       name: 'push-multi-commit',
       bytes: encodeMessage(pushMultiCommit),
       render: renderMessage,
       covers:
-        'Two commits: upsert with baseVersion, delete, row-codec payload edge cases (NULL bitmap, empty string, non-BMP unicode, json-typed column raw-string round-trip)',
+        'outboxId + two commits with increasing clientSeq: upsert with baseVersion, delete, sparse-row payload edge cases (presence and NULL bitmaps, empty string, non-BMP unicode, json-typed column raw-string round-trip)',
     },
     {
       name: 'combined',
       bytes: encodeMessage(combined),
       render: renderMessage,
-      covers: 'Push + pull in one envelope (SPEC.md §1.5 ordering)',
+      covers:
+        'Push + pull in one envelope (§1.5 ordering): a referenced list with one post-bootstrap unit in PROGRESS',
     },
     {
       name: 'epoch-bound',
       bytes: encodeMessage(epochBound),
       render: renderMessage,
-      covers: 'Request carrying the client partition log epoch (§2.1)',
+      covers:
+        'Request header with the stored partition logEpoch (§2.1) and outboxId (§6.3.2)',
     },
     {
       name: 'json-boundaries',
       bytes: encodeMessage(jsonBoundaries),
       render: renderMessage,
       covers:
-        'JSON validity rule (Conventions) at its accepting edge: params nested exactly 64 containers deep, bootstrapState with whitespace, a duplicate key, the largest finite binary64 and escapes',
+        'JSON validity rule (Conventions) at its accepting edge: one PROGRESS.bootstrapState nested exactly 64 containers deep, a second with whitespace, a duplicate key, the largest finite binary64 and escapes',
     },
     {
       name: 'round-failure-report',
@@ -1622,6 +1666,20 @@ total += emitKind(
       render: renderMessage,
       covers:
         'ROUND_FAILURE (§1.5) immediately after REQ_HEADER: the client reports the code of its last round that failed where the server could not see it',
+    },
+    {
+      name: 'empty-registration',
+      bytes: encodeMessage(emptyRegistration),
+      render: renderMessage,
+      covers:
+        "A pull whose registrationDigest is the empty list's digest and which carries no UNIT frame: the empty list travels (§4.1)",
+    },
+    {
+      name: 'producer-push',
+      bytes: encodeMessage(producerPush),
+      render: renderMessage,
+      covers:
+        'A database-less producer push: no outboxId, clientSeq = 0 (§6.10)',
     },
   ],
   [],
@@ -1639,10 +1697,10 @@ total += emitKind(
       covers: 'Envelope magic is SSP1, not SSP2',
     },
     {
-      name: 'unsupported-wire-version',
+      name: 'wire-version-3',
       bytes: invalidWireVersion,
       error: 'sync.invalid_request',
-      covers: 'wireVersion 999 is rejected before reading frames',
+      covers: 'wireVersion 3 is rejected as unknown before reading frames (§9)',
     },
     {
       name: 'nonzero-flags',
@@ -1658,49 +1716,137 @@ total += emitKind(
     },
     {
       name: 'op-enum-out-of-range',
-      bytes: invalidOpEnum,
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPushCommit(0, 3, rowFullSparseBytes),
+      ]),
       error: 'sync.invalid_request',
       covers: 'Push operation op byte 3 (unknown enum byte)',
     },
     {
       name: 'upsert-without-payload',
-      bytes: invalidUpsertNoPayload,
+      bytes: rawMessage(1, [rawReqHeader(), rawPushCommit(0, 1)]),
       error: 'sync.invalid_request',
       covers: 'Upsert operation with absent payload (presence invariant)',
     },
     {
       name: 'round-failure-duplicate',
-      bytes: invalidRoundFailureDuplicate,
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawRoundFailure('sync.transport_failed'),
+        rawRoundFailure('sync.transport_failed'),
+        rawPullHeader(),
+      ]),
       error: 'sync.invalid_request',
       covers: 'Two ROUND_FAILURE frames (§1.5: at most one)',
     },
     {
       name: 'round-failure-after-push',
-      bytes: invalidRoundFailureAfterPush,
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPushCommit(0),
+        rawRoundFailure('sync.transport_failed'),
+      ]),
       error: 'sync.invalid_request',
       covers:
         'ROUND_FAILURE after a PUSH_COMMIT (§1.5: only directly after REQ_HEADER)',
     },
     {
       name: 'round-failure-bad-code',
-      bytes: invalidRoundFailureCode,
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawRoundFailure('sync.transport-failed'),
+        rawPullHeader(),
+      ]),
       error: 'sync.invalid_request',
       covers:
         'ROUND_FAILURE code outside the §1.5 grammar (hyphen instead of a dotted segment)',
     },
     {
-      name: 'params-json-number-overflow',
-      bytes: pullWithSubscriptionJson('params', '{"limit":1e999}'),
+      name: 'bootstrap-state-json-number-overflow',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID, 100, '{"asOfCommitSeq":1e999}'),
+      ]),
       error: 'sync.invalid_request',
       covers:
-        'SUBSCRIPTION.params holds 1e999, outside finite binary64 (Conventions JSON validity rule)',
+        'PROGRESS.bootstrapState holds 1e999, outside finite binary64 (Conventions JSON validity rule)',
     },
     {
       name: 'bootstrap-state-json-depth-65',
-      bytes: pullWithSubscriptionJson('bootstrapState', jsonDepth(65)),
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID, 100, jsonDepth(65)),
+      ]),
       error: 'sync.invalid_request',
       covers:
-        'SUBSCRIPTION.bootstrapState nests 65 containers (Conventions JSON validity rule)',
+        'PROGRESS.bootstrapState nests 65 containers (Conventions JSON validity rule)',
+    },
+    {
+      name: 'registration-digest-31-bytes',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader({ registrationDigest: REGISTRATION.subarray(0, 31) }),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'PULL_HEADER.registrationDigest of 31 bytes (§4.2: exactly 32)',
+    },
+    {
+      name: 'echo-digest-16-bytes',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader({ echoDigest: ECHO.subarray(0, 16) }),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'PULL_HEADER.echoDigest of 16 bytes (§4.2: 0 or 32)',
+    },
+    {
+      name: 'pull-cursor-below-minus-one',
+      bytes: rawMessage(1, [rawReqHeader(), rawPullHeader({ cursor: -2 })]),
+      error: 'sync.invalid_request',
+      covers: 'PULL_HEADER.cursor = -2 (§4.2: -1 or above)',
+    },
+    {
+      name: 'progress-id-uppercase',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID.toUpperCase(), -1),
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'PROGRESS.id in uppercase hex (§4.3: 32 lowercase hex characters)',
+    },
+    {
+      name: 'unit-after-progress',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID, -1),
+        rawUnit,
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'UNIT after a PROGRESS frame (§1.5: PROGRESS follows every UNIT)',
+    },
+    {
+      name: 'unit-without-pull-header',
+      bytes: rawMessage(1, [rawReqHeader(), rawUnit]),
+      error: 'sync.invalid_request',
+      covers: 'UNIT without a PULL_HEADER (§1.5)',
+    },
+    {
+      name: 'outbox-id-empty',
+      bytes: rawMessage(1, [rawReqHeader(''), rawPullHeader()]),
+      error: 'sync.invalid_request',
+      covers: 'REQ_HEADER.outboxId present but empty (§1.5)',
+    },
+    {
+      name: 'client-seq-negative',
+      bytes: rawMessage(1, [rawReqHeader('outbox-7d1c'), rawPushCommit(-1)]),
+      error: 'sync.invalid_request',
+      covers: 'PUSH_COMMIT.clientSeq = -1 (§6.1: non-negative)',
     },
   ],
 );
@@ -1713,7 +1859,7 @@ total += emitKind(
       bytes: encodeMessage(pullEmpty),
       render: renderMessage,
       covers:
-        'Active subscription, zero commits, cursor advanced anyway (SPEC.md §4.5)',
+        'Quiet replica: LIVE_START active, no COMMIT, LIVE_END with throughSeq advanced (§4.5)',
     },
     {
       name: 'epoch-reset',
@@ -1726,14 +1872,14 @@ total += emitKind(
       bytes: encodeMessage(commitsIncremental),
       render: renderMessage,
       covers:
-        'Two COMMIT frames; row codec exercising every column type incl. NULLs, bytes, non-BMP strings; scope map on changes',
+        'A live section of two COMMIT frames, one spanning two tables; row codec exercising every column type incl. NULLs, bytes, non-BMP strings; scope map on changes',
     },
     {
       name: 'bootstrap-segments',
       bytes: encodeMessage(bootstrapSegments),
       render: renderMessage,
       covers:
-        'SEGMENT_REF (sqlite, with signed URL) + SEGMENT_REF (rows, no URL) + SEGMENT_INLINE; incomplete bootstrapState in SUB_END',
+        'A catching-up unit section with an echo: SEGMENT_REF (sqlite, with signed URL) + SEGMENT_REF (rows, no URL) + SEGMENT_INLINE across two tables; incomplete bootstrapState in SUB_END; then an empty live section',
     },
     {
       name: 'push-applied',
@@ -1755,32 +1901,32 @@ total += emitKind(
       covers: 'Idempotent replay: status = cached, original results',
     },
     {
-      name: 'subscription-revoked',
-      bytes: encodeMessage(subscriptionRevoked),
+      name: 'unit-revoked',
+      bytes: encodeMessage(unitRevoked),
       render: renderMessage,
       covers:
-        'SUB_START status revoked, reason sync.scope_revoked, empty effective scopes',
+        'SUB_START status revoked, reason sync.scope_revoked, no fenced record; an active unit whose echo carries one revoked and one active fenced record (§4.4)',
     },
     {
       name: 'cursor-reset',
       bytes: encodeMessage(cursorReset),
       render: renderMessage,
       covers:
-        'SUB_START status reset, reason sync.cursor_expired (horizon signal)',
+        'A unit section with SUB_START status reset and LIVE_START status reset, both reason sync.cursor_expired (horizon signal), throughSeq = -1',
     },
     {
       name: 'error-mid-stream',
       bytes: encodeMessage(errorMidStream),
       render: renderMessage,
       covers:
-        'RESP_HEADER + SUB_START + ERROR + END: partially streamed failure (SPEC.md §1.4 abort rule)',
+        'RESP_HEADER + SUB_START + ERROR + END: partially streamed failure (§1.4 abort rule)',
     },
     {
       name: 'unknown-frame-skip',
       bytes: encodeMessage(unknownFrameSkip),
       render: renderMessage,
       covers:
-        'A reserved/unknown frame type between known frames — MUST decode with the frame skipped (SPEC.md §9)',
+        'A reserved/unknown frame type inside the live section — MUST decode with the frame skipped (§9)',
     },
     {
       name: 'schema-floor',
@@ -1800,14 +1946,28 @@ total += emitKind(
       bytes: encodeMessage(leaseIssued),
       render: renderMessage,
       covers:
-        'RESP_HEADER + LEASE (§7.3.2) + active subscription: pins the new 0x19 frame (leaseId, expiresAtMs) in its grammar position',
+        'RESP_HEADER + LEASE (§7.3.2) + an empty live section: pins the 0x19 frame (leaseId, expiresAtMs) in its grammar position',
+    },
+    {
+      name: 'unregistered',
+      bytes: encodeMessage(unregistered),
+      render: renderMessage,
+      covers:
+        'LIVE_START status unregistered, LIVE_END with throughSeq = -1 and an empty echoDigest (§4.1)',
+    },
+    {
+      name: 'realtime-delta',
+      bytes: encodeMessage(realtimeDelta),
+      render: renderMessage,
+      covers:
+        'A delta: LIVE_START, one COMMIT spanning three tables, LIVE_END with throughSeq = its commitSeq and an empty echoDigest (§8.2)',
     },
   ],
   [],
   [
     {
       name: 'bool-byte-out-of-range',
-      bytes: invalidBoolByte,
+      bytes: rawMessage(2, [rawRespHeader, rawSubStart([], 2), rawSubEnd()]),
       error: 'sync.invalid_request',
       covers: 'SUB_START.bootstrap bool byte 0x02',
     },
@@ -1820,10 +1980,79 @@ total += emitKind(
     },
     {
       name: 'sub-end-bootstrap-state-lone-surrogate',
-      bytes: invalidSubEndLoneSurrogate,
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart(),
+        rawSubEnd('"\\udc00"'),
+      ]),
       error: 'sync.invalid_request',
       covers:
         'SUB_END.bootstrapState is an unpaired low-surrogate escape (Conventions JSON validity rule)',
+    },
+    {
+      name: 'commit-inside-unit-section',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart(),
+        rawCommit,
+        rawSubEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'COMMIT inside a unit section (§1.6)',
+    },
+    {
+      name: 'sub-start-after-live-start',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawLiveStart,
+        rawLiveEnd(),
+        rawSubStart(),
+        rawSubEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'SUB_START after the live section (§1.6)',
+    },
+    {
+      name: 'second-live-start',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawLiveStart,
+        rawLiveEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'A second LIVE_START (§1.6)',
+    },
+    {
+      name: 'live-start-without-live-end',
+      bytes: rawMessage(2, [rawRespHeader, rawLiveStart]),
+      error: 'sync.invalid_request',
+      covers: 'LIVE_START without LIVE_END before END (§1.6)',
+    },
+    {
+      name: 'fenced-out-of-order',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart(['tasks', 'notes']),
+        rawSubEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'Fenced records out of ascending table order (§4.4)',
+    },
+    {
+      name: 'live-end-echo-digest-31-bytes',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawLiveStart,
+        rawLiveEnd(ECHO.subarray(0, 31)),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'LIVE_END.echoDigest of 31 bytes (§4.4: 0 or 32)',
     },
   ],
 );
@@ -2164,6 +2393,108 @@ total += emitKind(
         'Client→server presence publish without a doc member is malformed (SPEC.md §8.6.2)',
     },
   ],
+);
+
+// §4.1, §4.4: unit ids, registration digests and echo digests (JSON only).
+// The generator hashes its own canonical text with node:crypto and refuses
+// to emit a case where the codec helpers disagree.
+function checkedDigest(canonicalJson: string, digest: string): string {
+  if (sha256Hex(canonicalJson).slice(0, digest.length) !== digest) {
+    throw new Error('codec digest differs from node:crypto');
+  }
+  return digest;
+}
+
+const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+
+const DIGEST_UNITS: UnitScopes[] = [
+  { campaign_id: 'c1' },
+  { ruleset_id: 'r1' },
+  // UTF-16 order puts U+1F600 (D83D) before U+FF01; UTF-8 order does not.
+  { '\u{1f600}': 'x', '\uff01': 'y' },
+  // Integer-like keys sort as text, never in JavaScript object order.
+  { '9': 'a', '10': 'b' },
+  { campaign_id: '7' },
+  { note: 'q"b\\s\n\u0001\u2028é' },
+];
+
+const ECHO_CASES: UnitEcho[][] = [
+  [],
+  [
+    {
+      id: NOTES_ID,
+      status: 'active',
+      fenced: [
+        {
+          table: 'tasks',
+          status: 'active',
+          scopes: { assignee: ['u2', 'u1', 'u2'] },
+        },
+      ],
+    },
+    { id: TEAM_ID, status: 'active', fenced: [] },
+  ],
+  [
+    { id: NOTES_ID, status: 'revoked', fenced: [] },
+    {
+      id: TEAM_ID,
+      status: 'active',
+      fenced: [
+        { table: 'notes', status: 'revoked', scopes: {} },
+        { table: 'tasks', status: 'active', scopes: { assignee: ['u1'] } },
+      ],
+    },
+  ],
+];
+
+const registrationDigests = {
+  units: DIGEST_UNITS.map((scopes) => ({
+    scopes,
+    canonicalJson: canonicalUnitJson(scopes),
+    id: checkedDigest(canonicalUnitJson(scopes), unitId(scopes)),
+  })),
+  registrations: [
+    DIGEST_UNITS.slice(0, 2),
+    [],
+    DIGEST_UNITS.slice(2),
+    DIGEST_UNITS.slice(0, 2).reverse(),
+  ].map((units) => {
+    const canonicalJson = `[${units.map(canonicalUnitJson).join(',')}]`;
+    return {
+      units,
+      canonicalJson,
+      digest: checkedDigest(canonicalJson, hex(registrationDigest(units))),
+    };
+  }),
+  echoes: ECHO_CASES.map((units) => {
+    const entries = units.map((unit) => {
+      const fenced = unit.fenced.map(
+        (record) =>
+          `{"scopes":${canonicalScopeJson(record.scopes)},"status":"${record.status}","table":${JSON.stringify(record.table)}}`,
+      );
+      return `{"fenced":[${fenced.join(',')}],"id":"${unit.id}","status":"${unit.status}"}`;
+    });
+    const canonicalJson = `[${entries.join(',')}]`;
+    return {
+      units,
+      canonicalJson,
+      digest: checkedDigest(canonicalJson, hex(echoDigest(units))),
+    };
+  }),
+};
+
+total += emitKind(
+  'registration',
+  [],
+  [
+    {
+      name: 'digests',
+      value: registrationDigests,
+      covers:
+        'Unit ids (§4.1), registration digests (§4.1: the golden example, the empty list, non-BMP and integer-like keys, an integer-text value, JSON escapes, reversed order) and echo digests (§4.4: sorted unique scope lists, revoked units and fenced records)',
+    },
+  ],
+  [],
 );
 
 console.log(`generated ${total} vector cases under ${vectorsDir}`);

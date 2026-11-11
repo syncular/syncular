@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "response",
   "frames": [
     {
@@ -10,15 +10,25 @@
     },
     {
       "type": "SUB_START",
-      "id": "sub-notes",
+      "id": "7229e751d6a9ec99dfbcb011ed895d52",
       "status": "reset",
       "reasonCode": "sync.cursor_expired",
-      "effectiveScopes": {},
-      "bootstrap": false
+      "bootstrap": false,
+      "fenced": []
     },
     {
       "type": "SUB_END",
-      "nextCursor": 42
+      "nextCursor": 30
+    },
+    {
+      "type": "LIVE_START",
+      "status": "reset",
+      "reasonCode": "sync.cursor_expired"
+    },
+    {
+      "type": "LIVE_END",
+      "throughSeq": -1,
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
     }
   ]
 }

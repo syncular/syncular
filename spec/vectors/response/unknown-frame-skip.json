@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "response",
   "frames": [
     {
@@ -9,16 +9,9 @@
       "resetRequired": false
     },
     {
-      "type": "SUB_START",
-      "id": "sub-notes",
+      "type": "LIVE_START",
       "status": "active",
-      "reasonCode": "",
-      "effectiveScopes": {
-        "project": [
-          "p1"
-        ]
-      },
-      "bootstrap": false
+      "reasonCode": ""
     },
     {
       "type": "UNKNOWN",
@@ -26,8 +19,9 @@
       "payload": "cmVzZXJ2ZWQtZnJhbWUtcGF5bG9hZA=="
     },
     {
-      "type": "SUB_END",
-      "nextCursor": 45
+      "type": "LIVE_END",
+      "throughSeq": 45,
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
     }
   ]
 }

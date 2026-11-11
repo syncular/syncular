@@ -1,0 +1,165 @@
+{
+  "units": [
+    {
+      "scopes": {
+        "campaign_id": "c1"
+      },
+      "canonicalJson": "{\"campaign_id\":\"c1\"}",
+      "id": "47c583f8f997e2a55f46dc618c2f1969"
+    },
+    {
+      "scopes": {
+        "ruleset_id": "r1"
+      },
+      "canonicalJson": "{\"ruleset_id\":\"r1\"}",
+      "id": "2aa6ecebeab5fd23a8d13f806b28e4c6"
+    },
+    {
+      "scopes": {
+        "😀": "x",
+        "！": "y"
+      },
+      "canonicalJson": "{\"😀\":\"x\",\"！\":\"y\"}",
+      "id": "55c7c42eb888d9083e5bedf4e34bbce8"
+    },
+    {
+      "scopes": {
+        "9": "a",
+        "10": "b"
+      },
+      "canonicalJson": "{\"10\":\"b\",\"9\":\"a\"}",
+      "id": "1b3878c0fb1c0f2ec8f4bde7d8d182cf"
+    },
+    {
+      "scopes": {
+        "campaign_id": "7"
+      },
+      "canonicalJson": "{\"campaign_id\":\"7\"}",
+      "id": "392333c754b356a0aca8b9f63ddd6aa2"
+    },
+    {
+      "scopes": {
+        "note": "q\"b\\s\n\u0001 é"
+      },
+      "canonicalJson": "{\"note\":\"q\\\"b\\\\s\\n\\u0001 é\"}",
+      "id": "71996a0085e37ba62f7dd66da4cb0408"
+    }
+  ],
+  "registrations": [
+    {
+      "units": [
+        {
+          "campaign_id": "c1"
+        },
+        {
+          "ruleset_id": "r1"
+        }
+      ],
+      "canonicalJson": "[{\"campaign_id\":\"c1\"},{\"ruleset_id\":\"r1\"}]",
+      "digest": "2d52a2d80eed610872ef7239611c9cf9d768a6bce24d222f2985b129d4c929bf"
+    },
+    {
+      "units": [],
+      "canonicalJson": "[]",
+      "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "units": [
+        {
+          "😀": "x",
+          "！": "y"
+        },
+        {
+          "9": "a",
+          "10": "b"
+        },
+        {
+          "campaign_id": "7"
+        },
+        {
+          "note": "q\"b\\s\n\u0001 é"
+        }
+      ],
+      "canonicalJson": "[{\"😀\":\"x\",\"！\":\"y\"},{\"10\":\"b\",\"9\":\"a\"},{\"campaign_id\":\"7\"},{\"note\":\"q\\\"b\\\\s\\n\\u0001 é\"}]",
+      "digest": "aa3053ef8ddfcc23e93e42dcd19d0856db66dac4843ef0fe91109029fc62ea08"
+    },
+    {
+      "units": [
+        {
+          "ruleset_id": "r1"
+        },
+        {
+          "campaign_id": "c1"
+        }
+      ],
+      "canonicalJson": "[{\"ruleset_id\":\"r1\"},{\"campaign_id\":\"c1\"}]",
+      "digest": "391ce574643f4d5e0e879d27fa63305b2dc86977911ef7b4971f974e3cf3c55a"
+    }
+  ],
+  "echoes": [
+    {
+      "units": [],
+      "canonicalJson": "[]",
+      "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "units": [
+        {
+          "id": "98bfde90a5f820d3555be61bb46dbbe6",
+          "status": "active",
+          "fenced": [
+            {
+              "table": "tasks",
+              "status": "active",
+              "scopes": {
+                "assignee": [
+                  "u2",
+                  "u1",
+                  "u2"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "7229e751d6a9ec99dfbcb011ed895d52",
+          "status": "active",
+          "fenced": []
+        }
+      ],
+      "canonicalJson": "[{\"fenced\":[{\"scopes\":{\"assignee\":[\"u1\",\"u2\"]},\"status\":\"active\",\"table\":\"tasks\"}],\"id\":\"98bfde90a5f820d3555be61bb46dbbe6\",\"status\":\"active\"},{\"fenced\":[],\"id\":\"7229e751d6a9ec99dfbcb011ed895d52\",\"status\":\"active\"}]",
+      "digest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
+    },
+    {
+      "units": [
+        {
+          "id": "98bfde90a5f820d3555be61bb46dbbe6",
+          "status": "revoked",
+          "fenced": []
+        },
+        {
+          "id": "7229e751d6a9ec99dfbcb011ed895d52",
+          "status": "active",
+          "fenced": [
+            {
+              "table": "notes",
+              "status": "revoked",
+              "scopes": {}
+            },
+            {
+              "table": "tasks",
+              "status": "active",
+              "scopes": {
+                "assignee": [
+                  "u1"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "canonicalJson": "[{\"fenced\":[],\"id\":\"98bfde90a5f820d3555be61bb46dbbe6\",\"status\":\"revoked\"},{\"fenced\":[{\"scopes\":{},\"status\":\"revoked\",\"table\":\"notes\"},{\"scopes\":{\"assignee\":[\"u1\"]},\"status\":\"active\",\"table\":\"tasks\"}],\"id\":\"7229e751d6a9ec99dfbcb011ed895d52\",\"status\":\"active\"}]",
+      "digest": "39694d535b8c1920ec8da4f451dba586875ab95c3ef72c59fe694730f9d6d817"
+    }
+  ]
+}

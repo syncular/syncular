@@ -1,11 +1,12 @@
-/** Frame type registry for wire versions 1 and 2 (SPEC.md §1.2). */
+/** Frame type registry for wire version 4 (SPEC.md §1.2). */
 export const FrameType = {
   END: 0x00,
   REQ_HEADER: 0x01,
   PUSH_COMMIT: 0x02,
   PULL_HEADER: 0x03,
-  SUBSCRIPTION: 0x04,
+  UNIT: 0x04,
   ROUND_FAILURE: 0x05,
+  PROGRESS: 0x06,
   RESP_HEADER: 0x10,
   PUSH_RESULT: 0x11,
   SUB_START: 0x12,
@@ -15,6 +16,8 @@ export const FrameType = {
   SUB_END: 0x16,
   LEASE: 0x19,
   PUSH_RESULT_DETAILS: 0x1b,
+  LIVE_START: 0x1c,
+  LIVE_END: 0x1d,
   ERROR: 0x1f,
 } as const;
 
@@ -25,8 +28,9 @@ export const REQUEST_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.REQ_HEADER,
   FrameType.PUSH_COMMIT,
   FrameType.PULL_HEADER,
-  FrameType.SUBSCRIPTION,
+  FrameType.UNIT,
   FrameType.ROUND_FAILURE,
+  FrameType.PROGRESS,
 ]);
 
 /** Known response frame types (excluding END). */
@@ -40,10 +44,12 @@ export const RESPONSE_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.SUB_END,
   FrameType.LEASE,
   FrameType.PUSH_RESULT_DETAILS,
+  FrameType.LIVE_START,
+  FrameType.LIVE_END,
   FrameType.ERROR,
 ]);
 
-/** Every frame type with a defined layout in wire versions 1 and 2. */
+/** Every frame type with a defined layout in wire version 4. */
 export const KNOWN_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.END,
   ...REQUEST_FRAME_TYPES,
