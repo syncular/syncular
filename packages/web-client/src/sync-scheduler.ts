@@ -45,7 +45,7 @@ export function installSyncScheduler(
   let backgroundReady = false;
   let backgroundDue = Number.POSITIVE_INFINITY;
   let cancelBackground: (() => void) | undefined;
-  // §7.6 backoff for drives that end without a client retry intent.
+  // §7.7 backoff for drives that end without a client retry intent.
   let retryDelayMs = 250;
 
   const report = (error: unknown): void => {
@@ -103,7 +103,7 @@ export function installSyncScheduler(
       .catch((error: unknown) => {
         if (stopped) return;
         report(error);
-        // §7.7: a retryable drive rejection owes another drive. A retryable
+        // §7.8: a retryable drive rejection owes another drive. A retryable
         // round failure already handed this loop its background intent; the
         // drive deadline did not. An unreachable endpoint waits for the
         // host's connectivity resume (§1.8).

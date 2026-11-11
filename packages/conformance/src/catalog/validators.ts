@@ -67,7 +67,7 @@ async function bootstrapped(
 export const validatorScenarios: readonly Scenario[] = [
   {
     name: 'validators/rejected-base-waits-for-a-complete-pull',
-    specRefs: ['§7.2', '§7.2.1', '§7.7'],
+    specRefs: ['§7.2', '§7.2.1', '§7.8'],
     requires: ['validators', 'scope-authorization'],
     async run(ctx) {
       await install(ctx, [
@@ -221,7 +221,7 @@ export const validatorScenarios: readonly Scenario[] = [
   },
   {
     name: 'validators/prove-all-aggregate-bases',
-    specRefs: ['§7.2.1', '§7.5', '§7.7'],
+    specRefs: ['§7.2.1', '§7.5', '§7.8'],
     requires: ['validators', 'scope-authorization'],
     async run(ctx) {
       await install(ctx, [

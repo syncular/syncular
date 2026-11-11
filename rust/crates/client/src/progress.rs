@@ -1,4 +1,4 @@
-//! Ephemeral live sync work (SPEC §7.6), observable while the core is busy.
+//! Ephemeral live sync work (SPEC §7.7), observable while the core is busy.
 use crate::api::TransportCauseKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

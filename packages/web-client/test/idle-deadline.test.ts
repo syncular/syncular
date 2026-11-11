@@ -1,5 +1,5 @@
 /**
- * SPEC §7.7: one `syncUntilIdle` drive is bounded by a total deadline, and
+ * SPEC §7.8: one `syncUntilIdle` drive is bounded by a total deadline, and
  * §1.8: a refused or unreachable endpoint stops without another backoff.
  */
 import { expect, test } from 'bun:test';

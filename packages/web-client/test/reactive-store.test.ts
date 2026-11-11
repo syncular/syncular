@@ -420,7 +420,7 @@ describe('leader link recovery', () => {
   });
 });
 
-describe('rejected claim recovery (SPEC §7.7)', () => {
+describe('rejected claim recovery (SPEC §7.8)', () => {
   const failure = () =>
     new ClientSyncError(
       'window.transport_failed',

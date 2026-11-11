@@ -394,7 +394,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     name: 'observation/storage-full-import-recovery',
-    specRefs: ['§7.5', '§7.6'],
+    specRefs: ['§7.5', '§7.7'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',

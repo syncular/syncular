@@ -1720,7 +1720,7 @@ fn retryable_server_error_schedules_a_background_retry() {
 
 #[test]
 fn sync_until_idle_reports_budget_exhaustion_or_failure() {
-    // §7.7: the exhausted outcome is a partial success, not a failure,
+    // §7.8: the exhausted outcome is a partial success, not a failure,
     // and serializes with an explicit flag.
     let exhausted = SyncOutcome::BudgetExhausted(SyncReport::default()).to_json();
     assert_eq!(exhausted["ok"], json!(true));

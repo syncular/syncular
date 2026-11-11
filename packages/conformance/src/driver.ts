@@ -737,7 +737,7 @@ export type ClientSyncResult =
   | {
       readonly ok: true;
       readonly report: ClientSyncReport;
-      /** §7.7: true when an explicit round budget ran out before idle. */
+      /** §7.8: true when an explicit round budget ran out before idle. */
       readonly budgetExhausted?: boolean;
     }
   | {

@@ -652,7 +652,7 @@ pub struct SyncClient {
     sync_intent_queue: VecDeque<SyncIntent>,
     /// Explicit exponential retry policy for transient transport failures.
     retry_delay_ms: u64,
-    /// §7.6: the background retry the current round scheduled, if any.
+    /// §7.7: the background retry the current round scheduled, if any.
     round_retry_delay_ms: Option<u64>,
     /// A round whose response never completed (§1.5): the client keeps its
     /// code and reports it on every following request until a round receives a
@@ -7858,7 +7858,7 @@ impl SyncClient {
         }
     }
 
-    /// §7.7: one idle drive's default total deadline, the TS client's value.
+    /// §7.8: one idle drive's default total deadline, the TS client's value.
     pub const SYNC_IDLE_TIMEOUT_MS: u64 = 60_000;
 
     pub fn sync_until_idle(
@@ -7879,7 +7879,7 @@ impl SyncClient {
         max_rounds: Option<u32>,
         timeout_ms: Option<u64>,
     ) -> SyncOutcome {
-        // §7.7: an explicit budget is a strict positive round count. Zero is a
+        // §7.8: an explicit budget is a strict positive round count. Zero is a
         // caller error, not an exhaustion.
         if max_rounds == Some(0) {
             return SyncOutcome::Failed {
@@ -7988,7 +7988,7 @@ impl SyncClient {
                 }
             }
         }
-        // §7.7: partial success. The aggregate report is retained and the run
+        // §7.8: partial success. The aggregate report is retained and the run
         // is explicitly not idle.
         SyncOutcome::BudgetExhausted(aggregate)
     }

@@ -17,7 +17,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   ...[0b0011, 0b0111].map(
     (accept): Scenario => ({
       name: `bootstrap/live-progress-intermediate-import-${accept === 3 ? 'rows' : 'sqlite'}`,
-      specRefs: ['§7.6', '§7.7', '§5.2', '§5.3'],
+      specRefs: ['§7.7', '§7.8', '§5.2', '§5.3'],
       requires:
         accept === 3
           ? ['segment-refs', 'server-limits']
@@ -87,7 +87,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   ),
   {
     name: 'bootstrap/live-progress-failure-and-retry',
-    specRefs: ['§7.6', '§5.1', '§1.4'],
+    specRefs: ['§7.7', '§5.1', '§1.4'],
     requires: ['segment-refs', 'server-limits'],
     server: { limits: { inlineSegmentMaxBytes: 0 } },
     async run(ctx) {

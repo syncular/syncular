@@ -183,7 +183,7 @@ test('a drive deadline rejection schedules a background retry with backoff', asy
   for (const delayMs of [250, 500]) {
     queued.shift()?.();
     await flushPromises();
-    // §7.7: the deadline left a half-finished drive and no client intent.
+    // §7.8: the deadline left a half-finished drive and no client intent.
     expect(timers.at(-1)).toMatchObject({ delayMs, cancelled: false });
     timers.at(-1)?.callback();
   }

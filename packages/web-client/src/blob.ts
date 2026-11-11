@@ -45,7 +45,7 @@ export type BlobUploadGrant =
 /**
  * The transport seam for blob upload/download (§5.9.3/§5.9.5). The upload
  * calls receive the round's `signal`, which aborts when the `syncUntilIdle`
- * deadline elapses (§7.7).
+ * deadline elapses (§7.8).
  */
 export interface BlobTransport {
   /** `PUT <mount>/blobs/{blobId}` — host-authenticated direct upload (§5.9.3). */

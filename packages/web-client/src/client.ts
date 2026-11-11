@@ -359,7 +359,7 @@ export interface SyncIdleResult extends SyncSummary {
 }
 
 export interface SyncIdleOptions {
-  /** §7.7: a strict positive round count. Default: 20. */
+  /** §7.8: a strict positive round count. Default: 20. */
   readonly maxRounds?: number;
   /**
    * Total wall-clock budget for one drive, across every round. When it
@@ -391,7 +391,7 @@ export interface SyncClientLimits {
   /**
    * §4.2 accept bitmask; defaults to inline + external rows (0b0011)
    * plus SQLite images and signed URLs when supported. Both image chunks
-   * and rows blocks commit before yielding to local reads (§7.7).
+   * and rows blocks commit before yielding to local reads (§7.8).
    */
   readonly accept?: number;
   /**
@@ -773,7 +773,7 @@ function emptySummary(pushed: number): MutableSummary {
 
 const LOG_EPOCH_META_KEY = 'logEpoch';
 
-/** §7.7: one `syncUntilIdle` drive's default total deadline. */
+/** §7.8: one `syncUntilIdle` drive's default total deadline. */
 const SYNC_IDLE_TIMEOUT_MS = 60_000;
 
 /** RFC 0005 defaults (D2/A4/D7). */
@@ -783,7 +783,7 @@ const PREVIOUS_VERSION_DEFAULT_MAX_TABLES = 32;
 const PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES = 1024 * 1024;
 const PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** §7.7: an explicit round budget is a strict positive u32 count. */
+/** §7.8: an explicit round budget is a strict positive u32 count. */
 function requireRoundBudget(maxRounds: number | undefined): void {
   if (
     maxRounds !== undefined &&
@@ -4315,7 +4315,7 @@ export class SyncClient {
     return this.#sync();
   }
 
-  /** `signal` is the `syncUntilIdle` deadline (§7.7); `sync()` has none. */
+  /** `signal` is the `syncUntilIdle` deadline (§7.8); `sync()` has none. */
   #sync(signal?: AbortSignal): Promise<SyncSummary> {
     this.#requireActive();
     if (this.#syncOutstanding) {
@@ -4624,7 +4624,7 @@ export class SyncClient {
       // failure the server could not see — keep its code for the next request.
       const unseen = this.#unseenRoundFailureCode(caught);
       if (unseen !== undefined) this.#roundFailureCode = unseen;
-      // §7.7: a round the drive deadline aborted ends with the deadline's
+      // §7.8: a round the drive deadline aborted ends with the deadline's
       // error, whichever transport call observed the abort.
       const error: unknown = signal?.aborted === true ? signal.reason : caught;
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
@@ -4698,7 +4698,7 @@ export class SyncClient {
    * Callers that arrive during the same drive with the same budget share that
    * single follow-up. `sync()` keeps rejecting a concurrent `sync()`.
    *
-   * §7.7: one drive is bounded by a total deadline (`timeoutMs`, default
+   * §7.8: one drive is bounded by a total deadline (`timeoutMs`, default
    * 60 s). A drive that reaches it rejects with `sync.idle_timeout` and
    * aborts a socket round in flight; the round budget does not bound elapsed
    * time, and a transport that never answers must not hang the caller.
@@ -4712,7 +4712,7 @@ export class SyncClient {
       typeof options === 'number'
         ? SYNC_IDLE_TIMEOUT_MS
         : (options?.timeoutMs ?? SYNC_IDLE_TIMEOUT_MS);
-    // §7.7: an explicit budget is a strict positive round count. Zero,
+    // §7.8: an explicit budget is a strict positive round count. Zero,
     // fractional, and out-of-range values are caller errors.
     requireRoundBudget(maxRounds);
     if (

@@ -887,7 +887,7 @@ pub enum SyncOutcome {
         reason_code: Option<String>,
         retry_delay_ms: u64,
     },
-    /// §7.7: the round budget ran out while the client was still not idle.
+    /// §7.8: the round budget ran out while the client was still not idle.
     /// The aggregate report of every round that ran is retained. This is a
     /// partial success, not a failure, and MUST NOT be read as idle.
     BudgetExhausted(SyncReport),

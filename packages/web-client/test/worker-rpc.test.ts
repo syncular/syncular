@@ -1625,7 +1625,7 @@ test('a drive deadline rejection re-arms the worker host loop', async () => {
     observe,
     'the loop schedules a retry after the deadline',
   );
-  // §7.7: the deadline is retryable, so the loop owes another drive.
+  // §7.8: the deadline is retryable, so the loop owes another drive.
   expect(events.synced[0]?.error?.code).toBe('sync.idle_timeout');
   expect(backgrounds).toEqual([250]);
   expect(await handle.pendingCommits()).toHaveLength(1);

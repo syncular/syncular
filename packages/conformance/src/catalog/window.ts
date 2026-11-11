@@ -28,7 +28,7 @@ async function windowUnits(handle: ClientHandle): Promise<string[]> {
 export const windowScenarios: readonly Scenario[] = [
   {
     name: 'window/default-convergence-allows-advancing-bootstrap-pages',
-    specRefs: ['§4.8', '§7.7'],
+    specRefs: ['§4.8', '§7.8'],
     async run(ctx) {
       await seedTasks(
         ctx,
@@ -74,7 +74,7 @@ export const windowScenarios: readonly Scenario[] = [
 
   {
     name: 'window/chunked-fts-eviction-preserves-pins-and-reentry',
-    specRefs: ['§4.8', '§7.7'],
+    specRefs: ['§4.8', '§7.8'],
     async run(ctx) {
       const rows = Array.from({ length: 2050 }, (_, i) =>
         task(`code-${i}`, 'p1'),

@@ -228,7 +228,7 @@ export function startSyncWorkerCore(
   let autoSyncScheduled = false;
   let cancelBackground: (() => void) | undefined;
   let backgroundDue = Number.POSITIVE_INFINITY;
-  // §7.6 backoff for drives that end without a client retry intent.
+  // §7.7 backoff for drives that end without a client retry intent.
   let retryDelayMs = 250;
   const scheduleBackground =
     overrides.scheduleBackground ??
@@ -282,7 +282,7 @@ export function startSyncWorkerCore(
           t: 'event',
           event: { kind: 'synced', error: toErrorShape(error) },
         });
-        // §7.7: a retryable drive rejection owes another drive. A retryable
+        // §7.8: a retryable drive rejection owes another drive. A retryable
         // round failure already handed this loop its background intent; the
         // drive deadline did not. An unreachable endpoint waits for the
         // host's connectivity resume (§1.8).

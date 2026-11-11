@@ -1097,11 +1097,11 @@ export const offlineScenarios: readonly Scenario[] = [
   },
 
   {
-    // §7.7: the aggregate spans every round. Round 1 defers the second commit,
+    // §7.8: the aggregate spans every round. Round 1 defers the second commit,
     // so the run is not idle after two rounds even though `bootstrapping` is
     // empty; the delivered commits keep it going.
     name: 'offline/sync-budget-aggregates-across-rounds',
-    specRefs: ['§7.7', '§6.1'],
+    specRefs: ['§7.8', '§6.1'],
     async run(ctx) {
       const a = await bootstrapped(ctx, 'actor-a', 'client-a');
       const commits = await Promise.all([
