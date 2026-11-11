@@ -1619,9 +1619,14 @@ fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
         client.push(&mut authority, "d", vec![delete("nodes", "n3")]);
     }
     // §3.1: at the same version a changed pattern is refused.
-    let error = LocalAuthority::open(&path, &rescoped(1, "id")).err().unwrap();
+    let error = LocalAuthority::open(&path, &rescoped(1, "id"))
+        .err()
+        .unwrap();
     assert_eq!(
-        (error.code.as_str(), error.details.unwrap()["reason"].clone()),
+        (
+            error.code.as_str(),
+            error.details.unwrap()["reason"].clone()
+        ),
         (
             "sync.schema_mismatch",
             json!("layout_changed_without_version_bump")
