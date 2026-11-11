@@ -1,5 +1,20 @@
 # Syncular release notes
 
+## 0.62.0 release notes
+
+0.62.0 lets a query that only the server runs leave the client plan check.
+`syncular generate` plans every query against the client schema database
+(SYQL.md §14.5), which says nothing about a registered query the server plans
+with its own indexes or on Postgres. The acknowledgement `allow plan
+'<reason>'` (`-- allow plan: <reason>` in `.sql`) acknowledges every finding
+of its query. It is the query's only acknowledgement, and on a query without
+findings it fails with `typegen.query_acknowledgement_unused`. SSP2, the
+storage layout, and the wire version are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A
+server-only query that carries one `allow` line per finding can replace them
+with one `allow plan` line.
+
 ## 0.61.0 release notes
 
 0.61.0 gives the native bridge the unit reads of the other clients.

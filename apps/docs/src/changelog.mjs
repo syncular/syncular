@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'A server-only query leaves the client plan check',
+    body: "`syncular generate` plans every query against the client schema database, which does not predict how the server plans a registered query with its own indexes or on Postgres. `allow plan '<reason>'` (`-- allow plan: <reason>` in `.sql`) acknowledges every plan finding of one query and must be its only acknowledgement; a query that a client replica also runs keeps per-finding acknowledgements.",
+    links: [
+      {
+        href: '/tooling-queries/',
+        label: 'Named queries',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title:
       'Tauri and React Native read units, and `unitId` ships with the client',
     body: "`NativeBridgeClient`, the base of `TauriSyncClient` and the React Native `NativeSyncClient`, gains `units()`, `unit(id)` and `unitCatchup(id)` with the same types as `SyncClient`. `@syncular/client`, `@syncular/client/native-bridge`, `@syncular/tauri` and the React Native binding re-export `unitId` and `UnitScopes`, so an app computes a scope map's unit id without depending on `@syncular/core`.",

@@ -148,7 +148,13 @@
             "required": ["finding", "reason"],
             "properties": {
               "finding": {
-                "enum": ["scan", "automatic_index", "unbounded", "many_tables"]
+                "enum": [
+                  "scan",
+                  "automatic_index",
+                  "unbounded",
+                  "many_tables",
+                  "plan"
+                ]
               },
               "table": { "type": "string" },
               "reason": { "type": "string", "pattern": "\\S" }

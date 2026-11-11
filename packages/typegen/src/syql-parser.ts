@@ -487,15 +487,20 @@ class Parser {
     while (this.#peek().text === 'allow') {
       const start = this.#take();
       const kind = this.#take();
-      const finding = QUERY_PLAN_FINDINGS.find((name) => name === kind.text);
+      const finding = [...QUERY_PLAN_FINDINGS, 'plan' as const].find(
+        (name) => name === kind.text,
+      );
       if (finding === undefined) {
         this.#fail(
           'SYQL2013_INVALID_ACKNOWLEDGEMENT',
           kind,
-          `expected a query plan finding (${QUERY_PLAN_FINDINGS.join(', ')}), found ${JSON.stringify(kind.text || 'end of file')}`,
+          `expected a query plan finding (${QUERY_PLAN_FINDINGS.join(', ')}) or plan, found ${JSON.stringify(kind.text || 'end of file')}`,
         );
       }
-      const table = finding === 'many_tables' ? undefined : this.#take();
+      const table =
+        finding === 'many_tables' || finding === 'plan'
+          ? undefined
+          : this.#take();
       if (table !== undefined && table.kind !== 'identifier') {
         this.#fail(
           'SYQL2013_INVALID_ACKNOWLEDGEMENT',
@@ -519,6 +524,15 @@ class Parser {
           'SYQL2013_INVALID_ACKNOWLEDGEMENT',
           start,
           'the query already acknowledges this finding',
+        );
+      }
+      if (
+        out.some((ack) => (ack.finding === 'plan') !== (finding === 'plan'))
+      ) {
+        this.#fail(
+          'SYQL2013_INVALID_ACKNOWLEDGEMENT',
+          start,
+          'allow plan is the only acknowledgement of its query',
         );
       }
       out.push({

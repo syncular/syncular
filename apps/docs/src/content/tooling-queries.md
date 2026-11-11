@@ -296,6 +296,23 @@ acknowledgement. A `.sql` acknowledgement without a reason fails with
 `SYQL2013_INVALID_ACKNOWLEDGEMENT`. Queries an app passes to `client.query()`
 or `useRawSql()` by hand are outside the check.
 
+The check plans against the client schema database. A query that only the
+server runs, as a [registered query](/guide-remote-operations/#registered-typed-queries), is planned by the
+server's database, with the server's indexes, and on Postgres by a different
+planner. Mark such a query with `allow plan` and a reason; it acknowledges
+every finding of the query and is its only acknowledgement:
+
+```syql title="queries/campaign-report.syql"
+allow plan 'registered on the server, which runs it on Postgres'
+sync query campaignReport(campaignId) {
+  select id, title from documents where documents.campaign_id = :campaignId;
+}
+```
+
+In a `.sql` file the comment is `-- allow plan: <reason>`. A query a client
+replica also runs keeps per-finding acknowledgements, so a later scan on the
+device still fails generation.
+
 ## Reference: what each target emits
 
 | Target | Emitted shape |

@@ -738,6 +738,11 @@ An acknowledgement without a reason fails with
 `.syql`), and one that matches no finding of its query fails with
 `typegen.query_acknowledgement_unused`.
 
+A query that only the server runs as a registered query takes
+`allow plan '<reason>'` (`-- allow plan: <reason>` in `.sql`) instead: it
+acknowledges every finding of that query, because the server's database plans
+it with the server's indexes.
+
 **Emitted SQL.** Wrappers take **positional** params (`query(sql, params[])`),
 so the emitted SQL rewrites `:name` → `?` (repeats included) and each runner
 reorders the named params object into the positional array. Comments are

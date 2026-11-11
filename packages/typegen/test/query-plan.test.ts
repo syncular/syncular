@@ -209,6 +209,61 @@ query owned(ownerId) { select id from lists where lists.owner_id = :ownerId; }`,
     }
   });
 
+  test('allow plan acknowledges every finding of a server-run query', () => {
+    const sql =
+      'SELECT t.id FROM todos t JOIN tags g ON g.label = t.title WHERE t.list_id = :listId';
+    for (const [file, source] of [
+      ['server.sql', `-- allow plan: registered on the server only\n${sql}`],
+      [
+        'server.syql',
+        `allow plan 'registered on the server only'
+query server(listId) {
+  select t.id from todos t join tags g on g.label = t.title
+  where t.list_id = :listId;
+}`,
+      ],
+    ] as const) {
+      const [query] = analyzeQueries(IR, [{ file, sql: source }]);
+      expect(query?.acknowledgements).toEqual([
+        { finding: 'plan', reason: 'registered on the server only' },
+      ]);
+    }
+    const unused = failure(
+      'owned.sql',
+      '-- allow plan: stale\nSELECT id FROM lists WHERE owner_id = :ownerId',
+    );
+    expect(unused.code).toBe('typegen.query_acknowledgement_unused');
+    expect(unused.details).toEqual({
+      query: 'owned',
+      file: 'owned.sql',
+      finding: 'plan',
+      table: null,
+    });
+    for (const comment of [
+      '-- allow plan todos: server',
+      '-- allow plan:   ',
+    ]) {
+      expect(failure('q.sql', `${comment}\n${sql}`).details).toEqual({
+        file: 'q.sql',
+        comment,
+      });
+    }
+    expect(
+      failure(
+        'q.sql',
+        `-- allow plan: server\n-- allow scan todos: small\n${sql}`,
+      ).code,
+    ).toBe('typegen.query_acknowledgement_invalid');
+    expect(() =>
+      analyzeQueries(IR, [
+        {
+          file: 'q.syql',
+          sql: "allow plan 'server'\nallow scan todos 'small'\nquery q(listId) { select id from todos where todos.list_id = :listId; }",
+        },
+      ]),
+    ).toThrow(SyqlFrontendError);
+  });
+
   test('an acknowledgement without a reason fails', () => {
     for (const comment of [
       '-- allow scan todos',

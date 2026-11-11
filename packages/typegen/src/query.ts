@@ -323,10 +323,11 @@ export const QUERY_PLAN_FINDINGS = [
 ] as const;
 export type QueryPlanFinding = (typeof QUERY_PLAN_FINDINGS)[number];
 
-/** An author's acknowledgement of one plan finding, with its reason. */
+/** An author's acknowledgement of one plan finding, with its reason.
+ * `plan` acknowledges every finding of a query only the server runs. */
 export interface QueryAcknowledgement {
-  readonly finding: QueryPlanFinding;
-  /** Absent for `many_tables`. */
+  readonly finding: QueryPlanFinding | 'plan';
+  /** Absent for `many_tables` and `plan`. */
   readonly table?: string;
   readonly reason: string;
 }
@@ -588,7 +589,7 @@ function parseCommentParams(file: string, raw: string): CommentParam[] {
 }
 
 const ACKNOWLEDGEMENT_RE = new RegExp(
-  `^--\\s*allow\\s+(${QUERY_PLAN_FINDINGS.join('|')})\\b`,
+  `^--\\s*allow\\s+(${QUERY_PLAN_FINDINGS.join('|')}|plan)\\b`,
 );
 
 /** Parse the `-- allow <finding> [table]: <reason>` acknowledgements of the
@@ -600,7 +601,9 @@ function parseCommentAcknowledgements(
   const out: QueryAcknowledgement[] = [];
   for (const comment of leadingComments(raw)) {
     const kind = ACKNOWLEDGEMENT_RE.exec(comment)?.[1];
-    const finding = QUERY_PLAN_FINDINGS.find((name) => name === kind);
+    const finding = [...QUERY_PLAN_FINDINGS, 'plan' as const].find(
+      (name) => name === kind,
+    );
     if (finding === undefined) continue;
     const match =
       /^--\s*allow\s+\w+(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*:\s*(\S.*?)\s*$/.exec(
@@ -609,8 +612,13 @@ function parseCommentAcknowledgements(
     const table = match?.[1];
     if (
       match === null ||
-      (finding === 'many_tables') !== (table === undefined) ||
-      out.some((other) => other.finding === finding && other.table === table)
+      (finding === 'many_tables' || finding === 'plan') !==
+        (table === undefined) ||
+      out.some(
+        (other) =>
+          (other.finding === finding && other.table === table) ||
+          (other.finding === 'plan') !== (finding === 'plan'),
+      )
     ) {
       throw new TypegenError(
         file,
@@ -2518,8 +2526,9 @@ export function checkQueryPlan(
     acknowledgement: QueryAcknowledgement,
     found: (typeof findings)[number],
   ): boolean =>
-    acknowledgement.finding === found.finding &&
-    acknowledgement.table === found.table;
+    acknowledgement.finding === 'plan' ||
+    (acknowledgement.finding === found.finding &&
+      acknowledgement.table === found.table);
   for (const found of findings) {
     if (!query.acknowledgements.some((ack) => acknowledged(ack, found))) {
       throw new TypegenError(

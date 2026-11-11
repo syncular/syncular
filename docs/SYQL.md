@@ -134,7 +134,8 @@ dynamic_limit     = "limit", camel_name, "default", INTEGER,
 
 template_block    = "{", SQL_TEMPLATE, "}" ;
 
-acknowledgement   = "allow", plan_finding, [ sql_name ], SQL_STRING ;
+acknowledgement   = "allow", ( plan_finding | "plan" ), [ sql_name ],
+                    SQL_STRING ;
 plan_finding      = "scan" | "automatic_index" | "unbounded" |
                     "many_tables" ;
 ```
@@ -709,6 +710,14 @@ acknowledgement that matches no finding of its query fails compilation with
 `typegen.query_acknowledgement_unused`, whose details carry `query`, `file`,
 `finding` and `table`.
 
+The acknowledgement `plan` names no table and acknowledges every finding of
+its query. It marks a query that only the server runs as a registered query
+(REMOTE.md §2), whose plan the server's database decides and the client
+schema database does not predict. `plan` is the only acknowledgement of its
+query, and a `plan` acknowledgement on a query with no finding fails with
+`typegen.query_acknowledgement_unused` (`finding` is `plan`, `table` is
+null).
+
 In a `.syql` source, acknowledgements precede the query (§4). The reason is a
 SQL string literal and MUST contain a non-blank character. A malformed
 acknowledgement, an acknowledgement before a predicate, and a second
@@ -728,13 +737,15 @@ leading comment block, beside `-- name:` and `-- param`:
 ```sql
 -- allow scan tasks: the filter reads at most 200 rows of one list
 -- allow many_tables: the report joins five tables once per export
+-- allow plan: registered on the server, which runs it on Postgres
 ```
 
 A leading comment whose words after `--` are `allow` and a finding kind is an
 acknowledgement. The kind is followed by the table (absent for
 `many_tables`), a colon, and a non-blank reason. A comment of that form that
-does not parse, and a second acknowledgement of the same kind and table on one
-statement, fail with `typegen.query_acknowledgement_invalid`, whose details
+does not parse, a second acknowledgement of the same kind and table on one
+statement, and `plan` beside another acknowledgement fail with
+`typegen.query_acknowledgement_invalid`, whose details
 carry `file` and `comment`.
 
 ## 15. Lowering and execution
