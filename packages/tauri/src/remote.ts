@@ -35,7 +35,11 @@ import {
   type SyncularEvent,
 } from '@syncular/client/native-bridge';
 
-export type { BytesEnvelope } from '@syncular/client/native-bridge';
+export {
+  type BytesEnvelope,
+  unitId,
+  type UnitScopes,
+} from '@syncular/client/native-bridge';
 
 /** §7.5: one read-only statement in an atomic sidecar snapshot read. */
 export type { SnapshotStatement } from '@syncular/client';

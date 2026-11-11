@@ -21,6 +21,8 @@ syncular-client = { version = "0.0.0", features = ["native-transport"] }
 
 `syncular-client` builds on rusqlite 0.41 with its bundled SQLite 3.54.1 and needs Rust 1.89 or later.
 
+rusqlite 0.41 depends on libsqlite3-sys 0.39, and Cargo resolves one package that links `sqlite3` per lockfile. Every other crate in the workspace that depends on libsqlite3-sys, including an optional dependency no build enables, must accept 0.39. diesel 2.3.14 with the `sqlite` feature requires libsqlite3-sys below 0.39, so `cargo update` fails with `package diesel links to the native library sqlite3, but it conflicts with ... libsqlite3-sys v0.39`. Move that crate to a version that accepts libsqlite3-sys 0.39, port it to rusqlite 0.41, or build it in a separate workspace.
+
 Four features exist, all off by default so the core's dependency tree stays small:
 
 - `native-transport`: `HostTransport`, a blocking HTTP client (`ureq`) and a WebSocket client (`tungstenite`) with a reader thread.

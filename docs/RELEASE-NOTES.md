@@ -1,5 +1,33 @@
 # Syncular release notes
 
+## 0.61.0 release notes
+
+0.61.0 gives the native bridge the unit reads of the other clients.
+`NativeBridgeClient` (`@syncular/client/native-bridge`, the base of
+`@syncular/tauri`'s `TauriSyncClient` and the React Native `NativeSyncClient`)
+gains `units()`, `unit(id)` and `unitCatchup(id)`, typed like `SyncClient`'s.
+`units` and `unit` call the native commands of the same name, and
+`unitCatchup` reads the unit through `snapshotRead`; `unit(id)` returns
+`undefined` for an id the client does not hold. `@syncular/client`, its
+`native-bridge` entry, `@syncular/tauri` and the React Native binding
+re-export `unitId` and `UnitScopes`, so an app computes a unit id without a
+direct `@syncular/core` dependency. SSP2, the storage layout, and the wire
+version are unchanged.
+
+**Corrections to 0.58.0 and 0.59.0.** 0.58.0 moved the Rust crates to
+libsqlite3-sys 0.39, and Cargo resolves one package that links `sqlite3` per
+lockfile: a workspace that also depends on diesel 2.3.14 with the `sqlite`
+feature, even optionally, fails to resolve. Since 0.59.0 `mutate` and `patch`
+in both clients throw `sync.invalid_request` for a value push admission
+rejects (a `json` value that does not parse, a non-canonical `blob_ref`, a
+non-finite `float`, a string with U+0000) and record nothing; earlier releases
+queued the write and reported a `rejected` outcome. Both upgrade notes now say
+so.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A Tauri
+or React Native app that sent the raw `unit` or `units` command through
+`syncular_command` calls the bridge methods instead.
+
 ## 0.60.1 release notes
 
 0.60.1 fixes the reconcile of server-only indexes on Postgres
@@ -155,6 +183,11 @@ An interrupted local-authority abandon blocks attach until it completes.
   lock with `typegen.migration_lock_outdated`.
 - Change a `float`, `boolean` or `json` scope column to `integer` or `string`
   before upgrading.
+- Handle authoring refusals at the call: `mutate` and `patch` in both clients
+  throw `sync.invalid_request` for a value push admission rejects (a `json`
+  value that does not parse, a non-canonical `blob_ref`, a non-finite
+  `float`, a string with U+0000) and record nothing, where earlier releases
+  queued the write and reported a `rejected` outcome.
 - Wrap each computed query column in `CAST(... AS INTEGER|REAL|TEXT|BLOB|BOOLEAN)`.
   `count(*)` columns change from a float to an integer type in Rust, Kotlin,
   Swift and Dart.
@@ -190,8 +223,12 @@ storage layout, the wire version, and the npm packages are unchanged.
 app that passes its own `rusqlite::Connection` to `SyncClient::with_connection`
 moves to rusqlite 0.41, which needs Rust 1.89. rusqlite 0.41 takes `&mut self`
 for `trace_v2`, `commit_hook`, `rollback_hook`, and `busy_handler`, and
-`trace_v2` returns a `Result`. The Tauri, Swift, Kotlin, Flutter, and React
-Native bindings pick up SQLite 3.54.1 when they rebuild their native library.
+`trace_v2` returns a `Result`. Cargo resolves one package that links
+`sqlite3` per lockfile, so every other libsqlite3-sys consumer in the
+workspace, optional dependencies included, moves to libsqlite3-sys 0.39
+first; diesel 2.3.14 with the `sqlite` feature requires a version below 0.39.
+The Tauri, Swift, Kotlin, Flutter, and React Native bindings pick up SQLite
+3.54.1 when they rebuild their native library.
 
 ## 0.57.0 release notes
 

@@ -30,6 +30,8 @@ The server reads wire version 4 only, and the clients write version 4 only. A ve
 
 A unit has no table list. An app that held only some of the tables of one scope variable on a device gives those tables their own scope variable before it upgrades.
 
+An app that upgrades from a release before 0.59 also receives 0.59's authoring checks. Since 0.59 `mutate` and `patch` refuse a value that push admission would reject before they record anything: a `json` value that does not parse as a JSON document, a `blob_ref` that is not canonical, a non-finite `float`, and a `string` that contains U+0000. The call throws `sync.invalid_request` with the message `the authoring request is invalid` and the cause in `details.legacyCause`, and appends no outbox commit. Before 0.59 the client queued such a write and the server refused it with a `rejected` commit outcome. A write to a table the client schema does not declare throws `sync.unknown_table`. Move tests and error handling that read these refusals from `commitOutcome` to the `mutate` call.
+
 ## Deploy server and clients together
 
 1. Update every `@syncular/*` package and the `syncular-client` crate to the same release ([Do's and Don'ts](/pitfalls/#do-upgrade-every-syncular-package-and-syncular-client-crate-together)).

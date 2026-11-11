@@ -107,6 +107,21 @@ declares fails with `sync.invalid_subscription`.
 The registration list, each unit's state, and the replica cursor survive an
 app restart. `units()` lists every unit in registration order, `unit(id)`
 reads one, and `unitCatchup(id)` reports whether its bootstrap has completed.
+`unitId(scopes)` from `@syncular/client` computes a scope map's id without
+registering it.
+
+An app that derives its units from synced rows releases the units it no
+longer wants itself, because units registered by an earlier run survive the
+restart. List `units()`, keep the explicit units of the variable the app
+manages, and unsubscribe every one that the current set does not contain:
+
+```ts
+const wanted = rulesetIds.map((id) => ({ ruleset_id: id }));
+const keep = new Set(client.subscribeMany(wanted));
+for (const unit of client.units())
+  if (unit.explicit && 'ruleset_id' in unit.scopes && !keep.has(unit.id))
+    client.unsubscribe(unit.id);
+```
 
 `subscribe`, `subscribeMany` and `unsubscribe` raise `syncNeeded` and queue one
 interactive sync intent when they change the registration list, in the web

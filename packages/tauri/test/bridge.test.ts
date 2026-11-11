@@ -14,6 +14,7 @@ import {
   installRealtimeSupervisor,
   realtimeSupervisorSnapshot,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
+  type UnitRecord,
 } from '@syncular/client';
 import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
@@ -21,6 +22,7 @@ import {
   createTauriSyncClient,
   type TauriApi,
   TauriSyncError,
+  unitId,
 } from '../src/index';
 import { createTauriSyncClient as createRemoteTauriSyncClient } from '../src/remote';
 
@@ -1385,6 +1387,70 @@ describe('createTauriSyncClient', () => {
       method: 'proveCurrentBase',
       params: { outcome: { clientCommitId: 'c1', sequence: 3 }, maxRounds: 2 },
     });
+    await client.close();
+  });
+
+  test('unit reads map to the native unit, units and snapshotRead commands', async () => {
+    const id = unitId({ list_id: 'one' });
+    const record: UnitRecord = {
+      id,
+      scopes: { list_id: 'one' },
+      explicit: true,
+      status: 'active',
+      cursor: -1,
+      seeded: [],
+    };
+    const { tauri, calls } = makeTauri((_cmd, args) => {
+      const command = args.command as
+        | { method: string; params: Record<string, unknown> }
+        | undefined;
+      switch (command?.method) {
+        case 'create':
+          return OK({});
+        case 'units':
+          return OK({ units: [record] });
+        case 'unit':
+          return OK({ unit: command.params.id === id ? record : null });
+        case 'snapshotRead':
+          return OK({
+            revision: '3',
+            queries: [],
+            coverage: { complete: true, pending: [], missing: [] },
+            units: [{ state: 'unknown', id }],
+            deliveries: [],
+          });
+        default:
+          return OK({});
+      }
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'c1',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(await client.units()).toEqual([record]);
+    expect(await client.unit(id)).toEqual(record);
+    expect(await client.unit('absent')).toBeUndefined();
+    expect(await client.unitCatchup(id)).toEqual({ state: 'unknown', id });
+    expect(
+      calls
+        .map((call) => call.args.command as { method: string; params: unknown })
+        .filter((command) => command.method !== 'create'),
+    ).toEqual([
+      { method: 'units', params: {} },
+      { method: 'unit', params: { id } },
+      { method: 'unit', params: { id: 'absent' } },
+      {
+        method: 'snapshotRead',
+        params: {
+          statements: [],
+          coverage: [],
+          units: [id],
+          commitIds: [],
+        },
+      },
+    ]);
     await client.close();
   });
 

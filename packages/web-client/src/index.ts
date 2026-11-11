@@ -59,6 +59,10 @@ export * from './window';
 export * from './worker-host';
 export * from './worker-protocol';
 
+// §4.1: the unit id of a scope map, for `unit(id)` and `unsubscribe(id)`
+// before (or without) a `subscribe`.
+export { unitId, type UnitScopes } from '@syncular/core';
+
 export {
   ProgressEmitter,
   type SyncProgress,

@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import {
   ReactiveClientStore,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
+  type UnitRecord,
 } from '@syncular/client';
 import { makeClient, makeServer } from '../../web-client/test/helpers';
 import { decodeMessage, encodeMessage } from '../../core/src/index';
@@ -17,7 +18,7 @@ import {
   handleSegmentDownload,
   ValidationRejection,
 } from '@syncular/server';
-import { createTauriSyncClient, type TauriApi } from '../src/remote';
+import { createTauriSyncClient, type TauriApi, unitId } from '../src/remote';
 import { createTauriAuthoritySyncClient } from '../src/authority';
 
 const ROOT = join(import.meta.dir, '..', '..', '..');
@@ -1298,6 +1299,41 @@ if (!available) {
             },
           ],
         });
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
+
+    test('real native unit reads match the TS client shapes', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({ schema, tauri: host.api });
+        const id = await client.subscribe({ list_id: 'held' });
+        expect(id).toBe(unitId({ list_id: 'held' }));
+        const record: UnitRecord = {
+          id,
+          scopes: { list_id: 'held' },
+          explicit: true,
+          status: 'active',
+          cursor: -1,
+          seeded: [],
+        };
+        expect(await client.units()).toEqual([record]);
+        expect(await client.unit(id)).toEqual(record);
+        expect(await client.unit(unitId({ list_id: 'other' }))).toBeUndefined();
+        expect(await client.unitCatchup(id)).toEqual({
+          state: 'known',
+          id,
+          status: 'active',
+          live: false,
+          cursor: -1,
+          hasResumeToken: false,
+          bootstrapComplete: false,
+          knownPendingPages: true,
+        });
+        await client.unsubscribe(id);
+        expect(await client.unitCatchup(id)).toEqual({ state: 'unknown', id });
         await client.close();
       } finally {
         await host.close();

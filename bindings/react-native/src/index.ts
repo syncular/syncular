@@ -33,6 +33,8 @@ export {
   type BytesEnvelope,
   NativeSyncError,
   type SyncularEvent,
+  unitId,
+  type UnitScopes,
 } from '@syncular/client/native-bridge';
 
 /**

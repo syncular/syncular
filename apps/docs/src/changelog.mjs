@@ -17,6 +17,19 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title:
+      'Tauri and React Native read units, and `unitId` ships with the client',
+    body: "`NativeBridgeClient`, the base of `TauriSyncClient` and the React Native `NativeSyncClient`, gains `units()`, `unit(id)` and `unitCatchup(id)` with the same types as `SyncClient`. `@syncular/client`, `@syncular/client/native-bridge`, `@syncular/tauri` and the React Native binding re-export `unitId` and `UnitScopes`, so an app computes a scope map's unit id without depending on `@syncular/core`.",
+    links: [
+      {
+        href: '/concepts-subscriptions/#what-a-unit-holds',
+        label: 'What a unit holds',
+      },
+      { href: '/native-client-api/#units', label: 'Native client API' },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'A preflight worker handle starts with an onDiagnostics callback',
     body: 'Since 0.60.0, `createSyncClientHandle({ securityPreflight: true, onDiagnostics })` pulled a diagnostics snapshot during start, which preflight refuses, so the handle failed to start with `client.security_preflight_required`. The start now accepts that refusal, and the callback receives its first snapshot when `activateSecurity()` completes.',
     links: [

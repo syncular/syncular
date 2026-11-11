@@ -23,11 +23,14 @@ import {
   type SecurityLifecycle,
   type SnapshotRead,
   type SnapshotReadRequest,
+  type SyncClient,
   type SyncClientConfig,
+  type UnitCatchup,
   type WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
 import type { PresenceErrorCode, UnitScopes } from '@syncular/core';
+export { unitId, type UnitScopes } from '@syncular/core';
 import {
   CLIENT_DIAGNOSTICS_VERSION,
   type ClientDiagnosticsListener,
@@ -68,6 +71,7 @@ import {
   type SyncProgress,
   type SyncProgressListener,
 } from './progress';
+import type { UnitRecord } from './state';
 import type { WindowBase } from './window';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
@@ -289,7 +293,9 @@ type OutcomeRowValue = ConflictRecord['serverRow'][string];
  * returns a promise from one host round trip; React hooks accept the
  * canonical snapshot interface directly.
  */
-export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapshotMethods> {
+export abstract class NativeBridgeClient implements PromiseMethods<
+  ClientSnapshotMethods & Pick<SyncClient, 'unit' | 'units' | 'unitCatchup'>
+> {
   readonly #kind: 'tauri' | 'react-native';
   readonly #Error: typeof NativeSyncError;
   readonly #release: () => void;
@@ -1006,6 +1012,23 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
 
   async unsubscribe(id: string): Promise<void> {
     await this.command('unsubscribe', { id });
+  }
+
+  /** Every unit in registration order (§4.1), including revoked and failed. */
+  async units(): Promise<UnitRecord[]> {
+    return ((await this.command('units', {})) as { units: UnitRecord[] }).units;
+  }
+
+  async unit(id: string): Promise<UnitRecord | undefined> {
+    return (
+      ((await this.command('unit', { id })) as { unit: UnitRecord | null })
+        .unit ?? undefined
+    );
+  }
+
+  /** §7.5: one unit's persisted catch-up state (never the owner cache). */
+  async unitCatchup(id: string): Promise<UnitCatchup> {
+    return (await this.snapshotRead({ statements: [], units: [id] })).units[0]!;
   }
 
   async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
