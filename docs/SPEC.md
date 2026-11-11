@@ -1186,7 +1186,7 @@ needs no schema-version bump and no client re-bootstrap.
 
 A server storage opening a database whose stored schema version equals the
 running schema version MUST NOT treat the version marker as proof of layout. It
-MUST refuse to serve, without writing DDL or rows, in two cases:
+MUST refuse to serve, without writing DDL or rows, in three cases:
 
 1. The persisted per-table layouts (column name, type, nullability) differ from
    the running schema: `sync.storage.stored_layout_mismatch`.
@@ -1202,8 +1202,9 @@ MUST refuse to serve, without writing DDL or rows, in two cases:
 3. A table's scope patterns differ from the recorded ones (§3.1):
    `sync.storage.scope_patterns_changed`.
 
-Both errors carry `table`, and `column` where one applies, in structured
-details; the physical refusal also carries `reason` (`missing_table`,
+All three errors carry `table` in structured details, the two layout errors
+also `column` where one applies, and the scope refusal `stored` and
+`configured`; the physical refusal also carries `reason` (`missing_table`,
 `missing_column`, `type`, `nullability`, `primary_key`) and, for a type or
 nullability refusal, `expected` and `actual`. The message never names them.
 Only a schema-version bump adds `_sync_column_versions` to a table created
