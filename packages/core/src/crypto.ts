@@ -39,14 +39,34 @@ export const KEY_LENGTH = 32;
 
 /**
  * Client-local decrypt failure (SPEC.md §5.11, §10.3). Never on the wire —
- * the `client.` family is client-only. Raised at the apply seam for an
- * unknown envelope version, unknown `keyId`, GCM auth failure (wrong key), a
- * malformed envelope, or a post-decrypt value-parse failure. Not retryable.
+ * the `client.` family is client-only. Raised at the apply seam. A `keyId`
+ * the keyring does not hold is `client.encryption_key_missing` with
+ * `details` naming the key id (and the table at the apply seam); an unknown
+ * envelope version, GCM auth failure (wrong key), a malformed envelope, or a
+ * post-decrypt value-parse failure is `client.decrypt_failed`. Not
+ * retryable.
  */
 export class DecryptError extends Error {
   override readonly name = 'DecryptError';
-  readonly code = 'client.decrypt_failed';
+  readonly code: 'client.decrypt_failed' | 'client.encryption_key_missing';
   readonly retryable = false;
+  readonly details:
+    | { readonly table?: string | undefined; readonly keyId: string }
+    | undefined;
+
+  constructor(
+    message: string,
+    missingKey?: {
+      readonly table?: string | undefined;
+      readonly keyId: string;
+    },
+  ) {
+    super(message);
+    this.code = missingKey
+      ? 'client.encryption_key_missing'
+      : 'client.decrypt_failed';
+    this.details = missingKey;
+  }
 }
 
 /**
@@ -313,20 +333,24 @@ export async function encryptValue(
 
 /**
  * Decrypt a §5.11 envelope back to a declared-type value. `keyProvider`
- * resolves the envelope's `keyId` to key bytes; a missing key or GCM tag
- * mismatch is {@link DecryptError} (`client.decrypt_failed`).
+ * resolves the envelope's `keyId` to key bytes. A missing key is a
+ * {@link DecryptError} coded `client.encryption_key_missing` whose details
+ * name the key id and, when given, `table`; a GCM tag mismatch is
+ * `client.decrypt_failed`.
  */
 export async function decryptValue(
   declaredType: DeclaredType,
   envelopeBytes: Uint8Array,
   keyProvider: (keyId: string) => Uint8Array | undefined,
+  table?: string,
 ): Promise<PlainValue> {
   const envelope = decodeEnvelope(envelopeBytes);
   const key = keyProvider(envelope.keyId);
   if (key === undefined) {
-    throw new DecryptError(
-      `no key for keyId ${JSON.stringify(envelope.keyId)}`,
-    );
+    throw new DecryptError('no key for the envelope keyId', {
+      table,
+      keyId: envelope.keyId,
+    });
   }
   const cryptoKey = await importAesKey(key);
   let plaintext: Uint8Array;

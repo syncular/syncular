@@ -137,10 +137,15 @@ describe('§5.11 encrypt/decrypt', () => {
     );
   });
 
-  test('unknown keyId surfaces client.decrypt_failed', async () => {
+  test('unknown keyId surfaces client.encryption_key_missing', async () => {
     const env = await encryptValue('string', 'secret', 'k1', KEY, fixedNonce);
     await expect(
       decryptValue('string', env, () => undefined),
-    ).rejects.toMatchObject({ code: 'client.decrypt_failed' });
+    ).rejects.toMatchObject({
+      code: 'client.encryption_key_missing',
+      retryable: false,
+      message: 'no key for the envelope keyId',
+      details: { keyId: 'k1' },
+    });
   });
 });

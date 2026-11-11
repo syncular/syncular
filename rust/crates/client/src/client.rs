@@ -8237,8 +8237,8 @@ impl SyncClient {
                         AppliedServerCommitSource::Pull,
                     ) {
                         Ok(applied) => report.commits_applied += u32::from(applied),
-                        Err((code, message)) => {
-                            failure = Some((code, message, None, None));
+                        Err(error) => {
+                            failure = Some((error.code, error.message, None, error.details));
                             break;
                         }
                     }
@@ -9360,7 +9360,7 @@ impl SyncClient {
         changes: Vec<ssp2::model::Change>,
         commit_seq: i64,
         source: AppliedServerCommitSource,
-    ) -> Result<bool, (String, String)> {
+    ) -> Result<bool, TransportError> {
         let changes: Vec<ssp2::model::Change> = changes
             .into_iter()
             .filter(|change| {
@@ -9421,20 +9421,20 @@ impl SyncClient {
         tables: &[String],
         changes: &[ssp2::model::Change],
         sequence: i64,
-    ) -> Result<(), (String, String)> {
+    ) -> Result<(), TransportError> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::CommitApply);
         let rollback = self.capture();
         self.coalesce_unit(changes.len())
             .and_then(|()| self.begin_observation("syncular_commit"))
-            .map_err(|message| ("storage.failed".into(), message))?;
+            .map_err(|message| TransportError::new("storage.failed", message))?;
         let applied = (|| {
             let mut batch = ChangeAccumulator::default();
             self.record_commit_changes(&mut batch, tables, changes);
             {
                 let storage_failed = |error| {
-                    (
-                        "storage.failed".to_owned(),
+                    TransportError::new(
+                        "storage.failed",
                         Self::sqlite_failure(&self.storage_failure, error),
                     )
                 };
@@ -9446,8 +9446,8 @@ impl SyncClient {
                     .collect();
                 for change in changes {
                     let table = tables.get(change.table_index as usize).ok_or_else(|| {
-                        (
-                            "sync.invalid_request".to_owned(),
+                        TransportError::new(
+                            "sync.invalid_request",
                             "change tableIndex out of range".to_owned(),
                         )
                     })?;
@@ -9463,9 +9463,9 @@ impl SyncClient {
             }
             self.apply_commit_changes(tables, changes)?;
             self.rebuild_overlay_if_dirty()
-                .map_err(|message| ("storage.failed".into(), message))?;
+                .map_err(|message| TransportError::new("storage.failed", message))?;
             self.finish_observation("syncular_commit", batch)
-                .map_err(|message| ("storage.failed".into(), message))
+                .map_err(|message| TransportError::new("storage.failed", message))
         })();
         if applied.is_err() {
             self.rollback_observation("syncular_commit");
@@ -9478,7 +9478,7 @@ impl SyncClient {
         &mut self,
         tables: &[String],
         changes: &[ssp2::model::Change],
-    ) -> Result<(), (String, String)> {
+    ) -> Result<(), TransportError> {
         // A clean overlay can reconcile changed primary keys independently
         // when their tables have no secondary unique constraints. Such a
         // constraint can change whether another row's write succeeds, so a
@@ -9498,28 +9498,28 @@ impl SyncClient {
             {
                 let (pending, protected) = self
                     .table_intent(name)
-                    .map_err(|message| ("storage.failed".to_owned(), message))?;
+                    .map_err(|message| TransportError::new("storage.failed", message))?;
                 mirror_visible = !pending && !protected;
             }
         }
         for change in changes {
             let table_name = tables.get(change.table_index as usize).ok_or_else(|| {
-                (
-                    "sync.invalid_request".to_owned(),
+                TransportError::new(
+                    "sync.invalid_request",
                     "change tableIndex out of range".to_owned(),
                 )
             })?;
             let table = self.schema.table(table_name).ok_or_else(|| {
-                (
-                    "sync.schema_mismatch".to_owned(),
+                TransportError::new(
+                    "sync.schema_mismatch",
                     format!("change targets unknown table {table_name:?}"),
                 )
             })?;
             let landed = match change.op {
                 Op::Upsert => {
                     let payload = change.row.as_ref().ok_or_else(|| {
-                        (
-                            "sync.invalid_request".to_owned(),
+                        TransportError::new(
+                            "sync.invalid_request",
                             "upsert change without row payload".to_owned(),
                         )
                     })?;
@@ -9527,21 +9527,14 @@ impl SyncClient {
                     let row = {
                         #[cfg(feature = "bench-internals")]
                         let _phase = self.benchmark_phases.start(Phase::RowDecode);
-                        decode_row_bytes(table, payload, &self.encryption).map_err(|m| {
-                            // §5.11: a decrypt failure keeps its own identity.
-                            match m.strip_prefix("client.decrypt_failed: ") {
-                                Some(detail) => {
-                                    ("client.decrypt_failed".to_owned(), detail.to_owned())
-                                }
-                                None => ("sync.invalid_request".to_owned(), m),
-                            }
-                        })?
+                        // §5.11: a decrypt failure keeps its own identity.
+                        decode_row_bytes(table, payload, &self.encryption)?
                     };
                     let table_name = table.name.clone();
                     // §4.5 version guard: only a newer upsert lands.
                     let landed = self
                         .write_base_row(&table_name, &row, change.row_version)
-                        .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                        .map_err(|m| TransportError::new("sync.invalid_request", m))?;
                     if mirror_visible && landed {
                         self.write_row(
                             &visible_table(&table_name),
@@ -9549,7 +9542,7 @@ impl SyncClient {
                             &row,
                             change.row_version,
                         )
-                        .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                        .map_err(|m| TransportError::new("sync.invalid_request", m))?;
                     }
                     landed
                 }
@@ -9557,7 +9550,7 @@ impl SyncClient {
                 // is skipped, a delete of an absent row is a no-op.
                 Op::Delete => self
                     .delete_base_row(table_name, &change.row_id, change.row_version)
-                    .map_err(|m| ("sync.invalid_request".to_owned(), m))?,
+                    .map_err(|m| TransportError::new("sync.invalid_request", m))?,
             };
             // The change dropped the row's acknowledged intent either way
             // (§7.1), so the overlay of a skipped change rebuilds from the
@@ -9579,7 +9572,9 @@ impl SyncClient {
                         .and_then(|mut statement| {
                             statement.execute(rusqlite::params![change.row_id])
                         })
-                        .map_err(|error| ("sync.invalid_request".to_owned(), error.to_string()))?;
+                        .map_err(|error| {
+                            TransportError::new("sync.invalid_request", error.to_string())
+                        })?;
                 }
             }
         }
@@ -9594,7 +9589,7 @@ impl SyncClient {
                 })
                 .collect();
             self.replay_overlay(&changed_tables, Some(&changed_rows))
-                .map_err(|message| ("storage.failed".to_owned(), message))?;
+                .map_err(|message| TransportError::new("storage.failed", message))?;
             self.overlay_dirty.set(false);
         }
         Ok(())
@@ -9671,9 +9666,7 @@ impl SyncClient {
                     let values = if table.has_encrypted_columns() {
                         let mut values = row.values.clone();
                         crate::values::decrypt_segment_row(table, &mut values, &self.encryption)
-                            .map_err(|message| {
-                                SectionError::Abort("client.decrypt_failed".into(), message)
-                            })?;
+                            .map_err(SectionError::Transport)?;
                         decrypted = values;
                         &decrypted
                     } else {

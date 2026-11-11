@@ -211,8 +211,9 @@ export async function encryptRowValues<T extends RowValue | undefined>(
  * (returns a new array). Called at the apply seam (§4.5 COMMIT, §5.6 rows
  * segment) AFTER the row codec decodes: an encrypted column's ciphertext
  * envelope `bytes` becomes its plaintext declared-type value for the local
- * mirror. A wrong/missing key or malformed envelope throws
- * {@link DecryptError} (`client.decrypt_failed`, §5.11).
+ * mirror. A missing key throws {@link DecryptError} coded
+ * `client.encryption_key_missing` with the table and key id in `details`; a
+ * wrong key or malformed envelope throws `client.decrypt_failed` (§5.11).
  */
 export async function decryptRowValues(
   config: EncryptionConfig | undefined,
@@ -235,7 +236,12 @@ export async function decryptRowValues(
       throw new DecryptError('encrypted columns need an encryption config');
     }
     out[i] = deserializeGuard(
-      await decryptValue(declaredTypeOf(column), value, config.keyProvider),
+      await decryptValue(
+        declaredTypeOf(column),
+        value,
+        config.keyProvider,
+        table.name,
+      ),
     );
   }
   return out;

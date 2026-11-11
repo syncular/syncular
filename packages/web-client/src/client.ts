@@ -117,6 +117,7 @@ import {
   ClientSyncError,
   invalidRequest,
   classifySqliteFailure,
+  isStableCode,
   REALTIME_LOST_CODE,
   RealtimeUnavailableError,
   transportFailed,
@@ -4305,9 +4306,7 @@ export class SyncClient {
   }
 
   #diagnosticCode(code: string): string {
-    return code.length <= 96 && /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/.test(code)
-      ? code
-      : 'client.unknown_failure';
+    return isStableCode(code) ? code : 'client.unknown_failure';
   }
 
   async #runSync(signal: AbortSignal | undefined): Promise<SyncSummary> {

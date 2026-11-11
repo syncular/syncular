@@ -3651,8 +3651,9 @@ On encode the client resolves `keyId`, embeds it in the envelope, and encrypts w
 `keyProvider(keyId)`. On apply the client reads `keyId` **from the
 envelope** and decrypts with `keyProvider(keyId)` — so key rotation and
 per-scope keys work without a schema change: the envelope is
-self-describing. A `keyId` the provider does not know, or a wrong key
-(GCM tag mismatch), is `client.decrypt_failed`.
+self-describing. On apply, a `keyId` the provider does not know is
+`client.encryption_key_missing`; a wrong key (GCM tag mismatch) is
+`client.decrypt_failed`.
 
 Worker-hosted clients accept a structured-clone-safe `{ keys, keyIdColumns }`
 keyring and install the provider inside the leader worker. Tauri and React
@@ -3754,14 +3755,26 @@ mirror remains plaintext by architecture, so platform storage encryption,
 device lock policy, secure key storage, and the exact purge protocol remain
 mandatory application responsibilities.
 
-**`client.decrypt_failed` (client-local, §10.3).** Decrypt failures —
-unknown envelope version, unknown `keyId`, GCM authentication failure,
-malformed envelope, or a post-decrypt value-parse failure — surface as the
-client-local code `client.decrypt_failed` (never on the wire; the `client.`
-family is client-only per §10.3). It is not retryable: a wrong or missing
-key does not fix itself. The client raises it at the apply seam
-(§4.5/§5.6); the app decides whether to skip the row, halt, or surface a
-re-key prompt.
+**`client.encryption_key_missing` and `client.decrypt_failed`
+(client-local, §10.3).** An envelope whose `keyId` the keyring does not hold
+surfaces as `client.encryption_key_missing`, with the structured details
+`{ table, keyId }`: the table the row belongs to and the envelope's `keyId`.
+A `keyId` names a key and carries no key material; the message is static
+text. The other decrypt failures (unknown envelope version, GCM
+authentication failure, malformed envelope, or a post-decrypt value-parse
+failure) surface as `client.decrypt_failed`. Both codes are client-local
+(never on the wire; the `client.` family is client-only per §10.3) and not
+retryable: a wrong or missing key does not fix itself. The client raises
+them at the apply seam (§4.5/§5.6), and the round fails with that code. The
+code is the round's error identity on every host: the rejected `sync()`
+call, the failed progress snapshot (`errorCode`), and the diagnostics
+`lastRound.errorCode` all carry it, and a Worker or native bridge MUST
+forward the code, `retryable` and details unchanged instead of replacing
+them with a generic host failure code. A unit covers every table that
+declares its variables (§4.1), so a reader that lacks the key of an
+encrypted table MUST NOT share that table's scope variable with the units it
+does register; the encrypted table takes its own variable (the sidecar shape
+above).
 
 **Nonce discipline.** The 12-byte nonce **MUST** be from a cryptographically
 secure RNG on every production encrypt (never reused with the same key —
@@ -3824,7 +3837,9 @@ gives the full recipe.
 agree: an encrypted round-trip (TS writes / Rust reads via a shared fixture
 key and vice versa; a raw-driver assertion confirms the **server row holds a
 ciphertext envelope, not plaintext**), a wrong-key apply surfacing
-`client.decrypt_failed`, and committed crypto **test vectors** (fixed-nonce
+`client.decrypt_failed`, a missing-key apply surfacing
+`client.encryption_key_missing` with its details in the sync result,
+progress and last round, and committed crypto **test vectors** (fixed-nonce
 AES-GCM encrypt vectors and X25519 wrap/unwrap vectors under
 `spec/vectors/crypto/`) that both cores reproduce byte-for-byte.
 
@@ -7301,8 +7316,11 @@ abandon rollback (`reason = undo_pending`); non-retryable, with the structured
 `reason` in details], `client.encrypt_failed` [§5.11 — an encrypted column failed to
 encode at the push seam: the key id resolved to no usable value or the
 selected key is unknown; category `crypto`, non-retryable, raised at the
-encode seam as a durable per-commit rejection, never on the wire], `client.decrypt_failed` [§5.11 — an encrypted column failed to
-decrypt on apply: unknown envelope version, unknown `keyId`, GCM
+encode seam as a durable per-commit rejection, never on the wire], `client.encryption_key_missing` [§5.11 — an
+encrypted column's envelope names a `keyId` the keyring does not hold;
+category `crypto`, non-retryable, raised at the apply seam with details
+`{ table, keyId }`, never on the wire], `client.decrypt_failed` [§5.11 — an
+encrypted column failed to decrypt on apply: unknown envelope version, GCM
 authentication failure (wrong key), a malformed envelope, or a post-decrypt
 value-parse failure; category `crypto`, non-retryable, raised at the apply
 seam, never on the wire], `sync.local_corrupt` [protected client-local state or a

@@ -22,10 +22,10 @@ import {
 } from './diagnostics';
 import { encryptionConfigFromKeyring } from './encryption';
 import {
-  classifySqliteFailure,
   ClientSyncError,
   invalidRequest,
   STORAGE_BUSY_CODE,
+  toErrorShape,
 } from './errors';
 import {
   httpBlobTransport,
@@ -49,7 +49,6 @@ import {
   WORKER_METHOD_UNAVAILABLE_CODE,
   type WorkerApi,
   type WorkerCallMessage,
-  type WorkerErrorShape,
   type WorkerInitConfig,
   type WorkerInitResult,
   type WorkerMethod,
@@ -144,23 +143,6 @@ interface WorkerScope {
     type: 'message',
     listener: (event: MessageEvent) => void,
   ): void;
-}
-
-function toErrorShape(caught: unknown): WorkerErrorShape {
-  const error = classifySqliteFailure(caught).error;
-  if (error instanceof ClientSyncError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      ...(error.details !== undefined ? { details: error.details } : {}),
-    };
-  }
-  return {
-    code: WORKER_FAILED_CODE,
-    message: error instanceof Error ? error.message : String(error),
-    retryable: false,
-  };
 }
 
 /**

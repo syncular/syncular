@@ -279,7 +279,7 @@ describe('portable keyring hardening', () => {
     expect(config.keyProvider('secrets')).toBe(KEY);
 
     // End to end through the apply seam: an envelope carrying such a keyId
-    // surfaces the clean missing-key DecryptError.
+    // surfaces the missing-key error naming the table and key id.
     const table = compileClientSchema(CLIENT_SCHEMA).tables.get('secrets');
     if (table === undefined) throw new Error('fixture table missing');
     const envelope = await encryptValue('string', 'ghost', 'constructor', KEY);
@@ -290,9 +290,11 @@ describe('portable keyring hardening', () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(DecryptError);
-    expect(String((caught as Error).message)).toContain(
-      'no key for keyId "constructor"',
-    );
+    expect(caught).toMatchObject({
+      code: 'client.encryption_key_missing',
+      retryable: false,
+      details: { table: 'secrets', keyId: 'constructor' },
+    });
   });
 
   test('a wrong-length key fails loud at install time', () => {

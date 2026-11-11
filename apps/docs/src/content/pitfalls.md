@@ -66,6 +66,12 @@ A unit covers every table that declares all of its variables, and it has no tabl
 
 See [Subscriptions & the outbox](/concepts-subscriptions/#a-unit).
 
+### Do give a table encrypted with a key some readers lack its own variable
+
+When one scope variable spans a plaintext table and a table encrypted with a key that only some readers hold, a reader without the key receives the encrypted rows with every unit it registers on that variable. Its rounds fail with `client.encryption_key_missing`, `details.table` and `details.keyId` name the table and the key id, and its units stay `bootstrapping`. Give the encrypted table its own scope variable and register units on it only on devices that hold its key.
+
+See [Client-side encryption](/concepts-encryption/#a-protected-value-shares-a-row-with-shared-data).
+
 ### Do register units in one call
 
 Each `subscribe` is a local transaction, and on OPFS a commit costs about 3 ms. Declaring 400 units one at a time costs about 1.2 s before the first round. `subscribeMany` (`subscribe_many` in Rust) writes them in one transaction and registers none of them when one entry is invalid.

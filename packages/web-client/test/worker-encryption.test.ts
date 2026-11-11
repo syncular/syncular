@@ -121,3 +121,64 @@ test('worker keyring encrypts by a row key-id column and decrypts locally', asyn
     await http.stop();
   }
 });
+
+test('a worker round that meets a row without its key fails with client.encryption_key_missing', async () => {
+  const server = makeServer(SERVER_SCHEMA);
+  server.allowed['actor-1'] = { project_id: ['p1'] };
+  const http = serveOverHttp(server);
+  const makeHandle = (clientId: string, keys: Record<string, Uint8Array>) =>
+    createSyncClientHandle({
+      worker: () => new Worker(WORKER_URL),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl, segmentsUrl: http.segmentsUrl },
+      clientId,
+      autoSync: false,
+      lockName: `worker-encryption-${clientId}`,
+      encryption: { keys, keyIdColumns: { secrets: 'encryption_key_id' } },
+    });
+  const writer = await makeHandle('worker-key-missing-writer', {
+    'practice-key-v1': KEY,
+  });
+  const reader = await makeHandle('worker-key-missing-reader', {});
+  try {
+    await writer.subscribe({ project_id: 'p1' });
+    await writer.syncUntilIdle();
+    await writer.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: {
+          id: 'secret-1',
+          project_id: 'p1',
+          encryption_key_id: 'practice-key-v1',
+          note: 'patient identity',
+        },
+      },
+    ]);
+    await writer.syncUntilIdle();
+
+    await reader.subscribe({ project_id: 'p1' });
+    const failure = await reader.syncUntilIdle().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toMatchObject({
+      code: 'client.encryption_key_missing',
+      retryable: false,
+      details: { table: 'secrets', keyId: 'practice-key-v1' },
+    });
+    expect((await reader.diagnosticsSnapshot()).lastRound).toMatchObject({
+      status: 'failed',
+      errorCode: 'client.encryption_key_missing',
+    });
+    expect(reader.progressSnapshot()).toMatchObject({
+      state: 'failed',
+      errorCode: 'client.encryption_key_missing',
+    });
+  } finally {
+    await writer.close();
+    await reader.close();
+    await http.stop();
+  }
+});
