@@ -8,7 +8,7 @@
  * Everything the lab shows comes from the engine: the commit log and the
  * packets on the wires fold server events (`push.*`, `realtime.delta`,
  * `pull.served`), each device renders its own SQLite rows, outbox,
- * subscriptions, and conflict records, and the tour completes from the
+ * units, and conflict records, and the tour completes from the
  * same data.
  */
 import { ClientSyncError } from '@syncular/client';
@@ -368,7 +368,7 @@ async function simulateConflict(lab: Lab): Promise<void> {
  * Grant or revoke Ben's membership of the Web board. The laptop (Ada, the
  * lead) writes the `members` row; the server's `resolveScopes` reads
  * memberships, so the next round of the phone either bootstraps the board
- * (after a fresh subscription) or finds its Web subscriptions revoked and
+ * (after a fresh subscription) or finds its Web unit revoked and
  * purges every Web row (SPEC §3.3).
  */
 async function toggleWebAccess(lab: Lab): Promise<void> {
@@ -439,7 +439,7 @@ async function toggleWebAccess(lab: Lab): Promise<void> {
   lab.narrate(
     granting
       ? `The phone subscribed to board:web and bootstrapped ${after} cards into its SQLite. Its Local SQL lens shows them.`
-      : `The server revoked the phone's board:web subscriptions, and the phone purged ${before - after} cards with their labels and comments. Its Local SQL lens shows only board:mobile.`,
+      : `The server revoked the phone's board:web unit, and the phone purged ${before - after} cards with their labels and comments. Its Local SQL lens shows only board:mobile.`,
   );
 }
 

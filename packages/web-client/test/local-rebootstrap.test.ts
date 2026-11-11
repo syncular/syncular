@@ -249,8 +249,8 @@ describe('application-authorized local projection rebootstrap', () => {
     ]);
     await local.client.syncUntilIdle();
     expect(
-      local.client.unit(unitId({ project_id: 'p1' }))?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+      local.client.unitCatchup(unitId({ project_id: 'p1' })),
+    ).toMatchObject({ bootstrapComplete: true });
 
     // Park a round between request send and response apply, then reset the
     // projection inside that window.
@@ -277,8 +277,8 @@ describe('application-authorized local projection rebootstrap', () => {
       'server-row',
     ]);
     expect(
-      local.client.unit(unitId({ project_id: 'p1' }))?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+      local.client.unitCatchup(unitId({ project_id: 'p1' })),
+    ).toMatchObject({ bootstrapComplete: true });
     expect(local.client.statusSnapshot().upgrading).toBe(false);
     await local.client.close();
     local.db.close();
@@ -427,8 +427,8 @@ describe('application-authorized local projection rebootstrap', () => {
       'server-row',
     ]);
     expect(
-      local.client.unit(unitId({ project_id: 'p1' }))?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+      local.client.unitCatchup(unitId({ project_id: 'p1' })),
+    ).toMatchObject({ bootstrapComplete: true });
 
     await local.client.close();
     local.db.close();

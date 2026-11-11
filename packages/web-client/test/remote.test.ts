@@ -208,7 +208,7 @@ describe('SyncRemoteClient', () => {
       dependencies: () => [{ table: 'tasks' }],
       coverage: (params: { projectId: string }) => [
         {
-          base: { table: 'tasks', variable: 'project_id' },
+          base: { variable: 'project_id' },
           units: [params.projectId],
         },
       ],
@@ -310,7 +310,7 @@ describe('SyncRemoteClient', () => {
       dependencies: () => [{ table: 'docs' }],
       coverage: (params: { orgId: string }) => [
         {
-          base: { table: 'docs', variable: 'org_id' },
+          base: { variable: 'org_id' },
           units: [params.orgId],
         },
       ],
@@ -920,7 +920,7 @@ describe('SyncRemoteClient', () => {
       dependencies: () => [{ table: 'tasks' }],
       coverage: (params: { projectId: string }) => [
         {
-          base: { table: 'tasks', variable: 'project_id' },
+          base: { variable: 'project_id' },
           units: [params.projectId],
         },
       ],

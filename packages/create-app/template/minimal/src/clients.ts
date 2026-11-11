@@ -9,6 +9,7 @@
  * clients`). Both talk real HTTP to http://localhost:8787.
  */
 import { makeClient } from './make-client';
+import { todosInListSubscription } from './syncular.generated';
 
 const BASE_URL = process.env.SERVER_URL ?? 'http://localhost:8787';
 const LIST_ID = 'groceries';
@@ -18,10 +19,11 @@ const b = makeClient(BASE_URL, 'client-b');
 await a.start();
 await b.start();
 
-// Both clients subscribe to the same list (the requested scope).
-const sub = { id: 'todos', table: 'todos', scopes: { list_id: [LIST_ID] } };
-a.subscribe(sub);
-b.subscribe(sub);
+// Both clients subscribe to the list's unit: one scope map covers every table
+// scoped by `list_id`.
+const list = todosInListSubscription.scopes({ listId: LIST_ID });
+a.subscribe(list);
+b.subscribe(list);
 
 // A writes a todo. mutate() records it locally + queues it for the next push.
 a.mutate([

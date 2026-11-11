@@ -419,92 +419,14 @@
   ],
   "subscriptions": [
     {
-      "name": "boardBoards",
-      "table": "boards",
+      "name": "board",
       "scopes": [
         {
           "variable": "board_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "boardId"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "boardMembers",
-      "table": "members",
-      "scopes": [
-        {
-          "variable": "board_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "boardId"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "boardLabels",
-      "table": "labels",
-      "scopes": [
-        {
-          "variable": "board_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "boardId"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "boardCards",
-      "table": "cards",
-      "scopes": [
-        {
-          "variable": "board_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "boardId"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "boardCardLabels",
-      "table": "card_labels",
-      "scopes": [
-        {
-          "variable": "board_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "boardId"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "boardComments",
-      "table": "comments",
-      "scopes": [
-        {
-          "variable": "board_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "boardId"
-            }
-          ]
+          "value": {
+            "kind": "parameter",
+            "name": "boardId"
+          }
         }
       ]
     }

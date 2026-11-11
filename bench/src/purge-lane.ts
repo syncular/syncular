@@ -14,6 +14,7 @@ import {
   processObject,
   assertProcessSync,
 } from './process-driver';
+import { unitId } from '@syncular/core';
 import { closeBenchClients } from './loopback';
 import { startSocketServer } from './socket-server';
 
@@ -56,11 +57,11 @@ export async function runProcessPurge(options: {
       clientId: reader.clientId,
       ...sqlite,
     });
-    await reader.invoke('subscribe', {
-      id: 'retained',
-      table: 'tasks',
-      scopes: { project_id: [RETAINED_PROJECT_ID] },
-    });
+    const retainedUnit = processObject(
+      await reader.invoke('subscribe', {
+        scopes: { project_id: RETAINED_PROJECT_ID },
+      }),
+    ).id;
     assertProcessSync(
       processObject(
         await reader.invoke('benchSync', { mode: options.boundary }),
@@ -134,9 +135,10 @@ export async function runProcessPurge(options: {
     const report = assertProcessSync(sync.outcome, 0);
     if (
       !Array.isArray(report.revoked) ||
-      JSON.stringify(report.revoked) !== JSON.stringify(['bench'])
+      JSON.stringify(report.revoked) !==
+        JSON.stringify([unitId({ project_id: PROJECT_ID })])
     )
-      throw new Error('Expected exactly one revoked subscription');
+      throw new Error('Expected exactly one revoked unit');
     if (
       typeof sync.elapsedNs !== 'number' ||
       !Number.isFinite(sync.elapsedNs) ||
@@ -144,20 +146,19 @@ export async function runProcessPurge(options: {
     )
       throw new Error('Purge operation timing missing');
     const state = processObject(
-      processObject(await reader.invoke('subscriptionState', { id: 'bench' }))
-        .state,
+      processObject(
+        await reader.invoke('unit', { id: unitId({ project_id: PROJECT_ID }) }),
+      ).unit,
     );
     const retainedState = processObject(
-      processObject(
-        await reader.invoke('subscriptionState', { id: 'retained' }),
-      ).state,
+      processObject(await reader.invoke('unit', { id: retainedUnit })).unit,
     );
     if (
       state.status !== 'revoked' ||
       state.reasonCode !== 'sync.scope_revoked' ||
       retainedState.status !== 'active'
     )
-      throw new Error('Purge subscription state differs from fixture');
+      throw new Error('Purge unit state differs from fixture');
     await validateRetainedRows(reader);
     if (processObject(await reader.invoke('statusSnapshot')).outbox !== 0)
       throw new Error('Purge fixture has pending writes');

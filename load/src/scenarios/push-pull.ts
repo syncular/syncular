@@ -39,7 +39,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
           baseUrl,
           clientId: `pp-${vu}`,
         });
-        client.subscribe('tasks', 'tasks', { project_id: [project] });
+        client.subscribe({ project_id: project });
         // Bootstrap this VU's (empty) project once, then steady push+pull.
         await client.pull();
         let seq = 0;

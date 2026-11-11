@@ -110,7 +110,7 @@ describe('useRawSql', () => {
 
   test('toggling claimCoverage claims the window', async () => {
     const client = new FakeClient();
-    const base = { table: 'tasks', variable: 'project_id' };
+    const base = { variable: 'project_id' };
     const claims: string[][] = [];
     const setWindow = client.setWindow.bind(client);
     client.setWindow = (claimed, units) => {
@@ -153,7 +153,7 @@ describe('useRawSql', () => {
 
   test('cached rows render while registration waits and retain its error', async () => {
     const client = new FakeClient();
-    const base = { table: 'tasks', variable: 'project_id' };
+    const base = { variable: 'project_id' };
     client.setWindow(base, ['p1']);
     client.completeBootstrap(base);
     client.setRows('tasks', [{ id: 't1', title: 'cached' }]);
@@ -183,7 +183,7 @@ describe('useRawSql', () => {
 
   test('growing coverage before the first complete read keeps rows identity and renders once', async () => {
     const client = new FakeClient();
-    const base = { table: 'tasks', variable: 'project_id' };
+    const base = { variable: 'project_id' };
     let renders = 0;
     const view = renderHook(
       ({ units }: { units: readonly string[] }) => {
@@ -210,7 +210,7 @@ describe('useRawSql', () => {
 
   test('a failed round surfaces as error until the retry starts', async () => {
     const client = new FakeClient();
-    const base = { table: 'tasks', variable: 'project_id' };
+    const base = { variable: 'project_id' };
     const view = renderHook(
       () =>
         useRawSql('SELECT * FROM tasks', [], {
@@ -422,53 +422,23 @@ describe('useSyncStatus', () => {
 });
 
 describe('useDiagnostics', () => {
-  test('keeps expected subscription intent across diagnostic events', async () => {
+  test('re-reads the snapshot on every diagnostic event', async () => {
     const client = new FakeClient();
-    const { result } = renderHook(
-      () =>
-        useDiagnostics({
-          expectedSubscriptions: [
-            { id: 'membership-security', table: 'memberships' },
-          ],
-        }),
-      { wrapper: wrapper(client) },
-    );
+    const { result } = renderHook(() => useDiagnostics(), {
+      wrapper: wrapper(client),
+    });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.snapshot?.subscriptions).toEqual([
-      expect.objectContaining({
-        id: 'membership-security',
-        state: 'unregistered',
-        complete: false,
-      }),
-    ]);
+    expect(result.current.snapshot).toMatchObject({
+      version: 2,
+      activeUnits: 0,
+      replicaCursor: -1,
+    });
 
     client.setCurrentSchemaVersion(2);
     act(() => client.emitDiagnostics());
     await waitFor(() =>
       expect(result.current.snapshot?.schema.currentVersion).toBe(2),
     );
-    expect(result.current.snapshot?.subscriptions[0]?.id).toBe(
-      'membership-security',
-    );
-  });
-
-  test('a changed request never shows the previous request snapshot', async () => {
-    const client = new FakeClient();
-    const { result, rerender } = renderHook(
-      ({ id }) =>
-        useDiagnostics({ expectedSubscriptions: [{ id, table: 'tasks' }] }),
-      { initialProps: { id: 'first' }, wrapper: wrapper(client) },
-    );
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.snapshot?.subscriptions[0]?.id).toBe('first');
-
-    rerender({ id: 'second' });
-    expect(result.current.snapshot).toBeUndefined();
-    expect(result.current.isLoading).toBe(true);
-    await waitFor(() =>
-      expect(result.current.snapshot?.subscriptions[0]?.id).toBe('second'),
-    );
-    expect(result.current.isLoading).toBe(false);
   });
 });
 
@@ -659,7 +629,7 @@ function Bare(): ReactNode {
 }
 
 describe('useWindow (§4.8 completeness oracle, I3)', () => {
-  const base = { table: 'tasks', variable: 'project_id' } as const;
+  const base = { variable: 'project_id' } as const;
 
   test('retains a declarative working set and releases only its claim', async () => {
     const client = new FakeClient();
@@ -754,10 +724,7 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
 
   test('changing base while mounted releases the previous base claim', async () => {
     const client = new FakeClient();
-    const baseB = {
-      table: 'tasks',
-      variable: 'org_id',
-    } as const;
+    const baseB = { variable: 'org_id' } as const;
     const { result, rerender } = renderHook(({ b }) => useWindow(b), {
       initialProps: { b: base as typeof base | typeof baseB },
       wrapper: wrapper(client),

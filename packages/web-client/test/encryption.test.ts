@@ -591,7 +591,7 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
     },
   });
   try {
-    a.client.subscribe({ project_id: 'p1' });
+    const unit = a.client.subscribe({ project_id: 'p1' });
     a.client.mutate(
       ['s1', 's2'].map((id) => ({
         op: 'upsert' as const,
@@ -606,7 +606,7 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
       })),
     );
     await a.client.syncUntilIdle();
-    a.client.unsubscribe('secrets');
+    a.client.unsubscribe(unit);
     locked = true;
     const id = a.client.mutate(
       ['s1', 's2'].map((id, index) => ({

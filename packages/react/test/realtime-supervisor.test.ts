@@ -22,7 +22,7 @@ function diagnostics(
   realtime: 'connected' | 'disconnected',
 ): ClientDiagnosticsSnapshot {
   return {
-    version: 1,
+    version: 2,
     capturedAtMs: 1,
     host: {
       kind: 'worker',
@@ -34,9 +34,16 @@ function diagnostics(
     schema: { currentVersion: 1, upgrading: false },
     replica: { localRevision: '0', syncNeeded: false, pendingOutbox: 0 },
     lease: { state: 'none' },
-    subscriptions: [],
-    subscriptionsTruncated: false,
-    activeSubscriptions: 0,
+    units: {
+      bootstrapping: 0,
+      complete: 0,
+      reset: 0,
+      revoked: 0,
+      failed: 0,
+      reasonCodes: [],
+    },
+    activeUnits: 0,
+    replicaCursor: -1,
     storage: { status: 'healthy' },
     queryFailures: [],
   };

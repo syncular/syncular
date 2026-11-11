@@ -1472,16 +1472,16 @@ describe('sync loop discipline', () => {
   test('unsubscribe during an in-flight round is not undone by its SUB_END', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({ project_id: 'p1' });
+    const id = a.client.subscribe({ project_id: 'p1' });
     const gate = responseGate();
     a.faults.holdResponseOnce = gate.fault;
     const round = a.client.sync();
     await gate.held;
-    a.client.unsubscribe('s1');
+    a.client.unsubscribe(id);
     gate.release();
     await round;
     expect(a.client.unit(unitId({ project_id: 'p1' }))).toBeUndefined();
-    expect(a.db.query('SELECT id FROM _syncular_subscriptions')).toEqual([]);
+    expect(a.db.query('SELECT id FROM _syncular_units')).toEqual([]);
   });
 
   test('concurrent sync() calls are rejected — one loop owns the database', async () => {

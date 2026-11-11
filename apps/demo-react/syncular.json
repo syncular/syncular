@@ -13,10 +13,6 @@
   ],
   "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
-    {
-      "name": "todoList",
-      "table": "todos",
-      "scopes": { "list_id": ["{listId}"] }
-    }
+    { "name": "todoList", "scopes": { "list_id": "{listId}" } }
   ]
 }

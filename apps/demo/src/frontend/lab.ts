@@ -198,39 +198,32 @@ export function applyServerEvent(
     case 'pull.served': {
       const device = deviceOf(event.clientId);
       if (device === undefined) return { state, transits: [] };
-      let next = state;
-      const transits: Transit[] = [];
-      for (const section of event.subscriptions) {
-        if (section.mode === 'bootstrap') {
-          transits.push({
-            device,
-            direction: 'down',
-            label: 'snapshot',
-            tone: 'delivery',
-          });
-          continue;
-        }
-        const first = section.firstCommitSeq;
-        const last = section.lastCommitSeq;
-        if (
-          section.commits === 0 ||
-          first === undefined ||
-          last === undefined
-        ) {
-          continue;
-        }
-        next = deliver(
-          next,
-          device,
-          Array.from({ length: last - first + 1 }, (_, index) => first + index),
-        );
-        transits.push({
+      const transits: Transit[] = event.units
+        .filter((unit) => unit.mode === 'bootstrap')
+        .map(() => ({
           device,
           direction: 'down',
-          label: first === last ? `c${first}` : `c${first}–c${last}`,
+          label: 'snapshot',
           tone: 'delivery',
-        });
-      }
+        }));
+      const {
+        commits,
+        firstCommitSeq: first,
+        lastCommitSeq: last,
+      } = event.live;
+      if (commits === 0 || first === undefined || last === undefined)
+        return { state, transits };
+      transits.push({
+        device,
+        direction: 'down',
+        label: first === last ? `c${first}` : `c${first}–c${last}`,
+        tone: 'delivery',
+      });
+      const next = deliver(
+        state,
+        device,
+        Array.from({ length: last - first + 1 }, (_, index) => first + index),
+      );
       return { state: next, transits };
     }
     default:

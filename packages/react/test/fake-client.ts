@@ -11,7 +11,6 @@ import type {
   ClientChangeBatch,
   ClientChangeListener,
   ClientDiagnosticsListener,
-  ClientDiagnosticsRequest,
   ClientDiagnosticsSnapshot,
   CommitOutcome,
   CommitOutcomeQuery,
@@ -214,11 +213,9 @@ export class FakeClient implements SyncClientLike {
     return () => this.#diagnosticsListeners.delete(listener);
   }
 
-  diagnosticsSnapshot(
-    request: ClientDiagnosticsRequest = {},
-  ): ClientDiagnosticsSnapshot {
+  diagnosticsSnapshot(): ClientDiagnosticsSnapshot {
     return {
-      version: 1,
+      version: 2,
       capturedAtMs: 1,
       host: {
         kind: 'direct',
@@ -237,23 +234,23 @@ export class FakeClient implements SyncClientLike {
         pendingOutbox: this.#pending.length,
       },
       lease: { state: 'none' },
-      subscriptions: (request.expectedSubscriptions ?? []).map(
-        ({ id, table }) => ({
-          id,
-          table,
-          state: 'unregistered',
-          complete: false,
-        }),
-      ),
-      subscriptionsTruncated: false,
-      activeSubscriptions: 0,
+      units: {
+        bootstrapping: 0,
+        complete: 0,
+        reset: 0,
+        revoked: 0,
+        failed: 0,
+        reasonCodes: [],
+      },
+      activeUnits: 0,
+      replicaCursor: -1,
       storage: { status: 'healthy' },
       queryFailures: [],
     };
   }
 
-  emitDiagnostics(request: ClientDiagnosticsRequest = {}): void {
-    const snapshot = this.diagnosticsSnapshot(request);
+  emitDiagnostics(): void {
+    const snapshot = this.diagnosticsSnapshot();
     for (const listener of this.#diagnosticsListeners) listener(snapshot);
   }
 
@@ -298,10 +295,9 @@ export class FakeClient implements SyncClientLike {
     const pending: Array<{ baseKey: string; unit: string }> = [];
     const missing: Array<{ baseKey: string; unit: string }> = [];
     for (const coverage of spec.coverage ?? []) {
-      const key = this.#windowKey(coverage.base);
-      const units = this.#windowUnits.get(key) ?? [];
-      const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
       const baseKey = windowBaseKey(coverage.base);
+      const units = this.#windowUnits.get(baseKey) ?? [];
+      const done = this.#windowBootstrapped.get(baseKey) ?? new Set<string>();
       for (const unit of coverage.units) {
         if (!units.includes(unit)) missing.push({ baseKey, unit });
         else if (!done.has(unit)) pending.push({ baseKey, unit });
@@ -333,7 +329,7 @@ export class FakeClient implements SyncClientLike {
         this.query(statement.sql, statement.params),
       ),
       coverage,
-      subscriptions: (spec.subscriptions ?? []).map((id) => ({
+      units: (spec.units ?? []).map((id) => ({
         state: 'unknown' as const,
         id,
       })),
@@ -386,12 +382,8 @@ export class FakeClient implements SyncClientLike {
   /** Units whose (fake) bootstrap completed — everything else is pending. */
   #windowBootstrapped = new Map<string, Set<string>>();
 
-  #windowKey(base: WindowBase): string {
-    return `${base.table} ${base.variable}`;
-  }
-
   setWindow(base: WindowBase, units: readonly string[]): void {
-    const key = this.#windowKey(base);
+    const key = windowBaseKey(base);
     this.#windowUnits.set(key, [...units]);
     // Departing units lose their bootstrap state (eviction, E3); entering
     // units start pending — `completeBootstrap` lands them.
@@ -404,8 +396,7 @@ export class FakeClient implements SyncClientLike {
       tables: [],
       windows: [
         {
-          baseKey: windowBaseKey(base),
-          table: base.table,
+          baseKey: key,
           units: new Set(units),
         },
       ],
@@ -421,7 +412,7 @@ export class FakeClient implements SyncClientLike {
    * verdict through the choke point).
    */
   completeBootstrap(base: WindowBase, units?: readonly string[]): void {
-    const key = this.#windowKey(base);
+    const key = windowBaseKey(base);
     const registered = this.#windowUnits.get(key) ?? [];
     const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
     for (const unit of units ?? registered) done.add(unit);
@@ -430,8 +421,7 @@ export class FakeClient implements SyncClientLike {
       tables: [],
       windows: [
         {
-          baseKey: windowBaseKey(base),
-          table: base.table,
+          baseKey: key,
           units: new Set(units ?? registered),
         },
       ],
@@ -441,7 +431,7 @@ export class FakeClient implements SyncClientLike {
   }
 
   windowState(base: WindowBase): WindowState {
-    const key = this.#windowKey(base);
+    const key = windowBaseKey(base);
     const units = this.#windowUnits.get(key) ?? [];
     const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
     return { units, pending: units.filter((unit) => !done.has(unit)) };

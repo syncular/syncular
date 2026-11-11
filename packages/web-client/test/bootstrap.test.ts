@@ -56,9 +56,11 @@ describe('fresh bootstrap', () => {
     expect(summary.segmentRowsApplied).toBe(5);
     expect(summary.bootstrapping).toHaveLength(0);
     expect(tableRows(b.db, 'tasks')).toHaveLength(5);
-    const sub = b.client.unit(unitId({ project_id: 'p1' }));
-    expect(sub?.cursor).toBe(await server.storage.getMaxCommitSeq(PARTITION));
-    expect(sub?.bootstrapState).toBeUndefined();
+    expect(b.client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+      live: true,
+      cursor: await server.storage.getMaxCommitSeq(PARTITION),
+      hasResumeToken: false,
+    });
 
     // A later commit arrives incrementally, not via re-bootstrap.
     const a = await makeClient(server, { clientId: 'client-a' });
@@ -374,7 +376,7 @@ describe('bootstrap resume (§4.7)', () => {
     b.client.subscribe({ project_id: 'p1' });
 
     const first = await b.client.sync();
-    expect(first.bootstrapping).toEqual(['s1']);
+    expect(first.bootstrapping).toEqual([unitId({ project_id: 'p1' })]);
     expect(tableRows(b.db, 'tasks')).toHaveLength(2);
     const mid = b.client.unit(unitId({ project_id: 'p1' }));
     // §4.7: every bootstrap response pins nextCursor = asOfCommitSeq; the
@@ -416,7 +418,7 @@ describe('bootstrap resume (§4.7)', () => {
     // A drive that ends early (deadline, budget, a manual sync) leaves the
     // resume token; the status tells every host loop more rounds are owed.
     const first = await b.client.sync();
-    expect(first.bootstrapping).toEqual(['s1']);
+    expect(first.bootstrapping).toEqual([unitId({ project_id: 'p1' })]);
     expect(b.client.statusSnapshot().syncNeeded).toBe(true);
 
     await b.client.syncUntilIdle();
@@ -450,7 +452,7 @@ describe('cursor expiry (§4.6)', () => {
     const b = await makeClient(server, { clientId: 'client-b' });
     b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
-    const oldCursor = b.client.unit(unitId({ project_id: 'p1' }))?.cursor ?? -1;
+    const oldCursor = b.client.diagnosticsSnapshot().replicaCursor;
 
     // The server advances and prunes past B's cursor while B is away.
     await seedTasks(server, 2, 100);
@@ -543,7 +545,10 @@ test('batched image construction converges cold and warm clients with all row ve
           'SELECT MIN(_sync_version) AS minimum, MAX(_sync_version) AS maximum FROM tasks',
         ),
       ).toEqual([{ minimum: 7, maximum: 7 }]);
-      expect(client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(0);
+      expect(client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+        live: true,
+        cursor: 0,
+      });
       if (process.env.SYNCULAR_IMAGE_BENCH === '1')
         console.log(JSON.stringify({ phase, count, elapsedMs }));
     } finally {

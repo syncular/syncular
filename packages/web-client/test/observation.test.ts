@@ -769,7 +769,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     const partial = client.client.querySnapshot(spec);
     expect(partial.coverage.complete).toBe(false);
     expect(partial.coverage.pending).toEqual([
-      { baseKey: 'projectId\0{"org_id":["o1"]}', unit: 'p1' },
+      { baseKey: 'projectId\0{"org_id":"o1"}', unit: 'p1' },
     ]);
     expect(partial.coverage.missing).toEqual([]);
 
@@ -785,7 +785,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     expect(missing.complete).toBe(false);
     expect(missing.pending).toEqual([]);
     expect(missing.missing).toEqual([
-      { baseKey: 'projectId\0{"org_id":["o1"]}', unit: 'p1' },
+      { baseKey: 'projectId\0{"org_id":"o1"}', unit: 'p1' },
     ]);
   });
 

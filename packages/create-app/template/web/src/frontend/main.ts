@@ -72,11 +72,8 @@ async function main(): Promise<void> {
     onSynced: () => void refresh(),
   });
 
-  await handle.subscribe({
-    id: 'todos',
-    table: 'todos',
-    scopes: todoListSubscription.scopes({ listId: LIST_ID }),
-  });
+  // One unit per list: the scope map covers every table scoped by `list_id`.
+  await handle.subscribe(todoListSubscription.scopes({ listId: LIST_ID }));
 
   // The supported host policy owns connect + catch-up, retries transient
   // startup/socket loss, and suspends while this page is offline.

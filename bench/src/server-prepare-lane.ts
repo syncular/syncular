@@ -12,6 +12,8 @@ import {
   encodeMessage,
   encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
+  registrationDigest,
+  unitId,
   type RequestFrame,
   type RowColumn,
 } from '@syncular/core';
@@ -96,23 +98,29 @@ const request = (frames: readonly RequestFrame[]): Uint8Array =>
       ...frames,
     ],
   });
-const pull: RequestFrame = {
+const unit = { project_id: 'a' };
+// The replica cursor of a steady-state pull that refers to the stored list.
+const pull = (cursor: number): RequestFrame => ({
   type: 'PULL_HEADER',
   limitCommits: 100,
   limitSnapshotRows: 100,
   maxSnapshotPages: 1,
   accept: 3,
-};
-const subscription = (cursor: number): RequestFrame => ({
-  type: 'SUBSCRIPTION',
-  id: 'tasks/a',
-  table: 'tasks',
-  scopes: { project_id: ['a'] },
   cursor,
+  registrationDigest: registrationDigest([unit]),
+  echoDigest: new Uint8Array(),
 });
 
-// Warm the schema, partition registry, and client record before counting.
-await handleSyncRequest(request([pull, subscription(0)]), ctx);
+// Warm the schema, partition registry, and client record before counting:
+// the first pull carries the list and bootstraps the unit.
+await handleSyncRequest(
+  request([
+    pull(-1),
+    { type: 'UNIT', scopes: unit },
+    { type: 'PROGRESS', id: unitId(unit), cursor: -1 },
+  ]),
+  ctx,
+);
 for (const map of [db.queried, db.executed, db.ran]) map.clear();
 
 for (let round = 0; round < ROUNDS; round++) {
@@ -122,6 +130,7 @@ for (let round = 0; round < ROUNDS; round++) {
       {
         type: 'PUSH_COMMIT',
         clientCommitId: `c${round}`,
+        clientSeq: 0,
         operations: [
           {
             table: 'tasks',
@@ -135,11 +144,11 @@ for (let round = 0; round < ROUNDS; round++) {
           },
         ],
       },
-      pull,
+      pull(round),
     ]),
     ctx,
   );
-  await handleSyncRequest(request([pull, subscription(round)]), ctx);
+  await handleSyncRequest(request([pull(round)]), ctx);
 }
 
 const total = (map: Map<string, number>): number =>

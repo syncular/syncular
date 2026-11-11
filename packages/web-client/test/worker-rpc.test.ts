@@ -417,28 +417,31 @@ test('the worker builds no diagnostics push until a consumer pulls', async () =>
   expect(seen.length).toBe(pushes());
 });
 
-test('worker subscriptions reject an identity rebind without losing completeness', async () => {
+test('worker re-registration of an active unit keeps its completeness', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-subscription-identity',
     autoSync: false,
   });
-  await handle.subscribeMany([{ project_id: 'p2' }, { project_id: 'p1' }]);
+  const p1 = unitId({ project_id: 'p1' });
+  const p2 = unitId({ project_id: 'p2' });
+  expect(
+    await handle.subscribeMany([{ project_id: 'p2' }, { project_id: 'p1' }]),
+  ).toEqual([p2, p1]);
   await handle.syncUntilIdle();
-  const complete = await handle.unit(unitId({ project_id: 'p2' }));
-  expect(complete?.cursor).toBeGreaterThanOrEqual(0);
+  const complete = await handle.unit(p2);
+  expect(
+    (await handle.snapshotRead({ statements: [], units: [p2] })).units,
+  ).toMatchObject([{ bootstrapComplete: true }]);
 
-  await handle.subscribeMany([
-    { project_id: 'p1' },
-    { project_id: 'p2' },
-    { project_id: 'p1' },
-  ]);
-  expect(await handle.unit(unitId({ project_id: 'p1' }))).toEqual(complete);
-
-  await expectRejectsWithCode(
-    handle.subscribe({ project_id: 'p2' }),
-    'client.subscription_intent_mismatch',
-  );
-  expect(await handle.unit(unitId({ project_id: 'p2' }))).toEqual(complete);
+  expect(
+    await handle.subscribeMany([
+      { project_id: 'p1' },
+      { project_id: 'p2' },
+      { project_id: 'p1' },
+    ]),
+  ).toEqual([p1, p2, p1]);
+  expect(await handle.subscribe({ project_id: 'p2' })).toBe(p2);
+  expect(await handle.unit(p2)).toEqual(complete);
 });
 
 test('worker preflight gates protected RPCs and activates the host loop later', async () => {

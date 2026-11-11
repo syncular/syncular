@@ -54,7 +54,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
         // Mixed readers + writers: even VUs write, odd VUs read.
         const project = clientProject(vu % 8); // 8 shared projects = churn
         const client = new HttpVClient({ baseUrl, clientId: `mc-${vu}` });
-        client.subscribe('tasks', 'tasks', { project_id: [project] });
+        client.subscribe({ project_id: project });
         await client.pull();
         let seq = 0;
         while (!signal.aborted) {

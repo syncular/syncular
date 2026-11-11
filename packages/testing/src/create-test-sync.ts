@@ -8,8 +8,8 @@
  *     const sync = await createTestSync({ schema });
  *     const a = await sync.client('a');
  *     const b = await sync.client('b');
- *     a.api.subscribe({ id: 's', table: 'notes', scopes: { list_id: ['x'] } });
- *     b.api.subscribe({ id: 's', table: 'notes', scopes: { list_id: ['x'] } });
+ *     a.api.subscribe({ list_id: 'x' });
+ *     b.api.subscribe({ list_id: 'x' });
  *     a.api.mutate([{ table: 'notes', op: 'upsert', values: … }]);
  *     await sync.syncAll();           // both converge
  *     await sync.dispose();

@@ -41,11 +41,7 @@ describe('syncWrapper', () => {
   test('a hook mounted against a test client re-runs on a local mutate', async () => {
     sync = await createTestSync({ schema: SCHEMA });
     const client = await sync.client('a');
-    client.api.subscribe({
-      id: 's',
-      table: 'notes',
-      scopes: { list_id: ['x'] },
-    });
+    client.api.subscribe({ list_id: 'x' });
     await client.sync();
 
     const { result } = renderHook(

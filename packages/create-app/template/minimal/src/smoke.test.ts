@@ -13,7 +13,7 @@ import {
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
 import { makeClient } from './make-client';
-import { schema } from './syncular.generated';
+import { schema, todosInListSubscription } from './syncular.generated';
 
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl: string;
@@ -43,13 +43,9 @@ test('two clients converge through the server', async () => {
   await a.start();
   await b.start();
 
-  const sub = {
-    id: 'todos',
-    table: 'todos',
-    scopes: { list_id: ['groceries'] },
-  };
-  a.subscribe(sub);
-  b.subscribe(sub);
+  const list = todosInListSubscription.scopes({ listId: 'groceries' });
+  a.subscribe(list);
+  b.subscribe(list);
 
   a.mutate([
     {

@@ -37,7 +37,7 @@ function note(
   return { id, list_id: listId, body };
 }
 
-const SUB = { id: 's', table: 'notes', scopes: { list_id: ['welcome'] } };
+const SUB = { list_id: 'welcome' };
 
 describe('createTestSync — convergence', () => {
   test('two clients converge through the in-memory server', async () => {
@@ -409,11 +409,7 @@ describe('createTestSync — scopes', () => {
       // B subscribes to BOTH a granted list ('welcome') and one it is not
       // granted ('secret'); the round keeps the first, revokes the second.
       b.api.subscribe(SUB);
-      b.api.subscribe({
-        id: 'secret',
-        table: 'notes',
-        scopes: { list_id: ['secret'] },
-      });
+      const secret = b.api.subscribe({ list_id: 'secret' });
       await sync.syncAll();
 
       // Separate commits: A holds 'welcome' but not 'secret', so the second
@@ -432,7 +428,7 @@ describe('createTestSync — scopes', () => {
       expect(b.api.query('SELECT id FROM notes ORDER BY id')).toEqual([
         { id: 'n1' },
       ]);
-      expect(b.api.subscription('secret')?.status).toBe('revoked');
+      expect(b.api.unit(secret)?.status).toBe('revoked');
     } finally {
       await sync.dispose();
     }

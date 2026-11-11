@@ -18,7 +18,7 @@ import {
   SYNC_VERSION_COLUMN,
 } from '@syncular/client';
 import { BOARD_COLUMNS, releaseBoardSeed } from '../seed';
-import { schema } from '../syncular.generated';
+import { boardSubscription } from '../syncular.generated';
 import { type DeviceCore, makeCore } from './cores';
 import { type DeviceId, outboxLines, planMove, type WriteIntent } from './lab';
 
@@ -29,8 +29,6 @@ export const COLUMN_LABEL: Record<string, string> = {
   done: 'Done',
 };
 const ESTIMATES = [1, 2, 3, 5, 8, 13];
-/** Every synced table, in the manifest's bootstrap order. */
-const TABLES = schema.tables.map((table) => table.name);
 
 export const SQL_EXAMPLES: readonly { label: string; sql: string }[] = [
   {
@@ -213,7 +211,7 @@ export class Device {
   members: MemberView[] = [];
   pending: readonly OutboxCommit[] = [];
   conflicts: readonly ConflictRecord[] = [];
-  /** Boards with an active `cards:{board}` subscription on this device. */
+  /** Boards whose unit is active on this device. */
   subscribed = new Set<string>();
   revoked = new Set<string>();
   board: string;
@@ -263,20 +261,14 @@ export class Device {
     core.title = this.core.backendLabel;
     this.core.onRoleChange?.(() => this.render());
     this.core.onChange(() => this.refreshSoon());
-    const existing = await this.core.subscriptions();
+    const existing = await this.core.units();
     const boards =
       existing.length > 0
-        ? [
-            ...new Set(
-              existing.map((record) =>
-                text(record.scopes.board_id?.[0] ?? null),
-              ),
-            ),
-          ]
+        ? existing.map((unit) => text(unit.scopes.board_id ?? null))
         : this.spec.boards;
     for (const board of boards) await this.subscribeBoard(board);
     // Connect-then-sync (§8.7 reference boot order): the first sync round
-    // rides the socket and registers this connection's subscriptions.
+    // rides the socket and registers this connection's units.
     await this.core.connectRealtime();
     this.ready = true;
     this.root.dataset.state = 'ready';
@@ -285,24 +277,12 @@ export class Device {
   }
 
   /**
-   * Subscribe every table of a board. A subscription the server revoked
-   * stays revoked (SPEC §3.3), so a re-grant replaces it with a fresh one
-   * that bootstraps from cursor -1.
+   * Subscribe to a board's unit, which covers every table scoped by
+   * `board_id`. Subscribing to a revoked unit re-arms it, and it bootstraps
+   * from cursor -1 (SPEC §3.3).
    */
   async subscribeBoard(board: string): Promise<void> {
-    const records = await this.core.subscriptions();
-    for (const table of TABLES) {
-      const id = `${table}:${board}`;
-      const record = records.find((candidate) => candidate.id === id);
-      if (record !== undefined && record.status !== 'active') {
-        await this.core.unsubscribe(id);
-      }
-      await this.core.subscribe({
-        id,
-        table,
-        scopes: { board_id: [board] },
-      });
-    }
+    await this.core.subscribe(boardSubscription.scopes({ boardId: board }));
   }
 
   /** Run sync rounds until idle. A call during a run waits for it and
@@ -538,16 +518,15 @@ export class Device {
   /** Read the device's state back from its SQLite and outbox, then render. */
   async refresh(): Promise<void> {
     if (!this.ready) return;
-    const [cards, members, pending, conflicts, subscriptions] =
-      await Promise.all([
-        this.core.query(CARDS_SQL),
-        this.core.query(
-          'SELECT id, board_id AS boardId, name, color, role FROM members ORDER BY name',
-        ),
-        this.core.pendingCommits(),
-        this.core.conflicts(),
-        this.core.subscriptions(),
-      ]);
+    const [cards, members, pending, conflicts, units] = await Promise.all([
+      this.core.query(CARDS_SQL),
+      this.core.query(
+        'SELECT id, board_id AS boardId, name, color, role FROM members ORDER BY name',
+      ),
+      this.core.pendingCommits(),
+      this.core.conflicts(),
+      this.core.units(),
+    ]);
     this.cards = cards.map(toCard);
     this.members = members.map((row) => ({
       id: text(row.id),
@@ -559,7 +538,7 @@ export class Device {
     this.pending = pending;
     this.conflicts = conflicts;
     const status = (board: string) =>
-      subscriptions.find((record) => record.id === `cards:${board}`)?.status;
+      units.find((unit) => unit.scopes.board_id === board)?.status;
     this.subscribed = new Set(
       releaseBoardSeed.boards
         .map((board) => board.id)

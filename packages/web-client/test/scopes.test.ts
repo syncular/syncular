@@ -204,7 +204,7 @@ describe('revocation purge (§3.3)', () => {
     await a.client.syncUntilIdle();
     server.resolverError.value = true;
     const summary = await a.client.sync();
-    expect(summary.revoked).toEqual(['s1']);
+    expect(summary.revoked).toEqual([unitId({ project_id: 'p1' })]);
     expect(tableRows(a.db, 'tasks')).toHaveLength(0);
   });
 
@@ -398,9 +398,9 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
     await a.client.setWindow(base, []);
     // `all` still covers p1 and keeps claiming completeness for it.
     expect(tableRows(a.db, 'tasks').map((row) => row.id)).toEqual(['shared']);
-    expect(
-      a.client.unit(unitId({ project_id: 'p1' }))?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+    expect(a.client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+      bootstrapComplete: true,
+    });
   });
 
   test('a revocation purge keeps rows another active subscription covers', async () => {
@@ -419,7 +419,7 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
       org_id: ['o1'],
     };
     const summary = await a.client.sync();
-    expect(summary.revoked).toEqual(['project']);
+    expect(summary.revoked).toEqual([unitId({ projectId: 'p1' })]);
     expect(a.client.unit(unitId({ org_id: 'o1' }))?.status).toBe('active');
     // d1 stays under `org`; d2 had no other owner.
     expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['d1']);
@@ -456,7 +456,7 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
 
     const summary = await a.client.sync();
 
-    expect(summary.revoked).toEqual(['project']);
+    expect(summary.revoked).toEqual([unitId({ projectId: 'p1' })]);
     // `org` still covers d1; a delete carries no values to test.
     expect(a.client.pendingCommits().map((c) => c.clientCommitId)).toEqual([
       shared,

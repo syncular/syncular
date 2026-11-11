@@ -66,7 +66,7 @@ function delta(clientId: string, commitSeq: number): SyncularServerEvent {
 }
 function pulled(
   clientId: string,
-  mode: 'bootstrap' | 'incremental',
+  mode: 'bootstrap' | 'live',
   first?: number,
   last?: number,
 ): SyncularServerEvent {
@@ -76,24 +76,28 @@ function pulled(
     clientId,
     acceptedThrough: 0,
     storageMaxCommitSeq: last ?? 0,
-    subscriptions: [
+    registrationTraveled: false,
+    units: [
       {
-        id: 'todos:home',
-        table: 'todos',
+        id: 'home',
+        scopes: { list_id: 'home' },
         status: 'active',
         mode,
-        requestedScopes: { list_id: ['home'] },
-        effectiveScopes: { list_id: ['home'] },
-        ...(first !== undefined ? { firstCommitSeq: first } : {}),
-        ...(last !== undefined ? { lastCommitSeq: last } : {}),
-        fromCursor: 0,
-        nextCursor: last ?? 0,
-        commits:
-          first === undefined || last === undefined ? 0 : last - first + 1,
-        changes: 1,
+        section: mode === 'bootstrap',
+        fenced: [],
+        fromCursor: -1,
         segments: [],
       },
     ],
+    live: {
+      status: 'active',
+      fromCursor: 0,
+      throughSeq: last ?? 0,
+      commits: first === undefined || last === undefined ? 0 : last - first + 1,
+      changes: 1,
+      ...(first !== undefined ? { firstCommitSeq: first } : {}),
+      ...(last !== undefined ? { lastCommitSeq: last } : {}),
+    },
   };
 }
 
@@ -174,7 +178,7 @@ describe('commit log', () => {
       applied('c-laptop', 'k1', 2),
       applied('c-laptop', 'k2', 3),
       applied('c-laptop', 'k3', 4),
-      pulled('c-phone', 'incremental', 2, 3),
+      pulled('c-phone', 'live', 2, 3),
     ]);
     expect(
       state.entries.map((entry) => [entry.commitSeq, entry.deliveredTo]),
@@ -194,7 +198,7 @@ describe('commit log', () => {
   test('a device never counts as a receiver of its own commit', () => {
     const { state } = fold([
       applied('c-phone', 'k1', 2),
-      pulled('c-phone', 'incremental', 2, 2),
+      pulled('c-phone', 'live', 2, 2),
     ]);
     expect(state.entries[0]?.deliveredTo).toEqual([]);
   });
@@ -208,7 +212,7 @@ describe('commit log', () => {
         tone: 'delivery',
       },
     ]);
-    expect(fold([pulled('c-phone', 'incremental')]).transits).toEqual([]);
+    expect(fold([pulled('c-phone', 'live')]).transits).toEqual([]);
   });
 
   test('a replayed backlog leaves entries in place and marks cache replays', () => {

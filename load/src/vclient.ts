@@ -28,7 +28,9 @@ import {
   type ResponseFrame,
   type ResponseMessage,
   type RowValue,
-  type ScopeMap,
+  registrationDigest,
+  type UnitScopes,
+  unitId,
 } from '@syncular/core';
 import { COLUMNS, SCHEMA, SSP2_CONTENT_TYPE, TABLE } from './wire';
 
@@ -42,11 +44,11 @@ export class VClientError extends Error {
   }
 }
 
-export interface SubscriptionState {
+interface UnitState {
   readonly id: string;
-  readonly table: string;
-  readonly scopes: ScopeMap;
-  cursor: number;
+  readonly scopes: UnitScopes;
+  /** Absent once the unit is live (§4.5); otherwise `-1` or its cursor. */
+  cursor?: number;
   bootstrapState?: string;
 }
 
@@ -55,7 +57,7 @@ export interface RoundResult {
   readonly message: ResponseMessage;
   /** Rows carried by the response (inline + ref rowCount + commit changes). */
   readonly appliedRows: number;
-  /** True once no subscription section left a bootstrapState. */
+  /** True once no unit section left a bootstrapState. */
   readonly bootstrapComplete: boolean;
 }
 
@@ -78,6 +80,7 @@ function upsertOp(id: string, project: string, seq: number): RequestFrame {
   return {
     type: 'PUSH_COMMIT',
     clientCommitId: `${id}-c${seq}`,
+    clientSeq: seq,
     operations: [
       {
         table: TABLE,
@@ -103,6 +106,7 @@ function requestBytes(
         clientId,
         schemaVersion: SCHEMA.version,
         ...(logEpoch !== undefined ? { logEpoch } : {}),
+        outboxId: clientId,
       },
       ...frames,
     ],
@@ -169,70 +173,140 @@ function isEpochReset(message: ResponseMessage): boolean {
   return header?.type === 'RESP_HEADER' && header.resetRequired === true;
 }
 
-interface Accounting {
-  readonly appliedRows: number;
-  readonly bootstrapComplete: boolean;
+interface PullLimits {
+  readonly limitCommits: number;
+  readonly limitSnapshotRows: number;
+  readonly maxSnapshotPages: number;
+  readonly accept: number;
 }
 
 /**
- * Walk a decoded response: count applied rows, fold SUB_END nextCursor +
- * bootstrapState back into the subscription states, and report whether any
- * section is still paging.
+ * The client side of §4.1 and §4.5 without a local database: the
+ * registration list, each catching-up unit's cursor and resume token, the
+ * replica cursor and the last echo digest.
  */
-function account(
-  message: ResponseMessage,
-  subs: Map<string, SubscriptionState>,
-): Accounting {
-  assertNoErrorFrames(message.frames);
-  let appliedRows = 0;
-  let bootstrapComplete = true;
-  let currentSub: SubscriptionState | undefined;
-  const refIds: Array<{ segmentId: string; scopes: ScopeMap }> = [];
-  for (const frame of message.frames) {
-    switch (frame.type) {
-      case 'SUB_START':
-        currentSub = subs.get(frame.id);
-        break;
-      case 'SEGMENT_INLINE': {
-        const decoded = decodeRowsSegment(frame.payload);
-        for (const block of decoded.blocks) appliedRows += block.length;
-        break;
-      }
-      case 'SEGMENT_REF':
-        appliedRows += frame.rowCount;
-        if (currentSub !== undefined) {
-          refIds.push({
-            segmentId: frame.segmentId,
-            scopes: currentSub.scopes,
-          });
-        }
-        break;
-      case 'COMMIT':
-        appliedRows += frame.changes.length;
-        break;
-      case 'SUB_END': {
-        if (currentSub !== undefined) {
-          currentSub.cursor = frame.nextCursor;
-          if (frame.bootstrapState !== undefined) {
-            currentSub.bootstrapState = frame.bootstrapState;
-            bootstrapComplete = false;
-          } else {
-            delete currentSub.bootstrapState;
-          }
-        }
-        currentSub = undefined;
-        break;
-      }
-      default:
-        break;
-    }
+class UnitRegistry {
+  readonly #units = new Map<string, UnitState>();
+  #travel = false;
+  #replicaCursor = -1;
+  #echoDigest: Uint8Array = new Uint8Array();
+
+  subscribe(scopes: UnitScopes): void {
+    const id = unitId(scopes);
+    if (this.#units.has(id)) return;
+    this.#units.set(id, { id, scopes, cursor: -1 });
+    this.#travel = true;
   }
-  // External row segments carry their row count in the ref frame; the
-  // scenarios that assert reuse read the server metrics, and bootstrap
-  // paging is driven by SUB_END, so we do not need to fetch ref bodies to
-  // account rows. Segment fetching is exercised explicitly below.
-  void refIds;
-  return { appliedRows, bootstrapComplete };
+
+  /** `PULL_HEADER`, the list when it travels, one `PROGRESS` per catching-up unit (§4.3). */
+  pullFrames(limits: PullLimits): RequestFrame[] {
+    const units = [...this.#units.values()];
+    return [
+      {
+        type: 'PULL_HEADER',
+        ...limits,
+        cursor: this.#replicaCursor,
+        registrationDigest: registrationDigest(
+          units.map((unit) => unit.scopes),
+        ),
+        echoDigest: this.#echoDigest,
+      },
+      ...(this.#travel
+        ? units.map((unit) => ({ type: 'UNIT' as const, scopes: unit.scopes }))
+        : []),
+      ...units.flatMap((unit) =>
+        unit.cursor === undefined
+          ? []
+          : [
+              {
+                type: 'PROGRESS' as const,
+                id: unit.id,
+                cursor: unit.cursor,
+                ...(unit.bootstrapState !== undefined
+                  ? { bootstrapState: unit.bootstrapState }
+                  : {}),
+              },
+            ],
+      ),
+    ];
+  }
+
+  /**
+   * Walk a decoded response: count applied rows, fold `SUB_END` into the
+   * unit states, apply join rule J at `LIVE_END` (§4.5), and report whether
+   * any unit is still paging.
+   */
+  account(message: ResponseMessage): {
+    appliedRows: number;
+    bootstrapComplete: boolean;
+  } {
+    assertNoErrorFrames(message.frames);
+    let appliedRows = 0;
+    let bootstrapComplete = true;
+    let current: UnitState | undefined;
+    let liveStatus: string | undefined;
+    for (const frame of message.frames) {
+      switch (frame.type) {
+        case 'SUB_START':
+          current = this.#units.get(frame.id);
+          if (frame.status === 'revoked')
+            throw new VClientError('unit revoked', frame.reasonCode);
+          if (current !== undefined && frame.status === 'reset') {
+            current.cursor = -1;
+            delete current.bootstrapState;
+          }
+          break;
+        case 'SEGMENT_INLINE': {
+          const decoded = decodeRowsSegment(frame.payload);
+          for (const block of decoded.blocks) appliedRows += block.length;
+          break;
+        }
+        case 'SEGMENT_REF':
+          appliedRows += frame.rowCount;
+          break;
+        case 'COMMIT':
+          appliedRows += frame.changes.length;
+          break;
+        case 'SUB_END':
+          if (current !== undefined) {
+            current.cursor = frame.nextCursor;
+            if (frame.bootstrapState !== undefined) {
+              current.bootstrapState = frame.bootstrapState;
+              bootstrapComplete = false;
+            } else {
+              delete current.bootstrapState;
+            }
+          }
+          current = undefined;
+          break;
+        case 'LIVE_START':
+          liveStatus = frame.status;
+          if (frame.status === 'unregistered') this.#travel = true;
+          break;
+        case 'LIVE_END': {
+          if (liveStatus !== 'active') break;
+          this.#travel = false;
+          this.#echoDigest = frame.echoDigest;
+          const joined = Math.max(this.#replicaCursor, frame.throughSeq);
+          let live = false;
+          for (const unit of this.#units.values()) {
+            if (unit.cursor !== undefined && unit.cursor >= 0) {
+              if (unit.bootstrapState === undefined) {
+                unit.cursor = Math.max(unit.cursor, frame.throughSeq);
+                if (unit.cursor >= joined) delete unit.cursor;
+              }
+            }
+            live ||= unit.cursor === undefined;
+          }
+          this.#replicaCursor = live ? joined : -1;
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    return { appliedRows, bootstrapComplete };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +321,7 @@ export interface VClientOptions {
 export class HttpVClient {
   readonly clientId: string;
   readonly #baseUrl: string;
-  readonly #subs = new Map<string, SubscriptionState>();
+  readonly #units = new UnitRegistry();
   #pushSeq = 0;
   #logEpoch: string | undefined;
 
@@ -256,21 +330,8 @@ export class HttpVClient {
     this.#baseUrl = options.baseUrl;
   }
 
-  subscribe(id: string, table: string, scopes: ScopeMap): void {
-    this.#subs.set(id, { id, table, scopes, cursor: -1 });
-  }
-
-  #subFrames(): RequestFrame[] {
-    return [...this.#subs.values()].map((s) => ({
-      type: 'SUBSCRIPTION' as const,
-      id: s.id,
-      table: s.table,
-      scopes: s.scopes,
-      cursor: s.cursor,
-      ...(s.bootstrapState !== undefined
-        ? { bootstrapState: s.bootstrapState }
-        : {}),
-    }));
+  subscribe(scopes: UnitScopes): void {
+    this.#units.subscribe(scopes);
   }
 
   /** The wire round: one request, one response, no epoch bookkeeping. */
@@ -296,7 +357,7 @@ export class HttpVClient {
     if (decoded.msgKind !== 'response') {
       throw new VClientError('expected a response message');
     }
-    const { appliedRows, bootstrapComplete } = account(decoded, this.#subs);
+    const { appliedRows, bootstrapComplete } = this.#units.account(decoded);
     assertPushAccepted(decoded);
     return { latencyMs, message: decoded, appliedRows, bootstrapComplete };
   }
@@ -321,22 +382,20 @@ export class HttpVClient {
     return result;
   }
 
-  /** One pull round (PULL_HEADER then subscription frames, §1.5 order). */
+  /** One pull round (PULL_HEADER, then UNIT and PROGRESS frames, §1.5 order). */
   pull(overrides?: {
     limitSnapshotRows?: number;
     maxSnapshotPages?: number;
     accept?: number;
   }): Promise<RoundResult> {
-    return this.#round([
-      {
-        type: 'PULL_HEADER',
+    return this.#round(
+      this.#units.pullFrames({
         limitCommits: 0,
         limitSnapshotRows: overrides?.limitSnapshotRows ?? 5_000,
         maxSnapshotPages: overrides?.maxSnapshotPages ?? 1,
         accept: overrides?.accept ?? ACCEPT_ROWS,
-      },
-      ...this.#subFrames(),
-    ]);
+      }),
+    );
   }
 
   /** One push+pull round; increments the client's write sequence. */
@@ -344,14 +403,12 @@ export class HttpVClient {
     this.#pushSeq += 1;
     return this.#round([
       upsertOp(id, project, this.#pushSeq),
-      {
-        type: 'PULL_HEADER',
+      ...this.#units.pullFrames({
         limitCommits: 100,
         limitSnapshotRows: 5_000,
         maxSnapshotPages: 1,
         accept: ACCEPT_ROWS,
-      },
-      ...this.#subFrames(),
+      }),
     ]);
   }
 
@@ -361,15 +418,14 @@ export class HttpVClient {
       this.#logEpoch ??
       acquiredLogEpoch(
         (
-          await this.#roundRaw([
-            {
-              type: 'PULL_HEADER',
+          await this.#roundRaw(
+            this.#units.pullFrames({
               limitCommits: 0,
               limitSnapshotRows: 0,
               maxSnapshotPages: 0,
               accept: ACCEPT_ROWS,
-            },
-          ])
+            }),
+          )
         ).message,
       );
     this.#logEpoch = epoch;
@@ -422,18 +478,6 @@ export class HttpVClient {
       pageLatenciesMs,
     };
   }
-
-  /** Fetch a segment body over GET /segments/:id (§5.5 direct endpoint). */
-  async fetchSegment(segmentId: string, scopes: ScopeMap): Promise<number> {
-    const response = await fetch(`${this.#baseUrl}/segments/${segmentId}`, {
-      headers: { 'x-syncular-scopes': JSON.stringify(scopes) },
-    });
-    if (!response.ok) {
-      throw new VClientError(`GET /segments ${response.status}`);
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return bytes.length;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +500,7 @@ export interface RealtimeVClientHandlers {
 export class RealtimeVClient {
   readonly clientId: string;
   readonly #baseUrl: string;
-  readonly #subs = new Map<string, SubscriptionState>();
+  readonly #units = new UnitRegistry();
   #ws: WebSocket | undefined;
   #roundResolve: ((message: ResponseMessage) => void) | undefined;
   #roundReject: ((error: Error) => void) | undefined;
@@ -470,8 +514,8 @@ export class RealtimeVClient {
     this.#baseUrl = options.baseUrl;
   }
 
-  subscribe(id: string, table: string, scopes: ScopeMap): void {
-    this.#subs.set(id, { id, table, scopes, cursor: -1 });
+  subscribe(scopes: UnitScopes): void {
+    this.#units.subscribe(scopes);
   }
 
   /** Connect and resolve once the 'hello' control event has arrived. */
@@ -541,19 +585,6 @@ export class RealtimeVClient {
     }
   }
 
-  #subFrames(): RequestFrame[] {
-    return [...this.#subs.values()].map((s) => ({
-      type: 'SUBSCRIPTION' as const,
-      id: s.id,
-      table: s.table,
-      scopes: s.scopes,
-      cursor: s.cursor,
-      ...(s.bootstrapState !== undefined
-        ? { bootstrapState: s.bootstrapState }
-        : {}),
-    }));
-  }
-
   #roundOverSocket(
     frames: readonly RequestFrame[],
     logEpoch?: string,
@@ -576,18 +607,16 @@ export class RealtimeVClient {
   /** One sync (catch-up) round over the socket; returns latency + rows. */
   async syncRound(): Promise<RoundResult> {
     const t0 = performance.now();
-    const message = await this.#socketRound([
-      {
-        type: 'PULL_HEADER',
+    const message = await this.#socketRound(
+      this.#units.pullFrames({
         limitCommits: 200,
         limitSnapshotRows: 10_000,
         maxSnapshotPages: 1,
         accept: ACCEPT_ROWS,
-      },
-      ...this.#subFrames(),
-    ]);
+      }),
+    );
     const latencyMs = performance.now() - t0;
-    const { appliedRows, bootstrapComplete } = account(message, this.#subs);
+    const { appliedRows, bootstrapComplete } = this.#units.account(message);
     return { latencyMs, message, appliedRows, bootstrapComplete };
   }
 
@@ -597,17 +626,15 @@ export class RealtimeVClient {
     const t0 = performance.now();
     const message = await this.#socketRound([
       upsertOp(id, project, this.#pushSeq),
-      {
-        type: 'PULL_HEADER',
+      ...this.#units.pullFrames({
         limitCommits: 100,
         limitSnapshotRows: 5_000,
         maxSnapshotPages: 1,
         accept: ACCEPT_ROWS,
-      },
-      ...this.#subFrames(),
+      }),
     ]);
     const latencyMs = performance.now() - t0;
-    const { appliedRows, bootstrapComplete } = account(message, this.#subs);
+    const { appliedRows, bootstrapComplete } = this.#units.account(message);
     assertPushAccepted(message);
     return { latencyMs, message, appliedRows, bootstrapComplete };
   }
@@ -638,15 +665,14 @@ export class RealtimeVClient {
     const epoch =
       this.#logEpoch ??
       acquiredLogEpoch(
-        await this.#roundOverSocket([
-          {
-            type: 'PULL_HEADER',
+        await this.#roundOverSocket(
+          this.#units.pullFrames({
             limitCommits: 0,
             limitSnapshotRows: 0,
             maxSnapshotPages: 0,
             accept: ACCEPT_ROWS,
-          },
-        ]),
+          }),
+        ),
       );
     this.#logEpoch = epoch;
     return epoch;

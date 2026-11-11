@@ -14,7 +14,7 @@ import {
   ValidationRejection,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
-import { decodeMessage, encodeMessage } from '@syncular/core';
+import { decodeMessage, encodeMessage, unitId } from '@syncular/core';
 
 const schema: ClientSchema = {
   version: 1,
@@ -218,7 +218,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       });
       const racingProof = reader!.proveCurrentBase(outcome);
       await requestEntered;
-      reader!.unsubscribe('one');
+      reader!.unsubscribe(unitId({ theatre_id: 'one' }));
       reader!.subscribe({ theatre_id: 'one' });
       release();
       hold = undefined;
@@ -226,7 +226,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         proven: false,
         reason: 'missing_coverage',
       });
-      reader!.unsubscribe('one');
+      reader!.unsubscribe(unitId({ theatre_id: 'one' }));
       expect(await reader!.proveCurrentBase(outcome)).toEqual({
         proven: false,
         reason: 'missing_coverage',

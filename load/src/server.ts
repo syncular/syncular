@@ -105,8 +105,8 @@ class MetricsEvents implements SyncularServerEvents {
         break;
       }
       case 'pull.served': {
-        for (const sub of event.subscriptions) {
-          for (const segment of sub.segments) {
+        for (const unit of event.units) {
+          for (const segment of unit.segments) {
             if (segment.origin === 'reused') this.#segmentsReused += 1;
             else this.#segmentsBuilt += 1;
           }

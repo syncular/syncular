@@ -58,16 +58,13 @@
   "subscriptions": [
     {
       "name": "todosInList",
-      "table": "todos",
       "scopes": [
         {
           "variable": "list_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "listId"
-            }
-          ]
+          "value": {
+            "kind": "parameter",
+            "name": "listId"
+          }
         }
       ]
     }

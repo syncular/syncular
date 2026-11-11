@@ -250,10 +250,8 @@ not need a custom retention effect.
 
 ## Other hooks
 
-- `useDiagnostics({ expectedSubscriptions })` observes the versioned,
-  privacy-safe support snapshot. Native/Worker events trigger a fresh request,
-  preserving expected-but-unregistered intent on every host. Subscription ids
-  must be stable and PHI-free; scopes are not accepted.
+- `useDiagnostics()` observes the versioned, privacy-safe support snapshot.
+  Native/Worker events trigger a fresh read on every host.
 - `useSyncStatus()` observes the status domain without a follow-up read after
   every row change. It includes `availability` and `currentSchemaVersion`;
   `outbox` is local push work, while `syncNeeded` specifically means an inbound
@@ -292,23 +290,16 @@ a stable error code, an optional SQLite result code, and the first failure
 time. It never contains SQL, parameters, rows, or SQLite error prose. Raw SQL
 uses the diagnostic id `raw` unless `useRawSql` receives an explicit `id`.
 
-Use application-owned, stable, PHI-free subscription ids to make missing
-registration distinguishable from a completed zero-row bootstrap. The hook
-refreshes after diagnostics events on direct, Worker, Tauri, and React Native
-hosts while preserving that expected intent:
+The snapshot counts units by state (`units.bootstrapping`, `units.complete`,
+`units.reset`, `units.revoked`, `units.failed`) and carries `activeUnits` and
+the replica cursor, without scope values. The hook refreshes after diagnostics
+events on direct, Worker, Tauri, and React Native hosts:
 
 ```tsx
 import { useDiagnostics } from '@syncular/react';
 
-const expectedSubscriptions = [
-  { id: 'membership-security', table: 'facility_memberships' },
-  { id: 'scheduler-window', table: 'surgeries' },
-] as const;
-
 function SyncSupportPanel() {
-  const { snapshot, isLoading, error, refresh } = useDiagnostics({
-    expectedSubscriptions,
-  });
+  const { snapshot, isLoading, error, refresh } = useDiagnostics();
 
   if (isLoading) return <p>Collecting local sync evidence…</p>;
   if (error) return <p>Diagnostics unavailable: {error.message}</p>;

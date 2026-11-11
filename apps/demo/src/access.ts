@@ -3,7 +3,7 @@
  * embedded server worker. An actor may see a board exactly while a
  * `members` row `m-{board}-{actor}` exists, so granting or revoking a board
  * is an ordinary write that travels through the commit log. Revoking a
- * membership revokes the actor's per-board subscriptions on their next
+ * membership revokes the actor's board unit on their next
  * round, and the client purges that board's rows (SPEC §3.3).
  */
 import type { ResolveScopesArgs, ServerStorage } from '@syncular/server';

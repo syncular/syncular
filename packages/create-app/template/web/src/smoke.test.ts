@@ -62,9 +62,9 @@ test('two clients converge through the scaffolded server config', async () => {
   await a.start();
   await b.start();
 
-  const scopes = todoListSubscription.scopes({ listId: 'welcome' });
-  a.subscribe({ id: 'todos', table: 'todos', scopes });
-  b.subscribe({ id: 'todos', table: 'todos', scopes });
+  const list = todoListSubscription.scopes({ listId: 'welcome' });
+  a.subscribe(list);
+  b.subscribe(list);
 
   a.mutate([
     {

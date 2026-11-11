@@ -364,11 +364,7 @@ export async function createProcessDriver(
         headers: { 'x-bench-client-id': clientId },
       },
     });
-    await invoke('subscribe', {
-      id: 'bench',
-      table: 'tasks',
-      scopes: { project_id: [PROJECT_ID] },
-    });
+    await invoke('subscribe', { scopes: { project_id: PROJECT_ID } });
     return {
       invoke,
       close,

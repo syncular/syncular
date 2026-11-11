@@ -231,7 +231,10 @@ describe('deltas (§8.2)', () => {
     // The cursor advanced through SUB_END, and the post-apply ack reached
     // the server's client record (§8.2: acks update it without a pull).
     const seq = await server.storage.getMaxCommitSeq(PARTITION);
-    expect(b.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(seq);
+    expect(b.client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+      live: true,
+      cursor: seq,
+    });
     await waitFor(
       async () => {
         const record = await server.storage.getClientRecord(
