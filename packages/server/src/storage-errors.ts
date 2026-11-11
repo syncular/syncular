@@ -33,6 +33,7 @@ export type StorageQueryErrorCode =
   | 'sync.storage.checkpoint_incomplete'
   | 'sync.storage.stored_layout_mismatch'
   | 'sync.storage.scope_patterns_changed'
+  | 'sync.storage.scope_value_missing'
   | 'sync.storage.physical_layout_mismatch'
   | 'sync.storage.transaction_query_unsupported'
   | 'sync.storage.partition_lock_unsupported'
@@ -68,6 +69,8 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'stored schema layouts disagree with the configured schema at the same version',
     'sync.storage.scope_patterns_changed':
       'a table declares scope patterns other than the ones its stored rows are indexed under',
+    'sync.storage.scope_value_missing':
+      'a stored row has no value for a scope column the schema bump re-keys it under',
     'sync.storage.physical_layout_mismatch':
       'a synced table does not match the storage layout the running code reads and writes',
     'sync.storage.transaction_query_unsupported':

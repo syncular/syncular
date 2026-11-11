@@ -1200,7 +1200,8 @@ MUST refuse to serve, without writing DDL or rows, in three cases:
    answered by the persisted layouts, because columns added by a migration are
    nullable in the database regardless of the schema.
 3. A table's scope patterns differ from the recorded ones (§3.1):
-   `sync.storage.scope_patterns_changed`.
+   `sync.storage.scope_patterns_changed`. A schema-version bump re-keys
+   the table instead (§3.1).
 
 All three errors carry `table` in structured details, the two layout errors
 also `column` where one applies, and the scope refusal `stored` and
@@ -1227,7 +1228,10 @@ refusals are host readiness failures and add no wire error.
 
 A SQLite or PostgreSQL storage that opens a database whose stored schema
 version is lower than the running version applies the DDL, rewrites stored
-rows, and writes the new marker in one transaction. In that transaction it
+rows, re-keys every table whose scope patterns changed (§3.1), and writes the
+new marker in one transaction. The re-key decodes each row's stored payload,
+because a table with `materialize: false` has no projection columns; it runs
+under the migration lock, so writes wait for it. In that transaction it
 MUST raise the writer fence of every partition in `sync_partitions` to the
 new schema version, never lowering an existing fence. A process still running
 the previous schema has its pushes refused by the serve gate; the fence also
@@ -1248,7 +1252,12 @@ layout.
 
 A D1 schema upgrade MUST save row-rewrite progress in the same atomic batch as
 those rewrites. A resumed upgrade MUST decode only rows after that checkpoint
-using the previous schema layout. The published schema version advances only
+using the previous schema layout. A re-key (§3.1) checks every row of the
+table for its new scope values in the prepare phase, before any DDL; a refusal
+deletes the migration claim, so the database keeps its previous version and
+serves again. It clears the table's row scope index entries and tombstones and
+raises the horizons in the DDL phase, then writes each rewritten row's scopes
+and index entries in the batch of its rewrite. The published schema version advances only
 after all DDL, rewrites, and retired-table cleanup finish.
 
 Each call to `D1ServerStorage.migrateSchema` has a statement budget, including
@@ -1309,16 +1318,34 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   inverted index (scope key = the pattern's literal prefix + `:` +
   value) so pulls filter by scope without scanning (an SSP2 storage-schema
   requirement; the index itself is not wire-visible).
-- Stored scopes keep the patterns they were written under; no schema change
-  re-keys them. The server storage records each table's scope patterns
-  (prefix, variable, column) beside the schema version marker and refuses to
-  serve a configured table whose patterns differ from the recorded ones, at
-  the same schema version and across a version bump:
-  `sync.storage.scope_patterns_changed`, with `table`, `stored` and
-  `configured` in its details. A table whose scope patterns must change is a
-  new table. A marker written before patterns were recorded records the
-  configured patterns at the next open; a change made before that open is
-  not detected.
+- The server storage records each table's scope patterns (prefix, variable,
+  column) beside the schema version marker. At the same schema version it
+  refuses to serve a configured table whose patterns differ from the
+  recorded ones: `sync.storage.scope_patterns_changed`, with `table`,
+  `stored` and `configured` in its details. A marker written before
+  patterns were recorded records the configured patterns at the next open;
+  a change made before that open is not detected.
+- **Re-key on a bump.** A schema-version bump that changes a table's scope
+  patterns re-keys the table in the upgrade transaction ("Schema upgrade
+  writer fence", §2.4). The storage recomputes every stored row's scopes
+  from the row's own column values under the new patterns, replaces the
+  row's entries in the row scope index, deletes the table's tombstones
+  (§2.2), and raises the horizon of every partition to its `maxCommitSeq`
+  (§4.6). It then records the new patterns. A table whose patterns are
+  unchanged is not re-keyed. A row whose newly mapped scope column is NULL
+  or empty has no value for that variable, so the bump refuses with
+  `sync.storage.scope_value_missing` (`table`, `variable`, `rowId` in its
+  details) and changes nothing; a changed pattern therefore cannot map to
+  a column the same bump appends.
+- Logged changes keep the scopes they were written under, and the horizon
+  raise keeps them from being served under the new patterns. Client resets
+  alone do not cover this: a client may send an old cursor, and a pattern
+  that keeps its variable but maps another column would match foreign rows'
+  history. A deleted row's column values are gone, so its tombstone's scopes
+  cannot be recomputed; after the bump an unversioned upsert of a row
+  deleted before the bump inserts it again above the delete floor instead of
+  answering `sync.row_deleted`, as it does once pruning has passed the
+  delete.
 
 ### 3.2 Requested, allowed, effective
 
@@ -1996,6 +2023,10 @@ Servers prune the commit log. The contract:
   force-advance past commits older than the **age force limit** (default 30
   days) regardless of laggard cursors. A server MUST always retain at least
   the newest **1000** commits. (Hosts may raise any of the defaults.)
+  A schema-version bump that re-keys a table (§3.1) is the one exception:
+  it raises `horizonSeq` of every partition to its `maxCommitSeq` regardless
+  of client cursors and the retained minimum, and the next pruning pass
+  deletes the commits below it.
 - **Replica reset.** A pull with a live unit and `R < horizonSeq` (including
   `R = -1`), or with `R > maxCommitSeq` (corrupt client state), cannot be
   answered from the log. The server MUST answer `LIVE_START.status = reset`
@@ -7452,7 +7483,11 @@ all values, and issues no lease. It has no realtime channel (§8), blob routes
 operations.
 
 Before it serves, the authority migrates its own tables to the running schema
-version: added tables and appended nullable columns (§9). A client's §7.4
+version: added tables, appended nullable columns (§9), and changed scope
+patterns, which it re-keys as §3.1 describes. It refuses a same-version scope
+pattern change, and a re-key of a row without a value for a new pattern, with
+`sync.schema_mismatch` (`reason` `layout_changed_without_version_bump` and
+`scope_value_missing`). A client's §7.4
 reset then bootstraps from the authority, and every acknowledged row survives
 the bump. At open the authority prunes its commit log under the §4.6 floors.
 
@@ -8033,3 +8068,9 @@ Each is a driver-interface script, not a prose test.
     none. (e) After N pushes from one replica the server holds the results
     of the last request plus one watermark row, on SQLite, PostgreSQL, D1
     and the Rust authority. Both pairings (TS×TS, Rust×TS).
+28. **Scope pattern re-key (§3.1, §4.6).** A client of the old variable
+    holds rows and a cursor; the server restarts at a bump whose pattern
+    maps the table to another variable. A unit of the new variable
+    bootstraps every row, a pull with the old cursor gets
+    `sync.cursor_expired`, and no change logged before the bump reaches a
+    unit of the new variable. Both pairings and the Rust authority.

@@ -141,6 +141,43 @@ describe('D1 migration invocations', () => {
     raw.close();
   });
 
+  for (const budget of [10, 1000]) {
+    test(`a scope pattern re-key resumes across pages within a ${budget}-statement budget`, async () => {
+      // Two or three pages of the prepare-phase check, many rewrite pages. A
+      // 10-statement invocation rewrites one re-keyed row.
+      const rows = budget === 10 ? 600 : 1100;
+      const { db, raw } = await fixture(rows);
+      const rekeyed = compileSchema({
+        version: 2,
+        tables: [
+          {
+            ...schema.tables[0]!,
+            scopes: [{ pattern: 'task:{task_id}', column: 'id' }],
+          },
+        ],
+      });
+      await finish(db, rekeyed, budget);
+      expect(raw.query('SELECT * FROM sync_schema_migration').all()).toEqual(
+        [],
+      );
+      expect(
+        raw
+          .query(
+            "SELECT count(*) AS n FROM tasks WHERE _sync_scopes=json_object('task_id', id)",
+          )
+          .get(),
+      ).toEqual({ n: rows });
+      expect(
+        raw
+          .query(
+            "SELECT var, count(*) AS n FROM sync_row_scopes WHERE tbl='tasks' AND value=row_id GROUP BY var",
+          )
+          .all(),
+      ).toEqual([{ var: 'task_id', n: rows }]);
+      raw.close();
+    });
+  }
+
   test('materialization backfill resumes across tables and partitions', async () => {
     const raw = new Database(':memory:');
     const db = new D1DatabaseDouble(raw);

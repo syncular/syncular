@@ -61,6 +61,16 @@ without the partition before and after a `serverIndexes` entry, and 20,000
 | Lookup `owner_id, id` without the partition | 165 ms (scan) | 0.09 ms (`serverIndexes`) |
 | 20,000 `touchPartition` calls within one minute | 20,000 rows written | 1 row written |
 
+`rekey-lane.ts` (`bun run --cwd bench bench:rekey -- --rows 100000`) seeds one
+materialized table through the storage API and times a version-only bump and a
+bump that maps the scope column to another variable, which re-keys every row
+(SPEC §3.1). On 100,000 rows (Bun 1.4.4, macOS arm64, Apple M5 Pro, three runs):
+
+| Backend | Version-only bump | Re-key bump |
+| --- | --- | --- |
+| `bun:sqlite`, file, WAL | 1.5 ms | 684 to 689 ms |
+| PGlite (in-process Postgres) | 22 to 26 ms | 2,451 to 2,669 ms |
+
 `server-prepare-lane.ts` counts statements through `db.query` (cached by Bun per
 SQL text), `db.exec`, and `db.run` over a push and a pull per round. The steady
 state issues 42 cached statements and 3 `exec` statements (`BEGIN IMMEDIATE`,

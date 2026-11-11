@@ -174,15 +174,17 @@ See [Remote server operations](/guide-remote-operations/).
 
 A table that leaves the schema is dropped, with its rows and scope index, in the bump's transaction, and its name cannot be reused. The bump runs under `LOCK TABLE sync_partitions IN EXCLUSIVE MODE`, so every push of every partition waits for it. Copying rows during the bump holds that lock for the length of the copy, and plain SQL into the new table skips the scope index, the payload, and the change log.
 
-Create the successor table in one version. Write the rows into it as server-authoritative commits (through `host.serialized` and `contextFor`, so they reach the log and the clients). Retire the source table in a later version, after the counts match. A table cannot turn a required column nullable, gain or lose a scope variable, or drop a column in place, because existing rows keep the scopes they were written with. Every such change takes the same successor route. In one app, two consecutive bumps each moved rows into successor tables this way.
+Create the successor table in one version. Write the rows into it as server-authoritative commits (through `host.serialized` and `contextFor`, so they reach the log and the clients). Retire the source table in a later version, after the counts match. A table cannot turn a required column nullable or drop a column in place. Both changes take the same successor route. A scope pattern change is the exception: the bump re-keys the stored rows itself (below). In one app, two consecutive bumps each moved rows into successor tables this way.
 
 See [Retire tables and indexes](/guide-schema/#retire-tables-and-indexes).
 
-### Don't change the scope patterns of a table that holds rows
+### Do change a table's scope patterns only in a schema-version bump
 
-The server stores each row's scopes under the patterns the row was written under and never re-keys them. Before 0.63, renaming `log:{log_scope}` to `history:{history_scope}` over the same column left 13,041 existing rows indexed under `log_scope`, and a unit of `history_scope` bootstrapped none of them, with no error. Since 0.63 the server refuses to open with `sync.storage.scope_patterns_changed`. Give the new patterns to a new table and write its rows through a registered command after the bump.
+Before 0.63, renaming `log:{log_scope}` to `history:{history_scope}` over the same column left 13,041 existing rows indexed under `log_scope`, and a unit of `history_scope` bootstrapped none of them, with no error. A bump that changes a table's patterns now re-keys every stored row from its own column values and raises the pruning horizon past the history logged under the old patterns. The app needs no data step; a recommit of rows already re-keyed changes no scopes. The same change at an unchanged schema version is refused with `sync.storage.scope_patterns_changed`.
 
-See [Schema upgrades](/concepts-schema-upgrades/#what-the-reset-touches).
+Map a changed pattern to a column that holds a value in every row before the bump. A NULL or empty value refuses the bump with `sync.storage.scope_value_missing`, so a pattern cannot move to a column the same bump appends: append the column in one bump, write its values, and change the pattern in a later one.
+
+See [Changing a table's scope patterns](/concepts-schema-upgrades/#changing-a-tables-scope-patterns).
 
 ### Don't remove a column or table that a pending commit may still reference
 

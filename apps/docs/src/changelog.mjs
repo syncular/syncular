@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'A schema bump re-keys a table whose scope patterns changed',
+    body: "A scope pattern change no longer needs a successor table or an app data step. A schema-version bump that changes a table's patterns recomputes every stored row's scopes from its own column values, rebuilds the row scope index, and raises the pruning horizon so no change logged under the old patterns reaches a unit of the new ones, on SQLite, Postgres, D1 and the Rust local authority. The re-key of 100,000 rows takes 685 ms on SQLite and 2.5 s on PGlite under the migration lock. A row without a value for a new pattern refuses the bump with `sync.storage.scope_value_missing`; a change at the same schema version is still refused with `sync.storage.scope_patterns_changed`.",
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#changing-a-tables-scope-patterns',
+        label: 'Changing scope patterns',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'The server refuses a changed scope pattern',
     body: "Stored rows keep the scope variables they were written under, and no schema change re-keys them, so a changed pattern left existing rows invisible to units of the new variable without an error. Server storage now records every table's scope patterns and refuses to open with `sync.storage.scope_patterns_changed` when a table declares other ones, at the same schema version and across a bump, on SQLite, D1 and Postgres.",
     links: [

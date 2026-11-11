@@ -46,7 +46,11 @@ import { serveNotReadyError } from './readiness';
  * would leave gaps on rollback, which the pull-window arithmetic in §4.5
  * does not tolerate). Cross-partition pushes never contend.
  */
-import type { PushOperationResult, UnitScopes } from '@syncular/core';
+import {
+  decodeRow,
+  type PushOperationResult,
+  type UnitScopes,
+} from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -65,6 +69,7 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   assertStoredScopePatterns,
+  changedScopePatterns,
   deleteRowSql,
   dropTableDdl,
   indexRowPageStatement,
@@ -72,6 +77,9 @@ import {
   migratePayload,
   parseLayouts,
   quoteIdent,
+  rekeyCleanupSql,
+  rekeyedScopes,
+  rekeyRowScopesSql,
   tableColumnNames,
   retiredTableNames,
   rewritePlan,
@@ -933,34 +941,40 @@ function toStoredChange(record: ChangeRecord): StoredChange {
  * transaction. When `oldLayout` is
  * given every payload re-encodes under the current columns, and the
  * projection (when materialized) refreshes from the payload either way.
+ * `rekey` recomputes and indexes the stored scopes (§3.1).
  */
 async function rewriteRowsOn(
   q: PgQueryable,
   table: CompiledTable,
   oldLayout: readonly StoredColumnLayout[] | undefined,
+  rekey: boolean,
 ): Promise<void> {
   const select = selectRowsForRewriteSql(table, 'postgres');
   // One UPDATE per page: behind a network hop (Hyperdrive, a managed
   // database) every statement is a round trip, and the bump holds the
   // migration lock for its whole duration. The page's rows bind as one
   // VALUES list with typed placeholders (`rewriteValues` order: projection
-  // columns, payload, partition, row id).
+  // columns, re-keyed scopes, payload, partition, row id). The scopes bind as
+  // text before the JSONB cast (see `scanRowBatchSql`).
+  const projected = table.materialize ? table.columns : [];
   const types = [
-    ...(table.materialize
-      ? table.columns.map((column) => columnSqlType(column, 'postgres'))
-      : []),
+    ...projected.map((column) => columnSqlType(column, 'postgres')),
+    ...(rekey ? ['TEXT'] : []),
     'BYTEA',
     'TEXT',
     'TEXT',
   ];
-  const projected = table.materialize ? table.columns : [];
+  const payloadAt = projected.length + (rekey ? 1 : 0);
   const sets = [
     ...projected.map((column, i) => `${quoteIdent(column.name)}=v.c${i}`),
-    `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=v.c${projected.length}`,
+    ...(rekey
+      ? [`${quoteIdent(SYNC_SCOPES_COLUMN)}=v.c${projected.length}::jsonb`]
+      : []),
+    `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=v.c${payloadAt}`,
   ].join(', ');
   const aliases = types.map((_, i) => `c${i}`).join(', ');
-  const partitionAlias = `c${projected.length + 1}`;
-  const rowIdAlias = `c${projected.length + 2}`;
+  const partitionAlias = `c${payloadAt + 1}`;
+  const rowIdAlias = `c${payloadAt + 2}`;
   // A page binds types.length parameters per row; PGlite corrupts its state
   // above 32,767 bound parameters (see PG_CHANGES_PER_STATEMENT).
   const batch = Math.max(1, Math.min(500, Math.floor(30_000 / types.length)));
@@ -974,15 +988,29 @@ async function rewriteRowsOn(
     }>(select, [afterPartition, afterRowId, batch]);
     if (rows.length === 0) break;
     const params: unknown[] = [];
+    const entries: string[][] = [];
     const values = rows.map((row) => {
       const bytes = asBytes(row.payload);
       const payload =
         oldLayout !== undefined
           ? migratePayload(oldLayout, table, bytes)
           : bytes;
+      const scopes = rekey
+        ? rekeyedScopes(table, decodeRow(table.columns, payload), row.row_id)
+        : undefined;
+      for (const [variable, value] of Object.entries(scopes ?? {})) {
+        entries.push([row.partition, variable, value, row.row_id]);
+      }
       const base = params.length;
       params.push(
-        ...rewriteValues(table, row.partition, row.row_id, payload, 'postgres'),
+        ...rewriteValues(
+          table,
+          row.partition,
+          row.row_id,
+          payload,
+          'postgres',
+          scopes,
+        ),
       );
       return `(${types.map((type, i) => `$${base + i + 1}::${type}`).join(',')})`;
     });
@@ -993,6 +1021,11 @@ async function rewriteRowsOn(
           AND t.${quoteIdent(SYNC_ROW_ID_COLUMN)}=v.${rowIdAlias}`,
       params,
     );
+    if (entries.length > 0) {
+      await q.query(rekeyRowScopesSql(table, 'postgres'), [
+        JSON.stringify(entries),
+      ]);
+    }
     const last = rows[rows.length - 1];
     if (last === undefined || rows.length < batch) break;
     afterPartition = last.partition;
@@ -2456,7 +2489,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           typeof lockedMarker[0]?.layouts === 'string'
             ? lockedMarker[0].layouts
             : undefined;
-        assertStoredScopePatterns(schema, lockedLayouts);
+        const rekeyed = (changedScopePatterns(schema, lockedLayouts) ?? []).map(
+          (change) => change.table,
+        );
         const layouts = parseLayouts(lockedLayouts);
         const retiredTables = retiredTableNames(schema, layouts);
         const existing = new Map<string, ReadonlySet<string>>();
@@ -2503,14 +2538,19 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         )) {
           await client.query(statement);
         }
+        for (const statement of rekeyCleanupSql(rekeyed)) {
+          await client.query(statement);
+        }
         for (const table of schema.tables.values()) {
           const oldLayout = layouts[table.name];
           const plan = rewritePlan(table, oldLayout, existing.get(table.name));
-          if (!plan.migrate && !plan.backfill) continue;
+          const rekey = rekeyed.includes(table.name);
+          if (!plan.migrate && !plan.backfill && !rekey) continue;
           await rewriteRowsOn(
             client,
             table,
             plan.migrate ? oldLayout : undefined,
+            rekey,
           );
         }
         await client.query(

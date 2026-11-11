@@ -45,12 +45,16 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   assertStoredScopePatterns,
+  changedScopePatterns,
   dropTableDdl,
   indexRowPageStatement,
   layoutsOf,
   migratePayload,
   parseLayouts,
   quoteIdent,
+  rekeyCleanupSql,
+  rekeyedScopes,
+  rekeyRowScopesSql,
   retiredTableNames,
   rewritePlan,
   rewriteRowSql,
@@ -836,7 +840,11 @@ interface D1MigrationState {
   columns: Record<string, string[]>;
   indexes: Record<string, Record<string, string>>;
   ddl: string[];
-  rewrites: Array<{ table: string; oldLayout?: readonly StoredColumnLayout[] }>;
+  rewrites: Array<{
+    table: string;
+    oldLayout?: readonly StoredColumnLayout[];
+    rekey?: true;
+  }>;
   afterPartition: string;
   afterRowId: string;
 }
@@ -1130,7 +1138,6 @@ export class D1ServerStorage
       throw new StorageQueryError('sync.storage.schema_changed');
     }
     if (claim === null) {
-      assertStoredScopePatterns(schema, marker?.layouts);
       const layouts = parseLayouts(marker?.layouts);
       for (const table of tables) {
         const oldLayout = layouts[table.name];
@@ -1180,6 +1187,9 @@ export class D1ServerStorage
       throw new StorageQueryError('sync.storage.schema_migration_conflict');
     }
     const sourceLayouts = parseLayouts(claim.source_layouts);
+    const rekeyed = (
+      changedScopePatterns(schema, claim.source_layouts) ?? []
+    ).map((change) => change.table);
     let state = JSON.parse(claim.state) as D1MigrationState;
     // Reserve one statement to distinguish a stale checkpoint from a database
     // failure. A losing concurrent step returns incomplete without retrying here.
@@ -1252,7 +1262,60 @@ export class D1ServerStorage
       } else if (state.phase === 'prepare') {
         const table = tables[state.offset];
         if (table !== undefined) {
-          if (remaining < 4) break;
+          // §3.1: every row of a re-keyed table needs a value for each new
+          // pattern. Check before any DDL (one more statement); a refusal
+          // releases the claim, so the refused bump changes nothing.
+          const oldLayout = sourceLayouts[table.name];
+          const verify =
+            rekeyed.includes(table.name) && oldLayout !== undefined;
+          if (remaining < (verify ? 5 : 4)) break;
+          if (verify) {
+            statementsExecuted++;
+            const { results } = await this.#db
+              .prepare(`SELECT * FROM (${selectRowsForRewriteSql(table, 'sqlite')})
+                WHERE EXISTS (SELECT 1 FROM sync_schema_migration WHERE id=1 AND target=? AND state=?)`)
+              .bind(
+                state.afterPartition,
+                state.afterRowId,
+                500,
+                target,
+                claim.state,
+              )
+              .all<{ partition: string; row_id: string; payload: unknown }>();
+            try {
+              for (const row of results) {
+                rekeyedScopes(
+                  table,
+                  decodeRow(oldLayout, asUint8Array(row.payload)),
+                  row.row_id,
+                );
+              }
+            } catch (error) {
+              await batch([
+                this.#db
+                  .prepare(
+                    'DELETE FROM sync_schema_migration WHERE id=1 AND target=? AND state=?',
+                  )
+                  .bind(target, claim.state),
+              ]);
+              throw error;
+            }
+            const last = results.at(-1);
+            if (last !== undefined && results.length === 500) {
+              if (
+                !(await save(
+                  {
+                    ...state,
+                    afterPartition: last.partition,
+                    afterRowId: last.row_id,
+                  },
+                  [],
+                ))
+              )
+                break;
+              continue;
+            }
+          }
           statementsExecuted += 2;
           const columns = await this.#db
             .prepare(`PRAGMA table_info(${quoteIdent(table.name)})`)
@@ -1274,6 +1337,8 @@ export class D1ServerStorage
               {
                 ...state,
                 offset: state.offset + 1,
+                afterPartition: '',
+                afterRowId: '',
                 columns: {
                   ...state.columns,
                   ...(columns.results.length > 0
@@ -1313,13 +1378,15 @@ export class D1ServerStorage
             sourceLayouts[table.name],
             columns.get(table.name),
           );
-          return plan.migrate || plan.backfill
+          const rekey = rekeyed.includes(table.name);
+          return plan.migrate || plan.backfill || rekey
             ? [
                 {
                   table: table.name,
                   ...(plan.migrate
                     ? { oldLayout: sourceLayouts[table.name] }
                     : {}),
+                  ...(rekey ? { rekey: true as const } : {}),
                 },
               ]
             : [];
@@ -1331,6 +1398,7 @@ export class D1ServerStorage
             dropTableDdl(name),
           ]),
           ...schemaDdl(schema, columns, 'sqlite', indexes),
+          ...rekeyCleanupSql(rekeyed),
         ];
         if (
           !(await save(
@@ -1389,8 +1457,10 @@ export class D1ServerStorage
         const table = schema.tables.get(plan.table);
         if (table === undefined)
           throw new StorageQueryError('sync.storage.schema_migration_conflict');
-        if (remaining < 4) break;
-        const limit = Math.min(32, remaining - 3);
+        // A re-keyed page adds one scope-index statement.
+        const rekey = plan.rekey === true;
+        if (remaining < (rekey ? 5 : 4)) break;
+        const limit = Math.min(32, remaining - (rekey ? 4 : 3));
         statementsExecuted++;
         const { results } = await this.#db
           .prepare(`SELECT * FROM (${selectRowsForRewriteSql(table, 'sqlite')})
@@ -1403,14 +1473,25 @@ export class D1ServerStorage
             claim.state,
           )
           .all<{ partition: string; row_id: string; payload: unknown }>();
+        const entries: string[][] = [];
         const statements = results.map((row) => {
           const bytes = asUint8Array(row.payload);
           const payload =
             plan.oldLayout !== undefined
               ? migratePayload(plan.oldLayout, table, bytes)
               : bytes;
+          const scopes = rekey
+            ? rekeyedScopes(
+                table,
+                decodeRow(table.columns, payload),
+                row.row_id,
+              )
+            : undefined;
+          for (const [variable, value] of Object.entries(scopes ?? {})) {
+            entries.push([row.partition, variable, value, row.row_id]);
+          }
           return this.#db
-            .prepare(rewriteRowSql(table))
+            .prepare(rewriteRowSql(table, rekey))
             .bind(
               ...rewriteValues(
                 table,
@@ -1418,9 +1499,17 @@ export class D1ServerStorage
                 row.row_id,
                 payload,
                 'sqlite',
+                scopes,
               ),
             );
         });
+        if (entries.length > 0) {
+          statements.push(
+            this.#db
+              .prepare(rekeyRowScopesSql(table, 'sqlite'))
+              .bind(JSON.stringify(entries)),
+          );
+        }
         const last = results.at(-1);
         const done = results.length < limit;
         if (

@@ -64,6 +64,7 @@
     "bench": {
       "name": "@syncular/bench",
       "dependencies": {
+        "@electric-sql/pglite": "^0.5.4",
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",

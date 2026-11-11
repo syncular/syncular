@@ -256,6 +256,7 @@ describe('same-version schema readiness', () => {
   async function database(backend: Backend): Promise<{
     open(): AnyStorage;
     exec(statements: readonly string[]): Promise<void>;
+    all(sql: string): Promise<Record<string, unknown>[]>;
     count(): Promise<number>;
     close(): Promise<void>;
   }> {
@@ -266,6 +267,7 @@ describe('same-version schema readiness', () => {
         exec: async (statements) => {
           for (const sql of statements) await pg.exec(sql);
         },
+        all: async (sql) => (await pg.query<Record<string, unknown>>(sql)).rows,
         count: async () =>
           (
             await pg.query<{ n: number }>(
@@ -285,6 +287,7 @@ describe('same-version schema readiness', () => {
       exec: async (statements) => {
         for (const sql of statements) db.exec(sql);
       },
+      all: async (sql) => db.query<Record<string, unknown>, []>(sql).all(),
       count: async () =>
         db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM tasks').get()!.n,
       close: async () => db.close(),
@@ -438,7 +441,7 @@ describe('same-version schema readiness', () => {
       },
     };
 
-    test(`${backend}: a changed scope pattern is refused at the same version and across a bump`, async () => {
+    test(`${backend}: a changed scope pattern is refused at the same version`, async () => {
       const db = await database(backend);
       const storage = db.open();
       await ensure(storage, SCHEMA);
@@ -446,11 +449,136 @@ describe('same-version schema readiness', () => {
       await expect(
         db.open().ensureSchema(compileSchema(rescoped(1))),
       ).rejects.toMatchObject(scopeChange);
-      await expect(ensure(db.open(), rescoped(2))).rejects.toMatchObject(
-        scopeChange,
-      );
-      await ensure(db.open(), { ...SCHEMA, version: 2 });
       expect(await db.count()).toBe(1);
+      await db.close();
+    });
+
+    const scopeIndex = (db: Awaited<ReturnType<typeof database>>) =>
+      db.all(
+        "SELECT var, value, row_id FROM sync_row_scopes WHERE tbl='tasks' ORDER BY row_id",
+      );
+    const tombstone = async (storage: AnyStorage, rowId: string) => {
+      const tx = await storage.begin(PARTITION);
+      try {
+        return await tx.getTombstone('tasks', rowId);
+      } finally {
+        await tx.rollback();
+      }
+    };
+    const commit = async (
+      storage: AnyStorage,
+      id: string,
+      upserts: readonly StoredRow[],
+      deletes: readonly string[],
+    ) => {
+      const tx = await storage.begin(PARTITION);
+      for (const row of upserts) await tx.upsertRow('tasks', row);
+      for (const rowId of deletes) await tx.deleteRow('tasks', rowId);
+      await tx.appendCommit({
+        clientId: 'c1',
+        clientCommitId: id,
+        actorId: 'a1',
+        createdAtMs: 1,
+        changes: [
+          ...upserts.map((row) => ({
+            table: 'tasks',
+            rowId: row.rowId,
+            op: 'upsert' as const,
+            rowVersion: row.serverVersion,
+            scopes: row.scopes,
+            payload: row.payload,
+          })),
+          ...deletes.map((rowId) => ({
+            table: 'tasks',
+            rowId,
+            op: 'delete' as const,
+            rowVersion: 2,
+            scopes: {},
+          })),
+        ],
+      });
+      await tx.commit();
+    };
+
+    test(`${backend}: a bump with a changed scope pattern re-keys every row`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      const rows = [
+        taskRow('t1', 'p1', 'one'),
+        taskRow('t2', 'p1', 'two'),
+        taskRow('t3', 'p2', 'three'),
+      ];
+      await commit(storage, 'seed', rows, ['t3']);
+      const bumped = db.open();
+      await ensure(bumped, rescoped(2));
+      expect((await bumped.getRow(PARTITION, 'tasks', 't2'))?.scopes).toEqual({
+        board_id: 'p1',
+      });
+      const keyed = ['t1', 't2'].map((row_id) => ({
+        var: 'board_id',
+        value: 'p1',
+        row_id,
+      }));
+      expect(await scopeIndex(db)).toEqual(keyed);
+      // A deleted row's scopes cannot be recomputed: its tombstone goes, and
+      // the horizon passes every change logged under the previous pattern.
+      expect(await tombstone(bumped, 't3')).toBeUndefined();
+      expect(await bumped.getHorizonSeq(PARTITION)).toBe(1);
+      // A host's own recommit under the new scopes changes nothing.
+      await upsert(bumped, PARTITION, 'tasks', {
+        ...rows[0]!,
+        serverVersion: 2,
+        scopes: { board_id: 'p1' },
+      });
+      expect(await scopeIndex(db)).toEqual(keyed);
+      // A bump with unchanged patterns re-keys nothing.
+      await commit(bumped, 'delete', [], ['t2']);
+      const unchanged = db.open();
+      await ensure(unchanged, rescoped(3));
+      expect(await unchanged.getHorizonSeq(PARTITION)).toBe(1);
+      expect(await unchanged.getMaxCommitSeq(PARTITION)).toBe(2);
+      expect(await tombstone(unchanged, 't2')).toBeDefined();
+      await db.close();
+    });
+
+    test(`${backend}: a re-key refuses a row without a value for the new pattern and changes nothing`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      await upsert(
+        storage,
+        PARTITION,
+        'tasks',
+        taskRow('t1', 'p1', 'one', { priority: 5 }),
+      );
+      await upsert(storage, PARTITION, 'tasks', taskRow('t2', 'p1', 'two'));
+      const byPriority: ServerSchema = {
+        version: 2,
+        tables: [
+          {
+            ...SCHEMA.tables[0]!,
+            scopes: [{ pattern: 'priority:{priority}', column: 'priority' }],
+          },
+          SCHEMA.tables[1]!,
+        ],
+      };
+      await expect(ensure(db.open(), byPriority)).rejects.toMatchObject({
+        code: 'sync.storage.scope_value_missing',
+        details: { table: 'tasks', variable: 'priority', rowId: 't2' },
+      });
+      const reopened = db.open();
+      await reopened.ensureSchema(compileSchema(SCHEMA));
+      expect((await reopened.getRow(PARTITION, 'tasks', 't1'))?.scopes).toEqual(
+        { project_id: 'p1' },
+      );
+      expect(await scopeIndex(db)).toEqual(
+        ['t1', 't2'].map((row_id) => ({
+          var: 'project_id',
+          value: 'p1',
+          row_id,
+        })),
+      );
       await db.close();
     });
 

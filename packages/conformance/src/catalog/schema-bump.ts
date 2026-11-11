@@ -19,7 +19,15 @@ import {
   FIXTURE_SCHEMA_V2_DROP_META,
   task,
 } from '../fixture';
-import { rawPull, responseSection } from '../raw';
+import {
+  rawDelete,
+  rawPull,
+  rawPushCommit,
+  rawUpsert,
+  responseLive,
+  responsePushResults,
+  responseSection,
+} from '../raw';
 import type { DriverSchema, DriverTable } from '../driver';
 import type { Scenario } from '../scenario';
 import {
@@ -51,7 +59,130 @@ const TASKS_WITH_NOTE: DriverSchema = {
   ],
 };
 
+/** Version 2 maps `tasks.project_id` to the variable `team_id` (§3.1). */
+const TASKS_BY_TEAM: DriverSchema = {
+  version: 2,
+  tables: [
+    {
+      ...(FIXTURE_SCHEMA.tables[0] as DriverTable),
+      scopes: [{ pattern: 'team:{team_id}', column: 'project_id' }],
+    },
+    FIXTURE_SCHEMA.tables[1] as DriverTable,
+  ],
+};
+
 export const schemaBumpScenarios: readonly Scenario[] = [
+  {
+    // §3.1 re-key: the server bump recomputes stored scopes from row columns,
+    // so a unit of the new variable bootstraps every row with no data step;
+    // §4.6: the history logged under the old variable is behind the horizon.
+    name: 'schema-bump/scope-pattern-change-rekeys-stored-rows',
+    specRefs: ['§3.1', '§4.6', '§2.2', '§7.4.3'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('writer', { project_id: ['p1', 'p2'] });
+      const push = (
+        id: string,
+        schema: DriverSchema,
+        ops: Parameters<typeof rawPushCommit>[1],
+      ) =>
+        ctx.rawSync('writer', [rawPushCommit(id, ops)], {
+          clientId: 'writer',
+          schemaVersion: schema.version,
+        });
+      await push('seed', FIXTURE_SCHEMA, [
+        rawUpsert(FIXTURE_SCHEMA, 'tasks', task('t1', 'p1', 'one')),
+        rawUpsert(FIXTURE_SCHEMA, 'tasks', task('t2', 'p1', 'two')),
+        rawUpsert(FIXTURE_SCHEMA, 'tasks', task('t3', 'p2', 'three')),
+      ]);
+      await push('drop', FIXTURE_SCHEMA, [rawDelete('tasks', 't2')]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: FIXTURE_SCHEMA,
+        allowed: P1,
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the client of the old variable holds its rows',
+      );
+
+      await ctx.server.restart(TASKS_BY_TEAM);
+      // Grants name the variables the running schema declares (§3.2).
+      await ctx.server.setAllowedScopes('writer', { team_id: ['p1', 'p2'] });
+      await ctx.server.setAllowedScopes('actor-a', { team_id: ['p1'] });
+
+      await ctx.recreateClient(a, TASKS_BY_TEAM);
+      await a.api.subscribe({ team_id: 'p1' });
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the updated client bootstraps its rows under the new variable',
+      );
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        schema: TASKS_BY_TEAM,
+        allowed: { team_id: ['p1', 'p2'] },
+      });
+      await b.api.subscribeMany([{ team_id: 'p1' }, { team_id: 'p2' }]);
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't3'],
+        'a unit of the new variable bootstraps every stored row (§3.1)',
+      );
+
+      // A cursor into the history logged under `project_id` is reset.
+      const pull = (cursor: number) =>
+        ctx.rawSync(
+          'writer',
+          [...rawPull([{ scopes: { team_id: 'p1' } }], { cursor })],
+          { clientId: 'reader', schemaVersion: TASKS_BY_TEAM.version },
+        );
+      const old = await pull(1);
+      check(old.ok, 'the old-cursor pull answers');
+      if (!old.ok) return;
+      const expired = responseLive(old.message);
+      checkEqual(
+        {
+          status: expired.start.status,
+          reasonCode: expired.start.reasonCode,
+          commits: expired.commits.length,
+        },
+        { status: 'reset', reasonCode: 'sync.cursor_expired', commits: 0 },
+        'a cursor below the raised horizon gets the ordinary reset (§4.6)',
+      );
+      const head = await pull(2);
+      check(head.ok, 'the head-cursor pull answers');
+      if (!head.ok) return;
+      checkEqual(
+        responseLive(head.message).commits.length,
+        0,
+        'no change logged before the bump reaches the new variable',
+      );
+
+      // §2.2: the re-key dropped t2's tombstone, so an unversioned upsert
+      // inserts the row again instead of answering sync.row_deleted.
+      const again = await push('again', TASKS_BY_TEAM, [
+        rawUpsert(TASKS_BY_TEAM, 'tasks', task('t2', 'p1', 'again')),
+      ]);
+      checkEqual(
+        again.ok ? responsePushResults(again.message)[0]?.status : undefined,
+        'applied',
+        'an unversioned upsert of a row deleted before the bump inserts it',
+      );
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2', 't3'],
+        'the recreated row reaches the new variable',
+      );
+    },
+  },
   {
     name: 'schema-bump/queued-insert-survives-appended-column',
     specRefs: ['§7.1', '§7.4.4', '§6.2'],

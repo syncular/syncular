@@ -60,6 +60,7 @@ import type {
   ServerIndexSchema,
 } from './schema';
 import type { StoredRow } from './storage';
+import { storedScopesForRow } from './scopes';
 import { StorageQueryError } from './storage-errors';
 
 export type RelationalDialect = 'sqlite' | 'postgres';
@@ -903,35 +904,89 @@ export function parseLayouts(json: string | null | undefined): StoredLayouts {
 }
 
 /**
- * §3.1: stored scopes are keyed by the scope patterns a row was written
- * under, and no schema change re-keys them. Refuse a configured table whose
- * patterns differ from the stored ones. Returns false when the marker
- * predates recorded patterns (nothing to compare), so the caller records them.
+ * §3.1: the configured tables whose scope patterns differ from the recorded
+ * ones, or `undefined` when the marker predates recorded patterns (nothing to
+ * compare). A schema-version bump re-keys these tables.
  */
-export function assertStoredScopePatterns(
+export function changedScopePatterns(
   schema: CompiledSchema,
   storedJson: string | null | undefined,
-): boolean {
+): { table: string; stored: string; configured: string }[] | undefined {
   if (storedJson === null || storedJson === undefined || storedJson === '')
-    return true;
+    return [];
   const stored = (
     JSON.parse(storedJson) as {
       sync_scopes?: Record<string, readonly string[]>;
     }
   ).sync_scopes;
-  if (stored === undefined) return false;
-  for (const table of schema.tables.values()) {
+  if (stored === undefined) return undefined;
+  return [...schema.tables.values()].flatMap((table) => {
     const before = stored[table.name];
     const after = scopePatternsOf(table);
-    if (before !== undefined && before.join('\n') !== after.join('\n')) {
-      throw new StorageQueryError('sync.storage.scope_patterns_changed', {
-        table: table.name,
-        stored: before.join(' '),
-        configured: after.join(' '),
-      });
-    }
+    return before !== undefined && before.join('\n') !== after.join('\n')
+      ? [
+          {
+            table: table.name,
+            stored: before.join(' '),
+            configured: after.join(' '),
+          },
+        ]
+      : [];
+  });
+}
+
+/**
+ * §3.1: at the same schema version, refuse a configured table whose patterns
+ * differ from the recorded ones. Returns false when the marker predates
+ * recorded patterns, so the caller records them.
+ */
+export function assertStoredScopePatterns(
+  schema: CompiledSchema,
+  storedJson: string | null | undefined,
+): boolean {
+  const changed = changedScopePatterns(schema, storedJson);
+  if (changed?.[0] !== undefined) {
+    throw new StorageQueryError(
+      'sync.storage.scope_patterns_changed',
+      changed[0],
+    );
   }
-  return true;
+  return changed !== undefined;
+}
+
+/**
+ * §3.1 re-key, before the row walk: drop the re-keyed tables' row scope index
+ * entries and tombstones, and raise every partition's horizon past the
+ * changes logged under the previous patterns. Empty when nothing re-keys.
+ */
+export function rekeyCleanupSql(tables: readonly string[]): string[] {
+  if (tables.length === 0) return [];
+  const names = tables.map((name) => `'${name.replaceAll("'", "''")}'`);
+  return [
+    `DELETE FROM sync_row_scopes WHERE tbl IN (${names.join(',')})`,
+    `DELETE FROM sync_tombstones WHERE tbl IN (${names.join(',')})`,
+    'UPDATE sync_partitions SET horizon_seq=max_commit_seq WHERE horizon_seq<max_commit_seq',
+  ];
+}
+
+/**
+ * §3.1 re-key: index the scopes of one rewritten page of rows. The entries
+ * bind as one JSON array of `[partition, variable, value, rowId]`, so the
+ * statement reads no row table (a planner that ranges a page over a declared
+ * index would scan the whole partition per page). Params: [entries].
+ */
+export function rekeyRowScopesSql(
+  table: CompiledTable,
+  dialect: RelationalDialect,
+): string {
+  const name = `'${table.name.replaceAll("'", "''")}'`;
+  return dialect === 'sqlite'
+    ? `INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
+    SELECT json_extract(e.value, '$[0]'), ${name}, json_extract(e.value, '$[1]'), json_extract(e.value, '$[2]'), json_extract(e.value, '$[3]')
+      FROM json_each(?) AS e`
+    : `INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
+    SELECT e->>0, ${name}, e->>1, e->>2, e->>3
+      FROM jsonb_array_elements($1::text::jsonb) AS e`;
 }
 
 /**
@@ -1072,26 +1127,52 @@ export function selectRowsForRewriteSql(
 }
 
 /**
- * SQLite/D1: rewrite one row during a migration: refresh the projection columns (when
- * materialized) and the payload. Bind with `rewriteValues`.
+ * §3.1 re-key: the row's stored scopes under the table's current patterns. A
+ * row without a value for one of them refuses the bump.
  */
-export function rewriteRowSql(table: CompiledTable): string {
+export function rekeyedScopes(
+  table: CompiledTable,
+  values: readonly RowValue[],
+  rowId: string,
+): Record<string, string> {
+  const extracted = storedScopesForRow(table, values);
+  if ('missing' in extracted) {
+    throw new StorageQueryError('sync.storage.scope_value_missing', {
+      table: table.name,
+      variable: extracted.missing,
+      rowId,
+    });
+  }
+  return extracted.scopes;
+}
+
+/**
+ * SQLite/D1: rewrite one row during a migration: refresh the projection columns (when
+ * materialized), the stored scopes when the table re-keys (§3.1), and the
+ * payload. Bind with `rewriteValues`.
+ */
+export function rewriteRowSql(table: CompiledTable, rekey: boolean): string {
   const sets = [
     ...(table.materialize
       ? table.columns.map((column) => `${quoteIdent(column.name)}=?`)
       : []),
+    ...(rekey ? [`${quoteIdent(SYNC_SCOPES_COLUMN)}=?`] : []),
     `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=?`,
   ];
   return `UPDATE ${quoteIdent(table.name)} SET ${sets.join(', ')} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=? AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=?`;
 }
 
-/** Bind values for `rewriteRowSql` from the (already migrated) payload. */
+/**
+ * Bind values for `rewriteRowSql` from the (already migrated) payload:
+ * projection columns, the re-keyed scopes JSON, payload, partition, row id.
+ */
 export function rewriteValues(
   table: CompiledTable,
   partition: string,
   rowId: string,
   payload: Uint8Array,
   dialect: RelationalDialect,
+  scopes: Record<string, string> | undefined,
 ): RowValue[] {
   const out: RowValue[] = [];
   if (table.materialize) {
@@ -1102,6 +1183,7 @@ export function rewriteValues(
       out.push(toSqlValue(column, values[i] ?? null, dialect));
     }
   }
+  if (scopes !== undefined) out.push(JSON.stringify(scopes));
   out.push(payload, partition, rowId);
   return out;
 }

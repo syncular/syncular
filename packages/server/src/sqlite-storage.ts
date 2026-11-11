@@ -9,6 +9,7 @@
  * select candidates from the index and verify the full multi-variable
  * match against the stored scope map — never a log scan.
  */
+import { decodeRow } from '@syncular/core';
 import {
   isSqliteConstraintError,
   retainRollbackFailure,
@@ -22,10 +23,14 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   assertStoredScopePatterns,
+  changedScopePatterns,
   dropTableDdl,
   layoutsOf,
   migratePayload,
   parseLayouts,
+  rekeyCleanupSql,
+  rekeyedScopes,
+  rekeyRowScopesSql,
   retiredTableNames,
   rewritePlan,
   rewriteRowSql,
@@ -628,7 +633,9 @@ END`);
           this.schemaVersion = schema.version;
           return;
         }
-        assertStoredScopePatterns(schema, locked?.layouts);
+        const rekeyed = (
+          changedScopePatterns(schema, locked?.layouts) ?? []
+        ).map((change) => change.table);
         const layouts = parseLayouts(locked?.layouts);
         const retiredTables = retiredTableNames(schema, layouts);
         for (const tableName of retiredTables) {
@@ -648,11 +655,15 @@ END`);
         )) {
           this.db.exec(statement);
         }
+        for (const statement of rekeyCleanupSql(rekeyed)) {
+          this.db.exec(statement);
+        }
         for (const table of schema.tables.values()) {
           const oldLayout = layouts[table.name];
           const plan = rewritePlan(table, oldLayout, existing.get(table.name));
-          if (!plan.migrate && !plan.backfill) continue;
-          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+          const rekey = rekeyed.includes(table.name);
+          if (!plan.migrate && !plan.backfill && !rekey) continue;
+          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined, rekey);
         }
         this.db
           .query(
@@ -699,14 +710,17 @@ END`);
    * Migration rewrite: keyset-paged walk of a row table. When `oldLayout` is
    * given every payload re-encodes under
    * the current columns, and the projection (when materialized) refreshes
-   * from the payload either way.
+   * from the payload either way. `rekey` recomputes and indexes the stored
+   * scopes (§3.1).
    */
   #rewriteRows(
     table: CompiledTable,
     oldLayout: readonly StoredColumnLayout[] | undefined,
+    rekey: boolean,
   ): void {
     const select = selectRowsForRewriteSql(table, 'sqlite');
-    const update = this.db.query(rewriteRowSql(table));
+    const update = this.db.query(rewriteRowSql(table, rekey));
+    const index = this.db.query(rekeyRowScopesSql(table, 'sqlite'));
     const BATCH = 500;
     let afterPartition = '';
     let afterRowId = '';
@@ -718,15 +732,30 @@ END`);
         >(select)
         .all(afterPartition, afterRowId, BATCH);
       if (rows.length === 0) break;
+      const entries: string[][] = [];
       for (const row of rows) {
         const payload =
           oldLayout !== undefined
             ? migratePayload(oldLayout, table, row.payload)
             : row.payload;
+        const scopes = rekey
+          ? rekeyedScopes(table, decodeRow(table.columns, payload), row.row_id)
+          : undefined;
+        for (const [variable, value] of Object.entries(scopes ?? {})) {
+          entries.push([row.partition, variable, value, row.row_id]);
+        }
         update.run(
-          ...rewriteValues(table, row.partition, row.row_id, payload, 'sqlite'),
+          ...rewriteValues(
+            table,
+            row.partition,
+            row.row_id,
+            payload,
+            'sqlite',
+            scopes,
+          ),
         );
       }
+      if (entries.length > 0) index.run(JSON.stringify(entries));
       const last = rows[rows.length - 1];
       if (last === undefined || rows.length < BATCH) break;
       afterPartition = last.partition;

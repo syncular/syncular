@@ -1589,6 +1589,126 @@ fn a_schema_bump_appends_a_nullable_column_and_keeps_rows() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// `schema_json(1)` at `version` with `nodes` scoped `team:{team}` over
+/// `column` (`nodes` references only itself, so its pattern may change alone).
+fn rescoped(version: i32, column: &str) -> Value {
+    let mut schema = schema_json(1);
+    schema["version"] = json!(version);
+    for table in schema["tables"].as_array_mut().unwrap() {
+        if table["name"] == "nodes" {
+            table["scopes"] = json!([{ "pattern": "team:{team}", "column": column }]);
+        }
+    }
+    schema
+}
+
+fn node(schema: &schema::Schema, id: &str, parent: Option<&str>) -> Operation {
+    upsert(schema, "nodes", &[Some(id), Some("o1"), parent], None)
+}
+
+#[test]
+fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
+    let path = temp_path();
+    {
+        let mut authority = LocalAuthority::open(&path, &schema_json(1)).unwrap();
+        let s = authority.schema.clone();
+        let client = Session::new(&mut authority, "c1");
+        for id in ["n1", "n2", "n3"] {
+            client.push(&mut authority, id, vec![node(&s, id, None)]);
+        }
+        client.push(&mut authority, "d", vec![delete("nodes", "n3")]);
+    }
+    // §3.1: at the same version a changed pattern is refused.
+    let error = LocalAuthority::open(&path, &rescoped(1, "id")).err().unwrap();
+    assert_eq!(
+        (error.code.as_str(), error.details.unwrap()["reason"].clone()),
+        (
+            "sync.schema_mismatch",
+            json!("layout_changed_without_version_bump")
+        )
+    );
+    let mut authority = LocalAuthority::open(&path, &rescoped(2, "id")).unwrap();
+    let scopes = |authority: &LocalAuthority, row_id: &str| -> String {
+        authority
+            .conn
+            .query_row(
+                "SELECT _sync_scopes FROM nodes WHERE _sync_row_id=?1",
+                [row_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let horizon = |authority: &LocalAuthority| -> (i64, i64) {
+        authority
+            .conn
+            .query_row(
+                "SELECT horizon_seq, max_commit_seq FROM sync_log WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(scopes(&authority, "n1"), r#"{"team":"n1"}"#);
+    assert_eq!(scopes(&authority, "n2"), r#"{"team":"n2"}"#);
+    assert_eq!(tombstone(&authority, "nodes", "n3"), None);
+    assert_eq!(horizon(&authority), (4, 4));
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c2");
+    let team = vec![("team".to_owned(), "n1".to_owned())];
+    let units = std::slice::from_ref(&team);
+    let frames = client.register(&mut authority, units);
+    let rows: Vec<Option<ColumnValue>> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            Frame::SegmentInline { payload } => Some(decode_rows_segment(payload).unwrap()),
+            _ => None,
+        })
+        .filter(|segment| segment.table == "nodes")
+        .flat_map(|segment| segment.blocks.into_iter().flatten())
+        .map(|row| row.values[0].clone())
+        .collect();
+    assert_eq!(rows, vec![text("n1")]);
+    // §4.6: a cursor into the history logged under `org` gets the reset.
+    let mut pull = vec![pull_header(2, units, None, 0, 0)];
+    pull.extend(unit_frames(units));
+    let (status, through, _, commits) = live(&client.round(&mut authority, pull));
+    assert_eq!((status, through, commits.len()), (LiveStatus::Reset, -1, 0));
+    // The tombstone left with the re-key: an unversioned upsert inserts again.
+    let (status, results, _) = client.push(&mut authority, "again", vec![node(&s, "n3", None)]);
+    assert_eq!(status, PushStatus::Applied, "{results:?}");
+    client.push(&mut authority, "d2", vec![delete("nodes", "n2")]);
+    drop(authority);
+    // A bump with unchanged patterns re-keys nothing.
+    let authority = LocalAuthority::open(&path, &rescoped(3, "id")).unwrap();
+    assert_eq!(horizon(&authority), (4, 6));
+    assert!(tombstone(&authority, "nodes", "n2").is_some());
+    drop(authority);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_rekey_refuses_a_row_without_a_value_for_the_new_pattern() {
+    let path = temp_path();
+    {
+        let mut authority = LocalAuthority::open(&path, &schema_json(1)).unwrap();
+        let s = authority.schema.clone();
+        let client = Session::new(&mut authority, "c1");
+        client.push(&mut authority, "a", vec![node(&s, "n1", None)]);
+        client.push(&mut authority, "b", vec![node(&s, "n2", Some("n1"))]);
+    }
+    let error = LocalAuthority::open(&path, &rescoped(2, "parent_id"))
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "sync.schema_mismatch");
+    assert_eq!(
+        error.details.unwrap(),
+        json!({ "table": "nodes", "reason": "scope_value_missing", "variable": "team", "rowId": "n1" })
+    );
+    // The refused bump changed nothing: version 1 still opens.
+    LocalAuthority::open(&path, &schema_json(1)).unwrap();
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn request_validation_fails_before_any_byte() {
     let mut authority = memory();

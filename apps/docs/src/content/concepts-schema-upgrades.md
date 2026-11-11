@@ -66,9 +66,21 @@ The reset touches the whole local database except three things.
 
 A unit survives a bump when every one of its variables keeps its pattern prefix and mapped column on every table it covered, and the unit still covers at least one table. The client drops incompatible units, their windows, and their pending evictions before its first sync. The app registers units for its current schema, and the client never translates stored scope values. Changing `calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}`, for example, removes the units that use the old variable.
 
-The server never re-keys rows it already stores, because each row's stored scopes keep the patterns the row was written under. Server storage records every table's scope patterns and refuses to open a database whose table declares other patterns, at the same version and across a bump, with `sync.storage.scope_patterns_changed` ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#31-scope-patterns-and-stored-scopes)). A table whose scope patterns change is a new table: add it in a bump and write its rows through a registered command after the bump.
-
 A compatible unit resets to catching up with cursor `-1` and status `active`, because the bump wipes the local rows and needs a fresh bootstrap. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
+
+### Changing a table's scope patterns
+
+Server storage records every table's scope patterns beside its schema version. A schema-version bump that changes a table's patterns re-keys the table in the upgrade transaction ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#31-scope-patterns-and-stored-scopes)), on SQLite, Postgres, D1 and the Rust local authority:
+
+- It recomputes every stored row's scopes from the row's own column values under the new patterns and rebuilds the table's row scope index. A unit of the new variable bootstraps every row with no data step in the app.
+- It raises the pruning horizon of every partition to its last commit, because the change log keeps the scopes each change was written under. A pull whose cursor lies before the bump gets the ordinary `sync.cursor_expired` reset, so no change logged under the old patterns reaches a unit of the new ones. Clients re-bootstrap after such a bump anyway: the [compatibility window](#serving-a-compatibility-window) refuses a changed pattern, so every client bumps and resets.
+- It deletes the table's tombstones, because a deleted row's column values are gone and its scopes cannot be recomputed. After the bump an unversioned upsert of a row deleted before it inserts the row again, one version above the delete floor, instead of answering `sync.row_deleted`. That is the same answer as after pruning has passed the delete ([delete precedence](/concepts-conflicts/#delete-precedence)).
+
+A table whose patterns are unchanged is not re-keyed. A declared reference requires the parent and the child table to declare the same patterns ([SPEC §6.11](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#611-declared-references)), so change both in one bump. The re-key decodes every stored payload, because a table with `materialize: false` has no projection columns to read. On 100,000 rows it takes 685 ms on file-backed SQLite and 2.5 s on PGlite (the in-process Postgres build; a Postgres server was not measured), against 1.5 ms and 25 ms for a version-only bump ([bench lane](https://github.com/syncular/syncular/blob/main/bench/src/rekey-lane.ts), Bun 1.4.4, Apple M5 Pro). It runs under the migration lock, so writes wait for it.
+
+Every row needs a value for each new pattern. A row whose newly mapped scope column is NULL or empty refuses the bump with `sync.storage.scope_value_missing` (details `table`, `variable`, `rowId`), and the database stays at its previous version; the Rust authority refuses with `sync.schema_mismatch`, reason `scope_value_missing`. A changed pattern therefore cannot map to a column the same bump appends, because an appended column is NULL in every row. Append the column in one bump, write its values, and change the pattern in a later bump.
+
+At the same schema version a changed pattern is refused with `sync.storage.scope_patterns_changed` (the Rust authority: `sync.schema_mismatch`). A database whose marker was written before 0.63 records no patterns; its first open records the configured ones, and a pattern change made in that same open is not detected. Open such a database once at its current version before a bump that changes patterns.
 
 ## Pending writes across the bump
 

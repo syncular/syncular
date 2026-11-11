@@ -80,6 +80,7 @@ import type {
   ServerCreateOptions,
   ServerDriver,
   ServerInstance,
+  ServerLimitsOptions,
   ServerRowState,
   ValidatorInstallSpec,
 } from '../driver';
@@ -408,15 +409,16 @@ function parseBlobUrl(
 }
 
 class TsServerInstance implements ServerInstance {
-  readonly #schema: DriverSchema;
-  readonly #serverSchema: ServerSchema;
-  readonly #schemaWindow: readonly CompiledSchema[] | undefined;
+  #schema: DriverSchema;
+  #serverSchema: ServerSchema;
+  #schemaWindow: readonly CompiledSchema[] | undefined;
   readonly #partition: string;
   #storage: SqliteServerStorage;
   readonly #wrapped: ServerStorage;
   readonly #segments: MemorySegmentStore;
   readonly #blobs: BlobStore = new MemoryBlobStore();
-  readonly #hub: RealtimeHub;
+  #hub: RealtimeHub;
+  readonly #hubLimits: ServerLimitsOptions | undefined;
   readonly #allowed = new Map<string, ScopeMap>();
   readonly #now: { ms: number };
   readonly #limits: {
@@ -522,7 +524,12 @@ class TsServerInstance implements ServerInstance {
         mintBlobUrl(partition, blobId, 'put', nowMs, ttlSeconds),
     };
     this.#wrapped = this.#wrapStorage();
-    this.#hub = createRealtimeHub({
+    this.#hubLimits = options.limits;
+    this.#hub = this.#createHub();
+  }
+
+  #createHub(): RealtimeHub {
+    return createRealtimeHub({
       sqliteImageBuilder: buildSqliteImage,
       schema: this.#serverSchema,
       ...(this.#schemaWindow !== undefined
@@ -543,13 +550,22 @@ class TsServerInstance implements ServerInstance {
       // The conformance driver installs validators after construction. Keep a
       // live indirection so socket rounds observe the currently installed rule.
       commitValidator: (input) => this.#commitValidator?.(input),
-      ...(options.limits?.maxDeltaBytes !== undefined
-        ? { maxDeltaBytes: options.limits.maxDeltaBytes }
+      ...(this.#hubLimits?.maxDeltaBytes !== undefined
+        ? { maxDeltaBytes: this.#hubLimits.maxDeltaBytes }
         : {}),
-      ...(options.limits?.maxPresenceBytes !== undefined
-        ? { maxPresenceBytes: options.limits.maxPresenceBytes }
+      ...(this.#hubLimits?.maxPresenceBytes !== undefined
+        ? { maxPresenceBytes: this.#hubLimits.maxPresenceBytes }
         : {}),
     });
+  }
+
+  async restart(schema: DriverSchema): Promise<void> {
+    this.#schema = schema;
+    this.#serverSchema = toServerSchema(schema);
+    this.#schemaWindow = undefined;
+    this.#storage = new SqliteServerStorage(this.#storage.db);
+    await this.#storage.ensureSchema(compileSchema(this.#serverSchema));
+    this.#hub = this.#createHub();
   }
 
   #resolveScopes(actorId: string): ScopeMap | typeof RESOLVER_OUTAGE {

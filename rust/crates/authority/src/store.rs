@@ -10,10 +10,10 @@
 //! so a unique index enforces uniqueness in SQLite.
 //!
 //! The commit log, tombstones, idempotency records, client cursors and the
-//! log identity live in `sync_*` tables. A schema bump (§12.2) adds tables
-//! and appends nullable columns: `ADD COLUMN` extends the projection, and the
-//! stored payloads (rows and logged changes) are re-encoded with NULL in the
-//! appended slots.
+//! log identity live in `sync_*` tables. A schema bump (§12.2) adds tables,
+//! appends nullable columns and re-keys tables whose scope patterns changed:
+//! `ADD COLUMN` extends the projection, and the stored payloads (rows and
+//! logged changes) are re-encoded with NULL in the appended slots.
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -151,6 +151,15 @@ pub(crate) fn render(value: &Option<ColumnValue>) -> Option<String> {
         ColumnValue::Float(_) | ColumnValue::Bytes(_) | ColumnValue::Crdt(_) => return None,
     };
     (!rendered.is_empty()).then_some(rendered)
+}
+
+/// The stored scopes of a row (§3.1), or `None` when one is missing.
+pub(crate) fn scopes_of(table: &Table, values: &Row) -> Option<Scopes> {
+    table
+        .scopes
+        .iter()
+        .map(|scope| Some((scope.variable.clone(), render(&values[scope.column])?)))
+        .collect()
 }
 
 pub(crate) fn encode_column_versions(versions: &BTreeMap<usize, i64>) -> Option<Vec<u8>> {
@@ -963,8 +972,9 @@ fn column_ddl_type(column: &Column) -> &'static str {
 }
 
 /// §12.2: bring the authority tables to `schema` before serving. A version
-/// already stored must carry the same layouts; a newer schema may add tables
-/// and append nullable columns, and every other change is refused.
+/// already stored must carry the same layouts; a newer schema may add tables,
+/// append nullable columns and change scope patterns, which re-keys the
+/// table's rows (§3.1), and every other change is refused.
 pub(crate) fn migrate(conn: &Connection, schema: &Schema) -> Result<(), AuthorityError> {
     transaction(conn, || {
         conn.execute_batch(INTERNAL_DDL).db()?;
@@ -1090,8 +1100,8 @@ fn upgrade(
             continue;
         };
         let new = table.layout();
-        if old["primaryKey"] != new["primaryKey"] || old["scopes"] != new["scopes"] {
-            return Err(mismatch(&table.name, "key_or_scopes_changed"));
+        if old["primaryKey"] != new["primaryKey"] {
+            return Err(mismatch(&table.name, "primary_key_changed"));
         }
         // The stored `Table::layout` columns: `[name, type, nullable]`.
         let old_columns: Vec<Column> = old["columns"]
@@ -1130,8 +1140,50 @@ fn upgrade(
         if !appended.is_empty() {
             reencode(conn, table, &old_columns)?;
         }
+        if old["scopes"] != new["scopes"] {
+            rekey(conn, table)?;
+        }
         create_indexes(conn, table)?;
     }
+    Ok(())
+}
+
+/// §3.1: recompute every row's stored scopes under the table's patterns. A
+/// deleted row's scopes cannot be recomputed, so its tombstone goes, and the
+/// horizon passes the changes logged under the previous patterns (§4.6).
+fn rekey(conn: &Connection, table: &Table) -> Result<(), AuthorityError> {
+    let sql = format!(
+        "UPDATE {} SET _sync_scopes=?1 WHERE _sync_partition=?2 AND _sync_row_id=?3",
+        quote(&table.name)
+    );
+    for (row_id, payload) in all_rows(conn, &table.name)? {
+        let values = decode_payload(&table.columns, &payload)?;
+        let Some(scopes) = scopes_of(table, &values) else {
+            let variable = table
+                .scopes
+                .iter()
+                .find(|scope| render(&values[scope.column]).is_none())
+                .map(|scope| scope.variable.as_str());
+            return Err(AuthorityError::with_details(
+                "sync.schema_mismatch",
+                "a stored row has no value for a scope column the schema bump re-keys it under",
+                json!({
+                    "table": table.name,
+                    "reason": "scope_value_missing",
+                    "variable": variable,
+                    "rowId": row_id,
+                }),
+            ));
+        };
+        conn.execute(&sql, params![scopes_json(&scopes), PARTITION, row_id])
+            .db()?;
+    }
+    conn.execute("DELETE FROM sync_tombstones WHERE tbl=?1", [&table.name])
+        .db()?;
+    conn.execute_batch(
+        "UPDATE sync_log SET horizon_seq=max_commit_seq WHERE horizon_seq<max_commit_seq",
+    )
+    .db()?;
     Ok(())
 }
 

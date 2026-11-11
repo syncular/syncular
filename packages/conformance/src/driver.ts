@@ -589,6 +589,12 @@ export interface ServerInstance {
    */
   reopenAsVersion3Database?(): Promise<void>;
 
+  /**
+   * A process restart at `schema`: reopen the server over the same database,
+   * running the storage's schema upgrade when the version is newer.
+   */
+  restart(schema: DriverSchema): Promise<void>;
+
   close(): Promise<void>;
 }
 

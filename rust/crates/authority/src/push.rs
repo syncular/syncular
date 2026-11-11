@@ -193,20 +193,6 @@ fn authorized(table: &Table, scopes: &Scopes) -> bool {
         .all(|scope| scopes.get(&scope.variable).is_some_and(|v| !v.is_empty()))
 }
 
-/// The stored scopes of a row (§3.1), or `None` when one is missing.
-fn scopes_of(table: &Table, values: &Row) -> Option<Scopes> {
-    table
-        .scopes
-        .iter()
-        .map(|scope| {
-            Some((
-                scope.variable.clone(),
-                store::render(&values[scope.column])?,
-            ))
-        })
-        .collect()
-}
-
 /// §5.10.3: replace each present non-NULL crdt value with
 /// `merge(stored, incoming)`.
 fn merge_crdt(
@@ -457,7 +443,7 @@ fn apply_operation(
 
     // Insert path: no stored row (§6.2 tombstone table). The authorization
     // row is the payload plus the primary key (§3.4 step 2).
-    let scopes = scopes_of(table, &values);
+    let scopes = store::scopes_of(table, &values);
     if op.base_version.is_some_and(|base| base != 0) {
         if scopes.is_none() {
             return Err(error(

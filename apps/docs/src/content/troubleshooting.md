@@ -41,7 +41,8 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 | `sync.validator_error` | A whole-commit validator threw an unexpected exception; the original reaches `onError` | [Handling conflicts](/guide-concurrency-correction/#validate-the-complete-aggregate-on-the-server) |
 | `sync.storage.scan_requires_scope` | A row scan omitted its mandatory scope filter | [Storage reference](/server-storage-reference/#advanced-row-lookups-for-trusted-server-code) |
 | `sync.storage.stored_layout_mismatch` | Stored layouts disagree with the schema at the same version | [Storage reference](/server-storage-reference/#materialized-app-tables) |
-| `sync.storage.scope_patterns_changed` | A table's scope patterns changed, and its stored rows are indexed under the old ones | [Schema upgrades](/concepts-schema-upgrades/#what-the-reset-touches) |
+| `sync.storage.scope_patterns_changed` | A table's scope patterns changed without a schema-version bump | [Schema upgrades](/concepts-schema-upgrades/#changing-a-tables-scope-patterns) |
+| `sync.storage.scope_value_missing` | A bump re-keys a table, and a stored row has no value for a new scope column | [Schema upgrades](/concepts-schema-upgrades/#changing-a-tables-scope-patterns) |
 | `sync.storage.physical_layout_mismatch` | A synced table's columns or key differ from the storage layout | [Storage reference](/server-storage-reference/#materialized-app-tables) |
 | `blob.not_found`, `blob.forbidden`, `blob.hash_mismatch` | A blob is absent, unauthorized, or uploaded under the wrong address | [Blobs](/concepts-blobs/#transfer-failures) |
 | `client.not_leader` | Another tab owns the origin leader lock | [below](#clientnot_leader-on-a-second-tab) |
