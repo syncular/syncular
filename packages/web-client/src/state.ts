@@ -1,119 +1,184 @@
 export const META_TABLE = '_syncular_meta';
 import { PENDING_EVICTIONS } from './window';
 import { WINDOWS_TABLE } from './window';
-export const SUBSCRIPTIONS_TABLE = '_syncular_subscriptions';
+export const UNITS_TABLE = '_syncular_units';
 /**
- * Durable client sync state: per-subscription cursor, bootstrap resume
- * token (round-tripped opaquely, §4.7), and the last-echoed effective
- * scopes the §3.3 purge contract is keyed on — persisted per subscription
- * exactly for that purpose.
+ * Durable unit state (SPEC.md §4.1): per unit its scope map, status, live
+ * membership, catch-up cursor and opaque resume token (§4.7), the tables its
+ * current bootstrap seeded (§5.6) and the last echo (§4.4) the §3.3 purge
+ * contract is keyed on. The replica cursor, the echo digest and the
+ * registration digest the server holds live in meta.
  */
-import type { ScopeMap } from '@syncular/core';
+import type { FencedRecord, ScopeMap, UnitScopes } from '@syncular/core';
 import { ClientSyncError } from './errors';
-import type { CompiledClientSchema } from './schema';
+import type { CompiledClientSchema, CompiledClientTable } from './schema';
 import type { ClientDatabase } from './database';
 import type { LocalRevision } from './invalidation';
 
 export const LOCAL_REVISION_KEY = 'localRevision';
+/** §4.5 replica cursor; absent means `-1`. */
+export const REPLICA_CURSOR_KEY = 'replicaCursor';
+/** Hex of the last pull `LIVE_END.echoDigest` (§4.2); absent means empty. */
+export const ECHO_DIGEST_KEY = 'echoDigest';
+/** Hex of the registration digest of the list the server stores (§4.1). */
+export const REGISTERED_DIGEST_KEY = 'registrationDigest';
 const MAX_U64 = 18_446_744_073_709_551_615n;
 
-export type SubscriptionStatus = 'active' | 'revoked' | 'failed';
+export type UnitStatus = 'active' | 'revoked' | 'failed';
 
-export interface SubscriptionRecord {
+export interface UnitRecord {
+  /** §4.1: derived from the scope map. */
   readonly id: string;
-  readonly table: string;
-  /** Requested scopes (§3.2), chosen by the app. */
-  readonly scopes: ScopeMap;
-  /** Host-opaque JSON params, preserved verbatim. */
-  readonly params?: string;
-  /** Last fully-applied commitSeq; -1 = never synced (§4.3). */
-  readonly cursor: number;
+  readonly scopes: UnitScopes;
+  /** An explicit `subscribe` holds the unit; window bases hold it through
+   * the window registry (§4.1 references). */
+  readonly explicit: boolean;
+  readonly status: UnitStatus;
+  /** §10 code when not active, or `sync.cursor_expired` after a reset. */
+  readonly reasonCode?: string | undefined;
+  /** Absent while the unit is live (§4.5); otherwise `-1`, the pin, or the
+   * post-bootstrap cursor `P`. */
+  readonly cursor?: number | undefined;
   /** Opaque resume token from `SUB_END` (§4.7); present mid-bootstrap. */
-  readonly bootstrapState?: string;
-  /** Last effective scopes echoed while active (§3.3 purge key). */
-  readonly effectiveScopes?: ScopeMap;
-  readonly status: SubscriptionStatus;
-  /** §10 code when not active (`sync.scope_revoked`, …). */
-  readonly reasonCode?: string;
+  readonly bootstrapState?: string | undefined;
+  /** Tables that received a segment in the current bootstrap (§5.6). */
+  readonly seeded: readonly string[];
+  /** The echo persisted at the last `SUB_END` (§4.4). */
+  readonly echo?: readonly FencedRecord[] | undefined;
 }
 
-function rowToRecord(row: Record<string, unknown>): SubscriptionRecord {
-  return {
+/** §4.1: a catching-up unit holding cursor `-1` or a resume token. */
+export function bootstrapping(unit: UnitRecord): boolean {
+  return (
+    unit.cursor !== undefined &&
+    (unit.cursor < 0 || unit.bootstrapState !== undefined)
+  );
+}
+
+/** §3.3 row ownership: active, live or post-bootstrap, with an echo. */
+export function owning(unit: UnitRecord): boolean {
+  return (
+    unit.status === 'active' && unit.echo !== undefined && !bootstrapping(unit)
+  );
+}
+
+/** §4.1: the unit covers every table declaring all of its variables. */
+export function covers(
+  table: CompiledClientTable,
+  scopes: UnitScopes,
+): boolean {
+  return Object.keys(scopes).every((variable) =>
+    table.scopeColumnByVariable.has(variable),
+  );
+}
+
+/**
+ * §4.4: the effective scopes of the (unit, table) pair under `echo`: the
+ * scope map as one-element lists plus the fenced lists. Undefined when the
+ * fence revoked the pair.
+ */
+export function pairScopes(
+  scopes: UnitScopes,
+  table: string,
+  echo: readonly FencedRecord[] | undefined,
+): ScopeMap | undefined {
+  const fenced = echo?.find((record) => record.table === table);
+  if (fenced?.status === 'revoked') return undefined;
+  const effective: ScopeMap = { ...fenced?.scopes };
+  for (const [variable, value] of Object.entries(scopes))
+    effective[variable] = [value];
+  return effective;
+}
+
+/** §3.3 row ownership: the pair scopes of every owner of `table` but one. */
+export function unitOwners(
+  units: readonly UnitRecord[],
+  table: CompiledClientTable,
+  exceptId: string,
+): ScopeMap[] {
+  return units.flatMap((unit) => {
+    const scopes =
+      unit.id !== exceptId && owning(unit) && covers(table, unit.scopes)
+        ? pairScopes(unit.scopes, table.name, unit.echo)
+        : undefined;
+    return scopes === undefined ? [] : [scopes];
+  });
+}
+
+function rowToRecord(row: Record<string, unknown>): UnitRecord {
+  const record: { -readonly [K in keyof UnitRecord]: UnitRecord[K] } = {
     id: row.id as string,
-    table: row.tbl as string,
-    scopes: JSON.parse(row.requested_scopes as string) as ScopeMap,
-    ...(row.params !== null ? { params: row.params as string } : {}),
-    cursor: row.cursor as number,
-    ...(row.bootstrap_state !== null
-      ? { bootstrapState: row.bootstrap_state as string }
-      : {}),
-    ...(row.effective_scopes !== null
-      ? {
-          effectiveScopes: JSON.parse(
-            row.effective_scopes as string,
-          ) as ScopeMap,
-        }
-      : {}),
-    status: row.status as SubscriptionStatus,
-    ...(row.reason_code !== null
-      ? { reasonCode: row.reason_code as string }
-      : {}),
+    scopes: JSON.parse(row.scopes as string) as UnitScopes,
+    explicit: row.explicit === 1,
+    status: row.status as UnitStatus,
+    seeded: JSON.parse(row.seeded as string) as string[],
   };
+  if (row.reason_code !== null) record.reasonCode = row.reason_code as string;
+  if (row.cursor !== null) record.cursor = row.cursor as number;
+  if (row.bootstrap_state !== null)
+    record.bootstrapState = row.bootstrap_state as string;
+  if (row.echo !== null)
+    record.echo = JSON.parse(row.echo as string) as FencedRecord[];
+  return record;
 }
 
-export function loadSubscriptions(db: ClientDatabase): SubscriptionRecord[] {
+/** Every unit in registration order (§4.1). */
+export function loadUnits(db: ClientDatabase): UnitRecord[] {
   return db
-    .query(`SELECT * FROM ${SUBSCRIPTIONS_TABLE} ORDER BY rowid ASC`)
+    .query(`SELECT * FROM ${UNITS_TABLE} ORDER BY rowid ASC`)
     .map(rowToRecord);
 }
 
-export function getSubscription(
+export function getUnit(
   db: ClientDatabase,
   id: string,
-): SubscriptionRecord | undefined {
-  const row = db.query(`SELECT * FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [
-    id,
-  ])[0];
+): UnitRecord | undefined {
+  const row = db.query(`SELECT * FROM ${UNITS_TABLE} WHERE id=?`, [id])[0];
   return row === undefined ? undefined : rowToRecord(row);
 }
 
-export function saveSubscription(
-  db: ClientDatabase,
-  record: SubscriptionRecord,
-): void {
+/** Insert or update in place: an update keeps the registration order. */
+export function saveUnit(db: ClientDatabase, record: UnitRecord): void {
   db.exec(
-    `INSERT OR REPLACE INTO ${SUBSCRIPTIONS_TABLE}(id,tbl,requested_scopes,params,cursor,bootstrap_state,effective_scopes,status,reason_code)VALUES(?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO ${UNITS_TABLE}(id,scopes,explicit,status,reason_code,cursor,bootstrap_state,seeded,echo)VALUES(?,?,?,?,?,?,?,?,?)ON CONFLICT(id)DO UPDATE SET explicit=excluded.explicit,status=excluded.status,reason_code=excluded.reason_code,cursor=excluded.cursor,bootstrap_state=excluded.bootstrap_state,seeded=excluded.seeded,echo=excluded.echo`,
     [
       record.id,
-      record.table,
       JSON.stringify(record.scopes),
-      record.params ?? null,
-      record.cursor,
-      record.bootstrapState ?? null,
-      record.effectiveScopes === undefined
-        ? null
-        : JSON.stringify(record.effectiveScopes),
+      record.explicit ? 1 : 0,
       record.status,
       record.reasonCode ?? null,
+      record.cursor ?? null,
+      record.bootstrapState ?? null,
+      JSON.stringify(record.seeded),
+      record.echo === undefined ? null : JSON.stringify(record.echo),
     ],
   );
 }
 
-export function deleteSubscription(db: ClientDatabase, id: string): void {
-  db.exec(`DELETE FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [id]);
+export function deleteUnit(db: ClientDatabase, id: string): void {
+  db.exec(`DELETE FROM ${UNITS_TABLE} WHERE id=?`, [id]);
 }
 
 /**
- * §7.4.3 reset: keep compatible subscription REGISTRATIONS (id, table,
- * requested scopes, params — the app's declared intent) but discard all
- * synced state (cursor → -1, no resume token, no effective-scope map,
- * status → active), so the next round fresh-bootstraps exactly the
- * subscriptions the app still wants. Caller owns the transaction.
+ * §7.4.3 reset, §2.1 log reset and local rebootstrap: keep the unit
+ * registrations (the app's declared intent) and discard every synced state,
+ * so the next round sends the list and fresh-bootstraps every unit. Caller
+ * owns the transaction.
  */
-export function resetSubscriptionsForBump(db: ClientDatabase): void {
+export function resetUnits(db: ClientDatabase): void {
   db.exec(
-    `UPDATE ${SUBSCRIPTIONS_TABLE} SET cursor=-1,bootstrap_state=NULL,effective_scopes=NULL,status='active',reason_code=NULL`,
+    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',echo=NULL`,
   );
+  db.exec(`DELETE FROM ${META_TABLE} WHERE key IN(?,?,?)`, [
+    REPLICA_CURSOR_KEY,
+    ECHO_DIGEST_KEY,
+    REGISTERED_DIGEST_KEY,
+  ]);
+}
+
+/** §4.5: the replica cursor, `-1` while no unit is live. */
+export function replicaCursor(db: ClientDatabase): number {
+  return Number(getMeta(db, REPLICA_CURSOR_KEY) ?? -1);
 }
 
 type ScopeDeclarations = Record<
@@ -121,8 +186,8 @@ type ScopeDeclarations = Record<
   Record<string, readonly [string, string]>
 >;
 
-/** Persist declarations separately from the previous-version row descriptor. */
-export function saveSubscriptionScopeSchema(
+/** §7.4.3 declaration evidence, persisted beside the schema marker. */
+export function saveUnitScopeSchema(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
@@ -138,76 +203,58 @@ export function saveSubscriptionScopeSchema(
   setMeta(db, 'subscriptionScopeSchema', JSON.stringify(declarations));
 }
 
-/** Drop incompatible registrations and their windows; never translate scopes. */
-export function pruneUnknownSubscriptions(
+/**
+ * Drop units that cover no table of the running schema, with their window
+ * registry rows and pending evictions; never translate scopes. At a bump
+ * (§7.4.3) a unit also needs every variable unchanged in prefix and column on
+ * every table it covered before.
+ */
+export function pruneUnknownUnits(
   db: ClientDatabase,
-  subscriptions: readonly SubscriptionRecord[],
   schema: CompiledClientSchema,
   bump = false,
-): SubscriptionRecord[] {
+): void {
   const stored = bump ? getMeta(db, 'subscriptionScopeSchema') : undefined;
   const previous =
     stored === undefined
       ? undefined
       : (JSON.parse(stored) as ScopeDeclarations);
-  const compatible = (
-    record: Pick<SubscriptionRecord, 'table' | 'scopes'>,
-  ): boolean => {
-    const table = schema.tables.get(record.table);
-    if (table === undefined) return false;
-    const variables = Object.keys(record.scopes);
-    if (
-      !variables.every((variable) => table.scopeColumnByVariable.has(variable))
-    )
+  const compatible = (scopes: UnitScopes): boolean => {
+    const variables = Object.keys(scopes);
+    if (![...schema.tables.values()].some((table) => covers(table, scopes)))
       return false;
     if (!bump) return true;
-    // An old binary stored no declaration evidence. Re-registration is required
-    // at a bump: matching names cannot prove unchanged column/prefix meaning.
-    const old = previous?.[record.table];
-    if (old === undefined) return false;
-    const compared =
-      variables.length === 0
-        ? [
-            ...new Set([
-              ...Object.keys(old),
-              ...table.scopeColumnByVariable.keys(),
-            ]),
-          ]
-        : variables;
-    return compared.every(
-      (variable) =>
-        old[variable]?.[0] === table.scopePrefixByVariable.get(variable) &&
-        old[variable]?.[1] === table.scopeColumnByVariable.get(variable),
-    );
+    // An old binary stored no declaration evidence. Matching names cannot
+    // prove unchanged column/prefix meaning, so the app registers again.
+    if (previous === undefined) return false;
+    return Object.entries(previous).every(([name, old]) => {
+      if (!variables.every((variable) => old[variable] !== undefined))
+        return true;
+      const table = schema.tables.get(name);
+      return (
+        table !== undefined &&
+        variables.every(
+          (variable) =>
+            old[variable]?.[0] === table.scopePrefixByVariable.get(variable) &&
+            old[variable]?.[1] === table.scopeColumnByVariable.get(variable),
+        )
+      );
+    });
   };
-  const retained = subscriptions.filter(compatible);
-  const staleIds = new Set(
-    subscriptions
-      .filter((record) => !compatible(record))
-      .map((record) => record.id),
+  const stale = new Set(
+    loadUnits(db)
+      .filter((unit) => !compatible(unit.scopes))
+      .map((unit) => unit.id),
   );
-  // Shrinking a pinned window already removed its registration. Its deferred
-  // eviction still carries the old scope declaration and needs the same fence.
-  for (const row of db.query(
-    `SELECT sub_id,tbl,effective_scopes FROM ${PENDING_EVICTIONS}`,
-  )) {
-    if (
-      !compatible({
-        table: String(row.tbl),
-        scopes: JSON.parse(String(row.effective_scopes)) as ScopeMap,
-      })
-    )
-      staleIds.add(String(row.sub_id));
+  // A shrunk window's deferred eviction outlives its unit row and keeps its
+  // per-table scopes; a table the schema no longer has cannot be evicted.
+  for (const row of db.query(`SELECT unit_id,tbl FROM ${PENDING_EVICTIONS}`))
+    if (!schema.tables.has(String(row.tbl))) stale.add(String(row.unit_id));
+  for (const id of stale) {
+    db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE sub_id=?`, [id]);
+    db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE unit_id=?`, [id]);
+    deleteUnit(db, id);
   }
-  if (staleIds.size === 0) return retained;
-  db.transaction(() => {
-    for (const id of staleIds) {
-      db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE sub_id=?`, [id]);
-      db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE sub_id=?`, [id]);
-      db.exec(`DELETE FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [id]);
-    }
-  });
-  return retained;
 }
 
 export function getMeta(db: ClientDatabase, key: string): string | undefined {

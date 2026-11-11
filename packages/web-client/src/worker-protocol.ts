@@ -28,7 +28,6 @@ import type {
   QueryReadSpec,
   QuerySnapshot,
   SecurityLifecycle,
-  SubscribeInput,
   SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
@@ -53,7 +52,8 @@ import type {
   PreviousVersionSnapshot,
 } from './previous-version';
 import type { ClientSchema } from './schema';
-import type { SubscriptionRecord } from './state';
+import type { UnitScopes } from '@syncular/core';
+import type { UnitRecord } from './state';
 import type { WindowBase } from './window';
 
 // ---------------------------------------------------------------------------
@@ -183,12 +183,12 @@ export interface WorkerApi extends Omit<
   securityLifecycle(): SecurityLifecycle;
   beginSecurityPreflight(): Promise<void>;
   activateSecurity(options?: WorkerSecurityActivation): Promise<void>;
-  subscribe(input: SubscribeInput): void;
-  subscribeMany(inputs: readonly SubscribeInput[]): void;
+  subscribe(scopes: UnitScopes): string;
+  subscribeMany(units: readonly UnitScopes[]): string[];
   unsubscribe(id: string): void;
-  /** §4.8 windowed subscriptions: set the live units for a window base. */
+  /** §4.8 windows: set the windowed-in values of a base. */
   setWindow(base: WindowBase, units: readonly string[]): Promise<void>;
-  /** §4.8 completeness oracle (I3): the windowed-in units for a base. */
+  /** §4.8 completeness oracle: the windowed-in values of a base. */
   windowState(base: WindowBase): WindowState;
   mutate(mutations: readonly MutationInput[]): string;
   /** Partial-update convenience: read-merge-write one full-row upsert. */
@@ -224,8 +224,8 @@ export interface WorkerApi extends Omit<
   querySnapshot(spec: QueryReadSpec): QuerySnapshot;
   localRevision(): LocalRevision;
   pendingCommits(): OutboxCommit[];
-  subscriptions(): SubscriptionRecord[];
-  subscription(id: string): SubscriptionRecord | undefined;
+  units(): UnitRecord[];
+  unit(id: string): UnitRecord | undefined;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): void;
   /** §8.6 presence: publish/clear a scope-keyed presence document. */

@@ -18,6 +18,7 @@ import {
   type PushResultFrame,
   type RowValue,
   type RemoteOperationResponse,
+  registrationDigest,
 } from '@syncular/core';
 import type { MutationInput } from './client';
 import type { EncryptionConfig } from './encryption';
@@ -298,6 +299,9 @@ export class SyncRemoteClient {
                 limitSnapshotRows: 0,
                 maxSnapshotPages: 0,
                 accept: 0b0011,
+                cursor: -1,
+                registrationDigest: registrationDigest([]),
+                echoDigest: new Uint8Array(),
               },
             ],
           }),
@@ -387,6 +391,7 @@ export class SyncRemoteClient {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: input.requestId,
+            clientSeq: 0,
             operations,
           },
         ],

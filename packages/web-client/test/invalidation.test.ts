@@ -47,11 +47,7 @@ async function seededPair(): Promise<{
   const a = await makeClient(server, { clientId: 'client-a' });
   const b = await makeClient(server, { clientId: 'client-b' });
   for (const c of [a, b]) {
-    c.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    c.client.subscribe({ project_id: 'p1' });
     await c.client.syncUntilIdle();
   }
   return { server, a, b };
@@ -88,17 +84,9 @@ describe('invalidation choke point', () => {
   test('coalescing: a multi-row commit is ONE event with distinct keys (I1)', async () => {
     const { a, b } = await seededPair();
     // Two projects in one commit: one batch, two scope keys, one table.
-    a.client.subscribe({
-      id: 's2',
-      table: 'tasks',
-      scopes: { project_id: ['p2'] },
-    });
+    a.client.subscribe({ project_id: 'p2' });
     await a.client.syncUntilIdle();
-    b.client.subscribe({
-      id: 's2',
-      table: 'tasks',
-      scopes: { project_id: ['p2'] },
-    });
+    b.client.subscribe({ project_id: 'p2' });
     await b.client.syncUntilIdle();
 
     a.client.mutate([
@@ -120,11 +108,7 @@ describe('invalidation choke point', () => {
     const { server, a, b } = await seededPair();
     // Both also subscribe to `docs` so it bootstraps and stays in sync.
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 'sd',
-        table: 'docs',
-        scopes: { org_id: ['o1'] },
-      });
+      c.client.subscribe({ org_id: 'o1' });
       await c.client.syncUntilIdle();
     }
     void server;
@@ -159,11 +143,7 @@ describe('invalidation choke point', () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
     // Seed rows on the server via client A first.
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'seed') },
@@ -173,11 +153,7 @@ describe('invalidation choke point', () => {
     // A fresh client B bootstraps via a segment: table + effective scope key.
     const b = await makeClient(server, { clientId: 'client-b' });
     const rec = record(b.client);
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
     expect(rec.tables()).toContain('tasks');
     // Bulk segment rows do not carry per-row before/after facts (§7.5).

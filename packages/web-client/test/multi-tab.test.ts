@@ -7,6 +7,7 @@
  * the server, the wire — is real.
  */
 import { afterEach, beforeAll, expect, test } from 'bun:test';
+import { unitId } from '@syncular/core';
 import {
   ClientSyncError,
   type ClientDiagnosticsSnapshot,
@@ -545,15 +546,12 @@ test('leader + follower: follower proxies the full API to the one core', async (
   expect(follower.isLeader).toBe(false);
 
   // The follower subscribes + mutates through the leader's single core.
-  await follower.subscribe({
-    id: 's',
-    table: 'tasks',
-    scopes: { project_id: ['mp1'] },
-  });
-  const subsViaLeader = await leader.subscriptions();
-  expect(subsViaLeader.map((s) => s.id)).toEqual(['s']);
-  const subsViaFollower = await follower.subscriptions();
-  expect(subsViaFollower.map((s) => s.id)).toEqual(['s']);
+  const id = await follower.subscribe({ project_id: 'mp1' });
+  expect(id).toBe(unitId({ project_id: 'mp1' }));
+  const subsViaLeader = await leader.units();
+  expect(subsViaLeader.map((s) => s.id)).toEqual([id]);
+  const subsViaFollower = await follower.units();
+  expect(subsViaFollower.map((s) => s.id)).toEqual([id]);
 
   const commitId = await follower.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('mt1', 'mp1', 'hi') },
@@ -600,39 +598,22 @@ test('leader + follower: follower proxies the full API to the one core', async (
   }).toEqual(leaderDiagnostics);
 });
 
-test('a follower cannot rebind a leader-owned subscription identity', async () => {
+test('a follower registering the leader units again changes nothing', async () => {
   const group = makeGroup();
   const leader = await group.make({ clientId: 'mt-subscription-identity' });
   const follower = await group.make();
-  await leader.subscribe({
-    id: 'stable-subscription',
-    table: 'tasks',
-    scopes: { project_id: ['mp2', 'mp1'] },
-    params: '{"view":"v1"}',
-  });
+  await leader.subscribeMany([{ project_id: 'mp2' }, { project_id: 'mp1' }]);
   await leader.syncUntilIdle();
-  const complete = await leader.subscription('stable-subscription');
-  expect(complete?.cursor).toBeGreaterThanOrEqual(0);
+  const complete = await leader.unit(unitId({ project_id: 'mp2' }));
+  expect(complete).toMatchObject({ status: 'active', echo: [] });
 
-  await follower.subscribe({
-    id: 'stable-subscription',
-    table: 'tasks',
-    scopes: { project_id: ['mp1', 'mp2', 'mp1'] },
-    params: '{"view":"v1"}',
-  });
-  expect(await follower.subscription('stable-subscription')).toEqual(complete);
-
-  await expect(
-    follower.subscribe({
-      id: 'stable-subscription',
-      table: 'tasks',
-      scopes: { project_id: ['mp2'] },
-      params: '{"view":"v1"}',
-    }),
-  ).rejects.toMatchObject({
-    code: 'client.subscription_intent_mismatch',
-  });
-  expect(await leader.subscription('stable-subscription')).toEqual(complete);
+  await follower.subscribeMany([
+    { project_id: 'mp1' },
+    { project_id: 'mp2' },
+    { project_id: 'mp1' },
+  ]);
+  expect(await follower.unit(unitId({ project_id: 'mp2' }))).toEqual(complete);
+  expect(await leader.unit(unitId({ project_id: 'mp2' }))).toEqual(complete);
 });
 
 test('a follower preflight request gates the already-running shared leader', async () => {
@@ -673,11 +654,7 @@ test('events fan out from the leader to two followers', async () => {
     diagnostics2.push(snapshot.replica.localRevision),
   );
 
-  await leader.subscribe({
-    id: 's',
-    table: 'tasks',
-    scopes: { project_id: ['fp'] },
-  });
+  await leader.subscribe({ project_id: 'fp' });
   // A mutation on the leader routes touched tables through invalidation,
   // which the bridge fans out to both followers.
   await leader.mutate([
@@ -701,11 +678,7 @@ test('a follower is bound on return: an event emitted immediately reaches it', a
   // resolves the follower can receive fanned-out events.
   const group = makeGroup();
   const leader = await group.make({ clientId: 'mt-bind-lead' });
-  await leader.subscribe({
-    id: 's',
-    table: 'tasks',
-    scopes: { project_id: ['bp'] },
-  });
+  await leader.subscribe({ project_id: 'bp' });
 
   const follower = await group.make();
   const seen: number[] = [];
@@ -725,11 +698,7 @@ test('leader close → follower promotes, keeps the DB, continues syncing', asyn
   const leader = await group.make({ clientId: 'mt-promo-lead' });
   const follower = await group.make();
 
-  await leader.subscribe({
-    id: 's',
-    table: 'tasks',
-    scopes: { project_id: ['pp'] },
-  });
+  await leader.subscribe({ project_id: 'pp' });
   await leader.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('before', 'pp', 'A') },
   ]);
@@ -756,11 +725,7 @@ test('leader close → follower promotes, keeps the DB, continues syncing', asyn
   // A brand-new tab joining now follows the PROMOTED leader.
   const late = await group.make();
   expect(late.role).toBe('follower');
-  await late.subscribe({
-    id: 's',
-    table: 'tasks',
-    scopes: { project_id: ['pp'] },
-  });
+  await late.subscribe({ project_id: 'pp' });
   await late.syncUntilIdle();
   const rows = await late.query(
     'SELECT id FROM tasks WHERE project_id = ? ORDER BY id',

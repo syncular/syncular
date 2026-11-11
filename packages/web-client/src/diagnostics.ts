@@ -7,8 +7,7 @@
  */
 import type { SecurityLifecycle } from './client';
 
-export const CLIENT_DIAGNOSTICS_VERSION = 1 as const;
-export const MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS = 256;
+export const CLIENT_DIAGNOSTICS_VERSION = 2 as const;
 export const MAX_DIAGNOSTIC_DOMAINS = 256;
 export const MAX_DIAGNOSTIC_QUERY_FAILURES = 256;
 
@@ -66,38 +65,15 @@ export interface ClientDiagnosticsHost {
   readonly realtimeRetryDelayMs?: number;
 }
 
-export interface ExpectedDiagnosticSubscription {
-  /** Application-owned stable identifier. It must never contain PHI. */
-  readonly id: string;
-  /** Generated schema table name. */
-  readonly table: string;
-}
-
-export interface ClientDiagnosticsRequest {
-  /**
-   * Optional bounded intent list. Missing registrations are returned as
-   * `unregistered`, allowing a zero-row security scope to fail closed without
-   * reading private Syncular tables. Values/scopes are intentionally absent.
-   */
-  readonly expectedSubscriptions?: readonly ExpectedDiagnosticSubscription[];
-}
-
-export type DiagnosticSubscriptionState =
-  | 'unregistered'
-  | 'bootstrapping'
-  | 'complete'
-  | 'reset'
-  | 'revoked'
-  | 'failed';
-
-export interface DiagnosticSubscription {
-  readonly id: string;
-  readonly table: string;
-  readonly state: DiagnosticSubscriptionState;
-  readonly complete: boolean;
-  /** Last fully applied local commit sequence; absent when unregistered. */
-  readonly cursor?: number;
-  readonly reasonCode?: string;
+/** §7.6: registered units per state; a unit id never enters diagnostics. */
+export interface DiagnosticUnits {
+  readonly bootstrapping: number;
+  readonly complete: number;
+  readonly reset: number;
+  readonly revoked: number;
+  readonly failed: number;
+  /** Distinct stable reason codes of registered units, ascending. */
+  readonly reasonCodes: readonly string[];
 }
 
 export interface DiagnosticRoundCounters {
@@ -140,7 +116,8 @@ export interface DiagnosticLastChange {
   readonly recordedAtMs: number;
   /** Generated table names only; no scope keys or row ids. */
   readonly tables: readonly string[];
-  /** Generated table names for changed window registrations/completeness. */
+  /** Selected variables of window bases whose registration or completeness
+   * changed. */
   readonly windows: readonly string[];
   readonly domainsTruncated: boolean;
   readonly statusChanged: boolean;
@@ -201,10 +178,11 @@ export interface ClientDiagnosticsSnapshot {
     readonly expiresAtMs?: number;
     readonly errorCode?: string;
   };
-  readonly subscriptions: readonly DiagnosticSubscription[];
-  readonly subscriptionsTruncated: boolean;
-  /** Registrations the next pull sends; the server limit counts these (SPEC §4.1). */
-  readonly activeSubscriptions: number;
+  readonly units: DiagnosticUnits;
+  /** Units the next registration list carries; the server limit counts these (SPEC §4.1). */
+  readonly activeUnits: number;
+  /** §4.5 replica cursor; `-1` while no unit is live. */
+  readonly replicaCursor: number;
   readonly lastRound?: DiagnosticLastRound;
   readonly lastChange?: DiagnosticLastChange;
   readonly storage: ClientDiagnosticsStorage;

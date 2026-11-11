@@ -27,13 +27,13 @@ describe('§7.5 snapshot read surface', () => {
         { sql: 'SELECT id FROM tasks ORDER BY id' },
         { sql: 'SELECT count(*) AS n FROM tasks' },
       ],
-      subscriptions: ['tasks', 'missing'],
+      units: ['tasks', 'missing'],
       commitIds: [commitId, 'missing'],
     });
     expect(read.queries).toEqual([[{ id: 't1' }], [{ n: 1 }]]);
     expect(read.revision).toBe(client.localRevision);
-    expect(read.subscriptions[0]).toEqual({ state: 'unknown', id: 'tasks' });
-    expect(read.subscriptions[1]).toEqual({ state: 'unknown', id: 'missing' });
+    expect(read.units[0]).toEqual({ state: 'unknown', id: 'tasks' });
+    expect(read.units[1]).toEqual({ state: 'unknown', id: 'missing' });
     expect(read.deliveries[0]).toEqual({
       status: 'pending',
       clientCommitId: commitId,
@@ -48,7 +48,7 @@ describe('§7.5 snapshot read surface', () => {
   test('ergonomic catch-up and delivery reads share the atomic primitive', async () => {
     const { db, client } = makeLocalClient();
     await client.start();
-    expect(client.subscriptionCatchup('nope')).toEqual({
+    expect(client.unitCatchup('nope')).toEqual({
       state: 'unknown',
       id: 'nope',
     });
@@ -87,28 +87,26 @@ describe('§7.5 snapshot read surface', () => {
     db.close();
   });
 
-  test('a corrupt persisted subscription record is static sync.local_corrupt', async () => {
+  test('a corrupt persisted unit record is static sync.local_corrupt', async () => {
     const { db, client } = makeLocalClient();
     await client.start();
-    client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    const id = client.subscribe({ project_id: 'p1' });
     const mutations: readonly [string, string | number][] = [
       ['status', 'bogus'],
       ['cursor', 'not-a-number'],
-      ['bootstrap_state', 7],
-      ['effective_scopes', 'not json'],
-      ['reason_code', 7],
+      ['echo', 'not json'],
+      ['scopes', 'not json'],
     ];
     for (const [column, value] of mutations) {
-      db.exec(`UPDATE _syncular_subscriptions SET ${column}=? WHERE id='s1'`, [
-        value,
-      ]);
-      expect(() => client.subscriptionCatchup('s1')).toThrow(
+      const before = db.query('SELECT * FROM _syncular_units WHERE id=?', [id]);
+      db.exec(`UPDATE _syncular_units SET ${column}=? WHERE id=?`, [value, id]);
+      expect(() => client.unitCatchup(id)).toThrow(
         expect.objectContaining({ code: 'sync.local_corrupt' }),
       );
+      db.exec(`UPDATE _syncular_units SET ${column}=? WHERE id=?`, [
+        before[0]![column] as string,
+        id,
+      ]);
     }
     db.close();
   });

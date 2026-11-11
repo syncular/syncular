@@ -545,8 +545,8 @@ export function startSyncWorkerCore(
     'commitOutcomes',
     'resolveCommitOutcome',
     'pendingCommits',
-    'subscriptions',
-    'subscription',
+    'units',
+    'unit',
     'connectRealtime',
     'disconnectRealtime',
     'setPresence',
@@ -607,7 +607,7 @@ export function startSyncWorkerCore(
     },
     resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,
-    diagnosticsSnapshot: (request) => {
+    diagnosticsSnapshot: () => {
       const running = requireClient();
       // The first pull makes the worker a push source: no tab has asked for
       // diagnostics before it, so no snapshot is built per revision until then.
@@ -615,7 +615,7 @@ export function startSyncWorkerCore(
         pushingDiagnostics = true;
         running.onDiagnostics(postDiagnostics);
       }
-      return workerDiagnostics(running.diagnosticsSnapshot(request));
+      return workerDiagnostics(running.diagnosticsSnapshot());
     },
     setHeaders: (next) => {
       headers = next;

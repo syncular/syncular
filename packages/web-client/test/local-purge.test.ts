@@ -265,11 +265,7 @@ describe('application-authorized local data purge', () => {
     const local = await makeClient(server, {
       clientId: 'local-purge-race-client',
     });
-    local.client.subscribe({
-      id: 'purge-race-tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.syncUntilIdle();
     const inFlight = local.client.mutate([
       {

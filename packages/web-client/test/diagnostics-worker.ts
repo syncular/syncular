@@ -1,4 +1,4 @@
-import { encodeMessage } from '@syncular/core';
+import { encodeMessage, PROTOCOL_WIRE_VERSION } from '@syncular/core';
 import { BunClientDatabase } from '../src/bun-database';
 import { ClientSyncError } from '../src/errors';
 import { httpSyncTransport } from '../src/http';
@@ -11,7 +11,7 @@ startSyncWorker({
       config.database.mode === 'custom' ? config.database.options : undefined;
     let first = true;
     const response = encodeMessage({
-      wireVersion: 3,
+      wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'response',
       frames: [
         { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: true },

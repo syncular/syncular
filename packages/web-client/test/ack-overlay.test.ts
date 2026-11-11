@@ -64,12 +64,8 @@ for (const subscriptions of [0, 2, 6, 12]) {
       }
       for (let index = 0; index < subscriptions; index += 1)
         client.subscribe({
-          id: `unrelated-${index}`,
-          table: 'docs',
-          scopes: {
-            org_id: ['org-1'],
-            projectId: [index % 2 ? 'empty' : 'project-1'],
-          },
+          org_id: 'org-1',
+          projectId: index % 2 ? 'empty' : 'project-1',
         });
       const ids = Array.from({ length: 32 }, (_, index) =>
         client.mutate([
@@ -97,11 +93,7 @@ for (const subscriptions of [0, 2, 6, 12]) {
       // Repeated empty pulls and fresh unrelated bootstraps preserve intent
       // without writing or materializing any protected task row.
       for (let index = 0; index < subscriptions; index += 1)
-        client.subscribe({
-          id: `again-${index}`,
-          table: 'docs',
-          scopes: { org_id: ['org-1'], projectId: ['empty'] },
-        });
+        client.subscribe({ org_id: 'org-1', projectId: 'empty' });
       db.reset();
       await client.sync();
       expect([db.restores, db.replays, db.journalRows]).toEqual([0, 0, 0]);
@@ -119,22 +111,14 @@ for (const subscriptions of [0, 2, 6, 12]) {
 
       // An empty bootstrap of another scope in the SAME nonunique table must
       // also leave unsubscribed intent intact after its covering SUB_END.
-      client.subscribe({
-        id: 'other-tasks',
-        table: 'tasks',
-        scopes: { project_id: ['empty'] },
-      });
+      client.subscribe({ project_id: 'empty' });
       db.reset();
       await client.sync();
       expect([db.restores, db.replays]).toEqual([0, 0]);
       expect(db.query('SELECT title FROM tasks')).toHaveLength(32);
 
       // Matching delivery retires the ACK journal. Later server changes win.
-      client.subscribe({
-        id: 'own-tasks',
-        table: 'tasks',
-        scopes: { project_id: ['project-1'] },
-      });
+      client.subscribe({ project_id: 'project-1' });
       await client.syncUntilIdle();
       expect(
         db.query('SELECT count(*) AS n FROM _syncular_failed_rows')[0]?.n,

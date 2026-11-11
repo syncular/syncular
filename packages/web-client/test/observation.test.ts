@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { PROTOCOL_WIRE_VERSION } from '@syncular/core';
 import {
   type ClientChangeBatch,
   SyncClient,
@@ -22,11 +23,10 @@ import {
   taskValues,
 } from './helpers';
 
-const BASE: WindowBase = { table: 'tasks', variable: 'project_id' };
+const BASE: WindowBase = { variable: 'project_id' };
 const DOC_BASE: WindowBase = {
-  table: 'docs',
   variable: 'projectId',
-  fixedScopes: { org_id: ['o1'] },
+  fixedScopes: { org_id: 'o1' },
 };
 
 describe('revisioned local observation (SPEC §7.5)', () => {
@@ -38,7 +38,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       schema: CLIENT_SCHEMA,
       transport: async () =>
         encodeMessage({
-          wireVersion: 3,
+          wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'response',
           frames: [
             { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
@@ -47,7 +47,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               id: subId,
               status: 'active',
               reasonCode: '',
-              effectiveScopes: { project_id: ['p1'] },
+              fenced: [],
               bootstrap: true,
             },
             {
@@ -80,7 +80,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
         "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','epoch-1')",
       );
       await client.setWindow(BASE, ['p1']);
-      subId = client.subscriptions()[0]!.id;
+      subId = client.units()[0]!.id;
       const commit = client.mutate([
         {
           op: 'upsert',
@@ -98,7 +98,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
             { id: 'first', title: 'offline edit' },
           ]);
           expect(snapshot.coverage.complete).toBe(false);
-          expect(client.subscriptions()[0]?.cursor).toBe(-1);
+          expect(client.units()[0]?.cursor).toBe(-1);
           expect(
             client.pendingCommits().map((c) => c.clientCommitId),
           ).toContain(commit);
@@ -141,6 +141,8 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     try {
       await client.start();
       await client.setWindow(BASE, ['p1', 'p2']);
+      // The units completed a bootstrap: each holds an echo (§4.8 E3).
+      db.exec("UPDATE _syncular_units SET cursor=NULL, echo='[]'");
       db.exec(
         "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks(id,project_id,title,done) SELECT printf('%05d',x),'p1','cached',0 FROM n",
       );
@@ -161,11 +163,9 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       );
       expect(changes).toEqual([1027]);
       expect(client.windowState(BASE).units).toEqual(['p2']);
-      expect(client.subscriptions().map((s) => s.scopes.project_id)).toEqual([
-        ['p2'],
-      ]);
+      expect(client.units().map((s) => s.scopes.project_id)).toEqual(['p2']);
       expect(
-        db.query('SELECT count(*) AS n FROM _syncular_window_pending_evict'),
+        db.query('SELECT count(*) AS n FROM _syncular_pending_evictions'),
       ).toEqual([{ n: 1 }]);
       db.exec('DROP TRIGGER interrupt_evict');
       await client.close();
@@ -181,9 +181,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       expect(client.statusSnapshot().syncNeeded).toBe(true);
       await expect(client.sync()).rejects.toThrow('transport round failed');
       expect(client.query('SELECT id FROM tasks')).toEqual([{ id: 'held' }]);
-      expect(db.query('SELECT * FROM _syncular_window_pending_evict')).toEqual(
-        [],
-      );
+      expect(db.query('SELECT * FROM _syncular_pending_evictions')).toEqual([]);
     } finally {
       await client.close();
       db.close();
@@ -204,6 +202,8 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     try {
       await client.start();
       await store.setWindowClaim(owner, BASE, ['p1']);
+      // The units completed a bootstrap: each holds an echo (§4.8 E3).
+      db.exec("UPDATE _syncular_units SET cursor=NULL, echo='[]'");
       db.exec(
         "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks(id,project_id,title,done) SELECT printf('%05d',x),'p1','cached',0 FROM n",
       );
@@ -220,9 +220,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
         units: ['p1'],
         pending: ['p1'],
       });
-      expect(db.query('SELECT * FROM _syncular_window_pending_evict')).toEqual(
-        [],
-      );
+      expect(db.query('SELECT * FROM _syncular_pending_evictions')).toEqual([]);
     } finally {
       store.dispose();
       await client.close();
@@ -242,11 +240,13 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     try {
       await client.start();
       await client.setWindow(BASE, ['p1']);
+      // The units completed a bootstrap: each holds an echo (§4.8 E3).
+      db.exec("UPDATE _syncular_units SET cursor=NULL, echo='[]'");
       db.exec(
         "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks(id,project_id,title,done) SELECT printf('%05d',x),'p1','cached',0 FROM n",
       );
       db.exec(
-        "CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END",
+        "CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_pending_evictions BEGIN SELECT RAISE(ABORT,'marker failed'); END",
       );
       const revision = client.querySnapshot({
         sql: 'SELECT count(*) AS n FROM tasks',
@@ -265,7 +265,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       );
       db.exec('DROP TRIGGER interrupt_evict');
       db.exec(
-        "CREATE TRIGGER fail_marker BEFORE DELETE ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END",
+        "CREATE TRIGGER fail_marker BEFORE DELETE ON _syncular_pending_evictions BEGIN SELECT RAISE(ABORT,'marker failed'); END",
       );
       await expect(client.sync()).rejects.toThrow('marker failed');
       expect(db.query('SELECT count(*) AS n FROM tasks')).toEqual([{ n: 2 }]);
@@ -274,7 +274,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       );
       expect(client.windowState(BASE).units).toEqual([]);
       expect(
-        db.query('SELECT count(*) AS n FROM _syncular_window_pending_evict'),
+        db.query('SELECT count(*) AS n FROM _syncular_pending_evictions'),
       ).toEqual([{ n: 1 }]);
       db.exec('DROP TRIGGER fail_marker');
       await client.setWindow(BASE, ['p1']);
@@ -296,7 +296,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       clientId: 'observer-append',
       transport: async () =>
         encodeMessage({
-          wireVersion: 3,
+          wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'response',
           frames: [
             { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
@@ -407,7 +407,11 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               retryable: false,
               recommendedAction: 'retry',
             });
-          return encodeMessage({ wireVersion: 3, msgKind: 'response', frames });
+          return encodeMessage({
+            wireVersion: PROTOCOL_WIRE_VERSION,
+            msgKind: 'response',
+            frames,
+          });
         },
       });
       try {
@@ -548,7 +552,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               );
             }
             return encodeMessage({
-              wireVersion: 3,
+              wireVersion: PROTOCOL_WIRE_VERSION,
               msgKind: 'response',
               frames: [
                 {
@@ -765,7 +769,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     const partial = client.client.querySnapshot(spec);
     expect(partial.coverage.complete).toBe(false);
     expect(partial.coverage.pending).toEqual([
-      { baseKey: 'docs\0projectId\0{"org_id":["o1"]}', unit: 'p1' },
+      { baseKey: 'projectId\0{"org_id":["o1"]}', unit: 'p1' },
     ]);
     expect(partial.coverage.missing).toEqual([]);
 
@@ -781,7 +785,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     expect(missing.complete).toBe(false);
     expect(missing.pending).toEqual([]);
     expect(missing.missing).toEqual([
-      { baseKey: 'docs\0projectId\0{"org_id":["o1"]}', unit: 'p1' },
+      { baseKey: 'projectId\0{"org_id":["o1"]}', unit: 'p1' },
     ]);
   });
 

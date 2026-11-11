@@ -182,11 +182,7 @@ async function seedV1(
       ]);
     }
     if (options.subscribe === true) {
-      seeded.client.subscribe({
-        id: 'sub-things',
-        table: 'things',
-        scopes: { project_id: ['p1'] },
-      });
+      seeded.client.subscribe({ project_id: 'p1' });
     }
   } finally {
     await seeded.client.close();
@@ -706,7 +702,7 @@ describe('RFC 0005 lifetime and discard', () => {
     const bumped = await openAt(server, path, V2_SCHEMA, enabled());
     try {
       bumped.db.exec(
-        "UPDATE _syncular_subscriptions SET status = 'revoked', reason_code = 'sync.scope_revoked'",
+        "UPDATE _syncular_units SET status = 'revoked', reason_code = 'sync.scope_revoked'",
       );
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
@@ -1015,7 +1011,7 @@ describe('RFC 0005 coverage exclusion', () => {
     await seedV1(server, path);
     const bumped = await openAt(server, path, V2_SCHEMA, enabled());
     try {
-      const base = { table: 'things', variable: 'project_id' } as const;
+      const base = { variable: 'project_id' } as const;
       await bumped.client.setWindow(base, ['p1']);
       const pending = bumped.client.querySnapshot({
         sql: 'SELECT 1 AS one',

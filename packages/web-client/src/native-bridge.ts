@@ -27,10 +27,10 @@ import {
   type WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
-import type { PresenceErrorCode } from '@syncular/core';
+import type { PresenceErrorCode, UnitScopes } from '@syncular/core';
 import {
+  CLIENT_DIAGNOSTICS_VERSION,
   type ClientDiagnosticsListener,
-  type ClientDiagnosticsRequest,
   type ClientDiagnosticsSnapshot,
   withClientDiagnosticsHost,
 } from './diagnostics';
@@ -206,19 +206,8 @@ function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
     ? raw.windows.flatMap((entry) => {
         if (entry === null || typeof entry !== 'object') return [];
         const item = entry as Record<string, unknown>;
-        if (
-          typeof item.baseKey !== 'string' ||
-          typeof item.table !== 'string'
-        ) {
-          return [];
-        }
-        return [
-          {
-            baseKey: item.baseKey,
-            table: item.table,
-            units: toStringSet(item.units),
-          },
-        ];
+        if (typeof item.baseKey !== 'string') return [];
+        return [{ baseKey: item.baseKey, units: toStringSet(item.units) }];
       })
     : [];
   const appliedCommits: NonNullable<
@@ -230,7 +219,6 @@ function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
       if (entry === null || typeof entry !== 'object') return undefined;
       const item = entry as Record<string, unknown>;
       if (
-        typeof item.subscriptionId !== 'string' ||
         typeof item.table !== 'string' ||
         typeof item.commitSeq !== 'number' ||
         !Number.isSafeInteger(item.commitSeq) ||
@@ -239,7 +227,6 @@ function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
       )
         return undefined;
       appliedCommits.push({
-        subscriptionId: item.subscriptionId,
         table: item.table,
         commitSeq: item.commitSeq,
         source: item.source,
@@ -558,14 +545,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
         const batch = decodeChangeBatch(event.batch);
         if (batch === undefined) break;
         fanOut(this.#changeListeners, batch);
-        if (batch.tables.length === 0 && batch.windows.length === 0) break;
+        if (batch.tables.length === 0) break;
         const tables = new Set<string>();
         const scopeKeys = new Set<string>();
         for (const table of batch.tables) {
           tables.add(table.table);
           for (const key of table.scopeKeys ?? []) scopeKeys.add(key);
         }
-        for (const window of batch.windows) tables.add(window.table);
         fanOut(this.#invalidationListeners, { tables, scopeKeys });
         break;
       }
@@ -581,7 +567,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
         if (
           snapshot === null ||
           typeof snapshot !== 'object' ||
-          snapshot.version !== 1 ||
+          snapshot.version !== CLIENT_DIAGNOSTICS_VERSION ||
           snapshot.host === undefined
         )
           break;
@@ -738,14 +724,14 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
         params: encodeValue(statement.params ?? []),
       })),
       coverage: request.coverage ?? [],
-      subscriptions: request.subscriptions ?? [],
+      units: request.units ?? [],
       commitIds: request.commitIds ?? [],
       ...(request.owner !== undefined ? { owner: request.owner } : {}),
     })) as {
       revision: string;
       queries: readonly (readonly Record<string, unknown>[])[];
       coverage: SnapshotRead['coverage'];
-      subscriptions: SnapshotRead['subscriptions'];
+      units: SnapshotRead['units'];
       deliveries: SnapshotRead['deliveries'];
     };
     return {
@@ -754,7 +740,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
         rows.map((row) => this.decodeRow(row)),
       ),
       coverage: result.coverage,
-      subscriptions: result.subscriptions,
+      units: result.units,
       deliveries: result.deliveries.map((delivery) =>
         delivery.status === 'known'
           ? { ...delivery, outcome: this.#commitOutcome(delivery.outcome) }
@@ -774,12 +760,11 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
     return (await this.command('statusSnapshot', {})) as SyncStatusSnapshot;
   }
 
-  async diagnosticsSnapshot(
-    request: ClientDiagnosticsRequest = {},
-  ): Promise<ClientDiagnosticsSnapshot> {
-    const snapshot = (await this.command('diagnosticsSnapshot', {
-      expectedSubscriptions: request.expectedSubscriptions ?? [],
-    })) as ClientDiagnosticsSnapshot;
+  async diagnosticsSnapshot(): Promise<ClientDiagnosticsSnapshot> {
+    const snapshot = (await this.command(
+      'diagnosticsSnapshot',
+      {},
+    )) as ClientDiagnosticsSnapshot;
     return withClientDiagnosticsHost(snapshot, {
       ...snapshot.host,
       kind: this.#kind,
@@ -1007,37 +992,16 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
     };
   }
 
-  async subscribe(input: {
-    readonly id: string;
-    readonly table: string;
-    readonly scopes?: Record<string, readonly string[]>;
-    readonly params?: string;
-  }): Promise<void> {
-    await this.command('subscribe', {
-      id: input.id,
-      table: input.table,
-      scopes: input.scopes ?? {},
-      ...(input.params !== undefined ? { params: input.params } : {}),
-    });
+  /** §4.1: register one unit; returns its id. */
+  async subscribe(scopes: UnitScopes): Promise<string> {
+    return ((await this.command('subscribe', { scopes })) as { id: string }).id;
   }
 
-  /** Register several subscriptions in one local transaction. */
-  async subscribeMany(
-    inputs: readonly {
-      readonly id: string;
-      readonly table: string;
-      readonly scopes?: Record<string, readonly string[]>;
-      readonly params?: string;
-    }[],
-  ): Promise<void> {
-    await this.command('subscribeMany', {
-      subscriptions: inputs.map((input) => ({
-        id: input.id,
-        table: input.table,
-        scopes: input.scopes ?? {},
-        ...(input.params !== undefined ? { params: input.params } : {}),
-      })),
-    });
+  /** Register several units in one local transaction; returns their ids. */
+  async subscribeMany(units: readonly UnitScopes[]): Promise<string[]> {
+    return (
+      (await this.command('subscribeMany', { units })) as { ids: string[] }
+    ).ids;
   }
 
   async unsubscribe(id: string): Promise<void> {

@@ -37,7 +37,7 @@ const STATUS: SyncStatusSnapshot = {
 };
 
 const COMPLETE = { complete: true, pending: [], missing: [] } as const;
-const BASE: WindowBase = { table: 'tasks', variable: 'project_id' };
+const BASE: WindowBase = { variable: 'project_id' };
 
 function batch(
   revision: bigint,
@@ -478,8 +478,7 @@ describe('rejected claim recovery (SPEC §7.8)', () => {
       batch(2n, {
         windows: [
           {
-            baseKey: 'tasks\0project_id\0{}',
-            table: 'tasks',
+            baseKey: 'project_id\0{}',
             units: new Set(['p1']),
           },
         ],
@@ -649,8 +648,7 @@ describe('revision race gates', () => {
       batch(2n, {
         windows: [
           {
-            baseKey: 'tasks\0project_id\0{}',
-            table: 'tasks',
+            baseKey: 'project_id\0{}',
             units: new Set(['p1']),
           },
         ],
@@ -676,8 +674,7 @@ describe('failed sync rounds', () => {
     batch(revision, {
       windows: [
         {
-          baseKey: 'tasks\0project_id\0{}',
-          table: 'tasks',
+          baseKey: 'project_id\0{}',
           units: new Set(['p1']),
         },
       ],
@@ -1024,7 +1021,7 @@ describe('composable windows and domain routing', () => {
       querySpec({
         coverage: [
           { base: BASE, units: ['p1'] },
-          { base: { table: 'docs', variable: 'org_id' }, units: ['o1'] },
+          { base: { variable: 'org_id' }, units: ['o1'] },
           { base: BASE, units: ['p2'] },
         ],
       }),
@@ -1036,15 +1033,14 @@ describe('composable windows and domain routing', () => {
     // first entry's units survive registration.
     expect(client.setWindowCalls).toEqual([
       { base: BASE, units: ['p1', 'p2'] },
-      { base: { table: 'docs', variable: 'org_id' }, units: ['o1'] },
+      { base: { variable: 'org_id' }, units: ['o1'] },
     ]);
 
     client.emit(
       batch(2n, {
         windows: [
           {
-            baseKey: 'tasks\0project_id\0{}',
-            table: 'tasks',
+            baseKey: 'project_id\0{}',
             units: new Set(['p1']),
           },
         ],
@@ -1057,8 +1053,7 @@ describe('composable windows and domain routing', () => {
       batch(3n, {
         windows: [
           {
-            baseKey: 'tasks\0project_id\0{}',
-            table: 'tasks',
+            baseKey: 'project_id\0{}',
             units: new Set(['p2']),
           },
         ],

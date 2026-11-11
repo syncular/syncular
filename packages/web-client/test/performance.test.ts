@@ -124,15 +124,15 @@ describe('local querySnapshot performance lanes', () => {
 
     const store = new ReactiveClientStore(client);
     store.start();
-    const base = { table: 'tasks', variable: 'project_id' } as const;
+    const base = { variable: 'project_id' } as const;
     const retention = store.retainWindow(base, units);
     await retention.ready;
     // This lane is deliberately warm: the bootstrap/network operation is a
     // separate budget. Mark the retained local fixtures complete before
     // timing first observation of each route/query entry.
     db.exec(
-      `UPDATE _syncular_subscriptions
-          SET cursor = 0, bootstrap_state = NULL, status = 'active'`,
+      `UPDATE _syncular_units
+          SET cursor = 0, bootstrap_state = NULL, status = 'active', echo = '[]'`,
     );
 
     const samples: number[] = [];

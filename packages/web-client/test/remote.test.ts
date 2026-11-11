@@ -5,6 +5,7 @@ import {
   encodeRemoteOperationRealtimeMessage,
   encodeRemoteOperationResponse,
   type RemoteOperationResponse,
+  PROTOCOL_WIRE_VERSION,
 } from '@syncular/core';
 import {
   composeRealtimeNotifiers,
@@ -51,7 +52,7 @@ describe('SyncRemoteClient', () => {
     });
 
     const message = decodeMessage(prepared.bytes);
-    expect(message.wireVersion).toBe(3);
+    expect(message.wireVersion).toBe(PROTOCOL_WIRE_VERSION);
     expect(message.frames[0]).toMatchObject({
       type: 'REQ_HEADER',
       logEpoch: 'epoch-2',

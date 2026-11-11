@@ -6,7 +6,8 @@ import {
   type ClientSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { saveSubscription } from '../src/state';
+import { unitId } from '@syncular/core';
+import { saveUnit } from '../src/state';
 
 const schema: ClientSchema = {
   version: 1,
@@ -120,13 +121,14 @@ test('authority snapshot merges complete persisted scope rectangles, distinguish
       ['one', 'a', 'reader', 'clinical plaintext', 7],
     );
     for (const actor of ['a', 'b'])
-      saveSubscription(db, {
-        id: actor,
-        table: 'authority',
-        scopes: { actor_id: [actor] },
-        effectiveScopes: { actor_id: [actor] },
-        cursor: 7,
+      saveUnit(db, {
+        id: unitId({ actor_id: actor }),
+        scopes: { actor_id: actor },
+        explicit: true,
         status: 'active',
+        cursor: 7,
+        seeded: [],
+        echo: [],
       });
     const revision = client.localRevision;
     const before = db.query('SELECT total_changes() AS changes');
@@ -156,31 +158,34 @@ test('authority snapshot merges complete persisted scope rectangles, distinguish
         ['outside'],
       ),
     ).toThrow();
-    saveSubscription(db, {
-      id: 'b',
-      table: 'authority',
-      scopes: { actor_id: ['b'] },
-      effectiveScopes: { actor_id: ['b'] },
-      cursor: 7,
+    const b = unitId({ actor_id: 'b' });
+    saveUnit(db, {
+      id: b,
+      scopes: { actor_id: 'b' },
+      explicit: true,
       status: 'active',
+      cursor: 7,
       bootstrapState: 'credential-must-not-leak',
+      seeded: [],
+      echo: [],
     });
     const partial = client.authoritySnapshot();
     expect(partial.complete).toBe(false);
     expect(
       JSON.stringify({ ...partial, revision: String(partial.revision) }),
     ).not.toContain('credential-must-not-leak');
-    saveSubscription(db, {
-      id: 'b',
-      table: 'authority',
-      scopes: { actor_id: ['b'] },
-      effectiveScopes: { actor_id: ['b'] },
-      cursor: 7,
+    // A pair the wildcard fence revoked is not coverage (§4.4).
+    saveUnit(db, {
+      id: b,
+      scopes: { actor_id: 'b' },
+      explicit: true,
       status: 'active',
-      params: '{}',
+      cursor: 7,
+      seeded: [],
+      echo: [{ table: 'authority', status: 'revoked', scopes: {} }],
     });
     expect(client.authoritySnapshot().complete).toBe(false);
-    db.exec("DELETE FROM _syncular_subscriptions WHERE id='b'");
+    db.exec('DELETE FROM _syncular_units WHERE id=?', [b]);
     expect(client.authoritySnapshot().complete).toBe(false);
     const closing = client.close();
     expect(() => client.authoritySnapshot()).toThrow(
@@ -228,13 +233,14 @@ test('SQLite pins revision, authority rows and persisted scope coverage before a
         "UPDATE _syncular_meta SET value=? WHERE key='localRevision'",
         [String(revision)],
       );
-      saveSubscription(writer, {
-        id: 'a',
-        table: 'authority',
-        scopes: { actor_id: ['a'] },
-        effectiveScopes: { actor_id: ['a'] },
-        cursor: revision,
+      saveUnit(writer, {
+        id: unitId({ actor_id: 'a' }),
+        scopes: { actor_id: 'a' },
+        explicit: true,
         status: 'active',
+        cursor: revision,
+        seeded: [],
+        echo: [],
       });
     });
   try {

@@ -6,12 +6,11 @@ import {
   SyncClient,
   type SyncProgress,
   httpSyncTransport,
-  MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
   MAX_DIAGNOSTIC_QUERY_FAILURES,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { encodeMessage } from '@syncular/core';
+import { encodeMessage, PROTOCOL_WIRE_VERSION, unitId } from '@syncular/core';
 import { errorBody, handleSyncRequest, SyncError } from '@syncular/server';
 import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
 
@@ -19,7 +18,7 @@ describe('privacy-safe client diagnostics', () => {
   test('publishes bounded transport evidence and clears it on recovery', async () => {
     const secret = 'https://user:password@example.invalid/private?token=secret';
     const response = encodeMessage({
-      wireVersion: 3,
+      wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'response',
       frames: [
         { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: true },
@@ -162,28 +161,25 @@ describe('privacy-safe client diagnostics', () => {
     }
   });
 
-  test('distinguishes intent, bootstrap, zero-row completion, local work, and offline failure', async () => {
+  test('distinguishes registration, bootstrap, zero-row completion, local work, and offline failure', async () => {
     const server = makeServer();
     const fixture = await makeClient(server, {
       clientId: 'private-device-id',
     });
-    const expected = [{ id: 'tasks-membership', table: 'tasks' }] as const;
-
-    const missing = fixture.client.diagnosticsSnapshot({
-      expectedSubscriptions: expected,
-    });
-    expect(missing).toMatchObject({
-      version: 1,
+    const empty = {
+      bootstrapping: 0,
+      complete: 0,
+      reset: 0,
+      revoked: 0,
+      failed: 0,
+      reasonCodes: [],
+    };
+    expect(fixture.client.diagnosticsSnapshot()).toMatchObject({
+      version: 2,
       host: { kind: 'direct', role: 'single', connectivity: 'unknown' },
-      subscriptions: [
-        {
-          id: 'tasks-membership',
-          table: 'tasks',
-          state: 'unregistered',
-          complete: false,
-        },
-      ],
-      activeSubscriptions: 0,
+      units: empty,
+      activeUnits: 0,
+      replicaCursor: -1,
       storage: { status: 'healthy' },
     });
 
@@ -191,29 +187,16 @@ describe('privacy-safe client diagnostics', () => {
     fixture.client.onDiagnostics((snapshot) => {
       events.push(snapshot.replica.localRevision);
     });
-    fixture.client.subscribe({
-      id: 'tasks-membership',
-      table: 'tasks',
-      scopes: { project_id: ['private-scope-value'] },
-    });
-    expect(
-      fixture.client.diagnosticsSnapshot({
-        expectedSubscriptions: expected,
-      }),
-    ).toMatchObject({
-      activeSubscriptions: 1,
-      subscriptions: [{ state: 'bootstrapping', complete: false, cursor: -1 }],
+    fixture.client.subscribe({ project_id: 'private-scope-value' });
+    expect(fixture.client.diagnosticsSnapshot()).toMatchObject({
+      activeUnits: 1,
+      units: { ...empty, bootstrapping: 1 },
     });
 
     // A bootstrap with zero matching rows is complete, not missing/unknown.
     await fixture.client.syncUntilIdle();
-    const complete = fixture.client.diagnosticsSnapshot({
-      expectedSubscriptions: expected,
-    });
-    expect(complete.subscriptions[0]).toMatchObject({
-      state: 'complete',
-      complete: true,
-    });
+    const complete = fixture.client.diagnosticsSnapshot();
+    expect(complete.units).toEqual({ ...empty, complete: 1 });
     expect(complete.lastRound).toMatchObject({ status: 'succeeded' });
     expect(complete.host.connectivity).toBe('online');
 
@@ -256,43 +239,22 @@ describe('privacy-safe client diagnostics', () => {
     });
   });
 
-  test('bounds intent and remains protected during security preflight', async () => {
+  test('counts units without ids and remains protected during security preflight', async () => {
     const fixture = await makeClient(makeServer(), {
       clientId: 'diagnostics-policy',
     });
-    expect(() =>
-      fixture.client.diagnosticsSnapshot({
-        expectedSubscriptions: Array.from(
-          { length: MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS + 1 },
-          (_, index) => ({ id: `sub-${index}`, table: 'tasks' }),
-        ),
-      }),
-    ).toThrow('at most');
-
-    for (let index = 0; index < 260; index += 1) {
-      fixture.client.subscribe({
-        id: `registered-${index}`,
-        table: 'tasks',
-        scopes: { project_id: ['private-scope'] },
-      });
-    }
-    const bounded = fixture.client.diagnosticsSnapshot({
-      expectedSubscriptions: [
-        { id: 'registered-259', table: 'tasks' },
-        { id: 'registered-0', table: 'docs' },
-      ],
-    });
-    expect(bounded.subscriptions).toHaveLength(256);
-    expect(bounded.subscriptionsTruncated).toBe(true);
-    expect(bounded.subscriptions[0]?.id).toBe('registered-259');
-    expect(bounded.subscriptions[1]).toMatchObject({
-      id: 'registered-0',
-      table: 'docs',
-      state: 'failed',
-      complete: false,
-      reasonCode: 'client.subscription_intent_mismatch',
-    });
+    fixture.client.subscribeMany(
+      Array.from({ length: 260 }, (_, index) => ({
+        project_id: `private-scope-${index}`,
+      })),
+    );
+    const bounded = fixture.client.diagnosticsSnapshot();
+    expect(bounded.activeUnits).toBe(260);
+    expect(bounded.units.bootstrapping).toBe(260);
     expect(JSON.stringify(bounded)).not.toContain('private-scope');
+    expect(JSON.stringify(bounded)).not.toContain(
+      unitId({ project_id: 'private-scope-0' }),
+    );
 
     await fixture.client.beginSecurityPreflight();
     try {
@@ -385,11 +347,7 @@ describe('privacy-safe client diagnostics', () => {
     const fixture = await makeClient(server, {
       clientId: 'diagnostics-lease',
     });
-    fixture.client.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    fixture.client.subscribe({ project_id: 'p1' });
     await fixture.client.syncUntilIdle();
     const active = fixture.client.diagnosticsSnapshot();
     expect(active.lease).toMatchObject({ state: 'active' });
@@ -499,14 +457,8 @@ describe('privacy-safe client diagnostics', () => {
         ),
       }),
     });
-    for (const id of ['a', 'b']) {
-      fixture.client.subscribe({
-        id,
-        table: 'tasks',
-        scopes: { project_id: [id] },
-      });
-    }
-    expect(fixture.client.diagnosticsSnapshot().activeSubscriptions).toBe(2);
+    fixture.client.subscribeMany([{ project_id: 'a' }, { project_id: 'b' }]);
+    expect(fixture.client.diagnosticsSnapshot().activeUnits).toBe(2);
     const failure = await fixture.client.syncUntilIdle().catch((e) => e);
     expect(failure).toBeInstanceOf(ClientSyncError);
     expect(failure).toMatchObject({

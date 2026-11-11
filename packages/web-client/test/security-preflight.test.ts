@@ -44,11 +44,7 @@ test('preflight suppresses startup work until exact purge and activation', async
     transport: async () => new Uint8Array(),
   });
   await initial.start();
-  initial.subscribe({
-    id: 'persisted-tasks',
-    table: 'tasks',
-    scopes: { project_id: ['facility-1'] },
-  });
+  initial.subscribe({ project_id: 'facility-1' });
   await initial.close();
   initialDb.close();
 
@@ -70,7 +66,7 @@ test('preflight suppresses startup work until exact purge and activation', async
   expect(client.statusSnapshot().currentSchemaVersion).toBe(1);
   expect(client.localRevision).toBeGreaterThanOrEqual(0n);
   expectPreflightFailure(() => client.query('SELECT id FROM tasks'));
-  expectPreflightFailure(() => client.subscriptions());
+  expectPreflightFailure(() => client.units());
   expectPreflightFailure(() => client.mutate([]));
   expectPreflightFailure(() => client.sync());
 

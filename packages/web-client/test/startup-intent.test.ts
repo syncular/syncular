@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClientSyncError, SyncClient, type SyncIntent } from '@syncular/client';
+import { PROTOCOL_WIRE_VERSION, unitId } from '@syncular/core';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { CLIENT_SCHEMA } from './helpers';
 
@@ -14,7 +15,7 @@ afterEach(() => {
   }
 });
 
-test('reopening active persistent subscriptions emits a catch-up intent', async () => {
+test('reopening active persistent units emits a catch-up intent', async () => {
   const root = mkdtempSync(join(tmpdir(), 'syncular-startup-'));
   roots.push(root);
   const path = join(root, 'client.db');
@@ -26,9 +27,7 @@ test('reopening active persistent subscriptions emits a catch-up intent', async 
     transport: async () => new Uint8Array(),
   });
   await first.start();
-  await first.setWindowCommand({ table: 'tasks', variable: 'project_id' }, [
-    'persisted',
-  ]);
+  await first.setWindowCommand({ variable: 'project_id' }, ['persisted']);
   await first.close();
   firstDb.close();
 
@@ -52,8 +51,8 @@ test('reopening active persistent subscriptions emits a catch-up intent', async 
   reopenedDb.close();
 });
 
-test('reopening preserves immutable subscription identity and progress', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'syncular-subscription-identity-'));
+test('reopening preserves a unit and its progress; registering it again changes nothing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'syncular-unit-identity-'));
   roots.push(root);
   const path = join(root, 'client.db');
 
@@ -64,74 +63,35 @@ test('reopening preserves immutable subscription identity and progress', async (
     transport: async () => new Uint8Array(),
   });
   await first.start();
-  first.subscribe({
-    id: 'stable-subscription',
-    table: 'tasks',
-    scopes: { project_id: ['p2', 'p1'] },
-    params: '{"view":"v1"}',
-  });
+  const id = first.subscribe({ project_id: 'p1' });
+  expect(id).toBe(unitId({ project_id: 'p1' }));
   firstDb.exec(
-    `UPDATE _syncular_subscriptions
-       SET cursor = 41, bootstrap_state = ?, effective_scopes = ?
-       WHERE id = ?`,
-    ['resume-token', '{"project_id":["p1","p2"]}', 'stable-subscription'],
+    `UPDATE _syncular_units SET cursor = 41, bootstrap_state = ?, seeded = ?, echo = '[]' WHERE id = ?`,
+    ['resume-token', '["tasks"]', id],
   );
   await first.close();
   firstDb.close();
 
+  const intents: SyncIntent[] = [];
   const reopenedDb = new BunClientDatabase(path);
   const reopened = new SyncClient({
     database: reopenedDb,
     schema: CLIENT_SCHEMA,
     transport: async () => new Uint8Array(),
+    onSyncIntent: (intent) => intents.push(intent),
   });
   await reopened.start();
-  const progress = reopened.subscription('stable-subscription');
+  const progress = reopened.unit(id);
   expect(progress).toMatchObject({
     cursor: 41,
     bootstrapState: 'resume-token',
-    effectiveScopes: { project_id: ['p1', 'p2'] },
+    seeded: ['tasks'],
+    echo: [],
   });
-
-  reopened.subscribe({
-    id: 'stable-subscription',
-    table: 'tasks',
-    scopes: { project_id: ['p1', 'p2', 'p1'] },
-    params: '{"view":"v1"}',
-  });
-  expect(reopened.subscription('stable-subscription')).toEqual(progress);
-
-  for (const input of [
-    {
-      id: 'stable-subscription',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-      params: '{"view":"v1"}',
-    },
-    {
-      id: 'stable-subscription',
-      table: 'tasks',
-      scopes: { project_id: ['p2', 'p1'] },
-      params: '{"view":"v2"}',
-    },
-    {
-      id: 'stable-subscription',
-      table: 'docs',
-      scopes: { org_id: ['o1'], projectId: ['p1'] },
-      params: '{"view":"v1"}',
-    },
-  ]) {
-    try {
-      reopened.subscribe(input);
-      throw new Error('expected subscription identity mismatch');
-    } catch (error) {
-      expect(error).toBeInstanceOf(ClientSyncError);
-      expect((error as ClientSyncError).code).toBe(
-        'client.subscription_intent_mismatch',
-      );
-    }
-    expect(reopened.subscription('stable-subscription')).toEqual(progress);
-  }
+  intents.length = 0;
+  expect(reopened.subscribe({ project_id: 'p1' })).toBe(id);
+  expect(reopened.unit(id)).toEqual(progress);
+  expect(intents).toEqual([]);
 
   await reopened.close();
   reopenedDb.close();
@@ -154,7 +114,7 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
             request.frames.filter((frame) => frame.type === 'PUSH_COMMIT'),
           ).toHaveLength(storedEpoch === undefined ? 0 : 1);
         return encodeMessage({
-          wireVersion: 3,
+          wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'response',
           frames: [
             { type: 'RESP_HEADER', logEpoch: 'new-epoch', resetRequired: true },
@@ -164,11 +124,7 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
     });
     try {
       await client.start();
-      client.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      const id = client.subscribe({ project_id: 'p1' });
       // A trigger on the existing table proves its physical identity survives
       // acquisition. A real reset must drop it with the table.
       db.exec(
@@ -188,7 +144,7 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
           },
         },
       ]);
-      const before = client.subscription('tasks');
+      const before = client.unit(id);
       const statuses: boolean[] = [];
       client.onChange((batch) => {
         if (batch.status) statuses.push(batch.status.upgrading);
@@ -199,7 +155,7 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
           storedEpoch,
         ]);
       const report = await client.sync();
-      expect(report.resets).toEqual(storedEpoch === undefined ? [] : ['tasks']);
+      expect(report.resets).toEqual(storedEpoch === undefined ? [] : [id]);
       expect(
         client.pendingCommits().map((entry) => entry.clientCommitId),
       ).toEqual([commit]);
@@ -212,7 +168,7 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
         expect(upgrading).toEqual([]);
         expect(statuses.every((value) => !value)).toBe(true);
         expect(client.statusSnapshot().upgrading).toBe(false);
-        expect(client.subscription('tasks')).toEqual(before);
+        expect(client.unit(id)).toEqual(before);
         expect(
           db.query(
             "SELECT name FROM sqlite_master WHERE name='epoch_table_identity'",
@@ -234,7 +190,7 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
   });
 }
 
-test('subscribeMany registers all subscriptions or none, with one intent', async () => {
+test('subscribeMany registers all units or none, with one intent', async () => {
   const db = new BunClientDatabase();
   const intents: SyncIntent[] = [];
   const client = new SyncClient({
@@ -245,20 +201,17 @@ test('subscribeMany registers all subscriptions or none, with one intent', async
   });
   await client.start();
   intents.length = 0;
-  client.subscribeMany([
-    { id: 'a', table: 'tasks', scopes: { project_id: ['p1'] } },
-    { id: 'b', table: 'tasks', scopes: { project_id: ['p2'] } },
+  const ids = client.subscribeMany([
+    { project_id: 'p1' },
+    { project_id: 'p2' },
   ]);
-  expect(client.subscriptions().map((sub) => sub.id)).toEqual(['a', 'b']);
+  expect(client.units().map((unit) => unit.id)).toEqual(ids);
   expect(intents).toHaveLength(1);
-  // `b` names another project: the whole call fails, `c` stays out.
+  // A wildcard value fails the whole call: `p3` stays out.
   expect(() =>
-    client.subscribeMany([
-      { id: 'c', table: 'tasks', scopes: { project_id: ['p3'] } },
-      { id: 'b', table: 'tasks', scopes: { project_id: ['p9'] } },
-    ]),
+    client.subscribeMany([{ project_id: 'p3' }, { project_id: '*' }]),
   ).toThrow(ClientSyncError);
-  expect(client.subscription('c')).toBeUndefined();
+  expect(client.unit(unitId({ project_id: 'p3' }))).toBeUndefined();
   expect(intents).toHaveLength(1);
   await client.close();
   db.close();

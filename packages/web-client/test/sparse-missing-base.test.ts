@@ -47,16 +47,8 @@ test('PGlite sync preserves a sparse conflict after the server deletes its base'
     const [a, b] = clients;
     await a!.start();
     await b!.start();
-    a!.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
-    b!.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a!.subscribe({ project_id: 'p1' });
+    b!.subscribe({ project_id: 'p1' });
     await a!.syncUntilIdle();
     await b!.syncUntilIdle();
     expect(() => b!.patch('tasks', 'absent', { title: 'mine' })).toThrow(

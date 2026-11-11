@@ -5,7 +5,7 @@ export interface SyncProgress {
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
   readonly phase: 'request' | 'download' | 'import';
-  readonly subscriptionId?: string;
+  readonly unitId?: string;
   readonly table?: string;
   readonly segmentId?: string | undefined;
   readonly bytesReceived: number;

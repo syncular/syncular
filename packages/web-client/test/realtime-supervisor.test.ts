@@ -88,7 +88,7 @@ function diagnostics(
   realtime: 'connected' | 'disconnected' | 'unsupported',
 ): ClientDiagnosticsSnapshot {
   return {
-    version: 1,
+    version: 2,
     capturedAtMs: 1,
     host: {
       kind: 'worker',
@@ -100,9 +100,16 @@ function diagnostics(
     schema: { currentVersion: 1, upgrading: false },
     replica: { localRevision: '0', syncNeeded: false, pendingOutbox: 0 },
     lease: { state: 'none' },
-    subscriptions: [],
-    subscriptionsTruncated: false,
-    activeSubscriptions: 0,
+    units: {
+      bootstrapping: 0,
+      complete: 0,
+      reset: 0,
+      revoked: 0,
+      failed: 0,
+      reasonCodes: [],
+    },
+    activeUnits: 0,
+    replicaCursor: -1,
     storage: { status: 'healthy' },
     queryFailures: [],
   };
@@ -628,11 +635,7 @@ describe('supported realtime host supervisor', () => {
     const a = await makeClient(server, { clientId: 'supervisor-writer' });
     const b = await makeClient(server, { clientId: 'supervisor-reader' });
     for (const current of [a, b]) {
-      current.client.subscribe({
-        id: 'supervised-tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      current.client.subscribe({ project_id: 'p1' });
     }
     await a.client.syncUntilIdle();
     const network = signal<'online' | 'offline' | 'unknown'>('online');

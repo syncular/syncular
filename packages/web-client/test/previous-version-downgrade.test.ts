@@ -21,13 +21,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ClientSchema } from '@syncular/client';
+import { type ClientSchema, SyncClient } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import type { ServerSchema } from '@syncular/server';
 import { makeClient, makeServer, type TestServer } from './helpers';
 
 /** The pre-change revision; `git worktree add` fails loud if it is gone. */
 const BASE_COMMIT = '8b22d81934001681bc4c8de105df67976b1824e5';
+/** 0.59.0, the last release that writes wire version 3 replicas (§9). */
+const WIRE_V3_COMMIT = '3bb94ddc9ca028eb7d47bbd49acd480247309591';
 const CONTAINER = 'syncular_prev_context';
 const CLIENT_ID = 'pvc-downgrade-client';
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -75,6 +77,25 @@ interface OldSyncClient {
   close(): Promise<void>;
   query(sql: string, params?: readonly unknown[]): Record<string, unknown>[];
 }
+/** The 0.59.0 surface that writes version 3 registrations. */
+interface V3SyncClient extends OldSyncClient {
+  subscribe(input: {
+    id: string;
+    table: string;
+    scopes: Record<string, string[]>;
+  }): void;
+  setWindow(
+    base: { table: string; variable: string },
+    units: readonly string[],
+  ): Promise<void>;
+  mutate(
+    mutations: readonly {
+      table: string;
+      op: 'upsert';
+      values: Record<string, unknown>;
+    }[],
+  ): string;
+}
 interface OldClientConfig {
   readonly database: unknown;
   readonly schema: unknown;
@@ -83,7 +104,9 @@ interface OldClientConfig {
 }
 
 let oldRoot: string | undefined;
+let v3Root: string | undefined;
 let oldParent: string | undefined;
+let v3SyncClient: new (config: OldClientConfig) => V3SyncClient;
 const tempDirs: string[] = [];
 let oldSyncClient: new (config: OldClientConfig) => OldSyncClient;
 let oldBunDatabase: new (path: string) => {
@@ -177,12 +200,28 @@ beforeAll(async () => {
   )) as { BunClientDatabase: typeof oldBunDatabase };
   oldSyncClient = index.SyncClient;
   oldBunDatabase = bun.BunClientDatabase;
+  v3Root = join(oldParent, 'wire-v3');
+  ensureCommit(WIRE_V3_COMMIT);
+  git(['worktree', 'add', '--detach', v3Root, WIRE_V3_COMMIT]);
+  symlinkSync(join(REPO_ROOT, 'node_modules'), join(v3Root, 'node_modules'));
+  symlinkSync(
+    join(REPO_ROOT, 'packages', 'web-client', 'node_modules'),
+    join(v3Root, 'packages', 'web-client', 'node_modules'),
+  );
+  v3SyncClient = (
+    (await import(
+      join(v3Root, 'packages', 'web-client', 'src', 'index.ts')
+    )) as {
+      SyncClient: typeof v3SyncClient;
+    }
+  ).SyncClient;
 });
 
 afterAll(() => {
-  if (oldRoot !== undefined) {
+  for (const root of [oldRoot, v3Root]) {
+    if (root === undefined) continue;
     Bun.spawnSync({
-      cmd: ['git', '-C', REPO_ROOT, 'worktree', 'remove', '--force', oldRoot],
+      cmd: ['git', '-C', REPO_ROOT, 'worktree', 'remove', '--force', root],
       env: gitEnv(),
     });
   }
@@ -341,6 +380,67 @@ describe('RFC 0005 separate-file regression against the real 8b22d819 binary', (
     } finally {
       await oldClient.close();
       oldDb.close();
+    }
+  });
+});
+
+describe('§9 a replica the real 0.59.0 binary wrote under wire version 3', () => {
+  test('keeps its outbox and rows, drops its subscriptions and registers units fresh', async () => {
+    const path = tempPath();
+    const offline = async (): Promise<never> => {
+      throw new Error('upgrade lane: no binary syncs');
+    };
+    const oldDb = new oldBunDatabase(path);
+    const old = new v3SyncClient({
+      database: oldDb,
+      schema: V1_SCHEMA,
+      clientId: CLIENT_ID,
+      transport: offline,
+    });
+    await old.start();
+    old.subscribe({
+      id: 's1',
+      table: 'things',
+      scopes: { project_id: ['p1', 'p2'] },
+    });
+    await old.setWindow({ table: 'things', variable: 'project_id' }, ['p3']);
+    const pending = old.mutate([
+      { table: 'things', op: 'upsert', values: SEED_ROW },
+    ]);
+    await old.close();
+    oldDb.close();
+    expect(git(['rev-parse', 'HEAD'], v3Root!)).toBe(WIRE_V3_COMMIT);
+
+    const db = new BunClientDatabase(path);
+    const client = new SyncClient({
+      database: db,
+      schema: V1_SCHEMA,
+      clientId: CLIENT_ID,
+      transport: offline,
+    });
+    try {
+      await client.start();
+      expect(
+        client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual([pending]);
+      expect(client.query('SELECT id, s FROM things')).toEqual([
+        { id: 'r1', s: 'kept-in-container' },
+      ]);
+      expect(client.units()).toEqual([]);
+      expect(client.windowState({ variable: 'project_id' })).toEqual({
+        units: [],
+        pending: [],
+      });
+      expect(
+        db.query(
+          "SELECT name FROM sqlite_master WHERE name IN ('_syncular_subscriptions','_syncular_window_pending_evict')",
+        ),
+      ).toEqual([]);
+      expect(metaValue(db, 'outboxId')).toMatch(/^[0-9a-f-]{36}$/);
+      expect(client.diagnosticsSnapshot().replicaCursor).toBe(-1);
+    } finally {
+      await client.close();
+      db.close();
     }
   });
 });

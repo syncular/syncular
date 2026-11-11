@@ -14,11 +14,7 @@ describe('scope move delivery (§2.2)', () => {
       const server = makeServer();
       server.allowed['actor-1'] = { project_id: ['p1', 'p2'] };
       const mover = await makeClient(server, { clientId: 'mover' });
-      mover.client.subscribe({
-        id: 'home',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      mover.client.subscribe({ project_id: 'p1' });
       mover.client.mutate([
         { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
       ]);
@@ -35,12 +31,8 @@ describe('scope move delivery (§2.2)', () => {
               ['new', 'p2'],
               ['old', 'p1'],
             ];
-      for (const [id, projectId] of sections) {
-        reader.client.subscribe({
-          id,
-          table: 'tasks',
-          scopes: { project_id: [projectId] },
-        });
+      for (const [, projectId] of sections) {
+        reader.client.subscribe({ project_id: projectId });
       }
       await reader.client.syncUntilIdle();
       expect(
@@ -91,11 +83,7 @@ describe('client id reset (§1.5)', () => {
       a.db.query("SELECT value FROM _syncular_meta WHERE key='clientId'"),
     ).toEqual([{ value: next }]);
 
-    a.client.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     const request = decodeMessage(a.requests.at(-1)!);
     expect(request.msgKind).toBe('request');

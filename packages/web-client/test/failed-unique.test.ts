@@ -125,11 +125,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
     try {
       for (const client of clients) {
         await client.start();
-        client.subscribe({
-          id: 'one',
-          table: 'versions',
-          scopes: { theatre_id: ['one'] },
-        });
+        client.subscribe({ theatre_id: 'one' });
       }
       winner!.mutate([
         {
@@ -223,11 +219,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       const racingProof = reader!.proveCurrentBase(outcome);
       await requestEntered;
       reader!.unsubscribe('one');
-      reader!.subscribe({
-        id: 'one',
-        table: 'versions',
-        scopes: { theatre_id: ['one'] },
-      });
+      reader!.subscribe({ theatre_id: 'one' });
       release();
       hold = undefined;
       expect(await racingProof).toEqual({
@@ -239,11 +231,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         proven: false,
         reason: 'missing_coverage',
       });
-      reader!.subscribe({
-        id: 'one',
-        table: 'versions',
-        scopes: { theatre_id: ['one'] },
-      });
+      reader!.subscribe({ theatre_id: 'one' });
       await reader!.syncUntilIdle();
       const floorId = floorReader!.patch('versions', 't1', { body: 'reject' });
       await floorReader!.syncUntilIdle();
@@ -314,11 +302,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         });
         clients.push(client);
         await client.start();
-        client.subscribe({
-          id: 'versions',
-          table: 'versions',
-          scopes: { theatre_id: ['one'] },
-        });
+        client.subscribe({ theatre_id: 'one' });
         return client;
       }
       try {
@@ -499,11 +483,7 @@ test('a later winner imports over visible failed intent; freeing the key restore
     const [a, b] = clients;
     for (const client of clients) {
       await client.start();
-      client.subscribe({
-        id: 'versions',
-        table: 'versions',
-        scopes: { theatre_id: ['one'] },
-      });
+      client.subscribe({ theatre_id: 'one' });
       await client.syncUntilIdle();
     }
     const losing = b!.mutate([

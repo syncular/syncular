@@ -282,11 +282,7 @@ test('recovery restores the synced authoritative row and keeps successor before-
           values: { ...valid, id: 't1', title: 'authoritative' },
         } as never,
       ]);
-      await seeder.client.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { projectId: ['p1'] },
-      });
+      await seeder.client.subscribe({ projectId: 'p1' });
       await seeder.client.syncUntilIdle();
       const authoritative = tableRows(seeder.db, 'tasks').find(
         (row) => row.id === 't1',

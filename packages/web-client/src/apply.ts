@@ -154,7 +154,32 @@ export async function applyCommitFrame(
     ]);
     restoreFailedBases(db, schema, scope);
     for (const [index, change] of resolved.entries()) {
-      const rowId = frame.changes[index]!.rowId;
+      const { rowId, scopes } = frame.changes[index]!;
+      if (change.op === 'delete') {
+        // §2.2 scope move: the delete carries the row's old scope. A local row
+        // that lies under other values of those variables is the moved row
+        // another unit already delivered, and the delete does not reach it.
+        const mapped = Object.keys(scopes).flatMap((variable) => {
+          const column = change.table.scopeColumnByVariable.get(variable);
+          return column === undefined ? [] : [[variable, column] as const];
+        });
+        const local =
+          mapped.length === 0
+            ? undefined
+            : db.query(
+                `SELECT ${mapped.map(([, column]) => quoteIdent(column)).join(',')} FROM ${quoteIdent(change.table.name)} WHERE ${quoteIdent(change.table.primaryKey)}=?`,
+                [pkSqlValue(change.table, rowId)],
+              )[0];
+        if (
+          local !== undefined &&
+          mapped.some(
+            ([variable, column]) =>
+              local[column] == null ||
+              String(local[column]) !== scopes[variable],
+          )
+        )
+          continue;
+      }
       db.exec(
         `UPDATE ${OUTBOX_IMAGES} SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE tbl=? AND row_id=?`,
         [frame.commitSeq, change.table.name, rowId],
@@ -418,7 +443,7 @@ export async function applySqliteSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
-    /** Effective scopes of the other row-holding subscriptions (§5.6). */
+    /** Pair scopes of the units that own rows of the table (§3.3). */
     readonly owners: readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
@@ -597,7 +622,7 @@ export async function applyRowsSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
-    /** Effective scopes of the other row-holding subscriptions (§5.6). */
+    /** Pair scopes of the units that own rows of the table (§3.3). */
     readonly owners: readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;

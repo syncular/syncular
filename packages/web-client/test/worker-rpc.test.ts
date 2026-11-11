@@ -8,6 +8,7 @@
  */
 import { defineAuthorityReads } from '@syncular/client/authority';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { unitId, decodeMessage } from '@syncular/core';
 import {
   ClientSyncError,
   createSyncClientHandle,
@@ -26,7 +27,6 @@ import {
   type WorkerErrorShape,
   workerStartupError,
 } from '@syncular/client';
-import { decodeMessage } from '@syncular/core';
 import { handleSyncRequest } from '@syncular/server';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
@@ -273,11 +273,7 @@ test('worker serves local mutations and reads while a sync reply is pending', as
     },
   });
   try {
-    await handle.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    await handle.subscribe({ project_id: 'p1' });
     await handle.syncUntilIdle();
     const first = await handle.mutate([
       {
@@ -331,15 +327,12 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(handle.isLeader).toBe(true);
   expect(handle.clientId).toBe('rpc-a');
 
-  await handle.subscribe({
-    id: 'tasks',
-    table: 'tasks',
-    scopes: { project_id: ['p1'] },
-  });
-  const subs = await handle.subscriptions();
-  expect(subs.map((sub) => sub.id)).toEqual(['tasks']);
-  expect((await handle.subscription('tasks'))?.cursor).toBe(-1);
-  expect(await handle.subscription('nope')).toBeUndefined();
+  const id = await handle.subscribe({ project_id: 'p1' });
+  expect(id).toBe(unitId({ project_id: 'p1' }));
+  const subs = await handle.units();
+  expect(subs.map((sub) => sub.id)).toEqual([id]);
+  expect((await handle.unit(unitId({ project_id: 'p1' })))?.cursor).toBe(-1);
+  expect(await handle.unit('nope')).toBeUndefined();
 
   const commitId = await handle.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hello') },
@@ -381,22 +374,9 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(await handle.rejections()).toEqual([]);
   expect((await handle.statusSnapshot()).schemaFloor).toBeUndefined();
   expect((await handle.statusSnapshot()).syncNeeded).toBe(false);
-  const diagnostics = await handle.diagnosticsSnapshot({
-    expectedSubscriptions: [
-      { id: 'tasks', table: 'tasks' },
-      { id: 'membership-security', table: 'docs' },
-    ],
-  });
+  const diagnostics = await handle.diagnosticsSnapshot();
   expect(diagnostics.host).toMatchObject({ kind: 'worker', role: 'leader' });
-  expect(diagnostics.subscriptions).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ id: 'tasks', state: 'complete' }),
-      expect.objectContaining({
-        id: 'membership-security',
-        state: 'unregistered',
-      }),
-    ]),
-  );
+  expect(diagnostics.units).toMatchObject({ complete: 1 });
   expect(diagnostics.lastRound).toMatchObject({ status: 'succeeded' });
   expect(JSON.stringify(diagnostics)).not.toContain('p1');
   expect(diagnosticEvents.length).toBeGreaterThan(0);
@@ -418,11 +398,7 @@ test('the worker builds no diagnostics push until a consumer pulls', async () =>
       (message) =>
         message.t === 'event' && message.event?.kind === 'diagnostics',
     ).length;
-  await handle.subscribe({
-    id: 'tasks',
-    table: 'tasks',
-    scopes: { project_id: ['p1'] },
-  });
+  await handle.subscribe({ project_id: 'p1' });
   await handle.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('lazy1', 'p1', 'a') },
   ]);
@@ -446,34 +422,23 @@ test('worker subscriptions reject an identity rebind without losing completeness
     clientId: 'rpc-subscription-identity',
     autoSync: false,
   });
-  await handle.subscribe({
-    id: 'stable-subscription',
-    table: 'tasks',
-    scopes: { project_id: ['p2', 'p1'] },
-    params: '{"view":"v1"}',
-  });
+  await handle.subscribeMany([{ project_id: 'p2' }, { project_id: 'p1' }]);
   await handle.syncUntilIdle();
-  const complete = await handle.subscription('stable-subscription');
+  const complete = await handle.unit(unitId({ project_id: 'p2' }));
   expect(complete?.cursor).toBeGreaterThanOrEqual(0);
 
-  await handle.subscribe({
-    id: 'stable-subscription',
-    table: 'tasks',
-    scopes: { project_id: ['p1', 'p2', 'p1'] },
-    params: '{"view":"v1"}',
-  });
-  expect(await handle.subscription('stable-subscription')).toEqual(complete);
+  await handle.subscribeMany([
+    { project_id: 'p1' },
+    { project_id: 'p2' },
+    { project_id: 'p1' },
+  ]);
+  expect(await handle.unit(unitId({ project_id: 'p1' }))).toEqual(complete);
 
   await expectRejectsWithCode(
-    handle.subscribe({
-      id: 'stable-subscription',
-      table: 'tasks',
-      scopes: { project_id: ['p2'] },
-      params: '{"view":"v1"}',
-    }),
+    handle.subscribe({ project_id: 'p2' }),
     'client.subscription_intent_mismatch',
   );
-  expect(await handle.subscription('stable-subscription')).toEqual(complete);
+  expect(await handle.unit(unitId({ project_id: 'p2' }))).toEqual(complete);
 });
 
 test('worker preflight gates protected RPCs and activates the host loop later', async () => {
@@ -508,11 +473,7 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
     SECURITY_PREFLIGHT_REQUIRED_CODE,
   );
   await expectRejectsWithCode(
-    handle.subscribe({
-      id: 'blocked',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    }),
+    handle.subscribe({ project_id: 'p1' }),
     SECURITY_PREFLIGHT_REQUIRED_CODE,
   );
   expect(
@@ -621,11 +582,7 @@ test('outbox-preserving rebootstrap crosses the worker RPC atomically', async ()
     clientId: 'rpc-local-rebootstrap',
     autoSync: false,
   });
-  await handle.subscribe({
-    id: 'rpc-rebootstrap-tasks',
-    table: 'tasks',
-    scopes: { project_id: ['p1'] },
-  });
+  await handle.subscribe({ project_id: 'p1' });
   const pending = await handle.mutate([
     {
       table: 'tasks',
@@ -647,7 +604,7 @@ test('outbox-preserving rebootstrap crosses the worker RPC atomically', async ()
   expect(
     (await handle.pendingCommits()).map((commit) => commit.clientCommitId),
   ).toEqual([pending]);
-  expect(await handle.subscription('rpc-rebootstrap-tasks')).toMatchObject({
+  expect(await handle.unit(unitId({ project_id: 'p1' }))).toMatchObject({
     cursor: -1,
     status: 'active',
   });
@@ -898,9 +855,9 @@ test('two worker cores converge through the real server', async () => {
     clientId: 'rpc-conv-b',
     autoSync: false,
   });
-  const scopes = { project_id: ['p2'] };
-  await a.subscribe({ id: 's', table: 'tasks', scopes });
-  await b.subscribe({ id: 's', table: 'tasks', scopes });
+  const scopes = { project_id: 'p2' };
+  await a.subscribe(scopes);
+  await b.subscribe(scopes);
 
   await a.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('t2', 'p2', 'from a') },
@@ -923,9 +880,9 @@ test('conflicts surface as RPC events and via conflicts()', async () => {
     clientId: 'rpc-conf-b',
     autoSync: false,
   });
-  const scopes = { project_id: ['p3'] };
-  await a.subscribe({ id: 's', table: 'tasks', scopes });
-  await b.subscribe({ id: 's', table: 'tasks', scopes });
+  const scopes = { project_id: 'p3' };
+  await a.subscribe(scopes);
+  await b.subscribe(scopes);
 
   await a.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('t3', 'p3', 'base') },
@@ -989,9 +946,9 @@ test('realtime wake-ups drive the worker-side host loop (§8.4)', async () => {
     clientId: 'rpc-rt-b',
     autoSync: true,
   });
-  const scopes = { project_id: ['p4'] };
-  await a.subscribe({ id: 's', table: 'tasks', scopes });
-  await b.subscribe({ id: 's', table: 'tasks', scopes });
+  const scopes = { project_id: 'p4' };
+  await a.subscribe(scopes);
+  await b.subscribe(scopes);
   await a.syncUntilIdle();
   await b.syncUntilIdle();
   await b.connectRealtime();
@@ -1084,11 +1041,7 @@ test('offline gate queues, reconnect drains through the worker', async () => {
     clientId: 'rpc-off',
     autoSync: false,
   });
-  await handle.subscribe({
-    id: 's',
-    table: 'tasks',
-    scopes: { project_id: ['p5'] },
-  });
+  await handle.subscribe({ project_id: 'p5' });
   await handle.syncUntilIdle();
 
   await handle.setOffline(true);
@@ -1292,11 +1245,7 @@ test('worker atomic sparse conflict keeps its local aggregate and explicit resol
     })
   ).handle;
   for (const handle of [a, b])
-    await handle.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['retained-worker'] },
-    });
+    await handle.subscribe({ project_id: 'retained-worker' });
   await a.mutate(
     ['w1', 'w2'].map((id) => ({
       table: 'tasks',
