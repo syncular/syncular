@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'A tab that promotes while its worker starts no longer times out',
+    body: 'A tab that won the lock while it was a follower kept the follower deadlines while its own worker opened the database. When the start took longer than `followerCallTimeoutMs` (10 s by default), as after a full navigation to another page of the same replica, the tab reported `blocked` with `leader-unreachable`, rejected calls with `client.follower_timeout`, and with `securityPreflight: true` `createSyncClientHandle` rejected. The tab now stays `waiting` with reason `handover` until its core starts, and calls made meanwhile run on that core.',
+    links: [
+      {
+        href: '/platform-web-specifics/#multi-tab',
+        label: 'Multi-tab',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'A server-only query leaves the client plan check',
     body: "`syncular generate` plans every query against the client schema database, which does not predict how the server plans a registered query with its own indexes or on Postgres. `allow plan '<reason>'` (`-- allow plan: <reason>` in `.sql`) acknowledges every plan finding of one query and must be its only acknowledgement; a query that a client replica also runs keeps per-finding acknowledgements.",
     links: [

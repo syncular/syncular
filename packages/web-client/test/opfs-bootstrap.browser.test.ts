@@ -242,7 +242,7 @@ beforeAll(async () => {
     async fetch(request) {
       const { pathname } = new URL(request.url);
       const headers = {};
-      if (pathname === '/')
+      if (pathname === '/' || pathname === '/second/')
         return new Response(
           '<!doctype html><script type="module" src="/opfs-bootstrap-page.js"></script>',
           { headers: { ...headers, 'Content-Type': 'text/html' } },
@@ -2066,6 +2066,80 @@ test('OPFS ACK automatically pulls its own image without a realtime wake', async
     expect(rounds).toBeGreaterThanOrEqual(2);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS listeners of a page reached by navigation receive pushes', async () => {
+  const writer = await makeClient(source, {
+    clientId: 'navigation-writer',
+    schema: OPFS_SCHEMA,
+  });
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`${server.url.href}#navigate`);
+    // Leave while the first page's worker still bootstraps the unit.
+    await page.evaluate(async () => {
+      await window.opfsTest.activated;
+      await (await window.opfsTest.ready).subscribe({ project_id: 'p1' });
+    });
+    await page.goto(new URL('/second/#navigate', server.url).href);
+    const settled = await page.evaluate(async () => {
+      await window.opfsTest.activated;
+      const client = await window.opfsTest.ready;
+      await client.syncUntilIdle();
+      return {
+        role: client.role,
+        progress: window.opfsTest.progress.map((value) => value.state),
+        rounds: window.opfsTest.diagnostics.map(
+          (snapshot) => snapshot.lastRound?.status,
+        ),
+        configDiagnostics: window.opfsTest.configDiagnostics,
+        changes: window.opfsTest.changes,
+      };
+    });
+    expect(settled.role).toBe('leader');
+    expect(settled.progress.at(-1)).toBe('complete');
+    expect(settled.rounds.at(-1)).toBe('succeeded');
+
+    writer.client.subscribe({ project_id: 'p1' });
+    await writer.client.syncUntilIdle();
+    writer.client.mutate([
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: { id: 'navigation-row', project_id: 'p1', title: 'pushed' },
+      },
+    ]);
+    await writer.client.syncUntilIdle();
+    const pushed = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.sync();
+      return {
+        progress: window.opfsTest.progress.map((value) => value.state),
+        rounds: window.opfsTest.diagnostics.length,
+        configDiagnostics: window.opfsTest.configDiagnostics,
+        changes: window.opfsTest.changes,
+        row: await client.query(
+          "SELECT title FROM catalogue WHERE id = 'navigation-row'",
+        ),
+      };
+    });
+    expect(pushed.row).toEqual([{ title: 'pushed' }]);
+    expect(pushed.progress.slice(settled.progress.length)).toContain(
+      'complete',
+    );
+    expect(pushed.rounds).toBeGreaterThan(settled.rounds.length);
+    expect(pushed.configDiagnostics).toBeGreaterThan(settled.configDiagnostics);
+    expect(pushed.changes).toBeGreaterThan(settled.changes);
+    expect(errors).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await writer.client.close();
+    writer.db.close();
     await browser.close();
   }
 }, 60000);

@@ -118,6 +118,14 @@ not: leadership moves when the leader tab closes and its Web Lock passes to a
 follower, or when the user takes over from an
 [unresponsive leader](#take-over-from-an-unresponsive-leader).
 
+A follower that won the lock runs no follower deadline while its worker
+opens the database: `handle.leadership` stays `waiting` with reason
+`handover`, and calls made meanwhile run on its own core once it starts. A
+page reached by a full navigation in the same tab opens this way when the
+previous page still holds the lock, and `createSyncClientHandle` resolves with
+`role` `'leader'` after its worker started, however long the worker took to
+open the database.
+
 A follower whose core fails to start after it won the lock releases the lock
 and reports `handle.leadership` as `waiting` with reason
 `leader-start-failed`, the start `error`, the `attempt` count, and `retrying`.

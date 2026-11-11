@@ -506,8 +506,13 @@ export class FollowerLink<E = SyncWorkerEvent> {
   };
   #cancelProbe: (() => void) | undefined;
   #cancelBlocked: (() => void) | undefined;
-  /** Resolvers waiting for the first `announce` to bind a leader. */
-  #bindWaiters: Array<() => void> = [];
+  /** Waiting for the first `announce` to bind a leader. */
+  #bindWaiters: Array<{
+    resolve(): void;
+    reject(error: ClientSyncError): void;
+  }> = [];
+  /** This tab won the lock and starts its own core: no follower deadline runs. */
+  #startingCore = false;
 
   constructor(options: {
     channel: CrossTabChannel<E>;
@@ -567,52 +572,35 @@ export class FollowerLink<E = SyncWorkerEvent> {
   }
 
   /**
-   * Resolve once the link is bound to a leader (the first `announce` arrived),
-   * or reject if `timeoutMs` elapses first. A caller awaits this before
-   * treating the follower as ready: until an announce is processed the link's
+   * Resolve once the link is bound to a leader (the first `announce` arrived)
+   * or hands over to this tab's own core, and reject once it is blocked
+   * because no leader announced within the call timeout. A caller awaits this
+   * before treating the follower as ready: until an announce is processed the link's
    * epoch is -1, so any fanned-out `event` in that window is dropped (an
    * unbound follower cannot match the leader's epoch). Awaiting binding closes
    * that gap — a just-opened follower tab never misses an invalidation emitted
    * between its `hello` and the leader's `announce`. Resolves synchronously
    * when already bound.
    */
-  waitUntilBound(timeoutMs = this.#callTimeoutMs): Promise<void> {
+  waitUntilBound(): Promise<void> {
     if (this.#epoch >= 0) return Promise.resolve();
     if (this.#closed) {
       return Promise.reject(
         new ClientSyncError(WORKER_FAILED_CODE, 'the follower link is closed'),
       );
     }
+    if (this.#state.state === 'blocked') {
+      return Promise.reject(this.#blockedError());
+    }
     return new Promise((resolve, reject) => {
-      const cancelTimer = this.#schedule(() => {
-        this.#dropBindWaiter(settle);
-        this.#setBlocked();
-        reject(
-          new ClientSyncError(
-            FOLLOWER_TIMEOUT_CODE,
-            'no leader announced within the follower bind timeout',
-            true,
-          ),
-        );
-      }, timeoutMs);
-      const settle = (): void => {
-        cancelTimer();
-        resolve();
-      };
-      this.#bindWaiters.push(settle);
+      this.#bindWaiters.push({ resolve, reject });
     });
   }
 
-  #dropBindWaiter(waiter: () => void): void {
-    const index = this.#bindWaiters.indexOf(waiter);
-    if (index >= 0) this.#bindWaiters.splice(index, 1);
-  }
-
   #resolveBindWaiters(): void {
-    if (this.#bindWaiters.length === 0) return;
     const waiters = this.#bindWaiters;
     this.#bindWaiters = [];
-    for (const settle of waiters) settle();
+    for (const waiter of waiters) waiter.resolve();
   }
 
   /** Forward one logical API call to the leader (queued if unbound). */
@@ -634,7 +622,8 @@ export class FollowerLink<E = SyncWorkerEvent> {
         cancelTimer: undefined,
       };
       if (this.#epoch < 0) {
-        // No leader bound yet — queue with a deadline so we never hang.
+        // No leader bound yet: queue with a deadline so we never hang. A core
+        // this tab starts settles the call itself (`handOver`).
         if (this.#queue.length >= this.#queueLimit) {
           this.#setBlocked();
           reject(
@@ -646,22 +635,26 @@ export class FollowerLink<E = SyncWorkerEvent> {
           );
           return;
         }
-        queued.cancelTimer = this.#schedule(() => {
-          this.#dropQueued(queued);
-          this.#setBlocked();
-          reject(
-            new ClientSyncError(
-              FOLLOWER_TIMEOUT_CODE,
-              'no leader answered within the follower call timeout',
-              true,
-            ),
-          );
-        }, this.#callTimeoutMs);
+        if (!this.#startingCore) this.#armQueuedDeadline(queued);
         this.#queue.push(queued);
         return;
       }
       this.#send(queued);
     });
+  }
+
+  #armQueuedDeadline(queued: QueuedCall): void {
+    queued.cancelTimer = this.#schedule(() => {
+      this.#dropQueued(queued);
+      this.#setBlocked();
+      queued.reject(
+        new ClientSyncError(
+          FOLLOWER_TIMEOUT_CODE,
+          'no leader answered within the follower call timeout',
+          true,
+        ),
+      );
+    }, this.#callTimeoutMs);
   }
 
   #send(queued: QueuedCall): void {
@@ -760,6 +753,7 @@ export class FollowerLink<E = SyncWorkerEvent> {
           : [];
       this.#epoch = message.epoch;
       this.#leaderClientId = message.clientId;
+      this.#startingCore = false;
       if (changed) this.#onLeaderChange(message.clientId);
       this.#setState({
         state: 'follower',
@@ -817,11 +811,12 @@ export class FollowerLink<E = SyncWorkerEvent> {
   }
 
   /**
-   * The leader we were bound to went away (its lock released). Un-bind so new
-   * calls queue again; re-request an announce so the next leader finds us.
-   * Calls in flight to the departed leader reject, except `replayOnHandover`
-   * methods, which queue again; the winner's announce flushes the queued
-   * ones.
+   * The leader we were bound to released its lock to this tab, which now
+   * starts its own core. Un-bind so new calls queue for that core. Calls in
+   * flight to the departed leader reject, except `replayOnHandover` methods,
+   * which queue again. No follower deadline runs while the core starts:
+   * `handOver` settles the queued calls, or `awaitLeader` after a failed
+   * start.
    */
   unbind(): void {
     if (this.#closed) return;
@@ -834,11 +829,28 @@ export class FollowerLink<E = SyncWorkerEvent> {
     );
     this.#epoch = -1;
     this.#leaderClientId = '';
+    this.#startingCore = true;
+    this.#clearReachabilityTimers();
+    for (const queued of this.#queue) {
+      queued.cancelTimer?.();
+      queued.cancelTimer = undefined;
+    }
     this.#setState({ state: 'waiting', reason: 'handover' });
-    this.#armUnboundDeadline();
     for (const call of replay) {
       this.call(call.method, call.args).then(call.resolve, call.reject);
     }
+    this.#probe();
+  }
+
+  /**
+   * This tab's own core failed to start: wait for another tab's leader under
+   * the follower deadlines again, and ask it to announce.
+   */
+  awaitLeader(): void {
+    if (this.#closed || !this.#startingCore) return;
+    this.#startingCore = false;
+    for (const queued of this.#queue) this.#armQueuedDeadline(queued);
+    this.#armUnboundDeadline();
     this.#probe();
   }
 
@@ -873,8 +885,8 @@ export class FollowerLink<E = SyncWorkerEvent> {
       queued.reject(closedError);
     }
     this.#queue = [];
-    // Bind waiters carry their own timeout timers; resolving them here lets an
-    // awaiting boot path settle promptly instead of hanging until that timeout.
+    // A boot path waiting for a leader settles: `handOver` closes the link
+    // once this tab's own core runs.
     this.#resolveBindWaiters();
     this.#channel.close();
   }
@@ -956,7 +968,11 @@ export class FollowerLink<E = SyncWorkerEvent> {
       code: FOLLOWER_TIMEOUT_CODE,
       retryable: true,
     });
-    this.#rejectInFlight(this.#blockedError());
+    const error = this.#blockedError();
+    this.#rejectInFlight(error);
+    const waiters = this.#bindWaiters;
+    this.#bindWaiters = [];
+    for (const waiter of waiters) waiter.reject(error);
     const reprobe = (): void => {
       this.#cancelProbe = this.#schedule(() => {
         reprobe();
@@ -1281,6 +1297,7 @@ export async function createTabCoordinator<E>(
       // Closed while the core was starting, or another tab took the lock: a
       // follower link, if any, binds to that tab's announcement.
       current = false;
+      follower?.awaitLeader();
       await leader.close();
       await lease.release();
       return;
@@ -1496,6 +1513,7 @@ export async function createTabCoordinator<E>(
         // time (a changed worker bundle, an unreadable database) would
         // otherwise take and drop the lock in a loop while this tab is alone.
         await promoted.release();
+        link.awaitLeader();
         failedStarts += 1;
         const retrying = failedStarts < 3 && !closed;
         setState({

@@ -18,6 +18,10 @@ declare global {
     opfsTest: {
       ready: Promise<SyncClientHandle>;
       progress: SyncProgress[];
+      diagnostics: ClientDiagnosticsSnapshot[];
+      configDiagnostics: number;
+      changes: number;
+      activated: Promise<void>;
       evidence: Promise<[SyncProgress, ClientDiagnosticsSnapshot]>;
       watchRound(state: 'failed' | 'complete'): Promise<void>;
       open(
@@ -41,6 +45,10 @@ let announceStorageBusy: () => void;
 let announceCrash: (receipt: CrashReceipt) => void;
 window.opfsTest = {
   progress: [],
+  diagnostics: [],
+  configDiagnostics: 0,
+  changes: 0,
+  activated: new Promise(() => {}),
   evidence: new Promise(() => {}),
   watchRound: async (state) => {
     const client = await window.opfsTest.ready;
@@ -97,6 +105,14 @@ window.opfsTest = {
       schema,
       autoSync,
       retainFailedCommits: true,
+      ...(location.hash === '#navigate'
+        ? {
+            securityPreflight: true,
+            onDiagnostics: () => {
+              window.opfsTest.configDiagnostics += 1;
+            },
+          }
+        : {}),
       endpoints: {
         syncUrl: `${location.origin}/${schema.version >= 100 ? 'sync-alternative' : schema.version >= 89 ? 'sync-scope' : location.search === '?fresh' ? 'sync-fresh' : location.search === '?signed' ? 'sync-signed' : 'sync'}`,
         segmentsUrl: `${location.origin}/${schema.version >= 100 ? 'alternative-segments' : schema.version >= 89 ? 'scope-segments' : location.search === '?fresh' ? 'fresh-segments' : 'segments'}`,
@@ -140,3 +156,21 @@ window.opfsTest = {
       worker.postMessage({ t: 'probe' });
     }),
 };
+
+// An application page opens its handle at module load, while the previous
+// document of the same tab may still hold the lock.
+if (location.hash === '#navigate') {
+  window.opfsTest.activated = window.opfsTest
+    .open(false, OPFS_SCHEMA, true)
+    .then(async () => {
+      const client = await window.opfsTest.ready;
+      client.onDiagnostics((snapshot) =>
+        window.opfsTest.diagnostics.push(snapshot),
+      );
+      client.onChange(() => {
+        window.opfsTest.changes += 1;
+      });
+      await client.beginSecurityPreflight();
+      await client.activateSecurity();
+    });
+}

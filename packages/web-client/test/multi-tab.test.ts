@@ -734,6 +734,113 @@ test('leader close → follower promotes, keeps the DB, continues syncing', asyn
   expect(rows.map((r) => r.id)).toContain('after');
 });
 
+for (const preflight of [false, true]) {
+  test(`listeners registered on a follower receive the promoted core's pushes${preflight ? ' under security preflight' : ''}`, async () => {
+    const group = makeGroup();
+    const config = preflight ? { securityPreflight: true } : {};
+    const leader = await group.make({
+      clientId: `mt-push-lead-${preflight}`,
+      ...config,
+    });
+    if (preflight) await leader.activateSecurity();
+    await leader.subscribe({ project_id: 'np' });
+    await leader.syncUntilIdle();
+    const configDiagnostics: string[] = [];
+    const follower = await group.make({
+      ...config,
+      onDiagnostics: (snapshot) =>
+        configDiagnostics.push(snapshot.replica.localRevision),
+    });
+    expect(follower.role).toBe('follower');
+    const progress: string[] = [];
+    const diagnostics: string[] = [];
+    let changes = 0;
+    follower.onProgress((value) => progress.push(value.state));
+    follower.onDiagnostics((snapshot) =>
+      diagnostics.push(snapshot.replica.localRevision),
+    );
+    follower.onChange(() => {
+      changes += 1;
+    });
+    const promoted = Promise.withResolvers<string>();
+    follower.onRoleChange(promoted.resolve);
+
+    await leader.close();
+    expect(await promoted.promise).toBe('leader');
+    if (preflight) {
+      await follower.beginSecurityPreflight();
+      await follower.activateSecurity();
+    }
+    const seen = {
+      progress: progress.length,
+      diagnostics: diagnostics.length,
+      changes,
+      config: configDiagnostics.length,
+    };
+    await follower.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('pushed', 'np', 'x') },
+    ]);
+    await follower.syncUntilIdle();
+    expect(progress.slice(seen.progress)).toContain('complete');
+    expect(diagnostics.length).toBeGreaterThan(seen.diagnostics);
+    expect(configDiagnostics.length).toBeGreaterThan(seen.config);
+    expect(changes).toBeGreaterThan(seen.changes);
+  });
+}
+
+test('a tab promoted while its own core starts past the follower timeout returns as leader', async () => {
+  // A full-page navigation: the previous document still holds the lock when
+  // this one opens, then releases it without announcing again.
+  const group = makeGroup();
+  const departed = await group.lock.acquire(group.lockName);
+  const contested = Promise.withResolvers<void>();
+  const initPosted = Promise.withResolvers<() => void>();
+  class HeldInitWorker extends Worker {
+    override postMessage(message: { readonly t?: string }): void {
+      if (message.t === 'init')
+        initPosted.resolve(() => super.postMessage(message));
+      else super.postMessage(message);
+    }
+  }
+  const clock = manualClock();
+  const states: LeadershipState[] = [];
+  const unreachable: LeaderUnreachableEvent[] = [];
+  const making = group.make({
+    worker: () => new HeldInitWorker(WORKER_URL),
+    clientId: 'mt-slow-start',
+    securityPreflight: true,
+    followerCallTimeoutMs: 30,
+    tabClock: clock,
+    leaderLock: {
+      ...group.lock,
+      acquire: (name) => {
+        if (name === group.lockName) contested.resolve();
+        return group.lock.acquire(name);
+      },
+    },
+    onLeadershipChange: (state) => states.push(state),
+    onLeaderUnreachable: (event) => unreachable.push(event),
+  });
+  await contested.promise;
+  departed.release();
+  const releaseInit = await initPosted.promise;
+  // The worker opens its database for longer than any follower deadline.
+  clock.advance(100);
+  releaseInit();
+  const handle = await making;
+
+  expect(handle.role).toBe('leader');
+  expect(handle.leadership).toEqual({
+    state: 'leader',
+    clientId: 'mt-slow-start',
+  });
+  expect(states.some((state) => state.state === 'blocked')).toBe(false);
+  expect(unreachable).toEqual([]);
+  expect(await handle.securityLifecycle()).toBe('preflight');
+  await handle.activateSecurity();
+  expect(await handle.query('SELECT id FROM tasks')).toEqual([]);
+});
+
 test('stale-epoch replies from a dead leader are discarded', async () => {
   // Drive FollowerLink directly against a controllable channel to prove the
   // epoch guard: a res/event stamped for an old epoch is dropped.
@@ -1208,6 +1315,12 @@ test('a tab that wins the lock runs the calls queued for the next leader on its 
   link.unbind();
   await expectRejectsWithCode(sentToOldLeader, LEADER_HANDOVER_CODE);
   const queued = link.call('setWindow', ['gap']);
+  // This tab's core starts for longer than the follower deadlines.
+  clock.advance(300 * 2);
+  expect(link.leadershipState).toEqual({
+    state: 'waiting',
+    reason: 'handover',
+  });
   const invoked: unknown[] = [];
   link.handOver((method, args) => {
     invoked.push([method, ...args]);
@@ -1218,6 +1331,44 @@ test('a tab that wins the lock runs the calls queued for the next leader on its 
   // The queued call's handover deadline no longer applies.
   clock.advance(300 * 2);
   await expectRejectsWithCode(link.call('query', []), 'client.worker_failed');
+});
+
+test('a tab whose own core failed to start waits for another leader under the follower deadlines', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const sent: MultiTabMessage[] = [];
+  const link = new FollowerLink({
+    channel: {
+      postMessage: (message) => sent.push(message),
+      addEventListener: noop,
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  const bound = link.waitUntilBound();
+  link.unbind();
+  const queued = link.call('query', []);
+  clock.advance(300 * 2);
+  expect(link.leadershipState).toEqual({
+    state: 'waiting',
+    reason: 'handover',
+  });
+  const hellos = sent.filter((message) => message.t === 'hello').length;
+  link.awaitLeader();
+  expect(sent.filter((message) => message.t === 'hello')).toHaveLength(
+    hellos + 1,
+  );
+  clock.advance(300);
+  expect(link.leadershipState.state).toBe('blocked');
+  await expectRejectsWithCode(queued, FOLLOWER_TIMEOUT_CODE);
+  await expectRejectsWithCode(bound, FOLLOWER_TIMEOUT_CODE);
+  link.close();
 });
 
 test('a follower never sends calls to a leader of another build', async () => {
