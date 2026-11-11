@@ -1,5 +1,52 @@
 # Syncular release notes
 
+## 0.64.0 release notes
+
+0.64.0 supports a scope pattern change in a schema-version bump and gives a
+row without its encryption key a stable error code.
+
+**Re-key on a bump.** 0.63.0 refused every changed scope pattern. A
+schema-version bump that changes a table's patterns now re-keys the table in
+the upgrade transaction (SPEC.md §3.1): the storage recomputes every stored
+row's scopes from its own column values (decoding the payload, so
+`materialize: false` tables are covered), rebuilds the table's row scope
+index, deletes the table's tombstones, raises every partition's horizon to its
+last commit (§4.6), and records the new patterns. A client cursor into the old
+history receives the ordinary `sync.cursor_expired` reset, and a unit of the
+new variable bootstraps every row. SQLite, Postgres, D1 and the Rust local
+authority behave alike, and conformance scenario B.28 runs in every pairing.
+The re-key of 100,000 rows took 684 to 689 ms on a SQLite file and 2.45 to
+2.67 s on PGlite under the migration lock; writes wait for it. A row whose
+newly mapped scope column is NULL or empty refuses the bump with
+`sync.storage.scope_value_missing` (`table`, `variable`, `rowId`), and the
+bump rolls back. A pattern change at the same schema version is still refused
+with `sync.storage.scope_patterns_changed`.
+
+**Missing encryption key.** A row whose envelope names a key id the keyring
+does not hold fails the round with `client.encryption_key_missing`, with
+`table` and `keyId` in its details, in the TypeScript and the Rust client
+(SPEC.md §5.11, §10.3). The code reaches the rejected `sync()` call, the
+failed progress snapshot and `lastRound.errorCode`. A wrong key or a corrupt
+envelope still fails with `client.decrypt_failed`. The worker and the tab
+relay now forward the code, `retryable` and details of every error with a
+stable code; before, a worker handle rejected decrypt, encrypt and decode
+errors as `client.worker_failed`.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together.
+- An app that matched `client.decrypt_failed` for a missing key matches
+  `client.encryption_key_missing`.
+- A table encrypted with a key not every reader holds needs its own scope
+  variable: a unit covers every table that declares its variables.
+- To change a table's scope patterns, bump the schema version; an app data
+  step that recommitted rows under the new scopes is no longer needed and
+  stays harmless. A database last opened before 0.63.0 records no patterns,
+  so open it once on 0.64.0 at its current version before a bump that changes
+  patterns. A changed pattern cannot map to a column the same bump appends:
+  append the column in one bump and change the pattern in the next.
+- After a re-key bump, an unversioned upsert of a row deleted before the bump
+  inserts it again above the delete floor instead of answering
+  `sync.row_deleted`, as after pruning.
+
 ## 0.63.0 release notes
 
 0.63.0 refuses a changed scope pattern instead of serving rows under the old
