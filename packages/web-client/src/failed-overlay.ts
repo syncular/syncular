@@ -37,6 +37,9 @@ export function ensureFailedOverlaySchema(db: ClientDatabase): void {
   for (const column of ['unique_conflicts TEXT', 'commit_seq INTEGER'])
     if (!columns.some((row) => row.name === column.split(' ')[0]))
       db.exec(`ALTER TABLE ${RETAINED_ROWS} ADD COLUMN ${column}`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS ${RETAINED_ROWS}_row ON ${RETAINED_ROWS}(tbl,id)`,
+  );
 }
 
 export function retainedBaseWrite(
@@ -176,8 +179,10 @@ function retainedRows(
   scope?: OverlayScope,
   acknowledged?: boolean,
 ) {
+  // A scope joins through the (tbl, id) index; a scan per applied commit
+  // would make a drained batch quadratic.
   return db.query(
-    `SELECT * FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1)) OR json_array(tbl) IN(SELECT value FROM json_each(?1)))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
+    `SELECT * FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=json_extract(k.value,'$[0]') AND r.id=json_extract(k.value,'$[1]') UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=json_extract(k.value,'$[0]')))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
     [scope ? JSON.stringify(scope) : null],
   );
 }

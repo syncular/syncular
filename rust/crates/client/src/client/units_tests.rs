@@ -1062,6 +1062,16 @@ fn evicting_a_window_unit_cancels_the_prepared_round() {
     assert_eq!(h.client.active_round, None);
 }
 
+#[test]
+fn unsubscribing_keeps_the_prepared_round() {
+    // §4.4: the released unit's section is skipped; the round completes.
+    let mut h = Harness::new();
+    let id = h.client.subscribe(p1()).unwrap();
+    h.client.active_round = Some(uuid::Uuid::nil());
+    h.client.unsubscribe(&id).unwrap();
+    assert_eq!(h.client.active_round, Some(uuid::Uuid::nil()));
+}
+
 // -- §6.3.2 push sequence -------------------------------------------------------
 
 #[test]
@@ -1445,4 +1455,73 @@ fn a_version_3_pending_eviction_that_cannot_be_carried_fails_loudly_before_any_w
     assert!(kept);
     drop(conn);
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_scope_changing_bump_deletes_the_pending_evictions_of_the_changed_table() {
+    let path = std::env::temp_dir()
+        .join(format!(
+            "syncular-bump-evictions-{}.db",
+            uuid::Uuid::new_v4()
+        ))
+        .to_string_lossy()
+        .into_owned();
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &schema(),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    client
+        .conn
+        .execute_batch(
+            r#"INSERT INTO _syncular_pending_evictions(unit_id, tbl, effective_scopes) VALUES
+                 ('gone-tasks', 'tasks', '{"project_id":["p1"]}'),
+                 ('gone-notes', 'notes', '{"org_id":["o1"]}');"#,
+        )
+        .unwrap();
+    drop(client);
+    // §7.4.3: `tasks` changes its prefix; `notes` keeps every declaration.
+    let mut bumped = schema();
+    bumped["version"] = json!(2);
+    bumped["tables"][0]["scopes"] = json!([{"pattern": "proj:{project_id}"}]);
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &bumped,
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    assert_eq!(
+        client.load_pending_evictions().unwrap(),
+        vec![(
+            "gone-notes".to_owned(),
+            "notes".to_owned(),
+            vec![("org_id".to_owned(), vec!["o1".to_owned()])]
+        )]
+    );
+    drop(client);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn acknowledged_intent_of_named_rows_reads_through_the_row_index() {
+    let h = Harness::new();
+    let plan: Vec<String> = h
+        .client
+        .conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {}", super::ACKED_ROWS_BY_ROW))
+        .unwrap()
+        .query_map(rusqlite::params![None::<String>, None::<String>], |row| {
+            row.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("USING INDEX _syncular_acked_rows_row (tbl=? AND id=?)")),
+        "{plan:?}"
+    );
 }

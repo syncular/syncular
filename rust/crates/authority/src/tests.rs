@@ -2419,6 +2419,29 @@ fn a_pull_carries_a_bootstrapping_unit_and_a_live_unit() {
 }
 
 #[test]
+fn an_insert_starts_above_a_delete_earlier_in_its_commit() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let task = |id| {
+        upsert(
+            &s,
+            "tasks",
+            &[Some(id), Some("o1"), None, Some("x"), None],
+            None,
+        )
+    };
+    client.push(&mut authority, "insert", vec![task("t1")]);
+    // §2.2: the delete writes t1 at 2, so the insert of t3 starts at 3.
+    client.push(
+        &mut authority,
+        "both",
+        vec![delete("tasks", "t1"), task("t3")],
+    );
+    assert_eq!(stored(&authority, "tasks", "t3").map(|row| row.0), Some(3));
+}
+
+#[test]
 fn a_recreate_starts_above_the_delete_floor_so_a_stale_base_version_conflicts() {
     let mut authority = memory();
     let s = authority.schema.clone();

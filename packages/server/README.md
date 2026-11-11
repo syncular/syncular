@@ -962,8 +962,8 @@ bytes straight to the object store. **Upload authz is host-authentication only**
 bytes is not a scope-bearing act, because the content address discloses
 nothing. The grant signs `content-length` (the declared `byteLength`) and
 `x-amz-checksum-sha256` (the `blobId` digest as base64), and the client sends
-that checksum header, so the object store refuses a PUT of another size or
-other bytes. The **size cap is enforced up front** against the declared
+that checksum header, derived from the `blobId` without hashing the body again,
+so the object store refuses a PUT of another size or other bytes. The **size cap is enforced up front** against the declared
 `byteLength`, before any URL is minted. An already-present blob returns `{ present: true }` (skip
 the PUT, idempotent §5.9.3). A **single PUT only** — never a multipart or chunk
 protocol; resumable upload, when it lands, is provider multipart behind this

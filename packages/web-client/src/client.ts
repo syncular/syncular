@@ -261,7 +261,6 @@ import {
   setMeta,
   type UnitRecord,
   unitOwners,
-  UNITS_TABLE,
 } from './state';
 import type {
   RealtimeConnector,
@@ -1814,25 +1813,10 @@ export class SyncClient {
     this.#requireActive();
     const owner = request.owner;
     const catchupOf = (id: string): UnitCatchup => {
-      let unit: UnitRecord | undefined;
-      try {
-        unit = getUnit(this.#db, id);
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-      }
-      if (unit === undefined) {
-        if (
-          this.#db.query(`SELECT 1 FROM ${UNITS_TABLE} WHERE id=?`, [id])
-            .length === 0
-        )
-          return { state: 'unknown', id };
-      }
-      const cursor = unit?.cursor ?? replicaCursor(this.#db);
-      if (
-        unit === undefined ||
-        !['active', 'revoked', 'failed'].includes(unit.status) ||
-        !Number.isSafeInteger(cursor)
-      )
+      const unit = getUnit(this.#db, id);
+      if (unit === undefined) return { state: 'unknown', id };
+      const cursor = unit.cursor ?? replicaCursor(this.#db);
+      if (!Number.isSafeInteger(cursor))
         throw new ClientSyncError(
           'sync.local_corrupt',
           'persisted unit state is invalid',

@@ -98,7 +98,7 @@ by serializing exactly these shapes over its pipe.
   `connectRealtime(sink)→connection`). The instance exposes `subscribe`,
   `mutate`, `sync`/`syncUntilIdle` (returning JSON-able reports, never
   throwing), `readRows`, `conflicts`, `rejections`, `pendingCommitIds`,
-  `subscriptionState`, `schemaFloor`, and realtime connect/disconnect.
+  `unitState`, `schemaFloor`, and realtime connect/disconnect.
 - **`CodecDriver`** — `messageRoundtrip(bytes)` / `segmentRoundtrip(bytes)`
   (decode → §11 rendering + byte-exact re-encode, or a named error code)
   and `realtimeKnown(text)`. This is the golden-vector stage: every codec

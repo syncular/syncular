@@ -4786,10 +4786,31 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
                 continue;
             }
             "subscription" => {
+                // §4.4: the released unit's section and its change are
+                // skipped; the round completes and its ack applies.
                 client.unsubscribe(&unit).unwrap();
                 client
                     .subscribe(UnitScopes::from([("project_id".to_owned(), "p2".into())]))
                     .unwrap();
+                let applied = client.apply_sync_round(completed);
+                assert!(matches!(
+                    applied,
+                    crate::AppliedSyncRound::Complete {
+                        outcome: SyncOutcome::Ok(_),
+                        ..
+                    }
+                ));
+                assert!(client.pending_commit_ids().is_empty());
+                assert!(client
+                    .query("SELECT id FROM tasks WHERE id = 'server'", &[])
+                    .unwrap()
+                    .is_empty());
+                assert!(!client
+                    .units()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == unit));
+                continue;
             }
             _ => unreachable!(),
         }
@@ -7507,6 +7528,9 @@ fn snapshot_read_rejects_corrupt_unit_state() {
         "scopes='[]'",
         "status='bogus'",
         "cursor='x'",
+        "cursor=0.5",
+        "scopes='{\"project_id\":[\"one\"]}'",
+        "echo='[{\"table\":\"tasks\",\"status\":\"paused\",\"scopes\":{}}]'",
         "bootstrap_state=X'00'",
         "reason_code=X'00'",
         "seeded='{}'",

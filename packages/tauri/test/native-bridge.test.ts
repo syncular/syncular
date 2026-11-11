@@ -568,10 +568,11 @@ if (!available) {
       const host = nativeTauri();
       const unit = async (id: string) =>
         (
-          await host.api.invoke<{ result: { unit: { cursor?: number } | null } }>(
-            'syncular_command',
-            { command: { method: 'unit', params: { id } } },
-          )
+          await host.api.invoke<{
+            result: { unit: { cursor?: number } | null };
+          }>('syncular_command', {
+            command: { method: 'unit', params: { id } },
+          })
         ).result.unit;
       const pendingIds = () =>
         host.api.invoke<{ result: { ids: string[] } }>('syncular_command', {

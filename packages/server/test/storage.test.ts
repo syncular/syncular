@@ -37,7 +37,7 @@ import { pgliteExecutor } from '@syncular/server/pglite';
 import { BunSqliteDatabase, SqliteLeaseStore } from '@syncular/server/sqlite';
 import { StorageConstraintError } from '../src/storage-errors';
 import { D1DatabaseDouble } from './d1-double';
-import { BunSQL, bunSqlExecutor, PG_URL } from './pg-real';
+import { BunSQL, bunSqlExecutor, PG_URL, resetPublicSchema } from './pg-real';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
 import {
@@ -249,8 +249,7 @@ runStorageContract('postgres/pglite', async () => {
 const realPg =
   PG_URL === undefined || BunSQL === undefined ? undefined : new BunSQL(PG_URL);
 async function resetRealPg(): Promise<PostgresServerStorage> {
-  await realPg.unsafe('DROP SCHEMA public CASCADE');
-  await realPg.unsafe('CREATE SCHEMA public');
+  await resetPublicSchema(realPg);
   return new PostgresServerStorage(bunSqlExecutor(realPg));
 }
 if (realPg !== undefined) {

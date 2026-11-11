@@ -962,7 +962,7 @@ export const unitScenarios: readonly Scenario[] = [
   },
 
   {
-    name: 'realtime/delta-with-a-schema-floor-applies-and-stops',
+    name: 'realtime/delta-with-a-schema-floor-records-and-stops',
     specRefs: ['§1.6', '§7.4.2', '§8.2'],
     requires: ['realtime'],
     async run(ctx) {
@@ -975,14 +975,16 @@ export const unitScenarios: readonly Scenario[] = [
       await syncIdle(a);
       // The next delta carries a schema floor in its RESP_HEADER.
       let floored = false;
+      const acks: string[] = [];
       const delivered = Promise.withResolvers<void>();
       const original = ctx.server.connectRealtime.bind(ctx.server);
-      ctx.server.connectRealtime = async (actorId, clientId, sink) =>
-        original(actorId, clientId, {
+      ctx.server.connectRealtime = async (actorId, clientId, sink) => {
+        const result = await original(actorId, clientId, {
           ...sink,
           async onBinary(bytes) {
             if (bytes[0] !== 0 || floored) return sink.onBinary(bytes);
             floored = true;
+            acks.length = 0;
             const delta = decodeResponse(bytes.subarray(1));
             const header = delta.frames[0];
             if (header?.type !== 'RESP_HEADER')
@@ -1000,10 +1002,26 @@ export const unitScenarios: readonly Scenario[] = [
             delivered.resolve();
           },
         });
+        if (!result.ok) return result;
+        const { connection } = result;
+        return {
+          ok: true,
+          connection: {
+            ...connection,
+            send(text) {
+              acks.push(text);
+              connection.send(text);
+            },
+            sendBinary: (bytes) => connection.sendBinary(bytes),
+            close: () => connection.close(),
+          },
+        };
+      };
       await a.api.connectRealtime();
       await syncIdle(a);
       await seedTasks(ctx, [task('t1', 'p1', 'with the floor')]);
       await delivered.promise;
+      await syncIdle(a);
       checkEqual(
         await a.api.schemaFloor(),
         { requiredSchemaVersion: 2, latestSchemaVersion: 2 },
@@ -1011,9 +1029,10 @@ export const unitScenarios: readonly Scenario[] = [
       );
       checkEqual(
         (await a.api.readRows('tasks')).map((row) => row.rowId),
-        ['t1'],
-        'the client applies the delta that carried the floor',
+        [],
+        'the client applies nothing from the delta that carried the floor',
       );
+      checkEqual(acks, [], 'the client acks nothing after the floored delta');
       await a.api.disconnectRealtime();
       await seedTasks(ctx, [task('t2', 'p1', 'after the floor')]);
       const stopped = await a.api.sync();
@@ -1023,7 +1042,7 @@ export const unitScenarios: readonly Scenario[] = [
       );
       checkEqual(
         (await a.api.readRows('tasks')).map((row) => row.rowId),
-        ['t1'],
+        [],
         'the stopped client pulls nothing more',
       );
     },
@@ -1032,6 +1051,9 @@ export const unitScenarios: readonly Scenario[] = [
   {
     name: 'upgrade/cursor-into-pre-upgrade-history-resets',
     specRefs: ['§4.6', '§9'],
+    // The Rust authority skips: the harness cannot seed a version 3 store
+    // there. Its own test `a_store_from_0_59_migrates_to_the_fresh_schema`
+    // covers that migration.
     requires: ['version3-database'],
     async run(ctx) {
       const reopen = ctx.server.reopenAsVersion3Database?.bind(ctx.server);

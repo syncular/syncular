@@ -257,7 +257,9 @@ export type ServerCapability =
   | 'idempotency-fault'
   /** §6.3.2 introspection: `idempotencyState`. */
   | 'idempotency-state'
-  /** §9: `reopenAsVersion3Database`. */
+  /** §9: `reopenAsVersion3Database`. The Rust authority lacks it: the
+   * harness cannot seed a version 3 store there, and its own test
+   * `a_store_from_0_59_migrates_to_the_fresh_schema` covers the migration. */
   | 'version3-database'
   | 'storage-fault'
   | 'concurrent-storage-faults'

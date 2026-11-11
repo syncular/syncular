@@ -2064,6 +2064,14 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
         },
       },
     ]);
+    // §7.4.3: a pending eviction keyed by a renamed variable dies at the bump.
+    const evictions = () =>
+      entry.db
+        .query('SELECT unit_id FROM _syncular_pending_evictions')
+        .map((row) => row.unit_id);
+    entry.db.exec(
+      `INSERT INTO _syncular_pending_evictions(unit_id,tbl,effective_scopes) VALUES ('gone-89','tasks','{"theatre_calendar_id":["p1"]}')`,
+    );
     await entry.client.close();
     entry.db.close();
     entry = await makeClient(source, {
@@ -2071,6 +2079,10 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
       databasePath: path,
       schema: schemas[1]!,
     });
+    expect(evictions()).toEqual([]);
+    entry.db.exec(
+      `INSERT INTO _syncular_pending_evictions(unit_id,tbl,effective_scopes) VALUES ('gone-90','tasks','{"calendar_theatre_id":["p1"]}')`,
+    );
     expect(
       entry.client.unit(unitId({ theatre_calendar_id: 'p1' })),
     ).toBeUndefined();
@@ -2104,6 +2116,7 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
     expect(
       entry.client.unit(unitId({ calendar_theatre_id: 'p1' }))?.cursor,
     ).toBe(-1);
+    expect(evictions()).toEqual(['gone-90']);
     expect(
       entry.client.pendingCommits().map((commit) => commit.clientCommitId),
     ).toEqual([pending]);

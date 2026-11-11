@@ -9,7 +9,14 @@
  *   SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db \
  *     bun test packages/server/test/postgres-checkpoints.integration.test.ts
  */
-import { afterAll, describe, expect, test } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from 'bun:test';
 import { decodeRow, encodeRow } from '@syncular/core';
 import {
   compileSchema,
@@ -19,7 +26,13 @@ import {
   prepareAuthorityTransaction,
   type ServerSchema,
 } from '@syncular/server';
-import { BunSQL, bunSqlExecutor, PG_URL, queryableOver } from './pg-real';
+import {
+  BunSQL,
+  bunSqlExecutor,
+  PG_URL,
+  queryableOver,
+  resetPublicSchema,
+} from './pg-real';
 
 const gate =
   PG_URL !== undefined && BunSQL !== undefined ? describe : describe.skip;
@@ -74,8 +87,20 @@ async function waitForLockWaiter(observer: PgQueryable): Promise<number> {
 gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
   // oxlint-disable-next-line typescript/no-explicit-any -- dynamic Bun.sql handles.
   const handles: any[] = [];
+  let admin: InstanceType<NonNullable<typeof BunSQL>>;
+  beforeAll(async () => {
+    admin = new (BunSQL as NonNullable<typeof BunSQL>)(PG_URL as string);
+    await resetPublicSchema(admin);
+  });
+  // Each receipt opens its own pools; ending them per test keeps the file
+  // under the server's connection limit.
+  afterEach(async () => {
+    for (const handle of handles.splice(0))
+      await handle.end?.().catch(() => {});
+  });
   afterAll(async () => {
-    for (const handle of handles) await handle.end?.().catch(() => {});
+    await resetPublicSchema(admin);
+    await admin.end();
   });
 
   async function fresh(): Promise<{

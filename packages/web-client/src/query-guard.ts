@@ -27,7 +27,7 @@ export class RawSqlError extends Error {
 }
 
 /** Refuse a statement the raw-SQL tier does not run. */
-export function refuseRawSql(): never {
+function refuseRawSql(): never {
   throw new RawSqlError(
     'client.query() runs read-only statements and no PRAGMA; write through client.mutate() so the outbox records it (SPEC §7.1).',
   );

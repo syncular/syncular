@@ -111,20 +111,68 @@ export function unitOwners(
   });
 }
 
+/** A unit row; every persisted field must have its stored type and shape,
+ * otherwise the row is `sync.local_corrupt` (§7.5). */
 function rowToRecord(row: Record<string, unknown>): UnitRecord {
-  const record: { -readonly [K in keyof UnitRecord]: UnitRecord[K] } = {
-    id: row.id as string,
-    scopes: JSON.parse(row.scopes as string) as UnitScopes,
-    explicit: row.explicit === 1,
-    status: row.status as UnitStatus,
-    seeded: JSON.parse(row.seeded as string) as string[],
+  const corrupt = () =>
+    new ClientSyncError(
+      'sync.local_corrupt',
+      'persisted unit state is invalid',
+    );
+  const json = (raw: unknown): unknown => {
+    if (typeof raw !== 'string') throw corrupt();
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw corrupt();
+    }
   };
-  if (row.reason_code !== null) record.reasonCode = row.reason_code as string;
-  if (row.cursor !== null) record.cursor = row.cursor as number;
-  if (row.bootstrap_state !== null)
-    record.bootstrapState = row.bootstrap_state as string;
-  if (row.echo !== null)
-    record.echo = JSON.parse(row.echo as string) as FencedRecord[];
+  const isMap = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+  const isStrings = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every((item) => typeof item === 'string');
+  const optionalText = (value: unknown) => {
+    if (value !== null && typeof value !== 'string') throw corrupt();
+    return value ?? undefined;
+  };
+  const scopes = json(row.scopes);
+  const seeded = json(row.seeded);
+  const echo = row.echo === null ? undefined : json(row.echo);
+  const { id, status, cursor } = row;
+  if (
+    typeof id !== 'string' ||
+    !isMap(scopes) ||
+    !Object.values(scopes).every((value) => typeof value === 'string') ||
+    (status !== 'active' && status !== 'revoked' && status !== 'failed') ||
+    (cursor !== null && !Number.isInteger(cursor)) ||
+    !isStrings(seeded) ||
+    (echo !== undefined &&
+      !(
+        Array.isArray(echo) &&
+        echo.every(
+          (record) =>
+            isMap(record) &&
+            typeof record.table === 'string' &&
+            (record.status === 'active' || record.status === 'revoked') &&
+            isMap(record.scopes) &&
+            Object.values(record.scopes).every(isStrings),
+        )
+      ))
+  )
+    throw corrupt();
+  const record: { -readonly [K in keyof UnitRecord]: UnitRecord[K] } = {
+    id,
+    scopes: scopes as UnitScopes,
+    explicit: row.explicit === 1,
+    status,
+    seeded,
+  };
+  const reasonCode = optionalText(row.reason_code);
+  if (reasonCode !== undefined) record.reasonCode = reasonCode;
+  if (typeof cursor === 'number') record.cursor = cursor;
+  const bootstrapState = optionalText(row.bootstrap_state);
+  if (bootstrapState !== undefined) record.bootstrapState = bootstrapState;
+  if (echo !== undefined) record.echo = echo as FencedRecord[];
   return record;
 }
 
@@ -225,27 +273,33 @@ export function pruneUnknownUnits(
     stored === undefined
       ? undefined
       : (JSON.parse(stored) as ScopeDeclarations);
+  // A table keeps the variables' meaning when each has the same prefix and
+  // column as before. An old binary stored no declaration evidence; matching
+  // names cannot prove unchanged meaning, so the app registers again.
+  const unchanged = (name: string, variables: readonly string[]): boolean => {
+    const old = previous?.[name];
+    const table = schema.tables.get(name);
+    return (
+      old !== undefined &&
+      table !== undefined &&
+      variables.every(
+        (variable) =>
+          old[variable]?.[0] === table.scopePrefixByVariable.get(variable) &&
+          old[variable]?.[1] === table.scopeColumnByVariable.get(variable),
+      )
+    );
+  };
   const compatible = (scopes: UnitScopes): boolean => {
     const variables = Object.keys(scopes);
     if (![...schema.tables.values()].some((table) => covers(table, scopes)))
       return false;
     if (!bump) return true;
-    // An old binary stored no declaration evidence. Matching names cannot
-    // prove unchanged column/prefix meaning, so the app registers again.
     if (previous === undefined) return false;
-    return Object.entries(previous).every(([name, old]) => {
-      if (!variables.every((variable) => old[variable] !== undefined))
-        return true;
-      const table = schema.tables.get(name);
-      return (
-        table !== undefined &&
-        variables.every(
-          (variable) =>
-            old[variable]?.[0] === table.scopePrefixByVariable.get(variable) &&
-            old[variable]?.[1] === table.scopeColumnByVariable.get(variable),
-        )
-      );
-    });
+    return Object.entries(previous).every(
+      ([name, old]) =>
+        !variables.every((variable) => old[variable] !== undefined) ||
+        unchanged(name, variables),
+    );
   };
   const stale = new Set(
     loadUnits(db)
@@ -253,9 +307,23 @@ export function pruneUnknownUnits(
       .map((unit) => unit.id),
   );
   // A shrunk window's deferred eviction outlives its unit row and keeps its
-  // per-table scopes; a table the schema no longer has cannot be evicted.
-  for (const row of db.query(`SELECT unit_id,tbl FROM ${PENDING_EVICTIONS}`))
-    if (!schema.tables.has(String(row.tbl))) stale.add(String(row.unit_id));
+  // per-table scopes. A table the schema no longer has cannot be evicted, and
+  // at a bump a table whose scope declarations changed must not be evicted by
+  // the outdated rule.
+  for (const row of db.query(
+    `SELECT unit_id,tbl,effective_scopes FROM ${PENDING_EVICTIONS}`,
+  )) {
+    const table = String(row.tbl);
+    if (
+      !schema.tables.has(table) ||
+      (bump &&
+        !unchanged(
+          table,
+          Object.keys(JSON.parse(String(row.effective_scopes)) as ScopeMap),
+        ))
+    )
+      stale.add(String(row.unit_id));
+  }
   for (const id of stale) {
     db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE sub_id=?`, [id]);
     db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE unit_id=?`, [id]);

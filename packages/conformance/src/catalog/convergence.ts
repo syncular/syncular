@@ -116,13 +116,15 @@ export const convergenceScenarios: readonly Scenario[] = [
         ['t2', 't3'],
         'delete propagated, inserts survived',
       );
-      // t3's starting version depends on whether its commit's own delete of
-      // t1 already raised the delete floor; §2.2 fixes only that it is above
-      // the floor and equal on both sides (expectConverged above).
       checkEqual(
         rows[0]?.version,
         2,
         'upsert incremented server_version by exactly 1 (§2.2)',
+      );
+      checkEqual(
+        rows[1]?.version,
+        3,
+        "t3 starts above the floor its commit's earlier delete of t1 raised (§2.2)",
       );
     },
   },

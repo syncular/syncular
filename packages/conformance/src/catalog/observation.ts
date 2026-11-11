@@ -1787,11 +1787,15 @@ export const observationScenarios: readonly Scenario[] = [
         "scopes=CAST(X'FF' AS TEXT)",
         "scopes='invalid'",
         'scopes=\'{"project_id":["p1"]}\'',
-        "cursor='0'",
+        'scopes=\'{"project_id":7}\'',
+        // INTEGER affinity stores '0' as 0; '0x' stays text.
+        "cursor='0x'",
+        'cursor=0.5',
         'cursor=9007199254740992',
         "seeded='{}'",
         "echo='invalid'",
         'echo=\'[{"table":"tasks","status":"active","scopes":{"org_id":[7]}}]\'',
+        'echo=\'[{"table":"tasks","status":"paused","scopes":{}}]\'',
       ]) {
         await handle.api.executeStorageSql(
           `UPDATE _syncular_units SET ${assignment}`,

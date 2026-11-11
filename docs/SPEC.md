@@ -900,7 +900,9 @@ starts it one above the partition's **delete floor**: the highest
 end of its commit, `0` before the first. A delete whose row the same commit
 writes again (a scope move's delete half, or a delete followed by a
 recreate) leaves the row live at a higher version and does not raise the
-floor. Every applied write to an existing row advances it by exactly 1:
+floor. Within a commit, an insert starts one above the larger of the delete
+floor and the highest `rowVersion` of the deletes applied earlier in that
+commit. Every applied write to an existing row advances it by exactly 1:
 an upsert, a delete, and a scope move (below). Pruning never lowers the
 delete floor. A row id's versions therefore increase strictly across all of
 its writes and incarnations, and the client's version guard (§4.5) relies on
@@ -5451,7 +5453,11 @@ lease** (`leaseState`). Everything else is destroyed and rebuilt:
   declared prefix and column mapping on every table it covered, and the
   unit to cover at least one table under the new schema. Incompatible
   units, their windows and pending evictions are deleted atomically; values
-  MUST NOT be translated. The app registers units for its current schema.
+  MUST NOT be translated. A pending eviction (§4.8) survives only when the
+  new schema declares every variable of its stored scopes on its table with
+  the same prefix and column mapping; otherwise the reset deletes it with
+  its unit's windows and pending evictions, because the eviction would later
+  delete rows by the outdated scope rule. The app registers units for its current schema.
   Clients persist declaration evidence alongside the schema marker. A
   replica written by a binary without that evidence requires
   re-registration on its next version bump. Same-version opens retain
@@ -5916,7 +5922,13 @@ results and omits retained operations while preserving the outcome status; that
 redacted journal entry remains readable. Stored operations, including
 those nested in results, require row values for upserts and omit them for
 deletes. Effective catch-up scopes are absent or maps of string arrays.
-Malformed journal
+A persisted unit (§4.1) holds its scope map as JSON text of an object with
+string values, its status as the text `active`, `revoked` or `failed`, its
+cursor as an integer or NULL, its reason code and resume token as text or
+NULL, its seeded tables as JSON text of a string array, and its echo as NULL
+or JSON text of an array of records, each with a string `table`, a `status`
+of `active` or `revoked` and `scopes` as a map of string arrays.
+Malformed journal or unit
 metadata fails with `sync.local_corrupt`; recognized SQLite storage errors
 retain their storage classification.
 

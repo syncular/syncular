@@ -850,6 +850,19 @@ describe('versions across deletes and incarnations (§2.2, §6.2)', () => {
     expect(decodeRow(TASK_COLUMNS, record.serverRow)[2]).toBe('new');
   });
 
+  test('an insert starts above a delete earlier in its commit (§2.2)', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    // The delete writes t1 at 2, so the insert of t3 starts at 3.
+    await sync(t, [
+      pushCommit('both', [
+        del('tasks', 't1'),
+        upsert('tasks', 't3', taskRow('t3', 'p1')),
+      ]),
+    ]);
+    expect(await version(t, 't3')).toBe(3);
+  });
+
   test('every insert starts above the floor; a pruned tombstone leaves the floor', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };

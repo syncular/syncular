@@ -46,7 +46,10 @@ test.skipIf(!process.env.SYNCULAR_NATIVE_BENCH)(
       const stats = processObject(attempt.writerStats);
       const phases = processPhases(stats.phases).measurements;
       expect(phases.commitApply?.calls).toBe(501);
-      expect(phases.pendingReplay?.units).toBe(1);
+      // §7.1: an acknowledgement records each operation as protected intent
+      // and replays it once; the same response's live section then delivers
+      // the row. One unit per operation keeps the replay linear.
+      expect(phases.pendingReplay?.units).toBe(501);
       expect(phases.outboxEncode?.calls).toBeGreaterThanOrEqual(2);
       expect(processObject(stats.sqliteCounts).rollbackHookCalls).toBe(0);
       expect(

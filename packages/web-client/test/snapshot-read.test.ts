@@ -94,8 +94,13 @@ describe('§7.5 snapshot read surface', () => {
     const mutations: readonly [string, string | number][] = [
       ['status', 'bogus'],
       ['cursor', 'not-a-number'],
+      ['cursor', 0.5],
       ['echo', 'not json'],
+      ['echo', '[{"table":"tasks","status":"paused","scopes":{}}]'],
+      ['echo', '[{"table":"tasks","status":"active","scopes":{"p":[7]}}]'],
       ['scopes', 'not json'],
+      ['scopes', '{"project_id":["p1"]}'],
+      ['seeded', '{}'],
     ];
     for (const [column, value] of mutations) {
       const before = db.query('SELECT * FROM _syncular_units WHERE id=?', [id]);

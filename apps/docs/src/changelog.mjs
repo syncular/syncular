@@ -17,8 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'Raw queries keep prepared writes, and presigned uploads hash once',
+    body: 'On Bun and Node, `client.query()` ran every SQL text between `PRAGMA query_only` ON and OFF, which made SQLite expire every prepared statement of the connection, so the next mutation prepared its statements again. The client now runs a text that completed once under `query_only` without the pragma. Query-then-mutate on a file database takes 0.11 ms, down from 0.182 ms on 0.59.0. A presigned blob upload derived `x-amz-checksum-sha256` by hashing the body a second time; both clients now derive it from the `blobId`, the SHA-256 of the body. A custom transport receives the blob id as the first argument of `uploadToUrl` in TypeScript and `blob_put_url` in Rust.',
+    links: [
+      { href: '/platform-web-reads-writes/', label: 'Browser: reads & writes' },
+      { href: '/concepts-blobs/', label: 'Blobs' },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'Wire version 4: units and one replica cursor',
-    body: "A subscription is now a unit: a scope map with one value per scope variable, covering every table that declares those variables. `subscribe(scopes)` returns the unit id, which the client derives from the scope map; `subscribeMany`, `unsubscribe(id)`, `units()`, `unit(id)` and `unitCatchup(id)` complete the surface in TypeScript, Rust, Swift, Kotlin, Flutter, React Native and Tauri. A replica holds one cursor, and a steady-state pull sends a 32-byte digest of the registration list in place of the list. A window base is `{ variable, fixedScopes? }`, manifest templates drop `table` and take one value per variable, diagnostics move to version 2 (`units`, `activeUnits`, `replicaCursor`), and `maxSubscriptionsPerRequest` counts units; `maxScopeValuesPerSubscription` and `params` are gone. The server reads version 4 only, so a version 3 client receives `sync.invalid_request` until it updates. Before upgrading, give tables a device must hold apart their own scope variable, rewrite manifest templates and `subscribe` calls, and plan to deploy the server and every client together; an upgraded replica keeps its rows and outbox and bootstraps each unit once.",
+    body: 'A subscription is now a unit: a scope map with one value per scope variable, covering every table that declares those variables. `subscribe(scopes)` returns the unit id, which the client derives from the scope map; `subscribeMany`, `unsubscribe(id)`, `units()`, `unit(id)` and `unitCatchup(id)` complete the surface in TypeScript, Rust, Swift, Kotlin, Flutter, React Native and Tauri. A replica holds one cursor, and a steady-state pull sends a 32-byte digest of the registration list in place of the list. A window base is `{ variable, fixedScopes? }`, manifest templates drop `table` and take one value per variable, diagnostics move to version 2 (`units`, `activeUnits`, `replicaCursor`), and `maxSubscriptionsPerRequest` counts units; `maxScopeValuesPerSubscription` and `params` are gone. The server reads version 4 only, so a version 3 client receives `sync.invalid_request` until it updates. Before upgrading, give tables a device must hold apart their own scope variable, rewrite manifest templates and `subscribe` calls, and plan to deploy the server and every client together; an upgraded replica keeps its rows and outbox and bootstraps each unit once.',
     links: [
       { href: '/upgrade-wire-4/', label: 'Upgrade to wire version 4' },
       { href: '/concepts-subscriptions/', label: 'Subscriptions & the outbox' },
@@ -29,8 +38,14 @@ export const changelog = [
     title: 'Row versions increase across deletes and recreates',
     body: "Every applied write to a row advances its `server_version` by 1, including a delete and a scope move, and an insert starts one above the partition's delete floor: the highest version a delete recorded for a row it left absent. A row id's versions therefore increase strictly across its incarnations, and both clients apply a delivered change only when its version exceeds the local row's, so a replayed delta or segment changes nothing. Before upgrading, remove code that treats `server_version = 1` as a new row, compares versions of different rows, or expects a recreated row to restart at 1.",
     links: [
-      { href: '/concepts-commits/#the-commit-log', label: 'Commits & row versions' },
-      { href: '/pitfalls/#dont-assume-a-new-row-starts-at-version-1', label: "Do's and Don'ts" },
+      {
+        href: '/concepts-commits/#the-commit-log',
+        label: 'Commits & row versions',
+      },
+      {
+        href: '/pitfalls/#dont-assume-a-new-row-starts-at-version-1',
+        label: "Do's and Don'ts",
+      },
     ],
   },
   {
@@ -38,8 +53,14 @@ export const changelog = [
     title: 'Idempotency results end at the outbox watermark',
     body: "Each push carries the replica's outbox id and a sequence per commit. The server raises a per-outbox watermark to the first sequence of each request and deletes the stored results below it, so `sync_push_results` no longer grows for the life of a partition. A commit below the watermark with no stored result receives `sync.commit_expired`, which the client records as a rejection; `admin.findWrite` reports the watermark of a write whose result is gone. Before upgrading, make an app that restores a replica from a backup or copies it to a second device delete the copy's database and open a fresh one.",
     links: [
-      { href: '/concepts-commits/#how-long-a-result-lives', label: 'How long a result lives' },
-      { href: '/upgrade-wire-4/#restored-and-copied-replicas', label: 'Restored and copied replicas' },
+      {
+        href: '/concepts-commits/#how-long-a-result-lives',
+        label: 'How long a result lives',
+      },
+      {
+        href: '/upgrade-wire-4/#restored-and-copied-replicas',
+        label: 'Restored and copied replicas',
+      },
     ],
   },
   {

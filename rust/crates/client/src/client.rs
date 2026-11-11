@@ -781,6 +781,11 @@ fn unit_scope_lists(scopes: &UnitScopes) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// §7.1 acknowledged intent of the rows `?1` names (`[[table, id], ...]`).
+/// It joins through the (tbl, id) index: a scan per acknowledgement would
+/// make draining a batch quadratic.
+const ACKED_ROWS_BY_ROW: &str = "SELECT a.op_json,a.intent_json FROM json_each(?1) k JOIN _syncular_acked_rows a ON a.tbl=json_extract(k.value,'$[0]') AND a.id=json_extract(k.value,'$[1]') WHERE ?2 IS NULL OR a.tbl IN(SELECT value FROM json_each(?2)) ORDER BY a.commit_seq,a.idx";
+
 const UNIT_COLUMNS: &str =
     "id, scopes, explicit, status, reason_code, cursor, bootstrap_state, seeded, echo";
 
@@ -810,7 +815,22 @@ fn unit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnitRecord> {
         seeded: json(7, &row.get::<_, String>(7)?)?,
         echo: row
             .get::<_, Option<String>>(8)?
-            .map(|echo| json(8, &echo))
+            .map(|echo| json::<Vec<EchoRecord>>(8, &echo))
+            .transpose()?
+            .map(|echo| {
+                if echo
+                    .iter()
+                    .all(|record| record.status == "active" || record.status == "revoked")
+                {
+                    Ok(echo)
+                } else {
+                    Err(rusqlite::Error::FromSqlConversionFailure(
+                        8,
+                        rusqlite::types::Type::Text,
+                        "echo status is neither active nor revoked".into(),
+                    ))
+                }
+            })
             .transpose()?,
     })
 }
@@ -2450,6 +2470,27 @@ impl SyncClient {
         } else {
             None
         };
+        // A table keeps the variables' meaning when each has the same prefix
+        // and column as before. An old binary stored no declaration evidence;
+        // matching names cannot prove unchanged meaning, so the app registers
+        // again.
+        let unchanged = |name: &str, variables: &[&String]| {
+            let (Some(old), Some(table)) = (
+                previous.as_ref().and_then(|previous| previous.get(name)),
+                self.schema.table(name),
+            ) else {
+                return false;
+            };
+            variables.iter().all(|variable| {
+                table
+                    .scope_variables
+                    .iter()
+                    .find(|scope| &scope.variable == *variable)
+                    .is_some_and(|scope| {
+                        old.get(*variable) == Some(&[scope.prefix.clone(), scope.column.clone()])
+                    })
+            })
+        };
         let compatible = |scopes: &UnitScopes| {
             if !self.schema.tables.iter().any(|table| covers(table, scopes)) {
                 return false;
@@ -2457,28 +2498,12 @@ impl SyncClient {
             if !bump {
                 return true;
             }
-            // An old binary stored no declaration evidence. Matching names
-            // cannot prove unchanged column/prefix meaning, so the app
-            // registers again.
             let Some(previous) = &previous else {
                 return false;
             };
             previous.iter().all(|(name, old)| {
-                if !scopes.keys().all(|variable| old.contains_key(variable)) {
-                    return true;
-                }
-                self.schema.table(name).is_some_and(|table| {
-                    scopes.keys().all(|variable| {
-                        table
-                            .scope_variables
-                            .iter()
-                            .find(|scope| &scope.variable == variable)
-                            .is_some_and(|scope| {
-                                old.get(variable)
-                                    == Some(&[scope.prefix.clone(), scope.column.clone()])
-                            })
-                    })
-                })
+                !scopes.keys().all(|variable| old.contains_key(variable))
+                    || unchanged(name, &scopes.keys().collect::<Vec<_>>())
             })
         };
         let mut stale: BTreeSet<String> = self
@@ -2488,10 +2513,20 @@ impl SyncClient {
             .map(|unit| unit.id)
             .collect();
         // A shrunk window's deferred eviction outlives its unit row and keeps
-        // its per-table scopes; a table the schema no longer has cannot be
-        // evicted.
-        for (id, table, _) in self.load_pending_evictions()? {
-            if self.schema.table(&table).is_none() {
+        // its per-table scopes. A table the schema no longer has cannot be
+        // evicted, and at a bump a table whose scope declarations changed must
+        // not be evicted by the outdated rule.
+        for (id, table, effective) in self.load_pending_evictions()? {
+            if self.schema.table(&table).is_none()
+                || (bump
+                    && !unchanged(
+                        &table,
+                        &effective
+                            .iter()
+                            .map(|(variable, _)| variable)
+                            .collect::<Vec<_>>(),
+                    ))
+            {
                 stale.insert(id);
             }
         }
@@ -4962,9 +4997,6 @@ impl SyncClient {
         self.conn
             .execute("DELETE FROM _syncular_units WHERE id = ?1", [id])
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        // §4.8: a prepared round's SUB_END must not complete a unit registered
-        // again without the rows the release may lose.
-        self.cancel_sync_round();
         self.registration_epoch = self.registration_epoch.wrapping_add(1);
         if unit.status == UnitStatus::Active {
             self.set_sync_needed(true, true);
@@ -11157,18 +11189,14 @@ impl SyncClient {
         rows: Option<&HashSet<(&str, &str)>>,
         tables: Option<&BTreeSet<&str>>,
     ) -> Result<Vec<OutboxOp>, String> {
-        let keys = rows.map(|rows| {
-            serde_json::to_string(
-                &rows
-                    .iter()
-                    .map(|(table, id)| serde_json::to_string(&(table, id)).expect("row key"))
-                    .collect::<Vec<_>>(),
-            )
-            .expect("row keys")
-        });
+        let keys = rows.map(|rows| serde_json::to_string(&rows).expect("row keys"));
         let mut statement = self
             .conn
-            .prepare("SELECT op_json,intent_json FROM _syncular_acked_rows WHERE (?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1))) AND (?2 IS NULL OR tbl IN(SELECT value FROM json_each(?2))) ORDER BY commit_seq,idx")
+            .prepare_cached(if keys.is_some() {
+                ACKED_ROWS_BY_ROW
+            } else {
+                "SELECT op_json,intent_json FROM _syncular_acked_rows WHERE ?1 IS NULL AND (?2 IS NULL OR tbl IN(SELECT value FROM json_each(?2))) ORDER BY commit_seq,idx"
+            })
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = statement
             .query_map(

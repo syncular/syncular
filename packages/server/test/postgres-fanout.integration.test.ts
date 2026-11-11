@@ -11,7 +11,7 @@
  *   SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db \
  *     bun test packages/server/test/postgres-fanout.integration.test.ts
  */
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
@@ -37,11 +37,7 @@ import {
   type ServerStorage,
   ValidationRejection,
 } from '@syncular/server';
-
-const PG_URL = process.env.SYNCULAR_PG_URL;
-
-// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
-const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
+import { BunSQL, PG_URL, resetPublicSchema } from './pg-real';
 
 const gate =
   PG_URL !== undefined && BunSQL !== undefined ? describe : describe.skip;
@@ -99,8 +95,15 @@ function bunSqlExecutor(sql: any): PgExecutor {
 gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
   // oxlint-disable-next-line typescript/no-explicit-any -- dynamic Bun.sql handles.
   const handles: any[] = [];
+  let admin: InstanceType<NonNullable<typeof BunSQL>>;
+  beforeAll(async () => {
+    admin = new (BunSQL as NonNullable<typeof BunSQL>)(PG_URL as string);
+    await resetPublicSchema(admin);
+  });
   afterAll(async () => {
     for (const h of handles) await h.end?.().catch(() => {});
+    await resetPublicSchema(admin);
+    await admin.end();
   });
 
   test('storage migrates and allocates commitSeq on real Postgres', async () => {
