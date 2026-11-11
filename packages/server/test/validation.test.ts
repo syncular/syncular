@@ -23,8 +23,8 @@ import {
   pullHeader,
   pushCommit,
   pushResults,
+  pullFrames,
   requestBytes,
-  subFrame,
   sync,
   taskRow,
   upsert,
@@ -53,13 +53,13 @@ describe('request validation (§1.7)', () => {
     }
   });
 
-  test('duplicate subscription ids fail with sync.invalid_subscription', async () => {
+  test('a scope map listed twice fails with sync.invalid_subscription (§4.1)', async () => {
     const t = makeContext();
-    const bytes = requestBytes([
-      pullHeader(),
-      subFrame('dup', 'tasks', { project_id: ['p1'] }, 0),
-      subFrame('dup', 'tasks', { project_id: ['p1'] }, 0),
-    ]);
+    const bytes = requestBytes(
+      pullFrames([{ project_id: 'p1' }, { project_id: 'p1' }], {
+        progress: [],
+      }),
+    );
     const error = await expectSyncError(
       handleSyncRequest(bytes, t.ctx),
       'sync.invalid_subscription',
@@ -71,22 +71,16 @@ describe('request validation (§1.7)', () => {
 
   test("a requested '*' fails with sync.invalid_subscription (§3.2 tightening)", async () => {
     const t = makeContext();
-    const bytes = requestBytes([
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['*'] }, 0),
-    ]);
+    const bytes = requestBytes(pullFrames([{ project_id: '*' }]));
     await expectSyncError(
       handleSyncRequest(bytes, t.ctx),
       'sync.invalid_subscription',
     );
   });
 
-  test('an undeclared requested scope key fails loud (§3.2 rule 2)', async () => {
+  test('a unit variable no table declares fails loud (§3.2 rule 2)', async () => {
     const t = makeContext();
-    const bytes = requestBytes([
-      pullHeader(),
-      subFrame('s1', 'tasks', { typo_key: ['p1'] }, 0),
-    ]);
+    const bytes = requestBytes(pullFrames([{ typo_key: 'p1' }]));
     await expectSyncError(
       handleSyncRequest(bytes, t.ctx),
       'sync.invalid_subscription',
@@ -96,36 +90,22 @@ describe('request validation (§1.7)', () => {
   test('a resolver returning undeclared keys fails the request (§3.2 rule 3)', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1'], not_declared_anywhere: ['x'] };
-    const bytes = requestBytes([
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
-    ]);
-    await expectSyncError(
+    const bytes = requestBytes(pullFrames([{ project_id: 'p1' }]));
+    const error = await expectSyncError(
       handleSyncRequest(bytes, t.ctx),
       'sync.invalid_subscription',
     );
-  });
-
-  test('a subscription naming an unknown table fails with sync.unknown_table', async () => {
-    const t = makeContext();
-    const bytes = requestBytes([
-      pullHeader(),
-      subFrame('s1', 'not_a_table', { project_id: ['p1'] }, 0),
-    ]);
-    const error = await expectSyncError(
-      handleSyncRequest(bytes, t.ctx),
-      'sync.unknown_table',
-    );
-    expect(error.category).toBe('schema-mismatch');
-    expect(error.recommendedAction).toBe('regenerateClient');
+    expect(JSON.parse(error.details ?? '{}')).toEqual({
+      reason: 'undeclared_resolved_variable',
+      variable: 'not_declared_anywhere',
+    });
   });
 
   test('missing rows-segment acceptance is rejected (§4.2)', async () => {
     const t = makeContext();
-    const bytes = requestBytes([
-      pullHeader({ accept: 0b0100 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
-    ]);
+    const bytes = requestBytes(
+      pullFrames([{ project_id: 'p1' }], { accept: 0b0100 }),
+    );
     await expectSyncError(
       handleSyncRequest(bytes, t.ctx),
       'sync.invalid_request',
@@ -253,6 +233,12 @@ describe('error catalog (§10.2)', () => {
       retryable: false,
       recommendedAction: 'fixRequest',
     });
+    // Wire version 4 added the outbox watermark refusal (§6.3.2).
+    expect(ERROR_CATALOG['sync.commit_expired']).toMatchObject({
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'resetClientId',
+    });
     // §5.10.6 CRDT fields added one internal code.
     expect(ERROR_CATALOG['sync.crdt_merge_failed']).toMatchObject({
       category: 'internal',
@@ -323,7 +309,7 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'fixRequest',
       httpStatus: 413,
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(43);
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(44);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {
@@ -346,13 +332,12 @@ describe('error catalog (§10.2)', () => {
 });
 
 describe('request limits (§1.7)', () => {
-  test('more subscriptions than maxSubscriptionsPerRequest fail the request', async () => {
+  test('more units than maxSubscriptionsPerRequest fail the request with HTTP 413', async () => {
     const t = makeContext({ limits: { maxSubscriptionsPerRequest: 2 } });
-    const subs = ['s1', 's2', 's3'].map((id) =>
-      subFrame(id, 'tasks', { project_id: ['p1'] }, -1),
-    );
+    t.scopes.value = { project_id: ['*'] };
+    const units = ['p1', 'p2', 'p3'].map((p) => ({ project_id: p }));
     const error = await expectSyncError(
-      handleSyncRequest(requestBytes([pullHeader(), ...subs]), t.ctx),
+      handleSyncRequest(requestBytes(pullFrames(units)), t.ctx),
       'sync.limit_exceeded',
     );
     expect(error.httpStatus).toBe(413);
@@ -361,37 +346,8 @@ describe('request limits (§1.7)', () => {
       max: 2,
       actual: 3,
     });
-    const served = await sync(
-      makeContext({ limits: { maxSubscriptionsPerRequest: 2 } }),
-      [pullHeader(), ...subs.slice(0, 2)],
-    );
+    const served = await sync(t, pullFrames(units.slice(0, 2)));
     expect(served.frames.filter((f) => f.type === 'SUB_START')).toHaveLength(2);
-  });
-
-  test('more requested scope values than maxScopeValuesPerSubscription fail the request', async () => {
-    const t = makeContext({ limits: { maxScopeValuesPerSubscription: 2 } });
-    const error = await expectSyncError(
-      handleSyncRequest(
-        requestBytes([
-          pullHeader(),
-          subFrame('ok', 'docs', { org_id: ['o1'], projectId: ['p1'] }, -1),
-          subFrame(
-            'wide',
-            'docs',
-            { org_id: ['o1'], projectId: ['p1', 'p2'] },
-            -1,
-          ),
-        ]),
-        t.ctx,
-      ),
-      'sync.limit_exceeded',
-    );
-    expect(JSON.parse(error.details ?? '{}')).toEqual({
-      limit: 'maxScopeValuesPerSubscription',
-      max: 2,
-      actual: 3,
-      subscriptionId: 'wide',
-    });
   });
 
   test('a limit that is not a positive safe integer throws at creation', () => {

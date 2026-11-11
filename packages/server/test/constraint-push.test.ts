@@ -11,6 +11,7 @@ import {
   type PushResultFrame,
   type ResponseMessage,
   type RowColumn,
+  registrationDigest,
 } from '@syncular/core';
 import {
   D1ServerStorage,
@@ -69,7 +70,7 @@ function commit(
   clientCommitId: string,
   operations: PushOperation[],
 ): PushCommitFrame {
-  return { type: 'PUSH_COMMIT', clientCommitId, operations };
+  return { type: 'PUSH_COMMIT', clientCommitId, clientSeq: 0, operations };
 }
 
 async function push(
@@ -107,6 +108,9 @@ async function push(
             limitSnapshotRows: 0,
             maxSnapshotPages: 0,
             accept: 0b0011,
+            cursor: -1,
+            registrationDigest: registrationDigest([]),
+            echoDigest: new Uint8Array(),
           },
         ],
       }),

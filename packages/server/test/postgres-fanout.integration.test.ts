@@ -119,7 +119,13 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
         actorId: 'a',
         createdAtMs: Date.now(),
         changes: [
-          { table: 'tasks', rowId: 'unscoped', op: 'delete', scopes: {} },
+          {
+            table: 'tasks',
+            rowId: 'unscoped',
+            op: 'delete',
+            rowVersion: 2,
+            scopes: {},
+          },
           {
             table: 'tasks',
             rowId: 'r0',
@@ -132,6 +138,7 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
             table: 'tasks',
             rowId: 'deleted',
             op: 'delete',
+            rowVersion: 3,
             scopes: { project_id: 'p1' },
           },
         ],
@@ -153,33 +160,32 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       { scope_type: 'object' },
       { scope_type: 'object' },
     ]);
-    const window = await storage.readCommitWindow(partition, {
-      table: 'tasks',
-      scopeFilter: { project_id: ['p1'] },
-      afterSeq: 0,
+    const query = {
+      units: [
+        {
+          scopes: { project_id: 'p1' },
+          afterSeq: 0,
+          tables: new Map([['tasks', { project_id: ['p1'] }]]),
+        },
+      ],
       throughSeq: 1,
       limitChanges: 10,
-    });
-    expect(window[0]?.changes[0]?.payload).toEqual(new Uint8Array([1, 2, 3]));
-    expect(window[0]?.changes.map((change) => change.rowId)).toEqual([
+    };
+    const window = await storage.readLiveWindow(partition, query);
+    const [commit] = window.commits;
+    expect(commit?.changes[0]?.payload).toEqual(new Uint8Array([1, 2, 3]));
+    expect(commit?.changes.map((change) => change.rowId)).toEqual([
       'r0',
       'deleted',
     ]);
+    expect(commit?.changes[1]?.rowVersion).toBe(3);
     // Historical Bun SQL bindings stored serialized scopes as a JSONB string.
     // Those rows must remain readable alongside the new object representation.
     await executor.query(
       'UPDATE sync_changes SET scopes=to_jsonb(scopes::text) WHERE partition=$1',
       [partition],
     );
-    expect(
-      await storage.readCommitWindow(partition, {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p1'] },
-        afterSeq: 0,
-        throughSeq: 1,
-        limitChanges: 10,
-      }),
-    ).toEqual(window);
+    expect(await storage.readLiveWindow(partition, query)).toEqual(window);
   });
 
   test('two real connections apply an overlapping duplicate exactly once', async () => {
@@ -251,6 +257,7 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'overlap-commit',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -606,7 +613,12 @@ gate(
                   schemaVersion: 1,
                   logEpoch: 'epoch',
                 },
-                { type: 'PUSH_COMMIT', clientCommitId, operations },
+                {
+                  type: 'PUSH_COMMIT',
+                  clientCommitId,
+                  clientSeq: 0,
+                  operations,
+                },
               ],
             }),
             {

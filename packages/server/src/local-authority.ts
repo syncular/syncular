@@ -5,11 +5,12 @@
  * server with `attach` (§12.3).
  */
 import {
-  decodeMessage,
+  decodeResponse,
   decodeRow,
-  encodeMessage,
+  encodeRequest,
   encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
+  registrationDigest,
   type PushCommitFrame,
   type PushOperation,
   type PushResultFrame,
@@ -285,22 +286,15 @@ export async function openLocalAuthority(
     transport: (request: Uint8Array) => Promise<Uint8Array>,
     frames: RequestFrame[],
   ): Promise<ResponseFrame[]> => {
-    const message = decodeMessage(
+    const message = decodeResponse(
       await transport(
-        encodeMessage({
+        encodeRequest({
           wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'request',
           frames,
         }),
       ),
     );
-    if (message.msgKind !== 'response') {
-      throw new LocalAuthorityAttachError({
-        reason: 'request_failed',
-        code: 'sync.invalid_request',
-        retryable: false,
-      });
-    }
     const header = message.frames[0];
     if (header?.type === 'RESP_HEADER' && header.requiredSchemaVersion) {
       throw new LocalAuthorityAttachError({
@@ -336,6 +330,9 @@ export async function openLocalAuthority(
           limitSnapshotRows: 0,
           maxSnapshotPages: 0,
           accept: 0b0011,
+          cursor: -1,
+          registrationDigest: registrationDigest([]),
+          echoDigest: new Uint8Array(),
         },
       ])
     )[0];
@@ -527,6 +524,7 @@ export async function openLocalAuthority(
       const commit: PushCommitFrame = {
         type: 'PUSH_COMMIT',
         clientCommitId: `${attachId}:undo:${attempt}:${start / ATTACH_OPERATION_BUDGET}`,
+        clientSeq: 0,
         operations: deletes.slice(start, start + ATTACH_OPERATION_BUDGET),
       };
       const result = await send(commit);
@@ -633,6 +631,7 @@ function planAttach(
     commits.push({
       type: 'PUSH_COMMIT',
       clientCommitId: `${attachId}:${commits.length}`,
+      clientSeq: 0,
       operations,
     });
     operations = [];

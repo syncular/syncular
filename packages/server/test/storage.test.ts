@@ -42,11 +42,10 @@ import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
 import {
   makeContext,
-  pullHeader,
+  pullFrames,
   pushCommit,
   pushResults,
   section,
-  subFrame,
   sync,
   taskRow,
   upsert,
@@ -265,6 +264,51 @@ if (realPg !== undefined) {
   });
 }
 
+for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+  test(`${backend} starts a migrated database's delete floor at its highest tombstone version (§2.2)`, async () => {
+    // The partition table as released before the delete floor.
+    const legacy = [
+      'CREATE TABLE sync_partitions(partition TEXT PRIMARY KEY, max_commit_seq BIGINT NOT NULL DEFAULT 0, horizon_seq BIGINT NOT NULL DEFAULT 0)',
+      "INSERT INTO sync_partitions VALUES ('part', 9, 0), ('quiet', 2, 0)",
+      'CREATE TABLE sync_tombstones(partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL, commit_seq BIGINT NOT NULL, server_version BIGINT, scopes TEXT, PRIMARY KEY(partition, tbl, row_id))',
+      "INSERT INTO sync_tombstones VALUES ('part', 'tasks', 'a', 7, 5, NULL), ('part', 'tasks', 'b', 8, 3, NULL), ('part', 'tasks', 'c', 9, NULL, NULL)",
+    ];
+    let storage: ServerStorage;
+    if (backend === 'postgres') {
+      const pg = await PGlite.create();
+      for (const sql of legacy)
+        await pg.exec(sql.replace('scopes TEXT', 'scopes JSONB'));
+      const postgres = new PostgresServerStorage(pgliteExecutor(pg));
+      await postgres.migrate();
+      storage = postgres;
+    } else if (backend === 'sqlite') {
+      const db = new BunSqliteDatabase();
+      for (const sql of legacy) db.exec(sql);
+      storage = new SqliteServerStorage(db);
+    } else {
+      const raw = new Database(':memory:');
+      for (const sql of legacy) raw.exec(sql);
+      const d1 = new D1ServerStorage(new D1DatabaseDouble(raw), {
+        pushApplySerialized: true,
+      });
+      await d1.migrate();
+      await prepareD1(d1);
+      storage = d1;
+    }
+    await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+    for (const [partition, floor] of [
+      ['part', 5],
+      ['quiet', 0],
+    ] as const) {
+      const tx = await storage.begin(partition);
+      expect((await tx.preparePushApply('c', 'probe', 1)).deleteFloor).toBe(
+        floor,
+      );
+      await tx.rollback();
+    }
+  });
+}
+
 // D1 (Cloudflare Workers) against the local bun:sqlite-backed double
 // (test/d1-double.ts documents its fidelity limits). Same contract, so the
 // D1 path is held to the reference behavior key-for-key.
@@ -330,7 +374,7 @@ for (const backend of [
           table: 'tasks',
           rowId: 'new',
           op: 'delete',
-          deletedVersion: 2,
+          rowVersion: 2,
           scopes: { project_id: 'p1' },
         },
       ],
@@ -1125,7 +1169,13 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
       ),
   });
   const changes: NewChange[] = [
-    { table: 'docs', rowId: 'unscoped', op: 'delete', scopes: {} },
+    {
+      table: 'docs',
+      rowId: 'unscoped',
+      op: 'delete',
+      rowVersion: 2,
+      scopes: {},
+    },
     {
       table: 'docs',
       rowId: 'upsert',
@@ -1138,6 +1188,7 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
       table: 'docs',
       rowId: 'delete',
       op: 'delete',
+      rowVersion: 2,
       scopes: { project_id: 'p\n1', org_id: "org's 雪" },
     },
   ];
@@ -1241,6 +1292,7 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
               table: 'docs',
               rowId: 'bad',
               op: 'delete',
+              rowVersion: 2,
               scopes: { project_id: 'rejected' },
             },
           ],
@@ -1682,14 +1734,14 @@ test('sqlite requests wait behind an open push transaction (§6.4)', async () =>
   });
   const pull = sync(
     { ...t, ctx: { ...t.ctx, storage: observed } },
-    [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+    [...pullFrames([{ project_id: 'p1' }])],
     { clientId: 'client-2' },
   ).finally(pullFinished);
   await Promise.race([pullDone, pullBlocked]);
   release();
 
   expect(pushResults(await push)[0]?.status).not.toBe('applied');
-  const bootstrap = section(await pull, 's1');
+  const bootstrap = section(await pull, { project_id: 'p1' });
   const rows = bootstrap.body
     .filter(
       (frame): frame is SegmentInlineFrame => frame.type === 'SEGMENT_INLINE',

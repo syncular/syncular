@@ -14,14 +14,7 @@ import {
   s3PresignedUrls,
   segmentIdFor,
 } from '@syncular/server';
-import {
-  makeContext,
-  pullHeader,
-  section,
-  seedTask,
-  subFrame,
-  sync,
-} from './helpers';
+import { makeContext, pullFrames, section, seedTask, sync } from './helpers';
 import { startS3Stub } from './s3-stub';
 import { runSegmentStoreContract } from './segment-store-contract';
 
@@ -479,10 +472,9 @@ describe('delegated presign through the pull (§5.4 equivalence)', () => {
     });
     await seedTask(t, 'c1', 't1', 'p1');
     const message = await sync(t, [
-      pullHeader({ accept: 0b1011 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], { accept: 0b1011 }),
     ]);
-    const ref = section(message, 's1').body.find(
+    const ref = section(message, { project_id: 'p1' }).body.find(
       (f: ResponseFrame): f is SegmentRefFrame => f.type === 'SEGMENT_REF',
     );
     if (ref?.url === undefined) throw new Error('expected a presigned url');

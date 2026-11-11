@@ -8,8 +8,10 @@ import {
   decodeMessage,
   parseRealtimeServerEvent,
   REALTIME_TAG_ROUND,
+  registrationDigest,
   type ScopeMap,
-  type SubStartFrame,
+  type UnitScopes,
+  unitId,
 } from '@syncular/core';
 import {
   CommitAuthorizationRejection,
@@ -23,11 +25,12 @@ import {
 import {
   del,
   makeContext,
-  pullHeader,
+  liveChanges,
+  progressFrame,
+  pullFrames,
   pushCommit,
   pushResults,
   requestBytes,
-  subFrame,
   sync,
   type TestContext,
   taskRow,
@@ -95,8 +98,9 @@ describe('handshake (§8.1)', () => {
     const hub = makeHub(t);
     await sync(t, [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+      ...pullFrames([{ project_id: 'p1' }], {
+        progress: [progressFrame({ project_id: 'p1' }, 0)],
+      }),
     ]);
     const wire = makeWire();
     await hub.connect({
@@ -134,13 +138,9 @@ describe('handshake (§8.1)', () => {
     const t = makeContext();
     const hub = makeHub(t);
     for (const clientId of ['client-1', 'client-2', 'client-3']) {
-      await sync(
-        t,
-        [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
-        {
-          clientId,
-        },
-      );
+      await sync(t, [...pullFrames([{ project_id: 'p1' }])], {
+        clientId,
+      });
     }
     const calls = { touch: 0, maxSeq: 0, record: 0 };
     const touch = t.storage.touchPartition.bind(t.storage);
@@ -188,10 +188,7 @@ describe('handshake (§8.1)', () => {
 describe('delta delivery (§8.2)', () => {
   async function connectedSession(t: TestContext, hub: RealtimeHub) {
     // Register subscriptions via a pull, then connect.
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const wire = makeWire();
     const session = await hub.connect({
       partition: 'part-1',
@@ -207,10 +204,7 @@ describe('delta delivery (§8.2)', () => {
       const t = makeContext();
       if (mode === 'added') t.scopes.value = { project_id: ['p1', 'p2'] };
       const hub = makeHub(t, 1024);
-      await sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-      ]);
+      await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const sent: (string | Uint8Array)[] = [];
@@ -234,11 +228,12 @@ describe('delta delivery (§8.2)', () => {
       });
       const request = requestBytes(
         [
-          pullHeader(),
-          subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
           ...(mode === 'added'
-            ? [subFrame('s2', 'tasks', { project_id: ['p2'] }, -1)]
-            : []),
+            ? pullFrames([{ project_id: 'p1' }, { project_id: 'p2' }], {
+                cursor: 0,
+                progress: [progressFrame({ project_id: 'p2' }, -1)],
+              })
+            : pullFrames([{ project_id: 'p1' }], { cursor: 0, progress: [] })),
         ],
         'client-1',
       );
@@ -316,19 +311,27 @@ describe('delta delivery (§8.2)', () => {
     expect(raw[0]).toBe(0x00);
     const delta = decodeMessage(raw.subarray(1));
     expect(delta.msgKind).toBe('response');
-    const start = delta.frames.find(
-      (f): f is SubStartFrame => f.type === 'SUB_START',
-    );
-    expect(start?.id).toBe('s1');
-    expect(start?.status).toBe('active');
+    // §8.2: one live section holding one COMMIT, no unit section.
+    expect(delta.frames.map((f) => f.type)).toEqual([
+      'RESP_HEADER',
+      'LIVE_START',
+      'COMMIT',
+      'LIVE_END',
+    ]);
+    expect(delta.frames[1]).toEqual({
+      type: 'LIVE_START',
+      status: 'active',
+      reasonCode: '',
+    });
     const commit = delta.frames.find(
       (f): f is CommitFrame => f.type === 'COMMIT',
     );
-    expect(commit?.changes[0]?.rowId).toBe('t1');
-    const end = delta.frames.find((f) => f.type === 'SUB_END');
-    expect(end?.type === 'SUB_END' && end.nextCursor).toBe(
-      commit?.commitSeq ?? -1,
-    );
+    expect(commit?.changes[0]).toMatchObject({ rowId: 't1', rowVersion: 1 });
+    expect(delta.frames[3]).toEqual({
+      type: 'LIVE_END',
+      throughSeq: commit?.commitSeq ?? -1,
+      echoDigest: new Uint8Array(),
+    });
   });
 
   test.each([
@@ -390,8 +393,9 @@ describe('delta delivery (§8.2)', () => {
     const t = makeContext();
     await sync(t, [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+      ...pullFrames([{ project_id: 'p1' }], {
+        progress: [progressFrame({ project_id: 'p1' }, 0)],
+      }),
     ]);
     const hub = makeHub(t);
     const wire = makeWire();
@@ -449,8 +453,9 @@ describe('delta delivery (§8.2)', () => {
     const t = makeContext();
     await sync(t, [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+      ...pullFrames([{ project_id: 'p1' }], {
+        progress: [progressFrame({ project_id: 'p1' }, 0)],
+      }),
     ]);
     const hub = makeHub(t);
     const wire = makeWire();
@@ -500,8 +505,9 @@ describe('delta delivery (§8.2)', () => {
     const t = makeContext();
     await sync(t, [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+      ...pullFrames([{ project_id: 'p1' }], {
+        progress: [progressFrame({ project_id: 'p1' }, 0)],
+      }),
     ]);
     const hub = makeHub(t);
     const wire = makeWire();
@@ -596,10 +602,7 @@ describe('delta delivery (§8.2)', () => {
   test('a behind client gets catchup-required wake-ups, never gap deltas; acks resume deltas', async () => {
     const t = makeContext();
     const hub = makeHub(t);
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     // Advance the log while the client is offline.
     await sync(
       t,
@@ -659,7 +662,7 @@ describe('delta delivery (§8.2)', () => {
     ).toBe(latest);
   });
 
-  test('delayed acknowledgements preserve newer subscription registration', async () => {
+  test('delayed acknowledgements preserve a newer registration list', async () => {
     const t = makeContext();
     const hub = makeHub(t);
     const { session } = await connectedSession(t, hub);
@@ -676,13 +679,12 @@ describe('delta delivery (§8.2)', () => {
       expect(pending).toHaveLength(1);
       const record = await t.storage.getClientRecord('part-1', 'client-1');
       if (!record) throw new Error('expected registered client');
+      const units = [{ project_id: 'p2' }];
       const updated = {
         ...record,
         cursor: 4,
-        wireVersion: 3,
-        subscriptions: [
-          { id: 'new-sub', table: 'tasks', scopes: { project_id: ['p2'] } },
-        ],
+        catchingUp: [{ id: unitId({ project_id: 'p2' }), cursor: 50 }],
+        registration: { units, digest: registrationDigest(units) },
       };
       await t.storage.putClientRecord('part-1', updated);
       gate.resolve();
@@ -698,7 +700,7 @@ describe('delta delivery (§8.2)', () => {
     }
   });
 
-  test('an HTTP pull that adds a subscription re-registers the live socket', async () => {
+  test('an HTTP pull that registers a unit re-registers the live socket', async () => {
     const t = makeContext();
     const hub = makeHub(t);
     const wire = makeWire();
@@ -708,10 +710,7 @@ describe('delta delivery (§8.2)', () => {
       clientId: 'client-1',
       send: wire.send,
     });
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     session.handleMessage(JSON.stringify({ type: 'ack', cursor: 0 }));
     await sync(
       t,
@@ -722,10 +721,89 @@ describe('delta delivery (§8.2)', () => {
     const delta = decodeMessage(
       (wire.binaries[0] ?? new Uint8Array()).subarray(1),
     );
-    const start = delta.frames.find(
-      (f): f is SubStartFrame => f.type === 'SUB_START',
+    if (delta.msgKind !== 'response') throw new Error('expected a delta');
+    expect(liveChanges(delta)).toEqual(['tasks/t1/upsert']);
+  });
+
+  test('a catching-up unit receives no delta; one COMMIT holds every matching change (§8.1, §8.2)', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2', 'p3'] };
+    const hub = makeHub(t);
+    const units = [
+      { project_id: 'p1' },
+      { project_id: 'p2' },
+      { project_id: 'p3' },
+    ];
+    await t.storage.putClientRecord('part-1', {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 4,
+      schemaVersion: 1,
+      cursor: 0,
+      updatedAtMs: t.now.ms,
+      registration: { units, digest: registrationDigest(units) },
+      catchingUp: [{ id: unitId({ project_id: 'p3' }), cursor: 0 }],
+    });
+    const wire = makeWire();
+    await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    await sync(
+      t,
+      [
+        pushCommit('c1', [
+          upsert('tasks', 'a', taskRow('a', 'p3')),
+          upsert('tasks', 'b', taskRow('b', 'p2')),
+          upsert('tasks', 'c', taskRow('c', 'p1')),
+        ]),
+      ],
+      { clientId: 'writer' },
     );
-    expect(start?.id).toBe('s1');
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 'd', taskRow('d', 'p3'))])],
+      { clientId: 'writer' },
+    );
+    expect(wire.binaries).toHaveLength(1);
+    const delta = decodeMessage(
+      (wire.binaries[0] ?? new Uint8Array()).subarray(1),
+    );
+    if (delta.msgKind !== 'response') throw new Error('expected a delta');
+    expect(liveChanges(delta)).toEqual(['tasks/b/upsert', 'tasks/c/upsert']);
+  });
+
+  test('a record written before wire version 4 registers nothing and requires a sync (§9)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    await t.storage.putClientRecord('part-1', {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 3,
+      cursor: 5,
+      updatedAtMs: t.now.ms,
+      catchingUp: [],
+    });
+    const wire = makeWire();
+    await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    const hello = parseRealtimeServerEvent(wire.texts[0] ?? '');
+    if (!hello.known || hello.event.event !== 'hello') {
+      throw new Error('expected hello');
+    }
+    expect(hello.event.data.requiresSync).toBe(true);
+    await sync(
+      t,
+      [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])],
+      { clientId: 'writer' },
+    );
+    expect(wire.binaries).toHaveLength(0);
   });
 
   test('closed sessions receive nothing', async () => {
@@ -743,10 +821,7 @@ describe('delta delivery (§8.2)', () => {
 
 describe('control-plane drain (§8.2)', () => {
   async function connected(t: TestContext, hub: RealtimeHub, wire: Wire) {
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     return hub.connect({
       partition: 'part-1',
       actorId: 'actor-1',
@@ -805,19 +880,16 @@ describe('host-initiated scope refresh (§8.7)', () => {
     clientId: string,
   ) {
     // Bind the client record to its own actor so the connection holds a grant.
+    const units = [{ project_id: 'p1' }];
     await t.storage.putClientRecord('part-1', {
       clientId,
       actorId,
-      wireVersion: 3,
+      wireVersion: 4,
+      schemaVersion: 1,
       cursor: 0,
       updatedAtMs: t.now.ms,
-      subscriptions: [
-        {
-          id: `sub-${clientId}`,
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
-        },
-      ],
+      registration: { units, digest: registrationDigest(units) },
+      catchingUp: [],
     });
     const wire = makeWire();
     const session = await hub.connect({
@@ -909,7 +981,11 @@ describe('host-initiated scope refresh (§8.7)', () => {
     clientId: string,
   ): Promise<void> {
     const bytes = requestBytes(
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, 0)],
+      [
+        ...pullFrames([{ project_id: 'p1' }], {
+          progress: [progressFrame({ project_id: 'p1' }, 0)],
+        }),
+      ],
       clientId,
     );
     const tagged = new Uint8Array(bytes.length + 1);
@@ -1066,11 +1142,9 @@ describe('presence (§8.6)', () => {
     t: TestContext,
     hub: RealtimeHub,
     clientId: string,
-    scopes: ScopeMap = { project_id: ['p1'] },
+    units: UnitScopes[] = [{ project_id: 'p1' }],
   ) {
-    await sync(t, [pullHeader(), subFrame('s1', 'tasks', scopes, -1)], {
-      clientId,
-    });
+    await sync(t, pullFrames(units), { clientId });
     const wire = makeWire();
     const session = await hub.connect({
       partition: 'part-1',
@@ -1185,7 +1259,7 @@ describe('presence (§8.6)', () => {
     const hub = makeHub(t);
     const a = await presentClient(t, hub, 'client-a');
     // d holds a DIFFERENT scope key.
-    const d = await presentClient(t, hub, 'client-d', { project_id: ['p2'] });
+    const d = await presentClient(t, hub, 'client-d', [{ project_id: 'p2' }]);
     const dWire = d.wire;
     a.session.handleMessage(
       JSON.stringify({
@@ -1297,12 +1371,10 @@ describe('presence (§8.6)', () => {
       maxPresenceBytes: 60,
     });
     Object.assign(t.ctx, { realtime: hub });
-    const both = { project_id: ['p1', 'p2'] };
-    t.scopes.value = both;
+    const both = [{ project_id: 'p1' }, { project_id: 'p2' }];
+    t.scopes.value = { project_id: ['p1', 'p2'] };
     const reports: string[][] = [];
-    await sync(t, [pullHeader(), subFrame('s1', 'tasks', both, -1)], {
-      clientId: 'client-a',
-    });
+    await sync(t, pullFrames(both), { clientId: 'client-a' });
     const aWire = makeWire();
     const a = await hub.connect({
       partition: 'part-1',
@@ -1353,17 +1425,14 @@ describe('presence (§8.6)', () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };
     const hub = makeHub(t);
-    const b = await presentClient(t, hub, 'client-b', {
-      project_id: ['p1', 'p2'],
-    });
+    const b = await presentClient(t, hub, 'client-b', [
+      { project_id: 'p1' },
+      { project_id: 'p2' },
+    ]);
     // client-a held p1 and p2 before the eviction; its record covers p1 now.
-    await sync(
-      t,
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
-      {
-        clientId: 'client-a',
-      },
-    );
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])], {
+      clientId: 'client-a',
+    });
     const aWire = makeWire();
     const reserved = '["remote-command","x"]';
     const restored = await hub.restore([
@@ -1436,10 +1505,7 @@ describe('presence (§8.6)', () => {
   test('a malformed presence publish drops the connection (§8.1)', async () => {
     const t = makeContext();
     const hub = makeHub(t);
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     let closed = 0;
     const session = await hub.connect({
       partition: 'part-1',
@@ -1501,7 +1567,7 @@ describe('whole-commit authority refusal over a socket', () => {
             upsert('tasks', 'sibling', taskRow('sibling', 'p1')),
             del('tasks', rowId),
           ]),
-          pullHeader(),
+          ...pullFrames([]),
         ],
         'socket-client',
       );
@@ -1562,7 +1628,7 @@ describe('unexpected exceptions in a socket round (SYNCULAR-ERROR-CLASS-001)', (
       throw new Error('Network connection lost. secret-7f3a');
     };
     const bytes = requestBytes(
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      [...pullFrames([{ project_id: 'p1' }])],
       'client-1',
     );
     const tagged = new Uint8Array(bytes.length + 1);
@@ -1626,7 +1692,7 @@ describe('unexpected exceptions in a socket round (SYNCULAR-ERROR-CLASS-001)', (
       throw new Error('Network connection lost. secret-7f3a');
     };
     const bytes = requestBytes(
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      [...pullFrames([{ project_id: 'p1' }])],
       'client-1',
     );
     const tagged = new Uint8Array(bytes.length + 1);
@@ -1669,7 +1735,7 @@ describe('socket round size (§1.7, §8.7)', () => {
       },
     });
     const bytes = requestBytes(
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      [...pullFrames([{ project_id: 'p1' }])],
       'client-1',
     );
     expect(bytes.length).toBeGreaterThan(64);

@@ -21,6 +21,7 @@ import {
 import {
   type ClientRecord,
   compileSchema,
+  type NewChange,
   type NewReaction,
   PARTITION_TOUCH_INTERVAL_MS,
   prepareAuthorityTransaction,
@@ -318,6 +319,7 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            rowVersion: 2,
             scopes: { project_id: 'p1' },
           },
           {
@@ -351,14 +353,14 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
-            deletedVersion: 1,
+            rowVersion: 1,
             scopes: { project_id: 'p1' },
           },
           {
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
-            deletedVersion: 3,
+            rowVersion: 3,
             scopes: { project_id: 'p2' },
           },
         ],
@@ -1707,6 +1709,59 @@ export function runStorageContract(
 
     // --- Horizon / pruning (§4.6) ---
 
+    test('the delete floor rises with each tombstoned delete and never falls (§2.2)', async () => {
+      const storage = await make();
+      const floor = async (): Promise<number> => {
+        const tx = await storage.begin(PARTITION);
+        const prepared = await tx.preparePushApply('c', 'floor-probe', 1);
+        await tx.rollback();
+        return prepared.deleteFloor;
+      };
+      const append = async (id: string, changes: NewChange[]) => {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: id,
+          actorId: 'a',
+          createdAtMs: NOW,
+          changes,
+        });
+        await tx.commit();
+      };
+      const del = (rowId: string, rowVersion: number): NewChange => ({
+        table: 'tasks',
+        rowId,
+        op: 'delete',
+        rowVersion,
+        scopes: { project_id: 'p1' },
+      });
+      expect(await floor()).toBe(0);
+      await append('d1', [del('r1', 4), del('r2', 3)]);
+      expect(await floor()).toBe(4);
+      // A scope move's delete half leaves no tombstone and no floor.
+      await append('move', [
+        del('r3', 9),
+        {
+          table: 'tasks',
+          rowId: 'r3',
+          op: 'upsert',
+          rowVersion: 9,
+          scopes: { project_id: 'p2' },
+          payload: bytes(3),
+        },
+      ]);
+      expect(await floor()).toBe(4);
+      await append('d2', [del('r4', 2)]);
+      expect(await floor()).toBe(4);
+      const { logEpoch } = await storage.touchPartition(
+        PARTITION,
+        NOW,
+        'floor-epoch',
+      );
+      await storage.pruneCommitsThrough(PARTITION, { logEpoch, throughSeq: 3 });
+      expect(await floor()).toBe(4);
+    });
+
     test('horizon set/get and pruneCommitsThrough', async () => {
       const storage = await make();
       for (let i = 0; i < 5; i++) {
@@ -2498,6 +2553,7 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            rowVersion: 2,
             scopes: { project_id: 'p2' },
           },
         ],
@@ -2530,11 +2586,11 @@ export function runStorageContract(
         scopes: { project_id: 'p1' },
       });
       expect(detail?.changes[1]?.payload).toEqual(bytes(7));
-      // A delete carries no rowVersion.
+      // §2.2: a delete carries its version.
       expect(detail?.changes[2]).toMatchObject({
         scopes: { project_id: 'p2' },
+        rowVersion: 2,
       });
-      expect(detail?.changes[2]?.rowVersion).toBeUndefined();
       expect(await storage.getCommit(PARTITION, multiSeq + 1)).toBeUndefined();
 
       // Row history: newest first, bounded by `limit`, one row only.
@@ -2575,8 +2631,11 @@ export function runStorageContract(
       });
       // The earlier loop upserted r1 in commit 2; the delete is newest.
       expect(deleted.map((h) => h.commitSeq)).toEqual([multiSeq, 2]);
-      expect(deleted[0]).toMatchObject({ commitSeq: multiSeq, op: 'delete' });
-      expect(deleted[0]?.rowVersion).toBeUndefined();
+      expect(deleted[0]).toMatchObject({
+        commitSeq: multiSeq,
+        op: 'delete',
+        rowVersion: 2,
+      });
       expect(deleted[1]).toMatchObject({
         commitSeq: 2,
         op: 'upsert',
@@ -2639,6 +2698,7 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            rowVersion: 2,
             scopes: { project_id: 'p1' },
           },
         ],

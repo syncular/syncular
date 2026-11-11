@@ -24,17 +24,16 @@ import { pgliteExecutor } from '@syncular/server/pglite';
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import {
   docRow,
-  pullHeader,
+  pullFrames,
   pushCommit,
   requestBytes,
-  subFrame,
+  taskRow,
   TEST_LOG_EPOCH,
   TEST_SCHEMA,
-  taskRow,
   upsert,
 } from './helpers';
 
-const P1 = { project_id: ['p1'] };
+const P1 = { project_id: 'p1' };
 
 test('a published image is served by a host without a builder until its scope changes', async () => {
   const db = await PGlite.create();
@@ -105,10 +104,7 @@ test('a published image is served by a host without a builder until its scope ch
     pushCommit('c3', [upsert('tasks', 't9', taskRow('t9', 'p2'))]),
   ]);
   const bootstrap = await sync(
-    [
-      pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-      subFrame('s1', 'tasks', P1, -1),
-    ],
+    pullFrames([P1], { accept: 0b0111, limitSnapshotRows: 1 }),
     'client-2',
   );
   const ref = bootstrap.frames.find((frame) => frame.type === 'SEGMENT_REF');
@@ -122,7 +118,10 @@ test('a published image is served by a host without a builder until its scope ch
   // The serving host streams the stored bytes (§5.5).
   const download = await openSegmentDownload(
     { ...host, partition: 'part-1', actorId: 'actor-1' },
-    { segmentId: published.segmentId, scopesHeader: canonicalScopeJson(P1) },
+    {
+      segmentId: published.segmentId,
+      scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+    },
   );
   const bytes = new Uint8Array(await new Response(download.body).arrayBuffer());
   expect(bytes.length).toBe(published.byteLength);
@@ -199,8 +198,10 @@ test('the §5.3 reuse lookup runs only for a snapshot past one rows page', async
   // page, so the reuse lookup (an R2 GET on Workers) never happens.
   const small = await sync(
     [
-      pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-      subFrame('s-small', 'tasks', { project_id: ['p2'] }, -1),
+      ...pullFrames([{ project_id: 'p2' }], {
+        accept: 0b0111,
+        limitSnapshotRows: 1,
+      }),
     ],
     'client-2',
   );
@@ -220,10 +221,7 @@ test('the §5.3 reuse lookup runs only for a snapshot past one rows page', async
   expect(published.rowCount).toBe(2);
   const findsBefore = segments.found();
   const first = await sync(
-    [
-      pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-      subFrame('s-large', 'tasks', P1, -1),
-    ],
+    pullFrames([P1], { accept: 0b0111, limitSnapshotRows: 1 }),
     'client-3',
   );
   expect(segments.found()).toBe(findsBefore + 1);
@@ -231,10 +229,7 @@ test('the §5.3 reuse lookup runs only for a snapshot past one rows page', async
   expect(ref).toMatchObject({ segmentId: published.segmentId });
 
   const second = await sync(
-    [
-      pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-      subFrame('s-large', 'tasks', P1, -1),
-    ],
+    pullFrames([P1], { accept: 0b0111, limitSnapshotRows: 1 }),
     'client-4',
   );
   expect(segments.found()).toBe(findsBefore + 2);

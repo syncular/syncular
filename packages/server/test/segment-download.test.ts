@@ -7,6 +7,7 @@ import {
   decodeRowsSegment,
   type ResponseMessage,
   type SegmentRefFrame,
+  type UnitScopes,
 } from '@syncular/core';
 import {
   handleSegmentDownload,
@@ -18,32 +19,28 @@ import {
 import {
   docRow,
   makeContext,
-  pullHeader,
   pushCommit,
+  pullFrames,
   section,
   seedTask,
-  subFrame,
   sync,
   type TestContext,
   TEST_LOG_EPOCH,
   upsert,
 } from './helpers';
 
-function refOf(message: ResponseMessage, id: string): SegmentRefFrame {
-  const ref = section(message, id).body.find(
+function refOf(message: ResponseMessage, unit: UnitScopes): SegmentRefFrame {
+  const ref = section(message, unit).body.find(
     (f): f is SegmentRefFrame => f.type === 'SEGMENT_REF',
   );
-  if (ref === undefined) throw new Error(`expected SEGMENT_REF for ${id}`);
+  if (ref === undefined) throw new Error('expected SEGMENT_REF');
   return ref;
 }
 
 async function bootstrapRef(t: TestContext): Promise<SegmentRefFrame> {
   await seedTask(t, 'seed', 't1', 'p1');
-  const message = await sync(t, [
-    pullHeader(),
-    subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-  ]);
-  const ref = section(message, 's1').body.find(
+  const message = await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+  const ref = section(message, { project_id: 'p1' }).body.find(
     (f): f is SegmentRefFrame => f.type === 'SEGMENT_REF',
   );
   if (ref === undefined) throw new Error('expected SEGMENT_REF');
@@ -90,9 +87,26 @@ describe('segment download (§5.5)', () => {
     await expect(
       handleSegmentDownload(t.ctx, {
         segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p1', 'p2'] }),
+        scopesHeader: canonicalScopeJson({ project_id: ['p2'] }),
       }),
     ).rejects.toMatchObject({ code: 'sync.forbidden' });
+  });
+
+  test('the scopes header is a unit scope map: one value per variable (§5.5)', async () => {
+    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+    const ref = await bootstrapRef(t);
+    for (const header of [
+      { project_id: ['p1', 'p2'] },
+      { project_id: [] },
+      { project_id: 'p1' },
+    ]) {
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: JSON.stringify(header),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.invalid_request' });
+    }
   });
 
   test('revoked scopes at download time are forbidden (§3.2 rule 5)', async () => {
@@ -161,11 +175,10 @@ describe('segment download (§5.5)', () => {
       t: TestContext,
       scopes: Record<string, string[]>,
     ): Promise<SegmentRefFrame> => {
-      const message = await sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', scopes, -1),
-      ]);
-      return refOf(message, 's1');
+      const unit = Object.fromEntries(
+        Object.entries(scopes).map(([key, [value]]) => [key, value!]),
+      );
+      return refOf(await sync(t, pullFrames([unit])), unit);
     };
     const firstRef = await refOfPull(first, emptyFirst);
     const secondRef = await refOfPull(second, emptySecond);
@@ -266,11 +279,9 @@ describe('segment download (§5.5)', () => {
       org_id: ['o1'],
     };
     const pullEmpty = async (): Promise<SegmentRefFrame> => {
-      const message = await sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', scopes, -1),
-      ]);
-      return refOf(message, 's1');
+      return refOf(await sync(t, pullFrames([{ project_id: 'p-none' }])), {
+        project_id: 'p-none',
+      });
     };
     const firstRef = await pullEmpty();
     await sync(t, [
@@ -357,12 +368,10 @@ describe('byte-identical segments across scopes (§5.1, §5.5)', () => {
         pushCommit('c1', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
       ]);
       const message = await sync(t, [
-        pullHeader(),
-        subFrame('s-org', 'docs', { org_id: ['o1'] }, -1),
-        subFrame('s-project', 'docs', { projectId: ['p1'] }, -1),
+        ...pullFrames([{ org_id: 'o1' }, { projectId: 'p1' }]),
       ]);
-      const orgRef = refOf(message, 's-org');
-      const projectRef = refOf(message, 's-project');
+      const orgRef = refOf(message, { org_id: 'o1' });
+      const projectRef = refOf(message, { projectId: 'p1' });
       // Different scopes, one content address: the digests differ.
       expect(orgRef.scopeDigest).not.toBe(projectRef.scopeDigest);
       expect(projectRef.segmentId).toBe(orgRef.segmentId);
@@ -401,12 +410,10 @@ describe('byte-identical segments across scopes (§5.1, §5.5)', () => {
       });
       t.scopes.value = { project_id: ['p1', 'p2'] };
       const message = await sync(t, [
-        pullHeader(),
-        subFrame('s-p1', 'tasks', { project_id: ['p1'] }, -1),
-        subFrame('s-p2', 'tasks', { project_id: ['p2'] }, -1),
+        ...pullFrames([{ project_id: 'p1' }, { project_id: 'p2' }]),
       ]);
-      const p1Ref = refOf(message, 's-p1');
-      const p2Ref = refOf(message, 's-p2');
+      const p1Ref = refOf(message, { project_id: 'p1' });
+      const p2Ref = refOf(message, { project_id: 'p2' });
       expect(p1Ref.scopeDigest).not.toBe(p2Ref.scopeDigest);
       expect(p2Ref.segmentId).toBe(p1Ref.segmentId);
 
@@ -423,10 +430,11 @@ describe('byte-identical segments across scopes (§5.1, §5.5)', () => {
       expect(
         (await t.ctx.segments.get(p1Ref.segmentId))?.record.scopeDigests,
       ).toHaveLength(2);
+      t.scopes.value = { project_id: ['p1', 'p2', 'p3'] };
       await expect(
         handleSegmentDownload(t.ctx, {
           segmentId: p1Ref.segmentId,
-          scopesHeader: canonicalScopeJson({ project_id: ['p1', 'p2'] }),
+          scopesHeader: canonicalScopeJson({ project_id: ['p3'] }),
         }),
       ).rejects.toMatchObject({ code: 'sync.forbidden' });
     });

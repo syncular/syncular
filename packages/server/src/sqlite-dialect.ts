@@ -116,7 +116,8 @@ export const SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
   partition TEXT PRIMARY KEY,
   max_commit_seq INTEGER NOT NULL DEFAULT 0,
-  horizon_seq INTEGER NOT NULL DEFAULT 0
+  horizon_seq INTEGER NOT NULL DEFAULT 0,
+  delete_floor INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sync_partition_registry(
   partition TEXT PRIMARY KEY,
@@ -244,6 +245,7 @@ const SQLITE_ADDED_COLUMNS = [
   ['sync_tombstones', 'scopes', 'TEXT'],
   ['sync_push_results', 'outbox_id', 'TEXT'],
   ['sync_push_results', 'client_seq', 'INTEGER'],
+  ['sync_partitions', 'delete_floor', 'INTEGER NOT NULL DEFAULT 0'],
 ] as const;
 
 /** Core-table columns wire version 4 deleted: the version 3 subscription list. */
@@ -313,6 +315,13 @@ export function sqliteUpgradeDdl(
       ([table, name, definition]) =>
         `ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`,
     ),
+    // §2.2: a database from before the delete floor starts it at the highest
+    // version its tombstones recorded.
+    ...(has('sync_partitions', 'delete_floor')
+      ? []
+      : [
+          `UPDATE sync_partitions SET delete_floor=coalesce((SELECT max(server_version) FROM sync_tombstones t WHERE t.partition=sync_partitions.partition),0)`,
+        ]),
     ...SQLITE_DROPPED_COLUMNS.filter(([table, name]) => has(table, name)).map(
       ([table, name]) => `ALTER TABLE ${table} DROP COLUMN ${name}`,
     ),
@@ -1333,7 +1342,7 @@ export abstract class SqliteFamilyStorage {
         record.wireVersion,
         record.cursor,
         record.updatedAtMs,
-        record.updatedAtMs,
+        record.lastRoundAtMs ?? record.updatedAtMs,
         record.schemaVersion ?? null,
         registration === undefined ? null : JSON.stringify(registration.units),
         registration?.digest ?? null,
@@ -1945,7 +1954,7 @@ export abstract class SqliteFamilyTransaction {
           change.table,
           change.rowId,
           change.op === 'upsert' ? 1 : 2,
-          change.rowVersion ?? null,
+          change.rowVersion,
           JSON.stringify(change.scopes),
           change.payload ?? null,
         ],
@@ -1965,7 +1974,7 @@ export abstract class SqliteFamilyTransaction {
             change.table,
             change.rowId,
             commitSeq,
-            change.deletedVersion ?? null,
+            change.rowVersion,
             JSON.stringify(change.scopes),
           ],
         );

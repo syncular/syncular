@@ -46,11 +46,14 @@ export interface RemoteQueryDependency {
   readonly scopeKeys?: readonly string[];
 }
 
+/**
+ * The window units a scoped query reads (§4.8): the client's `WindowBase`
+ * (a variable and one value per other variable) and the variable's values.
+ */
 export interface RemoteQueryCoverage {
   readonly base: {
-    readonly table: string;
     readonly variable: string;
-    readonly fixedScopes?: Readonly<Record<string, readonly string[]>>;
+    readonly fixedScopes?: Readonly<Record<string, string>>;
   };
   readonly units: readonly string[];
 }
@@ -384,46 +387,48 @@ export function registerRemoteQuery<Params>(
           );
         }
         const coverage = descriptor.coverage(params);
-        const coverageByTable = new Map<string, RemoteQueryCoverage>();
-        for (const entry of coverage) {
-          if (
-            coverageByTable.has(entry.base.table) ||
-            !descriptor.tables.includes(entry.base.table)
-          ) {
-            throw syncError(
-              'operation.invalid_request',
-              'scoped remote query has invalid generated scope coverage',
-            );
-          }
-          coverageByTable.set(entry.base.table, entry);
-        }
-        if (descriptor.tables.some((table) => !coverageByTable.has(table))) {
+        // A unit names every variable of a table it lets a query read in
+        // full: a variable left open would read rows outside the grant, and
+        // the wildcard fence (§3.2) has no counterpart in a SQL read.
+        const exact = (
+          entry: RemoteQueryCoverage,
+          declared: ReadonlySet<string>,
+        ): boolean => {
+          const variables = new Set([
+            entry.base.variable,
+            ...Object.keys(entry.base.fixedScopes ?? {}),
+          ]);
+          return (
+            variables.size === declared.size &&
+            [...declared].every((variable) => variables.has(variable))
+          );
+        };
+        const declared = descriptor.tables.map(
+          (name) => schema.tables.get(name)?.declaredVariables,
+        );
+        if (
+          declared.some(
+            (variables) =>
+              variables === undefined ||
+              !coverage.some((entry) => exact(entry, variables)),
+          )
+        ) {
           throw syncError(
             'operation.invalid_request',
             'scoped remote query lacks complete generated scope coverage',
           );
         }
         for (const entry of coverage) {
-          const table = schema.tables.get(entry.base.table);
           const fixedScopes = entry.base.fixedScopes ?? {};
-          const coveredVariables = new Set([
-            entry.base.variable,
-            ...Object.keys(fixedScopes),
-          ]);
           if (
-            table === undefined ||
-            Object.prototype.hasOwnProperty.call(
-              fixedScopes,
-              entry.base.variable,
-            ) ||
-            coveredVariables.size !== table.declaredVariables.size ||
-            [...table.declaredVariables].some(
-              (variable) => !coveredVariables.has(variable),
+            Object.hasOwn(fixedScopes, entry.base.variable) ||
+            !declared.some(
+              (variables) => variables !== undefined && exact(entry, variables),
             )
           ) {
             throw syncError(
               'operation.invalid_request',
-              'scoped remote query lacks complete generated scope coverage',
+              'scoped remote query has invalid generated scope coverage',
             );
           }
           if (entry.units.length === 0) {
@@ -432,18 +437,15 @@ export function registerRemoteQuery<Params>(
               'scoped remote query has an empty scope unit',
             );
           }
-          for (const value of entry.units) {
-            if (!scopeAllowed(allowed, entry.base.variable, value)) {
-              throw syncError('operation.forbidden');
-            }
-          }
-          for (const [variable, values] of Object.entries(fixedScopes)) {
-            if (
-              values.length === 0 ||
-              values.some((value) => !scopeAllowed(allowed, variable, value))
-            ) {
-              throw syncError('operation.forbidden');
-            }
+          if (
+            entry.units.some(
+              (value) => !scopeAllowed(allowed, entry.base.variable, value),
+            ) ||
+            Object.entries(fixedScopes).some(
+              ([variable, value]) => !scopeAllowed(allowed, variable, value),
+            )
+          ) {
+            throw syncError('operation.forbidden');
           }
         }
       } else if (

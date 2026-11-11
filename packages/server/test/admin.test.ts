@@ -21,14 +21,13 @@ import {
 import {
   del,
   makeContext,
-  pullHeader,
+  pullFrames,
   pushCommit,
   seedTask,
-  subFrame,
   sync,
-  type TestContext,
   taskRow,
   TEST_SCHEMA,
+  type TestContext,
   upsert,
 } from './helpers';
 import { startS3Stub } from './s3-stub';
@@ -57,10 +56,7 @@ describe('listClients', () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
     // A pull with a subscription persists the client record (§8.1).
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     const { clients, total } = await admin.listClients('part-1');
     expect(total).toBe(1);
@@ -128,10 +124,7 @@ describe('listClients', () => {
   test('lag counts commits the client has not pulled', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     // Two more commits land after the client's last pull (cursor 1).
     await seedTask(t, 'c2', 't2', 'p1');
     await seedTask(t, 'c3', 't3', 'p1');
@@ -144,10 +137,7 @@ describe('listClients', () => {
   test('a stale client falls outside the active window', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     // Advance the clock past the default 14-day active window.
     t.now.ms += 15 * 24 * 60 * 60 * 1000;
     const admin = adminOf(t);
@@ -160,10 +150,7 @@ describe('clientDetail', () => {
     const ring = new RingBufferEvents({ capacity: 100 });
     const t = makeContext({ events: ring });
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     await seedTask(t, 'c2', 't2', 'p1'); // one commit of lag
     const leases = new MemoryLeaseStore({ leaseId: () => 'lease_test' });
     await leases.issue(
@@ -244,10 +231,7 @@ describe('partitions', () => {
   test('listPartitions + partitionsOverview across two partitions', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     // A second partition on the same storage, via a direct commit.
     const tx = await t.storage.begin('part-2');
@@ -418,10 +402,7 @@ describe('horizonStatus', () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
     // A pull leaves an active cursor at 1; default floors keep everything.
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     const status = await admin.horizonStatus('part-1');
     expect(status.activeCursorFloor).toBe(1);
@@ -435,10 +416,7 @@ describe('stats + event stream', () => {
     // bytes — inline segments never touch the store.
     const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     const segStats = (await admin.stats('part-1')).segments;
     expect(segStats?.count).toBeGreaterThanOrEqual(1);
@@ -552,10 +530,7 @@ describe('traceRow', () => {
   }
 
   async function subscribed(t: TestContext): Promise<void> {
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
   }
 
   test('delivered, scope-mismatch, then pending-pull after a new change', async () => {
@@ -721,7 +696,7 @@ describe('errors + coverage', () => {
       errorCode: 'sync.invalid_request',
       pushCommits: 0,
       pulled: false,
-      subscriptions: 0,
+      units: 0,
     });
     const admin = adminOf(t, { ring });
     expect(admin.errors('part-1').byClient).toEqual([
@@ -805,15 +780,10 @@ describe('people, delivery, search', () => {
     await seedTask(t, 'c1', 't1', 'p1');
     await seedTask(t, 'c2', 't2', 'p2');
     // client-1 subscribes to p1 and holds a socket; client-2 to p2, offline.
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    await sync(
-      t,
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p2'] }, -1)],
-      { clientId: 'client-2' },
-    );
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+    await sync(t, [...pullFrames([{ project_id: 'p2' }])], {
+      clientId: 'client-2',
+    });
     const hub = createRealtimeHub({
       schema: t.ctx.schema,
       storage: t.storage,

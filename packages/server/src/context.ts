@@ -58,7 +58,7 @@ export type ResolverOutage = typeof RESOLVER_OUTAGE;
 /**
  * Host callback: actor → allowed scopes (§3.2 step 3). Resolved at most
  * once per request and memoized (§3.4 step 1). `'*'` means "any value for
- * this variable". A throwing resolver revokes subscriptions and rejects
+ * this variable". A throwing resolver revokes units and rejects
  * writes with `sync.forbidden` — fail loud, never leak. Returning
  * `RESOLVER_OUTAGE` instead opts the request into lease authorization
  * (§7.3.3) — a deliberate outage signal, not a failure.
@@ -87,10 +87,8 @@ export interface ServerLimits {
    * decoding, and a socket round's assembled request (§8.7).
    */
   readonly maxRequestBytes: number;
-  /** §1.7 cap on `SUBSCRIPTION` frames per request. */
+  /** §1.7 cap on `UNIT` frames per request: the units of a traveling list. */
   readonly maxSubscriptionsPerRequest: number;
-  /** §1.7 cap on requested scope values, summed over a subscription's keys. */
-  readonly maxScopeValuesPerSubscription: number;
   /** Cap on concurrent registered-query watches per watch session. */
   readonly maxWatchesPerSession: number;
 }
@@ -101,10 +99,8 @@ export const DEFAULT_LIMITS: ServerLimits = {
   maxCascadeOperationsPerCommit: 1_000,
   // The size above which adapters already refuse to buffer a segment body.
   maxRequestBytes: 16 * 1024 * 1024,
-  // One subscription per pushable operation: the existing per-request cap.
+  // One unit per pushable operation: the existing per-request cap.
   maxSubscriptionsPerRequest: 500,
-  // One default snapshot page (§4.2): a longer list wants a coarser scope.
-  maxScopeValuesPerSubscription: 1_000,
   // Every commit reruns a session's affected watches one after another.
   maxWatchesPerSession: 100,
 };
@@ -113,10 +109,10 @@ export const DEFAULT_LIMITS: ServerLimits = {
 export interface RealtimeNotifier {
   notifyCommit(partition: string, commit: StoredCommit): void | Promise<void>;
   /**
-   * A pull changed the client's persisted subscription list (§8.7). A hub
-   * re-registers that client's live sockets, so a client that runs its
-   * rounds over HTTP while a socket is open receives deltas for the new
-   * subscriptions.
+   * A pull changed the client's registration list or live set (§8.1). A
+   * hub re-registers that client's live sockets, so a client that runs its
+   * rounds over HTTP while a socket is open receives deltas for the units
+   * that joined.
    */
   notifySubscriptions?(
     partition: string,

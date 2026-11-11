@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   decodeRemoteOperationResponse,
   encodeRemoteOperationRequest,
+  encodeSparseRow,
   type RowValue,
 } from '@syncular/core';
 import {
@@ -14,6 +15,7 @@ import {
 import {
   makeContext,
   pushCommit,
+  pushResults,
   sync,
   TASK_COLUMNS,
   taskRow,
@@ -82,7 +84,7 @@ async function rowState(t: TestContext) {
 }
 
 describe('explicit rescope (§2.2)', () => {
-  test('moves twice and back without resetting the version or leaving a tombstone', async () => {
+  test('each move advances the version on both halves and leaves no tombstone (§2.2)', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };
     await sync(t, [
@@ -99,29 +101,52 @@ describe('explicit rescope (§2.2)', () => {
     expect(
       firstCommit?.changes.map((change) => ({
         op: change.op,
+        rowVersion: change.rowVersion,
         scopes: change.scopes,
       })),
     ).toEqual([
-      { op: 'delete', scopes: { project_id: 'p1' } },
-      { op: 'upsert', scopes: { project_id: 'p2' } },
+      { op: 'delete', rowVersion: 3, scopes: { project_id: 'p1' } },
+      { op: 'upsert', rowVersion: 3, scopes: { project_id: 'p2' } },
     ]);
     let state = await rowState(t);
     expect(state.row?.scopes).toEqual({ project_id: 'p2' });
-    expect(state.row?.serverVersion).toBe(2);
+    expect(state.row?.serverVersion).toBe(3);
     expect(state.tombstone).toBeUndefined();
 
     await rescope(t, 'r2', taskValues('p1', 'row2'));
     state = await rowState(t);
     expect(state.row?.scopes).toEqual({ project_id: 'p1' });
-    expect(state.row?.serverVersion).toBe(2);
+    expect(state.row?.serverVersion).toBe(4);
     expect(state.tombstone).toBeUndefined();
 
     await rescope(t, 'r3', taskValues('p2', 'row2'));
     state = await rowState(t);
     expect(state.row?.scopes).toEqual({ project_id: 'p2' });
-    expect(state.row?.serverVersion).toBe(2);
+    expect(state.row?.serverVersion).toBe(5);
     expect(state.tombstone).toBeUndefined();
-    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(5);
+    // Only the moved scope column took the move's version (§2.2): a
+    // baseVersion 2 write of the title still applies.
+    const titled = pushResults(
+      await sync(t, [
+        pushCommit('title', [
+          upsert(
+            'tasks',
+            't1',
+            encodeSparseRow(TASK_COLUMNS, 0, [
+              't1',
+              undefined,
+              'row3',
+              undefined,
+              undefined,
+              undefined,
+            ]),
+            2,
+          ),
+        ]),
+      ]),
+    )[0];
+    expect(titled?.status).toBe('applied');
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(6);
   });
 
   test('a command index scan reads candidate state beyond the actor scopes', async () => {
@@ -355,9 +380,9 @@ describe('command upsert insert (§6.2)', () => {
     expect((await run(t, 'w4', { op: 'insert', title: 'c' })).status).toBe(
       'applied',
     );
-    // §6.2: the recreate starts above the deleted version 1.
+    // §2.2: the delete wrote version 2; the recreate starts above it.
     const state = await rowState(t);
-    expect(state.row?.serverVersion).toBe(2);
+    expect(state.row?.serverVersion).toBe(3);
     expect(state.tombstone).toBeUndefined();
 
     const existing = await run(t, 'w5', { op: 'insert', title: 'd' });

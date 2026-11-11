@@ -14,9 +14,12 @@ import {
   decodeMessage,
   encodeMessage,
   encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
+  registrationDigest,
   type RequestFrame,
   type RowColumn,
+  unitId,
 } from '@syncular/core';
 import {
   type BlobStore,
@@ -110,7 +113,7 @@ async function makeHandler(
 
 function syncRequest(frames: RequestFrame[], clientId = 'client-1'): Request {
   const bytes = encodeMessage({
-    wireVersion: 3,
+    wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
       {
@@ -214,6 +217,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'coordinator-only',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -284,6 +288,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'admin-seed',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',
@@ -358,6 +363,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'unsafe-stateless',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -412,6 +418,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'mapped',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -458,6 +465,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'contained',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -483,6 +491,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'c1',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -511,14 +520,12 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
             limitSnapshotRows: 100,
             maxSnapshotPages: 4,
             accept: 0b0011,
-          },
-          {
-            type: 'SUBSCRIPTION',
-            id: 's1',
-            table: 'tasks',
-            scopes: { list_id: ['L'] },
             cursor: -1,
+            registrationDigest: registrationDigest([{ list_id: 'L' }]),
+            echoDigest: new Uint8Array(),
           },
+          { type: 'UNIT', scopes: { list_id: 'L' } },
+          { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
         ],
         'client-2',
       ),
@@ -529,7 +536,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     // D1. (Small datasets inline the rows segment rather than emit a separate
     // SEGMENT descriptor, so we assert on the section, not the frame type.)
     const subStart = pullMsg.frames.find(
-      (f) => f.type === 'SUB_START' && f.id === 's1',
+      (f) => f.type === 'SUB_START' && f.id === unitId({ list_id: 'L' }),
     );
     const subEnd = pullMsg.frames.find((f) => f.type === 'SUB_END');
     expect(subStart).toBeDefined();
@@ -542,6 +549,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'dup',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -582,6 +590,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'cb',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',
@@ -621,6 +630,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'cm',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',
@@ -689,6 +699,7 @@ describe('Workers fetch handler (D1 double + S3 blob store)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'cs3',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',

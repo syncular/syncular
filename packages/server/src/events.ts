@@ -13,7 +13,7 @@
  * - Timestamps and durations come from the ctx clock where one exists, so
  *   the conformance virtual-clock discipline stays intact.
  */
-import type { ScopeMap, WakeReason } from '@syncular/core';
+import type { FencedRecord, UnitScopes, WakeReason } from '@syncular/core';
 
 /** One `POST /sync` request, emitted once per request after the response
  * bytes are fully produced (or the request was rejected up front). */
@@ -48,7 +48,8 @@ export interface RequestHandledEvent {
   readonly errorCode?: string;
   readonly pushCommits: number;
   readonly pulled: boolean;
-  readonly subscriptions: number;
+  /** Units of the request's effective list (§4.1); 0 without one. */
+  readonly units: number;
 }
 
 interface PushEventBase {
@@ -154,7 +155,7 @@ export interface ReactionPruneCompletedEvent {
   readonly mayHaveMore: boolean;
 }
 
-/** One emitted segment within a pull subscription section. */
+/** One emitted segment within a unit section. */
 export interface PullSegmentSummary {
   readonly mediaType: 'rows' | 'sqlite';
   readonly delivery: 'inline' | 'ref';
@@ -164,25 +165,40 @@ export interface PullSegmentSummary {
   readonly rows: number;
 }
 
-/** One subscription section of a served pull (§1.6). */
-export interface PullSubscriptionSummary {
+/** One unit of a served pull's effective list (§4.1). */
+export interface PullUnitSummary {
   readonly id: string;
-  readonly table: string;
+  readonly scopes: UnitScopes;
   readonly status: 'active' | 'revoked' | 'reset';
-  /** `none` for revoked/reset sections (no data half was produced). */
-  readonly mode: 'bootstrap' | 'incremental' | 'none';
-  readonly requestedScopes: ScopeMap;
-  readonly effectiveScopes: ScopeMap;
-  readonly firstCommitSeq?: number;
-  readonly lastCommitSeq?: number;
+  /**
+   * `live` and `catching-up` (a post-bootstrap unit) units take part in the
+   * live section; `bootstrap` sections carry segments; `none` for revoked and
+   * reset units.
+   */
+  readonly mode: 'live' | 'catching-up' | 'bootstrap' | 'none';
+  /** Whether the response carried a unit section for it (§4.4). */
+  readonly section: boolean;
+  /** The unit's echo (§4.4). */
+  readonly fenced: readonly FencedRecord[];
+  /** The cursor the request held for the unit: its `PROGRESS` cursor or R. */
   readonly fromCursor: number;
-  readonly nextCursor: number;
-  readonly commits: number;
-  readonly changes: number;
   readonly segments: readonly PullSegmentSummary[];
 }
 
-/** The pull half of a request, emitted once after all sections streamed. */
+/** The live section of a served pull (§4.5). */
+export interface PullLiveSummary {
+  readonly status: 'active' | 'reset' | 'unregistered';
+  /** The request's replica cursor R. */
+  readonly fromCursor: number;
+  /** `LIVE_END.throughSeq`. */
+  readonly throughSeq: number;
+  readonly commits: number;
+  readonly changes: number;
+  readonly firstCommitSeq?: number;
+  readonly lastCommitSeq?: number;
+}
+
+/** The pull half of a request, emitted once after every section streamed. */
 export interface PullServedEvent {
   readonly type: 'pull.served';
   readonly atMs: number;
@@ -191,7 +207,10 @@ export interface PullServedEvent {
   readonly clientId: string;
   readonly acceptedThrough: number;
   readonly storageMaxCommitSeq: number;
-  readonly subscriptions: readonly PullSubscriptionSummary[];
+  /** The request carried its registration list (§4.1). */
+  readonly registrationTraveled: boolean;
+  readonly units: readonly PullUnitSummary[];
+  readonly live: PullLiveSummary;
 }
 
 /** A direct segment download (§5.5), success or failure. */
@@ -292,7 +311,7 @@ export interface PruneCompletedEvent {
 }
 
 /** The host `resolveScopes` callback threw — the §3.2/§3.4 fail-loud
- * path (subscriptions revoke, writes reject, downloads deny). */
+ * path (units revoke, writes reject, downloads deny). */
 export interface ScopesResolveFailedEvent {
   readonly type: 'scopes.resolve_failed';
   readonly atMs: number;

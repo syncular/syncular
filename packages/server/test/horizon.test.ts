@@ -5,93 +5,135 @@
 import { describe, expect, test } from 'bun:test';
 import { pruneCommitLog } from '@syncular/server';
 import {
+  live,
   makeContext,
-  pullHeader,
+  progressFrame,
+  pullFrames,
   section,
+  sections,
   seedTask,
-  subFrame,
   sync,
+  TestReplica,
 } from './helpers';
 
-describe('cursor behind the horizon (§4.6)', () => {
-  test('answers reset with sync.cursor_expired and echoes the cursor', async () => {
+const P1 = { project_id: 'p1' };
+
+describe('cursors behind the horizon (§4.6)', () => {
+  test('a post-bootstrap unit below the horizon answers reset and echoes its cursor', async () => {
     const t = makeContext();
     for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
     await t.storage.setHorizonSeq('part-1', 2);
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 1),
-    ]);
-    const s = section(message, 's1');
-    expect(s.start.status).toBe('reset');
-    expect(s.start.reasonCode).toBe('sync.cursor_expired');
-    expect(s.start.effectiveScopes).toEqual({});
+    const message = await sync(
+      t,
+      pullFrames([P1], { progress: [progressFrame(P1, 1)] }),
+    );
+    const s = section(message, P1);
+    expect(s.start).toMatchObject({
+      status: 'reset',
+      reasonCode: 'sync.cursor_expired',
+      bootstrap: false,
+      fenced: [],
+    });
     expect(s.body).toHaveLength(0);
-    expect(s.end.nextCursor).toBe(1); // echoed unchanged
+    expect(s.end).toEqual({ type: 'SUB_END', nextCursor: 1 });
+    // The unit left the scan set: an active live section without its changes.
+    expect(live(message).start.status).toBe('active');
+    expect(live(message).commits).toHaveLength(0);
+    const record = await t.storage.getClientRecord('part-1', 'client-1');
+    expect(record?.catchingUp).toEqual([
+      { id: section(message, P1).start.id, cursor: -1 },
+    ]);
   });
 
-  for (const pruneAfterRead of [false, true]) {
-    test(`pruning ${pruneAfterRead ? 'after' : 'before'} the window read resets before an active section`, async () => {
+  test('a replica cursor below the horizon or above maxCommitSeq resets the live section', async () => {
+    const t = makeContext();
+    for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
+    await t.storage.setHorizonSeq('part-1', 2);
+    for (const cursor of [1, -1, 4]) {
+      const message = await sync(t, pullFrames([P1], { cursor, progress: [] }));
+      expect(live(message).start).toEqual({
+        type: 'LIVE_START',
+        status: 'reset',
+        reasonCode: 'sync.cursor_expired',
+      });
+      expect(live(message).commits).toHaveLength(0);
+      expect(live(message).end.throughSeq).toBe(-1);
+      const record = await t.storage.getClientRecord('part-1', 'client-1');
+      expect(record?.catchingUp.map((unit) => unit.cursor)).toEqual([-1]);
+      expect(record?.cursor).toBe(-1);
+    }
+  });
+
+  for (const live_ of [false, true]) {
+    test(`pruning during the live read resets ${live_ ? 'the live section' : 'the unit'} before an active section`, async () => {
       const t = makeContext();
       for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
-      const read = t.storage.readCommitWindow.bind(t.storage);
-      t.storage.readCommitWindow = async (partition, query) => {
-        const commits = pruneAfterRead
-          ? await read(partition, query)
-          : undefined;
+      const read = t.storage.readLiveWindow.bind(t.storage);
+      t.storage.readLiveWindow = async (partition, query) => {
+        const window = await read(partition, query);
         const logEpoch = await t.storage.getPartitionLogEpoch(partition);
         if (logEpoch === undefined) throw new Error('missing epoch');
         await t.storage.pruneCommitsThrough(partition, {
           logEpoch,
           throughSeq: 3,
         });
-        return commits ?? read(partition, query);
+        return window;
       };
-      const message = await sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1),
-      ]);
-      const result = section(message, 's1');
-      expect(result.start.status).toBe('reset');
-      expect(result.start.reasonCode).toBe('sync.cursor_expired');
-      expect(result.body).toHaveLength(0);
-      expect(result.end.nextCursor).toBe(1);
+      const message = await sync(
+        t,
+        live_
+          ? pullFrames([P1], { cursor: 1, progress: [] })
+          : pullFrames([P1], { progress: [progressFrame(P1, 1)] }),
+      );
       expect(
         message.frames.filter((frame) => frame.type === 'ERROR'),
       ).toHaveLength(0);
+      expect(live(message).commits).toHaveLength(0);
+      if (live_) {
+        expect(live(message).start.status).toBe('reset');
+        expect(section(message, P1).start.status).toBe('active');
+      } else {
+        expect(live(message).start.status).toBe('active');
+        expect(section(message, P1).start.status).toBe('reset');
+        expect(section(message, P1).end.nextCursor).toBe(1);
+      }
       t.storage.db.close();
     });
   }
 
-  test('a cursor exactly at the horizon still pulls incrementally (boundary)', async () => {
+  test('a cursor exactly at the horizon still pulls from the log (boundary)', async () => {
     const t = makeContext();
     for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
     await t.storage.setHorizonSeq('part-1', 2);
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 2),
-    ]);
-    const s = section(message, 's1');
-    expect(s.start.status).toBe('active');
-    expect(s.body.filter((f) => f.type === 'COMMIT')).toHaveLength(1);
-    expect(s.end.nextCursor).toBe(3);
+    const message = await sync(
+      t,
+      pullFrames([P1], { cursor: 2, progress: [] }),
+    );
+    expect(
+      sections(message).get(section(message, P1).start.id)?.start,
+    ).toMatchObject({
+      status: 'active',
+      bootstrap: false,
+    });
+    expect(live(message).commits.map((c) => c.commitSeq)).toEqual([3]);
+    expect(live(message).end.throughSeq).toBe(3);
   });
 
-  test('after reset, the client re-bootstraps with cursor -1', async () => {
+  test('after a reset the replica re-bootstraps and joins again', async () => {
     const t = makeContext();
+    const replica = new TestReplica().register(P1);
+    await replica.pull(t);
     for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
-    await t.storage.setHorizonSeq('part-1', 3);
     const logEpoch = await t.storage.getPartitionLogEpoch('part-1');
     if (logEpoch === undefined) throw new Error('missing epoch');
     await t.storage.pruneCommitsThrough('part-1', { logEpoch, throughSeq: 3 });
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    const s = section(message, 's1');
-    expect(s.start.status).toBe('active');
-    expect(s.start.bootstrap).toBe(true);
-    expect(s.end.nextCursor).toBe(3);
+    expect(live(await replica.pull(t)).start.status).toBe('reset');
+    expect(replica.cursor).toBe(-1);
+    const again = await replica.pull(t);
+    expect(section(again, P1).start.bootstrap).toBe(true);
+    expect(section(again, P1).end.nextCursor).toBe(3);
+    expect(replica.cursor).toBe(3);
+    expect(replica.idle).toBe(true);
   });
 });
 

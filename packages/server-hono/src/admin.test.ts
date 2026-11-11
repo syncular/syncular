@@ -5,7 +5,14 @@
  * same allowance as index.test.ts — no socket).
  */
 import { describe, expect, test } from 'bun:test';
-import { encodeMessage, encodeSparseRow, type RowColumn } from '@syncular/core';
+import {
+  encodeMessage,
+  encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
+  registrationDigest,
+  type RowColumn,
+  unitId,
+} from '@syncular/core';
 import {
   createRealtimeHub,
   MemorySegmentStore,
@@ -75,7 +82,7 @@ async function harness(options: { actions?: boolean } = {}) {
 
   async function seed(): Promise<void> {
     const bytes = encodeMessage({
-      wireVersion: 3,
+      wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
       frames: [
         {
@@ -87,6 +94,7 @@ async function harness(options: { actions?: boolean } = {}) {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'c1',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -102,14 +110,12 @@ async function harness(options: { actions?: boolean } = {}) {
           limitSnapshotRows: 0,
           maxSnapshotPages: 0,
           accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
           cursor: -1,
+          registrationDigest: registrationDigest([{ project_id: 'p1' }]),
+          echoDigest: new Uint8Array(),
         },
+        { type: 'UNIT', scopes: { project_id: 'p1' } },
+        { type: 'PROGRESS', id: unitId({ project_id: 'p1' }), cursor: -1 },
       ],
     });
     await app.request('/sync', {
@@ -467,13 +473,13 @@ describe('drill-downs, trace, failures', () => {
         (await (await app.request(`/admin/trace?${query}`, auth)).json()) as {
           trace: {
             verdict: string;
-            subscriptions: { effectiveMatch?: boolean }[];
+            units: { effectiveMatch?: boolean }[];
           };
         }
       ).trace;
     const delivered = await trace('table=tasks&rowId=t1&clientId=client-1');
     expect(delivered.verdict).toBe('delivered');
-    expect(delivered.subscriptions[0]?.effectiveMatch).toBe(true);
+    expect(delivered.units[0]?.effectiveMatch).toBe(true);
     expect((await trace('table=tasks&rowId=t1&clientId=ghost')).verdict).toBe(
       'client-unknown',
     );
@@ -827,7 +833,7 @@ describe('static console page', () => {
       expect(text('#updated')).toStartWith('Updated');
 
       await visit('#/client/client-1');
-      expect(text('#client-subs')).toContain('tasks');
+      expect(text('#client-units')).toContain('project_id: p1');
       expect(text('#updated')).toStartWith('Updated');
 
       await visit('#/table/tasks');

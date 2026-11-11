@@ -4,6 +4,7 @@ import type { CommitPruneQuery, CommitPruneResult } from './storage';
 import {
   clientRoundState,
   PARTITION_TOUCH_INTERVAL_MS,
+  commitDeleteFloor,
   rowsLiveAfterDelete,
   serveGateRefusal,
 } from './storage';
@@ -194,7 +195,8 @@ export const POSTGRES_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
   partition TEXT PRIMARY KEY,
   max_commit_seq BIGINT NOT NULL DEFAULT 0,
-  horizon_seq BIGINT NOT NULL DEFAULT 0
+  horizon_seq BIGINT NOT NULL DEFAULT 0,
+  delete_floor BIGINT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sync_partition_registry(
   partition TEXT PRIMARY KEY,
@@ -303,6 +305,13 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
 );
 ALTER TABLE sync_tombstones ADD COLUMN IF NOT EXISTS server_version BIGINT;
 ALTER TABLE sync_tombstones ADD COLUMN IF NOT EXISTS scopes JSONB;
+ALTER TABLE sync_partitions
+  ADD COLUMN IF NOT EXISTS delete_floor BIGINT NOT NULL DEFAULT 0;
+UPDATE sync_partitions SET delete_floor = t.version
+  FROM (SELECT partition, max(server_version) AS version
+          FROM sync_tombstones GROUP BY partition) t
+ WHERE t.partition = sync_partitions.partition
+   AND t.version > sync_partitions.delete_floor;
 CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
   partition TEXT NOT NULL, name TEXT NOT NULL,
   schema_version INTEGER NOT NULL,
@@ -460,6 +469,7 @@ interface ServeGateRow {
   log_epoch: string | null;
   pending: unknown;
   result?: unknown;
+  delete_floor?: unknown;
 }
 
 /**
@@ -542,6 +552,7 @@ async function readAdmissionOn(
 ): Promise<{
   gate: ServeGate;
   persisted: StoredPushResult | undefined;
+  deleteFloor: number;
   prefetched: readonly PrefetchRow[];
 }> {
   const params: unknown[] = [
@@ -552,7 +563,8 @@ async function readAdmissionOn(
   ];
   let statement = `SELECT ${SERVE_GATE_PROJECTION},
             (SELECT result FROM sync_push_results
-              WHERE partition=$1 AND client_id=$3 AND client_commit_id=$4) AS result`;
+              WHERE partition=$1 AND client_id=$3 AND client_commit_id=$4) AS result,
+            (SELECT delete_floor FROM sync_partitions WHERE partition=$1) AS delete_floor`;
   if (prefetch !== undefined && prefetch.specs.length > 0) {
     params.push(JSON.stringify(prefetch.specs));
     // The gate row pads the read-ahead columns with typed NULLs so both
@@ -564,7 +576,7 @@ async function readAdmissionOn(
             NULL::bigint AS tombstone_seq, NULL::bigint AS tombstone_version,
             NULL::jsonb AS tombstone_scopes
        UNION ALL
-       SELECT NULL::bigint, NULL::text, NULL::json, NULL::jsonb,
+       SELECT NULL::bigint, NULL::text, NULL::json, NULL::jsonb, NULL::bigint,
               p.tbl, p.lookup_id, p.row_id, p.server_version, p.scopes,
               p.payload, p.column_versions, p.tombstone_seq,
               p.tombstone_version, p.tombstone_scopes
@@ -578,6 +590,8 @@ async function readAdmissionOn(
   return {
     gate: toServeGate(gateRow),
     persisted: toPersistedPushResult(gateRow?.result),
+    // asNumber maps the NULL of a partition without a commit to 0.
+    deleteFloor: asNumber(gateRow?.delete_floor),
     prefetched: rows.filter(
       (row): row is AdmissionRow & PrefetchRow =>
         row.tbl !== null && row.tbl !== undefined,
@@ -1606,6 +1620,7 @@ class PostgresTransaction implements StorageTransaction {
     return {
       gate: admission.gate,
       persisted: admission.persisted,
+      deleteFloor: admission.deleteFloor,
       ...(watermark === undefined ? {} : { watermark }),
     };
   }
@@ -1868,9 +1883,11 @@ class PostgresTransaction implements StorageTransaction {
     // Allocate the next dense commitSeq under a per-partition row lock: the
     // UPDATE … RETURNING serializes concurrent pushes to this partition and
     // never leaves a gap on rollback (see the file header).
-    const allocate = `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 1)
+    // §2.2: the allocation also raises the delete floor to the commit's.
+    const allocate = `INSERT INTO sync_partitions(partition, max_commit_seq, delete_floor) VALUES ($1, 1, $7)
          ON CONFLICT (partition) DO UPDATE
-           SET max_commit_seq = sync_partitions.max_commit_seq + 1
+           SET max_commit_seq = sync_partitions.max_commit_seq + 1,
+               delete_floor = GREATEST(sync_partitions.delete_floor, EXCLUDED.delete_floor)
          RETURNING max_commit_seq`;
     const commitRow = `INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version)
          SELECT $1, allocated.max_commit_seq, $2, $3, $4, $5, $6 FROM allocated
@@ -1882,6 +1899,7 @@ class PostgresTransaction implements StorageTransaction {
       commit.actorId,
       commit.createdAtMs,
       this.#writerVersion,
+      commitDeleteFloor(commit.changes),
     ];
     if (commit.changes.length === 0) {
       const { rows } = await q.query<{ commit_seq: unknown }>(
@@ -1908,8 +1926,7 @@ class PostgresTransaction implements StorageTransaction {
     // parameters would otherwise store the string as a scalar. A commit can
     // delete one row twice, so a chunk's tombstone insert keeps the latest
     // delete per key and a later chunk overwrites it with its own. `version`
-    // is an upsert's row version or a delete's deleted version (§2.2); only
-    // the tombstone keeps the latter.
+    // is the change's row version (§2.2), which a delete's tombstone keeps.
     const valuesOf = (
       params: unknown[],
       slice: readonly NewChange[],
@@ -1922,7 +1939,7 @@ class PostgresTransaction implements StorageTransaction {
           change.table,
           change.rowId,
           change.op === 'upsert' ? 1 : 2,
-          change.rowVersion ?? change.deletedVersion ?? null,
+          change.rowVersion,
           JSON.stringify(change.scopes),
           change.payload ?? null,
         );
@@ -1964,7 +1981,7 @@ class PostgresTransaction implements StorageTransaction {
        ),
        inserted AS (
          INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, CASE WHEN v.op = 1 THEN v.version END, v.scopes, v.payload
+         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, v.version, v.scopes, v.payload
            FROM allocated CROSS JOIN v
          RETURNING partition, idx, tbl, row_id, op, commit_seq, scopes
        ),
@@ -1993,7 +2010,7 @@ class PostgresTransaction implements StorageTransaction {
          ),
          inserted AS (
            INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, CASE WHEN v.op = 1 THEN v.version END, v.scopes, v.payload
+           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, v.version, v.scopes, v.payload
              FROM v
            RETURNING partition, idx, tbl, row_id, op, commit_seq, scopes
          ),
@@ -3358,7 +3375,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     const registration = record.registration;
     await this.#exec.query(
       `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, updated_at_ms, last_round_at_ms, schema_version, units, registration_digest, catching_up)
-       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8::text::jsonb,$9,$10::text::jsonb)
+       VALUES ($1,$2,$3,$4,$5,$6,$11,$7,$8::text::jsonb,$9,$10::text::jsonb)
        ON CONFLICT (partition, client_id) DO UPDATE
          SET actor_id=EXCLUDED.actor_id, wire_version=EXCLUDED.wire_version,
              cursor=EXCLUDED.cursor,
@@ -3385,6 +3402,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         registration === undefined ? null : JSON.stringify(registration.units),
         registration?.digest ?? null,
         JSON.stringify(record.catchingUp),
+        record.lastRoundAtMs ?? record.updatedAtMs,
       ],
     );
   }

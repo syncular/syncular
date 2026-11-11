@@ -18,11 +18,12 @@ import {
 import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import {
   makeContext,
+  progressFrame,
+  pullFrames,
   pullHeader,
   pushCommit,
   pushResults,
   requestBytes,
-  subFrame,
   sync,
   taskRow,
   upsert,
@@ -351,8 +352,10 @@ test('acceptance 13 (mixed push+pull): the pull half is refused and the applied 
     await expect(
       sync(t, [
         pushCommit('mixed-1', [upsert('tasks', 'm1', taskRow('m1', 'p1'))]),
-        pullHeader({ limitCommits: 1 }),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+        ...pullFrames([{ project_id: 'p1' }], {
+          limitCommits: 1,
+          progress: [progressFrame({ project_id: 'p1' }, 0)],
+        }),
       ]),
     ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
     // The push half is durable: it committed before the token changed.
@@ -465,11 +468,9 @@ test('fanout during a refused mixed push+pull delivers only the durable commit a
     });
     Object.assign(t.ctx, { realtime: hub });
     // The peer registers a subscription and connects on the real hub.
-    await sync(
-      t,
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
-      { clientId: 'client-peer' },
-    );
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])], {
+      clientId: 'client-peer',
+    });
     const wire = makeWire();
     const peer = await hub.connect({
       partition: PARTITION,
@@ -567,17 +568,15 @@ test('a pull refused by the serve gate leaves the client record and registration
     });
     await expect(
       handleSyncRequest(
-        requestBytes([
-          pullHeader(),
-          subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-        ]),
+        requestBytes([...pullFrames([{ project_id: 'p1' }])]),
         t.ctx,
       ),
     ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
     expect(migrated).toBe(true);
     const after = await a.getClientRecord(PARTITION, 'client-1');
     expect(after?.cursor).toBe(before?.cursor);
-    expect(after?.subscriptions).toEqual([]);
+    expect(after?.registration).toEqual(before?.registration);
+    expect(after?.catchingUp).toEqual(before?.catchingUp);
     expect(notified).toBe(0);
   } finally {
     db.close();

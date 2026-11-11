@@ -16,7 +16,7 @@ import {
   StorageConstraintError,
   StorageQueryError,
 } from './storage-errors';
-import { serveGateRefusal } from './storage';
+import { commitDeleteFloor, serveGateRefusal } from './storage';
 import { serveNotReadyError } from './readiness';
 import {
   assertPhysicalColumns,
@@ -180,16 +180,22 @@ class SqliteTransaction
       this.partition,
       runningSchemaVersion,
     );
+    const [floor] = await this.all<{ delete_floor: number }>(
+      'SELECT delete_floor FROM sync_partitions WHERE partition=?',
+      [this.partition],
+    );
+    const deleteFloor = floor?.delete_floor ?? 0;
     return settled === undefined
       ? {
           gate,
+          deleteFloor,
           persisted: await this.#storage.getPushResult(
             this.partition,
             clientId,
             clientCommitId,
           ),
         }
-      : { gate, ...settled };
+      : { gate, deleteFloor, ...settled };
   }
 
   async lockPartition(): Promise<void> {
@@ -268,10 +274,10 @@ class SqliteTransaction
       [p],
     );
     const commitSeq = (row?.max_commit_seq ?? 0) + 1;
-    this.run('UPDATE sync_partitions SET max_commit_seq=? WHERE partition=?', [
-      commitSeq,
-      p,
-    ]);
+    this.run(
+      'UPDATE sync_partitions SET max_commit_seq=?, delete_floor=max(delete_floor, ?) WHERE partition=?',
+      [commitSeq, commitDeleteFloor(commit.changes), p],
+    );
     this.run(
       'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version) VALUES (?,?,?,?,?,?,?)',
       [

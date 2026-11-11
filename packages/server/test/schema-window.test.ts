@@ -20,15 +20,16 @@ import {
   type ServerSchema,
 } from '@syncular/server';
 import {
+  live,
   makeContext,
+  progressFrame,
+  pullFrames,
   pullHeader,
   pushCommit,
   requestBytes,
-  section,
-  subFrame,
   TASK_COLUMNS,
-  TEST_SCHEMA,
   taskRow,
+  TEST_SCHEMA,
   upsert,
 } from './helpers';
 
@@ -172,8 +173,7 @@ test('bootstrap segments, incremental pulls and realtime deltas omit new columns
     'current',
   );
   const boot = await round([
-    pullHeader({ accept: 0b0010 }),
-    subFrame('tasks', 'tasks', { project_id: ['p1'] }, -1),
+    ...pullFrames([{ project_id: 'p1' }], { accept: 0b0010 }),
   ]);
   const ref = boot.frames.find((frame) => frame.type === 'SEGMENT_REF');
   if (ref?.type !== 'SEGMENT_REF') throw new Error('missing segment');
@@ -185,12 +185,11 @@ test('bootstrap segments, incremental pulls and realtime deltas omit new columns
   expect(segment.schemaVersion).toBe(2);
   expect(segment.columns).toEqual(TASK_COLUMNS);
   const increment = await round([
-    pullHeader(),
-    subFrame('tasks', 'tasks', { project_id: ['p1'] }, 0),
+    ...pullFrames([{ project_id: 'p1' }], {
+      progress: [progressFrame({ project_id: 'p1' }, 0)],
+    }),
   ]);
-  const commit = section(increment, 'tasks').body.find(
-    (frame) => frame.type === 'COMMIT',
-  );
+  const commit = live(increment).commits[0];
   if (commit?.type !== 'COMMIT') throw new Error('missing commit');
   const golden = encodeRow(TASK_COLUMNS, [
     't1',
@@ -315,8 +314,10 @@ test('N-1 SQLite images use only their columns and conflict rows retain their co
     'current',
   );
   const boot = await round([
-    pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-    subFrame('image', 'tasks', { project_id: ['p1'] }, -1),
+    ...pullFrames([{ project_id: 'p1' }], {
+      accept: 0b0111,
+      limitSnapshotRows: 1,
+    }),
   ]);
   const ref = boot.frames.find((frame) => frame.type === 'SEGMENT_REF');
   if (ref?.type !== 'SEGMENT_REF') throw new Error('missing image');

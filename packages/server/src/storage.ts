@@ -91,6 +91,11 @@ export interface PreparedPushApply {
   /** The already-persisted outcome for this key, or `undefined` on a miss. */
   readonly persisted: StoredPushResult | undefined;
   /**
+   * The partition's delete floor (§2.2): the highest version any applied
+   * delete recorded, `0` before the first. An insert starts one above it.
+   */
+  readonly deleteFloor: number;
+  /**
    * The outbox watermark `W` after §6.3.2 step 1; present iff the call
    * carried an {@link OutboxSettlement}. A commit of the request whose
    * `persisted` is `undefined` and whose `clientSeq` is below `W` is
@@ -211,13 +216,12 @@ export interface NewChange {
   readonly table: string;
   readonly rowId: string;
   readonly op: 'upsert' | 'delete';
-  /** Present for upsert (§2.2). */
-  readonly rowVersion?: number;
   /**
-   * Present for delete: the deleted row's last `server_version`, recorded on
-   * its tombstone (§2.2). Never reaches the wire.
+   * The row's `server_version` after the write (§2.2): an upsert's written
+   * version, a delete's advanced version, which its tombstone records and
+   * the delete floor rises to.
    */
-  readonly deletedVersion?: number;
+  readonly rowVersion: number;
   readonly scopes: Record<string, string>;
   /** Present for upsert. */
   readonly payload?: Uint8Array;
@@ -269,10 +273,29 @@ export function rowsLiveAfterDelete(
   return live;
 }
 
+/**
+ * The delete floor a commit raises the partition's to (§2.2): the highest
+ * version of a delete that leaves a tombstone, `0` without one.
+ */
+export function commitDeleteFloor(changes: readonly NewChange[]): number {
+  const live = rowsLiveAfterDelete(changes);
+  let floor = 0;
+  for (const change of changes) {
+    if (
+      change.op === 'delete' &&
+      !live.has(`${change.table}\u0000${change.rowId}`)
+    ) {
+      floor = Math.max(floor, change.rowVersion);
+    }
+  }
+  return floor;
+}
+
 export interface StoredChange {
   readonly table: string;
   readonly rowId: string;
   readonly op: 'upsert' | 'delete';
+  /** Absent only on a delete logged before wire version 4. */
   readonly rowVersion?: number;
   readonly scopes: Record<string, string>;
   readonly payload?: Uint8Array;
@@ -1154,10 +1177,11 @@ export interface ServerStorage {
   /**
    * Write the record for a completed round (§4.5). A record without
    * `registration` keeps the stored list and digest. The round-state fields
-   * reset: the stored last round is a success at `updatedAtMs` with no
-   * failures, unless `keepRoundOutcome` is set, which leaves the reported
-   * code and streak in place (the round carried a `ROUND_FAILURE` report,
-   * §1.5/§4.5).
+   * reset: the stored last round is a success at `lastRoundAtMs` (default
+   * `updatedAtMs`) with no failures, unless `keepRoundOutcome` is set, which
+   * leaves the reported code and streak in place (the round carried a
+   * `ROUND_FAILURE` report, §1.5/§4.5). An `unregistered` answer rewrites the
+   * stored record with only `lastRoundAtMs` moved.
    */
   putClientRecord(
     partition: string,

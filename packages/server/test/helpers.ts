@@ -6,10 +6,14 @@
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import { expect } from 'bun:test';
 import {
+  type CommitFrame,
   decodeMessage,
   encodeMessage,
   encodeSparseRow,
+  type LiveEndFrame,
+  type LiveStartFrame,
   PROTOCOL_WIRE_VERSION,
+  type ProgressFrame,
   type PullHeaderFrame,
   type PushCommitFrame,
   type PushOperation,
@@ -18,10 +22,13 @@ import {
   type ResponseFrame,
   type ResponseMessage,
   type RowColumn,
+  registrationDigest,
   type ScopeMap,
   type SubEndFrame,
   type SubStartFrame,
-  type SubscriptionFrame,
+  type UnitFrame,
+  type UnitScopes,
+  unitId,
 } from '@syncular/core';
 import {
   handleSyncRequest,
@@ -220,10 +227,12 @@ export function del(
 export function pushCommit(
   clientCommitId: string,
   operations: PushOperation[],
+  clientSeq = 0,
 ): PushCommitFrame {
-  return { type: 'PUSH_COMMIT', clientCommitId, operations };
+  return { type: 'PUSH_COMMIT', clientCommitId, clientSeq, operations };
 }
 
+/** A pull header for a request that carries the empty list (§4.1). */
 export function pullHeader(
   overrides?: Partial<Omit<PullHeaderFrame, 'type'>>,
 ): PullHeaderFrame {
@@ -233,28 +242,47 @@ export function pullHeader(
     limitSnapshotRows: 0,
     maxSnapshotPages: 0,
     accept: 0b0011,
+    cursor: -1,
+    registrationDigest: registrationDigest([]),
+    echoDigest: new Uint8Array(),
     ...overrides,
   };
 }
 
-export function subFrame(
-  id: string,
-  table: string,
-  scopes: ScopeMap,
+export function unitFrame(scopes: UnitScopes): UnitFrame {
+  return { type: 'UNIT', scopes };
+}
+
+export function progressFrame(
+  scopes: UnitScopes,
   cursor: number,
-  extra?: { bootstrapState?: string; params?: string },
-): SubscriptionFrame {
+  bootstrapState?: string,
+): ProgressFrame {
   return {
-    type: 'SUBSCRIPTION',
-    id,
-    table,
-    scopes,
+    type: 'PROGRESS',
+    id: unitId(scopes),
     cursor,
-    ...(extra?.bootstrapState !== undefined
-      ? { bootstrapState: extra.bootstrapState }
-      : {}),
-    ...(extra?.params !== undefined ? { params: extra.params } : {}),
+    ...(bootstrapState !== undefined ? { bootstrapState } : {}),
   };
+}
+
+/**
+ * A pull whose list travels (§4.1): the header with the list's digest, one
+ * UNIT per unit, and a PROGRESS frame per catching-up unit. Every unit
+ * catches up from cursor -1 unless `progress` says otherwise.
+ */
+export function pullFrames(
+  units: readonly UnitScopes[],
+  options?: Partial<Omit<PullHeaderFrame, 'type' | 'registrationDigest'>> & {
+    readonly progress?: readonly ProgressFrame[];
+  },
+): RequestFrame[] {
+  const { progress, ...header } = options ?? {};
+  return [
+    pullHeader({ registrationDigest: registrationDigest(units), ...header }),
+    ...units.map(unitFrame),
+    ...(progress ?? units.map((unit) => progressFrame(unit, -1))),
+  ];
 }
 
 export function requestBytes(
@@ -262,12 +290,19 @@ export function requestBytes(
   clientId = 'client-1',
   schemaVersion = 1,
   logEpoch = TEST_LOG_EPOCH,
+  outboxId?: string,
 ): Uint8Array {
   return encodeMessage({
     wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
-      { type: 'REQ_HEADER', clientId, schemaVersion, logEpoch },
+      {
+        type: 'REQ_HEADER',
+        clientId,
+        schemaVersion,
+        logEpoch,
+        ...(outboxId !== undefined ? { outboxId } : {}),
+      },
       ...frames,
     ],
   });
@@ -277,12 +312,14 @@ export function requestBytes(
 export async function sync(
   t: TestContext,
   frames: RequestFrame[],
-  options?: { clientId?: string; schemaVersion?: number },
+  options?: { clientId?: string; schemaVersion?: number; outboxId?: string },
 ): Promise<ResponseMessage> {
   const bytes = requestBytes(
     frames,
     options?.clientId ?? 'client-1',
     options?.schemaVersion ?? 1,
+    TEST_LOG_EPOCH,
+    options?.outboxId,
   );
   const out = await handleSyncRequest(bytes, t.ctx);
   const message = decodeMessage(out);
@@ -323,10 +360,184 @@ export function sections(message: ResponseMessage): Map<string, SubSection> {
   return result;
 }
 
-export function section(message: ResponseMessage, id: string): SubSection {
+/** The unit section of a unit, by scope map or id. */
+export function section(
+  message: ResponseMessage,
+  unit: UnitScopes | string,
+): SubSection {
+  const id = typeof unit === 'string' ? unit : unitId(unit);
   const s = sections(message).get(id);
-  if (s === undefined) throw new Error(`no subscription section ${id}`);
+  if (s === undefined) throw new Error(`no unit section ${id}`);
   return s;
+}
+
+/** The response's live section (§4.4). */
+export function live(message: ResponseMessage): {
+  start: LiveStartFrame;
+  commits: CommitFrame[];
+  end: LiveEndFrame;
+} {
+  const start = message.frames.find(
+    (f): f is LiveStartFrame => f.type === 'LIVE_START',
+  );
+  const end = message.frames.find(
+    (f): f is LiveEndFrame => f.type === 'LIVE_END',
+  );
+  if (start === undefined || end === undefined) {
+    throw new Error('no live section');
+  }
+  return {
+    start,
+    commits: message.frames.filter(
+      (f): f is CommitFrame => f.type === 'COMMIT',
+    ),
+    end,
+  };
+}
+
+/** Every change of the live section as `table/rowId/op`. */
+export function liveChanges(message: ResponseMessage): string[] {
+  return live(message).commits.flatMap((commit) =>
+    commit.changes.map(
+      (change) =>
+        `${commit.tables[change.tableIndex]}/${change.rowId}/${change.op}`,
+    ),
+  );
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+/**
+ * A reference replica for driving the server (§4.1 to §4.7): the
+ * registration list, the replica cursor, catching-up units and the echo
+ * digest, advanced by the client rules (`SUB_END`, the join rule J, the
+ * resets) from each response it applies.
+ */
+export class TestReplica {
+  units: UnitScopes[] = [];
+  /** The replica cursor R. */
+  cursor = -1;
+  echo: Uint8Array = new Uint8Array();
+  /** Catching-up units: id → cursor and resume token. */
+  readonly catching = new Map<string, { cursor: number; token?: string }>();
+  /** The digest of the list the server stores, after a processed LIVE_END. */
+  #stored: Uint8Array | undefined;
+
+  constructor(readonly clientId = 'client-1') {}
+
+  register(...units: UnitScopes[]): this {
+    for (const scopes of units) {
+      const id = unitId(scopes);
+      if (this.units.some((unit) => unitId(unit) === id)) continue;
+      this.units.push(scopes);
+      this.catching.set(id, { cursor: -1 });
+    }
+    return this;
+  }
+
+  unregister(scopes: UnitScopes): this {
+    const id = unitId(scopes);
+    this.units = this.units.filter((unit) => unitId(unit) !== id);
+    this.catching.delete(id);
+    return this;
+  }
+
+  /** True when no unit catches up. */
+  get idle(): boolean {
+    return this.catching.size === 0;
+  }
+
+  frames(
+    options?: Partial<
+      Pick<
+        PullHeaderFrame,
+        'limitCommits' | 'limitSnapshotRows' | 'maxSnapshotPages' | 'accept'
+      >
+    > & { readonly travel?: boolean },
+  ): RequestFrame[] {
+    const digest = registrationDigest(this.units);
+    const travel =
+      options?.travel ??
+      (this.#stored === undefined || !sameBytes(this.#stored, digest));
+    return [
+      pullHeader({
+        limitCommits: options?.limitCommits ?? 0,
+        limitSnapshotRows: options?.limitSnapshotRows ?? 0,
+        maxSnapshotPages: options?.maxSnapshotPages ?? 0,
+        accept: options?.accept ?? 0b0011,
+        cursor: this.cursor,
+        registrationDigest: digest,
+        echoDigest: this.echo,
+      }),
+      ...(travel ? this.units.map(unitFrame) : []),
+      ...this.units.flatMap((scopes) => {
+        const state = this.catching.get(unitId(scopes));
+        return state === undefined
+          ? []
+          : [progressFrame(scopes, state.cursor, state.token)];
+      }),
+    ];
+  }
+
+  apply(message: ResponseMessage): void {
+    for (const [id, { start, end }] of sections(message)) {
+      if (start.status === 'revoked') {
+        this.units = this.units.filter((unit) => unitId(unit) !== id);
+        this.catching.delete(id);
+      } else if (start.status === 'reset') {
+        this.catching.set(id, { cursor: -1 });
+      } else if (start.bootstrap) {
+        this.catching.set(id, {
+          cursor: end.nextCursor,
+          ...(end.bootstrapState !== undefined
+            ? { token: end.bootstrapState }
+            : {}),
+        });
+      }
+    }
+    const { start, end } = live(message);
+    if (start.status === 'unregistered') {
+      this.#stored = undefined;
+      return;
+    }
+    if (start.status === 'reset') {
+      for (const scopes of this.units) {
+        const id = unitId(scopes);
+        if (!this.catching.has(id)) this.catching.set(id, { cursor: -1 });
+      }
+      this.cursor = -1;
+    } else {
+      const joined = Math.max(this.cursor, end.throughSeq);
+      for (const [id, state] of this.catching) {
+        if (state.token !== undefined || state.cursor < 0) continue;
+        const cursor = Math.max(state.cursor, end.throughSeq);
+        if (cursor >= joined) this.catching.delete(id);
+        else state.cursor = cursor;
+      }
+      this.cursor = this.units.some((unit) => !this.catching.has(unitId(unit)))
+        ? joined
+        : -1;
+    }
+    this.echo = end.echoDigest;
+    this.#stored = registrationDigest(this.units);
+  }
+
+  async pull(
+    t: TestContext,
+    options?: Parameters<TestReplica['frames']>[0] & {
+      readonly push?: readonly PushCommitFrame[];
+    },
+  ): Promise<ResponseMessage> {
+    const message = await sync(
+      t,
+      [...(options?.push ?? []), ...this.frames(options)],
+      { clientId: this.clientId },
+    );
+    this.apply(message);
+    return message;
+  }
 }
 
 export async function expectSyncError(

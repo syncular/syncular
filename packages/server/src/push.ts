@@ -48,6 +48,8 @@ import { authorizeWrite, renderScopeValue, storedScopesForRow } from './scopes';
 import { decodeColumnVersions, encodeColumnVersions } from './relational-rows';
 import type {
   NewChange,
+  OutboxSequence,
+  OutboxSettlement,
   PreparedPushApply,
   StorageTransaction,
   StoredCommit,
@@ -344,6 +346,8 @@ async function applyOperation(
   validators: ValidatorRegistry | undefined,
   partition: string,
   actorId: string,
+  /** §2.2: the partition's delete floor, raised by this commit's deletes. */
+  deleteFloor: number,
 ): Promise<OperationOutcome> {
   const table = schema.tables.get(op.table);
   const wireTable = wireSchema.tables.get(op.table);
@@ -369,8 +373,9 @@ async function applyOperation(
 
   if (op.op === 'rescope') {
     // §2.2 explicit scope move. One stored row changes its scope values;
-    // apply rewrites it in place, keeps `server_version`, and emits the
-    // delete under the old scopes plus the upsert under the new ones.
+    // apply rewrites it in place, advances `server_version` by 1, and emits
+    // the delete under the old scopes plus the upsert under the new ones,
+    // both at the new version.
     if (stored === undefined) {
       return errorRecord(
         opIndex,
@@ -502,6 +507,22 @@ async function applyOperation(
     );
     if (blobCheck !== undefined) return blobCheck;
     const payload = encodeRow(table.columns, values);
+    // §2.2: the moved scope columns take the new version as their column
+    // version; every other column keeps its own (a row stored before column
+    // versions holds every column at its current version).
+    const movedVersion = stored.serverVersion + 1;
+    const storedVersions = decodeColumnVersions(stored.columnVersions);
+    const movedVersions = new Map<number, number>();
+    for (let i = 0; i < table.columns.length; i++) {
+      const version =
+        scopeIndexes.has(i) &&
+        !sameValue(values[i] ?? null, storedValues[i] ?? null)
+          ? movedVersion
+          : (storedVersions.get(i) ??
+            (stored.columnVersions === undefined ? stored.serverVersion : 1));
+      if (version > 1) movedVersions.set(i, version);
+    }
+    const columnVersions = encodeColumnVersions(movedVersions);
     // The move clears any tombstone from an earlier incarnation: the row is
     // live at the end of this commit, so the next move must not hit §5.2.
     await tx.clearTombstone(op.table, op.rowId);
@@ -509,12 +530,10 @@ async function applyOperation(
       op.table,
       {
         rowId: op.rowId,
-        serverVersion: stored.serverVersion,
+        serverVersion: movedVersion,
         scopes: extracted.scopes,
         payload,
-        ...(stored.columnVersions !== undefined
-          ? { columnVersions: stored.columnVersions }
-          : {}),
+        ...(columnVersions !== undefined ? { columnVersions } : {}),
       },
       { opIndex },
     );
@@ -526,13 +545,14 @@ async function applyOperation(
           table: op.table,
           rowId: op.rowId,
           op: 'delete',
+          rowVersion: movedVersion,
           scopes: stored.scopes,
         },
         {
           table: op.table,
           rowId: op.rowId,
           op: 'upsert',
-          rowVersion: stored.serverVersion,
+          rowVersion: movedVersion,
           scopes: extracted.scopes,
           payload,
         },
@@ -555,7 +575,7 @@ async function applyOperation(
           row: toValidateRow(table.columns, values),
           stored: storedRow,
           storedServerVersion: stored.serverVersion,
-          nextServerVersion: stored.serverVersion,
+          nextServerVersion: movedVersion,
         },
       ],
       staged: {
@@ -635,7 +655,9 @@ async function applyOperation(
           table: op.table,
           rowId: op.rowId,
           op: 'delete',
-          deletedVersion: stored.serverVersion,
+          // §2.2: a delete advances the version by 1; its tombstone records
+          // it and the delete floor rises to it.
+          rowVersion: stored.serverVersion + 1,
           scopes: stored.scopes,
         },
       ],
@@ -985,11 +1007,11 @@ async function applyOperation(
     actorId,
   );
   if (insertReject !== undefined) return insertReject;
-  // §6.2: an insert recreates over the tombstone and starts above the
-  // deleted row's version; without a column-versions blob every column sits
-  // at that version.
+  // §2.2, §6.2: every insert starts one above the delete floor, over a
+  // tombstone or not; without a column-versions blob every column sits at
+  // that version.
   if (tombstone !== undefined) await tx.clearTombstone(op.table, op.rowId);
-  const serverVersion = (deleted?.serverVersion ?? 0) + 1;
+  const serverVersion = deleteFloor + 1;
   const newRow = {
     rowId: op.rowId,
     serverVersion,
@@ -1579,7 +1601,7 @@ async function enforceReferences(
               table: child.name,
               rowId: childRow.rowId,
               op: 'delete',
-              deletedVersion: childRow.serverVersion,
+              rowVersion: childRow.serverVersion + 1,
               scopes: childRow.scopes,
             });
             operations.push({
@@ -1694,16 +1716,28 @@ export interface ProcessedPushCommit {
   readonly replayed: boolean;
   readonly recordedAtMs?: number;
   readonly cacheIdentity?: string;
+  /** The outbox watermark `W` the commit's settlement read (§6.3.2). */
+  readonly watermark?: number;
+}
+
+/** A pushed commit's outbox position and the request's watermark (§6.3.2). */
+export interface PushOutbox extends OutboxSequence {
+  /** `W` after the request's first commit. */
+  readonly watermark: number;
+  /** Present with the request's first commit: steps 1 and 2 run with it. */
+  readonly settlement?: OutboxSettlement;
 }
 
 function processedPushCommit(
   clientCommitId: string,
   stored: StoredPushResult,
   replayed: boolean,
+  watermark?: number,
 ): ProcessedPushCommit {
   return {
     frame: resultFrame(clientCommitId, stored, replayed),
     replayed,
+    ...(watermark !== undefined ? { watermark } : {}),
     ...(stored.recordedAtMs !== undefined
       ? { recordedAtMs: stored.recordedAtMs }
       : {}),
@@ -1744,6 +1778,24 @@ function idempotencyCacheMissFrame(
   };
 }
 
+/** §6.3: the unpersisted refusal of a commit below its outbox's watermark. */
+function commitExpiredFrame(clientCommitId: string): PushResultFrame {
+  return {
+    type: 'PUSH_RESULT',
+    clientCommitId,
+    status: 'rejected',
+    results: [
+      {
+        opIndex: 0,
+        status: 'error',
+        code: 'sync.commit_expired',
+        message: 'the commit lies below its outbox watermark (§6.3.2)',
+        retryable: false,
+      },
+    ],
+  };
+}
+
 export interface AppliedCommitEvent {
   readonly commit: StoredCommit;
 }
@@ -1776,6 +1828,7 @@ export async function processPushCommitWithTrace(
   clientId: string,
   frame: PushCommitFrame,
   wireSchema: CompiledSchema = schema,
+  outbox?: PushOutbox,
 ): Promise<ProcessedPushCommit> {
   // The frame names its rows before the transaction opens, so the admission
   // read carries the commit's read-ahead and the apply issues no separate
@@ -1800,6 +1853,7 @@ export async function processPushCommitWithTrace(
     targets.size === 0
       ? undefined
       : [...targets].map(([table, rowIds]) => ({ table, rowIds })),
+    outbox,
   );
 }
 
@@ -1822,6 +1876,7 @@ export async function processPushOperationsWithTrace(
     readonly table: string;
     readonly rowIds: readonly string[];
   }[],
+  outbox?: PushOutbox,
 ): Promise<ProcessedPushCommit> {
   const { partition } = ctx;
   const createdAtMs = clockOf(ctx)();
@@ -1835,6 +1890,13 @@ export async function processPushOperationsWithTrace(
   const commitValidator = ctx.commitValidator;
   const reactionPlanner = ctx.reactionPlanner;
   const tx = await ctx.storage.begin(partition);
+  // §6.3.2: the settlement's writes commit whatever the commit's outcome.
+  const release = (): Promise<void> =>
+    outbox?.settlement !== undefined ? tx.commit() : tx.rollback();
+  const sequence =
+    outbox === undefined
+      ? undefined
+      : { outboxId: outbox.outboxId, clientSeq: outbox.clientSeq };
   try {
     if (reactionPlanner !== undefined && tx.enqueueReactions === undefined) {
       throw new Error(
@@ -1854,6 +1916,7 @@ export async function processPushOperationsWithTrace(
         clientCommitId,
         schema.version,
         prefetchTargets,
+        outbox?.settlement,
       );
     } catch (error) {
       if (
@@ -1862,7 +1925,7 @@ export async function processPushOperationsWithTrace(
       ) {
         // §6.3: answer the retryable cache-miss for this commit rather than
         // re-applying. Not persisted — a retry may find a readable record.
-        await tx.rollback();
+        await release();
         return {
           frame: idempotencyCacheMissFrame(clientCommitId, error),
           replayed: false,
@@ -1879,9 +1942,10 @@ export async function processPushOperationsWithTrace(
       ctx.checkpoints,
     );
     if (refusal !== undefined) {
-      await tx.rollback();
+      await release();
       throw serveNotReadyError(refusal);
     }
+    const watermark = prepared.watermark ?? outbox?.watermark;
     if (prepared.persisted !== undefined) {
       const conflict = prepared.persisted.results.find(
         (result) => result.status === 'conflict',
@@ -1895,7 +1959,7 @@ export async function processPushOperationsWithTrace(
           table === undefined ||
           !authorizeWrite(table, authorization.scopes, resolved))
       ) {
-        await tx.rollback();
+        await release();
         return processedPushCommit(
           clientCommitId,
           {
@@ -1911,10 +1975,29 @@ export async function processPushOperationsWithTrace(
             ],
           },
           true,
+          watermark,
         );
       }
-      await tx.rollback();
-      return processedPushCommit(clientCommitId, prepared.persisted, true);
+      await release();
+      return processedPushCommit(
+        clientCommitId,
+        prepared.persisted,
+        true,
+        watermark,
+      );
+    }
+    // §6.3.2 step 3: below the watermark without a retained result.
+    if (
+      outbox !== undefined &&
+      watermark !== undefined &&
+      outbox.clientSeq < watermark
+    ) {
+      await release();
+      return {
+        frame: commitExpiredFrame(clientCommitId),
+        replayed: false,
+        watermark,
+      };
     }
     const results: PushOperationResult[] = [];
     const changes: NewChange[] = [];
@@ -1973,6 +2056,9 @@ export async function processPushOperationsWithTrace(
     // §6.4: the row each touched (table, rowId) held before this commit, so a
     // conflict reports the row as stored once the commit rolls back.
     const storedBeforeCommit = new Map<string, StoredRow | undefined>();
+    // §2.2: inserts start above the floor, which this commit's deletes raise
+    // as they stage.
+    let deleteFloor = prepared.deleteFloor;
     for (let opIndex = 0; opIndex < operations.length; opIndex++) {
       const op = operations[opIndex];
       if (op === undefined) continue;
@@ -1988,10 +2074,16 @@ export async function processPushOperationsWithTrace(
         validators,
         partition,
         ctx.actorId,
+        deleteFloor,
       );
       if (outcome.kind === 'terminate') {
         terminated = outcome.record;
         break;
+      }
+      for (const change of outcome.changes) {
+        if (change.op === 'delete') {
+          deleteFloor = Math.max(deleteFloor, change.rowVersion);
+        }
       }
       const rowKey = `${op.table}\u0000${op.rowId}`;
       if (!storedBeforeCommit.has(rowKey)) {
@@ -2122,11 +2214,13 @@ export async function processPushOperationsWithTrace(
         clientId,
         clientCommitId,
         stored,
+        sequence,
       );
       return processedPushCommit(
         clientCommitId,
         canonical,
         canonical.cacheIdentity !== stored.cacheIdentity,
+        watermark,
       );
     }
 
@@ -2155,7 +2249,7 @@ export async function processPushOperationsWithTrace(
       commitSeq,
       results,
     });
-    await tx.putPushResult(clientId, clientCommitId, stored);
+    await tx.putPushResult(clientId, clientCommitId, stored, sequence);
     await tx.commit();
     if (ctx.events !== undefined) {
       const atMs = clockOf(ctx)();
@@ -2189,7 +2283,7 @@ export async function processPushOperationsWithTrace(
         changes,
       });
     }
-    return processedPushCommit(clientCommitId, stored, false);
+    return processedPushCommit(clientCommitId, stored, false, watermark);
   } catch (error) {
     if (error instanceof StorageConstraintError) {
       const stored = newStoredPushResult(createdAtMs, {
@@ -2209,6 +2303,7 @@ export async function processPushOperationsWithTrace(
           clientId,
           clientCommitId,
           stored,
+          sequence,
         );
         return processedPushCommit(
           clientCommitId,

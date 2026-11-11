@@ -107,6 +107,7 @@ import type {
   StoredRow,
   Tombstone,
 } from './storage';
+import { commitDeleteFloor } from './storage';
 import {
   isD1ConstraintError,
   StorageConstraintError,
@@ -548,10 +549,26 @@ class D1Transaction
         ? undefined
         : await this.settleOutbox(clientId, clientCommitId, outbox);
     this.#pushApplyCheckpoint = this.#buffer.length;
-    const gate = await this.readServeGate(runningSchemaVersion);
+    // The serve gate and the delete floor (§2.2) in one round trip.
+    const read = await this.#db
+      .prepare(
+        'SELECT (SELECT schema_version FROM sync_schema_meta WHERE id=1) AS schema_version, (SELECT delete_floor FROM sync_partitions WHERE partition=?) AS delete_floor',
+      )
+      .bind(this.partition)
+      .first<{ schema_version: number | null; delete_floor: number | null }>();
+    const gate: ServeGate = {
+      storedSchemaVersion: read?.schema_version ?? 0,
+      logEpoch: undefined,
+      pending: [],
+    };
+    const deleteFloor = read?.delete_floor ?? 0;
     return settled === undefined
-      ? { gate, persisted: await this.getPushResult(clientId, clientCommitId) }
-      : { gate, ...settled };
+      ? {
+          gate,
+          deleteFloor,
+          persisted: await this.getPushResult(clientId, clientCommitId),
+        }
+      : { gate, deleteFloor, ...settled };
   }
 
   advanceCheckpoint(
@@ -721,8 +738,8 @@ class D1Transaction
     const commitSeq = this.#maxCommitSeq + 1;
     this.#maxCommitSeq = commitSeq;
     this.run(
-      'INSERT INTO sync_partitions(partition, max_commit_seq) VALUES (?,?) ON CONFLICT(partition) DO UPDATE SET max_commit_seq=excluded.max_commit_seq',
-      [p, commitSeq],
+      'INSERT INTO sync_partitions(partition, max_commit_seq, delete_floor) VALUES (?,?,?) ON CONFLICT(partition) DO UPDATE SET max_commit_seq=excluded.max_commit_seq, delete_floor=max(delete_floor, excluded.delete_floor)',
+      [p, commitSeq, commitDeleteFloor(commit.changes)],
     );
     this.run(
       'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms) VALUES (?,?,?,?,?,?)',

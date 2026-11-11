@@ -357,7 +357,7 @@ main{overflow:visible;padding:16px}
     </section>
 
     <section id="view-people" class="view" aria-labelledby="h-people" hidden>
-      <div class="vh"><p class="kicker">02 · People</p><h1 id="h-people">People and devices<span class="dot">.</span></h1><p class="lede">Every actor in this partition with the devices it syncs from. An actor opens its failed and warned requests; a device opens its client page: subscriptions, lease, failures, recent events, and a delivery trace.</p></div>
+      <div class="vh"><p class="kicker">02 · People</p><h1 id="h-people">People and devices<span class="dot">.</span></h1><p class="lede">Every actor in this partition with the devices it syncs from. An actor opens its failed and warned requests; a device opens its client page: units, lease, failures, recent events, and a delivery trace.</p></div>
       <div id="people-rt"></div>
       <div class="cols"><div class="panel"><div class="ph"><h2>Schema rollout</h2><span class="meta" id="rollout-meta"></span></div><div class="pb" id="people-rollout" data-skel></div></div></div>
       <div class="panel">
@@ -658,7 +658,7 @@ main{overflow:visible;padding:16px}
     if (t === 'push.conflicted' || t === 'reaction.retried' || t === 'lease.revoked' ||
       (t === 'request.handled' && (e.outcome === 'reset' || e.outcome === 'schema_floor')) ||
       (t === 'realtime.wake' && e.reason === 'delta-too-large') ||
-      (t === 'pull.served' && e.subscriptions.some(s => s.status !== 'active'))) return 'warn';
+      (t === 'pull.served' && (e.live.status !== 'active' || e.units.some(u => u.status !== 'active')))) return 'warn';
     return 'info';
   }
   var RANK = { err: 0, warn: 1, info: 2 }, LEVEL_LABEL = { err: 'error', warn: 'warn', info: 'info' };
@@ -668,12 +668,12 @@ main{overflow:visible;padding:16px}
   function summary(e) {
     if (e.type === 'request.handled') {
       return e.outcome + (e.errorCode ? ' ' + e.errorCode : '') + ' · ' + dur(e.durationMs) + ' ms · ' + e.pushCommits +
-        ' pushed · ' + (e.pulled ? 'pulled ' + e.subscriptions + ' subs' : 'no pull') + ' · ' + bytes(e.bytesIn) + ' in, ' + bytes(e.bytesOut) + ' out';
+        ' pushed · ' + (e.pulled ? 'pulled ' + e.units + ' units' : 'no pull') + ' · ' + bytes(e.bytesIn) + ' in, ' + bytes(e.bytesOut) + ' out';
     }
     if (e.type === 'pull.served') {
-      var modes = {}, commits = 0;
-      e.subscriptions.forEach(s => { var k = s.status === 'active' ? s.mode : s.status; modes[k] = (modes[k] || 0) + 1; commits += s.commits; });
-      return Object.keys(modes).map(k => modes[k] + ' ' + k).join(', ') + ' · ' + commits + ' commits · through ' + e.acceptedThrough;
+      var modes = {};
+      e.units.forEach(u => { var k = u.status === 'active' ? u.mode : u.status; modes[k] = (modes[k] || 0) + 1; });
+      return Object.keys(modes).map(k => modes[k] + ' ' + k).concat(['live ' + e.live.status]).join(', ') + ' · ' + e.live.commits + ' commits · through ' + e.live.throughSeq;
     }
     return (e.table && e.rowId ? e.table + ' / ' + e.rowId + ' · ' : '') + SUMMARY_KEYS.filter(k => e[k] !== undefined).map(k => {
       return k + ' ' + (typeof e[k] === 'string' ? e[k] : JSON.stringify(e[k]));
@@ -1002,13 +1002,13 @@ main{overflow:visible;padding:16px}
         '<select class="inp" name="t" aria-label="Table">' + INFO.tables.map(t => '<option>' + esc(t.name) + '</option>').join('') + '</select>' +
         '<input class="inp grow" name="r" placeholder="Row id" aria-label="Row id" spellcheck="false" /><button class="btn amber" type="submit">Trace</button></div></form></div></div>' +
         '<div class="panel"><div class="ph"><h2>Failures and warnings</h2><span class="meta" id="client-fail-meta"></span></div><div id="client-fail"></div></div>' +
-        '<div class="panel"><div class="ph"><h2>Subscriptions</h2><span class="meta">' + c.subscriptions.length + '</span></div><div id="client-subs"></div></div>' +
+        '<div class="panel"><div class="ph"><h2>Units</h2><span class="meta">' + c.units.length + '</span></div><div id="client-units"></div></div>' +
         '<div class="panel"><div class="ph"><h2>Recent events</h2><span class="meta">' + d.events.length + '</span></div><div id="client-events"></div></div>');
-      table('client-subs', [
-        { l: 'Id', c: 'w-sm', h: s => idCell(s.id) },
-        { l: 'Table', h: s => link(route('table', [s.table]), s.table) },
-        { l: 'Scopes', c: 'fill', h: s => '<span class="tags">' + Object.keys(s.scopes).map(k => s.scopes[k].map(v => link(route('table', [s.table, k + ':' + v]), k + ': ' + v, 'tag')).join('')).join('') + '</span>' }
-      ], c.subscriptions, empty('No subscriptions', 'The client has no active subscriptions.', true));
+      table('client-units', [
+        { l: 'Id', c: 'w-sm', h: u => idCell(u.id) },
+        { l: 'Scopes', h: u => tags(Object.keys(u.scopes).map(k => k + ': ' + u.scopes[k])) },
+        { l: 'State', c: 'fill', h: u => u.catchingUpCursor === undefined ? st('ok', 'live') : st('warn', 'catching up') + ' <span class="dim">at ' + fmt(u.catchingUpCursor) + '</span>' }
+      ], c.units, empty('No units', 'The client record stores no registration list.', true));
       table('client-events', EV_COLS, d.events, empty('No events', 'The ring holds no events for this client.', true), openEvent);
       return loadFailures('client-fail', { clientId: id });
     }, fail(['client-body']));
@@ -1036,11 +1036,9 @@ main{overflow:visible;padding:16px}
     $('table-activity-panel').hidden = !sv;
     var jobs = [(S.clients ? Promise.resolve() : loadClients()).then(() => get('/rows/' + enc(t), { limit: PAGE_ROWS, afterRowId: after, scope: scope })).then(r => {
       var p = r.page, cols = schema ? schema.columns.filter(c => !c.primaryKey).slice(0, 4) : [];
-      var seen = {}, chips = [];
-      (S.clients || []).forEach(c => c.subscriptions.forEach(s => {
-        if (s.table === t) Object.keys(s.scopes).forEach(k => s.scopes[k].forEach(v => { seen[k + ':' + v] = 1; }));
-      }));
-      p.rows.forEach(row => Object.keys(row.scopes || {}).forEach(k => { seen[k + ':' + row.scopes[k]] = 1; }));
+      var seen = {}, keys = {}, chips = [];
+      p.rows.forEach(row => Object.keys(row.scopes || {}).forEach(k => { keys[k] = 1; seen[k + ':' + row.scopes[k]] = 1; }));
+      (S.clients || []).forEach(c => c.units.forEach(u => Object.keys(u.scopes).forEach(k => { if (keys[k]) seen[k + ':' + u.scopes[k]] = 1; })));
       chips = Object.keys(seen).sort().slice(0, 30);
       html('table-scopes', 'Scope ' + link(route('table', [t]), 'all rows', 'tag' + (scope ? '' : ' on')) +
         chips.map(k => link(route('table', [t, k]), k.replace(':', ': '), 'tag' + (k === scope ? ' on' : ''))).join(''));
@@ -1073,15 +1071,15 @@ main{overflow:visible;padding:16px}
   }
   var VERDICT = {
     delivered: ['ok', 'Delivered', 'The client has pulled the row\\'s last change.'],
-    'pending-pull': ['warn', 'Pending pull', 'A subscription covers the row, and the client\\'s cursor is behind the row\\'s last change. The next pull delivers it.'],
+    'pending-pull': ['warn', 'Pending pull', 'A unit covers the row, and the client\\'s cursor is behind the row\\'s last change. The next pull delivers it.'],
     'row-deleted': ['warn', 'Row deleted', 'The row\\'s last change is a delete. A client that held the row drops it on its next pull.'],
-    'scope-mismatch': ['err', 'Scope mismatch', 'The client subscribes to the table, but no subscription requests the row\\'s scope values.'],
-    'scope-denied': ['err', 'Scope denied', 'A subscription requests the row\\'s scopes, but the actor\\'s allowed scopes from resolveScopes exclude them, so the server never delivers the row.'],
-    'no-subscription': ['idle', 'No subscription', 'The client has no subscription on this table.'],
+    'scope-mismatch': ['err', 'Scope mismatch', 'A unit of the client covers the table, but none carries the row\\'s scope values.'],
+    'scope-denied': ['err', 'Scope denied', 'A unit carries the row\\'s scopes, but the actor\\'s allowed scopes from resolveScopes exclude them, so the server never delivers the row.'],
+    'no-unit': ['idle', 'No unit', 'No unit of the client covers this table.'],
     'client-unknown': ['err', 'Client unknown', 'This partition has no cursor record for the client.'],
     'row-missing': ['err', 'Row missing', 'The partition holds no row with this id in this table.']
   };
-  var VORDER = ['row-missing', 'client-unknown', 'no-subscription', 'scope-denied', 'scope-mismatch', 'row-deleted', 'pending-pull', 'delivered'];
+  var VORDER = ['row-missing', 'client-unknown', 'no-unit', 'scope-denied', 'scope-mismatch', 'row-deleted', 'pending-pull', 'delivered'];
   function verdictOf(v) { return VERDICT[v] || ['err', v, 'The console does not know this verdict.']; }
   var HISTORY_COLS = [
     { l: 'Seq', c: 'num', d: -1, v: x => x.commitSeq, h: x => '<span class="ty">' + fmt(x.commitSeq) + '</span>' },
@@ -1137,14 +1135,14 @@ main{overflow:visible;padding:16px}
           ['Last change', lc ? seqBtn(lc.commitSeq) + ' ' + esc(lc.op) + ' by ' + esc(lc.actorId) + ' ' + ago(lc.createdAtMs) : '<span class="dim">none retained; horizon ' + fmt(x.horizonSeq) + '</span>'],
           ['Client', c ? clientLink(client) + ' · cursor ' + fmt(c.cursor) + ' · ' + presence(c) : st('err', 'unknown')],
           ['Allowed', x.allowed === undefined ? '<span class="dim">no resolver</span>' : x.allowed === 'outage' ? st('err', 'resolveScopes outage') : scopeTags(x.allowed)]]) +
-        '<h3>Subscriptions on ' + esc(t) + ' · ' + x.subscriptions.length + '</h3><div id="m-subs"></div><h3>Rejected pushes · ' + x.rejections.length + '</h3><div id="m-events"></div>', x);
-      table('m-subs', [
-        { l: 'Id', c: 'w-sm', h: s => idCell(s.id) },
-        { l: 'Requested scopes', h: s => scopeTags(s.scopes) },
-        { l: 'Requested', h: s => s.requestedMatch ? st('ok', 'covers row') : st('err', 'mismatch') },
-        { l: 'Allowed', h: s => s.effectiveMatch === undefined ? '<span class="dim">not checked</span>' : s.effectiveMatch ? st('ok', 'covers row') : st('err', 'denied') },
-        { l: 'Mismatches', c: 'fill', h: s => s.mismatches.length ? tags(s.mismatches.map(m => m.variable + ': row ' + m.rowValue + ', requested ' + (m.requested.join(', ') || 'none'))) : '<span class="dim">none</span>' }
-      ], x.subscriptions, empty('No subscriptions', 'The client has no subscription on ' + esc(t) + '.', true));
+        '<h3>Units covering ' + esc(t) + ' · ' + x.units.length + '</h3><div id="m-units"></div><h3>Rejected pushes · ' + x.rejections.length + '</h3><div id="m-events"></div>', x);
+      table('m-units', [
+        { l: 'Id', c: 'w-sm', h: u => idCell(u.id) },
+        { l: 'Scopes', h: u => tags(Object.keys(u.scopes).map(k => k + ': ' + u.scopes[k])) },
+        { l: 'Requested', h: u => u.requestedMatch ? st('ok', 'covers row') : st('err', 'mismatch') },
+        { l: 'Allowed', h: u => u.effectiveMatch === undefined ? '<span class="dim">not checked</span>' : u.effectiveMatch ? st('ok', 'covers row') : st('err', 'denied') },
+        { l: 'Mismatches', c: 'fill', h: u => u.mismatches.length ? tags(u.mismatches.map(m => m.variable + ': row ' + m.rowValue + ', requested ' + m.requested)) : '<span class="dim">none</span>' }
+      ], x.units, empty('No units', 'No unit of the client covers ' + esc(t) + '.', true));
       table('m-events', EV_COLS, x.rejections, empty('No rejections', 'The ring holds no rejected or conflicted push for this row.', true), openEvent);
     }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), { code: err.code, message: err.message }); });
   }
@@ -1182,7 +1180,7 @@ main{overflow:visible;padding:16px}
     get('/writes/' + enc(id)).then(r => {
       if (token !== modalToken) return;
       var w = r.write;
-      fillModal((w.outcomes.length ? '' : empty('No recorded outcome', 'No client has a stored outcome for this client commit id. The server never received it, or its idempotency record expired.', true)) +
+      fillModal((w.outcomes.length ? '' : w.watermarks.length ? w.watermarks.map(m => '<h3>' + st('idle', 'expired') + ' · client ' + clientLink(m.clientId) + ' · outbox ' + idText(m.outboxId) + '</h3><p class="verdict">The outbox watermark deleted its result: expired below sequence ' + fmt(m.throughSeq) + '.</p>').join('') : empty('No recorded outcome', 'No client has a stored outcome for this client commit id, and no outbox watermark covers it. The server never received it.', true)) +
         w.outcomes.map((o, i) => '<h3>' + (o.status === 'applied' ? st('ok', 'applied') : st('err', 'rejected')) + ' · client ' + clientLink(o.clientId) +
           (o.commitSeq !== undefined ? ' · commit ' + seqBtn(o.commitSeq) : '') + (o.recordedAtMs ? ' · ' + ago(o.recordedAtMs) : '') + '</h3><div id="m-res-' + i + '"></div>').join('') +
         '<h3>Ring events · ' + w.events.length + '</h3><div id="m-events"></div>', w);
@@ -1295,7 +1293,7 @@ main{overflow:visible;padding:16px}
     { l: 'Detail', c: 'fill', ns: true, h: detailCell }
   ];
   // One row per sync request: every event of a request shares requestId.
-  // An idle round pushed nothing and pulled no commit on any subscription.
+  // An idle round pushed nothing and pulled no commit.
   function groups(list) {
     var by = {}, out = [];
     list.forEach(e => {
@@ -1309,14 +1307,14 @@ main{overflow:visible;padding:16px}
       g.level = g.events.reduce((l, e) => RANK[level(e)] < RANK[l] ? level(e) : l, 'info');
       g.clientId = g.events.map(e => e.clientId).filter(Boolean)[0];
       g.actorId = g.events.map(e => e.actorId).filter(Boolean)[0];
-      g.idle = !!g.rh && g.level === 'info' && g.rh.pushCommits === 0 && g.events.every(e => e.type !== 'pull.served' || e.subscriptions.every(s => !s.commits));
+      g.idle = !!g.rh && g.level === 'info' && g.rh.pushCommits === 0 && g.events.every(e => e.type !== 'pull.served' || !e.live.commits);
     });
     return out;
   }
   function groupSummary(g) {
     if (!g.id) return summary(g.events[0]);
     var pulled = 0, rh = g.rh;
-    g.events.forEach(e => { if (e.type === 'pull.served') e.subscriptions.forEach(s => { pulled += s.commits; }); });
+    g.events.forEach(e => { if (e.type === 'pull.served') pulled += e.live.commits; });
     var bad = g.events.filter(e => e.type === 'push.rejected' || e.type === 'push.conflicted');
     return (rh ? rh.outcome + (rh.errorCode ? ' ' + rh.errorCode : '') + ' · ' + dur(rh.durationMs) + ' ms · ' + rh.pushCommits + ' pushed · ' : 'in flight · ') +
       pulled + ' commits pulled' + (bad.length ? ' · ' + bad.map(e => e.type.slice(5) + (e.table ? ' ' + e.table + ' / ' + e.rowId : '')).join(', ') : '') + ' · ' + g.events.length + ' events';

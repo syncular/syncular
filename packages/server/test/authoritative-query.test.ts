@@ -633,7 +633,7 @@ describe('transaction-bound registered queries in push hooks (§6.7, §6.8)', ()
                 schemaVersion: IR.schemaVersion,
                 logEpoch: 'epoch',
               },
-              { type: 'PUSH_COMMIT', clientCommitId, operations },
+              { type: 'PUSH_COMMIT', clientCommitId, clientSeq: 0, operations },
             ],
           }),
           {

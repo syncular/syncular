@@ -9,10 +9,12 @@
  * bytes; the reference codec remains the single source of wire bytes.
  */
 import {
-  encodeMessage,
+  encodeResponse,
   PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   type RespHeaderFrame,
+  type LiveEndFrame,
+  type LiveStartFrame,
   type ResponseFrame,
   type SubEndFrame,
   type SubStartFrame,
@@ -25,15 +27,25 @@ const stubHeader = (): RespHeaderFrame => ({
 });
 const STUB_SUB_START: SubStartFrame = {
   type: 'SUB_START',
-  id: '',
+  id: '0'.repeat(32),
   status: 'active',
   reasonCode: '',
-  effectiveScopes: {},
   bootstrap: false,
+  fenced: [],
 };
 const STUB_SUB_END: SubEndFrame = { type: 'SUB_END', nextCursor: 0 };
+const STUB_LIVE_START: LiveStartFrame = {
+  type: 'LIVE_START',
+  status: 'active',
+  reasonCode: '',
+};
+const STUB_LIVE_END: LiveEndFrame = {
+  type: 'LIVE_END',
+  throughSeq: 0,
+  echoDigest: new Uint8Array(),
+};
 
-const probe = encodeMessage({
+const probe = encodeResponse({
   wireVersion: PROTOCOL_WIRE_VERSION,
   msgKind: 'response',
   frames: [stubHeader()],
@@ -41,7 +53,7 @@ const probe = encodeMessage({
 
 /** The 8-byte SSP2 response envelope header (§1.2). */
 export function responseEnvelopeHeader(wireVersion: number): Uint8Array {
-  const encoded = encodeMessage({
+  const encoded = encodeResponse({
     wireVersion,
     msgKind: 'response',
     frames: [stubHeader()],
@@ -91,7 +103,15 @@ function wrapperFor(frame: ResponseFrame): {
         frames: [stubHeader(), STUB_SUB_START, frame],
         index: 2,
       };
+    case 'LIVE_START':
+      return { frames: [stubHeader(), frame, STUB_LIVE_END], index: 1 };
+    case 'LIVE_END':
+      return { frames: [stubHeader(), STUB_LIVE_START, frame], index: 2 };
     case 'COMMIT':
+      return {
+        frames: [stubHeader(), STUB_LIVE_START, frame, STUB_LIVE_END],
+        index: 2,
+      };
     case 'SEGMENT_REF':
     case 'SEGMENT_INLINE':
       return {
@@ -110,7 +130,7 @@ export function encodeResponseFrame(
   wireVersion = PROTOCOL_WIRE_VERSION,
 ): Uint8Array {
   const { frames, index } = wrapperFor(frame);
-  const encoded = encodeMessage({
+  const encoded = encodeResponse({
     wireVersion,
     msgKind: 'response',
     frames,

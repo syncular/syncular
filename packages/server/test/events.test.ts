@@ -4,7 +4,13 @@
  * processing), and zero-cost silence when no sink is configured.
  */
 import { describe, expect, test } from 'bun:test';
-import { encodeMessage, PROTOCOL_WIRE_VERSION } from '@syncular/core';
+import {
+  echoDigest,
+  encodeMessage,
+  PROTOCOL_WIRE_VERSION,
+  registrationDigest,
+  unitId,
+} from '@syncular/core';
 import {
   createRealtimeHub,
   handleSegmentDownload,
@@ -22,8 +28,9 @@ import {
   pushCommit,
   pushResults,
   requestBytes,
+  progressFrame,
+  pullFrames,
   seedTask,
-  subFrame,
   sync,
   TEST_SCHEMA,
   type TestContext,
@@ -126,7 +133,7 @@ describe('push events', () => {
       clientId: 'client-1',
       pushCommits: 1,
       pulled: false,
-      subscriptions: 0,
+      units: 0,
       requestId: expect.any(String),
     });
     // One request: every event carries the same requestId.
@@ -215,30 +222,42 @@ describe('push events', () => {
 });
 
 describe('pull events', () => {
-  test('combined ACK and own pull expose scope intersection and sequence window', async () => {
+  const P1 = { project_id: 'p1' };
+
+  test('a combined push and pull exposes the unit and the live section', async () => {
     const t = eventsContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
     const first = await seedTask(t, 'seed', 't1', 'p1');
     await sync(t, [
       pushCommit('own', [upsert('tasks', 't2', taskRow('t2', 'p1'))]),
-      pullHeader(),
-      subFrame('own-sub', 'tasks', { project_id: ['p1', 'p2'] }, first),
+      ...pullFrames([P1], { cursor: first, progress: [] }),
     ]);
     const served = ofType(t.events, 'pull.served')[0];
     expect(served).toMatchObject({
       acceptedThrough: 2,
       storageMaxCommitSeq: 2,
-    });
-    expect(served?.subscriptions[0]).toMatchObject({
-      id: 'own-sub',
-      table: 'tasks',
-      requestedScopes: { project_id: ['p1', 'p2'] },
-      effectiveScopes: { project_id: ['p1'] },
-      firstCommitSeq: 2,
-      lastCommitSeq: 2,
-      fromCursor: 1,
-      nextCursor: 2,
-      commits: 1,
-      changes: 1,
+      registrationTraveled: true,
+      units: [
+        {
+          id: unitId(P1),
+          scopes: P1,
+          status: 'active',
+          mode: 'live',
+          section: true,
+          fenced: [],
+          fromCursor: 1,
+          segments: [],
+        },
+      ],
+      live: {
+        status: 'active',
+        fromCursor: 1,
+        throughSeq: 2,
+        commits: 1,
+        changes: 1,
+        firstCommitSeq: 2,
+        lastCommitSeq: 2,
+      },
     });
     expect(ofType(t.events, 'push.applied').at(-1)?.commitSeq).toBe(2);
   });
@@ -246,19 +265,17 @@ describe('pull events', () => {
   test('inline bootstrap emits pull.served with segment summaries', async () => {
     const t = eventsContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, pullFrames([P1]));
     const served = ofType(t.events, 'pull.served');
     expect(served).toHaveLength(1);
-    const sub = served[0]?.subscriptions[0];
-    expect(sub).toBeDefined();
-    expect(sub?.status).toBe('active');
-    expect(sub?.mode).toBe('bootstrap');
-    expect(sub?.fromCursor).toBe(-1);
-    expect(sub?.nextCursor).toBe(1);
-    expect(sub?.segments).toEqual([
+    const unit = served[0]?.units[0];
+    expect(unit).toMatchObject({
+      status: 'active',
+      mode: 'bootstrap',
+      section: true,
+      fromCursor: -1,
+    });
+    expect(unit?.segments).toEqual([
       {
         mediaType: 'rows',
         delivery: 'inline',
@@ -267,9 +284,10 @@ describe('pull events', () => {
         rows: 1,
       },
     ]);
+    expect(served[0]?.live).toMatchObject({ throughSeq: 1, commits: 0 });
     const handled = ofType(t.events, 'request.handled');
     expect(handled[handled.length - 1]?.pulled).toBe(true);
-    expect(handled[handled.length - 1]?.subscriptions).toBe(1);
+    expect(handled[handled.length - 1]?.units).toBe(1);
   });
 
   test('external rows segment reports delivery ref', async () => {
@@ -279,12 +297,9 @@ describe('pull events', () => {
       limits: { inlineSegmentMaxBytes: 1 },
     });
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, pullFrames([P1]));
     const served = ofType(cap.events, 'pull.served');
-    const segment = served[0]?.subscriptions[0]?.segments[0];
+    const segment = served[0]?.units[0]?.segments[0];
     expect(segment?.delivery).toBe('ref');
     expect(segment?.origin).toBe('built');
     expect(segment?.mediaType).toBe('rows');
@@ -295,14 +310,13 @@ describe('pull events', () => {
     await seedTask(t, 'c1', 't1', 'p1');
     await seedTask(t, 'c2', 't2', 'p1');
     await seedTask(t, 'c3', 't3', 'p1');
-    const pull = pullHeader({ limitSnapshotRows: 1, accept: 0b0111 });
-    const sub = subFrame('s1', 'tasks', { project_id: ['p1'] }, -1);
-    await sync(t, [pull, sub]);
-    await sync(t, [pull, sub], { clientId: 'client-2' });
+    const frames = pullFrames([P1], { limitSnapshotRows: 1, accept: 0b0111 });
+    await sync(t, frames);
+    await sync(t, frames, { clientId: 'client-2' });
     const served = ofType(t.events, 'pull.served');
     expect(served).toHaveLength(2);
-    const first = served[0]?.subscriptions[0]?.segments[0];
-    const second = served[1]?.subscriptions[0]?.segments[0];
+    const first = served[0]?.units[0]?.segments[0];
+    const second = served[1]?.units[0]?.segments[0];
     expect(first).toMatchObject({
       mediaType: 'sqlite',
       delivery: 'ref',
@@ -317,48 +331,57 @@ describe('pull events', () => {
     });
   });
 
-  test('incremental pull reports commits, changes, cursor span', async () => {
+  test('a referring pull reports a catching-up unit without a section', async () => {
     const t = eventsContext();
+    await sync(t, pullFrames([P1], { progress: [progressFrame(P1, 0)] }));
     const first = await seedTask(t, 'c1', 't1', 'p1');
     await seedTask(t, 'c2', 't2', 'p1');
+    const traveled = ofType(t.events, 'pull.served')[0];
+    t.events.length = 0;
     await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, first),
+      pullHeader({
+        cursor: -1,
+        registrationDigest: registrationDigest([P1]),
+        echoDigest: echoDigest([
+          { id: unitId(P1), status: 'active', fenced: [] },
+        ]),
+      }),
+      progressFrame(P1, first),
     ]);
-    const served = ofType(t.events, 'pull.served');
-    const sub = served[0]?.subscriptions[0];
-    expect(sub?.mode).toBe('incremental');
-    expect(sub?.fromCursor).toBe(first);
-    expect(sub?.nextCursor).toBe(2);
-    expect(sub?.commits).toBe(1);
-    expect(sub?.changes).toBe(1);
-    expect(sub?.segments).toEqual([]);
+    expect(traveled?.registrationTraveled).toBe(true);
+    const served = ofType(t.events, 'pull.served')[0];
+    expect(served).toMatchObject({
+      registrationTraveled: false,
+      units: [{ mode: 'catching-up', section: false, fromCursor: first }],
+      live: { fromCursor: -1, throughSeq: 2, commits: 1, changes: 1 },
+    });
   });
 
-  test('revoked and reset sections report their statuses', async () => {
+  test('revoked, reset and unregistered answers report their statuses', async () => {
     const t = eventsContext();
     const seq = await seedTask(t, 'c1', 't1', 'p1');
     await seedTask(t, 'c2', 't2', 'p1');
     await t.storage.setHorizonSeq('part-1', seq + 1);
-    // Cursor behind the horizon ⇒ reset (sync.cursor_expired).
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, seq),
-    ]);
+    // A unit cursor behind the horizon ⇒ reset (sync.cursor_expired).
+    await sync(t, pullFrames([P1], { progress: [progressFrame(P1, seq)] }));
     t.scopes.error = true;
+    await sync(t, pullFrames([P1]));
     await sync(t, [
-      pullHeader(),
-      subFrame('s2', 'tasks', { project_id: ['p1'] }, -1),
+      pullHeader({ registrationDigest: registrationDigest([{ x: 'y' }]) }),
     ]);
     const served = ofType(t.events, 'pull.served');
-    expect(served[0]?.subscriptions[0]).toMatchObject({
+    expect(served[0]?.units[0]).toMatchObject({
       status: 'reset',
       mode: 'none',
       segments: [],
     });
-    expect(served[1]?.subscriptions[0]).toMatchObject({
+    expect(served[1]?.units[0]).toMatchObject({
       status: 'revoked',
       mode: 'none',
+    });
+    expect(served[2]).toMatchObject({
+      units: [],
+      live: { status: 'unregistered', throughSeq: -1 },
     });
   });
 });
@@ -366,11 +389,7 @@ describe('pull events', () => {
 describe('request lifecycle events', () => {
   test('request validation failure emits request.handled rejected', async () => {
     const t = eventsContext();
-    const bytes = requestBytes([
-      pullHeader(),
-      subFrame('dup', 'tasks', {}, -1),
-      subFrame('dup', 'tasks', {}, -1),
-    ]);
+    const bytes = requestBytes(pullFrames([{}], { progress: [] }));
     await expectSyncError(
       handleSyncRequest(bytes, t.ctx),
       'sync.invalid_subscription',
@@ -396,7 +415,7 @@ describe('request lifecycle events', () => {
   test('in-band SyncError emits request.handled error with its code', async () => {
     const base = makeContext();
     const cap = capture();
-    // Fault only readCommitWindow — pushes seed through the real storage.
+    // Fault only readLiveWindow — pushes seed through the real storage.
     const t = makeContext({
       events: cap.sink,
       storage: wrapStorage(base.storage, () => {
@@ -405,8 +424,9 @@ describe('request lifecycle events', () => {
     });
     await seedTask(t, 'c1', 't1', 'p1');
     const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 1),
+      ...pullFrames([{ project_id: 'p1' }], {
+        progress: [progressFrame({ project_id: 'p1' }, 1)],
+      }),
     ]);
     expect(message.frames.some((f) => f.type === 'ERROR')).toBe(true);
     const handled = ofType(cap.events, 'request.handled');
@@ -427,8 +447,9 @@ describe('request lifecycle events', () => {
     await seedTask(t, 'c1', 't1', 'p1');
     await expect(
       sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1),
+        ...pullFrames([{ project_id: 'p1' }], {
+          progress: [progressFrame({ project_id: 'p1' }, 1)],
+        }),
       ]),
     ).rejects.toThrow('db down');
     const handled = ofType(cap.events, 'request.handled');
@@ -438,10 +459,10 @@ describe('request lifecycle events', () => {
   });
 });
 
-/** Delegating storage with a fault injected into readCommitWindow. */
+/** Delegating storage with a fault injected into readLiveWindow. */
 function wrapStorage(
   storage: ServerStorage,
-  onReadCommitWindow: () => never,
+  onReadLiveWindow: () => never,
 ): ServerStorage {
   return {
     ensureSchema: (s, d) => storage.ensureSchema(s, d),
@@ -468,7 +489,7 @@ function wrapStorage(
     getCommitSeqBefore: (p, m) => storage.getCommitSeqBefore(p, m),
     getRow: (p, t, r) => storage.getRow(p, t, r),
     getPushResult: (p, c, id) => storage.getPushResult(p, c, id),
-    readCommitWindow: () => onReadCommitWindow(),
+    readLiveWindow: () => onReadLiveWindow(),
     latestScopedChangeSeq: (p, q) => storage.latestScopedChangeSeq(p, q),
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
@@ -476,7 +497,6 @@ function wrapStorage(
     recordClientRoundFailure: (...args) =>
       storage.recordClientRoundFailure(...args),
     advanceClientCursor: (...args) => storage.advanceClientCursor(...args),
-    updateClientCursor: (p, c, s, t) => storage.updateClientCursor(p, c, s, t),
     getActiveClientCursorFloor: (p, cutoff) =>
       storage.getActiveClientCursorFloor(p, cutoff),
     listClientCursors: (p) => storage.listClientCursors(p),
@@ -492,10 +512,7 @@ describe('segment download events', () => {
       limits: { inlineSegmentMaxBytes: 1 },
     });
     await seedTask(t, 'c1', 't1', 'p1');
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    const message = await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const ref = message.frames.find((f) => f.type === 'SEGMENT_REF');
     if (ref?.type !== 'SEGMENT_REF') throw new Error('expected SEGMENT_REF');
     const result = await handleSegmentDownload(t.ctx, {
@@ -536,10 +553,7 @@ describe('segment download events', () => {
       limits: { inlineSegmentMaxBytes: 1 },
     });
     await seedTask(t, 'c1', 't1', 'p1');
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    const message = await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const ref = message.frames.find((f) => f.type === 'SEGMENT_REF');
     if (ref?.type !== 'SEGMENT_REF') throw new Error('expected SEGMENT_REF');
     t.scopes.error = true;
@@ -569,10 +583,7 @@ describe('realtime events', () => {
     });
     const ctx = { ...t.ctx, realtime: hub };
     await seedTask({ ...t, ctx }, 'c1', 't1', 'p1');
-    await sync({ ...t, ctx }, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync({ ...t, ctx }, [...pullFrames([{ project_id: 'p1' }])]);
     const sent: Array<string | Uint8Array> = [];
     const session = await hub.connect({
       partition: 'part-1',
@@ -656,10 +667,7 @@ describe('prune events', () => {
     await seedTask(t, 'c1', 't1', 'p1');
     await seedTask(t, 'c2', 't2', 'p1');
     const last = await seedTask(t, 'c3', 't3', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const horizon = await pruneCommitLog({
       storage: t.storage,
       partition: 'part-1',
@@ -703,8 +711,7 @@ describe('discipline', () => {
     const t = makeContext({ events: throwingSink });
     const message = await sync(t, [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }]),
     ]);
     expect(pushResults(message)[0]?.status).toBe('applied');
     expect(message.frames.some((f) => f.type === 'ERROR')).toBe(false);
@@ -724,8 +731,7 @@ describe('discipline', () => {
     expect(t.ctx.events).toBeUndefined();
     const message = await sync(t, [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }]),
     ]);
     expect(pushResults(message)[0]?.status).toBe('applied');
   });
@@ -733,15 +739,9 @@ describe('discipline', () => {
   test('every emitted event is JSON-able and round-trips', async () => {
     const t = eventsContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     t.scopes.error = true;
-    await sync(t, [
-      pullHeader(),
-      subFrame('s2', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     await pruneCommitLog({
       storage: t.storage,
       partition: 'part-1',

@@ -15,9 +15,8 @@ import {
 } from '@syncular/server';
 import {
   makeContext,
-  pullHeader,
+  pullFrames,
   requestBytes,
-  subFrame,
   sync,
   TEST_SCHEMA,
 } from './helpers';
@@ -31,7 +30,7 @@ const CHECKPOINT = {
 } as const;
 
 function pull() {
-  return [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)];
+  return [...pullFrames([{ project_id: 'p1' }])];
 }
 
 async function refused(
