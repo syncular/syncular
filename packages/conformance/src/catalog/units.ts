@@ -458,6 +458,49 @@ export const unitScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'units/window-released-in-flight-never-recreates-rows',
+    specRefs: ['§4.4', '§4.8', 'B.25'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: BOTH,
+      });
+      if (
+        a.api.prepareRound === undefined ||
+        a.api.completeRound === undefined ||
+        a.api.setWindow === undefined
+      )
+        throw new Error('the reference clients expose the round barrier');
+      const base = { variable: 'project_id' };
+      await seedTasks(ctx, [task('b1', 'p2')]);
+      await a.api.setWindow(base, ['p1', 'p2']);
+      await syncIdle(a);
+      await seedTasks(ctx, [task('a-new', 'p1'), task('b-new', 'p2')]);
+      // The request names the p2 unit; the window releases it while the round
+      // is in flight. The release evicts the unit's rows (§4.8). A client
+      // that serializes window edits behind the round applies the edit once
+      // the round completes, so the edit is awaited after the round.
+      await a.api.prepareRound();
+      const released = a.api.setWindow(base, ['p1']);
+      const result = await a.api.completeRound();
+      await released;
+      check(result.ok, 'the captured round completes');
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['a-new'],
+        'the change of the released unit never created its row',
+      );
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['a-new'],
+        'later rounds do not create it either',
+      );
+    },
+  },
+
+  {
     name: 'units/progress-and-list-validation',
     specRefs: ['§1.7', '§4.1', '§4.3', 'B.25'],
     requires: ['server-limits'],

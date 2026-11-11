@@ -1052,14 +1052,15 @@ fn a_deferred_eviction_chunk_keeps_the_pages_a_bootstrapping_unit_already_applie
 }
 
 #[test]
-fn evicting_a_window_unit_cancels_the_prepared_round() {
+fn releasing_a_window_unit_keeps_the_prepared_round() {
+    // §4.4: the released unit's section is skipped; the round completes.
     let mut h = Harness::new();
     h.client
         .set_window(&project_window(), &["p1".into()])
         .unwrap();
     h.client.active_round = Some(uuid::Uuid::nil());
     h.client.set_window(&project_window(), &[]).unwrap();
-    assert_eq!(h.client.active_round, None);
+    assert_eq!(h.client.active_round, Some(uuid::Uuid::nil()));
 }
 
 #[test]

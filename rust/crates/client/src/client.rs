@@ -5191,9 +5191,6 @@ impl SyncClient {
                     .execute("DELETE FROM _syncular_units WHERE id = ?1", [id])
                     .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 self.sync_needed = true;
-                // A prepared round still carries this unit; its SUB_END must not
-                // complete a re-added unit that lost these rows (§4.8).
-                self.cancel_sync_round();
                 for table in self.schema.tables.clone() {
                     let Some(effective) = unit
                         .echo
