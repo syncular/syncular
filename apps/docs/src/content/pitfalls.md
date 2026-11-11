@@ -72,6 +72,12 @@ Each `subscribe` is a local transaction, and on OPFS a commit costs about 3 ms. 
 
 See [Subscriptions & the outbox](/concepts-subscriptions/).
 
+### Do release units that the app no longer derives
+
+Units survive a restart. An app that registers one unit per value it reads from synced rows (one unit per pinned ruleset) and releases only the units it registered in the same process keeps every unit whose value disappeared while the app was closed: each one still travels in the registration list and still receives rows. After `subscribeMany` with the current set, unsubscribe every explicit unit of that variable that the set does not contain.
+
+See [Subscriptions & the outbox](/concepts-subscriptions/#what-a-unit-holds).
+
 ### Don't assume a new row starts at version 1
 
 An insert starts the row's `server_version` one above the partition's delete floor: the highest version recorded by a delete whose row the commit left absent. A delete and a scope move advance the version like an upsert. Code that treats `server_version = 1` as "never edited" or compares versions across rows reads wrong values; compare a row's versions only with its own earlier versions.
@@ -245,6 +251,12 @@ See [Add the Durable Object](/server-workers/#add-the-durable-object).
 `host.serialized` runs its work on the partition FIFO, and so do pushes and the host's own `fetch` and `webSocketMessage`. Work that awaits one of those from inside `serialized` waits for a queue it blocks. Call the storage or `contextFor` directly from the work, and call `fetch` or `webSocketMessage` outside it.
 
 See [Add the Durable Object](/server-workers/#add-the-durable-object).
+
+### Don't call `SqliteServerStorage` while you hold its transaction
+
+`SqliteServerStorage` runs every call through one FIFO over its single SQLite connection, and a transaction from `begin(partition)` holds that FIFO until `commit()` or `rollback()`. A storage call made while the transaction is open, such as `storage.getRow(...)`, waits for the FIFO, so code that awaits it inside the transaction never finishes and raises no error. Since 0.59.0 the queue keeps a request from reading the open transaction's uncommitted writes. Read through the transaction (`tx.getRow(...)`) while it is open, and call the storage after it ends.
+
+See [Server storage reference](/server-storage-reference/).
 
 ### Don't register `operations` beside a `realtime` namespace in the Worker config
 
