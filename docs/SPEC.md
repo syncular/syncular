@@ -1199,6 +1199,8 @@ MUST refuse to serve, without writing DDL or rows, in two cases:
    `(_sync_partition, _sync_row_id)`. App-column types and nullability are
    answered by the persisted layouts, because columns added by a migration are
    nullable in the database regardless of the schema.
+3. A table's scope patterns differ from the recorded ones (§3.1):
+   `sync.storage.scope_patterns_changed`.
 
 Both errors carry `table`, and `column` where one applies, in structured
 details; the physical refusal also carries `reason` (`missing_table`,
@@ -1306,6 +1308,16 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   inverted index (scope key = the pattern's literal prefix + `:` +
   value) so pulls filter by scope without scanning (an SSP2 storage-schema
   requirement; the index itself is not wire-visible).
+- Stored scopes keep the patterns they were written under; no schema change
+  re-keys them. The server storage records each table's scope patterns
+  (prefix, variable, column) beside the schema version marker and refuses to
+  serve a configured table whose patterns differ from the recorded ones, at
+  the same schema version and across a version bump:
+  `sync.storage.scope_patterns_changed`, with `table`, `stored` and
+  `configured` in its details. A table whose scope patterns must change is a
+  new table. A marker written before patterns were recorded records the
+  configured patterns at the next open; a change made before that open is
+  not detected.
 
 ### 3.2 Requested, allowed, effective
 

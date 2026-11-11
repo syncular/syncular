@@ -872,20 +872,66 @@ export type StoredLayouts = Record<string, readonly StoredColumnLayout[]>;
 
 /** The layouts JSON persisted alongside the schema version marker. */
 export function layoutsOf(schema: CompiledSchema): string {
-  const out: Record<string, StoredColumnLayout[]> = {};
+  const out: Record<string, unknown> = {};
+  const scopes: Record<string, string[]> = {};
   for (const table of schema.tables.values()) {
     out[table.name] = table.columns.map((column) => ({
       name: column.name,
       type: column.type,
       nullable: column.nullable,
     }));
+    scopes[table.name] = scopePatternsOf(table);
   }
+  // `sync_` is a reserved table-name prefix, so this key names no table.
+  out.sync_scopes = scopes;
   return JSON.stringify(out);
+}
+
+function scopePatternsOf(table: CompiledTable): string[] {
+  return table.scopePatterns
+    .map(({ prefix, variable, column }) => `${prefix}:{${variable}}@${column}`)
+    .sort();
 }
 
 export function parseLayouts(json: string | null | undefined): StoredLayouts {
   if (json === null || json === undefined || json.length === 0) return {};
-  return JSON.parse(json) as StoredLayouts;
+  const { sync_scopes: _scopes, ...layouts } = JSON.parse(json) as Record<
+    string,
+    unknown
+  >;
+  return layouts as StoredLayouts;
+}
+
+/**
+ * §3.1: stored scopes are keyed by the scope patterns a row was written
+ * under, and no schema change re-keys them. Refuse a configured table whose
+ * patterns differ from the stored ones. Returns false when the marker
+ * predates recorded patterns (nothing to compare), so the caller records them.
+ */
+export function assertStoredScopePatterns(
+  schema: CompiledSchema,
+  storedJson: string | null | undefined,
+): boolean {
+  if (storedJson === null || storedJson === undefined || storedJson === '')
+    return true;
+  const stored = (
+    JSON.parse(storedJson) as {
+      sync_scopes?: Record<string, readonly string[]>;
+    }
+  ).sync_scopes;
+  if (stored === undefined) return false;
+  for (const table of schema.tables.values()) {
+    const before = stored[table.name];
+    const after = scopePatternsOf(table);
+    if (before !== undefined && before.join('\n') !== after.join('\n')) {
+      throw new StorageQueryError('sync.storage.scope_patterns_changed', {
+        table: table.name,
+        stored: before.join(' '),
+        configured: after.join(' '),
+      });
+    }
+  }
+  return true;
 }
 
 /**

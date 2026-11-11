@@ -44,6 +44,7 @@ import {
   assertAppendOnlyMigration,
   assertPhysicalColumns,
   assertStoredLayouts,
+  assertStoredScopePatterns,
   dropTableDdl,
   indexRowPageStatement,
   layoutsOf,
@@ -1052,6 +1053,17 @@ export class D1ServerStorage
     );
     if (claim === null && marker?.schema_version === schema.version) {
       assertStoredLayouts(schema, marker.layouts);
+      if (!assertStoredScopePatterns(schema, marker.layouts)) {
+        // A marker from before 0.63 records no scope patterns: record the
+        // configured ones, which every later start compares against.
+        statementsExecuted++;
+        await this.#db
+          .prepare(
+            'UPDATE sync_schema_meta SET layouts=? WHERE id=1 AND schema_version=?',
+          )
+          .bind(layoutsOf(schema), schema.version)
+          .run();
+      }
       statementsExecuted++;
       const present = await this.#db
         .prepare(
@@ -1118,6 +1130,7 @@ export class D1ServerStorage
       throw new StorageQueryError('sync.storage.schema_changed');
     }
     if (claim === null) {
+      assertStoredScopePatterns(schema, marker?.layouts);
       const layouts = parseLayouts(marker?.layouts);
       for (const table of tables) {
         const oldLayout = layouts[table.name];

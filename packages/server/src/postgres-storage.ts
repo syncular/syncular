@@ -64,6 +64,7 @@ import {
 import {
   assertPhysicalColumns,
   assertStoredLayouts,
+  assertStoredScopePatterns,
   deleteRowSql,
   dropTableDdl,
   indexRowPageStatement,
@@ -2361,10 +2362,17 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       );
     }
     if (stored !== undefined && stored === schema.version) {
-      assertStoredLayouts(
-        schema,
-        typeof marker.layouts === 'string' ? marker.layouts : undefined,
-      );
+      const storedLayouts =
+        typeof marker.layouts === 'string' ? marker.layouts : undefined;
+      assertStoredLayouts(schema, storedLayouts);
+      if (!assertStoredScopePatterns(schema, storedLayouts)) {
+        // A marker from before 0.63 records no scope patterns: record the
+        // configured ones, which every later start compares against.
+        await this.#exec.query(
+          'UPDATE sync_schema_meta SET layouts=$1 WHERE id=1 AND schema_version=$2',
+          [layoutsOf(schema), schema.version],
+        );
+      }
       const columns = JSON.parse(marker.columns) as {
         tbl: string;
         name: string;
@@ -2444,11 +2452,12 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           );
         }
         if (lockedVersion === schema.version) return;
-        const layouts = parseLayouts(
+        const lockedLayouts =
           typeof lockedMarker[0]?.layouts === 'string'
             ? lockedMarker[0].layouts
-            : undefined,
-        );
+            : undefined;
+        assertStoredScopePatterns(schema, lockedLayouts);
+        const layouts = parseLayouts(lockedLayouts);
         const retiredTables = retiredTableNames(schema, layouts);
         const existing = new Map<string, ReadonlySet<string>>();
         const existingIndexes = new Map<string, ReadonlyMap<string, string>>();

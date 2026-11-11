@@ -66,6 +66,8 @@ The reset touches the whole local database except three things.
 
 A unit survives a bump when every one of its variables keeps its pattern prefix and mapped column on every table it covered, and the unit still covers at least one table. The client drops incompatible units, their windows, and their pending evictions before its first sync. The app registers units for its current schema, and the client never translates stored scope values. Changing `calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}`, for example, removes the units that use the old variable.
 
+The server never re-keys rows it already stores, because each row's stored scopes keep the patterns the row was written under. Server storage records every table's scope patterns and refuses to open a database whose table declares other patterns, at the same version and across a bump, with `sync.storage.scope_patterns_changed` ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#31-scope-patterns-and-stored-scopes)). A table whose scope patterns change is a new table: add it in a bump and write its rows through a registered command after the bump.
+
 A compatible unit resets to catching up with cursor `-1` and status `active`, because the bump wipes the local rows and needs a fresh bootstrap. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
 
 ## Pending writes across the bump

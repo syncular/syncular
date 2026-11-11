@@ -418,6 +418,57 @@ describe('same-version schema readiness', () => {
       await db.close();
     });
 
+    // Same column, another variable: rows stay indexed under `project`.
+    const rescoped = (version: number): ServerSchema => ({
+      version,
+      tables: [
+        {
+          ...SCHEMA.tables[0]!,
+          scopes: [{ pattern: 'board:{board_id}', column: 'project_id' }],
+        },
+        SCHEMA.tables[1]!,
+      ],
+    });
+    const scopeChange = {
+      code: 'sync.storage.scope_patterns_changed',
+      details: {
+        table: 'tasks',
+        stored: 'project:{project_id}@project_id',
+        configured: 'board:{board_id}@project_id',
+      },
+    };
+
+    test(`${backend}: a changed scope pattern is refused at the same version and across a bump`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'row'));
+      await expect(
+        db.open().ensureSchema(compileSchema(rescoped(1))),
+      ).rejects.toMatchObject(scopeChange);
+      await expect(ensure(db.open(), rescoped(2))).rejects.toMatchObject(
+        scopeChange,
+      );
+      await ensure(db.open(), { ...SCHEMA, version: 2 });
+      expect(await db.count()).toBe(1);
+      await db.close();
+    });
+
+    test(`${backend}: a marker without scope patterns records them at the next open`, async () => {
+      const db = await database(backend);
+      await ensure(db.open(), SCHEMA);
+      await db.exec([
+        backend === 'postgres'
+          ? "UPDATE sync_schema_meta SET layouts=(layouts::jsonb - 'sync_scopes')::text"
+          : "UPDATE sync_schema_meta SET layouts=json_remove(layouts, '$.sync_scopes')",
+      ]);
+      await db.open().ensureSchema(compileSchema(SCHEMA));
+      await expect(
+        db.open().ensureSchema(compileSchema(rescoped(1))),
+      ).rejects.toMatchObject(scopeChange);
+      await db.close();
+    });
+
     for (const drift of drifts) {
       test(`${backend}: ${drift.name} is refused at the same version`, async () => {
         const db = await database(backend);

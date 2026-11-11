@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'The server refuses a changed scope pattern',
+    body: "Stored rows keep the scope variables they were written under, and no schema change re-keys them, so a changed pattern left existing rows invisible to units of the new variable without an error. Server storage now records every table's scope patterns and refuses to open with `sync.storage.scope_patterns_changed` when a table declares other ones, at the same schema version and across a bump, on SQLite, D1 and Postgres.",
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#what-the-reset-touches',
+        label: 'Schema upgrades',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'A tab that promotes while its worker starts no longer times out',
     body: 'A tab that won the lock while it was a follower kept the follower deadlines while its own worker opened the database. When the start took longer than `followerCallTimeoutMs` (10 s by default), as after a full navigation to another page of the same replica, the tab reported `blocked` with `leader-unreachable`, rejected calls with `client.follower_timeout`, and with `securityPreflight: true` `createSyncClientHandle` rejected. The tab now stays `waiting` with reason `handover` until its core starts, and calls made meanwhile run on that core.',
     links: [

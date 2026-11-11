@@ -178,6 +178,12 @@ Create the successor table in one version. Write the rows into it as server-auth
 
 See [Retire tables and indexes](/guide-schema/#retire-tables-and-indexes).
 
+### Don't change the scope patterns of a table that holds rows
+
+The server stores each row's scopes under the patterns the row was written under and never re-keys them. Before 0.63, renaming `log:{log_scope}` to `history:{history_scope}` over the same column left 13,041 existing rows indexed under `log_scope`, and a unit of `history_scope` bootstrapped none of them, with no error. Since 0.63 the server refuses to open with `sync.storage.scope_patterns_changed`. Give the new patterns to a new table and write its rows through a registered command after the bump.
+
+See [Schema upgrades](/concepts-schema-upgrades/#what-the-reset-touches).
+
 ### Don't remove a column or table that a pending commit may still reference
 
 A client that updates keeps its outbox, wipes its tables, and replays the outbox re-encoded at send time. A commit that references a column or table the new schema lacks gets `sync.outbox_incompatible`, leaves the outbox, and its optimistic rows are undone. The user's offline work is lost. Add columns as trailing nullable, move readers and writers, and drop the old column in a later version, after old clients have updated or left the compatibility window.

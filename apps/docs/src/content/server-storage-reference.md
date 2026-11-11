@@ -70,6 +70,7 @@ When the stored schema version equals the running one, `ensureSchema` still chec
 | Code | Cause | `details` |
 |---|---|---|
 | `sync.storage.stored_layout_mismatch` | Stored layouts differ from the configured schema | `table`, `column` |
+| `sync.storage.scope_patterns_changed` | A table declares scope patterns other than the recorded ones; checked at every open, also across a bump | `table`, `stored`, `configured` |
 | `sync.storage.physical_layout_mismatch` | A synced table differs from the storage layout | `table`, `column`, `reason`, and `expected`/`actual` for a type or nullability mismatch |
 
 `reason` is one of `missing_table`, `missing_column`, `type`, `nullability`, or `primary_key`. Neither refusal writes DDL. A table from before `_sync_column_versions` existed gains the column only through a schema-version bump ([version-only bumps](/guide-schema/#a-version-only-bump-server-internal-storage-changes)).

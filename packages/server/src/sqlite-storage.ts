@@ -21,6 +21,7 @@ import { serveNotReadyError } from './readiness';
 import {
   assertPhysicalColumns,
   assertStoredLayouts,
+  assertStoredScopePatterns,
   dropTableDdl,
   layoutsOf,
   migratePayload,
@@ -507,6 +508,15 @@ END`);
     }
     if (marker !== null && marker.schema_version === schema.version) {
       assertStoredLayouts(schema, marker.layouts);
+      if (!assertStoredScopePatterns(schema, marker.layouts)) {
+        // A marker from before 0.63 records no scope patterns: record the
+        // configured ones, which every later start compares against.
+        this.db
+          .query(
+            'UPDATE sync_schema_meta SET layouts=? WHERE id=1 AND schema_version=?',
+          )
+          .run(layoutsOf(schema), schema.version);
+      }
       for (const table of schema.tables.values()) {
         const escapedTableName = table.name.replaceAll('"', '""');
         const columns = this.db
@@ -618,6 +628,7 @@ END`);
           this.schemaVersion = schema.version;
           return;
         }
+        assertStoredScopePatterns(schema, locked?.layouts);
         const layouts = parseLayouts(locked?.layouts);
         const retiredTables = retiredTableNames(schema, layouts);
         for (const tableName of retiredTables) {

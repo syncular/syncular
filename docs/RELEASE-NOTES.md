@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.63.0 release notes
+
+0.63.0 refuses a changed scope pattern instead of serving rows under the old
+one. The server stores each row's scopes keyed by the scope variables of the
+patterns the row was written under, in `sync_row_scopes`, `_sync_scopes`,
+`sync_tombstones`, `sync_changes` and `sync_change_scopes`, and no schema
+change re-keys them. A table whose pattern changed from `log:{log_scope}` to
+`history:{history_scope}` kept every existing row under `log_scope`, and a
+`history_scope` unit bootstrapped none of them, with no error. Server storage
+now records each table's scope patterns beside the schema version marker and
+refuses to open, at the same version and across a bump, when a table declares
+other patterns: `sync.storage.scope_patterns_changed` with `table`, `stored`
+and `configured` in its details (SPEC.md §3.1). SQLite, D1 and Postgres check
+alike. SSP2 and the wire version are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. The
+first open of an existing database records the configured patterns in the
+marker, so a pattern change made before 0.63.0 stays undetected: compare the
+variables in `sync_row_scopes.var` per table with the declared patterns once.
+A table whose scope patterns must change is a new table.
+
 ## 0.62.1 release notes
 
 0.62.1 fixes a browser tab that won the leader lock while its own worker
