@@ -70,7 +70,7 @@ A failed commit leaves the outbox and is never retried implicitly. Incoming serv
 
 A rejection reaches the client before the pull section of the same sync round. The retained `serverRow` can therefore still contain the before-image when the rejection first appears. An empty outbox, an online connection, and a non-null `serverRow` do not establish freshness.
 
-Call `await client.proveCurrentBase(outcome)` when the user requests a reviewed replacement. The call waits for an earlier drive, completes a new idle drive, checks subscription coverage in a snapshot, and rereads the retained outcome. On success, `rows` contains the authorized bases and versions for every retained row in the aggregate. The call returns no rows when any row lacks proof. It also checks the coverage of returned `uniqueConflicts` rows.
+Call `await client.proveCurrentBase(outcome)` when the user requests a reviewed replacement. The call waits for an earlier drive, completes a new idle drive, checks unit coverage in a snapshot, and rereads the retained outcome. On success, `rows` contains the authorized bases and versions for every retained row in the aggregate. The call returns no rows when any row lacks proof. It also checks the coverage of returned `uniqueConflicts` rows.
 
 ```ts
 const proof = await client.proveCurrentBase(outcome);
@@ -81,7 +81,7 @@ if (!proof.proven) {
 // Construct the replacement from proof.rows and the saved operation intent.
 ```
 
-The failure reason is `offline`, `sync_failed`, `schema_floor`, `budget_exhausted`, `snapshot_failed`, `missing_coverage`, `revoked`, or `outcome_unavailable`. Keep the failed outcome and show a message for the reason. Pass a positive round limit as the second argument to bound the drive. Use a separate subscription for each exact scope value when access to one value can be revoked independently. A null `serverRow` means the covering subscription holds no authorized base; it does not establish that the primary key is absent outside the actor's scopes. Another writer can change a row after proof, so submit the replacement with the domain's version check and retain any new rejection.
+The failure reason is `offline`, `sync_failed`, `schema_floor`, `budget_exhausted`, `snapshot_failed`, `missing_coverage`, `revoked`, or `outcome_unavailable`. Keep the failed outcome and show a message for the reason. Pass a positive round limit as the second argument to bound the drive. A null `serverRow` means the covering unit holds no authorized base; it does not establish that the primary key is absent outside the actor's scopes. Another writer can change a row after proof, so submit the replacement with the domain's version check and retain any new rejection.
 
 | Resolution | Call |
 |---|---|

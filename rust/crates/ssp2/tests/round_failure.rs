@@ -16,6 +16,7 @@ fn req_header_payload() -> Vec<u8> {
     out.extend(1i32.to_le_bytes());
     out.push(0x01);
     out.extend(s("epoch-1"));
+    out.push(0x00); // no outboxId
     out
 }
 
@@ -25,11 +26,16 @@ fn pull_header_payload() -> Vec<u8> {
     out.extend(100i32.to_le_bytes());
     out.extend(2i32.to_le_bytes());
     out.push(0x03);
+    out.extend((-1i64).to_le_bytes()); // cursor
+    out.extend(32u32.to_le_bytes());
+    out.extend(ssp2::registration_digest([]));
+    out.extend(0u32.to_le_bytes()); // empty echoDigest
     out
 }
 
 fn push_commit_payload() -> Vec<u8> {
     let mut out = s("commit-1");
+    out.extend(0i64.to_le_bytes()); // clientSeq
     out.extend(1u32.to_le_bytes());
     out.extend(s("tasks"));
     out.extend(s("row-1"));
@@ -43,7 +49,7 @@ fn push_commit_payload() -> Vec<u8> {
 /// negative case can carry bytes no encoder would produce.
 fn raw_request(frames: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = b"SSP2".to_vec();
-    bytes.extend(3u16.to_le_bytes());
+    bytes.extend(ssp2::decode::WIRE_VERSION.to_le_bytes());
     bytes.push(0x01);
     bytes.push(0x00);
     for (ty, payload) in frames {
@@ -72,6 +78,7 @@ fn valid_round_failure_round_trips_and_renders() {
                 client_id: "client-1".to_owned(),
                 schema_version: 1,
                 log_epoch: Some("epoch-1".to_owned()),
+                outbox_id: None,
             },
             Frame::RoundFailure {
                 code: "transport.timeout".to_owned(),
@@ -81,6 +88,9 @@ fn valid_round_failure_round_trips_and_renders() {
                 limit_snapshot_rows: 100,
                 max_snapshot_pages: 2,
                 accept: 0x03,
+                cursor: -1,
+                registration_digest: ssp2::registration_digest([]),
+                echo_digest: None,
             },
         ],
     };
@@ -227,6 +237,7 @@ fn the_encoder_refuses_a_code_outside_the_grammar() {
                 client_id: "client-1".to_owned(),
                 schema_version: 1,
                 log_epoch: Some("epoch-1".to_owned()),
+                outbox_id: None,
             },
             Frame::RoundFailure {
                 code: "transport".to_owned(),
@@ -236,6 +247,9 @@ fn the_encoder_refuses_a_code_outside_the_grammar() {
                 limit_snapshot_rows: 100,
                 max_snapshot_pages: 2,
                 accept: 0x03,
+                cursor: -1,
+                registration_digest: ssp2::registration_digest([]),
+                echo_digest: None,
             },
         ],
     });

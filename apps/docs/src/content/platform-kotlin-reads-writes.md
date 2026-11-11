@@ -1,6 +1,6 @@
 # Reads & writes (Kotlin)
 
-Subscribe to data, write it optimistically, and read it back with `readRows`, `query`, or `querySnapshot`.
+Register units, write optimistically, and read it back with `readRows`, `query`, or `querySnapshot`.
 
 ::meta{for="Kotlin developers building screens on a synced table" time="6 minutes"}
 
@@ -20,15 +20,15 @@ The wrapper builds and reads commands with `JsonValue`, a sealed class with `Nul
 
 ## Subscribe
 
-A subscription is an id, a table, and a scope map. It is local; the next sync round fills it. [Scopes & authorization](/concepts-scopes/) defines the scope vocabulary.
+A unit is a scope map with one value per scope variable; it covers every table that declares those variables. Registering it is local; the next sync round fills it. [Subscriptions & the outbox](/concepts-subscriptions/#a-unit) defines the unit, and [Scopes & authorization](/concepts-scopes/) the scope vocabulary.
 
 ```kotlin title="Subscribe.kt"
-client.subscribe(id = "todos", table = "todos",
-                 scopes = mapOf("list_id" to listOf("groceries")))
-client.unsubscribe("todos")
+val unitId = client.subscribe(mapOf("list_id" to "groceries"))
+val ids = client.subscribeMany(listOf(mapOf("list_id" to "work"), mapOf("list_id" to "home")))
+client.unsubscribe(unitId)
 ```
 
-`subscriptionState(id)` returns `active`, `revoked`, or `failed`. Repeating a subscribe with the same definition is a no-op; a different definition under an existing id throws. The generated `Syncular.generated.kt` carries a typed helper per subscription declared in `syncular.json`.
+`subscribe` returns the unit id, a hash of the scope map. `units()` lists every registered unit, `unit(id)` reads one with its `status` (`active`, `revoked`, or `failed`), and `unitCatchup(id)` reports whether its bootstrap has completed. Registering an active unit again is a no-op. The generated `Syncular.generated.kt` carries a builder per unit template declared in `syncular.json`: `client.subscribe(SyncularSchema.Subscriptions.TodosInList.scopes(listId = id))`.
 
 ## Write
 

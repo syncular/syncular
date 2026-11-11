@@ -20,6 +20,7 @@ import type { Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** The host code the max-length rule rejects with — a non-reserved prefix
  * (§6.7): distinguishable from every `sync.*`/`blob.*` protocol code. */
@@ -59,7 +60,7 @@ async function bootstrapped(
   clientId: string,
 ) {
   const handle = await ctx.newClient({ actorId, clientId, allowed: P1 });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -67,7 +68,7 @@ async function bootstrapped(
 export const validatorScenarios: readonly Scenario[] = [
   {
     name: 'validators/rejected-base-waits-for-a-complete-pull',
-    specRefs: ['§7.2', '§7.2.1', '§7.7'],
+    specRefs: ['§7.2', '§7.2.1', '§7.8'],
     requires: ['validators', 'scope-authorization'],
     async run(ctx) {
       await install(ctx, [
@@ -88,7 +89,7 @@ export const validatorScenarios: readonly Scenario[] = [
         allowed: P1,
         retainFailedCommits: true,
       });
-      await reader.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await reader.api.subscribe(U1);
       await winner.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'old') },
       ]);
@@ -221,7 +222,7 @@ export const validatorScenarios: readonly Scenario[] = [
   },
   {
     name: 'validators/prove-all-aggregate-bases',
-    specRefs: ['§7.2.1', '§7.5', '§7.7'],
+    specRefs: ['§7.2.1', '§7.5', '§7.8'],
     requires: ['validators', 'scope-authorization'],
     async run(ctx) {
       await install(ctx, [
@@ -246,7 +247,7 @@ export const validatorScenarios: readonly Scenario[] = [
         allowed: P1,
         retainFailedCommits: true,
       });
-      await reader.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await reader.api.subscribe(U1);
       await writer.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('a', 'p1', 'old') },
         { op: 'upsert', table: 'tasks', values: task('b', 'p1', 'old') },
@@ -319,11 +320,7 @@ export const validatorScenarios: readonly Scenario[] = [
         { op: 'upsert', table: 'tasks', values: task('b', 'p2', 'server-b') },
       ]);
       await syncIdle(writer);
-      await reader.api.subscribe({
-        id: 'p1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await reader.api.subscribe({ project_id: 'p1' });
       await syncIdle(reader);
       const rejected = await reader.api.mutate([
         {
@@ -339,11 +336,7 @@ export const validatorScenarios: readonly Scenario[] = [
         { proven: false, reason: 'missing_coverage' },
         'one uncovered row prevents any aggregate result',
       );
-      await reader.api.subscribe({
-        id: 'p2',
-        table: 'tasks',
-        scopes: { project_id: ['p2'] },
-      });
+      await reader.api.subscribe({ project_id: 'p2' });
       const proof = await reader.api.proveCurrentBase(rejected);
       check(proof.proven, 'separate subscriptions cover both retained rows');
       if (!proof.proven) return;
@@ -413,11 +406,9 @@ export const validatorScenarios: readonly Scenario[] = [
         allowed: scopes,
         retainFailedCommits: true,
       });
-      await client.api.subscribe({
-        id: 'numbers',
-        table: 'measurements',
-        scopes,
-      });
+      await client.api.subscribeMany(
+        scopes.scope_num.map((value) => ({ scope_num: value })),
+      );
       await syncIdle(client);
       const id = await client.api.mutate([
         {

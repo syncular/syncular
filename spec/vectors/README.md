@@ -26,6 +26,9 @@ spec/vectors/
                      a case MAY carry its own `columns` and `primaryKey`,
                      which replace the kind-level table for that case)
   crypto/            §5.11 crypto vectors (vectors.json)
+  registration/      unit ids, registration and echo digests (JSON only,
+                     digests.json: each input with its §11.2 canonical
+                     JSON text and the expected id or lowercase-hex digest)
     <case>.bin       canonical encoded bytes (binary kinds)
     <case>.json      canonical JSON debug rendering (SPEC.md §11 —
                      non-contractual for wire, contractual for vectors)
@@ -56,22 +59,31 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative vector list (34 valid cases + 62 invalid cases) is
+The authoritative vector list (39 valid cases + 76 invalid cases) is
 SPEC.md Appendix A. Summary of what it covers:
 
-- requests: minimal pull, bootstrap pull (accept bits, resume token),
-  multi-commit push (payload edge cases), combined push+pull, a
-  `ROUND_FAILURE` report (§1.5)
-- responses: empty pull with cursor advance, incremental commits with
-  every row-codec column type (null, bytes, non-BMP unicode), bootstrap
-  segments (ref + signed URL + inline), push applied/conflict/cached,
-  subscription revoked, cursor reset (horizon), mid-stream ERROR frame,
-  unknown-frame skip (forward compat), schema floor
+- requests: a steady-state pull that refers to its list by digest, a
+  bootstrap pull whose list travels as two `UNIT` frames with two
+  `PROGRESS` frames (fresh and resumed), the empty list's digest, a
+  multi-commit push with `outboxId` and increasing `clientSeq`, a
+  database-less producer push, combined push+pull with one
+  post-bootstrap `PROGRESS`, an epoch-bound header, a `ROUND_FAILURE`
+  report (§1.5)
+- responses: a quiet live section, a live section of two commits with
+  every row-codec column type (null, bytes, non-BMP unicode), a
+  catching-up unit's bootstrap section (ref + signed URL + inline across
+  two tables, an echo) followed by a live section, push
+  applied/conflict/cached, a revoked unit beside an active unit with an
+  active and a revoked fenced record, unit and live reset (horizon),
+  `unregistered`, a realtime delta spanning three tables, mid-stream
+  ERROR frame, unknown-frame skip (forward compat), schema floor, lease,
+  a `COMMIT` upsert carrying a server-merged `crdt` column (§5.10.3)
+- registration: unit ids, registration digests (the §4.1 example, the
+  empty list, non-BMP and integer-like keys, an integer-text value, JSON
+  escapes, reversed order) and echo digests (§4.4)
 - segment: SSG2 with two row blocks + end marker, nullable columns,
   varied per-row `serverVersion` incl. the i64 safe-integer boundary;
   a `crdt` column (tag 8) riding the bytes machinery
-- response: a `COMMIT` upsert carrying a server-merged `crdt` column
-  (§5.10.3 — no CRDT-specific frame)
 - push: sparse row payloads (RFC §6.1) decoded against the manifest's
   column table: a partial row with a present-NULL column and the full-row
   case with every presence bit set, over nine columns covering every
@@ -80,25 +92,36 @@ SPEC.md Appendix A. Summary of what it covers:
   with whitespace and a duplicate key, the largest finite binary64, a
   canonical `blob_ref` with every escape class) and one invalid case per
   rejected value
-- JSON validity rule (SPEC.md Conventions) in the envelope: a request
-  whose `params` nests 64 deep and whose `bootstrapState` carries
-  whitespace and a duplicate key; invalid `params`, `bootstrapState`,
-  `ERROR.details` and `SUB_END.bootstrapState` documents
+- JSON validity rule (SPEC.md Conventions) in the envelope: one
+  `PROGRESS.bootstrapState` nested 64 deep and one with whitespace and a
+  duplicate key; invalid `PROGRESS.bootstrapState`, `ERROR.details` and
+  `SUB_END.bootstrapState` documents
 - segment: a full row keeps decoding a string with U+0000; non-canonical
   `blob_ref` values fail on the full-row path too (§5.9.1)
-- realtime: `wake` and `hello` JSON control vectors
-- invalid: truncated envelope (missing END), bad magic, unsupported
-  wireVersion, non-zero flags, overlong frame length, bad bool byte,
-  null bit on non-nullable column, rows segment without end marker,
-  json column value that does not parse, row `serverVersion` 0,
-  `ROUND_FAILURE` grammar violations (duplicate frame, frame after a
-  `PUSH_COMMIT`, code outside the dotted grammar),
-  sparse row violations (presence padding bit, null bit for an absent
-  column, null bit for a non-nullable column, absent primary key),
-  push admission values (U+0000 in a string; json nested 65 deep, `1e999`,
-  `1.7976931348623159e308`, unpaired surrogate value and key, U+0000
-  value and key, and `1e999`, an unpaired surrogate, a `\u0000` escape, depth 65 or depth 128 under a shadowed duplicate key; NaN, `Infinity` and `-Infinity` floats; `blob_ref` with
+- realtime: `wake`, `hello` and presence JSON control vectors
+- invalid requests: truncated envelope (missing END), bad magic,
+  wireVersion 3, non-zero flags, overlong frame length, `op = 3`, upsert
+  without payload, `ROUND_FAILURE` grammar violations (duplicate frame,
+  frame after a `PUSH_COMMIT`, code outside the dotted grammar), a
+  31-byte `registrationDigest`, a 16-byte `echoDigest`,
+  `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after
+  `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`,
+  `clientSeq = -1`
+- invalid responses: bad bool byte, `COMMIT` inside a unit section,
+  `SUB_START` after the live section, a second `LIVE_START`, `LIVE_START`
+  without `LIVE_END`, fenced records out of table order, a 31-byte
+  `LIVE_END.echoDigest`
+- invalid segments and push payloads: null bit on non-nullable column,
+  rows segment without end marker, json column value that does not parse,
+  row `serverVersion` 0, sparse row violations (presence padding bit,
+  null bit for an absent column, null bit for a non-nullable column,
+  absent primary key), push admission values (U+0000 in a string; json
+  nested 65 deep, `1e999`, `1.7976931348623159e308`, unpaired surrogate
+  value and key, U+0000 value and key, and `1e999`, an unpaired
+  surrogate, a `\u0000` escape, depth 65 or depth 128 under a shadowed
+  duplicate key; NaN, `Infinity` and `-Infinity` floats; `blob_ref` with
   reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace,
-  a duplicate key, an unpaired surrogate or U+0000 in `name`),
-  wake with `requiresPull` not the literal `true`, fractional realtime
-  numeric field
+  a duplicate key, an unpaired surrogate or U+0000 in `name`)
+- invalid realtime events: wake with `requiresPull` not the literal
+  `true`, fractional realtime numeric field, presence events outside
+  their closed sets

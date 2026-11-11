@@ -206,7 +206,7 @@ describe('eraseScopeValue', () => {
         expect(
           await storage.latestScopedChangeSeq(PARTITION, {
             table,
-            scopeFilter: { project_id: ['p1'] },
+            scopes: { project_id: 'p1' },
           }),
         ).toBe(step!.commitSeq!);
       }

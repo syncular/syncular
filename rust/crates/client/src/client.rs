@@ -22,28 +22,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use ssp2::decode::WIRE_VERSION;
-use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
+use ssp2::model::{
+    FencedRecord, Frame, LiveStatus, MediaType, Message, MsgKind, Op, OpResult, PushStatus,
+    SubStatus,
+};
 use ssp2::primitives::RawJson;
+use ssp2::registration::canonical_scope_json;
 use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, RowsSegment};
 use ssp2::{decode_message, encode_presence_publish, parse_control, ControlMessage, PresenceKind};
 
 use crate::api::{
     AppliedServerCommit, AppliedServerCommitSource, ClientChangeBatch, ClientDiagnosticsHost,
-    ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsRequest,
-    ClientDiagnosticsSchema, ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError,
-    ClientLimits, CommandEffects, CommitDelivery, CommitOperation, CommitOperationOutcome,
-    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
-    ConflictRecord, CoverageSnapshot, CurrentBaseProof, CurrentBaseProofReason,
-    DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
-    DiagnosticSubscription, FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
-    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
-    PresencePeer, PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot,
-    QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
-    RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
-    SubscriptionRequest, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
-    SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
-    WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
-    MAX_DIAGNOSTIC_QUERY_FAILURES,
+    ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsSchema,
+    ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects,
+    CommitDelivery, CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
+    CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
+    CurrentBaseProof, CurrentBaseProofReason, DiagnosticLastChange, DiagnosticLastRound,
+    DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticUnits, EchoRecord, FetchedBlob,
+    LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
+    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
+    PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
+    RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SyncIntent, SyncOutcome,
+    SyncReport, SyncStatusSnapshot, TableChange, UnitCatchup, UnitRecord, UnitScopes, UnitStatus,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 use crate::api::{RealtimePolicy, RealtimeState, REALTIME_UNAVAILABLE_CODE};
 #[cfg(feature = "bench-internals")]
@@ -57,10 +60,9 @@ use crate::previous_version::{
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, SegmentRequest, Transport, TransportError};
 use crate::values::{
-    bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes,
-    encode_sparse_row_json, full_row_values, is_canonical_bytes_envelope, json_to_column_value,
-    json_to_scope_map, normalize_values_casing, render_row_id_json, scope_map_to_json,
-    sort_scope_map,
+    bytes_to_hex, column_value_to_json, decode_row_bytes, encode_sparse_row_json, full_row_values,
+    is_canonical_bytes_envelope, json_to_column_value, json_to_scope_map, normalize_values_casing,
+    render_row_id_json, scope_map_to_json,
 };
 
 /// §4.2 default: rows and SQLite images, both applied in committed chunks.
@@ -82,90 +84,17 @@ fn recommended_action_of(details: &Option<Value>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// §2.2 scope migration: one commit carries the delete under the old scope and
-/// the upsert under the new one. A reader that holds both scopes receives the
-/// two changes in separate subscription sections, so section order would
-/// otherwise decide whether the row survives. Collect the `(commitSeq, table,
-/// rowId)` keys whose delete must be skipped because the same commit delivers
-/// the row's upsert in another applied section. A section that carries both
-/// changes itself keeps its own operation order.
-fn coalesced_delete_keys(
-    frames: &[Frame],
-    mut applies: impl FnMut(&str, SubStatus, Option<i64>) -> bool,
-) -> HashSet<(i64, String, String)> {
-    let mut sections = Vec::new();
-    let mut open: Option<(usize, String, SubStatus)> = None;
-    for (index, frame) in frames.iter().enumerate() {
-        match frame {
-            Frame::SubStart { id, status, .. } => {
-                open = Some((index, id.clone(), *status));
-            }
-            Frame::SubEnd { next_cursor, .. } => {
-                if let Some((start, id, status)) = open.take() {
-                    sections.push((start, index, id, status, Some(*next_cursor)));
-                }
-            }
-            _ => {}
-        }
-    }
-    type Key = (i64, String, String);
-    let mut ops: HashMap<Key, (HashSet<usize>, HashSet<usize>)> = HashMap::new();
-    let mut both_in_frame: HashSet<Key> = HashSet::new();
-    let mut frame_ordinal = 0usize;
-    for (start, end, id, status, next_cursor) in sections {
-        if !applies(&id, status, next_cursor) {
-            continue;
-        }
-        for frame in &frames[start + 1..end] {
-            let Frame::Commit {
-                commit_seq,
-                tables,
-                changes,
-                ..
-            } = frame
-            else {
-                continue;
-            };
-            frame_ordinal += 1;
-            let mut local: HashMap<(String, String), (bool, bool)> = HashMap::new();
-            for change in changes {
-                let Some(table) = tables.get(change.table_index as usize) else {
-                    continue;
-                };
-                let key = (*commit_seq, table.clone(), change.row_id.clone());
-                let entry = ops.entry(key).or_default();
-                let local_entry = local
-                    .entry((table.clone(), change.row_id.clone()))
-                    .or_default();
-                match change.op {
-                    Op::Upsert => {
-                        entry.0.insert(frame_ordinal);
-                        local_entry.0 = true;
-                    }
-                    Op::Delete => {
-                        entry.1.insert(frame_ordinal);
-                        local_entry.1 = true;
-                    }
-                }
-            }
-            for ((table, row_id), (has_upsert, has_delete)) in local {
-                if has_upsert && has_delete {
-                    both_in_frame.insert((*commit_seq, table, row_id));
-                }
-            }
-        }
-    }
-    ops.into_iter()
-        .filter_map(|(key, (upserts, deletes))| {
-            (!both_in_frame.contains(&key) && !upserts.is_empty() && !deletes.is_empty())
-                .then_some(key)
-        })
-        .collect()
-}
-
 /// §7.4.1 persisted local schema-version marker (`_syncular_meta` key).
 pub(crate) const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
 const LOCAL_REVISION_KEY: &str = "localRevision";
+/// §4.5 replica cursor; absent means `-1`.
+const REPLICA_CURSOR_KEY: &str = "replicaCursor";
+/// Hex of the last pull `LIVE_END.echoDigest` (§4.2); absent means empty.
+const ECHO_DIGEST_KEY: &str = "echoDigest";
+/// Hex of the registration digest of the list the server stores (§4.1).
+const REGISTERED_DIGEST_KEY: &str = "registrationDigest";
+/// §7.1: the identity of the outbox sequence.
+const OUTBOX_ID_KEY: &str = "outboxId";
 const CLIENT_ID_KEY: &str = "clientId";
 const LEASE_STATE_KEY: &str = "leaseState";
 const SCHEMA_FLOOR_KEY: &str = "schemaFloor";
@@ -242,79 +171,22 @@ fn decode_local_rebootstrap_receipt(value: &str) -> Result<(usize, usize), Strin
     ))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubState {
-    Active,
-    Revoked,
-    Failed,
-}
-
 #[cfg(test)]
 mod observation_tests;
-
-impl SubState {
-    fn name(self) -> &'static str {
-        match self {
-            SubState::Active => "active",
-            SubState::Revoked => "revoked",
-            SubState::Failed => "failed",
-        }
-    }
-
-    fn parse(value: &str) -> Self {
-        match value {
-            "revoked" => Self::Revoked,
-            "failed" => Self::Failed,
-            _ => Self::Active,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Subscription {
-    id: String,
-    table: String,
-    requested: Vec<(String, Vec<String>)>,
-    params: Option<String>,
-    cursor: i64,
-    /// §4.7 resume token, round-tripped opaquely.
-    bootstrap_state: Option<String>,
-    state: SubState,
-    reason_code: Option<String>,
-    /// Last effective scopes echoed while active (§3.3: persisted for the
-    /// purge contract; each active echo replaces it).
-    effective: Option<Vec<(String, Vec<String>)>>,
-    synced_once: bool,
-}
-
-impl Subscription {
-    /// §8.2: a delta section applies only to a locally active subscription
-    /// that holds a cursor and no resume token. A subscription at cursor -1
-    /// (never synced, reset, or rebootstrapped) bootstraps on its own pull.
-    fn takes_delta(&self) -> bool {
-        self.state == SubState::Active
-            && self.cursor >= 0
-            && self.bootstrap_state.is_none()
-            && self.synced_once
-    }
-}
 
 /// Internal state for hosts that perform network I/O outside the client owner.
 #[doc(hidden)]
 pub struct CurrentBasePreparation {
     client_commit_id: String,
     sequence: i64,
-    subscriptions: Vec<Subscription>,
+    units: Vec<UnitRecord>,
     transport_epoch: u64,
-    subscription_epoch: u64,
+    registration_epoch: u64,
     security_epoch: u64,
 }
 
 #[cfg(test)]
-mod row_ownership_tests;
-
-#[cfg(test)]
-mod subscription_rearm_tests;
+mod units_tests;
 
 #[derive(Debug, Clone)]
 struct OutboxOp {
@@ -423,8 +295,17 @@ impl StoredCommitOutcomeRow {
     }
 }
 
-/// Section outcome distinguishing the §5.6 subscription-local fail-closed
+/// Section outcome distinguishing the §5.6 unit-local fail-closed
 /// path from a round-aborting failure (§1.4 rule 5).
+/// §4.4 a unit section's `SUB_START`.
+struct SectionStart {
+    id: String,
+    status: SubStatus,
+    reason_code: String,
+    bootstrap: bool,
+    fenced: Vec<FencedRecord>,
+}
+
 enum SectionError {
     FailClosed,
     Abort(String, String),
@@ -434,9 +315,9 @@ enum SectionError {
 #[derive(Debug)]
 pub(crate) struct RequestMeta {
     pushed_ids: Vec<String>,
-    /// Subscription id → the request carried `cursor < 0` and no resume
-    /// token (§5.6 first-page detection: a *fresh* bootstrap).
-    fresh: Vec<(String, bool)>,
+    /// Hex of the registration digest this pull carried; the server stores
+    /// that list once the round completes (§4.1).
+    registration_digest: String,
     pub(crate) accept: u8,
     /// §6.1 splitBatch: outbox commits held back from THIS request because
     /// the running operation count reached the push cap — the next round
@@ -448,7 +329,7 @@ pub(crate) struct RequestMeta {
 struct ChangeAccumulator {
     /// None means table-wide; Some is the exact scoped domain.
     tables: BTreeMap<String, Option<BTreeSet<String>>>,
-    windows: BTreeMap<(String, String), BTreeSet<String>>,
+    windows: BTreeMap<String, BTreeSet<String>>,
     status: bool,
     conflicts: bool,
     rejections: bool,
@@ -473,11 +354,11 @@ impl ChangeAccumulator {
         }
     }
 
-    fn window(&mut self, base_key: &str, table: &str, unit: &str) {
+    fn window(&mut self, base_key: &str, value: &str) {
         self.windows
-            .entry((base_key.to_owned(), table.to_owned()))
+            .entry(base_key.to_owned())
             .or_default()
-            .insert(unit.to_owned());
+            .insert(value.to_owned());
     }
 
     fn touched(&self) -> bool {
@@ -560,7 +441,6 @@ impl<T> From<T> for Shared<T> {
 /// transaction, so their lengths suffice.
 #[derive(Debug, Clone)]
 struct Rollback {
-    subs: Shared<Vec<Subscription>>,
     outbox: Shared<Vec<Arc<OutboxCommit>>>,
     failed_commits: Shared<Vec<FailedCommit>>,
     conflicts: Shared<Vec<ConflictRecord>>,
@@ -584,7 +464,6 @@ pub struct SyncClient {
     schema: ClientSchema,
     client_id: String,
     limits: ClientLimits,
-    subs: Shared<Vec<Subscription>>,
     outbox: Shared<Vec<Arc<OutboxCommit>>>,
     failed_commits: Shared<Vec<FailedCommit>>,
     retain_failed_commits: bool,
@@ -620,7 +499,9 @@ pub struct SyncClient {
     security_epoch: u64,
     transport_enabled: bool,
     transport_epoch: u64,
-    subscription_epoch: u64,
+    /// Raised by every registration change; a current-base proof spanning
+    /// one reports missing coverage.
+    registration_epoch: u64,
     /// RFC 0005 D2/D8: the previous-version capture config. `None` (default)
     /// means the feature is off; the descriptor write and the container orphan
     /// sweep still happen.
@@ -652,7 +533,7 @@ pub struct SyncClient {
     sync_intent_queue: VecDeque<SyncIntent>,
     /// Explicit exponential retry policy for transient transport failures.
     retry_delay_ms: u64,
-    /// §7.6: the background retry the current round scheduled, if any.
+    /// §7.7: the background retry the current round scheduled, if any.
     round_retry_delay_ms: Option<u64>,
     /// A round whose response never completed (§1.5): the client keeps its
     /// code and reports it on every following request until a round receives a
@@ -734,8 +615,7 @@ fn row_id_predicate(table: &TableSchema) -> String {
 
 /// §3.3/§4.8/§5.6 row ownership: rows whose local scope columns match
 /// `effective` and that no entry of `owners` matches. `owners` holds the
-/// effective scopes of every other active subscription on the table that
-/// holds rows; a scoped delete never removes a row one of them still covers.
+/// pair scopes of every owner of the table (§3.3 row ownership); a scoped delete never removes a row one of them still covers.
 /// Scope values bind by the column's declared type, as `row_id_predicate`
 /// does. `Ok(None)` matches nothing (an empty map or value list); `Err(())`
 /// is a missing local scope-column mapping (the fail-closed case).
@@ -814,37 +694,218 @@ fn base_table(name: &str) -> String {
     quote_ident(&format!("_syncular_base_{name}"))
 }
 
-/// §4.8: a stable, server-opaque key for a window base — table + variable +
-/// canonical fixed scopes. Two `set_window` calls with the same base
-/// address the same registry rows.
-/// §4.8 deferred eviction record: (sub id, table, effective scope map).
+/// §4.8 deferred eviction record: (unit id, table, effective scope map).
 type PendingEvict = (String, String, Vec<(String, Vec<String>)>);
 
+/// §4.8: a stable key for a window base: variable + canonical fixed scopes.
 fn window_base_key(base: &WindowBase) -> String {
     format!(
-        "{}\0{}\0{}",
-        base.table,
+        "{}\0{}",
         base.variable,
-        canonical_scope_json(&base.fixed_scopes)
+        ssp2::registration::canonical_unit_json(&scope_pairs(&base.fixed_scopes))
     )
 }
 
-/// §4.8: the full requested scope map for one unit (fixed scopes + unit).
-fn unit_scopes(base: &WindowBase, unit: &str) -> Vec<(String, Vec<String>)> {
+/// The unit of one window value: the fixed scopes plus the value.
+fn window_unit_scopes(base: &WindowBase, value: &str) -> UnitScopes {
     let mut scopes = base.fixed_scopes.clone();
-    scopes.retain(|(k, _)| k != &base.variable);
-    scopes.push((base.variable.clone(), vec![unit.to_owned()]));
+    scopes.insert(base.variable.clone(), value.to_owned());
     scopes
 }
 
-/// §4.1 guidance: `w:<table>:<sha256(canonical scope map)[0..16]>`. Ids are
-/// echoed not interpreted by the server, so the exact hash is client
-/// convention; SHA-256 matches the SPEC's worked example.
-fn derive_sub_id(base: &WindowBase, unit: &str) -> String {
-    let canonical = canonical_scope_json(&unit_scopes(base, unit));
-    let digest = Sha256::digest(canonical.as_bytes());
-    let hex = bytes_to_hex(&digest);
-    format!("w:{}:{}", base.table, &hex[..16])
+/// A unit's scope map as the codec and the digests take it.
+fn scope_pairs(scopes: &UnitScopes) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = scopes
+        .iter()
+        .map(|(variable, value)| (variable.clone(), value.clone()))
+        .collect();
+    pairs.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+    pairs
+}
+
+/// §4.1: the unit covers every table declaring all of its variables.
+fn covers(table: &TableSchema, scopes: &UnitScopes) -> bool {
+    scopes
+        .keys()
+        .all(|variable| table.scope_column(variable).is_some())
+}
+
+/// §4.4: the effective scopes of the (unit, table) pair under `echo`: the
+/// scope map as one-element lists plus the fenced lists. `None` when the
+/// fence revoked the pair.
+fn pair_scopes(
+    scopes: &UnitScopes,
+    table: &str,
+    echo: Option<&[EchoRecord]>,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let fenced = echo.and_then(|echo| echo.iter().find(|record| record.table == table));
+    if fenced.is_some_and(|record| record.status == "revoked") {
+        return None;
+    }
+    let mut effective: BTreeMap<String, Vec<String>> = fenced
+        .map(|record| record.scopes.clone())
+        .unwrap_or_default();
+    for (variable, value) in scopes {
+        effective.insert(variable.clone(), vec![value.clone()]);
+    }
+    Some(effective.into_iter().collect())
+}
+
+/// §3.3 row ownership: the pair scopes of every owner of `table` except
+/// `except_id`. An owner is active with a persisted echo and live or
+/// post-bootstrap, or bootstrapping with a segment of the table in its
+/// current bootstrap.
+fn unit_owners(
+    units: &[UnitRecord],
+    table: &TableSchema,
+    except_id: &str,
+) -> Vec<Vec<(String, Vec<String>)>> {
+    units
+        .iter()
+        .filter(|unit| {
+            unit.id != except_id
+                && unit.status == UnitStatus::Active
+                && unit.echo.is_some()
+                && (!unit.bootstrapping() || unit.seeded.contains(&table.name))
+                && covers(table, &unit.scopes)
+        })
+        .filter_map(|unit| pair_scopes(&unit.scopes, &table.name, unit.echo.as_deref()))
+        .collect()
+}
+
+/// §5.5 / §5.6: the unit's scope map, each value a one-element list.
+fn unit_scope_lists(scopes: &UnitScopes) -> Vec<(String, Vec<String>)> {
+    scopes
+        .iter()
+        .map(|(variable, value)| (variable.clone(), vec![value.clone()]))
+        .collect()
+}
+
+/// §7.1 acknowledged intent of the rows `?1` names (`[[table, id], ...]`).
+/// It joins through the (tbl, id) index: a scan per acknowledgement would
+/// make draining a batch quadratic.
+const ACKED_ROWS_BY_ROW: &str = "SELECT a.op_json,a.intent_json FROM json_each(?1) k JOIN _syncular_acked_rows a ON a.tbl=json_extract(k.value,'$[0]') AND a.id=json_extract(k.value,'$[1]') WHERE ?2 IS NULL OR a.tbl IN(SELECT value FROM json_each(?2)) ORDER BY a.commit_seq,a.idx";
+
+const UNIT_COLUMNS: &str =
+    "id, scopes, explicit, status, reason_code, cursor, bootstrap_state, seeded, echo";
+
+/// A unit row; a field that does not parse is a conversion failure, which
+/// both read paths classify as `sync.local_corrupt`.
+fn unit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnitRecord> {
+    fn json<T: serde::de::DeserializeOwned>(index: usize, raw: &str) -> rusqlite::Result<T> {
+        serde_json::from_str(raw).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                index,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    }
+    Ok(UnitRecord {
+        id: row.get(0)?,
+        scopes: json(1, &row.get::<_, String>(1)?)?,
+        explicit: row.get::<_, i64>(2)? == 1,
+        status: json(
+            3,
+            &serde_json::to_string(&row.get::<_, String>(3)?).expect("text"),
+        )?,
+        reason_code: row.get(4)?,
+        cursor: row.get(5)?,
+        bootstrap_state: row.get(6)?,
+        seeded: json(7, &row.get::<_, String>(7)?)?,
+        echo: row
+            .get::<_, Option<String>>(8)?
+            .map(|echo| json::<Vec<EchoRecord>>(8, &echo))
+            .transpose()?
+            .map(|echo| {
+                if echo
+                    .iter()
+                    .all(|record| record.status == "active" || record.status == "revoked")
+                {
+                    Ok(echo)
+                } else {
+                    Err(rusqlite::Error::FromSqlConversionFailure(
+                        8,
+                        rusqlite::types::Type::Text,
+                        "echo status is neither active nor revoked".into(),
+                    ))
+                }
+            })
+            .transpose()?,
+    })
+}
+
+/// Every unit in registration order (§4.1).
+fn load_units(conn: &Connection) -> rusqlite::Result<Vec<UnitRecord>> {
+    conn.prepare_cached(&format!(
+        "SELECT {UNIT_COLUMNS} FROM _syncular_units ORDER BY rowid"
+    ))?
+    .query_map([], unit_from_row)?
+    .collect()
+}
+
+fn get_unit(conn: &Connection, id: &str) -> rusqlite::Result<Option<UnitRecord>> {
+    conn.query_row(
+        &format!("SELECT {UNIT_COLUMNS} FROM _syncular_units WHERE id = ?1"),
+        [id],
+        unit_from_row,
+    )
+    .optional()
+}
+
+/// Insert or update in place: an update keeps the registration order.
+fn save_unit(conn: &Connection, unit: &UnitRecord) -> rusqlite::Result<()> {
+    conn.prepare_cached(&format!(
+        "INSERT INTO _syncular_units({UNIT_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(id) DO UPDATE SET explicit=excluded.explicit, status=excluded.status,
+           reason_code=excluded.reason_code, cursor=excluded.cursor,
+           bootstrap_state=excluded.bootstrap_state, seeded=excluded.seeded, echo=excluded.echo"
+    ))?
+    .execute(rusqlite::params![
+        unit.id,
+        serde_json::to_string(&unit.scopes).expect("scope map serializes"),
+        i64::from(unit.explicit),
+        unit.status.name(),
+        unit.reason_code,
+        unit.cursor,
+        unit.bootstrap_state,
+        serde_json::to_string(&unit.seeded).expect("table list serializes"),
+        unit.echo
+            .as_ref()
+            .map(|echo| serde_json::to_string(echo).expect("echo serializes")),
+    ])
+    .map(|_| ())
+}
+
+/// §4.1 references: every window registry entry `(base, value)` holding a unit.
+fn window_refs(conn: &Connection, unit_id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    conn.prepare_cached("SELECT base, unit FROM _syncular_windows WHERE sub_id = ?1")?
+        .query_map([unit_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+
+/// §7.4.3 reset, §2.1 log reset and local rebootstrap: keep the unit
+/// registrations and discard every synced state, so the next round sends the
+/// list and fresh-bootstraps every unit. The caller owns the transaction.
+fn reset_units(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "UPDATE _syncular_units SET status='active', reason_code=NULL, cursor=-1,
+           bootstrap_state=NULL, seeded='[]', echo=NULL;
+         DELETE FROM _syncular_meta WHERE key IN ('replicaCursor','echoDigest','registrationDigest');",
+    )
+}
+
+/// §4.5: the replica cursor, `-1` while no unit is live.
+fn replica_cursor(conn: &Connection) -> rusqlite::Result<i64> {
+    meta_get(conn, REPLICA_CURSOR_KEY)?.map_or(Ok(-1), |raw| {
+        raw.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    })
 }
 
 fn visible_table(name: &str) -> String {
@@ -862,7 +923,7 @@ fn is_synced_table_name(name: &str) -> bool {
     if name.starts_with("_syncular_base_") {
         return true; // the base half of a synced table pair
     }
-    // Bookkeeping: outbox, subscriptions, meta, blob cache/uploads.
+    // Bookkeeping: outbox, units, meta, blob cache/uploads.
     !name.starts_with("_syncular_")
 }
 
@@ -1096,28 +1157,28 @@ fn persisted_window_state(
     base: &WindowBase,
 ) -> Result<WindowState, QueryReadFailure> {
     let mut stmt = conn.prepare(
-        "SELECT windows.unit, subscriptions.state_json
+        "SELECT windows.unit, units.status, units.cursor, units.bootstrap_state
            FROM _syncular_windows AS windows
-           JOIN _syncular_subscriptions AS subscriptions
-             ON subscriptions.id = windows.sub_id
+           LEFT JOIN _syncular_units AS units ON units.id = windows.sub_id
           WHERE windows.base = ?1
           ORDER BY windows.unit ASC",
     )?;
     let rows = stmt.query_map(rusqlite::params![window_base_key(base)], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
     })?;
     let mut units = Vec::new();
     let mut pending = Vec::new();
     for row in rows {
-        let (unit, raw) = row?;
-        let state: Value = serde_json::from_str(&raw)
-            .map_err(|error| format!("invalid persisted window subscription: {error}"))?;
-        let is_pending = state.get("status").and_then(Value::as_str) != Some("active")
-            || state.get("cursor").and_then(Value::as_i64).unwrap_or(-1) < 0
-            || state
-                .get("bootstrapState")
-                .is_some_and(|value| !value.is_null());
-        if is_pending {
+        let (unit, status, cursor, bootstrap_state) = row?;
+        // §4.8: complete iff registered, active and not bootstrapping.
+        if status.as_deref() != Some("active")
+            || cursor.is_some_and(|cursor| cursor < 0 || bootstrap_state.is_some())
+        {
             pending.push(unit.clone());
         }
         units.push(unit);
@@ -1132,14 +1193,14 @@ pub struct SnapshotStatement<'a> {
     pub params: &'a [Value],
 }
 
-/// A §7.5 atomic read request: read-only statements, window coverage,
-/// subscription catch-up states, and commit deliveries, all resolved from one
-/// SQLite read transaction and one revision.
+/// A §7.5 atomic read request: read-only statements, window coverage, unit
+/// catch-up states, and commit deliveries, all resolved from one SQLite read
+/// transaction and one revision.
 #[derive(Debug, Clone, Default)]
 pub struct SnapshotReadRequest<'a> {
     pub statements: Vec<SnapshotStatement<'a>>,
     pub coverage: &'a [WindowCoverage],
-    pub subscriptions: Vec<String>,
+    pub units: Vec<String>,
     pub commit_ids: Vec<String>,
 }
 
@@ -1230,66 +1291,41 @@ fn snapshot_read_connection(
                 }
             }
         }
-        let mut subscriptions = Vec::with_capacity(request.subscriptions.len());
-        for id in &request.subscriptions {
-            let row: Option<(String, String)> = conn
-                .query_row(
-                    "SELECT tbl, state_json FROM _syncular_subscriptions WHERE id = ?1",
-                    rusqlite::params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(|error| {
-                    stored_failure(error, "persisted subscription state is invalid")
-                })?;
-            let Some((table, raw)) = row else {
-                subscriptions.push(SubscriptionCatchup::Unknown { id: id.clone() });
+        let mut units = Vec::with_capacity(request.units.len());
+        for id in &request.units {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM _syncular_units WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                units.push(UnitCatchup::Unknown { id: id.clone() });
                 continue;
-            };
+            }
             // Every persisted field is required to be well typed; a corrupt
             // record fails typed instead of inventing a state.
-            let state: Value = serde_json::from_str(&raw)
-                .map_err(|_| corrupt("persisted subscription state is invalid"))?;
-            let status = match state.get("status").and_then(Value::as_str) {
-                Some(value @ ("active" | "revoked" | "failed")) => value,
-                _ => return Err(corrupt("persisted subscription state is invalid")),
-            };
-            let Some(cursor) = state.get("cursor").and_then(Value::as_i64) else {
-                return Err(corrupt("persisted subscription state is invalid"));
+            let unit = get_unit(conn, id)
+                .map_err(|error| stored_failure(error, "persisted unit state is invalid"))?
+                .ok_or_else(|| corrupt("persisted unit state is invalid"))?;
+            let cursor = match unit.cursor {
+                Some(cursor) => cursor,
+                None => replica_cursor(conn)
+                    .map_err(|error| stored_failure(error, "persisted unit state is invalid"))?,
             };
             if cursor.unsigned_abs() > MAX_JS_SAFE_INTEGER {
-                return Err(corrupt("persisted subscription state is invalid"));
+                return Err(corrupt("persisted unit state is invalid"));
             }
-            let effective_scopes = state
-                .get("effectiveScopes")
-                .filter(|value| !value.is_null());
-            if let Some(scopes) = effective_scopes {
-                json_to_scope_map(scopes)
-                    .map_err(|_| corrupt("persisted subscription state is invalid"))?;
-            }
-            let has_resume_token = match state.get("bootstrapState") {
-                None | Some(Value::Null) => false,
-                Some(Value::String(_)) => true,
-                Some(_) => return Err(corrupt("persisted subscription state is invalid")),
-            };
-            // A present reasonCode must be a string; a non-string value is a
-            // corrupt record, never silently dropped.
-            let reason_code = match state.get("reasonCode") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(value)) => Some(value.clone()),
-                Some(_) => return Err(corrupt("persisted subscription state is invalid")),
-            };
-            let active = status == "active";
-            subscriptions.push(SubscriptionCatchup::Known {
+            let active = unit.status == UnitStatus::Active;
+            let pending = unit.bootstrapping();
+            units.push(UnitCatchup::Known {
                 id: id.clone(),
-                table,
-                status: status.to_owned(),
+                status: unit.status,
+                live: unit.cursor.is_none(),
                 cursor,
-                has_resume_token,
-                bootstrap_complete: active && cursor >= 0 && !has_resume_token,
-                known_pending_pages: active && (has_resume_token || cursor < 0),
-                effective_scopes: effective_scopes.cloned(),
-                reason_code,
+                has_resume_token: unit.bootstrap_state.is_some(),
+                bootstrap_complete: active && !pending,
+                known_pending_pages: active && pending,
+                reason_code: unit.reason_code,
             });
         }
         let mut deliveries = Vec::with_capacity(request.commit_ids.len());
@@ -1334,7 +1370,7 @@ fn snapshot_read_connection(
                 pending,
                 missing,
             },
-            subscriptions,
+            units,
             deliveries,
         })
     })();
@@ -1365,7 +1401,7 @@ fn snapshot_connection(
         &SnapshotReadRequest {
             statements: vec![SnapshotStatement { sql, params }],
             coverage,
-            subscriptions: Vec::new(),
+            units: Vec::new(),
             commit_ids: Vec::new(),
         },
     )?;
@@ -1431,17 +1467,14 @@ impl FileQuerySnapshotReader {
             .revision)
     }
 
-    /// One subscription's persisted catch-up state (see the §7.5 contract).
-    pub fn subscription_catchup(
-        &mut self,
-        id: &str,
-    ) -> Result<SubscriptionCatchup, QueryReadFailure> {
+    /// One unit's persisted catch-up state (see the §7.5 contract).
+    pub fn unit_catchup(&mut self, id: &str) -> Result<UnitCatchup, QueryReadFailure> {
         let read = self.snapshot_read(&SnapshotReadRequest {
-            subscriptions: vec![id.to_owned()],
+            units: vec![id.to_owned()],
             ..Default::default()
         })?;
         Ok(read
-            .subscriptions
+            .units
             .into_iter()
             .next()
             .expect("one requested catch-up"))
@@ -1847,7 +1880,6 @@ impl SyncClient {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             limits,
-            subs: Shared::default(),
             outbox: Shared::default(),
             failed_commits: Shared::default(),
             retain_failed_commits: false,
@@ -1869,7 +1901,7 @@ impl SyncClient {
             security_epoch: 0,
             transport_enabled: true,
             transport_epoch: 0,
-            subscription_epoch: 0,
+            registration_epoch: 0,
             previous_version,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: OverlayDirty::clean(),
@@ -1932,7 +1964,7 @@ impl SyncClient {
                 None => {
                     client.create_synced_tables()?;
                     client.persist_schema_version()?;
-                    client.save_subscription_scope_schema()?;
+                    client.save_unit_scope_schema()?;
                 }
                 Some(version) if version == client.schema.version => {
                     client.create_synced_tables()?;
@@ -1941,7 +1973,7 @@ impl SyncClient {
                     // NEXT bump can capture without needing a schema bump first.
                     set_local_schema_descriptor(&client.conn, &client.schema)
                         .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
-                    client.save_subscription_scope_schema()?;
+                    client.save_unit_scope_schema()?;
                 }
                 Some(_) => client.run_schema_reset()?,
             }
@@ -1952,7 +1984,7 @@ impl SyncClient {
             // it before anything can read it. No-op when no container exists.
             client.reconcile_previous_version_at_boot()?;
             client.clear_satisfied_persisted_schema_floor()?;
-            client.prune_unknown_subscriptions(false)?;
+            client.prune_unknown_units(false)?;
             // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
             // the full startup/reset reconciliation boundary, inside this open
             // transaction and after the schema and identity guards, so a commit
@@ -1973,7 +2005,7 @@ impl SyncClient {
                 client.overlay_dirty.set(true);
                 client.rebuild_overlay()?;
             }
-            // Every persisted active subscription needs one catch-up pull on
+            // Every persisted active unit needs one catch-up pull on
             // open: realtime only covers changes after connection, while an
             // idempotent setWindow correctly creates no fresh command effect.
             // Pending outbox work has the same restart requirement. The core
@@ -2106,7 +2138,17 @@ impl SyncClient {
     }
 
     fn create_bookkeeping_tables(&self) -> Result<(), String> {
-        // Durable client bookkeeping (outbox + subscription + meta).
+        let exists = |name: &str| {
+            self.conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [name],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+        };
+        let outbox_existed = exists("_syncular_outbox")?;
+        // Durable client bookkeeping (outbox + units + meta).
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS _syncular_outbox (
@@ -2136,16 +2178,20 @@ impl SyncClient {
                    replacement_client_commit_id TEXT);
                  CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq
                    ON _syncular_commit_outcomes(resolution, seq);
-                 CREATE TABLE IF NOT EXISTS _syncular_subscriptions (
-                   id TEXT PRIMARY KEY, tbl TEXT NOT NULL, state_json TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS _syncular_units (
+                   id TEXT PRIMARY KEY, scopes TEXT NOT NULL,
+                   explicit INTEGER NOT NULL DEFAULT 0,
+                   status TEXT NOT NULL DEFAULT 'active', reason_code TEXT,
+                   cursor INTEGER DEFAULT -1, bootstrap_state TEXT,
+                   seeded TEXT NOT NULL DEFAULT '[]', echo TEXT);
                  CREATE TABLE IF NOT EXISTS _syncular_meta (
                    key TEXT PRIMARY KEY, value TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS _syncular_windows (
                    base TEXT NOT NULL, unit TEXT NOT NULL, sub_id TEXT NOT NULL,
                    PRIMARY KEY (base, unit));
-                 CREATE TABLE IF NOT EXISTS _syncular_window_pending_evict (
-                   sub_id TEXT PRIMARY KEY, tbl TEXT NOT NULL,
-                   effective_scopes TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS _syncular_pending_evictions (
+                   unit_id TEXT NOT NULL, tbl TEXT NOT NULL,
+                   effective_scopes TEXT NOT NULL, PRIMARY KEY (unit_id, tbl));
                  CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(
                    commit_id TEXT NOT NULL, blob_id TEXT NOT NULL,
                    PRIMARY KEY(commit_id, blob_id));
@@ -2161,18 +2207,51 @@ impl SyncClient {
         if self.get_meta(LOCAL_REVISION_KEY)?.is_none() {
             self.set_meta(LOCAL_REVISION_KEY, "0")?;
         }
+        // §7.1: `outboxId` names the outbox sequence. A new outbox table starts
+        // a new sequence, so it replaces the id in the same transaction.
+        if !outbox_existed || self.get_meta(OUTBOX_ID_KEY)?.is_none() {
+            self.set_meta(OUTBOX_ID_KEY, &uuid::Uuid::new_v4().to_string())?;
+        }
+        // §9: a replica written under wire version 3 keeps its outbox, journal,
+        // rows and pending evictions and registers its units fresh. Its
+        // subscriptions, cursors, echoes, resume tokens and window entries go;
+        // units left from an earlier version 4 life restart.
+        if exists("_syncular_window_pending_evict")? {
+            let invalid: bool = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM _syncular_window_pending_evict
+                       WHERE NOT json_valid(effective_scopes)
+                          OR json_type(effective_scopes) <> 'object'
+                          OR EXISTS(SELECT 1 FROM json_each(effective_scopes)
+                               WHERE type <> 'array'
+                                  OR EXISTS(SELECT 1 FROM json_each(value) AS v
+                                       WHERE v.type <> 'text')))",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            if invalid {
+                return Err(
+                    "sync.local_corrupt: a version 3 pending eviction cannot be upgraded"
+                        .to_owned(),
+                );
+            }
+            self.conn
+                .execute_batch(
+                    "INSERT OR REPLACE INTO _syncular_pending_evictions
+                       SELECT sub_id, tbl, effective_scopes FROM _syncular_window_pending_evict;
+                     DROP TABLE _syncular_window_pending_evict;
+                     DROP TABLE IF EXISTS _syncular_subscriptions;
+                     DELETE FROM _syncular_windows;",
+                )
+                .and_then(|()| reset_units(&self.conn))
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        }
         // §5.9.7 blob cache. Mutable upload state stays off the body row so
         // completing a large upload does not rewrite its BLOB record.
         if self.schema_has_blobs() {
-            let exists = self
-                .conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_syncular_blobs')",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(|e| e.to_string())?;
-            if exists {
+            if exists("_syncular_blobs")? {
                 let mut statement = self
                     .conn
                     .prepare("PRAGMA table_info(_syncular_blobs)")
@@ -2306,66 +2385,6 @@ impl SyncClient {
     }
 
     fn restore_persisted_state(&mut self) -> Result<(), String> {
-        self.subs = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id, tbl, state_json FROM _syncular_subscriptions ORDER BY id ASC")
-                .map_err(|error| error.to_string())?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })
-                .map_err(|error| error.to_string())?;
-            let mut subscriptions = Vec::new();
-            for row in rows {
-                let (id, table, raw) = row.map_err(|error| error.to_string())?;
-                let state: Value = serde_json::from_str(&raw)
-                    .map_err(|error| format!("invalid persisted subscription {id:?}: {error}"))?;
-                let requested = json_to_scope_map(
-                    state.get("requested").unwrap_or(&Value::Object(Map::new())),
-                )?;
-                let effective = state
-                    .get("effectiveScopes")
-                    .filter(|value| !value.is_null())
-                    .map(json_to_scope_map)
-                    .transpose()?;
-                subscriptions.push(Subscription {
-                    id,
-                    table,
-                    requested,
-                    params: state
-                        .get("params")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    cursor: state.get("cursor").and_then(Value::as_i64).unwrap_or(-1),
-                    bootstrap_state: state
-                        .get("bootstrapState")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    state: SubState::parse(
-                        state
-                            .get("status")
-                            .and_then(Value::as_str)
-                            .unwrap_or("active"),
-                    ),
-                    reason_code: state
-                        .get("reasonCode")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    effective,
-                    synced_once: state
-                        .get("syncedOnce")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                });
-            }
-            subscriptions.into()
-        };
-
         self.outbox = self.load_outbox()?.into();
 
         self.prune_commit_outcomes()?;
@@ -2411,7 +2430,7 @@ impl SyncClient {
         Ok(())
     }
 
-    fn save_subscription_scope_schema(&self) -> Result<(), String> {
+    fn save_unit_scope_schema(&self) -> Result<(), String> {
         let declarations: BTreeMap<_, BTreeMap<_, _>> = self
             .schema
             .tables
@@ -2438,84 +2457,90 @@ impl SyncClient {
         )
     }
 
-    /// Remove registrations with incompatible table/key/prefix/column meaning.
-    fn prune_unknown_subscriptions(&mut self, bump: bool) -> Result<(), String> {
+    /// Drop units that cover no table of the running schema, with their window
+    /// registry rows and pending evictions; never translate scopes. At a bump
+    /// (§7.4.3) a unit also needs every variable unchanged in prefix and column
+    /// on every table it covered before.
+    fn prune_unknown_units(&mut self, bump: bool) -> Result<(), String> {
         let previous: Option<BTreeMap<String, BTreeMap<String, [String; 2]>>> = if bump {
             self.get_meta("subscriptionScopeSchema")?
                 .map(|raw| serde_json::from_str(&raw))
                 .transpose()
-                .map_err(|error| format!("invalid persisted scope schema: {error}"))?
+                .map_err(|_| "sync.local_corrupt: invalid persisted scope schema".to_owned())?
         } else {
             None
         };
-        let compatible = |table_name: &str, requested: &[(String, Vec<String>)]| {
-            let Some(table) = self.schema.table(table_name) else {
+        // A table keeps the variables' meaning when each has the same prefix
+        // and column as before. An old binary stored no declaration evidence;
+        // matching names cannot prove unchanged meaning, so the app registers
+        // again.
+        let unchanged = |name: &str, variables: &[&String]| {
+            let (Some(old), Some(table)) = (
+                previous.as_ref().and_then(|previous| previous.get(name)),
+                self.schema.table(name),
+            ) else {
                 return false;
             };
-            if requested
-                .iter()
-                .any(|(variable, _)| table.scope_column(variable).is_none())
-            {
+            variables.iter().all(|variable| {
+                table
+                    .scope_variables
+                    .iter()
+                    .find(|scope| &scope.variable == *variable)
+                    .is_some_and(|scope| {
+                        old.get(*variable) == Some(&[scope.prefix.clone(), scope.column.clone()])
+                    })
+            })
+        };
+        let compatible = |scopes: &UnitScopes| {
+            if !self.schema.tables.iter().any(|table| covers(table, scopes)) {
                 return false;
             }
             if !bump {
                 return true;
             }
-            let Some(old) = previous.as_ref().and_then(|tables| tables.get(table_name)) else {
+            let Some(previous) = &previous else {
                 return false;
             };
-            let variables: BTreeSet<_> = if requested.is_empty() {
-                old.keys()
-                    .cloned()
-                    .chain(
-                        table
-                            .scope_variables
-                            .iter()
-                            .map(|scope| scope.variable.clone()),
-                    )
-                    .collect()
-            } else {
-                requested
-                    .iter()
-                    .map(|(variable, _)| variable.clone())
-                    .collect()
-            };
-            variables.iter().all(|variable| {
-                let current = table
-                    .scope_variables
-                    .iter()
-                    .find(|scope| &scope.variable == variable);
-                match (old.get(variable), current) {
-                    (Some(old), Some(current)) => {
-                        old == &[current.prefix.clone(), current.column.clone()]
-                    }
-                    _ => false,
-                }
+            previous.iter().all(|(name, old)| {
+                !scopes.keys().all(|variable| old.contains_key(variable))
+                    || unchanged(name, &scopes.keys().collect::<Vec<_>>())
             })
         };
-        let mut stale_ids: BTreeSet<_> = self
-            .subs
-            .iter()
-            .filter(|sub| !compatible(&sub.table, &sub.requested))
-            .map(|sub| sub.id.clone())
+        let mut stale: BTreeSet<String> = self
+            .stored(load_units(&self.conn))?
+            .into_iter()
+            .filter(|unit| !compatible(&unit.scopes))
+            .map(|unit| unit.id)
             .collect();
+        // A shrunk window's deferred eviction outlives its unit row and keeps
+        // its per-table scopes. A table the schema no longer has cannot be
+        // evicted, and at a bump a table whose scope declarations changed must
+        // not be evicted by the outdated rule.
         for (id, table, effective) in self.load_pending_evictions()? {
-            if !compatible(&table, &effective) {
-                stale_ids.insert(id);
+            if self.schema.table(&table).is_none()
+                || (bump
+                    && !unchanged(
+                        &table,
+                        &effective
+                            .iter()
+                            .map(|(variable, _)| variable)
+                            .collect::<Vec<_>>(),
+                    ))
+            {
+                stale.insert(id);
             }
         }
-        for id in &stale_ids {
+        for id in &stale {
             for sql in [
                 "DELETE FROM _syncular_windows WHERE sub_id = ?1",
-                "DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?1",
-                "DELETE FROM _syncular_subscriptions WHERE id = ?1",
+                "DELETE FROM _syncular_pending_evictions WHERE unit_id = ?1",
+                "DELETE FROM _syncular_units WHERE id = ?1",
             ] {
                 self.conn
                     .execute(sql, rusqlite::params![id])
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
         }
-        self.subs.retain(|sub| !stale_ids.contains(&sub.id));
         Ok(())
     }
 
@@ -2596,8 +2621,11 @@ impl SyncClient {
             self.previous_version.as_ref(),
             PreviousVersionLifecycle {
                 lease_inactive: self.previous_version_lease_inactive(now_ms),
-                scope_revoked: self.subs.iter().any(|sub| sub.state == SubState::Revoked),
-                coverage_complete: self.previous_version_coverage_complete(),
+                scope_revoked: self
+                    .stored(load_units(&self.conn))?
+                    .iter()
+                    .any(|unit| unit.status == UnitStatus::Revoked),
+                coverage_complete: self.previous_version_coverage_complete()?,
             },
             now_ms,
             self.schema.version,
@@ -2645,21 +2673,16 @@ impl SyncClient {
         lease.expires_at_ms.is_some_and(|expires| expires <= now_ms)
     }
 
-    /// RFC 0005 D7: §7.4.5 replacement coverage — every ACTIVE subscription
-    /// has `cursor >= 0` and no resume token. An empty active set is not
-    /// completion (mirrors the TS predicate exactly).
-    fn previous_version_coverage_complete(&self) -> bool {
-        let active = self
-            .subs
+    /// RFC 0005 D7: §7.4.5 replacement coverage — no active unit is
+    /// bootstrapping. An empty active set is not completion (mirrors the TS
+    /// predicate exactly).
+    fn previous_version_coverage_complete(&self) -> Result<bool, String> {
+        let units = self.stored(load_units(&self.conn))?;
+        let mut active = units
             .iter()
-            .filter(|sub| sub.state == SubState::Active)
-            .collect::<Vec<_>>();
-        if active.is_empty() {
-            return false;
-        }
-        active
-            .iter()
-            .all(|sub| sub.cursor >= 0 && sub.bootstrap_state.is_none())
+            .filter(|unit| unit.status == UnitStatus::Active)
+            .peekable();
+        Ok(active.peek().is_some() && !active.any(UnitRecord::bootstrapping))
     }
 
     /// RFC 0005 D7: lifetime triggers evaluated once per sync round, after the
@@ -2681,7 +2704,10 @@ impl SyncClient {
         else {
             return;
         };
-        if self.subs.iter().any(|sub| sub.state == SubState::Revoked) {
+        let Ok(units) = load_units(&self.conn) else {
+            return;
+        };
+        if units.iter().any(|unit| unit.status == UnitStatus::Revoked) {
             let _ = self.drop_previous_version();
             return;
         }
@@ -2689,93 +2715,47 @@ impl SyncClient {
             let _ = self.drop_previous_version();
             return;
         }
-        if self.previous_version_coverage_complete() {
+        if self.previous_version_coverage_complete() == Ok(true) {
             let _ = self.drop_previous_version();
         }
     }
 
-    pub fn diagnostics_snapshot(
-        &self,
-        request: &ClientDiagnosticsRequest,
-    ) -> Result<ClientDiagnosticsSnapshot, String> {
-        if request.expected_subscriptions.len() > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS {
-            return Err(format!(
-                "sync.invalid_request: diagnosticsSnapshot accepts at most {MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS} expected subscriptions"
-            ));
-        }
-        let mut subscriptions = BTreeMap::<String, DiagnosticSubscription>::new();
-        for sub in self.subs.iter() {
-            let reset = sub.cursor < 0 && sub.reason_code.as_deref() == Some("sync.cursor_expired");
-            let complete =
-                sub.state == SubState::Active && sub.cursor >= 0 && sub.bootstrap_state.is_none();
-            let state = match sub.state {
-                SubState::Revoked => "revoked",
-                SubState::Failed => "failed",
-                SubState::Active if reset => "reset",
-                SubState::Active if complete => "complete",
-                SubState::Active => "bootstrapping",
-            };
-            subscriptions.insert(
-                sub.id.clone(),
-                DiagnosticSubscription {
-                    id: sub.id.clone(),
-                    table: sub.table.clone(),
-                    state: state.to_owned(),
-                    complete,
-                    cursor: Some(sub.cursor),
-                    reason_code: sub.reason_code.as_deref().map(Self::diagnostic_code),
-                },
-            );
-        }
-        for expected in &request.expected_subscriptions {
-            if expected.id.is_empty() || expected.table.is_empty() {
-                return Err("sync.invalid_request: diagnosticsSnapshot expected subscriptions require non-empty id and table strings".to_owned());
-            }
-            if subscriptions
-                .get(&expected.id)
-                .is_some_and(|registered| registered.table != expected.table)
-            {
-                subscriptions.insert(
-                    expected.id.clone(),
-                    DiagnosticSubscription {
-                        id: expected.id.clone(),
-                        table: expected.table.clone(),
-                        state: "failed".to_owned(),
-                        complete: false,
-                        cursor: None,
-                        reason_code: Some("client.subscription_intent_mismatch".to_owned()),
-                    },
-                );
-            } else {
-                subscriptions.entry(expected.id.clone()).or_insert_with(|| {
-                    DiagnosticSubscription {
-                        id: expected.id.clone(),
-                        table: expected.table.clone(),
-                        state: "unregistered".to_owned(),
-                        complete: false,
-                        cursor: None,
-                        reason_code: None,
-                    }
-                });
-            }
-        }
-        let mut ordered_subscriptions = Vec::new();
-        let mut included = BTreeSet::new();
-        for expected in &request.expected_subscriptions {
-            if included.insert(expected.id.clone()) {
-                if let Some(subscription) = subscriptions.get(&expected.id) {
-                    ordered_subscriptions.push(subscription.clone());
+    pub fn diagnostics_snapshot(&self) -> Result<ClientDiagnosticsSnapshot, String> {
+        let registered = self.stored(load_units(&self.conn))?;
+        // Both meta values in one statement: the FFI host recomputes
+        // diagnostics after every command.
+        let (local_revision, replica_cursor): (Option<String>, Option<String>) = self.stored(
+            self.conn
+                .prepare_cached(
+                    "SELECT (SELECT value FROM _syncular_meta WHERE key = ?1),
+                            (SELECT value FROM _syncular_meta WHERE key = ?2)",
+                )
+                .and_then(|mut statement| {
+                    statement.query_row([LOCAL_REVISION_KEY, REPLICA_CURSOR_KEY], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })
+                }),
+        )?;
+        let mut units = DiagnosticUnits::default();
+        for unit in &registered {
+            *match unit.status {
+                UnitStatus::Revoked => &mut units.revoked,
+                UnitStatus::Failed => &mut units.failed,
+                UnitStatus::Active if !unit.bootstrapping() => &mut units.complete,
+                UnitStatus::Active
+                    if unit.reason_code.as_deref() == Some("sync.cursor_expired") =>
+                {
+                    &mut units.reset
                 }
-            }
+                UnitStatus::Active => &mut units.bootstrapping,
+            } += 1;
         }
-        for (id, subscription) in &subscriptions {
-            if included.insert(id.clone()) {
-                ordered_subscriptions.push(subscription.clone());
-            }
-        }
-        let subscriptions_truncated =
-            ordered_subscriptions.len() > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS;
-        ordered_subscriptions.truncate(MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS);
+        units.reason_codes = registered
+            .iter()
+            .filter_map(|unit| unit.reason_code.as_deref().map(Self::diagnostic_code))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let captured_at_ms = self.clock_now_ms();
         let lease = if let Some(error_code) = self
             .lease_state
@@ -2854,18 +2834,23 @@ impl SyncClient {
                     .and_then(|floor| floor.latest_schema_version),
             },
             replica: ClientDiagnosticsReplica {
-                local_revision: self.local_revision()?.to_string(),
+                local_revision: local_revision
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    .to_string(),
                 sync_needed: self.sync_needed,
                 pending_outbox: self.outbox.len(),
             },
             lease,
-            subscriptions: ordered_subscriptions,
-            subscriptions_truncated,
-            active_subscriptions: self
-                .subs
+            active_units: registered
                 .iter()
-                .filter(|sub| sub.state == SubState::Active)
+                .filter(|unit| unit.status == UnitStatus::Active)
                 .count(),
+            units,
+            replica_cursor: replica_cursor.map_or(Ok(-1), |raw| {
+                raw.parse()
+                    .map_err(|_| "sync.local_corrupt: persisted unit state is invalid".to_owned())
+            })?,
             last_round: self.last_round.clone(),
             last_change: self.last_change.clone(),
             storage: self.diagnostics_storage(),
@@ -2881,14 +2866,16 @@ impl SyncClient {
             let page_size: i64 = self
                 .conn
                 .query_row("PRAGMA page_size", [], |row| row.get(0))?;
-            // Reuse compiled aggregates; every invocation still reads current storage.
-            let outbox_bytes: i64 = self
+            // One cached aggregate, since the FFI host recomputes diagnostics
+            // after every command; every invocation still reads current storage.
+            let (outbox_bytes, outcome_entries, outcome_bytes): (i64, i64, i64) = self
                 .conn
-                .prepare_cached("SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox")?
-                .query_row([], |row| row.get(0))?;
-            let (outcome_entries, outcome_bytes): (i64, i64) = self.conn.prepare_cached(
-                "SELECT COUNT(*), COALESCE(SUM(LENGTH(results_json) + COALESCE(LENGTH(operations_json), 0)), 0) FROM _syncular_commit_outcomes",
-            )?.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                .prepare_cached(
+                    "SELECT (SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox),
+                            COUNT(*), COALESCE(SUM(LENGTH(results_json) + COALESCE(LENGTH(operations_json), 0)), 0)
+                       FROM _syncular_commit_outcomes",
+                )?
+                .query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
             let blob_bytes = if self.schema_has_blobs() {
                 self.conn
                     .prepare_cached("SELECT COALESCE(SUM(byte_length), 0) FROM _syncular_blobs")?
@@ -3039,6 +3026,17 @@ impl SyncClient {
         }
     }
 
+    /// A unit-store result: a row that does not parse is `sync.local_corrupt`;
+    /// every other SQLite error keeps its storage classification.
+    fn stored<T>(&self, result: rusqlite::Result<T>) -> Result<T, String> {
+        result.map_err(|error| match error {
+            rusqlite::Error::FromSqlConversionFailure(..) => {
+                "sync.local_corrupt: persisted unit state is invalid".to_owned()
+            }
+            error => Self::sqlite_failure(&self.storage_failure, error),
+        })
+    }
+
     fn sqlite_failure(
         storage_failure: &RefCell<Option<QueryReadFailure>>,
         error: rusqlite::Error,
@@ -3087,7 +3085,6 @@ impl SyncClient {
 
     fn capture(&self) -> Rollback {
         Rollback {
-            subs: self.subs.clone(),
             outbox: self.outbox.clone(),
             failed_commits: self.failed_commits.clone(),
             conflicts: self.conflicts.clone(),
@@ -3106,7 +3103,6 @@ impl SyncClient {
     }
 
     fn restore(&mut self, rollback: Rollback) {
-        self.subs = rollback.subs;
         self.outbox = rollback.outbox;
         self.failed_commits = rollback.failed_commits;
         self.conflicts = rollback.conflicts;
@@ -3234,9 +3230,8 @@ impl SyncClient {
             windows: batch
                 .windows
                 .into_iter()
-                .map(|((base_key, table), units)| WindowChange {
+                .map(|(base_key, units)| WindowChange {
                     base_key,
-                    table,
                     units: units.into_iter().collect(),
                 })
                 .collect(),
@@ -3256,10 +3251,18 @@ impl SyncClient {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        // §7.6: the selected variables of the changed window bases.
         let mut diagnostic_windows = event
             .windows
             .iter()
-            .map(|entry| entry.table.clone())
+            .map(|entry| {
+                entry
+                    .base_key
+                    .split('\0')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -3477,8 +3480,8 @@ impl SyncClient {
                 self.overlay_dirty.set(true);
                 self.rebuild_overlay()?;
             }
-            self.prune_unknown_subscriptions(false)?;
-            self.save_subscription_scope_schema()?;
+            self.prune_unknown_units(false)?;
+            self.save_unit_scope_schema()?;
             // The conformance recreate is the in-memory equivalent of reopening
             // a durable client. Apply the same startup catch-up contract even
             // when the schema itself did not change.
@@ -3511,7 +3514,10 @@ impl SyncClient {
             && (!self.outbox.is_empty()
                 || self.has_acknowledged_rows()?
                 || !self.load_pending_evictions()?.is_empty()
-                || self.subs.iter().any(|sub| sub.state == SubState::Active));
+                || self
+                    .stored(load_units(&self.conn))?
+                    .iter()
+                    .any(|unit| unit.status == UnitStatus::Active));
         if startup_work {
             self.sync_needed = true;
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
@@ -3574,7 +3580,7 @@ impl SyncClient {
 
     /// §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,
     /// and leaseState. Drops/recreates every synced table from the new
-    /// schema, resets subscription sync-state (keeping registrations), clears
+    /// schema, resets unit sync state (keeping registrations), clears
     /// the schema-floor stop state, rewrites the marker, drops outbox commits
     /// that cannot re-encode (§7.4.4), and replays the survivors on top.
     fn run_schema_reset(&mut self) -> Result<(), String> {
@@ -3616,7 +3622,11 @@ impl SyncClient {
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
             return Ok(Vec::new());
         }
-        let resets = self.subs.iter().map(|sub| sub.id.clone()).collect();
+        let resets = self
+            .stored(load_units(&self.conn))?
+            .into_iter()
+            .map(|unit| unit.id)
+            .collect();
         self.begin_observation("syncular_log_epoch_reset")?;
         let rollback = self.capture();
         let mut batch = ChangeAccumulator::default();
@@ -3718,18 +3728,18 @@ impl SyncClient {
         for table in &self.schema.tables {
             batch.table(&table.name);
         }
-        for (base_key, unit, table) in self.load_registered_window_units() {
-            batch.window(&base_key, &table, &unit);
+        for (base_key, value) in self.load_window_registry()? {
+            batch.window(&base_key, &value);
         }
         if capture {
-            self.prune_unknown_subscriptions(true)?;
+            self.prune_unknown_units(true)?;
         }
         // The per-table insert SQL is derived from the OLD column lists.
         self.insert_sql.borrow_mut().clear();
         self.overlay_dirty.set(true);
         // Drop every synced table (base + visible) that currently exists —
         // discovered from sqlite_master so a bump that adds/removes tables is
-        // handled. Bookkeeping tables (`_syncular_outbox/_subscriptions/_meta`
+        // handled. Bookkeeping tables (`_syncular_outbox/_units/_meta`
         // and the blob cache) are preserved; base tables are `_syncular_base_*`
         // so they are matched explicitly, not by the bookkeeping filter.
         // Drop virtual tables first so SQLite removes every FTS shadow table
@@ -3785,26 +3795,16 @@ impl SyncClient {
         }
         // Recreate the synced tables from the NEW schema.
         self.create_synced_tables()?;
-        // Reset every subscription's sync-state, keeping the registration.
-        for sub in self.subs.iter_mut() {
-            sub.cursor = -1;
-            sub.bootstrap_state = None;
-            sub.effective = None;
-            sub.state = SubState::Active;
-            sub.reason_code = None;
-            sub.synced_once = false;
-        }
-        let subs = self.subs.clone();
-        for sub in subs.iter() {
-            self.persist_sub(sub)?;
-        }
+        // Reset every unit's sync state, keeping the registration.
+        reset_units(&self.conn)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         // The stop state is over: this client now ships a servable schema.
         self.stopped = false;
         self.schema_floor = None;
         self.delete_meta(SCHEMA_FLOOR_KEY)?;
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
         self.persist_schema_version()?;
-        self.save_subscription_scope_schema()?;
+        self.save_unit_scope_schema()?;
         // §7.1/§7.4.4: the previous-version capture and audit above saw the
         // original pending intent; the synced tables now carry the new schema, so
         // recover intrinsically codec-invalid persisted values here, before the
@@ -4158,23 +4158,6 @@ impl SyncClient {
     }
 
     // -- persistence write-through --------------------------------------------
-
-    fn persist_sub(&self, sub: &Subscription) -> Result<(), String> {
-        let state = serde_json::json!({
-            "requested": scope_map_to_json(&sub.requested),
-            "params": sub.params,
-            "cursor": sub.cursor,
-            "bootstrapState": sub.bootstrap_state,
-            "status": sub.state.name(),
-            "reasonCode": sub.reason_code,
-            "effectiveScopes": sub.effective.as_ref().map(|e| scope_map_to_json(e)),
-            "syncedOnce": sub.synced_once,
-        });
-        self.conn.execute(
-            "INSERT OR REPLACE INTO _syncular_subscriptions (id, tbl, state_json) VALUES (?1, ?2, ?3)",
-            rusqlite::params![sub.id, sub.table, state.to_string()],
-        ).map(|_| ()).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
-    }
 
     fn persist_outbox_insert(&self, commit: &OutboxCommit) -> Result<(), String> {
         let ops: Vec<Value> = commit
@@ -4665,9 +4648,10 @@ impl SyncClient {
         Ok(CurrentBasePreparation {
             client_commit_id: client_commit_id.to_owned(),
             sequence,
-            subscriptions: self.subs.to_vec(),
+            units: load_units(&self.conn)
+                .map_err(|_| CurrentBaseProof::failure(CurrentBaseProofReason::SnapshotFailed))?,
             transport_epoch: self.transport_epoch,
-            subscription_epoch: self.subscription_epoch,
+            registration_epoch: self.registration_epoch,
             security_epoch: self.security_epoch,
         })
     }
@@ -4682,7 +4666,7 @@ impl SyncClient {
         if !self.transport_enabled || self.transport_epoch != prepared.transport_epoch {
             return CurrentBaseProof::failure(CurrentBaseProofReason::Offline);
         }
-        if self.subscription_epoch != prepared.subscription_epoch {
+        if self.registration_epoch != prepared.registration_epoch {
             return CurrentBaseProof::failure(CurrentBaseProofReason::MissingCoverage);
         }
         if self.security_preflight || self.security_epoch != prepared.security_epoch {
@@ -4709,11 +4693,7 @@ impl SyncClient {
             let snapshot = snapshot_read_connection(
                 &self.conn,
                 &SnapshotReadRequest {
-                    subscriptions: prepared
-                        .subscriptions
-                        .iter()
-                        .map(|sub| sub.id.clone())
-                        .collect(),
+                    units: prepared.units.iter().map(|unit| unit.id.clone()).collect(),
                     commit_ids: vec![prepared.client_commit_id.clone()],
                     ..Default::default()
                 },
@@ -4748,13 +4728,13 @@ impl SyncClient {
             if rows.is_empty() || operations.len() != rows.len() {
                 return Err(unavailable);
             }
-            let after: HashMap<&str, &Subscription> =
-                self.subs.iter().map(|sub| (sub.id.as_str(), sub)).collect();
+            let after =
+                load_units(&self.conn).map_err(|_| CurrentBaseProofReason::SnapshotFailed)?;
             let complete: HashSet<&str> = snapshot
-                .subscriptions
+                .units
                 .iter()
-                .filter_map(|sub| match sub {
-                    SubscriptionCatchup::Known {
+                .filter_map(|unit| match unit {
+                    UnitCatchup::Known {
                         id,
                         bootstrap_complete: true,
                         ..
@@ -4762,45 +4742,44 @@ impl SyncClient {
                     _ => None,
                 })
                 .collect();
-            let candidates: Vec<_> = prepared
-                .subscriptions
+            // A unit id names one scope map (§4.1), so the same id before and
+            // after the drive is the same registration.
+            let candidates: Vec<&UnitRecord> = after
                 .iter()
-                .filter_map(|before| {
-                    let after = after.get(before.id.as_str())?;
-                    if before.table != after.table
-                        || before.params != after.params
-                        || canonical_scope_json(&before.requested)
-                            != canonical_scope_json(&after.requested)
-                        || !complete.contains(before.id.as_str())
-                    {
-                        return None;
-                    }
-                    after
-                        .effective
-                        .as_ref()
-                        .map(|scopes| (after.table.as_str(), scopes))
+                .filter(|unit| {
+                    complete.contains(unit.id.as_str())
+                        && prepared.units.iter().any(|before| before.id == unit.id)
                 })
                 .collect();
             let covered = |table_name: &str, row: &Map<String, Value>| {
                 let Some(table) = self.schema.table(table_name) else {
                     return false;
                 };
-                candidates.iter().any(|(candidate_table, scopes)| {
-                    *candidate_table == table_name
-                        && !scopes.is_empty()
-                        && scopes.iter().all(|(variable, allowed)| {
-                            table
-                                .scope_column(variable)
-                                .and_then(|column| match row.get(column) {
-                                    Some(Value::String(value)) => Some(value.clone()),
-                                    Some(Value::Bool(value)) => Some(value.to_string()),
-                                    Some(Value::Number(value)) => value.as_f64().map(|number| {
-                                        ryu_js::Buffer::new().format_finite(number).to_owned()
-                                    }),
-                                    _ => None,
+                candidates.iter().any(|unit| {
+                    covers(table, &unit.scopes)
+                        && pair_scopes(&unit.scopes, table_name, unit.echo.as_deref()).is_some_and(
+                            |scopes| {
+                                scopes.iter().all(|(variable, allowed)| {
+                                    table
+                                        .scope_column(variable)
+                                        .and_then(|column| match row.get(column) {
+                                            Some(Value::String(value)) => Some(value.clone()),
+                                            Some(Value::Bool(value)) => Some(value.to_string()),
+                                            Some(Value::Number(value)) => {
+                                                value.as_f64().map(|number| {
+                                                    ryu_js::Buffer::new()
+                                                        .format_finite(number)
+                                                        .to_owned()
+                                                })
+                                            }
+                                            _ => None,
+                                        })
+                                        .is_some_and(|value| {
+                                            !value.is_empty() && allowed.contains(&value)
+                                        })
                                 })
-                                .is_some_and(|value| !value.is_empty() && allowed.contains(&value))
-                        })
+                            },
+                        )
                 })
             };
             for row in &rows {
@@ -4946,214 +4925,185 @@ impl SyncClient {
         Ok(())
     }
 
-    // -- driver surface ---------------------------------------------------------
+    // -- units (§4.1) ------------------------------------------------------------
 
-    /// Register one subscription; see [`SyncClient::subscribe_many`].
-    pub fn subscribe(
-        &mut self,
-        id: String,
-        table: String,
-        scopes: Vec<(String, Vec<String>)>,
-        params: Option<String>,
-    ) -> Result<(), String> {
-        self.subscribe_many(vec![SubscriptionRequest {
-            id,
-            table,
-            scopes,
-            params,
-        }])
+    /// Every registered unit in registration order (§4.1).
+    pub fn units(&self) -> Result<Vec<UnitRecord>, String> {
+        self.stored(load_units(&self.conn))
     }
 
-    /// Persist one registration or re-arm without raising sync-needed.
-    /// Returns whether the registry changed.
-    fn register_subscription(
-        &mut self,
-        id: String,
-        table: String,
-        scopes: Vec<(String, Vec<String>)>,
-        params: Option<String>,
-    ) -> Result<bool, String> {
-        if self.schema.table(&table).is_none() {
-            return Err(format!("unknown table {table:?}"));
-        }
-        let registered_at = self
-            .subs
-            .iter()
-            .position(|subscription| subscription.id == id);
-        if let Some(index) = registered_at {
-            let existing = &self.subs[index];
-            let same_intent = existing.table == table
-                && canonical_scope_json(&existing.requested) == canonical_scope_json(&scopes)
-                && existing.params == params;
-            if !same_intent {
-                return Err(
-                    "client.subscription_intent_mismatch: the subscription id is already registered for a different table, scopes, or params"
-                        .to_owned(),
-                );
-            }
-            // §3.3: a revoked registration keeps its id and intent but no
-            // progress. Subscribing again with the same intent re-arms it and
-            // asks for a pull, which resolves its scopes from scratch. A
-            // `failed` registration is a configuration error and stays put.
-            if existing.state != SubState::Revoked {
-                return Ok(false);
-            }
-        }
-        let sub = Subscription {
-            id: id.clone(),
-            table,
-            requested: scopes,
-            params,
-            cursor: -1,
-            bootstrap_state: None,
-            state: SubState::Active,
-            reason_code: None,
-            effective: None,
-            synced_once: false,
-        };
-        self.persist_sub(&sub)?;
-        match registered_at {
-            Some(index) => self.subs[index] = sub,
-            None => self.subs.push(sub),
-        }
-        self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
-        Ok(true)
+    pub fn unit(&self, id: &str) -> Result<Option<UnitRecord>, String> {
+        self.stored(get_unit(&self.conn, id))
     }
 
-    /// Register several subscriptions in one local transaction: the same
-    /// rules as `subscribe` for each request, and one commit for all of them
-    /// (on OPFS a commit costs milliseconds, so a cold start with hundreds of
-    /// registrations pays it once). An error rolls back every registration
-    /// of the call. A call that registers or re-arms anything raises
-    /// sync-needed with an interactive intent (§4.1), as the TS client does;
-    /// `set_window` (§4.8) registers through the same path without it and
-    /// batches its own intent.
-    pub fn subscribe_many(&mut self, requests: Vec<SubscriptionRequest>) -> Result<(), String> {
-        let rollback = self.capture();
+    /// Register one unit (§4.1) and return its id.
+    pub fn subscribe(&mut self, scopes: UnitScopes) -> Result<String, String> {
+        Ok(self.subscribe_many(vec![scopes])?.remove(0))
+    }
+
+    /// Register several units in one local transaction and return their ids:
+    /// one commit for all of them (on OPFS a commit costs milliseconds, so a
+    /// cold start with hundreds of units pays it once). An error rolls back
+    /// every registration of the call. Registering an active unit again
+    /// changes nothing; a revoked unit re-arms (§3.3). A call that registers or
+    /// re-arms a unit raises sync-needed with an interactive intent.
+    pub fn subscribe_many(&mut self, units: Vec<UnitScopes>) -> Result<Vec<String>, String> {
         self.begin_observation("syncular_subscribe")?;
-        let mut registered_any = false;
+        let mut changed = false;
         let registered = (|| {
-            for request in requests {
-                registered_any |= self.register_subscription(
-                    request.id,
-                    request.table,
-                    request.scopes,
-                    request.params,
-                )?;
+            let mut ids = Vec::with_capacity(units.len());
+            for scopes in units {
+                let (id, held) = self.hold_unit(scopes, true)?;
+                changed |= held;
+                ids.push(id);
             }
             self.conn
                 .execute_batch("RELEASE syncular_subscribe")
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            Ok(ids)
         })();
-        if let Err(error) = registered {
-            self.rollback_observation("syncular_subscribe");
-            self.restore(rollback);
-            return Err(error);
+        let ids = match registered {
+            Ok(ids) => ids,
+            Err(error) => {
+                self.rollback_observation("syncular_subscribe");
+                return Err(error);
+            }
+        };
+        if changed {
+            self.registration_epoch = self.registration_epoch.wrapping_add(1);
+            self.set_sync_needed(true, true);
         }
-        if registered_any {
+        Ok(ids)
+    }
+
+    /// Release the explicit reference to a unit. The unit leaves the
+    /// registration list when no window base holds it (§4.1); its rows stay.
+    pub fn unsubscribe(&mut self, id: &str) -> Result<(), String> {
+        let Some(unit) = self.stored(get_unit(&self.conn, id))? else {
+            return Ok(());
+        };
+        if !unit.explicit {
+            return Ok(());
+        }
+        if !self.stored(window_refs(&self.conn, id))?.is_empty() {
+            return self.stored(save_unit(
+                &self.conn,
+                &UnitRecord {
+                    explicit: false,
+                    ..unit
+                },
+            ));
+        }
+        self.conn
+            .execute("DELETE FROM _syncular_units WHERE id = ?1", [id])
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.registration_epoch = self.registration_epoch.wrapping_add(1);
+        if unit.status == UnitStatus::Active {
             self.set_sync_needed(true, true);
         }
         Ok(())
     }
 
-    /// Remove a registration. Removing a registered id raises sync-needed with
-    /// an interactive intent (§4.1), as the TS client does; an unknown id is a
-    /// no-op.
-    pub fn unsubscribe(&mut self, id: &str) -> Result<(), String> {
-        if !self.subs.iter().any(|s| s.id == id) {
-            return Ok(());
+    /// Take one reference on a unit (§4.1): validate the scope map, register a
+    /// new unit catching up with cursor `-1`, re-arm a revoked one (§3.3).
+    /// Returns the id and whether the registration list changed.
+    fn hold_unit(&mut self, scopes: UnitScopes, explicit: bool) -> Result<(String, bool), String> {
+        if scopes.is_empty()
+            || scopes.values().any(|value| value == "*")
+            || !self
+                .schema
+                .tables
+                .iter()
+                .any(|table| covers(table, &scopes))
+        {
+            return Err("sync.invalid_subscription: a unit names one non-wildcard value per variable and covers a table".to_owned());
         }
-        self.conn
-            .execute(
-                "DELETE FROM _syncular_subscriptions WHERE id = ?1",
-                rusqlite::params![id],
-            )
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        self.cancel_sync_round();
-        self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
-        self.subs.retain(|s| s.id != id);
-        self.set_sync_needed(true, true);
-        Ok(())
+        let id = ssp2::registration::unit_id(&scope_pairs(&scopes));
+        let existing = self.stored(get_unit(&self.conn, &id))?;
+        if let Some(existing) = existing
+            .as_ref()
+            .filter(|unit| unit.status != UnitStatus::Revoked)
+        {
+            if explicit && !existing.explicit {
+                self.stored(save_unit(
+                    &self.conn,
+                    &UnitRecord {
+                        explicit,
+                        ..existing.clone()
+                    },
+                ))?;
+            }
+            return Ok((id, false));
+        }
+        self.delete_pending_evict(&id)?;
+        self.stored(save_unit(
+            &self.conn,
+            &UnitRecord {
+                id: id.clone(),
+                scopes,
+                explicit: explicit || existing.is_some_and(|unit| unit.explicit),
+                status: UnitStatus::Active,
+                reason_code: None,
+                cursor: Some(-1),
+                bootstrap_state: None,
+                seeded: Vec::new(),
+                echo: None,
+            },
+        ))?;
+        Ok((id, true))
     }
 
-    // -- windowed subscriptions (§4.8) ------------------------------------------
+    // -- windows (§4.8) -----------------------------------------------------------
 
-    /// §4.8: set the live window units for a base — a value-sharded family
-    /// of subscriptions, one per unit. Added units get fresh subscriptions
-    /// (image-lane bootstrap on the next sync); removed units are
-    /// unsubscribed with their first eviction chunk in one transaction (E1–E4).
-    /// Idempotent; re-entry cancels any deferred eviction.
+    /// §4.8: set the windowed-in values of a base, one unit per value. Added
+    /// values take a reference on their unit (a new unit bootstraps on the
+    /// next sync); removed values release theirs, and a unit no reference
+    /// holds leaves the registration list fused with its first eviction chunk
+    /// (E1–E4). Idempotent; re-entry cancels a deferred eviction.
     pub fn set_window(
         &mut self,
         base: &WindowBase,
         units: &[String],
     ) -> Result<CommandEffects, String> {
-        let table = self
-            .schema
-            .table(&base.table)
-            .ok_or_else(|| format!("unknown table {:?}", base.table))?;
-        if table.scope_column(&base.variable).is_none() {
-            return Err(format!(
-                "setWindow: table {:?} has no scope variable {:?} (§4.8)",
-                base.table, base.variable
-            ));
-        }
         let base_key = window_base_key(base);
-        let wanted: std::collections::HashSet<&String> = units.iter().collect();
-        let live = self.load_window_units(&base_key);
-        self.begin_observation("syncular_window")?;
-        let mut batch = ChangeAccumulator::default();
+        let live = self.load_window_units(&base_key)?;
         let mut changed = false;
-
-        let rollback = self.capture();
-        let widened = (|| {
-            // Widen: units wanted but not live → fresh subscription + registry row.
-            for unit in units {
-                if live.iter().any(|(u, _)| u == unit) {
-                    continue;
-                }
-                let sub_id = derive_sub_id(base, unit);
-                self.delete_pending_evict(&sub_id)?;
-                self.insert_window_unit(&base_key, unit, &sub_id)?;
-                self.register_subscription(
-                    sub_id,
-                    base.table.clone(),
-                    unit_scopes(base, unit),
-                    base.params.clone(),
-                )?;
-                batch.window(&base_key, &base.table, unit);
-                changed = true;
+        for value in units {
+            if live.iter().any(|(held, _)| held == value) {
+                continue;
             }
-
-            self.finish_observation("syncular_window", batch)
-        })();
-        if let Err(error) = widened {
-            self.rollback_observation("syncular_window");
-            self.restore(rollback);
-            return Err(error);
+            let rollback = self.capture();
+            self.begin_observation("syncular_window")?;
+            let widened = (|| {
+                let (id, registered) = self.hold_unit(window_unit_scopes(base, value), false)?;
+                self.sync_needed |= registered;
+                self.conn
+                    .execute(
+                        "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![base_key, value, id],
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                let mut batch = ChangeAccumulator::default();
+                batch.window(&base_key, value);
+                batch.status = true;
+                self.finish_observation("syncular_window", batch)
+            })();
+            if let Err(error) = widened {
+                self.rollback_observation("syncular_window");
+                self.restore(rollback);
+                return Err(error);
+            }
+            changed = true;
+            self.registration_epoch = self.registration_epoch.wrapping_add(1);
         }
-        for (unit, sub_id) in live {
-            if wanted.contains(&unit) {
+        for (value, id) in live {
+            if units.contains(&value) {
                 continue;
             }
             self.rebuild_overlay_if_dirty()?;
             let rollback = self.capture();
             self.begin_observation("syncular_window")?;
-            let effective = self
-                .subs
-                .iter()
-                .find(|sub| sub.id == sub_id)
-                .and_then(|sub| sub.effective.clone())
-                .unwrap_or_else(|| unit_scopes(base, &unit));
-            let mut batch = ChangeAccumulator::default();
-            self.record_scope_map(&mut batch, &base.table, &effective);
-            batch.window(&base_key, &base.table, &unit);
-            let remaining =
-                self.evict_unit(&base_key, base, &unit, &sub_id)
-                    .and_then(|remaining| {
-                        self.finish_observation("syncular_window", batch)
-                            .map(|()| remaining)
-                    });
+            let remaining = self.release_window_unit(&base_key, &value, &id);
             let remaining = match remaining {
                 Ok(remaining) => remaining,
                 Err(error) => {
@@ -5162,151 +5112,107 @@ impl SyncClient {
                     return Err(error);
                 }
             };
+            changed = true;
+            self.registration_epoch = self.registration_epoch.wrapping_add(1);
             if remaining {
                 self.drain_pending_evictions()?;
             }
-            changed = true;
         }
-        Ok(if changed {
+        Ok(if changed && self.transport_enabled {
             CommandEffects::interactive()
         } else {
             CommandEffects::none()
         })
     }
 
-    /// §4.8 completeness oracle (I3): the windowed-in units for a base plus
-    /// the subset still bootstrap-pending. Registration alone is not
-    /// completeness — a unit is pending until its subscription completes a
-    /// bootstrap round (cursor advances past -1 with no resume token held).
-    pub fn window_state(&self, base: &WindowBase) -> WindowState {
-        let mut units = Vec::new();
-        let mut pending = Vec::new();
-        for (unit, sub_id) in self.load_window_units(&window_base_key(base)) {
-            let is_pending = match self.subs.iter().find(|s| s.id == sub_id) {
-                Some(sub) => {
-                    sub.state != SubState::Active || sub.cursor < 0 || sub.bootstrap_state.is_some()
-                }
-                None => true,
-            };
-            if is_pending {
-                pending.push(unit.clone());
-            }
-            units.push(unit);
-        }
-        WindowState { units, pending }
+    /// §4.8 completeness oracle: the windowed-in values of a base and those
+    /// whose unit is not complete. A value is complete once its unit is active
+    /// and no longer bootstrapping; registration alone is not completeness.
+    pub fn window_state(&self, base: &WindowBase) -> Result<WindowState, String> {
+        persisted_window_state(&self.conn, base).map_err(|failure| failure.message)
     }
 
-    fn load_window_units(&self, base_key: &str) -> Vec<(String, String)> {
-        let mut stmt = match self
+    /// Registry rows for a base, ordered by value: (value, unit id).
+    fn load_window_units(&self, base_key: &str) -> Result<Vec<(String, String)>, String> {
+        let mut statement = self
             .conn
-            .prepare("SELECT unit, sub_id FROM _syncular_windows WHERE base = ?1 ORDER BY unit ASC")
-        {
-            Ok(stmt) => stmt,
-            Err(_) => return Vec::new(),
-        };
-        let rows = stmt.query_map(rusqlite::params![base_key], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        });
-        match rows {
-            Ok(rows) => rows.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
-    fn load_registered_window_units(&self) -> Vec<(String, String, String)> {
-        let mut stmt = match self.conn.prepare(
-            "SELECT windows.base, windows.unit, subscriptions.tbl
-               FROM _syncular_windows AS windows
-               JOIN _syncular_subscriptions AS subscriptions
-                 ON subscriptions.id = windows.sub_id
-               ORDER BY windows.base, windows.unit",
-        ) {
-            Ok(stmt) => stmt,
-            Err(_) => return Vec::new(),
-        };
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        });
-        match rows {
-            Ok(rows) => rows.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
-    fn window_unit_by_sub_id(&self, sub_id: &str) -> Option<(String, String)> {
-        self.conn
-            .query_row(
-                "SELECT base, unit FROM _syncular_windows WHERE sub_id = ?1 LIMIT 1",
-                rusqlite::params![sub_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+            .prepare_cached(
+                "SELECT unit, sub_id FROM _syncular_windows WHERE base = ?1 ORDER BY unit ASC",
             )
-            .ok()
-    }
-
-    fn insert_window_unit(&self, base_key: &str, unit: &str, sub_id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
-                rusqlite::params![base_key, unit, sub_id],
-            )
-            .map(|_| ())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let rows = statement
+            .query_map([base_key], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        rows.collect::<Result<_, _>>()
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    fn delete_window_unit(&self, base_key: &str, unit: &str) -> Result<(), String> {
+    /// Every window registry row: (base key, value).
+    fn load_window_registry(&self) -> Result<Vec<(String, String)>, String> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT base, unit FROM _syncular_windows ORDER BY base, unit")
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+    }
+
+    /// §4.8: release a window value's reference inside the caller's
+    /// observation. When no reference holds the unit, unregister it fused with
+    /// its first eviction chunk (E3): delete the rows of every covered table
+    /// matching the persisted echo, except rows pinned by the outbox (E1) or
+    /// owned by another unit (§3.3), and park the per-table scopes of what
+    /// remains in the pending-eviction registry. Fails closed without a local
+    /// scope-column mapping. Returns whether unpinned rows remain.
+    fn release_window_unit(
+        &mut self,
+        base_key: &str,
+        value: &str,
+        id: &str,
+    ) -> Result<bool, String> {
         self.conn
             .execute(
                 "DELETE FROM _syncular_windows WHERE base = ?1 AND unit = ?2",
-                rusqlite::params![base_key, unit],
-            )
-            .map(|_| ())
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
-    }
-
-    /// §4.8 E1–E4: evict one departing unit, fused with unsubscription.
-    /// Deletes the unit's rows except those pinned by a pending outbox
-    /// commit (E1); records a deferred eviction if any pin remains; discards
-    /// the subscription's cursor/resume/effective-echo (E3) and version
-    /// state with the rows (E2). Fail-closed: no local mapping ⇒ evict
-    /// nothing.
-    fn evict_unit(
-        &mut self,
-        base_key: &str,
-        base: &WindowBase,
-        unit: &str,
-        sub_id: &str,
-    ) -> Result<bool, String> {
-        let effective = self
-            .subs
-            .iter()
-            .find(|s| s.id == sub_id)
-            .and_then(|s| s.effective.clone())
-            .unwrap_or_else(|| unit_scopes(base, unit));
-        let pinned = self.pinned_row_ids(&base.table);
-        let owners = self.scope_owners(&base.table, sub_id);
-        let (remaining, deferred) =
-            self.evict_scope_rows(&base.table, &effective, &owners, &pinned)?;
-        self.delete_window_unit(base_key, unit)?;
-        self.conn
-            .execute(
-                "DELETE FROM _syncular_subscriptions WHERE id = ?1",
-                [sub_id],
+                rusqlite::params![base_key, value],
             )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        self.subs.retain(|sub| sub.id != sub_id);
-        // A prepared round still carries this unit; its SUB_END must not
-        // complete a re-added unit that lost these rows (as `unsubscribe`).
-        self.cancel_sync_round();
-        self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
-        if deferred {
-            self.save_pending_evict(sub_id, &base.table, &effective)?;
-        } else {
-            self.delete_pending_evict(sub_id)?;
+        let mut batch = ChangeAccumulator::default();
+        batch.window(base_key, value);
+        batch.status = true;
+        let unit = self.stored(get_unit(&self.conn, id))?;
+        let mut remaining = false;
+        if let Some(unit) = unit.filter(|unit| !unit.explicit) {
+            if self.stored(window_refs(&self.conn, id))?.is_empty() {
+                let units = self.stored(load_units(&self.conn))?;
+                self.conn
+                    .execute("DELETE FROM _syncular_units WHERE id = ?1", [id])
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                self.sync_needed = true;
+                for table in self.schema.tables.clone() {
+                    let Some(effective) = unit
+                        .echo
+                        .as_deref()
+                        .filter(|_| covers(&table, &unit.scopes))
+                        .and_then(|echo| pair_scopes(&unit.scopes, &table.name, Some(echo)))
+                    else {
+                        continue;
+                    };
+                    let pinned = self.pinned_row_ids(&table.name);
+                    let owners = unit_owners(&units, &table, id);
+                    let (more, deferred) =
+                        self.evict_scope_rows(&table.name, &effective, &owners, &pinned)?;
+                    remaining |= more;
+                    if deferred {
+                        self.save_pending_evict(id, &table.name, &effective)?;
+                    }
+                    self.record_scope_map(&mut batch, &table.name, &effective);
+                }
+            }
         }
+        self.finish_observation("syncular_window", batch)?;
         Ok(remaining)
     }
 
@@ -5398,65 +5304,48 @@ impl SyncClient {
         Ok((remaining, deferred))
     }
 
-    /// Resume committed eviction chunks, retaining outbox pins and their durable marker.
+    /// §4.8 E1: continue deferred evictions after the outbox drains or between
+    /// chunks, retaining outbox pins and their durable marker. A unit that
+    /// re-entered the window has no pending entry left.
     fn drain_pending_evictions(&mut self) -> Result<(), String> {
         let pending = self.load_pending_evictions()?;
         if pending.is_empty() {
             return Ok(());
         }
         self.rebuild_overlay_if_dirty()?;
-        for (sub_id, table_name, effective) in pending {
-            if self.schema.table(&table_name).is_none() {
-                self.delete_pending_evict(&sub_id)?;
+        for (unit_id, table_name, effective) in pending {
+            let Some(table) = self.schema.table(&table_name).cloned() else {
+                self.delete_pending_evict_table(&unit_id, &table_name)?;
                 continue;
-            }
+            };
             loop {
                 std::thread::yield_now();
                 self.begin_observation("syncular_evict")?;
-                let pinned = self.pinned_row_ids(&table_name);
-                let owners = self.scope_owners(&table_name, &sub_id);
-                let result = self.evict_scope_rows(&table_name, &effective, &owners, &pinned);
-                let (remaining, deferred) = match result {
-                    Ok(result) => result,
+                let chunk = (|| {
+                    let pinned = self.pinned_row_ids(&table_name);
+                    let owners =
+                        unit_owners(&self.stored(load_units(&self.conn))?, &table, &unit_id);
+                    let (remaining, deferred) =
+                        self.evict_scope_rows(&table_name, &effective, &owners, &pinned)?;
+                    if !deferred {
+                        self.delete_pending_evict_table(&unit_id, &table_name)?;
+                    }
+                    let mut batch = ChangeAccumulator::default();
+                    self.record_scope_map(&mut batch, &table_name, &effective);
+                    self.finish_observation("syncular_evict", batch)?;
+                    Ok(remaining)
+                })();
+                match chunk {
+                    Ok(true) => {}
+                    Ok(false) => break,
                     Err(error) => {
                         self.rollback_observation("syncular_evict");
                         return Err(error);
                     }
-                };
-                if !deferred {
-                    if let Err(error) = self.delete_pending_evict(&sub_id) {
-                        self.rollback_observation("syncular_evict");
-                        return Err(error);
-                    }
-                }
-                let mut batch = ChangeAccumulator::default();
-                self.record_scope_map(&mut batch, &table_name, &effective);
-                if let Err(error) = self.finish_observation("syncular_evict", batch) {
-                    self.rollback_observation("syncular_evict");
-                    return Err(error);
-                }
-                if !remaining {
-                    break;
                 }
             }
         }
         Ok(())
-    }
-
-    /// §3.3/§4.8/§5.6 row ownership: the effective scopes of every other
-    /// active subscription on `table` that holds rows (`cursor >= 0`). A
-    /// scoped delete keeps every row one of them still covers.
-    fn scope_owners(&self, table: &str, except_id: &str) -> Vec<Vec<(String, Vec<String>)>> {
-        self.subs
-            .iter()
-            .filter(|sub| {
-                sub.id != except_id
-                    && sub.table == table
-                    && sub.state == SubState::Active
-                    && sub.cursor >= 0
-            })
-            .filter_map(|sub| sub.effective.clone())
-            .collect()
     }
 
     /// §4.8 E1: primary keys of `table` referenced by a pending outbox
@@ -5480,21 +5369,32 @@ impl SyncClient {
 
     fn save_pending_evict(
         &self,
-        sub_id: &str,
+        unit_id: &str,
         table: &str,
         effective: &[(String, Vec<String>)],
     ) -> Result<(), String> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO _syncular_window_pending_evict(sub_id, tbl, effective_scopes) VALUES (?1, ?2, ?3)",
-            rusqlite::params![sub_id, table, scope_map_to_json(effective).to_string()],
+            "INSERT OR REPLACE INTO _syncular_pending_evictions(unit_id, tbl, effective_scopes) VALUES (?1, ?2, ?3)",
+            rusqlite::params![unit_id, table, scope_map_to_json(effective).to_string()],
         ).map(|_| ()).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    fn delete_pending_evict(&self, sub_id: &str) -> Result<(), String> {
+    /// Re-entry cancels every pending eviction of the unit.
+    fn delete_pending_evict(&self, unit_id: &str) -> Result<(), String> {
         self.conn
             .execute(
-                "DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?1",
-                rusqlite::params![sub_id],
+                "DELETE FROM _syncular_pending_evictions WHERE unit_id = ?1",
+                [unit_id],
+            )
+            .map(|_| ())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+    }
+
+    fn delete_pending_evict_table(&self, unit_id: &str, table: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_pending_evictions WHERE unit_id = ?1 AND tbl = ?2",
+                [unit_id, table],
             )
             .map(|_| ())
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
@@ -5503,7 +5403,7 @@ impl SyncClient {
     fn load_pending_evictions(&self) -> Result<Vec<PendingEvict>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT sub_id, tbl, effective_scopes FROM _syncular_window_pending_evict")
+            .prepare("SELECT unit_id, tbl, effective_scopes FROM _syncular_pending_evictions")
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = stmt
             .query_map([], |row| {
@@ -5515,13 +5415,13 @@ impl SyncClient {
             })
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         rows.map(|row| {
-            let (sub_id, table, json) =
+            let (unit_id, table, json) =
                 row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let value: Value = serde_json::from_str(&json)
                 .map_err(|_| "sync.local_corrupt: invalid pending eviction scopes".to_owned())?;
             let effective = json_to_scope_map(&value)
                 .map_err(|_| "sync.local_corrupt: invalid pending eviction scopes".to_owned())?;
-            Ok((sub_id, table, effective))
+            Ok((unit_id, table, effective))
         })
         .collect()
     }
@@ -6487,19 +6387,6 @@ impl SyncClient {
         self.sync_needed
     }
 
-    pub fn subscription_state(&self, id: &str) -> Option<SubscriptionStateView> {
-        let sub = self.subs.iter().find(|s| s.id == id)?;
-        Some(SubscriptionStateView {
-            id: sub.id.clone(),
-            table: sub.table.clone(),
-            status: sub.state.name().to_owned(),
-            cursor: sub.cursor,
-            has_resume_token: sub.bootstrap_state.is_some(),
-            effective_scopes: sub.effective.as_ref().map(|e| scope_map_to_json(e)),
-            reason_code: sub.reason_code.clone(),
-        })
-    }
-
     pub fn read_rows(&self, table: &str) -> Result<Vec<RowState>, String> {
         let schema_table = self
             .schema
@@ -6870,56 +6757,38 @@ impl SyncClient {
                 }
                 intent.retain(|id| relevant.contains(id));
                 let rows = rows.into_values().collect::<Vec<_>>();
-                let mut persisted = Vec::new();
-                for row in query_connection(
-                    &self.conn,
-                    "SELECT state_json FROM _syncular_subscriptions WHERE tbl=? ORDER BY rowid",
-                    &[Value::String(read.table.clone())],
-                )
-                .map_err(|e| e.message)?
-                {
-                    let state: Value = serde_json::from_str(
-                        row.get("state_json")
-                            .and_then(Value::as_str)
-                            .ok_or("sync.local_corrupt: authority subscription state is missing")?,
-                    )
-                    .map_err(|_| "sync.local_corrupt: authority subscription state is invalid")?;
-                    let effective = state.get("effectiveScopes").and_then(Value::as_object);
-                    let status = state
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .ok_or("sync.local_corrupt: authority subscription status is missing")?;
-                    let cursor = state
-                        .get("cursor")
-                        .and_then(Value::as_i64)
-                        .ok_or("sync.local_corrupt: authority subscription cursor is missing")?;
-                    let complete = effective.is_some_and(|s| s.len() == read.scopes.len())
-                        && status == "active"
-                        && cursor >= 0
-                        && state.get("bootstrapState").is_none_or(Value::is_null)
-                        && state.get("params").is_none_or(Value::is_null);
-                    let exposed = effective.map(|s| {
-                        read.scopes
+                // Every unit covering the table, as its (unit, table) pair (§4.4).
+                let replica = self.stored(replica_cursor(&self.conn))?;
+                let persisted = self
+                    .stored(load_units(&self.conn))?
+                    .into_iter()
+                    .filter(|unit| covers(table, &unit.scopes))
+                    .map(|unit| {
+                        let effective = unit.echo.as_deref().and_then(|echo| {
+                            pair_scopes(&unit.scopes, &read.table, Some(echo))
+                        });
+                        let requested = read
+                            .scopes
                             .keys()
-                            .map(|v| (v.clone(), s.get(v).cloned().unwrap_or(json!([]))))
-                            .collect::<Map<_, _>>()
-                    });
-                    let requested = read
-                        .scopes
-                        .keys()
-                        .map(|v| {
-                            (
-                                v.clone(),
-                                state
-                                    .get("requested")
-                                    .and_then(|s| s.get(v))
-                                    .cloned()
-                                    .unwrap_or(json!([])),
-                            )
-                        })
-                        .collect::<Map<_, _>>();
-                    persisted.push(json!({"requestedScopes": requested, "status": status, "cursor": cursor, "effectiveScopes": exposed, "complete": complete}));
-                }
+                            .map(|v| (v.clone(), json!(unit.scopes.get(v).into_iter().collect::<Vec<_>>())))
+                            .collect::<Map<_, _>>();
+                        let complete = effective
+                            .as_ref()
+                            .is_some_and(|scopes| scopes.len() == read.scopes.len())
+                            && unit.status == UnitStatus::Active
+                            && !unit.bootstrapping();
+                        let exposed = effective.map(|scopes| {
+                            read.scopes
+                                .keys()
+                                .map(|v| {
+                                    let held = scopes.iter().find(|(variable, _)| variable == v);
+                                    (v.clone(), json!(held.map_or(&Vec::new(), |(_, values)| values)))
+                                })
+                                .collect::<Map<_, _>>()
+                        });
+                        json!({"requestedScopes": requested, "status": unit.status, "cursor": unit.cursor.unwrap_or(replica), "effectiveScopes": exposed, "complete": complete})
+                    })
+                    .collect::<Vec<_>>();
                 fn covered(selectors: &[(&String, &Vec<String>)], candidates: &[&Value]) -> bool {
                     match selectors.split_first() {
                         None => !candidates.is_empty(),
@@ -6956,7 +6825,6 @@ impl SyncClient {
                             values.iter().any(|value| {
                                 p["requestedScopes"][v].as_array().is_some_and(|held| {
                                     held.contains(&Value::String(value.clone()))
-                                        || held.contains(&Value::String("*".into()))
                                 })
                             })
                         })
@@ -7070,13 +6938,22 @@ impl SyncClient {
         } else {
             DEFAULT_ACCEPT
         });
+        let storage_failed = |message: String| {
+            Box::new(SyncOutcome::Failed {
+                error_code: "storage.failed".into(),
+                message,
+                details: None,
+                recommended_action: None,
+            })
+        };
         let header = Frame::ReqHeader {
             client_id: self.client_id.clone(),
             schema_version: self.schema.version,
             log_epoch: log_epoch.clone(),
+            outbox_id: self.get_meta(OUTBOX_ID_KEY).map_err(storage_failed)?,
         };
         // §1.5: the lead frames are REQ_HEADER plus the optional ROUND_FAILURE,
-        // which stays ahead of every push, pull and subscription frame; the
+        // which stays ahead of every push, pull, unit and progress frame; the
         // byte-capacity probes below measure this exact sequence.
         let mut lead = vec![header];
         lead.extend(
@@ -7084,33 +6961,67 @@ impl SyncClient {
                 .iter()
                 .map(|code| Frame::RoundFailure { code: code.clone() }),
         );
+        let registered: Vec<UnitRecord> = self
+            .stored(load_units(&self.conn))
+            .map_err(storage_failed)?
+            .into_iter()
+            .filter(|unit| unit.status == UnitStatus::Active)
+            .collect();
+        let registration_digest = ssp2::registration::registration_digest(
+            registered
+                .iter()
+                .map(|unit| scope_pairs(&unit.scopes))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(Vec::as_slice),
+        );
+        let echo_digest = self
+            .get_meta(ECHO_DIGEST_KEY)
+            .map_err(storage_failed)?
+            .filter(|hex| !hex.is_empty())
+            .map(|hex| {
+                crate::values::hex_to_bytes(&hex)
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                    .ok_or_else(|| {
+                        "sync.local_corrupt: persisted echo digest is invalid".to_owned()
+                    })
+            })
+            .transpose()
+            .map_err(storage_failed)?;
         let pull = Frame::PullHeader {
             limit_commits: self.limits.limit_commits.unwrap_or(0),
             limit_snapshot_rows: self.limits.limit_snapshot_rows.unwrap_or(0),
             max_snapshot_pages: self.limits.max_snapshot_pages.unwrap_or(0),
             accept,
+            cursor: self
+                .stored(replica_cursor(&self.conn))
+                .map_err(storage_failed)?,
+            registration_digest,
+            echo_digest,
         };
-        let mut fresh = Vec::new();
-        let mut sub_frames = Vec::new();
-        for sub in self.subs.iter() {
-            if sub.state != SubState::Active {
-                continue;
-            }
-            let mut scopes = sub.requested.clone();
-            sort_scope_map(&mut scopes);
-            sub_frames.push(Frame::Subscription {
-                id: sub.id.clone(),
-                table: sub.table.clone(),
-                scopes,
-                params: sub.params.clone().map(RawJson),
-                cursor: sub.cursor,
-                bootstrap_state: sub.bootstrap_state.clone().map(RawJson),
-            });
-            fresh.push((
-                sub.id.clone(),
-                sub.cursor < 0 && sub.bootstrap_state.is_none(),
-            ));
+        let registration_digest = bytes_to_hex(&registration_digest);
+        // §4.1: the list travels when it changed since the server stored it,
+        // after `unregistered` and after a reset (both clear the stored digest).
+        let travels = self
+            .get_meta(REGISTERED_DIGEST_KEY)
+            .map_err(storage_failed)?
+            .as_deref()
+            != Some(registration_digest.as_str());
+        let mut sub_frames: Vec<Frame> = Vec::new();
+        if travels {
+            sub_frames.extend(registered.iter().map(|unit| Frame::Unit {
+                scopes: scope_pairs(&unit.scopes),
+            }));
         }
+        // §4.3: one PROGRESS per catching-up unit, in registration order.
+        sub_frames.extend(registered.iter().filter_map(|unit| {
+            Some(Frame::Progress {
+                id: unit.id.clone(),
+                cursor: unit.cursor?,
+                bootstrap_state: unit.bootstrap_state.clone().map(RawJson),
+            })
+        }));
         // The fixed frames (order-independent size) and the header+pull probe
         // both encode canonically, so the byte budget is the exact wire size.
         let fixed_bytes = match byte_cap {
@@ -7226,8 +7137,19 @@ impl SyncClient {
                     })
                 })
                 .collect::<Result<Vec<_>, Box<SyncOutcome>>>()?;
+            // §6.3.2, §7.1: the commit's outbox sequence.
+            let client_seq = self
+                .conn
+                .prepare_cached("SELECT seq FROM _syncular_outbox WHERE commit_id = ?1")
+                .and_then(|mut statement| {
+                    statement.query_row([&commit.client_commit_id], |row| row.get(0))
+                })
+                .map_err(|error| {
+                    storage_failed(Self::sqlite_failure(&self.storage_failure, error))
+                })?;
             let frame = Frame::PushCommit {
                 client_commit_id: commit.client_commit_id.clone(),
+                client_seq,
                 operations,
             };
             let frame_bytes = match byte_cap {
@@ -7291,7 +7213,7 @@ impl SyncClient {
             message,
             RequestMeta {
                 pushed_ids,
-                fresh,
+                registration_digest,
                 accept,
                 deferred_commits,
             },
@@ -7597,10 +7519,24 @@ impl SyncClient {
                 continuation: None,
                 completed: None,
                 realtime: self.realtime_state == RealtimeState::Connected,
+                // §5.5: the owning unit's scope map, each value a one-element list.
                 scopes: self
-                    .subs
-                    .iter()
-                    .map(|s| (s.id.clone(), canonical_scope_json(&s.requested)))
+                    .stored(load_units(&self.conn))
+                    .map_err(|message| {
+                        Box::new(SyncOutcome::Failed {
+                            error_code: "storage.failed".into(),
+                            message,
+                            details: None,
+                            recommended_action: None,
+                        })
+                    })?
+                    .into_iter()
+                    .map(|unit| {
+                        (
+                            unit.id,
+                            canonical_scope_json(&unit_scope_lists(&unit.scopes)),
+                        )
+                    })
                     .collect(),
                 #[cfg(feature = "bench-internals")]
                 benchmark_phases: self.benchmark_phases.clone(),
@@ -7612,7 +7548,7 @@ impl SyncClient {
         prepared.map_err(|outcome| Box::new(self.finish_sync_round(started_at_ms, *outcome)))
     }
 
-    /// Discard the reply of an old authorization/subscription context. Its
+    /// Discard the reply of an old authorization or registration context. Its
     /// submitted commits stay durable and can be retried with the same ids.
     pub fn cancel_sync_round(&mut self) {
         self.active_round = None;
@@ -7740,11 +7676,7 @@ impl SyncClient {
             } => (response, downloads, transport_failed),
         };
         self.active_round = None;
-        let before = self
-            .subs
-            .iter()
-            .map(|s| (s.id.clone(), s.bootstrap_state.clone()))
-            .collect::<Vec<_>>();
+        let before = self.resume_tokens();
         let outcome = (|| {
             let response = match response {
                 Ok(response) => {
@@ -7818,8 +7750,8 @@ impl SyncClient {
             outcome
         })();
         match &outcome {
-            // §4.7: a subscription that still holds a resume token needs
-            // another round, also when the drive that started it ends early.
+            // §7.1: a unit still catching up needs another round, also when the
+            // drive that started it ends early.
             SyncOutcome::Ok(report) if !report.bootstrapping.is_empty() => {
                 self.set_sync_needed(true, false)
             }
@@ -7840,12 +7772,7 @@ impl SyncClient {
                         || report.deferred_commits > 0
                         || self.sync_needed));
         let bootstrap_advanced = matches!(&outcome, SyncOutcome::Ok(report) if report.segment_rows_applied > 0 && !report.bootstrapping.is_empty())
-            && before
-                != self
-                    .subs
-                    .iter()
-                    .map(|s| (s.id.clone(), s.bootstrap_state.clone()))
-                    .collect::<Vec<_>>();
+            && before != self.resume_tokens();
         crate::AppliedSyncRound::Complete {
             outcome: self.finish_sync_round(prepared.started_at_ms, outcome),
             controls: if self.transport_enabled {
@@ -7858,7 +7785,17 @@ impl SyncClient {
         }
     }
 
-    /// §7.7: one idle drive's default total deadline, the TS client's value.
+    /// Every unit's resume token: a bootstrap that advanced changes one (§4.7).
+    fn resume_tokens(&self) -> Option<Vec<(String, Option<String>)>> {
+        load_units(&self.conn).ok().map(|units| {
+            units
+                .into_iter()
+                .map(|unit| (unit.id, unit.bootstrap_state))
+                .collect()
+        })
+    }
+
+    /// §7.8: one idle drive's default total deadline, the TS client's value.
     pub const SYNC_IDLE_TIMEOUT_MS: u64 = 60_000;
 
     pub fn sync_until_idle(
@@ -7879,7 +7816,7 @@ impl SyncClient {
         max_rounds: Option<u32>,
         timeout_ms: Option<u64>,
     ) -> SyncOutcome {
-        // §7.7: an explicit budget is a strict positive round count. Zero is a
+        // §7.8: an explicit budget is a strict positive round count. Zero is a
         // caller error, not an exhaustion.
         if max_rounds == Some(0) {
             return SyncOutcome::Failed {
@@ -7928,11 +7865,7 @@ impl SyncClient {
                 }
             }
             spent += 1;
-            let before = self
-                .subs
-                .iter()
-                .map(|sub| (sub.id.clone(), sub.bootstrap_state.clone()))
-                .collect::<Vec<_>>();
+            let before = self.resume_tokens();
             match self.sync(transport) {
                 SyncOutcome::Failed {
                     error_code,
@@ -7955,12 +7888,7 @@ impl SyncClient {
                     if max_rounds.is_none()
                         && report.segment_rows_applied > 0
                         && !report.bootstrapping.is_empty()
-                        && before
-                            != self
-                                .subs
-                                .iter()
-                                .map(|sub| (sub.id.clone(), sub.bootstrap_state.clone()))
-                                .collect::<Vec<_>>()
+                        && before != self.resume_tokens()
                     {
                         spent = 0;
                     }
@@ -7988,7 +7916,7 @@ impl SyncClient {
                 }
             }
         }
-        // §7.7: partial success. The aggregate report is retained and the run
+        // §7.8: partial success. The aggregate report is retained and the run
         // is explicitly not idle.
         SyncOutcome::BudgetExhausted(aggregate)
     }
@@ -8012,8 +7940,6 @@ impl SyncClient {
             .iter()
             .map(String::as_str)
             .collect::<HashSet<_>>();
-        let mut incomplete_subscriptions: HashSet<&str> =
-            meta.fresh.iter().map(|(id, _)| id.as_str()).collect();
         let mut last_final_push_result_id: Option<String> = None;
         for frame in &response.frames {
             match frame {
@@ -8052,17 +7978,6 @@ impl SyncClient {
                 _ => {}
             }
         }
-        if response.wire_version < 2 {
-            return SyncOutcome::Failed {
-                details: None,
-                error_code: "client.invalid_host_response".to_owned(),
-                message: "server response does not carry wire version 2 log-epoch state".to_owned(),
-                recommended_action: None,
-            };
-        }
-        let coalesced_deletes = coalesced_delete_keys(&response.frames, |id, status, _| {
-            status == SubStatus::Active && self.subs.iter().any(|sub| sub.id == id)
-        });
         let mut frames = response.frames.into_iter().peekable();
         match frames.next() {
             Some(Frame::RespHeader {
@@ -8152,6 +8067,10 @@ impl SyncClient {
             };
         }
         let mut failure: Option<(String, String, Option<String>, Option<Value>)> = None;
+        // §4.5 client application: the units whose persisted echo a live
+        // change must match, fixed at LIVE_START after every SUB_END persisted.
+        let mut live: Option<(LiveStatus, String, Vec<UnitRecord>)> = None;
+        let mut live_ended = false;
         while let Some(frame) = frames.next() {
             match frame {
                 frame @ Frame::PushResult { .. } => {
@@ -8200,11 +8119,14 @@ impl SyncClient {
                     id,
                     status,
                     reason_code,
-                    effective_scopes,
-                    bootstrap: _,
+                    bootstrap,
+                    fenced,
                 } => {
+                    // §1.4 rule 5: an ERROR closes the section; its body still
+                    // applied, its SUB_END values are never persisted.
                     let mut body = Vec::new();
                     let mut sub_end: Option<(i64, Option<String>)> = None;
+                    let mut error: Option<Frame> = None;
                     for inner in frames.by_ref() {
                         match inner {
                             Frame::SubEnd {
@@ -8214,35 +8136,131 @@ impl SyncClient {
                                 sub_end = Some((next_cursor, bootstrap_state.map(|r| r.0)));
                                 break;
                             }
+                            inner @ Frame::Error { .. } => {
+                                error = Some(inner);
+                                break;
+                            }
                             Frame::Unknown { .. } => {}
                             other => body.push(other),
                         }
                     }
-                    if sub_end.is_some() {
-                        incomplete_subscriptions.remove(id.as_str());
-                    }
-                    let section_failure = match self.process_section(
-                        transport,
-                        &id,
+                    let ended = sub_end.is_some();
+                    let section = SectionStart {
+                        id,
                         status,
-                        &reason_code,
-                        effective_scopes,
+                        reason_code,
+                        bootstrap,
+                        fenced,
+                    };
+                    match self.process_section(
+                        transport,
+                        &section,
                         body,
                         sub_end,
                         meta,
                         &mut report,
-                        &coalesced_deletes,
                     ) {
                         Err(SectionError::Abort(code, message)) => {
-                            Some((code, message, None, None))
+                            failure = Some((code, message, None, None));
+                            break;
                         }
                         Err(SectionError::Transport(error)) => {
-                            Some((error.code, error.message, None, error.details))
+                            failure = Some((error.code, error.message, None, error.details));
+                            break;
                         }
-                        _ => None,
+                        _ => {}
+                    }
+                    match error {
+                        Some(Frame::Error {
+                            code,
+                            message,
+                            recommended_action,
+                            details,
+                            ..
+                        }) => {
+                            failure = Some(Self::error_frame_failure(
+                                code,
+                                message,
+                                recommended_action,
+                                details,
+                            ));
+                            break;
+                        }
+                        Some(_) => unreachable!("only an ERROR closes a section early"),
+                        None if !ended => {
+                            failure = Some((
+                                "sync.invalid_request".to_owned(),
+                                "unit section without SUB_END".to_owned(),
+                                None,
+                                None,
+                            ));
+                            break;
+                        }
+                        None => {}
+                    }
+                }
+                Frame::LiveStart {
+                    status,
+                    reason_code,
+                } => {
+                    let receivers = match self.stored(load_units(&self.conn)) {
+                        Ok(units) => units
+                            .into_iter()
+                            .filter(|unit| {
+                                unit.status == UnitStatus::Active
+                                    && unit.echo.is_some()
+                                    && !unit.bootstrapping()
+                            })
+                            .collect(),
+                        Err(message) => {
+                            failure = Some(("storage.failed".to_owned(), message, None, None));
+                            break;
+                        }
                     };
-                    if section_failure.is_some() {
-                        failure = section_failure;
+                    live = Some((status, reason_code, receivers));
+                }
+                Frame::Commit {
+                    commit_seq,
+                    tables,
+                    changes,
+                    ..
+                } => {
+                    let Some((LiveStatus::Active, _, receivers)) = &live else {
+                        continue;
+                    };
+                    let receivers = receivers.clone();
+                    match self.apply_live_commit(
+                        &receivers,
+                        &tables,
+                        changes,
+                        commit_seq,
+                        AppliedServerCommitSource::Pull,
+                    ) {
+                        Ok(applied) => report.commits_applied += u32::from(applied),
+                        Err((code, message)) => {
+                            failure = Some((code, message, None, None));
+                            break;
+                        }
+                    }
+                }
+                Frame::LiveEnd {
+                    through_seq,
+                    echo_digest,
+                } => {
+                    let Some((status, reason_code, _)) = live.take() else {
+                        continue;
+                    };
+                    live_ended = true;
+                    live = Some((status, String::new(), Vec::new()));
+                    if let Err(message) = self.finish_live_section(
+                        status,
+                        &reason_code,
+                        through_seq,
+                        echo_digest,
+                        &meta.registration_digest,
+                        &mut report,
+                    ) {
+                        failure = Some(("storage.failed".to_owned(), message, None, None));
                         break;
                     }
                 }
@@ -8269,13 +8287,13 @@ impl SyncClient {
                     ..
                 } => {
                     // §1.6: the whole request failed; already-completed
-                    // subscriptions keep their applied data and cursors.
-                    let recommended_action =
-                        (!recommended_action.is_empty()).then_some(recommended_action);
-                    let details = details
-                        .and_then(|details| serde_json::from_str::<Value>(&details.0).ok())
-                        .filter(Value::is_object);
-                    failure = Some((code, message, recommended_action, details));
+                    // units keep their applied data and cursors.
+                    failure = Some(Self::error_frame_failure(
+                        code,
+                        message,
+                        recommended_action,
+                        details,
+                    ));
                     break;
                 }
                 Frame::Unknown { .. } => {}
@@ -8320,16 +8338,138 @@ impl SyncClient {
                 recommended_action,
             };
         }
-        if !incomplete_subscriptions.is_empty() {
-            self.set_sync_needed(true, true);
+        let catching_up = match self.stored(load_units(&self.conn)) {
+            Ok(units) => units
+                .into_iter()
+                .filter(|unit| unit.status == UnitStatus::Active && unit.cursor.is_some())
+                .map(|unit| unit.id)
+                .collect::<Vec<_>>(),
+            Err(message) => {
+                return SyncOutcome::Failed {
+                    details: None,
+                    error_code: "storage.failed".into(),
+                    message,
+                    recommended_action: None,
+                }
+            }
+        };
+        // §7.1: a response without LIVE_END, one answered `unregistered` or
+        // `reset`, or a unit still catching up leaves sync-needed raised;
+        // after `unregistered` the next round starts at once.
+        let status = live.map(|(status, _, _)| status);
+        if !live_ended || status != Some(LiveStatus::Active) || !catching_up.is_empty() {
+            self.set_sync_needed(true, status == Some(LiveStatus::Unregistered));
         }
         self.ack_after_pull(transport);
         // §7.4.5: the reset is over once the first post-reset pull round
-        // leaves no subscription mid-bootstrap — the tables are rebuilt.
-        if self.upgrading && report.bootstrapping.is_empty() {
+        // leaves no unit catching up: the tables are rebuilt and current.
+        if self.upgrading && catching_up.is_empty() {
             self.set_upgrading(false);
         }
+        report.bootstrapping = catching_up;
         SyncOutcome::Ok(report)
+    }
+
+    /// §1.6 / §10.1: the failure an in-band `ERROR` frame reports.
+    fn error_frame_failure(
+        code: String,
+        message: String,
+        recommended_action: String,
+        details: Option<RawJson>,
+    ) -> (String, String, Option<String>, Option<Value>) {
+        let recommended_action = (!recommended_action.is_empty()).then_some(recommended_action);
+        let details = details
+            .and_then(|details| serde_json::from_str::<Value>(&details.0).ok())
+            .filter(Value::is_object);
+        (code, message, recommended_action, details)
+    }
+
+    /// §4.5 at `LIVE_END` of a pull: join rule J for an `active` section, the
+    /// §4.6 replica reset for `reset`, nothing for `unregistered`; then the
+    /// replica cursor, the echo digest and the digest of the list the server
+    /// now stores.
+    fn finish_live_section(
+        &mut self,
+        status: LiveStatus,
+        reason_code: &str,
+        through_seq: i64,
+        echo_digest: Option<[u8; 32]>,
+        registration_digest: &str,
+        report: &mut SyncReport,
+    ) -> Result<(), String> {
+        let rollback = self.capture();
+        let resets = report.resets.len();
+        self.begin_observation("syncular_live_end")?;
+        let finished = (|| {
+            let mut batch = ChangeAccumulator::default();
+            let before = self.stored(replica_cursor(&self.conn))?;
+            let mut cursor = if status == LiveStatus::Unregistered {
+                before
+            } else {
+                -1
+            };
+            let joined = before.max(through_seq);
+            for unit in self.stored(load_units(&self.conn))? {
+                if unit.status != UnitStatus::Active || unit.bootstrapping() {
+                    continue;
+                }
+                match status {
+                    // §4.6 replica reset: every live unit bootstraps again;
+                    // post-bootstrap units keep their cursors.
+                    LiveStatus::Reset if unit.cursor.is_none() => {
+                        for (base_key, value) in self.stored(window_refs(&self.conn, &unit.id))? {
+                            batch.window(&base_key, &value);
+                        }
+                        report.resets.push(unit.id.clone());
+                        self.stored(save_unit(
+                            &self.conn,
+                            &UnitRecord {
+                                reason_code: Some(reason_code.to_owned()),
+                                cursor: Some(-1),
+                                seeded: Vec::new(),
+                                ..unit
+                            },
+                        ))?;
+                    }
+                    // §4.5 join rule J.
+                    LiveStatus::Active => {
+                        let next = unit.cursor.unwrap_or(joined).max(through_seq);
+                        if next >= joined {
+                            cursor = joined;
+                        }
+                        if unit.cursor.is_some() {
+                            self.stored(save_unit(
+                                &self.conn,
+                                &UnitRecord {
+                                    cursor: (next < joined).then_some(next),
+                                    ..unit
+                                },
+                            ))?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.set_meta(REPLICA_CURSOR_KEY, &cursor.to_string())?;
+            self.set_meta(
+                ECHO_DIGEST_KEY,
+                &echo_digest
+                    .map(|digest| bytes_to_hex(&digest))
+                    .unwrap_or_default(),
+            )?;
+            if status == LiveStatus::Unregistered {
+                self.delete_meta(REGISTERED_DIGEST_KEY)?;
+            } else {
+                self.set_meta(REGISTERED_DIGEST_KEY, registration_digest)?;
+            }
+            self.finish_observation("syncular_live_end", batch)
+        })();
+        if finished.is_err() {
+            self.rollback_observation("syncular_live_end");
+            self.restore(rollback);
+            report.resets.truncate(resets);
+        }
+        finished
     }
 
     // -- push results (§6.3, §7.2) ------------------------------------------------
@@ -8676,559 +8816,575 @@ impl SyncClient {
             })
     }
 
-    // -- subscription sections ------------------------------------------------------
+    // -- unit sections and the live section ------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    /// One unit section (§4.4): apply its segments, then persist its
+    /// `SUB_END` (§4.6 reset, §3.3 revocation and purge, the echo, cursor and
+    /// resume token). A section of a unit the app released while the round was
+    /// in flight is skipped; a fail-closed first page fails the unit and skips
+    /// the rest of its section (§5.6).
     fn process_section(
         &mut self,
         transport: &mut dyn Transport,
-        id: &str,
-        status: SubStatus,
-        reason_code: &str,
-        effective_scopes: Vec<(String, Vec<String>)>,
+        start: &SectionStart,
         body: Vec<Frame>,
         sub_end: Option<(i64, Option<String>)>,
         meta: &RequestMeta,
         report: &mut SyncReport,
-        coalesced_deletes: &HashSet<(i64, String, String)>,
     ) -> Result<(), SectionError> {
-        let Some(sub_index) = self.subs.iter().position(|s| s.id == id) else {
-            return Ok(()); // unknown echo: ignore
+        let storage = |message| SectionError::Abort("storage.failed".to_owned(), message);
+        let Some(unit) = self
+            .stored(get_unit(&self.conn, &start.id))
+            .map_err(storage)?
+            .filter(|unit| unit.status == UnitStatus::Active)
+        else {
+            return Ok(());
         };
-        if status != SubStatus::Active && sub_end.is_none() {
-            return Err(SectionError::Abort(
-                "sync.invalid_request".into(),
-                "subscription section without SUB_END".into(),
-            ));
-        }
-        match status {
-            SubStatus::Revoked => {
-                self.begin_observation("syncular_revocation")
-                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let rollback = self.capture();
-                let revoked_count = report.revoked.len();
-                let failed_count = report.failed.len();
-                let result = (|| {
-                    let mut batch = ChangeAccumulator::default();
-                    let registered = self.window_unit_by_sub_id(id);
-                    // §3.3: stop pulling, purge exactly the last effective grant.
-                    let (table, effective) = {
-                        let sub = &self.subs[sub_index];
-                        (sub.table.clone(), sub.effective.clone().unwrap_or_default())
-                    };
-                    let owners = self.scope_owners(&table, id);
-                    let scoped_table = self.schema.table(&table).cloned().ok_or_else(|| {
-                        SectionError::Abort(
-                            "sync.unknown_table".to_owned(),
-                            "revoked scope references an unknown table".to_owned(),
-                        )
-                    })?;
-                    let dropped = self
-                        .drop_failed_commits(|name, values| {
-                            name == table
-                                && owns_local_row(&scoped_table, &effective, &owners, values)
-                        })
-                        .map_err(|message| {
-                            SectionError::Abort("storage.failed".to_owned(), message)
+        let echo: Vec<EchoRecord> = start
+            .fenced
+            .iter()
+            .map(|record| EchoRecord {
+                table: record.table.clone(),
+                status: record.status.name().to_owned(),
+                scopes: record.scopes.iter().cloned().collect(),
+            })
+            .collect();
+        // §5.6: a resumed bootstrap keeps the tables it already seeded.
+        let mut seeded: BTreeSet<String> = if unit.bootstrap_state.is_none() {
+            BTreeSet::new()
+        } else {
+            unit.seeded.iter().cloned().collect()
+        };
+        let applied = (|| {
+            for frame in body {
+                match frame {
+                    Frame::SegmentInline { payload } => {
+                        let segment = decode_rows_segment(&payload).map_err(|e| {
+                            SectionError::Abort(e.code.as_str().to_owned(), e.detail)
                         })?;
-                    for commit in dropped {
-                        batch.conflicts = true;
-                        batch.rejections = true;
-                        batch.outcomes = true;
-                        for operation in commit.ops {
-                            batch.table(&operation.table);
-                        }
+                        self.progress.update(|p| {
+                            p.phase = ProgressPhase::Import;
+                            p.unit_id = Some(unit.id.clone());
+                            p.table = Some(segment.table.clone());
+                            p.segment_id = None;
+                            p.bytes_received = payload.len() as u64;
+                            p.bytes_total = Some(payload.len() as u64);
+                            p.rows_processed = 0;
+                            p.rows_total =
+                                Some(segment.blocks.iter().map(|block| block.len() as u64).sum());
+                        });
+                        let (pair, clear, effective, owners) =
+                            self.segment_pair(&unit, &echo, &seeded, &segment.table)?;
+                        report.segment_rows_applied +=
+                            self.apply_segment(&pair, &segment, clear, &effective, &owners)?;
+                        seeded.insert(segment.table);
                     }
-                    let purged = self.purge_scope_rows(&table, &effective, &owners);
-                    match purged {
-                        Ok(()) => {
-                            self.record_scope_map(&mut batch, &table, &effective);
-                            let sub = &mut self.subs[sub_index];
-                            sub.state = SubState::Revoked;
-                            sub.reason_code = Some(if reason_code.is_empty() {
-                                "sync.scope_revoked".to_owned()
-                            } else {
-                                reason_code.to_owned()
-                            });
-                            report.revoked.push(id.to_owned());
-                            self.persist_sub(&self.subs[sub_index].clone())
-                                .map_err(|message| {
-                                    SectionError::Abort("storage.failed".into(), message)
-                                })?;
-                            let dropped = self
-                                .drop_doomed_outbox(&scoped_table, &effective, &owners)
-                                .map_err(|message| {
-                                    SectionError::Abort("storage.failed".to_owned(), message)
-                                })?;
-                            if dropped {
-                                batch.status = true;
-                                batch.rejections = true;
-                                batch.outcomes = true;
+                    Frame::SegmentRef {
+                        segment_id,
+                        byte_length,
+                        media_type,
+                        table,
+                        row_count,
+                        as_of_commit_seq,
+                        scope_digest,
+                        row_cursor,
+                        next_row_cursor,
+                        url,
+                        url_expires_at_ms,
+                        ..
+                    } => {
+                        // §4.2: reject a descriptor whose mediaType was not
+                        // advertised — never skip or guess.
+                        let advertised = match media_type {
+                            MediaType::Rows => {
+                                meta.accept & ACCEPT_EXTERNAL_ROWS != 0
+                                    || meta.accept & ACCEPT_INLINE_ROWS != 0
                             }
-                            // §5.9.7 B2: revocation deletes now-unauthorized blob
-                            // bodies (evicted ≠ revoked).
-                            self.delete_unreferenced_cached_blobs().map_err(|message| {
-                                SectionError::Abort("storage.failed".into(), message)
-                            })?;
-                        }
-                        Err(()) => {
-                            // §3.3 fail closed: no local mapping — never clear by
-                            // approximation; fatal configuration error.
-                            let sub = &mut self.subs[sub_index];
-                            sub.state = SubState::Failed;
-                            sub.reason_code = Some("sync.scope_revoked".to_owned());
-                            report.failed.push(id.to_owned());
-                            self.persist_sub(&self.subs[sub_index].clone())
-                                .map_err(|message| {
-                                    SectionError::Abort("storage.failed".into(), message)
-                                })?;
-                        }
-                    }
-                    if let Some((base_key, unit)) = registered {
-                        batch.window(&base_key, &self.subs[sub_index].table, &unit);
-                    }
-                    self.rebuild_overlay_if_dirty()
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                    self.finish_observation("syncular_revocation", batch)
-                        .map_err(|message| {
-                            SectionError::Abort("storage.failed".to_owned(), message)
-                        })?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    self.rollback_observation("syncular_revocation");
-                    self.restore(rollback);
-                    report.revoked.truncate(revoked_count);
-                    report.failed.truncate(failed_count);
-                }
-                result
-            }
-            SubStatus::Reset => {
-                self.begin_observation("syncular_reset")
-                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let rollback = self.capture();
-                let reset_count = report.resets.len();
-                let result = (|| {
-                    let mut batch = ChangeAccumulator::default();
-                    let registered = self.window_unit_by_sub_id(id);
-                    // §4.6: discard cursor + bootstrap state, keep local rows —
-                    // reset is a staleness signal, not a purge signal.
-                    let sub = &mut self.subs[sub_index];
-                    sub.cursor = -1;
-                    sub.bootstrap_state = None;
-                    sub.reason_code = Some(if reason_code.is_empty() {
-                        "sync.cursor_expired".to_owned()
-                    } else {
-                        reason_code.to_owned()
-                    });
-                    report.resets.push(id.to_owned());
-                    self.persist_sub(&self.subs[sub_index].clone())
-                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                    if let Some((base_key, unit)) = registered {
-                        batch.window(&base_key, &self.subs[sub_index].table, &unit);
-                    }
-                    self.finish_observation("syncular_reset", batch)
-                        .map_err(|message| {
-                            SectionError::Abort("storage.failed".to_owned(), message)
-                        })?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    self.rollback_observation("syncular_reset");
-                    self.restore(rollback);
-                    report.resets.truncate(reset_count);
-                }
-                result
-            }
-            SubStatus::Active => {
-                let fresh = meta
-                    .fresh
-                    .iter()
-                    .find(|(fid, _)| fid == id)
-                    .map(|(_, fresh)| *fresh)
-                    .unwrap_or(false);
-                let previous = self.subs[sub_index].clone();
-                self.subs[sub_index].effective = Some(effective_scopes);
-                let outcome = self
-                    .apply_section_body(
-                        transport,
-                        sub_index,
-                        body,
-                        fresh,
-                        meta,
-                        report,
-                        coalesced_deletes,
-                    )
-                    .and_then(|()| {
-                        let (cursor, bootstrap_state) = sub_end.ok_or_else(|| {
-                            SectionError::Abort(
-                                "sync.invalid_request".into(),
-                                "subscription section without SUB_END".into(),
-                            )
-                        })?;
-                        self.apply_sub_end(sub_index, cursor, bootstrap_state)
-                            .map_err(|message| {
-                                SectionError::Abort("storage.failed".into(), message)
-                            })
-                    });
-                match outcome {
-                    Ok(()) => {
-                        if self.subs[sub_index].bootstrap_state.is_some() {
-                            report.bootstrapping.push(id.to_owned());
-                        }
-                        Ok(())
-                    }
-                    Err(SectionError::FailClosed) => {
-                        self.subs[sub_index] = previous.clone();
-                        self.begin_observation("syncular_section_failure")
-                            .map_err(|message| {
-                                SectionError::Abort("storage.failed".into(), message)
-                            })?;
-                        let persisted = (|| {
-                            let mut batch = ChangeAccumulator::default();
-                            if let Some((base_key, unit)) = self.window_unit_by_sub_id(id) {
-                                batch.window(&base_key, &self.subs[sub_index].table, &unit);
-                            }
-                            self.subs[sub_index].state = SubState::Failed;
-                            self.subs[sub_index].reason_code = Some("sync.scope_revoked".into());
-                            self.persist_sub(&self.subs[sub_index])?;
-                            self.finish_observation("syncular_section_failure", batch)
-                        })();
-                        if let Err(message) = persisted {
-                            self.rollback_observation("syncular_section_failure");
-                            self.subs[sub_index] = previous;
-                            return Err(SectionError::Abort("storage.failed".into(), message));
-                        }
-                        report.failed.push(id.to_owned());
-                        Ok(())
-                    }
-                    Err(error) => {
-                        // Frame/block transactions already completed. Preserve their
-                        // rows and revisions, but leave this subscription cursor unchanged.
-                        self.subs[sub_index] = previous;
-                        Err(error)
-                    }
-                }
-            }
-        }
-    }
-
-    fn apply_sub_end(
-        &mut self,
-        sub_index: usize,
-        cursor: i64,
-        bootstrap_state: Option<String>,
-    ) -> Result<(), String> {
-        #[cfg(feature = "bench-internals")]
-        let _phase = self.benchmark_phases.start(Phase::CursorPersist);
-        let previous = self.subs[sub_index].clone();
-        self.begin_observation("syncular_sub_end")?;
-        let persisted = (|| {
-            let mut batch = ChangeAccumulator::default();
-            let completed = (previous.cursor < 0 || previous.bootstrap_state.is_some())
-                && cursor >= 0
-                && bootstrap_state.is_none();
-            if completed {
-                let table = self
-                    .schema
-                    .table(&previous.table)
-                    .ok_or_else(|| "sync.unknown_table".to_owned())?;
-                let effective = previous.effective.as_deref().unwrap_or(&[]);
-                let mut statement = self.conn.prepare("SELECT id,intent_json FROM _syncular_acked_rows WHERE tbl=?1 AND commit_seq<=?2")
-                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-                let rows = statement
-                    .query_map(rusqlite::params![previous.table, cursor], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-                let mut covered = HashSet::new();
-                for row in rows {
-                    let (id, intent) =
-                        row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-                    let values: Map<String, Value> = serde_json::from_str(&intent)
-                        .map_err(|_| "sync.local_corrupt".to_owned())?;
-                    if !effective.is_empty()
-                        && effective.iter().all(|(variable, allowed)| {
-                            table
-                                .scope_column(variable)
-                                .and_then(|column| values.get(column))
-                                .is_some_and(|value| {
-                                    allowed.contains(
-                                        &value
-                                            .as_str()
-                                            .map_or_else(|| value.to_string(), str::to_owned),
-                                    )
-                                })
-                        })
-                    {
-                        covered.insert(id);
-                    }
-                }
-                drop(statement);
-                for id in covered {
-                    self.conn.execute("DELETE FROM _syncular_acked_rows WHERE tbl=?1 AND id=?2 AND commit_seq<=?3", rusqlite::params![previous.table, id, cursor])
-                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-                    self.overlay_dirty.table(&previous.table);
-                    batch.table(&previous.table);
-                }
-                self.rebuild_overlay_if_dirty()?;
-                if let Some((base_key, unit)) = self.window_unit_by_sub_id(&previous.id) {
-                    batch.window(&base_key, &previous.table, &unit);
-                }
-            }
-            let sub = &mut self.subs[sub_index];
-            sub.cursor = cursor;
-            sub.bootstrap_state = bootstrap_state;
-            // §4.6: a completed (or continuing) active end clears the reset /
-            // revocation reason, matching the TS core's active-state persist.
-            sub.reason_code = None;
-            sub.synced_once = true;
-            self.persist_sub(&self.subs[sub_index])?;
-            self.finish_observation("syncular_sub_end", batch)
-        })();
-        if persisted.is_err() {
-            self.rollback_observation("syncular_sub_end");
-            self.subs[sub_index] = previous;
-        }
-        persisted
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_section_body(
-        &mut self,
-        transport: &mut dyn Transport,
-        sub_index: usize,
-        body: Vec<Frame>,
-        fresh: bool,
-        meta: &RequestMeta,
-        report: &mut SyncReport,
-        coalesced_deletes: &HashSet<(i64, String, String)>,
-    ) -> Result<(), SectionError> {
-        let mut saw_segment = false;
-        for frame in body {
-            match frame {
-                Frame::Commit {
-                    tables,
-                    changes,
-                    commit_seq,
-                    ..
-                } => {
-                    if self
-                        .apply_commit_frame_coalesced(
-                            &tables,
-                            changes,
-                            commit_seq,
-                            coalesced_deletes,
-                            sub_index,
-                            AppliedServerCommitSource::Pull,
-                        )
-                        .map_err(|(c, m)| SectionError::Abort(c, m))?
-                    {
-                        report.commits_applied += 1;
-                    }
-                }
-                Frame::SegmentInline { payload } => {
-                    let segment = decode_rows_segment(&payload)
-                        .map_err(|e| SectionError::Abort(e.code.as_str().to_owned(), e.detail))?;
-                    self.progress.update(|p| {
-                        p.phase = ProgressPhase::Import;
-                        p.subscription_id = Some(self.subs[sub_index].id.clone());
-                        p.table = Some(self.subs[sub_index].table.clone());
-                        p.segment_id = None;
-                        p.bytes_received = payload.len() as u64;
-                        p.bytes_total = Some(payload.len() as u64);
-                        p.rows_processed = 0;
-                        p.rows_total =
-                            Some(segment.blocks.iter().map(|block| block.len() as u64).sum());
-                    });
-                    let first = !saw_segment;
-                    saw_segment = true;
-                    let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
-                    report.segment_rows_applied += applied;
-                }
-                Frame::SegmentRef {
-                    segment_id,
-                    byte_length,
-                    media_type,
-                    table,
-                    row_count,
-                    as_of_commit_seq,
-                    scope_digest,
-                    row_cursor,
-                    next_row_cursor,
-                    url,
-                    url_expires_at_ms,
-                    ..
-                } => {
-                    // §4.2: reject a descriptor whose mediaType was not
-                    // advertised — never skip or guess.
-                    let advertised = match media_type {
-                        MediaType::Rows => {
-                            meta.accept & ACCEPT_EXTERNAL_ROWS != 0
-                                || meta.accept & ACCEPT_INLINE_ROWS != 0
-                        }
-                        MediaType::Sqlite => meta.accept & ACCEPT_SQLITE != 0,
-                    };
-                    if !advertised {
-                        return Err(SectionError::Abort(
-                            "sync.invalid_request".to_owned(),
-                            format!(
-                                "SEGMENT_REF mediaType {} was not advertised in accept (§4.2)",
-                                media_type.name()
-                            ),
-                        ));
-                    }
-                    self.progress.update(|p| {
-                        p.phase = ProgressPhase::Download;
-                        p.subscription_id = Some(self.subs[sub_index].id.clone());
-                        p.table = Some(table.clone());
-                        p.segment_id = Some(segment_id.clone());
-                        p.bytes_received = 0;
-                        p.bytes_total = u64::try_from(byte_length).ok();
-                        p.rows_processed = 0;
-                        p.rows_total = u64::try_from(row_count).ok();
-                    });
-                    let observer = self.progress.clone();
-                    let mut on_progress = |bytes| observer.update(|p| p.bytes_received = bytes);
-                    let bytes = if let Some(url) = url {
-                        // §5.4: a url-carrying descriptor MUST be fetched
-                        // from that URL; failure invalidates the whole
-                        // descriptor (no fall-through to §5.5 — re-pull
-                        // recovers, §1.4 rule 5).
-                        if meta.accept & ACCEPT_SIGNED_URLS == 0 {
+                            MediaType::Sqlite => meta.accept & ACCEPT_SQLITE != 0,
+                        };
+                        if !advertised {
                             return Err(SectionError::Abort(
                                 "sync.invalid_request".to_owned(),
-                                "SEGMENT_REF carries a url but accept bit 3 was not advertised (§5.4)"
-                                    .to_owned(),
-                            ));
-                        }
-                        // §5.4: MUST NOT start a fetch at/past expiry.
-                        if url_expires_at_ms.is_some_and(|exp| {
-                            exp <= transport
-                                .segment_fetch_started_at(&url)
-                                .unwrap_or_else(|| self.clock_now_ms())
-                        }) {
-                            return Err(SectionError::Abort(
-                                "sync.segment_expired".to_owned(),
                                 format!(
-                                    "signed URL for segment {segment_id} expired before fetch — re-pull mints fresh descriptors (§5.4)"
+                                    "SEGMENT_REF mediaType {} was not advertised in accept (§4.2)",
+                                    media_type.name()
                                 ),
                             ));
                         }
-                        transport
-                            .fetch_url(
-                                &url,
-                                u64::try_from(byte_length).unwrap_or(0),
-                                &mut on_progress,
-                            )
-                            .map_err(|e| self.segment_fetch_failed(e))?
-                    } else {
-                        let requested_scopes_json =
-                            canonical_scope_json(&self.subs[sub_index].requested);
-                        transport
-                            .download_segment(
-                                &SegmentRequest {
-                                    segment_id: segment_id.clone(),
-                                    table,
-                                    requested_scopes_json,
-                                    byte_length: u64::try_from(byte_length).unwrap_or(0),
-                                },
-                                &mut on_progress,
-                            )
-                            .map_err(|e| self.segment_fetch_failed(e))?
-                    };
-                    // §5.4: the descriptor's byteLength caps the body before
-                    // §5.1 verifies the content address; the client discards
-                    // the segment and re-pulls on either failure.
-                    if bytes.len() as i64 > byte_length {
-                        self.schedule_background_retry();
-                        return Err(SectionError::Abort(
-                            "sync.invalid_request".to_owned(),
-                            "segment exceeds its byteLength".to_owned(),
-                        ));
-                    }
-                    on_progress(bytes.len() as u64);
-                    let digest = Sha256::digest(&bytes);
-                    let expected = segment_id
-                        .strip_prefix("sha256:")
-                        .unwrap_or(segment_id.as_str());
-                    if bytes_to_hex(&digest) != expected {
-                        // §5.1: the client discards the segment and re-pulls.
-                        self.schedule_background_retry();
-                        return Err(SectionError::Abort(
-                            "sync.invalid_request".to_owned(),
-                            "segment bytes do not match the content address (§5.1)".to_owned(),
-                        ));
-                    }
-                    self.progress.update(|p| p.phase = ProgressPhase::Import);
-                    if media_type == MediaType::Sqlite {
-                        // §5.3: images are whole-table — a paged sqlite
-                        // descriptor is invalid.
-                        if row_cursor.is_some() || next_row_cursor.is_some() {
+                        self.progress.update(|p| {
+                            p.phase = ProgressPhase::Download;
+                            p.unit_id = Some(unit.id.clone());
+                            p.table = Some(table.clone());
+                            p.segment_id = Some(segment_id.clone());
+                            p.bytes_received = 0;
+                            p.bytes_total = u64::try_from(byte_length).ok();
+                            p.rows_processed = 0;
+                            p.rows_total = u64::try_from(row_count).ok();
+                        });
+                        let observer = self.progress.clone();
+                        let mut on_progress = |bytes| observer.update(|p| p.bytes_received = bytes);
+                        let bytes = if let Some(url) = url {
+                            // §5.4: a url-carrying descriptor MUST be fetched
+                            // from that URL; failure invalidates the whole
+                            // descriptor (no fall-through to §5.5 — re-pull
+                            // recovers, §1.4 rule 5).
+                            if meta.accept & ACCEPT_SIGNED_URLS == 0 {
+                                return Err(SectionError::Abort(
+                                    "sync.invalid_request".to_owned(),
+                                    "SEGMENT_REF carries a url but accept bit 3 was not advertised (§5.4)"
+                                        .to_owned(),
+                                ));
+                            }
+                            // §5.4: MUST NOT start a fetch at/past expiry.
+                            if url_expires_at_ms.is_some_and(|exp| {
+                                exp <= transport
+                                    .segment_fetch_started_at(&url)
+                                    .unwrap_or_else(|| self.clock_now_ms())
+                            }) {
+                                return Err(SectionError::Abort(
+                                    "sync.segment_expired".to_owned(),
+                                    format!(
+                                        "signed URL for segment {segment_id} expired before fetch — re-pull mints fresh descriptors (§5.4)"
+                                    ),
+                                ));
+                            }
+                            transport
+                                .fetch_url(
+                                    &url,
+                                    u64::try_from(byte_length).unwrap_or(0),
+                                    &mut on_progress,
+                                )
+                                .map_err(|e| self.segment_fetch_failed(e))?
+                        } else {
+                            // §5.5: the owning unit's scope map, each value a one-element list.
+                            let requested_scopes_json =
+                                canonical_scope_json(&unit_scope_lists(&unit.scopes));
+                            transport
+                                .download_segment(
+                                    &SegmentRequest {
+                                        segment_id: segment_id.clone(),
+                                        table: table.clone(),
+                                        requested_scopes_json,
+                                        byte_length: u64::try_from(byte_length).unwrap_or(0),
+                                    },
+                                    &mut on_progress,
+                                )
+                                .map_err(|e| self.segment_fetch_failed(e))?
+                        };
+                        // §5.4: the descriptor's byteLength caps the body before
+                        // §5.1 verifies the content address; the client discards
+                        // the segment and re-pulls on either failure.
+                        if bytes.len() as i64 > byte_length {
+                            self.schedule_background_retry();
                             return Err(SectionError::Abort(
                                 "sync.invalid_request".to_owned(),
-                                "sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)"
-                                    .to_owned(),
+                                "segment exceeds its byteLength".to_owned(),
                             ));
                         }
-                        let first = !saw_segment;
-                        saw_segment = true;
-                        let applied = self.apply_sqlite_segment(
-                            sub_index,
-                            &bytes,
-                            fresh && first,
-                            row_count,
-                            as_of_commit_seq,
-                            &scope_digest,
-                        )?;
-                        report.segment_rows_applied += applied;
-                    } else {
-                        let segment = decode_rows_segment(&bytes).map_err(|e| {
-                            SectionError::Abort(e.code.as_str().to_owned(), e.detail)
-                        })?;
-                        let first = row_cursor.is_none();
-                        saw_segment = true;
-                        let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
-                        report.segment_rows_applied += applied;
+                        on_progress(bytes.len() as u64);
+                        let digest = Sha256::digest(&bytes);
+                        let expected = segment_id
+                            .strip_prefix("sha256:")
+                            .unwrap_or(segment_id.as_str());
+                        if bytes_to_hex(&digest) != expected {
+                            // §5.1: the client discards the segment and re-pulls.
+                            self.schedule_background_retry();
+                            return Err(SectionError::Abort(
+                                "sync.invalid_request".to_owned(),
+                                "segment bytes do not match the content address (§5.1)".to_owned(),
+                            ));
+                        }
+                        self.progress.update(|p| p.phase = ProgressPhase::Import);
+                        if media_type == MediaType::Sqlite {
+                            // §5.3: images are whole-table — a paged sqlite
+                            // descriptor is invalid.
+                            if row_cursor.is_some() || next_row_cursor.is_some() {
+                                return Err(SectionError::Abort(
+                                    "sync.invalid_request".to_owned(),
+                                    "sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)"
+                                        .to_owned(),
+                                ));
+                            }
+                            let (pair, clear, effective, owners) =
+                                self.segment_pair(&unit, &echo, &seeded, &table)?;
+                            report.segment_rows_applied += self.apply_sqlite_segment(
+                                &pair,
+                                &bytes,
+                                clear,
+                                &effective,
+                                &owners,
+                                row_count,
+                                as_of_commit_seq,
+                                &scope_digest,
+                            )?;
+                            seeded.insert(table);
+                        } else {
+                            let segment = decode_rows_segment(&bytes).map_err(|e| {
+                                SectionError::Abort(e.code.as_str().to_owned(), e.detail)
+                            })?;
+                            let (pair, clear, effective, owners) =
+                                self.segment_pair(&unit, &echo, &seeded, &segment.table)?;
+                            report.segment_rows_applied +=
+                                self.apply_segment(&pair, &segment, clear, &effective, &owners)?;
+                            seeded.insert(segment.table);
+                        }
+                    }
+                    _ => {
+                        return Err(SectionError::Abort(
+                            "sync.invalid_request".to_owned(),
+                            "unexpected frame inside a unit section".to_owned(),
+                        ));
                     }
                 }
-                Frame::Unknown { .. } => {}
-                Frame::Error { code, message, .. } => {
-                    return Err(SectionError::Abort(code, message))
-                }
-                _ => {
-                    return Err(SectionError::Abort(
-                        "sync.invalid_request".to_owned(),
-                        "unexpected frame inside a subscription section".to_owned(),
-                    ));
-                }
             }
+            Ok(())
+        })();
+        match applied {
+            Ok(()) => {}
+            Err(SectionError::FailClosed) => {
+                // §5.6: the failure is unit-local; the rest of the response
+                // still applies and the failed unit leaves the list.
+                self.begin_observation("syncular_section_failure")
+                    .map_err(storage)?;
+                let failed = (|| {
+                    let mut batch = ChangeAccumulator::default();
+                    for (base_key, value) in self.stored(window_refs(&self.conn, &unit.id))? {
+                        batch.window(&base_key, &value);
+                    }
+                    batch.status = true;
+                    self.stored(save_unit(
+                        &self.conn,
+                        &UnitRecord {
+                            status: UnitStatus::Failed,
+                            reason_code: Some("sync.scope_revoked".to_owned()),
+                            ..unit.clone()
+                        },
+                    ))?;
+                    self.finish_observation("syncular_section_failure", batch)
+                })();
+                if let Err(message) = failed {
+                    self.rollback_observation("syncular_section_failure");
+                    return Err(storage(message));
+                }
+                report.failed.push(unit.id);
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
+        let Some((next_cursor, bootstrap_state)) = sub_end else {
+            return Ok(());
+        };
+        let rollback = self.capture();
+        let counts = (
+            report.resets.len(),
+            report.revoked.len(),
+            report.failed.len(),
+        );
+        self.begin_observation("syncular_sub_end")
+            .map_err(storage)?;
+        let finished = self
+            .finish_section(start, echo, next_cursor, bootstrap_state, seeded, report)
+            .and_then(|batch| {
+                self.rebuild_overlay_if_dirty()?;
+                self.finish_observation("syncular_sub_end", batch)
+            });
+        if let Err(message) = finished {
+            self.rollback_observation("syncular_sub_end");
+            self.restore(rollback);
+            report.resets.truncate(counts.0);
+            report.revoked.truncate(counts.1);
+            report.failed.truncate(counts.2);
+            return Err(storage(message));
         }
         Ok(())
     }
 
-    /// Apply one commit frame after dropping a scope move's duplicate delete
-    /// when the same commit carries the row's upsert in another applied
-    /// section (§2.2). A frame that carried both itself is untouched.
-    fn apply_commit_frame_coalesced(
+    /// §5.6: the table, first-page flag, effective scopes and owners of one
+    /// segment of `unit`'s section.
+    #[allow(clippy::type_complexity)]
+    fn segment_pair(
+        &self,
+        unit: &UnitRecord,
+        echo: &[EchoRecord],
+        seeded: &BTreeSet<String>,
+        name: &str,
+    ) -> Result<
+        (
+            TableSchema,
+            bool,
+            Vec<(String, Vec<String>)>,
+            Vec<Vec<(String, Vec<String>)>>,
+        ),
+        SectionError,
+    > {
+        let table = self.schema.table(name).cloned().ok_or_else(|| {
+            SectionError::Abort(
+                "sync.schema_mismatch".to_owned(),
+                format!("segment table {name:?} is not in the client schema"),
+            )
+        })?;
+        let effective = covers(&table, &unit.scopes)
+            .then(|| pair_scopes(&unit.scopes, name, Some(echo)))
+            .flatten()
+            .ok_or_else(|| {
+                SectionError::Abort(
+                    "sync.invalid_request".to_owned(),
+                    "a segment names no active pair of its unit".to_owned(),
+                )
+            })?;
+        let units = self
+            .stored(load_units(&self.conn))
+            .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
+        let owners = unit_owners(&units, &table, &unit.id);
+        Ok((table, !seeded.contains(name), effective, owners))
+    }
+
+    /// §4.4 `SUB_END` of an active, revoked or reset section, inside the
+    /// caller's observation: a reset discards cursor, resume token and
+    /// first-page record and keeps the echo; a revoked pair purges by its last
+    /// echo (§3.3); otherwise the echo replaces the persisted one, a revoked
+    /// fenced record that turns active again re-bootstraps the unit, and a
+    /// bootstrap section persists its pin, resume token and seeded tables.
+    fn finish_section(
         &mut self,
+        start: &SectionStart,
+        echo: Vec<EchoRecord>,
+        next_cursor: i64,
+        bootstrap_state: Option<String>,
+        seeded: BTreeSet<String>,
+        report: &mut SyncReport,
+    ) -> Result<ChangeAccumulator, String> {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::CursorPersist);
+        let mut batch = ChangeAccumulator::default();
+        // §4.4: SUB_END writes only into a unit that is still registered.
+        let Some(unit) = self
+            .stored(get_unit(&self.conn, &start.id))?
+            .filter(|unit| unit.status == UnitStatus::Active)
+        else {
+            return Ok(batch);
+        };
+        for (base_key, value) in self.stored(window_refs(&self.conn, &unit.id))? {
+            batch.window(&base_key, &value);
+        }
+        if start.status == SubStatus::Reset {
+            // §4.6: staleness, never a purge; the rows stay until the
+            // bootstrap replaces them.
+            report.resets.push(unit.id.clone());
+            self.stored(save_unit(
+                &self.conn,
+                &UnitRecord {
+                    reason_code: Some(start.reason_code.clone()),
+                    cursor: Some(-1),
+                    bootstrap_state: None,
+                    seeded: Vec::new(),
+                    ..unit
+                },
+            ))?;
+            return Ok(batch);
+        }
+        let revoked = start.status == SubStatus::Revoked;
+        let units = self.stored(load_units(&self.conn))?;
+        let mut failed = false;
+        let mut rearmed = false;
+        for table in self.schema.tables.clone() {
+            if !covers(&table, &unit.scopes) {
+                continue;
+            }
+            let last = unit
+                .echo
+                .as_deref()
+                .and_then(|last| pair_scopes(&unit.scopes, &table.name, Some(last)));
+            let next = (!revoked)
+                .then(|| pair_scopes(&unit.scopes, &table.name, Some(&echo)))
+                .flatten();
+            // §3.3: a revoked fenced record that turns active again re-bootstraps.
+            rearmed |= unit.echo.is_some() && last.is_none() && next.is_some();
+            // §3.3: purge a pair the response revokes, keyed on the echo the
+            // client persisted while the pair was active.
+            if let (Some(last), None) = (&last, &next) {
+                let owners = unit_owners(&units, &table, &unit.id);
+                failed |= !self.purge_pair(&mut batch, &table, last, &owners)?;
+            }
+        }
+        if revoked || failed {
+            if revoked {
+                report.revoked.push(unit.id.clone());
+            }
+            if failed {
+                report.failed.push(unit.id.clone());
+            }
+            batch.status = true;
+            self.stored(save_unit(
+                &self.conn,
+                &UnitRecord {
+                    status: if failed {
+                        UnitStatus::Failed
+                    } else {
+                        UnitStatus::Revoked
+                    },
+                    reason_code: Some(if failed {
+                        "sync.scope_revoked".to_owned()
+                    } else {
+                        start.reason_code.clone()
+                    }),
+                    cursor: Some(-1),
+                    bootstrap_state: None,
+                    seeded: Vec::new(),
+                    echo: None,
+                    ..unit
+                },
+            ))?;
+            return Ok(batch);
+        }
+        let completed = start.bootstrap && !rearmed && bootstrap_state.is_none();
+        let (cursor, bootstrap_state, seeded) = if rearmed {
+            (Some(-1), None, Vec::new())
+        } else if start.bootstrap {
+            let seeded = if bootstrap_state.is_none() {
+                Vec::new()
+            } else {
+                seeded.into_iter().collect()
+            };
+            (Some(next_cursor), bootstrap_state, seeded)
+        } else {
+            (
+                unit.cursor,
+                unit.bootstrap_state.clone(),
+                unit.seeded.clone(),
+            )
+        };
+        self.stored(save_unit(
+            &self.conn,
+            &UnitRecord {
+                reason_code: None,
+                echo: Some(echo.clone()),
+                cursor,
+                bootstrap_state,
+                seeded,
+                ..unit.clone()
+            },
+        ))?;
+        if !completed {
+            return Ok(batch);
+        }
+        // §7.1: a completed bootstrap covers acknowledged intent of its pairs
+        // at or below its pin.
+        for table in self.schema.tables.clone() {
+            let Some(effective) = covers(&table, &unit.scopes)
+                .then(|| pair_scopes(&unit.scopes, &table.name, Some(&echo)))
+                .flatten()
+            else {
+                continue;
+            };
+            let mut statement = self
+                .conn
+                .prepare("SELECT id,intent_json FROM _syncular_acked_rows WHERE tbl=?1 AND commit_seq<=?2")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let rows = statement
+                .query_map(rusqlite::params![table.name, next_cursor], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let mut covered = HashSet::new();
+            for row in rows {
+                let (id, intent) =
+                    row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                let values: Map<String, Value> =
+                    serde_json::from_str(&intent).map_err(|_| "sync.local_corrupt".to_owned())?;
+                if owns_local_row(&table, &effective, &[], &values) {
+                    covered.insert(id);
+                }
+            }
+            drop(statement);
+            for id in covered {
+                self.conn
+                    .execute(
+                        "DELETE FROM _syncular_acked_rows WHERE tbl=?1 AND id=?2 AND commit_seq<=?3",
+                        rusqlite::params![table.name, id, next_cursor],
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                self.overlay_dirty.table(&table.name);
+                batch.table(&table.name);
+            }
+        }
+        Ok(batch)
+    }
+
+    /// §3.3: purge one revoked pair inside the caller's observation: delete
+    /// the rows matching its last effective scopes that no owner holds, drop
+    /// the retained intent and every pending commit that provably writes into
+    /// them, and delete now-unauthorized blob bodies. `Ok(false)` when the
+    /// table has no local scope-column mapping (fail closed: nothing deleted).
+    fn purge_pair(
+        &mut self,
+        batch: &mut ChangeAccumulator,
+        table: &TableSchema,
+        last: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
+    ) -> Result<bool, String> {
+        if local_scope_predicate(table, last, owners).is_err() {
+            return Ok(false);
+        }
+        for commit in self.drop_failed_commits(|name, values| {
+            name == table.name && owns_local_row(table, last, owners, values)
+        })? {
+            batch.conflicts = true;
+            batch.rejections = true;
+            batch.outcomes = true;
+            for operation in commit.ops {
+                batch.table(&operation.table);
+            }
+        }
+        self.purge_scope_rows(&table.name, last, owners)
+            .map_err(|()| "storage.failed: the revoked scope purge failed".to_owned())?;
+        self.record_scope_map(batch, &table.name, last);
+        if self.drop_doomed_outbox(table, last, owners)? {
+            batch.status = true;
+            batch.rejections = true;
+            batch.outcomes = true;
+        }
+        // §5.9.7 B2: revocation deletes now-unauthorized blob bodies.
+        self.delete_unreferenced_cached_blobs()?;
+        Ok(true)
+    }
+
+    /// §4.5 client application: apply one live-section or delta `COMMIT`
+    /// with only the changes that match the persisted echo of a receiving
+    /// unit; every applied change then goes through the version guard.
+    /// Returns whether any change of the frame applied.
+    fn apply_live_commit(
+        &mut self,
+        receivers: &[UnitRecord],
         tables: &[String],
         changes: Vec<ssp2::model::Change>,
         commit_seq: i64,
-        coalesced_deletes: &HashSet<(i64, String, String)>,
-        sub_index: usize,
         source: AppliedServerCommitSource,
     ) -> Result<bool, (String, String)> {
         let changes: Vec<ssp2::model::Change> = changes
             .into_iter()
             .filter(|change| {
-                if change.op != Op::Delete {
-                    return true;
-                }
-                let Some(table) = tables.get(change.table_index as usize) else {
+                // An unknown table fails loud in the apply below.
+                let Some(table) = tables
+                    .get(change.table_index as usize)
+                    .and_then(|name| self.schema.table(name))
+                else {
                     return true;
                 };
-                !coalesced_deletes.contains(&(commit_seq, table.clone(), change.row_id.clone()))
+                receivers.iter().any(|unit| {
+                    covers(table, &unit.scopes)
+                        && pair_scopes(&unit.scopes, &table.name, unit.echo.as_deref()).is_some_and(
+                            |scopes| {
+                                scopes.iter().all(|(variable, values)| {
+                                    change
+                                        .scopes
+                                        .iter()
+                                        .find(|(key, _)| key == variable)
+                                        .is_some_and(|(_, value)| values.contains(value))
+                                })
+                            },
+                        )
+                })
             })
             .collect();
         if changes.is_empty() {
@@ -9240,9 +9396,8 @@ impl SyncClient {
             .cloned()
             .collect::<BTreeSet<_>>();
         let previous_batches = self.change_queue.len();
-        self.apply_commit_frame(tables, &changes, Some(commit_seq))?;
+        self.apply_commit_frame(tables, &changes, commit_seq)?;
         if self.change_queue.len() > previous_batches {
-            let subscription_id = self.subs[sub_index].id.clone();
             if let Some(batch) = self.change_queue.back_mut() {
                 batch
                     .applied_commits
@@ -9250,7 +9405,6 @@ impl SyncClient {
                         affected_tables
                             .into_iter()
                             .map(|table| AppliedServerCommit {
-                                subscription_id: subscription_id.clone(),
                                 table,
                                 commit_seq,
                                 source,
@@ -9266,7 +9420,7 @@ impl SyncClient {
         &mut self,
         tables: &[String],
         changes: &[ssp2::model::Change],
-        commit_seq: Option<i64>,
+        sequence: i64,
     ) -> Result<(), (String, String)> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::CommitApply);
@@ -9277,7 +9431,7 @@ impl SyncClient {
         let applied = (|| {
             let mut batch = ChangeAccumulator::default();
             self.record_commit_changes(&mut batch, tables, changes);
-            if let Some(sequence) = commit_seq {
+            {
                 let storage_failed = |error| {
                     (
                         "storage.failed".to_owned(),
@@ -9361,7 +9515,7 @@ impl SyncClient {
                     format!("change targets unknown table {table_name:?}"),
                 )
             })?;
-            match change.op {
+            let landed = match change.op {
                 Op::Upsert => {
                     let payload = change.row.as_ref().ok_or_else(|| {
                         (
@@ -9383,33 +9537,49 @@ impl SyncClient {
                             }
                         })?
                     };
-                    let version = change.row_version.unwrap_or(0);
                     let table_name = table.name.clone();
-                    self.write_base_row(&table_name, &row, version)
+                    // §4.5 version guard: only a newer upsert lands.
+                    let landed = self
+                        .write_base_row(&table_name, &row, change.row_version)
                         .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
-                    if mirror_visible {
-                        self.write_row(&visible_table(&table_name), &table_name, &row, version)
-                            .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                    if mirror_visible && landed {
+                        self.write_row(
+                            &visible_table(&table_name),
+                            &table_name,
+                            &row,
+                            change.row_version,
+                        )
+                        .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
                     }
+                    landed
                 }
-                Op::Delete => {
-                    self.delete_base_row(table_name, &change.row_id)
-                        .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
-                    if mirror_visible {
-                        let sql = format!(
-                            "DELETE FROM {} WHERE {}",
-                            visible_table(table_name),
-                            row_id_predicate(table)
-                        );
-                        self.conn
-                            .prepare_cached(&sql)
-                            .and_then(|mut statement| {
-                                statement.execute(rusqlite::params![change.row_id])
-                            })
-                            .map_err(|error| {
-                                ("sync.invalid_request".to_owned(), error.to_string())
-                            })?;
-                    }
+                // §4.5 version guard: a delete at or below the local version
+                // is skipped, a delete of an absent row is a no-op.
+                Op::Delete => self
+                    .delete_base_row(table_name, &change.row_id, change.row_version)
+                    .map_err(|m| ("sync.invalid_request".to_owned(), m))?,
+            };
+            // The change dropped the row's acknowledged intent either way
+            // (§7.1), so the overlay of a skipped change rebuilds from the
+            // unchanged base.
+            self.overlay_dirty.table(table_name);
+            if mirror_visible && !(landed && change.op == Op::Upsert) {
+                let predicate = row_id_predicate(table);
+                let visible = visible_table(table_name);
+                let mut statements = vec![format!("DELETE FROM {visible} WHERE {predicate}")];
+                if !landed {
+                    statements.push(format!(
+                        "INSERT INTO {visible} SELECT * FROM {} WHERE {predicate}",
+                        base_table(table_name)
+                    ));
+                }
+                for statement in &statements {
+                    self.conn
+                        .prepare_cached(statement)
+                        .and_then(|mut statement| {
+                            statement.execute(rusqlite::params![change.row_id])
+                        })
+                        .map_err(|error| ("sync.invalid_request".to_owned(), error.to_string()))?;
                 }
             }
         }
@@ -9431,29 +9601,17 @@ impl SyncClient {
     }
 
     /// §5.6 segment application: validate against the generated schema,
-    /// clear the grant on a fresh bootstrap's first page (fail closed
-    /// without a mapping), then replace-or-upsert each row with its
-    /// segment-carried server version (§5.2).
+    /// clear the pair's scope on the table's first page (fail closed
+    /// without a mapping), then upsert each row with its segment-carried
+    /// server version under the §4.5 version guard (§5.2).
     fn apply_segment(
         &mut self,
-        sub_index: usize,
+        table: &TableSchema,
         segment: &RowsSegment,
-        first_fresh_page: bool,
+        first_page: bool,
+        effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
     ) -> Result<u32, SectionError> {
-        let (sub_table, effective, owners) = {
-            let sub = &self.subs[sub_index];
-            (
-                sub.table.clone(),
-                sub.effective.clone().unwrap_or_default(),
-                self.scope_owners(&sub.table, &sub.id),
-            )
-        };
-        let table = self.schema.table(&sub_table).cloned().ok_or_else(|| {
-            SectionError::Abort(
-                "sync.schema_mismatch".to_owned(),
-                format!("subscription table {sub_table:?} is not in the client schema"),
-            )
-        })?;
         // §5.2: the column table validates against the generated schema —
         // order, names, types, nullability; mismatch is fatal. §5.11: the
         // server sends the WIRE types (bytes for an encrypted column), so
@@ -9480,7 +9638,7 @@ impl SyncClient {
             &segment.blocks
         };
         for (index, block) in blocks.iter().enumerate() {
-            let clear = first_fresh_page && index == 0;
+            let clear = first_page && index == 0;
             if !clear && block.is_empty() {
                 continue;
             }
@@ -9500,31 +9658,35 @@ impl SyncClient {
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
                 if !block.is_empty()
-                    || (clear && self.scoped_rows_exist(&table.name, &effective, &owners))
+                    || (clear && self.scoped_rows_exist(&table.name, effective, owners))
                 {
                     batch.table(&table.name);
                 }
                 if clear {
-                    self.purge_scope_rows(&table.name, &effective, &owners)
+                    self.purge_scope_rows(&table.name, effective, owners)
                         .map_err(|()| SectionError::FailClosed)?;
                 }
                 for (row_index, row) in block.iter().enumerate() {
                     let decrypted;
                     let values = if table.has_encrypted_columns() {
                         let mut values = row.values.clone();
-                        crate::values::decrypt_segment_row(&table, &mut values, &self.encryption)
+                        crate::values::decrypt_segment_row(table, &mut values, &self.encryption)
                             .map_err(|message| {
-                            SectionError::Abort("client.decrypt_failed".into(), message)
-                        })?;
+                                SectionError::Abort("client.decrypt_failed".into(), message)
+                            })?;
                         decrypted = values;
                         &decrypted
                     } else {
                         &row.values
                     };
-                    self.write_base_row(&table.name, values, row.server_version)
+                    if !self
+                        .write_base_row(&table.name, values, row.server_version)
                         .map_err(|message| {
                             SectionError::Abort("sync.invalid_request".into(), message)
-                        })?;
+                        })?
+                    {
+                        continue;
+                    }
                     if reconcile_pending {
                         changed_keys.push(
                             owned_sql_value(RowParam::Cell(&values[table.pk_index])).map_err(
@@ -9546,7 +9708,7 @@ impl SyncClient {
                         self.progress.update(|p| p.rows_processed = processed);
                     }
                 }
-                self.reconcile_import(&table, &mut changed_keys, protected, reconcile_pending)
+                self.reconcile_import(table, &mut changed_keys, protected, reconcile_pending)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 self.finish_observation("syncular_segment_block", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
@@ -9573,11 +9735,14 @@ impl SyncClient {
     /// Mechanics: the image lands in a temp file read through a second
     /// rusqlite connection, equivalent to ATTACH + INSERT…SELECT.
     /// Each image chunk commits its writes and revision before readers continue.
+    #[allow(clippy::too_many_arguments)]
     fn apply_sqlite_segment(
         &mut self,
-        sub_index: usize,
+        table: &TableSchema,
         bytes: &[u8],
-        first_fresh_page: bool,
+        first_page: bool,
+        effective: &[(String, Vec<String>)],
+        owners: &[Vec<(String, Vec<String>)>],
         row_count: i64,
         as_of_commit_seq: i64,
         scope_digest: &str,
@@ -9588,20 +9753,6 @@ impl SyncClient {
                 format!("sqlite segment rejected: {detail} (§5.3)"),
             )
         };
-        let (sub_table, effective, owners) = {
-            let sub = &self.subs[sub_index];
-            (
-                sub.table.clone(),
-                sub.effective.clone().unwrap_or_default(),
-                self.scope_owners(&sub.table, &sub.id),
-            )
-        };
-        let table = self.schema.table(&sub_table).cloned().ok_or_else(|| {
-            SectionError::Abort(
-                "sync.schema_mismatch".to_owned(),
-                format!("subscription table {sub_table:?} is not in the client schema"),
-            )
-        })?;
         // §5.11: an image bypasses the decrypt seam, so a server cannot serve
         // one for a table with encrypted columns.
         if table.has_encrypted_columns() {
@@ -9635,10 +9786,10 @@ impl SyncClient {
             .map_err(|_| invalid("bytes do not open as a SQLite database"))?;
             self.apply_sqlite_image(
                 &img,
-                &table,
-                first_fresh_page,
-                &effective,
-                &owners,
+                table,
+                first_page,
+                effective,
+                owners,
                 row_count,
                 as_of_commit_seq,
                 scope_digest,
@@ -9855,9 +10006,14 @@ impl SyncClient {
                             .map_err(|error| {
                                 invalid(Self::sqlite_failure(&self.storage_failure, error))
                             })?;
-                        ins.raw_execute().map_err(|error| {
+                        // §4.5 version guard: the base upsert decides.
+                        let landed = ins.raw_execute().map_err(|error| {
                             invalid(Self::sqlite_failure(&self.storage_failure, error))
-                        })?;
+                        })? > 0;
+                        if !landed {
+                            processed += 1;
+                            continue;
+                        }
                         if let Some(mirror) = &mut mirror {
                             mirror
                                 .raw_bind_parameter(version_index + 1, version)
@@ -10368,8 +10524,9 @@ impl SyncClient {
                     continue;
                 }
                 batch.table(table);
+                self.overlay_dirty.table(table);
                 for row_id in ids {
-                    self.delete_base_row(table, row_id)?;
+                    self.delete_base_row(table, row_id, i64::MAX)?;
                     purged_rows += 1;
                 }
             }
@@ -10408,8 +10565,8 @@ impl SyncClient {
 
     /// Application-authorized recovery of the replicated projection. Unlike a
     /// local security purge, this retains the entire outbox, device identity,
-    /// lease, outcomes, subscription registrations, and protected bookkeeping.
-    /// The projection reset, subscription rewind, optimistic replay, and
+    /// lease, outcomes, unit registrations, and protected bookkeeping.
+    /// The projection reset, unit rewind, optimistic replay, and
     /// idempotency marker share one savepoint for interruption safety.
     pub fn rebootstrap_local_data(
         &mut self,
@@ -10444,7 +10601,7 @@ impl SyncClient {
         }
 
         let retained_commits = self.outbox.len();
-        let reset_subscriptions = self.subs.len();
+        let reset_subscriptions = self.stored(load_units(&self.conn))?.len();
         let receipt = encode_local_rebootstrap_receipt(retained_commits, reset_subscriptions)?;
         let rollback = self.capture();
         self.begin_observation("syncular_local_rebootstrap")?;
@@ -10928,8 +11085,15 @@ impl SyncClient {
             .map(|column| format!("{column}=excluded.{column}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // §4.5 version guard: server state lands in the base table only above
+        // the stored version; the visible overlay takes every write.
+        let guard = if full_table == base_table(&table.name) {
+            format!(" WHERE excluded._syncular_version > {full_table}._syncular_version")
+        } else {
+            String::new()
+        };
         let sql = format!(
-            "INSERT INTO {full_table} ({}) VALUES ({}) ON CONFLICT ({primary_key}) DO UPDATE SET {updates}",
+            "INSERT INTO {full_table} ({}) VALUES ({}) ON CONFLICT ({primary_key}) DO UPDATE SET {updates}{guard}",
             columns.join(", "),
             placeholders.join(", ")
         );
@@ -10939,9 +11103,14 @@ impl SyncClient {
         sql
     }
 
-    fn write_base_row(&self, table_name: &str, row: &Row, version: i64) -> Result<(), String> {
-        self.overlay_dirty.table(table_name);
-        self.write_row(&base_table(table_name), table_name, row, version)
+    /// §4.5: write a server row under the version guard; returns whether it
+    /// landed.
+    fn write_base_row(&self, table_name: &str, row: &Row, version: i64) -> Result<bool, String> {
+        let landed = self.write_row(&base_table(table_name), table_name, row, version)?;
+        if landed {
+            self.overlay_dirty.table(table_name);
+        }
+        Ok(landed)
     }
 
     fn write_row(
@@ -10950,7 +11119,7 @@ impl SyncClient {
         table_name: &str,
         row: &Row,
         version: i64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::RowWrite);
         let table = self
@@ -10967,18 +11136,24 @@ impl SyncClient {
             .map(RowParam::Cell)
             .chain(std::iter::once(RowParam::Version(version)));
         stmt.execute(rusqlite::params_from_iter(params))
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        Ok(())
+            .map(|changed| changed > 0)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    fn delete_base_row(&self, table_name: &str, row_id: &str) -> Result<(), String> {
+    /// §4.5: delete a server row whose stored version lies below `version`;
+    /// returns whether a row left.
+    fn delete_base_row(
+        &self,
+        table_name: &str,
+        row_id: &str,
+        version: i64,
+    ) -> Result<bool, String> {
         let table = self
             .schema
             .table(table_name)
             .ok_or_else(|| format!("unknown table {table_name:?}"))?;
-        self.overlay_dirty.table(table_name);
         let sql = format!(
-            "DELETE FROM {} WHERE {}",
+            "DELETE FROM {} WHERE {} AND _syncular_version < ?2",
             base_table(table_name),
             row_id_predicate(table)
         );
@@ -10986,9 +11161,14 @@ impl SyncClient {
             .conn
             .prepare_cached(&sql)
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        stmt.execute(rusqlite::params![row_id])
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        Ok(())
+        let landed = stmt
+            .execute(rusqlite::params![row_id, version])
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+            > 0;
+        if landed {
+            self.overlay_dirty.table(table_name);
+        }
+        Ok(landed)
     }
 
     fn has_acknowledged_rows(&self) -> Result<bool, String> {
@@ -11006,18 +11186,14 @@ impl SyncClient {
         rows: Option<&HashSet<(&str, &str)>>,
         tables: Option<&BTreeSet<&str>>,
     ) -> Result<Vec<OutboxOp>, String> {
-        let keys = rows.map(|rows| {
-            serde_json::to_string(
-                &rows
-                    .iter()
-                    .map(|(table, id)| serde_json::to_string(&(table, id)).expect("row key"))
-                    .collect::<Vec<_>>(),
-            )
-            .expect("row keys")
-        });
+        let keys = rows.map(|rows| serde_json::to_string(&rows).expect("row keys"));
         let mut statement = self
             .conn
-            .prepare("SELECT op_json,intent_json FROM _syncular_acked_rows WHERE (?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1))) AND (?2 IS NULL OR tbl IN(SELECT value FROM json_each(?2))) ORDER BY commit_seq,idx")
+            .prepare_cached(if keys.is_some() {
+                ACKED_ROWS_BY_ROW
+            } else {
+                "SELECT op_json,intent_json FROM _syncular_acked_rows WHERE ?1 IS NULL AND (?2 IS NULL OR tbl IN(SELECT value FROM json_each(?2))) ORDER BY commit_seq,idx"
+            })
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = statement
             .query_map(
@@ -11358,6 +11534,7 @@ impl SyncClient {
         }
         let version = local.as_ref().map_or(-1, |(_, version)| *version);
         self.write_row(&visible, &table.name, &row, version)
+            .map(|_| ())
             .map_err(|error| {
                 if error.starts_with("UNIQUE constraint failed:") {
                     "sync.constraint_violation: local write violates a unique constraint".to_owned()
@@ -11674,6 +11851,11 @@ impl SyncClient {
         transport.controls
     }
 
+    /// §8.2: a delta applies exactly like a live section and sets the replica
+    /// cursor to its `throughSeq`; one at or below the replica cursor is a
+    /// duplicate. A delta the client does not apply (no live unit, a status
+    /// other than `active`, a decode or apply failure) is a drop and raises
+    /// sync-needed.
     pub fn on_realtime_binary(&mut self, transport: &mut dyn Transport, bytes: &[u8]) {
         if self.stopped || !self.transport_enabled || self.security_preflight {
             return;
@@ -11689,141 +11871,115 @@ impl SyncClient {
         };
         #[cfg(feature = "bench-internals")]
         drop(decode_phase);
-        let coalesced_deletes =
-            coalesced_delete_keys(&message.frames, |id, status, next_cursor| {
-                if status != SubStatus::Active {
-                    return false;
-                }
-                let Some(sub) = self.subs.iter().find(|sub| sub.id == id) else {
-                    return false;
-                };
-                sub.takes_delta() && next_cursor.is_some_and(|cursor| cursor > sub.cursor)
-            });
-        let mut frames = message.frames.into_iter();
-        let mut applied_cursor: Option<i64> = None;
-        let mut any_covered = false;
-        let mut dropped = self.begin_coalesced_apply().is_err();
-        while let Some(frame) = frames.next() {
-            let Frame::SubStart {
-                id,
-                status,
-                effective_scopes,
+        // §8.2: a delta's header means what a pull response's header means. A
+        // schema floor (§1.6) is recorded, stops syncing and applies nothing.
+        if let Some(Frame::RespHeader {
+            required_schema_version: Some(required),
+            latest_schema_version,
+            ..
+        }) = message.frames.first()
+        {
+            let floor = SchemaFloor {
+                required_schema_version: Some(*required),
+                latest_schema_version: *latest_schema_version,
+            };
+            if self.set_schema_floor(Some(floor)).is_err() {
+                self.set_sync_needed(true, true);
+            }
+            return;
+        }
+        let through = message.frames.iter().find_map(|frame| match frame {
+            Frame::LiveEnd { through_seq, .. } => Some(*through_seq),
+            _ => None,
+        });
+        let epoch = self.get_meta(LOG_EPOCH_KEY).ok().flatten();
+        let mut dropped = !matches!(message.frames.first(), Some(Frame::RespHeader {
+                reset_required: false,
+                log_epoch,
                 ..
-            } = frame
-            else {
-                continue;
-            };
-            let mut body = Vec::new();
-            let mut next_cursor: Option<i64> = None;
-            for inner in frames.by_ref() {
-                match inner {
-                    Frame::SubEnd {
-                        next_cursor: nc, ..
-                    } => {
-                        next_cursor = Some(nc);
+            }) if Some(log_epoch) == epoch.as_ref());
+        let mut applied: Option<i64> = None;
+        dropped |= self.begin_coalesced_apply().is_err();
+        let mut receivers: Option<Vec<UnitRecord>> = None;
+        for frame in message.frames {
+            if dropped {
+                break;
+            }
+            match frame {
+                Frame::LiveStart { status, .. } => {
+                    let Ok(cursor) = self.stored(replica_cursor(&self.conn)) else {
+                        dropped = true;
                         break;
-                    }
-                    Frame::Unknown { .. } => {}
-                    other => body.push(other),
-                }
-            }
-            let Some(sub_index) = self.subs.iter().position(|s| s.id == id) else {
-                dropped = true;
-                continue;
-            };
-            let sub = &self.subs[sub_index];
-            // §8.2: skipped sections are repaired by the next pull.
-            if status != SubStatus::Active || !sub.takes_delta() {
-                dropped = true;
-                continue;
-            }
-            if next_cursor.is_some_and(|cursor| cursor <= sub.cursor) {
-                // Idempotent redelivery of an already-covered window.
-                any_covered = true;
-                continue;
-            }
-            let previous_effective = self.subs[sub_index].effective.clone();
-            let previous_cursor = self.subs[sub_index].cursor;
-            self.subs[sub_index].effective = Some(effective_scopes);
-            let mut failed = false;
-            for inner in body {
-                match inner {
-                    Frame::Commit {
-                        tables,
-                        changes,
-                        commit_seq,
-                        ..
-                    } => {
-                        if self
-                            .apply_commit_frame_coalesced(
-                                &tables,
-                                changes,
-                                commit_seq,
-                                &coalesced_deletes,
-                                sub_index,
-                                AppliedServerCommitSource::Delta,
-                            )
-                            .is_err()
-                        {
-                            failed = true;
-                            break;
-                        }
-                    }
-                    _ => {
-                        failed = true;
-                        break;
+                    };
+                    if status != LiveStatus::Active || cursor < 0 {
+                        dropped = true;
+                    } else if !through.is_some_and(|through| through <= cursor) {
+                        // A catching-up unit receives no delta (§8.2).
+                        receivers = self.stored(load_units(&self.conn)).ok().map(|units| {
+                            units
+                                .into_iter()
+                                .filter(|unit| {
+                                    unit.status == UnitStatus::Active
+                                        && unit.echo.is_some()
+                                        && unit.cursor.is_none()
+                                })
+                                .collect()
+                        });
+                        dropped = receivers.is_none();
                     }
                 }
+                Frame::Commit {
+                    commit_seq,
+                    tables,
+                    changes,
+                    ..
+                } => {
+                    let Some(receivers) = receivers.clone() else {
+                        continue;
+                    };
+                    dropped = self
+                        .apply_live_commit(
+                            &receivers,
+                            &tables,
+                            changes,
+                            commit_seq,
+                            AppliedServerCommitSource::Delta,
+                        )
+                        .is_err();
+                }
+                Frame::LiveEnd { through_seq, .. } if receivers.is_some() => {
+                    dropped = self
+                        .set_meta(REPLICA_CURSOR_KEY, &through_seq.to_string())
+                        .is_err();
+                    applied = Some(through_seq);
+                }
+                Frame::Error { .. } => dropped = true,
+                _ => {}
             }
-            let committed = next_cursor.filter(|_| !failed).and_then(|cursor| {
-                self.apply_sub_end(sub_index, cursor, None)
-                    .ok()
-                    .map(|()| cursor)
-            });
-            let Some(next_cursor) = committed else {
-                self.subs[sub_index].effective = previous_effective;
-                self.subs[sub_index].cursor = previous_cursor;
-                dropped = true;
-                continue;
-            };
-            applied_cursor = Some(applied_cursor.map_or(next_cursor, |c| c.max(next_cursor)));
         }
         // §1.4 rule 4: the ack follows the COMMIT. A failed COMMIT restored
-        // the cursors, so the delta counts as a wake-up.
-        if self.finish_coalesced_apply().is_err() {
-            applied_cursor = None;
+        // the replica cursor, so the delta counts as a drop.
+        if self.finish_coalesced_apply().is_err() || dropped {
+            applied = None;
             dropped = true;
         }
-        if let Some(cursor) = applied_cursor {
-            // §8.2 ack point: the highest applied SUB_END.nextCursor.
+        if let Some(cursor) = applied {
+            // §8.2 ack point: the delta's throughSeq.
             let ack = format!("{{\"type\":\"ack\",\"cursor\":{cursor}}}");
             let _ = transport.realtime_send(&ack);
         }
-        if dropped || (applied_cursor.is_none() && !any_covered) {
-            // §8.2: a skipped section or an unapplied delta is a wake-up.
+        if dropped {
             self.set_sync_needed(true, true);
         }
     }
 
-    /// §8.2 ack point after an HTTP pull on a live connection: the minimum
-    /// cursor across active, non-bootstrapping subscriptions that have
-    /// synced at least once. No such subscription, no ack.
+    /// §8.2 ack point after a pull round on a live connection: the replica
+    /// cursor while it is at least `0`.
     fn ack_after_pull(&mut self, transport: &mut dyn Transport) {
         if !self.realtime_connected() {
             return;
         }
-        let floor = self
-            .subs
-            .iter()
-            .filter(|s| {
-                s.state == SubState::Active
-                    && s.bootstrap_state.is_none()
-                    && s.synced_once
-                    && s.cursor >= 0
-            })
-            .map(|s| s.cursor)
-            .min();
-        if let Some(cursor) = floor {
+        if let Ok(cursor @ 0..) = self.stored(replica_cursor(&self.conn)) {
             let ack = format!("{{\"type\":\"ack\",\"cursor\":{cursor}}}");
             let _ = transport.realtime_send(&ack);
         }
@@ -11834,7 +11990,7 @@ impl SyncClient {
 mod previous_version_wiring_tests;
 
 #[cfg(test)]
-mod scope_move_delivery_tests;
+mod identity_tests;
 
 #[cfg(test)]
 mod insert_intent_tests;

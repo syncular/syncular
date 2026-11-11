@@ -27,14 +27,11 @@ import {
   type SyncIntent,
   type SyncSummary,
   type SyncProgress,
+  type UnitRecord,
   last,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import {
-  MessageStreamScanner,
-  type RowValue,
-  type ScopeMap,
-} from '@syncular/core';
+import { MessageStreamScanner, type RowValue } from '@syncular/core';
 import { YjsColumn } from '@syncular/crdt-yjs';
 import type {
   ClientCommitOutcome,
@@ -46,7 +43,7 @@ import type {
   ClientPresencePeer,
   ClientRejection,
   ClientRowState,
-  ClientSubscriptionState,
+  ClientUnitState,
   ClientSyncResult,
   DriverChangeBatch,
   DriverColumn,
@@ -58,9 +55,8 @@ import type {
   DriverRow,
   DriverRowValue,
   DriverSchema,
-  DriverScopeMap,
+  DriverUnitScopes,
   DriverSnapshotRead,
-  DriverSubscriptionCatchup,
   DriverSyncIntent,
   DriverWindowBase,
 } from '../driver';
@@ -185,6 +181,19 @@ function driverOutcome(outcome: CommitOutcome): DriverCommitOutcome {
 }
 
 /** §7.5: one delivery at the driver seam. */
+function driverUnit(unit: UnitRecord): ClientUnitState {
+  return {
+    id: unit.id,
+    scopes: unit.scopes,
+    explicit: unit.explicit,
+    status: unit.status,
+    ...(unit.cursor !== undefined ? { cursor: unit.cursor } : {}),
+    hasResumeToken: unit.bootstrapState !== undefined,
+    ...(unit.echo !== undefined ? { echo: unit.echo } : {}),
+    ...(unit.reasonCode !== undefined ? { reasonCode: unit.reasonCode } : {}),
+  };
+}
+
 function driverDelivery(
   delivery: import('@syncular/client').CommitDelivery,
 ): DriverCommitDelivery {
@@ -338,6 +347,7 @@ async function constructClient(
           ...(putBlobUrl !== undefined
             ? {
                 uploadToUrl: (
+                  _blobId: string,
                   url: string,
                   bytes: Uint8Array,
                   mediaType?: string,
@@ -528,18 +538,12 @@ class TsClientInstance implements ClientInstance {
     });
   }
 
-  async subscribe(input: {
-    readonly id: string;
-    readonly table: string;
-    readonly scopes: DriverScopeMap;
-    readonly params?: string;
-  }): Promise<void> {
-    this.#client.subscribe({
-      id: input.id,
-      table: input.table,
-      scopes: input.scopes as ScopeMap,
-      ...(input.params !== undefined ? { params: input.params } : {}),
-    });
+  async subscribe(scopes: DriverUnitScopes): Promise<string> {
+    return this.#client.subscribe(scopes);
+  }
+
+  async subscribeMany(units: readonly DriverUnitScopes[]): Promise<string[]> {
+    return this.#client.subscribeMany(units);
   }
 
   async unsubscribe(id: string): Promise<void> {
@@ -550,17 +554,7 @@ class TsClientInstance implements ClientInstance {
     base: DriverWindowBase,
     units: readonly string[],
   ): Promise<void> {
-    const result = await this.#client.setWindowCommand(
-      {
-        table: base.table,
-        variable: base.variable,
-        ...(base.fixedScopes !== undefined
-          ? { fixedScopes: base.fixedScopes as ScopeMap }
-          : {}),
-        ...(base.params !== undefined ? { params: base.params } : {}),
-      },
-      units,
-    );
+    const result = await this.#client.setWindowCommand(base, units);
     this.#intents.push(result.effects.sync);
   }
 
@@ -568,14 +562,7 @@ class TsClientInstance implements ClientInstance {
     readonly units: readonly string[];
     readonly pending: readonly string[];
   }> {
-    return this.#client.windowState({
-      table: base.table,
-      variable: base.variable,
-      ...(base.fixedScopes !== undefined
-        ? { fixedScopes: base.fixedScopes as ScopeMap }
-        : {}),
-      ...(base.params !== undefined ? { params: base.params } : {}),
-    });
+    return this.#client.windowState(base);
   }
 
   async timeWindowSugar(
@@ -672,19 +659,7 @@ class TsClientInstance implements ClientInstance {
           ? hexToBytes(value.$bytes)
           : value,
       ),
-      coverage: coverage.map((item) => ({
-        base: {
-          table: item.base.table,
-          variable: item.base.variable,
-          ...(item.base.fixedScopes !== undefined
-            ? { fixedScopes: item.base.fixedScopes as ScopeMap }
-            : {}),
-          ...(item.base.params !== undefined
-            ? { params: item.base.params }
-            : {}),
-        },
-        units: item.units,
-      })),
+      coverage,
       ...(owner !== undefined ? { owner } : {}),
     });
     return {
@@ -714,7 +689,7 @@ class TsClientInstance implements ClientInstance {
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[];
-    readonly subscriptions?: readonly string[];
+    readonly units?: readonly string[];
     readonly commitIds?: readonly string[];
     readonly owner?: {
       readonly id: string;
@@ -726,44 +701,11 @@ class TsClientInstance implements ClientInstance {
         sql: statement.sql,
         params: (statement.params ?? []).map(toRowValue),
       })),
-      coverage: (request.coverage ?? []).map((item) => ({
-        base: {
-          table: item.base.table,
-          variable: item.base.variable,
-          ...(item.base.fixedScopes !== undefined
-            ? { fixedScopes: item.base.fixedScopes as ScopeMap }
-            : {}),
-          ...(item.base.params !== undefined
-            ? { params: item.base.params }
-            : {}),
-        },
-        units: item.units,
-      })),
-      subscriptions: request.subscriptions ?? [],
+      coverage: request.coverage ?? [],
+      units: request.units ?? [],
       commitIds: request.commitIds ?? [],
       ...(request.owner !== undefined ? { owner: request.owner } : {}),
     });
-    const subscriptions: DriverSubscriptionCatchup[] = read.subscriptions.map(
-      (catchup) =>
-        catchup.state === 'unknown'
-          ? { state: 'unknown', id: catchup.id }
-          : {
-              state: 'known',
-              id: catchup.id,
-              table: catchup.table,
-              status: catchup.status,
-              cursor: catchup.cursor,
-              hasResumeToken: catchup.hasResumeToken,
-              bootstrapComplete: catchup.bootstrapComplete,
-              knownPendingPages: catchup.knownPendingPages,
-              ...(catchup.effectiveScopes !== undefined
-                ? { effectiveScopes: catchup.effectiveScopes as DriverScopeMap }
-                : {}),
-              ...(catchup.reasonCode !== undefined
-                ? { reasonCode: catchup.reasonCode }
-                : {}),
-            },
-    );
     return {
       revision: read.revision.toString(),
       queries: read.queries.map((rows) =>
@@ -777,7 +719,7 @@ class TsClientInstance implements ClientInstance {
         ),
       ),
       coverage: read.coverage,
-      subscriptions,
+      units: read.units,
       deliveries: read.deliveries.map(driverDelivery),
     };
   }
@@ -785,6 +727,9 @@ class TsClientInstance implements ClientInstance {
   async diagnosticsSnapshot() {
     const snapshot = this.#client.diagnosticsSnapshot();
     return {
+      replicaCursor: snapshot.replicaCursor,
+      activeUnits: snapshot.activeUnits,
+      units: snapshot.units,
       queryFailures: snapshot.queryFailures,
       ...(snapshot.lastRound !== undefined
         ? { lastRound: snapshot.lastRound }
@@ -824,7 +769,6 @@ class TsClientInstance implements ClientInstance {
       })),
       windows: batch.windows.map((window) => ({
         baseKey: window.baseKey,
-        table: window.table,
         units: [...window.units].sort(),
       })),
       ...(batch.status !== undefined
@@ -1056,22 +1000,17 @@ class TsClientInstance implements ClientInstance {
     return payloads;
   }
 
-  async subscriptionState(
-    id: string,
-  ): Promise<ClientSubscriptionState | undefined> {
-    const sub = this.#client.subscription(id);
-    if (sub === undefined) return undefined;
-    return {
-      id: sub.id,
-      table: sub.table,
-      status: sub.status,
-      cursor: sub.cursor,
-      hasResumeToken: sub.bootstrapState !== undefined,
-      ...(sub.effectiveScopes !== undefined
-        ? { effectiveScopes: sub.effectiveScopes }
-        : {}),
-      ...(sub.reasonCode !== undefined ? { reasonCode: sub.reasonCode } : {}),
-    };
+  async unitState(id: string): Promise<ClientUnitState | undefined> {
+    const unit = this.#client.unit(id);
+    return unit === undefined ? undefined : driverUnit(unit);
+  }
+
+  async units(): Promise<readonly ClientUnitState[]> {
+    return this.#client.units().map(driverUnit);
+  }
+
+  async replicaCursor(): Promise<number> {
+    return this.#client.diagnosticsSnapshot().replicaCursor;
   }
 
   async schemaFloor(): Promise<

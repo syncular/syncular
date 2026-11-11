@@ -37,7 +37,7 @@ final client = SyncularClient.create(
   schema: syncularSchema,
   config: SyncularConfig(baseUrl: 'http://localhost:8787', dbPath: dbPath),
 );
-client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
+client.subscribe({'list_id': 'groceries'});
 client.mutate([
   {
     'op': 'upsert',
@@ -50,12 +50,12 @@ client.syncUntilIdle();
 print(client.query('SELECT id, title FROM todos'));
 ```
 
-`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the subscribed list, so a second device with the same subscription reads `t1`.
+`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the list's unit, so a second device that registers the same unit reads `t1`.
 
 ## The pages
 
 - **[Install & first sync](/platform-flutter-install/)**: depend on the package, ship the core, create a client.
-- **[Reads & writes](/platform-flutter-reads-writes/)**: subscribe, mutate, query, windows, and collaborative text.
+- **[Reads & writes](/platform-flutter-reads-writes/)**: units, mutate, query, windows, and collaborative text.
 - **[Realtime & lifecycle](/platform-flutter-realtime/)**: the `events` stream, `pause()`, `resume()`, `close()`, and the connectivity adapter.
 - **[Platform specifics](/platform-flutter-specifics/)**: library loading per platform, transport policy, and isolate rules.
 - **[Troubleshooting](/platform-flutter-troubleshooting/)**: library lookup errors, `client.failed`, and offline results.

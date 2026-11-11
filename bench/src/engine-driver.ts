@@ -325,11 +325,7 @@ export async function createEngineDriver(
       clientId,
       ...(dbPath ? { dbPath } : {}),
     });
-    await invoke('subscribe', {
-      id: 'bench',
-      table: 'tasks',
-      scopes: { project_id: [PROJECT_ID] },
-    });
+    await invoke('subscribe', { scopes: { project_id: PROJECT_ID } });
     const info = processObject(await invoke('benchEngineInfo'));
     if (info.processId !== process.pid || typeof info.threadId !== 'string')
       throw new Error('Rust engine is not in the host process');

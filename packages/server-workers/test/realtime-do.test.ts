@@ -19,13 +19,15 @@ import {
   encodeRemoteOperationRequest,
   encodeSparseRow,
   MessageStreamScanner,
+  PROTOCOL_WIRE_VERSION,
   type PushCommitFrame,
   type PushResultFrame,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
+  registrationDigest,
   type RequestFrame,
   type RowColumn,
-  type SubStartFrame,
+  unitId,
 } from '@syncular/core';
 import {
   type BlobStore,
@@ -190,7 +192,7 @@ function syncRequestBytes(
   clientId: string,
 ): Uint8Array {
   return encodeMessage({
-    wireVersion: 3,
+    wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
       {
@@ -326,6 +328,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'c1',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -404,14 +407,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
                   limitSnapshotRows: 100,
                   maxSnapshotPages: 4,
                   accept: 3,
-                },
-                {
-                  type: 'SUBSCRIPTION',
-                  id: 's1',
-                  table: 'tasks',
-                  scopes: { list_id: ['L'] },
                   cursor: -1,
+                  registrationDigest: registrationDigest([{ list_id: 'L' }]),
+                  echoDigest: new Uint8Array(),
                 },
+                { type: 'UNIT', scopes: { list_id: 'L' } },
+                { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
               ],
               'client-1',
             ).slice().buffer,
@@ -439,14 +440,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
             limitSnapshotRows: 100,
             maxSnapshotPages: 4,
             accept: 0b0011,
-          },
-          {
-            type: 'SUBSCRIPTION',
-            id: 's1',
-            table: 'tasks',
-            scopes: { list_id: ['L'] },
             cursor: -1,
+            registrationDigest: registrationDigest([{ list_id: 'L' }]),
+            echoDigest: new Uint8Array(),
           },
+          { type: 'UNIT', scopes: { list_id: 'L' } },
+          { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
         ],
         'client-1',
       );
@@ -492,6 +491,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'aggregate-c1',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -539,14 +539,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           limitSnapshotRows: 100,
           maxSnapshotPages: 4,
           accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { list_id: ['L'] },
           cursor: -1,
+          registrationDigest: registrationDigest([{ list_id: 'L' }]),
+          echoDigest: new Uint8Array(),
         },
+        { type: 'UNIT', scopes: { list_id: 'L' } },
+        { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
       ],
       'reader',
     );
@@ -564,6 +562,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'w1',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -584,10 +583,13 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     expect(delta).toBeDefined();
     const decoded = decodeMessage((delta as Uint8Array).subarray(1));
     if (decoded.msgKind !== 'response') throw new Error('expected response');
-    const sub = decoded.frames.find(
-      (f): f is SubStartFrame => f.type === 'SUB_START' && f.id === 's1',
-    );
-    expect(sub).toBeDefined();
+    // §8.2: one live section, no unit section.
+    expect(decoded.frames.map((f) => f.type)).toEqual([
+      'RESP_HEADER',
+      'LIVE_START',
+      'COMMIT',
+      'LIVE_END',
+    ]);
   });
 
   test('host work on the FIFO commits through the hub as a delta, without a wake', async () => {
@@ -604,14 +606,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           limitSnapshotRows: 100,
           maxSnapshotPages: 4,
           accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { list_id: ['L'] },
           cursor: -1,
+          registrationDigest: registrationDigest([{ list_id: 'L' }]),
+          echoDigest: new Uint8Array(),
         },
+        { type: 'UNIT', scopes: { list_id: 'L' } },
+        { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
       ],
       'reader',
     );
@@ -625,6 +625,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
             {
               type: 'PUSH_COMMIT',
               clientCommitId: 'server-1',
+              clientSeq: 0,
               operations: [
                 {
                   table: 'tasks',
@@ -665,6 +666,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'after-wake',
+          clientSeq: 0,
           operations: [
             {
               table: 'tasks',
@@ -704,14 +706,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           limitSnapshotRows: 100,
           maxSnapshotPages: 4,
           accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { list_id: ['L'] },
           cursor: -1,
+          registrationDigest: registrationDigest([{ list_id: 'L' }]),
+          echoDigest: new Uint8Array(),
         },
+        { type: 'UNIT', scopes: { list_id: 'L' } },
+        { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
       ],
       'reader',
     );
@@ -725,6 +725,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'http-1',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',
@@ -759,14 +760,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           limitSnapshotRows: 100,
           maxSnapshotPages: 4,
           accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { list_id: ['L'] },
           cursor: -1,
+          registrationDigest: registrationDigest([{ list_id: 'L' }]),
+          echoDigest: new Uint8Array(),
         },
+        { type: 'UNIT', scopes: { list_id: 'L' } },
+        { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
       ],
       'reader',
     );
@@ -783,6 +782,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'after-wake',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',
@@ -849,14 +849,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
             limitSnapshotRows: 100,
             maxSnapshotPages: 4,
             accept: 0b0011,
-          },
-          {
-            type: 'SUBSCRIPTION',
-            id: 's1',
-            table: 'tasks',
-            scopes: { list_id: ['L'] },
             cursor: -1,
+            registrationDigest: registrationDigest([{ list_id: 'L' }]),
+            echoDigest: new Uint8Array(),
           },
+          { type: 'UNIT', scopes: { list_id: 'L' } },
+          { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
         ],
         'reader',
       );
@@ -923,6 +921,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
             {
               type: 'PUSH_COMMIT',
               clientCommitId: 'before-maintenance',
+              clientSeq: 0,
               operations: [
                 {
                   table: 'tasks',
@@ -984,6 +983,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
             {
               type: 'PUSH_COMMIT',
               clientCommitId: 'before-erasure',
+              clientSeq: 0,
               operations: [
                 {
                   table: 'tasks',
@@ -1039,6 +1039,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     const commit: PushCommitFrame = {
       type: 'PUSH_COMMIT',
       clientCommitId: 'overlap-http',
+      clientSeq: 0,
       operations: [
         {
           table: 'tasks',
@@ -1082,6 +1083,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     const commit: PushCommitFrame = {
       type: 'PUSH_COMMIT',
       clientCommitId: 'overlap-socket',
+      clientSeq: 0,
       operations: [
         {
           table: 'tasks',
@@ -1156,6 +1158,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: `commit-${partition}`,
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',
@@ -1221,6 +1224,7 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
       const commit: PushCommitFrame = {
         type: 'PUSH_COMMIT',
         clientCommitId: 'transport-parity',
+        clientSeq: 0,
         operations: [
           {
             table: 'tasks',
@@ -1294,14 +1298,12 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
         limitSnapshotRows: 0,
         maxSnapshotPages: 0,
         accept: 0b0011,
-      },
-      {
-        type: 'SUBSCRIPTION',
-        id: 's1',
-        table: 'tasks',
-        scopes: { list_id: ['L'] },
         cursor: -1,
+        registrationDigest: registrationDigest([{ list_id: 'L' }]),
+        echoDigest: new Uint8Array(),
       },
+      { type: 'UNIT', scopes: { list_id: 'L' } },
+      { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
     ];
     const { do_, server: a } = await connect(ns, 'peer-a');
     await sendRound(do_, a, register, 'peer-a');
@@ -1500,14 +1502,12 @@ describe('hibernation rehydration (§8.1)', () => {
       limitSnapshotRows: 100,
       maxSnapshotPages: 4,
       accept: 0b0011,
-    },
-    {
-      type: 'SUBSCRIPTION',
-      id: 's1',
-      table: 'tasks',
-      scopes: { list_id: ['L'] },
       cursor: -1,
+      registrationDigest: registrationDigest([{ list_id: 'L' }]),
+      echoDigest: new Uint8Array(),
     },
+    { type: 'UNIT', scopes: { list_id: 'L' } },
+    { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
   ];
 
   function forwardedSync(frames: RequestFrame[], clientId: string): Request {
@@ -1556,6 +1556,7 @@ describe('hibernation rehydration (§8.1)', () => {
           {
             type: 'PUSH_COMMIT',
             clientCommitId: 'during-rebuild',
+            clientSeq: 0,
             operations: [
               {
                 table: 'tasks',

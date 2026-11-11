@@ -147,11 +147,7 @@ const write = (page: Page, projectId: string, ids: string[]) =>
   page.evaluate(
     async ({ projectId, values }) => {
       const handle = await window.localAuthorityTest.ready;
-      await handle.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: [projectId] },
-      });
+      await handle.subscribe({ project_id: projectId });
       await handle.mutate(
         values.map((row) => ({ table: 'tasks', op: 'upsert', values: row })),
       );

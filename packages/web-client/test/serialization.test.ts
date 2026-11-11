@@ -201,9 +201,7 @@ test('setWindow does not interleave with a bootstrap pull (§4.8, §8.2, one loo
     ['logEpoch', TEST_LOG_EPOCH],
   );
   // Window in winA — the bootstrap pull for it will download a gated segment.
-  await reader.client.setWindow({ table: 'tasks', variable: 'project_id' }, [
-    'winA',
-  ]);
+  await reader.client.setWindow({ variable: 'project_id' }, ['winA']);
   const firstPull = reader.client.sync();
   // The pull is now suspended at the gated segment download, mid-apply.
   await gate.started;
@@ -211,10 +209,10 @@ test('setWindow does not interleave with a bootstrap pull (§4.8, §8.2, one loo
   // Drive a window widen while the pull is suspended. Its widen transaction
   // must NOT interleave with the pull's segment-apply transactions. Without
   // #opChain it would, tripping the overlap probe.
-  const widen = reader.client.setWindow(
-    { table: 'tasks', variable: 'project_id' },
-    ['winA', 'winB'],
-  );
+  const widen = reader.client.setWindow({ variable: 'project_id' }, [
+    'winA',
+    'winB',
+  ]);
   await new Promise((r) => setTimeout(r, 5));
   gate.passthrough();
 

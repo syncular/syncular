@@ -8,11 +8,17 @@
 import { encodeSparseRow, type RowColumn } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { FIXTURE_SCHEMA, task } from '../fixture';
-import { rawPushCommit, responsePushResults } from '../raw';
+import {
+  rawDelete,
+  rawPushCommit,
+  rawUpsert,
+  responsePushResults,
+} from '../raw';
 import type { Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 async function bootstrapped(
   ctx: ScenarioContext,
@@ -20,7 +26,7 @@ async function bootstrapped(
   clientId: string,
 ) {
   const handle = await ctx.newClient({ actorId, clientId, allowed: P1 });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -98,8 +104,8 @@ export const deletePrecedenceScenarios: readonly Scenario[] = [
       checkEqual(rows.length, 1, 'the row exists again');
       checkEqual(
         rows[0]?.version,
-        2,
-        'the recreated row starts above the deleted version (§6.2)',
+        3,
+        'the delete wrote version 2, the floor; the recreate starts one above it (§2.2)',
       );
       checkEqual(
         rows[0]?.values.title,
@@ -139,8 +145,8 @@ export const deletePrecedenceScenarios: readonly Scenario[] = [
       await syncIdle(a);
       checkEqual(
         (await ctx.server.readRows('tasks'))[0]?.version,
-        4,
-        'the recreate starts above the deleted version 3',
+        5,
+        'the delete of version 3 wrote the floor 4; the recreate starts at 5 (§2.2)',
       );
 
       const stale = await b.api.patch('tasks', 't1', { title: 'stale' }, 3);
@@ -156,6 +162,51 @@ export const deletePrecedenceScenarios: readonly Scenario[] = [
         'new',
         'the new incarnation keeps its values',
       );
+    },
+  },
+
+  {
+    name: 'delete-precedence/same-commit-recreate-leaves-the-floor',
+    specRefs: ['§2.2', '§6.2'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'seed') },
+      ]);
+      await syncIdle(a);
+      // One commit deletes t1 and writes it again: the row stays live.
+      await ctx.server.setAllowedScopes('mover', P1);
+      const recreated = await ctx.rawSync(
+        'mover',
+        [
+          rawPushCommit('delete-and-recreate', [
+            rawDelete('tasks', 't1'),
+            rawUpsert(ctx.serverSchema, 'tasks', task('t1', 'p1', 'again'), 0),
+          ]),
+        ],
+        { clientId: 'mover' },
+      );
+      check(
+        recreated.ok &&
+          responsePushResults(recreated.message)[0]?.status === 'applied',
+        'the commit applies',
+      );
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'new') },
+      ]);
+      await syncIdle(a);
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => [
+          row.rowId,
+          row.version,
+        ]),
+        [
+          ['t1', 3],
+          ['t2', 1],
+        ],
+        'the delete wrote 2, the rewrite 3; the floor stayed 0, so a new row starts at 1 (§2.2)',
+      );
+      await expectConverged(ctx, 'tasks', [a]);
     },
   },
 
@@ -336,8 +387,8 @@ export const deletePrecedenceScenarios: readonly Scenario[] = [
       checkEqual(rows.length, 1, 'the insert rule applied');
       checkEqual(
         rows[0]?.version,
-        1,
-        'the recreated row restarts at version 1',
+        3,
+        'pruning never lowers the delete floor 2: the recreate starts at 3 (§2.2)',
       );
       checkEqual(
         rows[0]?.values.title,

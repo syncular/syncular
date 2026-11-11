@@ -48,8 +48,8 @@ void *syncular_client_new(const char *config_json);
 /*
  * Run one JSON command against the client. `command_json` is
  * {"method":"...","params":{...}} — create/subscribe/mutate/sync/
- * syncUntilIdle/readRows/conflicts/subscriptionState/setPresence/
- * drainRealtime/... (the full conformance command surface). Every command
+ * syncUntilIdle/readRows/conflicts/units/setPresence/drainRealtime/...
+ * (the full conformance command surface). Every command
  * applies the inbound realtime traffic buffered since the previous one.
  * Returns a heap-owned JSON string,
  * {"result":...} or {"error":{"code":...,"message":...}}, to free with

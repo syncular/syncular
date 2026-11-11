@@ -5,6 +5,20 @@ import { openNodeDatabase } from '../../src/node-database.ts';
 
 try {
   await runAdapterContract(openNodeDatabase);
+  // A text proven read-only runs without the `query_only` toggle.
+  const proven = openNodeDatabase();
+  const exec = proven.db.exec.bind(proven.db);
+  let pragmas = 0;
+  proven.db.exec = (sql) => {
+    if (sql.includes('query_only')) pragmas += 1;
+    return exec(sql);
+  };
+  proven.queryReadOnly('SELECT 1 AS one');
+  proven.queryReadOnly('SELECT 1 AS one');
+  proven.close();
+  if (pragmas !== 2) {
+    throw new Error(`a proven text toggled query_only again (${pragmas})`);
+  }
   // A Node older than 22.16 has no `columns()`: the adapter refuses to open.
   const columns = Object.getOwnPropertyDescriptor(
     StatementSync.prototype,

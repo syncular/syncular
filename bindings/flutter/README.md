@@ -31,7 +31,7 @@ final client = SyncularClient.create(
   ),
 );
 
-client.subscribe('todos', 'todos', scopes: {'list_id': ['inbox']});
+client.subscribe({'list_id': 'inbox'}); // returns the unit id
 
 // Optimistic write — visible immediately, offline or not.
 client.mutate([
@@ -74,9 +74,10 @@ to `baseUrl`, and `abandonLocalAuthorityAttach()` rolls a stopped attach back.
 Errors carry `code` and `details`. See `/guide-local-authority/`.
 
 Typed conveniences mirror the command surface exactly (same names as the
-Swift/Kotlin wrappers): `mutate` / `subscribe` / `unsubscribe` / `sync` /
-`syncUntilIdle` / `readRows` / `query` / `pendingCommitIds` / `statusSnapshot` /
-`subscriptionState` / `conflicts` / `presence` / `setPresence` / `setWindow` /
+Swift/Kotlin wrappers): `mutate` / `subscribe` / `subscribeMany` /
+`unsubscribe` / `units` / `unit` / `unitCatchup` / `sync` / `syncUntilIdle` /
+`readRows` / `query` / `pendingCommitIds` / `statusSnapshot` /
+`conflicts` / `presence` / `setPresence` / `setWindow` /
 `windowState` / `connectRealtime` / `disconnectRealtime` / `crdtText` /
 `crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` / `setHeaders` (native
 CRDT is specified in §5.10.5).
@@ -198,7 +199,8 @@ The tests need **no server**: syncular is offline-first, so `mutate` →
 
 Use `querySnapshot` for rows, coverage, and revision from one local read.
 `statusSnapshot` returns scheduling, schema, lease, and outbox state;
-`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+`diagnosticsSnapshot` adds bounded version 2 support evidence: units counted
+per state, `activeUnits` and the `replicaCursor`. `commitOutcome` looks up
 one terminal result by commit ID. `commitOutcomes` lists the durable journal,
 and `resolveCommitOutcome` records an explicit resolution. A pending commit
 has no terminal outcome. `rejections` lists rejected commits.

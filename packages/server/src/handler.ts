@@ -11,7 +11,9 @@
  */
 import {
   DecodeError,
-  decodeMessage,
+  decodeRequest,
+  echoDigest,
+  type ProgressFrame,
   type PullHeaderFrame,
   type PushCommitFrame,
   type PushResultDetailsFrame,
@@ -21,7 +23,10 @@ import {
   type ResponseFrame,
   type RoundFailureFrame,
   type ScopeMap,
-  type SubscriptionFrame,
+  type UnitFrame,
+  type UnitScopes,
+  registrationDigest,
+  unitId,
 } from '@syncular/core';
 import type { SyncRequestContext } from './context';
 import {
@@ -34,7 +39,7 @@ import {
 import { reportError, SyncError, syncError } from './errors';
 import {
   emitEvent,
-  type PullSubscriptionSummary,
+  type PullUnitSummary,
   type SyncularServerEvents,
 } from './events';
 import {
@@ -46,25 +51,47 @@ import type { LeaseRecord } from './lease-store';
 import {
   ACCEPT_EXTERNAL_ROWS,
   ACCEPT_INLINE_ROWS,
+  bootstrapSegments,
   clampPullLimits,
+  commitFrame,
+  coveredTables,
+  type PullLimits,
   type PullSectionTrace,
-  prepareSections,
-  preparedSection,
-  type SubscriptionPlan,
+  planBootstrap,
+  planUnit,
+  type UnitPlan,
 } from './pull';
 import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
 import { serveNotReadyError } from './readiness';
-import type { CompiledSchema } from './schema';
+import type { CompiledSchema, CompiledTable } from './schema';
 import { compileSchema } from './schema';
 import { schemaWindowOf, projectRowPayload } from './schema-window';
-import { computeEffective, type ResolvedScopes } from './scopes';
+import type { ResolvedScopes } from './scopes';
 import { StorageQueryError } from './storage-errors';
 import {
-  type ClientSubscription,
+  type CatchingUpUnit,
+  type ClientRecord,
+  type ClientRegistration,
+  type LiveWindow,
   type PartitionRegistryEntry,
   serveGateRefusal,
   serveGateTokenChanged,
 } from './storage';
+
+interface PlannedUnit {
+  readonly plan: UnitPlan;
+  /** Absent for a live unit. */
+  readonly progress: ProgressFrame | undefined;
+}
+
+interface PullPlan {
+  readonly header: PullHeaderFrame;
+  readonly limits: PullLimits;
+  /** The traveling list (§4.1); absent when the request referred to it. */
+  readonly registration: ClientRegistration | undefined;
+  /** The effective list; absent when the answer is `unregistered`. */
+  readonly units: readonly PlannedUnit[] | undefined;
+}
 
 interface RequestPlan {
   readonly wireVersion: number;
@@ -74,8 +101,9 @@ interface RequestPlan {
   /** §1.5: the code this request reports for its last unseen round failure. */
   readonly roundFailure: RoundFailureFrame | undefined;
   readonly pushes: readonly PushCommitFrame[];
-  readonly pull: PullHeaderFrame | undefined;
-  readonly subscriptions: readonly SubscriptionPlan[];
+  readonly pull: PullPlan | undefined;
+  /** The client record read for the actor binding (§1.5, §4.5). */
+  readonly record: ClientRecord | undefined;
   readonly resolved: ResolvedScopes;
   readonly schemaFloor: boolean;
   /**
@@ -100,7 +128,11 @@ function validateResolvedKeys(allowed: ScopeMap, schema: CompiledSchema): void {
       // bug — fail the request, do not guess.
       throw syncError(
         'sync.invalid_subscription',
-        `resolveScopes returned undeclared scope variable ${JSON.stringify(key)} (§3.2)`,
+        'resolveScopes returned an undeclared scope variable (§3.2)',
+        JSON.stringify({
+          reason: 'undeclared_resolved_variable',
+          variable: key,
+        }),
       );
     }
   }
@@ -163,8 +195,8 @@ async function resolveOnce(
     });
   } catch (error) {
     if (error instanceof SyncError) throw error;
-    // §3.2 rule 5 / §3.4 step 4: fail loud, never leak — subscriptions
-    // revoke and writes reject with sync.forbidden. A throw is NOT an
+    // §3.2 rule 5 / §3.4 step 4: fail loud, never leak — units revoke and
+    // writes reject with sync.forbidden. A throw is NOT an
     // outage (§7.3.3): it never reaches the lease.
     const events = ctx.events;
     if (events !== undefined) {
@@ -216,13 +248,15 @@ async function planRequest(
   }
   const pushes: PushCommitFrame[] = [];
   let roundFailure: RoundFailureFrame | undefined;
-  let pull: PullHeaderFrame | undefined;
-  const subFrames: SubscriptionFrame[] = [];
+  let pullHeader: PullHeaderFrame | undefined;
+  const unitFrames: UnitFrame[] = [];
+  const progressFrames: ProgressFrame[] = [];
   for (const frame of request.frames) {
     if (frame.type === 'ROUND_FAILURE') roundFailure = frame;
     else if (frame.type === 'PUSH_COMMIT') pushes.push(frame);
-    else if (frame.type === 'PULL_HEADER') pull = frame;
-    else if (frame.type === 'SUBSCRIPTION') subFrames.push(frame);
+    else if (frame.type === 'PULL_HEADER') pullHeader = frame;
+    else if (frame.type === 'UNIT') unitFrames.push(frame);
+    else if (frame.type === 'PROGRESS') progressFrames.push(frame);
   }
 
   if (header.logEpoch === undefined && pushes.length > 0) {
@@ -232,40 +266,25 @@ async function planRequest(
     );
   }
   const epochReset = header.logEpoch !== registry.logEpoch;
+  const unserved = {
+    wireVersion: request.wireVersion,
+    logEpoch: registry.logEpoch,
+    epochReset,
+    header,
+    roundFailure,
+    pushes: [],
+    pull: undefined,
+    record: undefined,
+    resolved: { ok: false },
+    leaseToEmit: undefined,
+  } as const;
 
   if (header.schemaVersion !== schema.version) {
     // §2.4: no degraded encoding — answer with the schema floor (§1.6).
     // No lease is issued on a floor round (§7.3.3).
-    return {
-      wireVersion: request.wireVersion,
-      logEpoch: registry.logEpoch,
-      epochReset,
-      header,
-      roundFailure,
-      pushes,
-      pull,
-      subscriptions: [],
-      resolved: { ok: false },
-      schemaFloor: true,
-      leaseToEmit: undefined,
-    };
+    return { ...unserved, schemaFloor: true };
   }
-
-  if (epochReset) {
-    return {
-      wireVersion: request.wireVersion,
-      logEpoch: registry.logEpoch,
-      epochReset: true,
-      header,
-      roundFailure,
-      pushes: [],
-      pull: undefined,
-      subscriptions: [],
-      resolved: { ok: false },
-      schemaFloor: false,
-      leaseToEmit: undefined,
-    };
-  }
+  if (epochReset) return { ...unserved, schemaFloor: false };
 
   if (header.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
     throw syncError(
@@ -292,83 +311,111 @@ async function planRequest(
   if (totalOperations > limits.maxOperationsPerRequest) {
     throw syncError(
       'sync.too_many_operations',
-      `request carries ${totalOperations} operations (cap ${limits.maxOperationsPerRequest}, §6.1)`,
-    );
-  }
-  // §1.7: subscription caps, checked before any subscription is planned.
-  if (subFrames.length > limits.maxSubscriptionsPerRequest) {
-    throw syncError(
-      'sync.limit_exceeded',
-      'request carries more subscriptions than the server accepts (§1.7)',
+      'request carries more operations than the server accepts (§6.1)',
       JSON.stringify({
-        limit: 'maxSubscriptionsPerRequest',
-        max: limits.maxSubscriptionsPerRequest,
-        actual: subFrames.length,
+        max: limits.maxOperationsPerRequest,
+        actual: totalOperations,
       }),
     );
   }
-  for (const frame of subFrames) {
-    let values = 0;
-    for (const list of Object.values(frame.scopes)) values += list.length;
-    if (values > limits.maxScopeValuesPerSubscription) {
-      throw syncError(
-        'sync.limit_exceeded',
-        'subscription requests more scope values than the server accepts (§1.7)',
-        JSON.stringify({
-          limit: 'maxScopeValuesPerSubscription',
-          max: limits.maxScopeValuesPerSubscription,
-          actual: values,
-          subscriptionId: frame.id,
-        }),
-      );
-    }
+  // §6.1 sequence rules: with an outbox every clientSeq is ≥ 1 and strictly
+  // increasing in frame order; without one every clientSeq is 0.
+  if (
+    pushes.some((push, i) =>
+      header.outboxId === undefined
+        ? push.clientSeq !== 0
+        : push.clientSeq < 1 ||
+          (i > 0 && push.clientSeq <= pushes[i - 1]!.clientSeq),
+    )
+  ) {
+    throw syncError(
+      'sync.invalid_request',
+      'push commits break the clientSeq rules (§6.1)',
+      JSON.stringify({
+        outbox: header.outboxId !== undefined,
+        clientSeqs: pushes.map((push) => push.clientSeq),
+      }),
+    );
+  }
+  // §1.7: the UNIT cap, checked before any unit is planned.
+  if (unitFrames.length > limits.maxSubscriptionsPerRequest) {
+    throw syncError(
+      'sync.limit_exceeded',
+      'request carries more units than the server accepts (§1.7)',
+      JSON.stringify({
+        limit: 'maxSubscriptionsPerRequest',
+        max: limits.maxSubscriptionsPerRequest,
+        actual: unitFrames.length,
+      }),
+    );
   }
 
-  if (pull !== undefined) {
-    // §4.2: rows support is mandatory (bits 0 and 1) — reject its absence
-    // as request validation (the MAY of §1.7).
-    if ((pull.accept & (ACCEPT_INLINE_ROWS | ACCEPT_EXTERNAL_ROWS)) === 0) {
+  // §4.1: the effective list is the traveling list, or the stored list the
+  // digest names; a digest naming neither answers `unregistered`.
+  let list: { scopes: UnitScopes; tables: CompiledTable[] }[] | undefined;
+  let registration: ClientRegistration | undefined;
+  if (pullHeader !== undefined) {
+    // §4.2: rows support is mandatory (bits 0 and 1).
+    if (
+      (pullHeader.accept & (ACCEPT_INLINE_ROWS | ACCEPT_EXTERNAL_ROWS)) ===
+      0
+    ) {
       throw syncError(
         'sync.invalid_request',
         'accept must include rows-segment support (bits 0 and 1, §4.2)',
       );
     }
-  }
-
-  // Request validation for subscriptions (§1.7): duplicate ids, unknown
-  // tables, undeclared scope keys, requested '*'.
-  const seenIds = new Set<string>();
-  const validated: Array<{ frame: SubscriptionFrame; table: string }> = [];
-  for (const frame of subFrames) {
-    if (seenIds.has(frame.id)) {
-      throw syncError(
-        'sync.invalid_subscription',
-        `duplicate subscription id ${JSON.stringify(frame.id)} (§4.1)`,
-      );
-    }
-    seenIds.add(frame.id);
-    const table = schema.tables.get(frame.table);
-    if (table === undefined) {
-      throw syncError(
-        'sync.unknown_table',
-        `subscription names unknown table ${JSON.stringify(frame.table)} (§4.3)`,
-      );
-    }
-    for (const [key, values] of Object.entries(frame.scopes)) {
-      if (!table.declaredVariables.has(key)) {
+    const traveling =
+      unitFrames.length > 0 ||
+      sameBytes(pullHeader.registrationDigest, registrationDigest([]));
+    if (traveling) {
+      const units = unitFrames.map((frame) => frame.scopes);
+      const digest = registrationDigest(units);
+      if (!sameBytes(digest, pullHeader.registrationDigest)) {
         throw syncError(
           'sync.invalid_subscription',
-          `requested scope key ${JSON.stringify(key)} is not declared by table ${JSON.stringify(frame.table)} (§3.2)`,
+          'the registration digest differs from the traveling list (§4.1)',
+          JSON.stringify({ reason: 'registration_digest' }),
         );
       }
-      if (values.includes('*')) {
-        throw syncError(
-          'sync.invalid_subscription',
-          `requested scope value '*' is reserved for allowed scopes (§3.2)`,
-        );
+      registration = { units, digest };
+    }
+    const units =
+      registration?.units ??
+      (record?.registration !== undefined &&
+      sameBytes(record.registration.digest, pullHeader.registrationDigest)
+        ? record.registration.units
+        : undefined);
+    if (units !== undefined) {
+      const ids = new Set<string>();
+      list = units.map((scopes) => {
+        const tables = coveredTables(schema, scopes);
+        const id = unitId(scopes);
+        if (ids.has(id)) {
+          throw syncError(
+            'sync.invalid_subscription',
+            'the registration list names a scope map twice (§4.1)',
+            JSON.stringify({ reason: 'duplicate_unit', scopes }),
+          );
+        }
+        ids.add(id);
+        return { scopes, tables };
+      });
+      const progressed = new Set<string>();
+      for (const frame of progressFrames) {
+        if (!ids.has(frame.id) || progressed.has(frame.id)) {
+          throw syncError(
+            'sync.invalid_subscription',
+            'a PROGRESS frame names no registered unit or repeats one (§4.1)',
+            JSON.stringify({
+              reason: ids.has(frame.id) ? 'duplicate_progress' : 'unknown_unit',
+              id: frame.id,
+            }),
+          );
+        }
+        progressed.add(frame.id);
       }
     }
-    validated.push({ frame, table: frame.table });
   }
 
   const { resolved, leaseToEmit } = await resolveOnce(
@@ -376,21 +423,7 @@ async function planRequest(
     header.clientId,
     compileSchema(ctx.schema),
   );
-
-  const subscriptions: SubscriptionPlan[] = validated.map(({ frame }) => {
-    const table = schema.tables.get(frame.table);
-    if (table === undefined) throw new Error('unreachable: validated table');
-    const outcome = computeEffective(
-      table.declaredVariables,
-      frame.scopes,
-      resolved,
-    );
-    if (outcome.status === 'active') {
-      return { frame, table, status: 'active', effective: outcome.effective };
-    }
-    return { frame, table, status: 'revoked', effective: {} };
-  });
-
+  const progress = new Map(progressFrames.map((frame) => [frame.id, frame]));
   return {
     wireVersion: request.wireVersion,
     logEpoch: registry.logEpoch,
@@ -398,12 +431,27 @@ async function planRequest(
     header,
     roundFailure,
     pushes,
-    pull,
-    subscriptions,
+    pull:
+      pullHeader === undefined
+        ? undefined
+        : {
+            header: pullHeader,
+            limits: clampPullLimits(pullHeader),
+            registration,
+            units: list?.map(({ scopes, tables }) => {
+              const plan = planUnit(scopes, tables, resolved);
+              return { plan, progress: progress.get(plan.id) };
+            }),
+          },
+    record,
     resolved,
     schemaFloor: false,
     leaseToEmit,
   };
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 /** Mutable outcome box shared with the instrumented stream wrapper. */
@@ -561,19 +609,41 @@ async function* streamResponse(
       });
     }
   }
+  const { clientId, outboxId } = plan.header;
   try {
     // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order.
     const currentSchema = compileSchema(ctx.schema);
     let acceptedThrough = 0;
-    for (const push of plan.pushes) {
+    // §6.3.2: the request's first commit settles the outbox and reads `W`.
+    let watermark = 0;
+    for (const [index, push] of plan.pushes.entries()) {
       const processed = await processPushCommitWithTrace(
         ctx,
         currentSchema,
         plan.resolved,
-        plan.header.clientId,
+        clientId,
         push,
         schema,
+        outboxId === undefined
+          ? undefined
+          : {
+              outboxId,
+              clientSeq: push.clientSeq,
+              watermark,
+              ...(index === 0
+                ? {
+                    settlement: {
+                      outboxId,
+                      commits: plan.pushes.map((commit) => ({
+                        clientCommitId: commit.clientCommitId,
+                        clientSeq: commit.clientSeq,
+                      })),
+                    },
+                  }
+                : {}),
+            },
       );
+      watermark = processed.watermark ?? watermark;
       acceptedThrough = Math.max(
         acceptedThrough,
         processed.frame.commitSeq ?? 0,
@@ -618,7 +688,7 @@ async function* streamResponse(
         }),
       };
       if (events !== undefined) {
-        emitPushEvent(events, ctx, plan.header.clientId, push, processed);
+        emitPushEvent(events, ctx, clientId, push, processed);
       }
       yield encodeResponseFrame(frame, plan.wireVersion);
       const details = pushResultDetailsFrame(frame);
@@ -627,12 +697,34 @@ async function* streamResponse(
       }
     }
 
-    // Pull half (§4): subscriptions echoed in request order.
-    const cursors: number[] = [];
-    if (plan.pull !== undefined) {
-      const summaries: PullSubscriptionSummary[] | undefined =
-        events !== undefined ? [] : undefined;
-      const limits = clampPullLimits(plan.pull);
+    const previous = plan.record;
+    const base = {
+      clientId,
+      actorId: ctx.actorId,
+      wireVersion: plan.wireVersion,
+      schemaVersion: schema.version,
+    };
+    const pull = plan.pull;
+    if (pull === undefined) {
+      // A push-only round keeps the registration, its states and the cursor;
+      // its record binds the actor (§1.5) and anchors the watermark rows
+      // (§6.3.2).
+      report.persist = () =>
+        ctx.storage.putClientRecord(
+          ctx.partition,
+          {
+            ...base,
+            cursor: previous?.cursor ?? -1,
+            updatedAtMs: clockOf(ctx)(),
+            catchingUp: previous?.catchingUp ?? [],
+          },
+          plan.roundFailure !== undefined
+            ? { keepRoundOutcome: true }
+            : undefined,
+        );
+    } else {
+      // Pull half (§4): unit sections in registration order, then one live
+      // section.
       const maxSeq = await ctx.storage.getMaxCommitSeq(ctx.partition);
       if (maxSeq < acceptedThrough)
         throw syncError(
@@ -640,166 +732,423 @@ async function* streamResponse(
           'storage returned a commit sequence older than the accepted push; disable query caching for sync storage',
           JSON.stringify({ acceptedThrough, storageMaxCommitSeq: maxSeq }),
         );
-      const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
-      // A window of sections runs its pre-frame reads together, so a batching
-      // storage answers them in one statement per table. The window holds at
-      // most 100,000 first-page or window rows (two maximal §4.2 pages): a
-      // request's read memory follows the configured limits, never its
-      // subscription count.
-      const window = Math.max(
-        1,
-        Math.floor(
-          100_000 /
-            (Math.max(limits.limitSnapshotRows, limits.limitCommits) + 1),
-        ),
-      );
-      for (let start = 0; start < plan.subscriptions.length; start += window) {
-        const batch = plan.subscriptions.slice(start, start + window);
-        const prepared = await prepareSections(
-          ctx,
-          schema,
-          limits,
-          batch,
-          maxSeq,
-          horizonSeq,
-          plan.logEpoch,
+      const { limits } = pull;
+      const units = pull.units;
+      if (units === undefined) {
+        // §4.1: no unit section, no COMMIT; PROGRESS frames are ignored.
+        yield encodeResponseFrame(
+          { type: 'LIVE_START', status: 'unregistered', reasonCode: '' },
+          plan.wireVersion,
         );
-        for (const [index, subscription] of batch.entries()) {
-          const trace: PullSectionTrace | undefined =
-            summaries !== undefined ? { segments: [] } : undefined;
-          const reads = prepared[index];
-          if (reads === undefined) {
-            throw new Error('prepareSections lost a plan');
+        yield encodeResponseFrame(
+          { type: 'LIVE_END', throughSeq: -1, echoDigest: new Uint8Array() },
+          plan.wireVersion,
+        );
+        if (events !== undefined) {
+          emitEvent(events, {
+            type: 'pull.served',
+            atMs: clockOf(ctx)(),
+            partition: ctx.partition,
+            actorId: ctx.actorId,
+            clientId,
+            acceptedThrough,
+            storageMaxCommitSeq: maxSeq,
+            registrationTraveled: false,
+            units: [],
+            live: {
+              status: 'unregistered',
+              fromCursor: pull.header.cursor,
+              throughSeq: -1,
+              commits: 0,
+              changes: 0,
+            },
+          });
+        }
+        // §4.5: an `unregistered` answer writes only the round outcome; the
+        // stored record keeps its cursor, timestamp and states.
+        if (previous !== undefined) {
+          report.persist = () =>
+            ctx.storage.putClientRecord(
+              ctx.partition,
+              {
+                clientId,
+                actorId: previous.actorId,
+                wireVersion: previous.wireVersion,
+                cursor: previous.cursor,
+                updatedAtMs: previous.updatedAtMs,
+                lastRoundAtMs: clockOf(ctx)(),
+                ...(previous.schemaVersion !== undefined
+                  ? { schemaVersion: previous.schemaVersion }
+                  : {}),
+                catchingUp: previous.catchingUp,
+              },
+              plan.roundFailure !== undefined
+                ? { keepRoundOutcome: true }
+                : undefined,
+            );
+        }
+      } else {
+        const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
+        const R = pull.header.cursor;
+        const echo = echoDigest(
+          units.map(({ plan: unit }) => ({
+            id: unit.id,
+            status: unit.status,
+            fenced: unit.fenced,
+          })),
+        );
+        // §4.4 rule 1: every unit gets a section when the list traveled or
+        // the client holds another echo.
+        const echoSections =
+          pull.registration !== undefined ||
+          !sameBytes(pull.header.echoDigest, echo);
+        const liveUnits = units.some(
+          (unit) =>
+            unit.progress === undefined && unit.plan.status === 'active',
+        );
+        // §4.6 replica reset: a live unit with R outside [horizon, max].
+        let liveReset = liveUnits && (R < horizonSeq || R > maxSeq);
+        // Per unit: its section kind and its scan-set bound (§4.5).
+        type UnitState =
+          | { kind: 'revoked' }
+          | { kind: 'reset' }
+          | { kind: 'live' }
+          | { kind: 'post'; cursor: number }
+          | {
+              kind: 'bootstrap';
+              pin: number;
+              frames: ResponseFrame[];
+              token: string | undefined;
+            };
+        const states: UnitState[] = units.map(({ plan: unit, progress }) => {
+          if (unit.status === 'revoked') return { kind: 'revoked' };
+          if (progress === undefined) return { kind: 'live' };
+          // §4.7: a token, cursor -1 or a cursor from the future bootstraps.
+          if (
+            progress.bootstrapState === undefined &&
+            progress.cursor >= 0 &&
+            progress.cursor <= maxSeq
+          ) {
+            return progress.cursor < horizonSeq
+              ? { kind: 'reset' }
+              : { kind: 'post', cursor: progress.cursor };
           }
-          const section = preparedSection(
-            ctx,
-            schema,
-            limits,
-            subscription,
-            maxSeq,
-            reads,
-            trace,
-            plan.logEpoch,
-          );
-          let status: 'active' | 'revoked' | 'reset' = 'active';
-          let bootstrap = false;
-          let commits = 0;
-          let changes = 0;
-          let effectiveScopes: ScopeMap = {};
-          let firstCommitSeq: number | undefined;
-          let lastCommitSeq: number | undefined;
-          let step = await section.next();
-          while (!step.done) {
-            const frame = step.value as ResponseFrame;
-            if (summaries !== undefined) {
-              if (frame.type === 'SUB_START') {
-                status = frame.status;
-                bootstrap = frame.bootstrap;
-                effectiveScopes = frame.effectiveScopes;
-              } else if (frame.type === 'COMMIT') {
-                commits += 1;
-                changes += frame.changes.length;
-                firstCommitSeq ??= frame.commitSeq;
-                lastCommitSeq = frame.commitSeq;
-              }
+          // Replaced by the section the bootstrap below produces.
+          return { kind: 'bootstrap', pin: -1, frames: [], token: '' };
+        });
+        const traces = units.map((): PullSectionTrace | undefined =>
+          events !== undefined ? { segments: [] } : undefined,
+        );
+        // Bootstrap sections run before the live read: a bootstrap that
+        // completes in this response enters the scan set at its pin (§4.5).
+        // A window of units runs its pre-frame reads together, so a
+        // batching storage answers them in one statement per table. A unit
+        // reads ahead the first page of at most `maxSnapshotPages` tables,
+        // and a window holds at most 100,000 first-page rows, so read memory
+        // follows the configured limits, never the unit count.
+        const bootstrapping = states.flatMap((state, index) =>
+          state.kind === 'bootstrap' ? [index] : [],
+        );
+        const firstPages = Math.max(
+          1,
+          Math.floor(100_000 / (limits.limitSnapshotRows + 1)),
+        );
+        for (let next = 0; next < bootstrapping.length;) {
+          const window: number[] = [];
+          let pages = 0;
+          while (next < bootstrapping.length) {
+            const index = bootstrapping[next]!;
+            const reads = Math.min(
+              limits.maxSnapshotPages,
+              units[index]!.plan.pairs.size,
+            );
+            if (window.length > 0 && pages + reads > firstPages) break;
+            window.push(index);
+            pages += reads;
+            next += 1;
+          }
+          const batch = window.map((index) => ({
+            index,
+            plan: planBootstrap(
+              ctx,
+              schema,
+              limits,
+              units[index]!.plan,
+              units[index]!.progress?.bootstrapState,
+              maxSeq,
+              horizonSeq,
+              plan.logEpoch,
+            ),
+          }));
+          for (const { index, plan: bootstrap } of batch) {
+            const frames: ResponseFrame[] = [];
+            const segments = bootstrapSegments(
+              ctx,
+              schema,
+              limits,
+              bootstrap,
+              traces[index],
+              plan.logEpoch,
+            );
+            let step = await segments.next();
+            while (!step.done) {
+              frames.push(step.value);
+              step = await segments.next();
             }
-            yield encodeResponseFrame(frame, plan.wireVersion);
-            step = await section.next();
-          }
-          if (step.value.active) cursors.push(step.value.nextCursor);
-          if (summaries !== undefined && trace !== undefined) {
-            summaries.push({
-              id: subscription.frame.id,
-              table: subscription.frame.table,
-              status,
-              mode:
-                status !== 'active'
-                  ? 'none'
-                  : bootstrap
-                    ? 'bootstrap'
-                    : 'incremental',
-              requestedScopes: subscription.frame.scopes,
-              effectiveScopes,
-              ...(firstCommitSeq !== undefined && lastCommitSeq !== undefined
-                ? { firstCommitSeq, lastCommitSeq }
-                : {}),
-              fromCursor: subscription.frame.cursor,
-              nextCursor: step.value.nextCursor,
-              commits,
-              changes,
-              segments: trace.segments,
-            });
+            states[index] = {
+              kind: 'bootstrap',
+              pin: bootstrap.pin,
+              frames,
+              token: step.value,
+            };
           }
         }
-      }
-      if (events !== undefined && summaries !== undefined) {
-        emitEvent(events, {
-          type: 'pull.served',
-          atMs: clockOf(ctx)(),
-          partition: ctx.partition,
-          actorId: ctx.actorId,
-          clientId: plan.header.clientId,
-          acceptedThrough,
-          storageMaxCommitSeq: maxSeq,
-          subscriptions: summaries,
-        });
+        const bound = (state: UnitState): number | undefined =>
+          state.kind === 'live'
+            ? R
+            : state.kind === 'post'
+              ? state.cursor
+              : state.kind === 'bootstrap' && state.token === undefined
+                ? state.pin
+                : undefined;
+        // §4.5 order of work: read and buffer the live section, then recheck
+        // the horizon. A bound below it leaves the scan set (a live unit's
+        // resets the live section), and the section is read again.
+        let live: LiveWindow | undefined;
+        for (;;) {
+          const scan = units.flatMap(({ plan: unit }, index) => {
+            const afterSeq = bound(states[index]!);
+            return afterSeq === undefined
+              ? []
+              : [{ scopes: unit.scopes, afterSeq, tables: unit.pairs }];
+          });
+          if (liveReset || scan.length === 0) break;
+          live = await ctx.storage.readLiveWindow(ctx.partition, {
+            units: scan,
+            throughSeq: maxSeq,
+            limitChanges: limits.limitCommits,
+          });
+          const recheck = await ctx.storage.getHorizonSeq(ctx.partition);
+          let expired = false;
+          for (const [index, state] of states.entries()) {
+            const afterSeq = bound(state);
+            if (afterSeq === undefined || afterSeq >= recheck) continue;
+            expired = true;
+            if (state.kind === 'live') liveReset = true;
+            else states[index] = { kind: 'reset' };
+          }
+          if (!expired) break;
+          live = undefined;
+        }
+        const T = liveReset ? -1 : (live?.throughSeq ?? maxSeq);
+
+        const summaries: PullUnitSummary[] = [];
+        for (const [index, { plan: unit, progress }] of units.entries()) {
+          const state = states[index]!;
+          const requestCursor = progress?.cursor ?? R;
+          const section =
+            state.kind === 'revoked' ||
+            state.kind === 'reset' ||
+            state.kind === 'bootstrap' ||
+            echoSections;
+          if (section) {
+            yield encodeResponseFrame(
+              state.kind === 'revoked'
+                ? {
+                    type: 'SUB_START',
+                    id: unit.id,
+                    status: 'revoked',
+                    reasonCode: 'sync.scope_revoked',
+                    bootstrap: false,
+                    fenced: [],
+                  }
+                : state.kind === 'reset'
+                  ? {
+                      type: 'SUB_START',
+                      id: unit.id,
+                      status: 'reset',
+                      reasonCode: 'sync.cursor_expired',
+                      bootstrap: false,
+                      fenced: [],
+                    }
+                  : {
+                      type: 'SUB_START',
+                      id: unit.id,
+                      status: 'active',
+                      reasonCode: '',
+                      bootstrap: state.kind === 'bootstrap',
+                      fenced: [...unit.fenced],
+                    },
+              plan.wireVersion,
+            );
+            if (state.kind === 'bootstrap') {
+              for (const frame of state.frames) {
+                yield encodeResponseFrame(frame, plan.wireVersion);
+              }
+            }
+            yield encodeResponseFrame(
+              state.kind === 'bootstrap'
+                ? {
+                    type: 'SUB_END',
+                    nextCursor: state.pin,
+                    ...(state.token !== undefined
+                      ? { bootstrapState: state.token }
+                      : {}),
+                  }
+                : { type: 'SUB_END', nextCursor: requestCursor },
+              plan.wireVersion,
+            );
+          }
+          summaries.push({
+            id: unit.id,
+            scopes: unit.scopes,
+            status:
+              state.kind === 'revoked' || state.kind === 'reset'
+                ? state.kind
+                : 'active',
+            mode:
+              state.kind === 'revoked' || state.kind === 'reset'
+                ? 'none'
+                : state.kind === 'post'
+                  ? 'catching-up'
+                  : state.kind,
+            section,
+            fenced: unit.fenced,
+            fromCursor: requestCursor,
+            segments: traces[index]?.segments ?? [],
+          });
+        }
+        yield encodeResponseFrame(
+          liveReset
+            ? {
+                type: 'LIVE_START',
+                status: 'reset',
+                reasonCode: 'sync.cursor_expired',
+              }
+            : { type: 'LIVE_START', status: 'active', reasonCode: '' },
+          plan.wireVersion,
+        );
+        let changes = 0;
+        for (const commit of live?.commits ?? []) {
+          changes += commit.changes.length;
+          yield encodeResponseFrame(
+            commitFrame(commit, currentSchema, schema),
+            plan.wireVersion,
+          );
+        }
+        yield encodeResponseFrame(
+          { type: 'LIVE_END', throughSeq: T, echoDigest: echo },
+          plan.wireVersion,
+        );
+        if (events !== undefined) {
+          const commits = live?.commits ?? [];
+          emitEvent(events, {
+            type: 'pull.served',
+            atMs: clockOf(ctx)(),
+            partition: ctx.partition,
+            actorId: ctx.actorId,
+            clientId,
+            acceptedThrough,
+            storageMaxCommitSeq: maxSeq,
+            registrationTraveled: pull.registration !== undefined,
+            units: summaries,
+            live: {
+              status: liveReset ? 'reset' : 'active',
+              fromCursor: R,
+              throughSeq: T,
+              commits: commits.length,
+              changes,
+              ...(commits.length > 0
+                ? {
+                    firstCommitSeq: commits[0]!.commitSeq,
+                    lastCommitSeq: commits.at(-1)!.commitSeq,
+                  }
+                : {}),
+            },
+          });
+        }
+
+        // §4.5 join rule J and the record the round writes: the live units,
+        // the catching-up ids with their cursors, and the record cursor.
+        const joined = Math.max(R, T);
+        let anyLive = false;
+        const catchingUp: CatchingUpUnit[] = [];
+        for (const [index, { plan: unit }] of units.entries()) {
+          const state = states[index]!;
+          const catching = (cursor: number): void => {
+            catchingUp.push({ id: unit.id, cursor });
+          };
+          if (state.kind === 'live') {
+            if (liveReset) catching(-1);
+            else anyLive = true;
+          } else if (state.kind === 'revoked' || state.kind === 'reset') {
+            catching(-1);
+          } else if (state.kind === 'bootstrap' && state.token !== undefined) {
+            catching(state.pin);
+          } else {
+            // Post-bootstrap, or a bootstrap completed here at its pin.
+            const cursor = state.kind === 'post' ? state.cursor : state.pin;
+            if (liveReset) catching(cursor);
+            else if (Math.max(cursor, T) >= joined) anyLive = true;
+            else catching(Math.max(cursor, T));
+          }
+        }
+        const held = [
+          ...(anyLive ? [joined] : []),
+          ...catchingUp.map((unit) => unit.cursor).filter((c) => c >= 0),
+        ];
+        const liveIds = (
+          listed: readonly UnitScopes[],
+          catching: readonly CatchingUpUnit[],
+        ): string =>
+          JSON.stringify(
+            listed
+              .map((scopes) => unitId(scopes))
+              .filter((id) => !catching.some((unit) => unit.id === id)),
+          );
+        const next: ClientRecord = {
+          ...base,
+          cursor: held.length === 0 ? -1 : Math.min(...held),
+          updatedAtMs: clockOf(ctx)(),
+          ...(pull.registration !== undefined
+            ? { registration: pull.registration }
+            : {}),
+          catchingUp,
+        };
+        report.persist = async () => {
+          await ctx.storage.putClientRecord(
+            ctx.partition,
+            next,
+            // §4.5: a round that carried a `ROUND_FAILURE` report completes
+            // without clearing the reported code and streak.
+            plan.roundFailure !== undefined
+              ? { keepRoundOutcome: true }
+              : undefined,
+          );
+          // §8.1: a traveled list or a changed live set re-registers the
+          // client's sockets on this hub.
+          if (
+            ctx.realtime?.notifySubscriptions !== undefined &&
+            (pull.registration !== undefined ||
+              liveIds(
+                previous?.registration?.units ?? [],
+                previous?.catchingUp ?? [],
+              ) !==
+                liveIds(
+                  units.map(({ plan: unit }) => unit.scopes),
+                  catchingUp,
+                ))
+          ) {
+            await ctx.realtime.notifySubscriptions(ctx.partition, clientId);
+          }
+        };
       }
     }
-
-    // §4.5/§8.1: the cursor watermark and the request's subscription list
-    // per (partition, clientId), persisted only after the serve gate
-    // verified the round (§4.5: a failed round leaves the cursor alone).
-    report.persist = async () => {
-      const previous = await ctx.storage.getClientRecord(
-        ctx.partition,
-        plan.header.clientId,
-      );
-      const subscriptions: ClientSubscription[] =
-        plan.pull !== undefined
-          ? plan.subscriptions.map((s) => ({
-              id: s.frame.id,
-              table: s.frame.table,
-              scopes: s.frame.scopes,
-              schemaVersion: schema.version,
-            }))
-          : [...(previous?.subscriptions ?? [])];
-      let cursor = cursors[0] ?? previous?.cursor ?? -1;
-      for (const next of cursors) cursor = Math.min(cursor, next);
-      await ctx.storage.putClientRecord(
-        ctx.partition,
-        {
-          clientId: plan.header.clientId,
-          actorId: ctx.actorId,
-          wireVersion: plan.wireVersion,
-          cursor,
-          updatedAtMs: clockOf(ctx)(),
-          subscriptions,
-        },
-        // §4.5: a round that carried a `ROUND_FAILURE` report completes
-        // without clearing the reported code and streak; the next request
-        // without the frame clears them as a plain completed round does.
-        plan.roundFailure !== undefined
-          ? { keepRoundOutcome: true }
-          : undefined,
-      );
-      if (
-        ctx.realtime?.notifySubscriptions !== undefined &&
-        JSON.stringify(
-          (previous?.subscriptions ?? []).map((s) => [s.id, s.table, s.scopes]),
-        ) !==
-          JSON.stringify(subscriptions.map((s) => [s.id, s.table, s.scopes]))
-      ) {
-        await ctx.realtime.notifySubscriptions(
-          ctx.partition,
-          plan.header.clientId,
-        );
-      }
-    };
   } catch (error) {
     if (error instanceof SyncError) {
       report.outcome = 'error';
       report.errorCode = error.code;
-      await recordRoundFailure(ctx, plan.header.clientId, error);
+      await recordRoundFailure(ctx, clientId, error);
       // §1.6: in-band ERROR, then END, nothing else.
       yield encodeResponseFrame(
         {
@@ -867,7 +1216,7 @@ export async function createSyncResponseStream(
       errorCode: error instanceof SyncError ? error.code : 'internal',
       pushCommits: 0,
       pulled: false,
-      subscriptions: 0,
+      units: 0,
     });
     await recordRoundFailure(ctx, clientId, error);
     throw error;
@@ -877,11 +1226,8 @@ export async function createSyncResponseStream(
 /** The `REQ_HEADER` clientId of a request that failed before planning. */
 function requestClientId(bytes: Uint8Array): string | undefined {
   try {
-    const message = decodeMessage(bytes);
-    const header = message.frames[0];
-    return message.msgKind === 'request' && header?.type === 'REQ_HEADER'
-      ? header.clientId
-      : undefined;
+    const header = decodeRequest(bytes).frames[0];
+    return header?.type === 'REQ_HEADER' ? header.clientId : undefined;
   } catch {
     return undefined;
   }
@@ -947,11 +1293,7 @@ async function createStreamCore(
 ): Promise<AsyncIterable<Uint8Array>> {
   let request: RequestMessage;
   try {
-    const message = decodeMessage(bytes);
-    if (message.msgKind !== 'request') {
-      throw syncError('sync.invalid_request', 'expected a request message');
-    }
-    request = message;
+    request = decodeRequest(bytes);
   } catch (error) {
     if (error instanceof DecodeError) {
       throw syncError(error.code, error.message);
@@ -1083,7 +1425,7 @@ async function* instrumentedStream(
         : {}),
       pushCommits: plan.pushes.length,
       pulled: plan.pull !== undefined,
-      subscriptions: plan.subscriptions.length,
+      units: plan.pull?.units?.length ?? 0,
     });
   };
   try {

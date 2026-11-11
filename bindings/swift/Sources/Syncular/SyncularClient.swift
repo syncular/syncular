@@ -348,25 +348,95 @@ public class SyncularClient {
         return id
     }
 
-    /// Register a subscription (table + scope map). Local; sync fills it.
-    public func subscribe(
-        id: String,
-        table: String,
-        scopes: [String: [String]] = [:],
-        params: String? = nil
-    ) throws {
-        var p: [String: JSONValue] = [
-            "id": .string(id),
-            "table": .string(table),
-            "scopes": .object(scopes.mapValues { .array($0.map(JSONValue.string)) }),
-        ]
-        if let params { p["params"] = .string(params) }
-        _ = try command(method: "subscribe", params: .object(p))
+    /// Register one unit (SPEC §4.1): one value per scope variable. Returns
+    /// the unit id derived from the scope map. Local; sync fills it.
+    @discardableResult
+    public func subscribe(scopes: [String: String]) throws -> String {
+        let result = try command(method: "subscribe", params: .object(["scopes": Self.scopeMap(scopes)]))
+        guard let id = result["id"]?.stringValue else {
+            throw SyncularError(code: "client.invalid_host_response", message: "subscribe returned no id")
+        }
+        return id
     }
 
-    /// Remove a subscription.
+    /// Register several units in one local transaction; returns their ids.
+    @discardableResult
+    public func subscribeMany(units: [[String: String]]) throws -> [String] {
+        let result = try command(
+            method: "subscribeMany",
+            params: .object(["units": .array(units.map(Self.scopeMap))])
+        )
+        return try Self.strings(result["ids"], "subscribeMany ids")
+    }
+
+    /// Release the explicit reference to a unit; its rows stay.
     public func unsubscribe(id: String) throws {
         _ = try command(method: "unsubscribe", params: .object(["id": .string(id)]))
+    }
+
+    /// Every registered unit record in registration order (SPEC §4.1).
+    public func units() throws -> [JSONValue] {
+        guard let units = try command(method: "units", params: .object([:]))["units"]?.arrayValue else {
+            throw SyncularError(code: "client.invalid_host_response", message: "units missing")
+        }
+        return units
+    }
+
+    /// One unit record, or nil when the id is not registered.
+    public func unit(id: String) throws -> JSONValue? {
+        let unit = try command(method: "unit", params: .object(["id": .string(id)]))["unit"]
+        return unit == .null ? nil : unit
+    }
+
+    /// One unit's persisted catch-up state (SPEC §7.5): `known` or `unknown`.
+    public func unitCatchup(id: String) throws -> JSONValue {
+        let result = try command(
+            method: "snapshotRead",
+            params: .object(["statements": .array([]), "units": .array([.string(id)])])
+        )
+        guard let catchup = result["units"]?.arrayValue?.first else {
+            throw SyncularError(code: "client.invalid_host_response", message: "unit catch-up missing")
+        }
+        return catchup
+    }
+
+    /// Set the windowed-in values of a window base (SPEC §4.8), one unit per
+    /// value of `variable`, each sharing `fixedScopes`.
+    public func setWindow(variable: String, fixedScopes: [String: String] = [:], units: [String]) throws {
+        _ = try command(method: "setWindow", params: .object([
+            "base": Self.windowBase(variable, fixedScopes),
+            "units": .array(units.map(JSONValue.string)),
+        ]))
+    }
+
+    /// The window's units and the subset whose bootstrap is still pending.
+    public func windowState(variable: String, fixedScopes: [String: String] = [:]) throws -> (units: [String], pending: [String]) {
+        let result = try command(
+            method: "windowState",
+            params: .object(["base": Self.windowBase(variable, fixedScopes)])
+        )
+        return (try Self.strings(result["units"], "window units"), try Self.strings(result["pending"], "window pending"))
+    }
+
+    /// A host string list; anything else is `client.invalid_host_response`.
+    private static func strings(_ value: JSONValue?, _ field: String) throws -> [String] {
+        guard let items = value?.arrayValue else {
+            throw SyncularError(code: "client.invalid_host_response", message: "\(field) missing")
+        }
+        return try items.map {
+            guard let item = $0.stringValue else {
+                throw SyncularError(code: "client.invalid_host_response", message: "\(field) entry is not a string")
+            }
+            return item
+        }
+    }
+
+    private static func scopeMap(_ scopes: [String: String]) -> JSONValue {
+        .object(scopes.mapValues(JSONValue.string))
+    }
+
+    private static func windowBase(_ variable: String, _ fixedScopes: [String: String]) -> JSONValue {
+        .object(["variable": .string(variable), "fixedScopes": scopeMap(fixedScopes)])
     }
 
     /// Replace the full native transport header set. Subsequent HTTP requests
@@ -457,16 +527,7 @@ public class SyncularClient {
     /// a local `mutate` until sync drains it). The honest offline "unsynced
     /// work" signal (the status snapshot also includes server-push scheduling intent).
     public func pendingCommitIds() throws -> [String] {
-        let result = try command(method: "pendingCommitIds", params: .object([:]))
-        guard case let .array(ids)? = result["ids"] else {
-            throw SyncularError(code: "client.invalid_host_response", message: "ids missing")
-        }
-        return try ids.map {
-            guard let id = $0.stringValue else {
-                throw SyncularError(code: "client.invalid_host_response", message: "commit id is not a string")
-            }
-            return id
-        }
+        try Self.strings(try command(method: "pendingCommitIds", params: .object([:]))["ids"], "commit ids")
     }
 
     /// Run arbitrary read-only SQL over the local visible tables (the live-query
@@ -492,8 +553,9 @@ public class SyncularClient {
         try command(method: "statusSnapshot", params: .object([:]))
     }
 
-    public func diagnosticsSnapshot(_ request: JSONValue = .object([:])) throws -> JSONValue {
-        try command(method: "diagnosticsSnapshot", params: request)
+    /// The version 2 privacy-safe diagnostics snapshot (SPEC §7.6).
+    public func diagnosticsSnapshot() throws -> JSONValue {
+        try command(method: "diagnosticsSnapshot", params: .object([:]))
     }
 
     public func commitOutcome(clientCommitId: String) throws -> JSONValue? {
@@ -526,14 +588,6 @@ public class SyncularClient {
             throw SyncularError(code: "client.invalid_host_response", message: "rejections missing")
         }
         return rejections
-    }
-
-    /// A subscription's status string (`active` / `revoked` / `failed`) — the
-    /// status surface. The core returns a `{state: {id, table, status, …}}`
-    /// view; this lifts `status` out of it.
-    public func subscriptionState(id: String) throws -> String? {
-        let result = try command(method: "subscriptionState", params: .object(["id": .string(id)]))
-        return result["state"]?["status"]?.stringValue
     }
 
     /// Current conflicts (§6).

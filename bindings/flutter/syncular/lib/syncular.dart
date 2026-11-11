@@ -12,7 +12,7 @@
 ///   schema: todoSchema,
 ///   config: SyncularConfig(dbPath: '/path/to/todos.db'),
 /// );
-/// client.subscribe('todos', 'todos', scopes: {'list_id': ['inbox']});
+/// client.subscribe({'list_id': 'inbox'}); // returns the unit id
 /// client.mutate([{'op': 'upsert', 'table': 'todos', 'values': {...}}]);
 /// final rows = client.query('SELECT * FROM todos WHERE done = 0');
 /// client.events.listen((e) { if (e.type == 'sync-intent') client.sync(); });

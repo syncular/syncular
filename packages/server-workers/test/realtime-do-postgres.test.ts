@@ -10,8 +10,11 @@ import {
   decodeMessage,
   encodeMessage,
   encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
+  registrationDigest,
   type RequestFrame,
   type RowColumn,
+  unitId,
 } from '@syncular/core';
 import {
   compileSchema,
@@ -58,20 +61,19 @@ const PULL: RequestFrame[] = [
     limitSnapshotRows: 100,
     maxSnapshotPages: 4,
     accept: 0b0011,
-  },
-  {
-    type: 'SUBSCRIPTION',
-    id: 's1',
-    table: 'tasks',
-    scopes: { list_id: ['L'] },
     cursor: -1,
+    registrationDigest: registrationDigest([{ list_id: 'L' }]),
+    echoDigest: new Uint8Array(),
   },
+  { type: 'UNIT', scopes: { list_id: 'L' } },
+  { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
 ];
 
 function pushFrame(id: string): RequestFrame {
   return {
     type: 'PUSH_COMMIT',
     clientCommitId: id,
+    clientSeq: 0,
     operations: [
       {
         table: 'tasks',
@@ -92,7 +94,7 @@ async function round(
     method: 'POST',
     headers: { 'content-type': SSP2_CONTENT_TYPE },
     body: encodeMessage({
-      wireVersion: 3,
+      wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
       frames: [
         { type: 'REQ_HEADER', clientId, schemaVersion: 1, logEpoch: 'epoch' },

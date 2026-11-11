@@ -52,11 +52,7 @@ test('registers on an opted-in dev page, snapshots state, unregisters on close',
   });
   expect(entryFor('dev-client')).toBeDefined();
 
-  a.client.subscribe({
-    id: 's1',
-    table: 'tasks',
-    scopes: { project_id: ['p1'] },
-  });
+  a.client.subscribe({ project_id: 'p1' });
   a.client.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
   ]);
@@ -65,7 +61,7 @@ test('registers on an opted-in dev page, snapshots state, unregisters on close',
   const snap = snapshots.find((s) => s.clientId === 'dev-client');
   expect(snap?.role).toBe('direct');
   expect(snap?.outbox).toBe(1);
-  expect(snap?.subscriptions).toBe(1);
+  expect(snap?.units).toBe(1);
   // The mutate's apply batch was recorded as the last invalidation.
   expect(entryFor('dev-client')?.lastInvalidation?.tables).toContain('tasks');
 

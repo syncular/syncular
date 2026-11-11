@@ -35,7 +35,7 @@ transport compression, §1.3).
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
 | `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). "Code unit" means **UTF-16 code units** — the order JavaScript string comparison yields; it diverges from UTF-8 byte order exactly when keys mix U+E000–U+FFFF characters with supplementary-plane characters, so implementations in byte-oriented languages MUST compare by UTF-16 code units, not encoded bytes. A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
-| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string is a valid JSON document under the JSON validity rule below (a value that is not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`details`, resume tokens). A decoder MUST validate that the string is a valid JSON document under the JSON validity rule below (a value that is not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
 
 **JSON validity rule.** The rule is defined on the raw text. A JSON document
 is valid when the text parses per RFC 8259 and meets three limits, each
@@ -58,7 +58,7 @@ text for what the parser does not see.
 
 Duplicate object keys and insignificant whitespace are valid; the parsed
 value of a duplicated key is the last one. Every reference codec decodes
-the envelope `json` fields (`params`, `bootstrapState`, `ERROR.details`,
+the envelope `json` fields (`bootstrapState`, `ERROR.details`,
 `PUSH_RESULT_DETAILS.details`), push-payload `json` columns (§2.4),
 `blob_ref` values (§5.9.1), decrypted `json` and `blob_ref` plaintext
 (§5.11) and realtime control messages (§8) against this rule. The rule
@@ -81,10 +81,10 @@ document (`msgKind`, `op`, `status`, `mediaType`, …) admits only the
 values listed in its field table; any other byte is a decode error (the
 `bool` rule above, generalized). Where a field table ties an `opt()`
 field's presence to another field's value (e.g. `row` present iff
-`op` = upsert), a violation is likewise a decode error. Wire version 1
+`op` = upsert), a violation is likewise a decode error. Wire version 4
 has exactly four such ties, all enforced by the envelope codec: push
 operation `payload` present iff `op` = upsert (§6.1); change
-`rowVersion` and `row` each present iff `op` = upsert (§4.5);
+`row` present iff `op` = upsert (§4.5);
 `PUSH_RESULT.commitSeq` present iff `status` is `applied` or `cached`
 (§6.3); `urlExpiresAtMs` present iff `url` is (§5.4).
 
@@ -120,8 +120,9 @@ rationale; the referenced sections carry the normative detail.
       server/storage concern and never visible on the wire.
 
 - [x] **Streaming-friendly framing.**
-      The frame grammar (§1.2) is strictly sequential: `SUB_START …
-      COMMIT/SEGMENT frames … SUB_END`, each frame length-prefixed, rows
+      The frame grammar (§1.2) is strictly sequential: unit sections
+      (`SUB_START`, segment frames, `SUB_END`), then one live section
+      (`LIVE_START`, `COMMIT` frames, `LIVE_END`), each frame length-prefixed, rows
       segments internally split into self-delimiting blocks (§5.2). A
       server MUST be able to encode a response without buffering it whole;
       a client MUST be able to apply commit and segment frames as they
@@ -171,9 +172,10 @@ rationale; the referenced sections carry the normative detail.
 
 - [x] **Pruning horizon is normative.** The server maintains a
       per-partition `horizonSeq`
-      (§4.6). A pull whose cursor is behind the horizon gets subscription
-      `status = reset` with reason code `sync.cursor_expired` (category
-      `reset-required`, action `rebootstrap`) and MUST re-bootstrap.
+      (§4.6). A pull whose replica cursor or unit cursor is behind the
+      horizon gets `status = reset` on the live section or the unit section
+      with reason code `sync.cursor_expired` (category `reset-required`,
+      action `rebootstrap`), and the reset units MUST re-bootstrap.
       Retention floors (≥1000 newest commits, 14-day active window,
       30-day age force) are normative minimum-behavior.
 
@@ -230,12 +232,10 @@ with a frame slot reserved:
 
 Two smaller shape decisions:
 
-- [x] **No `dedupeRows` request flag.** Big-gap catch-up prefers
-      segments (§8.4), which makes a dedupe mode's payload savings moot,
-      and its absence removes a whole response-shape variant. A dedupe
-      path that regroups only the latest change per row into synthetic
-      commit objects would also let clients observe partial commits —
-      violating the commit-atomicity spine (§6.4).
+- [x] **No `dedupeRows` request flag.** Its absence removes a whole
+      response-shape variant. A dedupe path that regroups only the latest
+      change per row into synthetic commit objects would let clients
+      observe partial commits — violating the commit-atomicity spine (§6.4).
 
       > RESOLVED (Benjamin, 2026-07-02): approved.
 
@@ -243,9 +243,11 @@ Two smaller shape decisions:
       Cheap, fixed-width, no timezone ambiguity. The JSON rendering
       (§11) shows it as a number.
 
-- [x] **Scope values are always lists on the wire.** SSP2
-      canonicalizes to `list(str)` everywhere (§3.2); a single value is a
-      one-element list. One shape, no `string | string[]` variance.
+- [x] **One shape per scope map.** A unit requests exactly one value per
+      variable (`map` of `str` → `str`, §4.3), and a change carries one
+      stored value per variable (§4.5). Allowed and effective scopes are
+      `list(str)` everywhere (§3.2, §4.4); a single effective value is a
+      one-element list.
 
 - [x] **Wire version 3: sparse push payloads, column versions, tombstones,
       declared references.** RESOLVED (Benjamin, 2026-09-16,
@@ -258,6 +260,19 @@ Two smaller shape decisions:
       (§6.11). One rule set, always on — no opt-in mode. Wire versions 1
       and 2 are dropped in the same release: serving two
       conflict-detection semantics side by side was rejected (§9).
+
+- [x] **Wire version 4: units, one replica cursor, registration by
+      reference, an idempotency watermark.** RESOLVED (Benjamin,
+      2026-11-10, RFC-REPLICA-SUBSCRIPTIONS and RFC-IDEMPOTENCY-RETENTION):
+      a subscription is a unit, one value per scope variable over every
+      table that declares the variables (§4.1); a replica holds one cursor
+      for its live units, and a pull answers them with one ordered stream of
+      commits (§4.5); a steady-state pull names its registration list by
+      digest (§4.1); and a per-outbox acknowledged watermark bounds the
+      idempotency results a server keeps (§6.3.2). One stream in commit
+      order is what makes apply safe without row-version checks, so a large
+      backlog of one unit delays newer changes of every unit until it
+      drains. The server reads version 4 only (§9).
 
 ---
 
@@ -321,7 +336,7 @@ Every SSP2 message is:
 ```
 offset  size  field
 0       4     magic          0x53 0x53 0x50 0x32  ("SSP2")
-4       2     wireVersion    u16; this document specifies version 3
+4       2     wireVersion    u16; this document specifies version 4
 6       1     msgKind        u8  — 0x01 request, 0x02 response
 7       1     flags          u8  — MUST be 0x00; non-zero is a decode error
 8       …     frames         sequence of frames, terminated by END
@@ -359,7 +374,7 @@ Rules:
    *either* message kind: a frame type registered for the other message
    kind (e.g. `SUB_START` in a request) is not unknown — it is a decode
    error. Registry entries that are *reserved* without a message kind
-   (`0x17`, `0x18`, `0x1A`, `0x1C`–`0x1E`, `0x20`–`0x2F`) have no layout in wire version 1 and
+   (`0x17`, `0x18`, `0x1A`, `0x1E`, `0x20`–`0x2F`) have no layout in wire version 4 and
    are therefore unknown — skippable, not errors — until a future
    version assigns them one. Preservation is the **only** source of
    unknown frames on the encode side: an encoder MUST NOT emit an
@@ -377,7 +392,7 @@ Rules:
 4. Frame ordering constraints are per message kind (§1.5, §1.6); a frame
    out of legal order is a decode error.
 
-Frame type registry (wire versions 1 and 2):
+Frame type registry (wire version 4):
 
 | Type | Name | Message | §
 |---|---|---|---|
@@ -385,8 +400,9 @@ Frame type registry (wire versions 1 and 2):
 | `0x01` | `REQ_HEADER` | request | 1.5 |
 | `0x02` | `PUSH_COMMIT` | request | 6.1 |
 | `0x03` | `PULL_HEADER` | request | 4.2 |
-| `0x04` | `SUBSCRIPTION` | request | 4.3 |
+| `0x04` | `UNIT` | request | 4.3 |
 | `0x05` | `ROUND_FAILURE` | request | 1.5 |
+| `0x06` | `PROGRESS` | request | 4.3 |
 | `0x10` | `RESP_HEADER` | response | 1.6 |
 | `0x11` | `PUSH_RESULT` | response | 6.3 |
 | `0x12` | `SUB_START` | response | 4.4 |
@@ -399,6 +415,8 @@ Frame type registry (wire versions 1 and 2):
 | `0x19` | `LEASE` | response | 7.3.2 |
 | `0x1A` | *reserved* (request-side lease assertion) | — | §7.3.2 |
 | `0x1B` | `PUSH_RESULT_DETAILS` | response | 6.3.1 |
+| `0x1C` | `LIVE_START` | response | 4.4 |
+| `0x1D` | `LIVE_END` | response | 4.4 |
 | `0x1F` | `ERROR` | response | 1.6 |
 | `0x20`–`0x2F` | *reserved* (realtime extensions, presence) | — | §8.6 |
 
@@ -428,14 +446,16 @@ a streaming reader needs:
 2. **Frame cursor**: the current frame type + remaining payload byte
    count. Because every frame is length-prefixed, the reader never needs
    lookahead beyond the 5-byte frame header.
-3. **Subscription context**: the currently open `SUB_START` (id, status),
-   if any. Frames `COMMIT`, `SEGMENT_REF`, `SEGMENT_INLINE`, `SUB_END`
-   are only legal inside an open subscription context; subscriptions
-   never nest or interleave.
+3. **Section context**: the currently open unit section (`SUB_START` id
+   and status) or live section (`LIVE_START` status), if any. Frames
+   `SEGMENT_REF`, `SEGMENT_INLINE` and `SUB_END` are only legal inside an
+   open unit section, and `COMMIT` and `LIVE_END` only inside the open
+   live section; sections never nest or interleave.
 4. **Apply transaction**: one local write transaction per `COMMIT` frame,
    and one per rows-segment *block* (§5.2) or SQLite-image chunk of at most
-   1,024 rows (§5.3). Durable client state (cursor,
-   bootstrap resume token) is persisted only when `SUB_END` is processed.
+   1,024 rows (§5.3). Durable client state is persisted only when the
+   section trailer is processed: a unit's cursor, resume token and echo at
+   its `SUB_END`, the replica cursor, joins and echo digest at `LIVE_END`.
    A client MUST finish each frame or block transaction before starting the
    next. A client MAY run consecutive frame and block transactions of one
    response as savepoints of one **coalesced apply transaction** holding at
@@ -450,32 +470,34 @@ a streaming reader needs:
    the response, and fails the round with a storage error; the next pull
    re-delivers the window as under rule 5.
 5. **Abort rule**: on a decode error, an in-band `ERROR` frame, or a
-   truncated stream, the reader MUST abort the currently open
-   subscription: roll back the *current in-progress* local transaction
-   (the open `COMMIT` frame or rows-segment block, rule 4; inside a
-   coalesced apply transaction, that frame's or block's savepoint, while
-   the frames and blocks completed before it commit) and MUST NOT
-   persist that subscription's `SUB_END` values (`nextCursor`,
-   `bootstrapState`). Frames already committed under rule 4 stay
-   committed — they are repaired by re-pull idempotency: the cursor and
-   resume token were not advanced, so the next pull re-delivers the same
-   window, and re-applying commits and segment blocks is safe (upserts
-   and deletes are idempotent, §5.6). Subscriptions whose `SUB_END` was
-   already processed keep their applied data and cursors — each
-   subscription is an independent unit of progress.
+   truncated stream, the reader MUST abort the currently open section:
+   roll back the *current in-progress* local transaction (the open
+   `COMMIT` frame or rows-segment block, rule 4; inside a coalesced apply
+   transaction, that frame's or block's savepoint, while the frames and
+   blocks completed before it commit) and MUST NOT persist that section's
+   trailer values (`SUB_END.nextCursor` and `bootstrapState`, or
+   `LIVE_END.throughSeq` and `echoDigest`). Frames already committed under
+   rule 4 stay committed — they are repaired by re-pull idempotency: the
+   cursors and resume token were not advanced, so the next pull re-delivers
+   the same window, and re-applying commits and segment blocks is safe
+   (upserts and deletes are idempotent, §5.6). Units whose `SUB_END` was
+   already processed keep their applied data and cursors.
 
-This is why `nextCursor` and the bootstrap resume token live in `SUB_END`
-(a trailer), not `SUB_START`: the server may not know them until it has
-streamed the frames, and the client must not persist them earlier anyway.
+This is why `nextCursor`, the bootstrap resume token and `throughSeq` live
+in trailers (`SUB_END`, `LIVE_END`), not in `SUB_START` or `LIVE_START`: the
+server may not know them until it has streamed the frames, and the client
+must not persist them earlier anyway.
 
 ### 1.5 Request message grammar
 
 ```
 REQ_HEADER                      exactly once, first
 ROUND_FAILURE                   0 or 1, immediately after REQ_HEADER
-PUSH_COMMIT × N                 N ≥ 0, in client commit order
+PUSH_COMMIT × N                 N ≥ 0, in outbox order
 PULL_HEADER                     0 or 1
-SUBSCRIPTION × M                M ≥ 0, only if PULL_HEADER present
+UNIT × M                        M ≥ 0, only if PULL_HEADER present (§4.1)
+PROGRESS × K                    K ≥ 0, only if PULL_HEADER present, after
+                                every UNIT frame (§4.3)
 END
 ```
 
@@ -487,11 +509,12 @@ envelope codec rejects a no-content request as a **decode error** under
 
 **`REQ_HEADER` payload:**
 
-| Field | Type | Versions | Semantics |
+| Field | Type | Since | Semantics |
 |---|---|---|---|
 | `clientId` | `str` | 3 | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
 | `schemaVersion` | `i32` | 3 | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
 | `logEpoch` | `opt(str)` | 3 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames |
+| `outboxId` | `opt(str)` | 4 | The identity of the sender's outbox sequence (§6.3.2, §7.1). Present on every request of a client replica; absent for a sender without an outbox (§6.10, §12.3). When present, non-empty and at most 64 bytes; any other value is a decode error |
 
 **`ROUND_FAILURE` payload:**
 
@@ -514,12 +537,10 @@ the server saw only the segment-bearing response. A newer failure replaces the
 kept code. A request that carries `ROUND_FAILURE`
 and neither `PUSH_COMMIT` nor `PULL_HEADER` is still invalid. A
 `ROUND_FAILURE` frame that appears more than once, or after a `PUSH_COMMIT`,
-`PULL_HEADER`, or `SUBSCRIPTION` frame, is a decode error. A server that predates the frame
-skips it as an unknown frame (§1.2 rule 2).
+`PULL_HEADER`, `UNIT` or `PROGRESS` frame, is a decode error.
 
-Wire version 3 reads `logEpoch` after `schemaVersion`. Versions 1 and 2 are
-rejected as unknown (§1.2, §9): wire version 3 changed the push payload to
-the sparse row codec (§2.4) and the conflict record shape (§6.3).
+`REQ_HEADER` reads its fields in table order. Versions below 4 are rejected
+as unknown (§1.2, §9).
 
 ### 1.6 Response message grammar
 
@@ -529,30 +550,31 @@ LEASE                           0 or 1 (§7.3.2), immediately after RESP_HEADER
 (PUSH_RESULT [PUSH_RESULT_DETAILS]) × N
                                 one result per PUSH_COMMIT, in request order;
                                 optional details immediately follow their result
-per subscription, in request order:
+per unit section, in registration order (§4.4):
   SUB_START
-  COMMIT × k                    incremental changes (§4.5)
   (SEGMENT_REF | SEGMENT_INLINE) × m    bootstrap data (§5)
   SUB_END
+LIVE_START                      0 or 1, after every unit section (§4.4)
+  COMMIT × k                    the live section (§4.5)
+LIVE_END                        exactly once iff LIVE_START
 ERROR                           0 or 1, may appear anywhere after RESP_HEADER;
                                 if present, the next frame MUST be END
 END
 ```
 
-A response MUST echo subscriptions **in request order** — this is
-normative so clients can prioritize critical tables by ordering their
-subscription list (see §4.7 on bootstrap phases). `COMMIT` and segment
-frames MUST NOT both appear for the same subscription in one response
-(a subscription is either catching up on the log or bootstrapping).
-The no-mixing rule is part of the frame grammar: a message that carries
-both `COMMIT` and segment frames inside one subscription context is a
-**decode error** under §1.7 (in either order), like any other
-frame-grammar violation. Echoing subscriptions in request order, by
-contrast, is cross-message state and stays a producer conformance rule.
+A response to a request that carried `PULL_HEADER` MUST carry exactly one
+live section unless it ends after `RESP_HEADER` (a schema-floor or
+`resetRequired` response) or with `ERROR`, and its unit sections MUST follow registration order, so a
+client prioritizes bootstrap by ordering its registration list (§4.7
+phases). A `COMMIT` frame inside a unit section, a segment frame or
+`SUB_START` inside or after the live section, and a second `LIVE_START`
+are **decode errors** under §1.7, like any other frame-grammar violation.
+The presence of the live section and the section order, by contrast,
+depend on the request and stay producer conformance rules.
 
 **`RESP_HEADER` payload:**
 
-| Field | Type | Versions | Semantics |
+| Field | Type | Since | Semantics |
 |---|---|---|---|
 | `requiredSchemaVersion` | `opt(i32)` | 3 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
 | `latestSchemaVersion` | `opt(i32)` | 3 | Informational: newest schema version the server knows. MUST NOT block syncing |
@@ -568,7 +590,7 @@ served — below the floor *or* newer than anything the server knows —
 the entire response is `RESP_HEADER` with **both**
 `requiredSchemaVersion` and `latestSchemaVersion` present, followed by
 `END`. Nothing else is processed: no push commit is attempted and no
-subscription is answered (§2.4 forbids degraded encodings, and an
+section is answered (§2.4 forbids degraded encodings, and an
 unserved version cannot codec row payloads in either direction).
 
 **`ERROR` frame payload** (in-band, mid-stream failure):
@@ -583,8 +605,8 @@ unserved version cannot codec row payloads in either direction).
 | `details` | `opt(json)` |
 
 On receiving `ERROR`, the client applies §1.4 rule 5, then treats the
-whole request as having failed with that error (already-completed
-subscriptions keep their applied data and cursors). A server MUST NOT
+whole request as having failed with that error (units whose `SUB_END` was
+already processed keep their applied data and cursors). A server MUST NOT
 emit further frames after `ERROR` except the terminating `END`. The
 "next frame MUST be END" rule admits no frame of **any** type between
 `ERROR` and `END` — unknown frame types included; a decoder MUST reject
@@ -605,11 +627,16 @@ independent codecs agree byte-for-byte on which messages are
   COMMIT/segment no-mixing rule of §1.6); primitive-encoding
   violations, enum bytes, and `opt()` presence invariants (Conventions
   — the four ties enumerated there); and the following single-frame
-  field-table constraints — `clientId` non-empty and
-  `schemaVersion ≥ 1` (§1.5), `clientCommitId` non-empty and
-  `operations ≥ 1` (§6.1, the latter as `sync.empty_commit`), change
-  `tableIndex` in range (§4.5), `accept` bits 4–7 zero (§4.2), the
-  `url`/`urlExpiresAtMs` presence tie (§5.4), and the structural
+  field-table constraints — `clientId` non-empty,
+  `schemaVersion ≥ 1` and a present `outboxId` non-empty and at most 64
+  bytes (§1.5), `clientCommitId` non-empty, `clientSeq ≥ 0` and
+  `operations ≥ 1` (§6.1, the last as `sync.empty_commit`), change
+  `tableIndex` in range (§4.5), `accept` bits 4–7 zero, `cursor ≥ -1`, a
+  32-byte `registrationDigest` and a 0- or 32-byte `echoDigest` (§4.2),
+  `PROGRESS.cursor ≥ -1` and a unit id of 32 lowercase hex characters in
+  `PROGRESS` and `SUB_START` (§4.3, §4.4), fenced records in strictly
+  ascending table order and a 0- or 32-byte `LIVE_END.echoDigest` (§4.4),
+  the `url`/`urlExpiresAtMs` presence tie (§5.4), and the structural
   validity of a `SEGMENT_INLINE` payload as a rows segment (§5.7 —
   structural only; the column-table schema check stays with the
   receiver, §5.2). A conformant decoder MUST
@@ -618,9 +645,10 @@ independent codecs agree byte-for-byte on which messages are
   decode time.
 - **Request validation** — everything requiring cross-frame, host, or
   schema state, performed by the server *after* a successful decode:
-  duplicate subscription ids and requested `'*'` values
-  (`sync.invalid_subscription`, §3.2, §4.1), unknown tables
-  (`sync.unknown_table`), `clientId` actor binding
+  the unit and `PROGRESS` rules of §4.1 and a registration digest that
+  differs from a traveling list (`sync.invalid_subscription`), the
+  `clientSeq` rules of §6.1 (`sync.invalid_request`), unknown tables
+  in push operations (`sync.unknown_table`), `clientId` actor binding
   (`sync.invalid_client_id`), operation caps
   (`sync.too_many_operations`), server limits (`sync.limit_exceeded`),
   and row-payload decode against the
@@ -632,11 +660,11 @@ independent codecs agree byte-for-byte on which messages are
 Request validation has **two failure surfaces**, split by request half:
 
 - **Request-level** — fails the whole request (HTTP-level JSON per
-  §1.1, or an in-band `ERROR` frame if streaming already began):
-  duplicate subscription ids, requested `'*'` values, undeclared scope
-  keys (requested *or* resolved, §3.2), a **subscription** naming an
-  unknown table (§4.3), `clientId` actor binding (§1.5), the
-  operation cap (§6.1), and the server limits below.
+  §1.1, or an in-band `ERROR` frame if streaming already began): the
+  §4.1 unit, digest and `PROGRESS` rules, undeclared scope keys
+  (requested *or* resolved, §3.2), the `clientSeq` rules (§6.1),
+  `clientId` actor binding (§1.5), the operation cap (§6.1), and the
+  server limits below.
 - **Commit-level** — rejects only the enclosing `PUSH_COMMIT`: its
   `PUSH_RESULT` is `rejected` with one `error` result record (§6.3)
   and the batch continues (§6.4). This is the surface for a push
@@ -645,18 +673,18 @@ Request validation has **two failure surfaces**, split by request half:
 
 **Server limits.** A server enforces configured caps on the decoded bytes
 of a request (an HTTP body after content decoding, §1.3, and a socket
-round's assembled request, §8.7), on `SUBSCRIPTION` frames per request,
-and on requested scope values summed over one subscription's keys. A
+round's assembled request, §8.7) and on `UNIT` frames per request
+(`maxSubscriptionsPerRequest`). A
 request past a cap fails request-level with `sync.limit_exceeded`;
 `details.limit` names the cap and `details.max` holds its value. The
 server reads a compressed body only up to the cap, so a small gzip body
 never inflates past it. A socket round assembled past the byte cap has no
 acceptable end, so the server drops the connection (§8.7). The reference
-server's defaults are 16 MiB, 500 subscriptions and 1,000 scope values.
+server's defaults are 16 MiB and 500 units.
 
 Response-side semantic expectations that are not `opt()` ties (e.g.
-`reasonCode` emptiness for `active`, `effectiveScopes` emptiness when
-not `active`, `results` cardinality in §6.3) are producer conformance
+`reasonCode` emptiness for `active`, `fenced` emptiness when not
+`active`, `results` cardinality in §6.3) are producer conformance
 rules, not decode errors. The `accept` bitmask illustrates the line: a
 set bit 4–7 is a decode error (explicitly flagged in the §4.2 field
 table); the "client MUST set at least bits 0 and 1" requirement is a
@@ -764,7 +792,7 @@ browser reports a missing connection, DNS, TLS, and CORS failure alike),
 
 A round that fails with `transport.failed`, `transport.timeout`,
 `transport.unavailable`, or `sync.transport_failed` is retryable: the client
-schedules one Background intent with the backoff of §7.6. The one exception is
+schedules one Background intent with the backoff of §7.7. The one exception is
 a failure whose `causeKind` is `connect` (native: DNS resolution failed, or the
 connection was refused, reset, or aborted) or `network` (browser fetch: the
 fetch rejected). A refused or unreachable endpoint does not become reachable
@@ -825,12 +853,13 @@ push application, pull reads, or client-record updates:
 
 If the replica has never stored a `logEpoch`, the client persists the acquired
 value and schedules the next round. Acquisition MUST NOT raise `upgrading`,
-drop synced tables, alter rows or reset subscription progress. Existing local
+drop synced tables, alter rows or reset unit progress. Existing local
 outbox intent remains visible and is sent only in the next epoch-bound request.
 
 When a stored epoch differs, the client stores the returned `logEpoch`, discards all
-synced rows, row versions, subscription cursors, effective scopes, and
-bootstrap state, then re-registers its subscription intent from cursor `-1`.
+synced rows, row versions, the replica cursor, unit cursors, echoes, the
+echo digest and bootstrap state, then registers its units again: every unit
+catches up from cursor `-1`, and the next pull carries the list (§4.1).
 The client preserves `clientId`, outbox commits, commit outcomes, auth lease,
 and local-only application state. It withholds the preserved outbox until the
 next request carries the accepted `logEpoch`. Replaying that outbox after the
@@ -862,16 +891,23 @@ A commit contains one or more **changes**:
 | `rowId` | Primary key rendered as a string (§2.4 primary-key eligibility) |
 | `op` | `upsert` or `delete` — the only two operations |
 | `row` | The full row payload after the write (absent for `delete`) |
-| `rowVersion` | The row's `server_version` after the write (absent for `delete`) |
+| `rowVersion` | The row's `server_version` after the write; for a `delete`, the version its tombstone records |
 | `scopes` | The stored scope values extracted from the row (§3.1) |
 
-Every synced row carries a **`server_version`** (`i64`, ≥ 1): starts at 1
-on insert, or one above its tombstone's `server_version` when the insert
-recreates a deleted row (§6.2), and increments by exactly 1 on every
-applied upsert. A §2.2 scope
-move keeps the stored `server_version` unchanged: it re-homes the row, it
-does not write a new row version. `server_version` is the
-optimistic-concurrency token for `baseVersion` conflict detection (§6.2).
+Every synced row carries a **`server_version`** (`i64`, ≥ 1). An insert
+starts it one above the partition's **delete floor**: the highest
+`server_version` recorded by any applied delete whose row was absent at the
+end of its commit, `0` before the first. A delete whose row the same commit
+writes again (a scope move's delete half, or a delete followed by a
+recreate) leaves the row live at a higher version and does not raise the
+floor. Within a commit, an insert starts one above the larger of the delete
+floor and the highest `rowVersion` of the deletes applied earlier in that
+commit. Every applied write to an existing row advances it by exactly 1:
+an upsert, a delete, and a scope move (below). Pruning never lowers the
+delete floor. A row id's versions therefore increase strictly across all of
+its writes and incarnations, and the client's version guard (§4.5) relies on
+that. `server_version` is the optimistic-concurrency token for `baseVersion`
+conflict detection (§6.2).
 
 Every stored column carries a **`column_version`**: the row's
 `server_version` at the column's last write. An insert sets every column to
@@ -886,10 +922,10 @@ row's current `server_version`.
 
 Every applied delete — including a §6.11 cascaded delete — records a
 **tombstone** `(partition, tbl, row_id, commit_seq, server_version,
-scopes)` in a server-side tombstone table: `server_version` and `scopes`
-are the deleted row's last `server_version` and stored scopes. A tombstone
-written before servers recorded them carries neither and keeps the rules
-that predate them (§6.2). The delete half of a §2.2 scope move records no tombstone:
+scopes)` in a server-side tombstone table: `server_version` is the version
+the delete wrote, one above the row's last, and `scopes` are the deleted
+row's stored scopes. A tombstone written before servers recorded them
+carries neither and keeps the rules that predate them (§6.2). The delete half of a §2.2 scope move records no tombstone:
 the same commit keeps the row live. An upsert consults the table only when
 its stored row is absent (§6.2 delete precedence); pruning removes
 tombstones with `commit_seq ≤ horizonSeq` in the same pass as the commit
@@ -901,19 +937,21 @@ values and an `upsert` tagged with the new ones, so subscribers of the
 old scope remove the row and subscribers of the new scope receive it.
 A registered command emits a move with the `rescope` mutation (§3.4,
 [REMOTE.md](./REMOTE.md) §3). The server rewrites the stored row under the
-new scope values in place, emits the change pair, and keeps the row's
-`server_version`. Only scope columns may differ from the stored row; a
-different non-scope value is `sync.invalid_request`. Both the old and the
-new scope values MUST pass §3.4 authorization. The upsert half carries the
-unchanged `server_version`. The delete half leaves no tombstone, so the
-same row can move again with no `baseVersion = 0` insert.
+new scope values in place, emits the change pair, and advances the row's
+`server_version` by 1; the moved scope columns take the new version as their
+`column_version` and every other column keeps its own. Only scope columns may
+differ from the stored row; a different non-scope value is
+`sync.invalid_request`. Both the old and the new scope values MUST pass §3.4
+authorization. Both halves carry the new `server_version`. The delete half
+leaves no tombstone, so the same row can move again with no
+`baseVersion = 0` insert.
 
-The delete and the upsert are one logical change. A client that receives
-both for the same `(commitSeq, table, rowId)` MUST apply the row with the
-upsert's values and MUST NOT let the delete remove it, whether the two
-changes arrive in one subscription section or split across sections in
-either order. A section that itself carries both changes keeps its change
-order; the coalescing rule applies to a pair split across sections.
+The delete and the upsert are one logical change. A live section carries
+every change of a commit that it delivers in one `COMMIT` frame (§4.5). A
+client that receives both keeps the row with the upsert's values in either
+change order, through the version guard alone: a delete after the upsert
+finds the row at its own version and is skipped, and an upsert after the
+delete re-creates the row.
 
 ### 2.3 Idempotency identity
 
@@ -925,7 +963,9 @@ originally-`applied` commit is returned with `status = cached`; an
 originally-`rejected` commit is returned with `status` still `rejected`
 (§6.3). `cached` means "this already applied — you may have missed the
 ack"; a rejection replays as itself. Exactly-once apply per client
-commit; at-least-once delivery of results.
+commit; at-least-once delivery of results. A server keeps a result until
+the per-outbox watermark (§6.3.2) proves that its replica can no longer
+send the commit.
 
 The key binds the commit ID alone. Host authentication, request-envelope
 validation, and the §1.5 clientId-actor binding run before the idempotency
@@ -1081,7 +1121,7 @@ encrypted column is eligible only when its `declaredType` is `string`: apply
 decrypts it before the local base-table write, so the projection indexes the
 same plaintext already present in the protected local mirror and never the
 ciphertext envelope. This metadata is client-only: it MUST NOT create a server table,
-wire table, scope, codec column, subscription target, or mutation target.
+wire table, scope, codec column, unit coverage, or mutation target.
 Reference clients materialize the same contentful FTS5 projection over the
 visible table with an internal `_syncular_source_id UNINDEXED` column equal to
 the string form of the application primary key, and a mapping table
@@ -1248,15 +1288,14 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   stored scope for that variable, so the server rejects every write of it.
 - Every synced table MUST declare **at least one** scope pattern — a
   schema-compile-time requirement (configuring a table without one is a
-  server bug, rejected before serving). Rationale: a zero-scope table
-  can never produce a non-empty effective map, so every subscription to
-  it would revoke under §3.2 rule 5; "global" tables are modeled with
+  server bug, rejected before serving). Rationale: a unit names at least
+  one variable (§4.1), so no unit could cover a zero-scope table; "global" tables are modeled with
   an explicit scope column shared by all rows, never by omitting
   patterns.
 - A server table MAY declare `writeScopeVariables`, a non-empty list of
   distinct variables from its scope patterns. The server requires all of
   those variables to authorize a write. If omitted, all declared variables
-  are required. This server-side policy does not change subscription scopes.
+  are required. This server-side policy does not change read scopes.
 - On every applied change the server extracts the declared columns from
   the row (upsert: the row after the write; delete: the row before
   removal) and stores them as **stored scopes**: a `map` of
@@ -1270,12 +1309,13 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
 
 ### 3.2 Requested, allowed, effective
 
-On every pull (and on realtime connect), per subscription:
+On every pull (and on realtime connect), per (unit, covered table) pair:
 
-1. The client sends **requested scopes**: `map` of variable →
-   `list(str)`.
-2. The server validates that every requested key is a variable declared
-   by the table's patterns. An unknown key fails the whole request with
+1. The unit supplies the **requested scopes**: each of its variables with
+   its one value as a one-element list.
+2. Every requested key is a variable the table declares, because a unit
+   covers only tables that declare all of its variables (§4.1). A unit
+   naming a variable no table declares fails the whole request with
    `sync.invalid_subscription` (fail loud — a typo'd scope key must never
    silently widen or narrow access). A requested *value* of `'*'` also
    fails the request with `sync.invalid_subscription`: the wildcard is
@@ -1314,7 +1354,7 @@ On every pull (and on realtime connect), per subscription:
      lists for the omitted variables all hold `'*'`, are unaffected. The
      fence applies wherever effective scopes are computed: pull, segment
      download (§5.5), realtime registration (§8.1, §8.7).
-5. The subscription is **revoked** when any of:
+5. The pair is **revoked** when any of:
    - `resolveScopes` threw (fail-loud: no data on errors — an
      authorization bug must fence, not leak);
    - a requested key is missing from effective (partial scope loss must
@@ -1322,24 +1362,31 @@ On every pull (and on realtime connect), per subscription:
    - the wildcard fence (rule 4) adds a variable whose allowed list is
      empty;
    - effective is empty.
-6. Otherwise the subscription is **active** with the effective scopes,
-   which are echoed in `SUB_START` so the client knows exactly what it is
-   receiving, including variables the wildcard fence added.
+6. Otherwise the pair is **active** with the effective scopes. The unit's
+   echo (§4.4) tells the client exactly what it receives, including the
+   variables the wildcard fence added.
 
-A pull for an active subscription returns exactly the changes whose
-stored scopes match the effective scopes: for every effective key, the
-change's stored value for that key is in the effective value list.
+The first two conditions of rule 5 hold for every covered table of a unit
+at once, because the unit's variables and the resolver result are the same
+for each table. A unit is therefore **revoked** when `resolveScopes` threw,
+when a unit variable's value is missing from allowed, or when every covered
+pair is revoked. A pair that the wildcard fence alone revokes inside an
+otherwise active unit is echoed as a revoked fenced record (§4.4).
+
+A live section returns, for an active pair, exactly the changes whose
+stored scopes match the pair's effective scopes: for every effective key,
+the change's stored value for that key is in the effective value list.
 
 **Scope variables are independent dimensions.**
 An allowed map such as `{ workspace_id: ['w1', 'w2'], surgery_id: ['s1',
 's2'] }` authorizes every row whose `workspace_id` is in the first list
 and whose `surgery_id` is in the second. It does not encode only the pairs
-`(w1, s1)` and `(w2, s2)`. A subscription that omits a variable is
+`(w1, s1)` and `(w2, s2)`. A unit that omits a variable is
 fenced on it only by the wildcard fence of rule 4. An actor allowed
-`{ workspace_id: ['w1'], surgery_id: ['s1'] }` who subscribes by
-`workspace_id` alone receives a row stored as `(w1, s9)`; an actor
-allowed `{ workspace_id: ['w1'], surgery_id: ['*'] }` who subscribes by
-`surgery_id` alone receives only rows stored under `w1`. A host that
+`{ workspace_id: ['w1'], surgery_id: ['s1'] }` who registers the unit
+`{ workspace_id: 'w1' }` receives a row stored as `(w1, s9)`; an actor
+allowed `{ workspace_id: ['w1'], surgery_id: ['*'] }` who registers a unit
+on `surgery_id` alone receives only rows stored under `w1`. A host that
 needs parent/child authorization MUST therefore do one of the following:
 declare and request the parent scope on every child table as well as the
 child scope, while validating the parent reference server-side;
@@ -1352,20 +1399,30 @@ as a new authorization decision.
 
 ### 3.3 Revocation and the purge contract
 
-When `SUB_START.status = revoked`:
+Revocation reaches the client as a unit section with
+`SUB_START.status = revoked` (the whole unit) or as a fenced record with
+`status = revoked` inside an active unit's echo (one covered table, §4.4).
+A **revoked pair** is every covered table of a revoked unit, or the one
+table of a revoked fenced record.
 
-- The server sends no commits and no segments for the subscription;
-  effective scopes are echoed as an empty map; `nextCursor` in `SUB_END`
+- The server sends no segments for a revoked pair, and no live section
+  carries its changes. A revoked unit's echo is empty and its `SUB_END`
   echoes the request cursor unchanged.
-- The client MUST stop pulling the subscription and MUST purge local rows
-  belonging to it: delete rows whose generated local scope columns match
-  the **last effective scopes** echoed in `SUB_START` while the
-  subscription was active — the client MUST persist those per
-  subscription for exactly this purpose. Requested
-  values that never became effective are not purged: the grant being
-  revoked is the effective one, and local-only rows outside it are not
-  the server's to destroy. The purge keeps every row another subscription
-  owns (row ownership, below).
+- The client MUST purge the local rows of every revoked pair: delete rows
+  of the table whose generated local scope columns match the pair's **last
+  effective scopes**, the echo it persisted while the pair was active
+  (§4.4); the client MUST persist that echo per (unit, table) for exactly
+  this purpose. Requested values that never became effective are not
+  purged: the grant being revoked is the effective one, and local-only
+  rows outside it are not the server's to destroy. The purge keeps every
+  row another unit owns (row ownership, below).
+- A revoked unit leaves the registration list, so the next pull carries the
+  changed list (§4.1); the client clears its persisted echo after the purge
+  and keeps it as a local registration with status `revoked` until the app
+  registers its scope map again or releases it.
+- When a later echo turns a revoked fenced record of an active unit back to
+  `active`, the client MUST move the unit to catching up with cursor `-1`:
+  the purge removed rows its cursor would otherwise claim (§4.5 C1).
 - **Fail closed**: if the client's generated schema has no local
   scope-column mapping for the table, the client MUST NOT clear the whole
   table as an approximation; it MUST surface `sync.scope_revoked` as a
@@ -1387,15 +1444,18 @@ When `SUB_START.status = revoked`:
 
 **Row ownership.** Every scoped local delete (this purge, the §4.8
 eviction, the §5.6 first-page clear) removes a row only when it matches
-the departing or bootstrapping subscription's effective scopes and no
-**owner** matches it. An owner is any other subscription on the same
-table that is `active`, holds a cursor (`cursor >= 0`, so it has processed
-a `SUB_END`), and has a persisted effective-scope echo; it owns the rows
-that echo matches. A subscription at cursor `-1` (never synced, reset, or
-rebootstrapped) owns nothing: it fresh-bootstraps and runs its own
-first-page clear. Without this rule a revoked or evicted subscription
-deletes rows a surviving subscription still claims to hold, and the
-survivor's cursor over-asserts possession (§4.5 C1).
+the departing or bootstrapping pair's effective scopes and no **owner**
+matches it. An owner is any other unit that covers the same table with an
+active pair and has a persisted echo, and that is live or post-bootstrap
+(§4.1) or is bootstrapping and has received a segment of the table in its
+current bootstrap (the §5.6 first-page record persisted at its last
+`SUB_END`); it owns the rows that echo matches. A bootstrapping unit (cursor
+`-1` or a resume token: never synced, reset, or rebootstrapped) owns nothing
+in a table its bootstrap has not reached: its own first-page clear runs
+there. Without this rule a revoked or evicted unit deletes rows a surviving
+unit still claims to hold, and the survivor's cursor over-asserts possession
+(§4.5 C1, C2); a deferred eviction chunk (§4.8) would delete the pages a
+bootstrapping unit applied, and the unit would complete without them.
 
 **Matching.** Scope values are text on the wire. A client matches them
 against a local scope column by the column's declared type: a `string`
@@ -1409,44 +1469,44 @@ pin).
 deleted rows' keys for that variable are unknown, and the change is
 table-wide.
 
-While the subscription stays `active`, each pull's `effectiveScopes`
-echo **replaces** the persisted copy. A narrowing echo (fewer values
-than before) purges nothing: the purge contract fires only on
-`status = revoked`. Rows outside the narrowed effective scopes simply
-stop receiving changes; they are cleaned up by the §5.6 first-page rule
-on the next fresh bootstrap, or by an eventual revocation.
+While a unit stays `active`, each echo it receives **replaces** the
+persisted copy. A narrowing echo (a fence list with fewer values than
+before) purges nothing: the purge contract fires only on a revoked pair.
+Rows outside the narrowed effective scopes stop receiving changes; they
+are cleaned up by the §5.6 first-page rule on the next fresh bootstrap, or
+by an eventual revocation.
 
-**Re-arming a revoked subscription.** Registering a subscription again
-with the same `id` and the same intent (table, requested scopes, params)
-on a registration whose status is `revoked` starts it fresh: the client
-sets the registration back to `active` with cursor `-1`, no bootstrap
-state, no persisted effective scopes, and no reason code, and raises
-sync-needed so the next pull resolves its scopes again. An app that
-subscribes before a grant exists, gets revoked, and subscribes again
-once the grant arrives receives its rows. A registration whose status
-is `failed` is a configuration error: the client leaves it in place,
-and the app fixes the schema before subscribing again.
+**Re-arming a revoked unit.** Registering the scope map of a unit whose
+status is `revoked` starts it fresh: the client sets it back to `active`,
+catching up with cursor `-1`, no bootstrap state, no persisted echo and no
+reason code, puts it back on the registration list at the position it held
+in the registration order, and raises sync-needed
+so the next pull resolves its scopes again. An app that registers a unit
+before a grant exists, gets revoked, and registers it again once the grant
+arrives receives its rows. A unit whose status is `failed` is a
+configuration error: the client leaves it in place, and the app fixes the
+schema before registering it again.
 
 **Registration raises sync-needed.** A `subscribe` or `subscribeMany` call
-that registers or re-arms at least one subscription, and an `unsubscribe`
-that removes a registered id, raise sync-needed and expose one interactive
-sync intent. Registering an identical active registration and unsubscribing
-an unknown id change nothing. `setWindow` (§4.8) registers its units
-without raising either and batches its own intent.
+that registers or re-arms at least one unit, and an `unsubscribe` that
+releases the last reference to a registered unit, raise sync-needed and
+expose one interactive sync intent. Registering an active unit again and
+unsubscribing an unknown id change nothing. `setWindow` (§4.8) registers
+its units without raising either and batches its own intent.
 
 **Eviction is not purge.** A client MAY *voluntarily* delete local rows
 it still holds authorization for — the windowed-sync retention policy of
 §4.8. This is distinct from the revocation purge above along every axis:
 its trigger is the client's own window shrink, never a server signal;
 authorization is still held (the server is never told and tombstones
-nothing); and it is legal **only when fused with unsubscription** — a
-client MUST NOT delete rows of a subscription it keeps syncing, because
-the surviving cursor would then silently over-assert local possession
+nothing); and it is legal **only when fused with unregistration** — a
+client MUST NOT delete rows of a unit it keeps registered, because the
+surviving cursor would then silently over-assert local possession
 (§4.5 C1). Eviction matches rows by the **same** local-scope-column rule
 as the purge (§5.6), **including its fail-closed clause**: with no local
 mapping for a scope key, a client MUST NOT clear by approximation. A
-narrowing echo on a *live* subscription still purges nothing; only the
-§4.8 unsubscribe-fused eviction removes rows a client remains
+narrowing echo on a registered unit still purges nothing; only the
+§4.8 unregistration-fused eviction removes rows a client remains
 authorized for. See §4.8 for the full contract (E1–E4, the outbox pin,
 version-state disposal, and re-entry).
 
@@ -1506,52 +1566,106 @@ partition and live `logEpoch` (§5.1, §5.5).
 
 ## 4. Subscriptions, cursors, pull
 
-### 4.1 Subscription identity
+### 4.1 Units and the registration list
 
-A subscription is client-defined: `id` (client-chosen, unique within the
-request — duplicates fail the request with `sync.invalid_subscription`),
-`table`, requested scopes, optional host-opaque `params` (passed to the
-host snapshot function), and a `cursor`. Subscription ids are echoed, not
-interpreted, by the server.
+A **unit** is the subscription grain: a map from each requested scope
+variable to exactly one value, for example `{ "campaign_id": "c1" }`. A
+unit **covers** every table of the request's `schemaVersion` whose scope
+patterns declare all of the unit's variables (§3.1). The server computes
+the covered tables; no frame carries a table list. Several values of one
+variable are several units. An application that wants only some of the
+tables declaring a variable on a device gives those tables their own scope
+variable.
 
-Within one durable client replica, the tuple `(table, canonical requested
-scopes, params)` is immutable for a registered `id`. Re-declaring the same
-tuple is idempotent and MUST retain its cursor, bootstrap state, effective
-scopes, status, and reason. Reusing that id for a different table, scope map,
-or params fails locally with `client.subscription_intent_mismatch` before the
-registration changes; it MUST NOT inherit or reset the prior tuple's progress.
-Hosts that need a different query use a distinct deterministic id, or explicitly
-unsubscribe the old registration and apply the relevant eviction policy before
-registering another. This is a client safety rule, not a new wire error.
+**Unit id.** The `id` of a unit is the lowercase hex rendering of the first
+16 bytes of SHA-256 over the canonical JSON (§11.2) of its scope map: 32
+characters. Client and server derive it from the scope map; the `UNIT` frame
+does not carry it. One scope map has exactly one id, so a registered id
+never names a second intent.
 
-**Omission is unregistration.** A pull's subscription list replaces the
-persisted registration list (§8.1) and, for socket rounds, the live
-connection's registrations (§8.7). A subscription present in an earlier
-pull and absent from a later steady-state pull is therefore
-**unsubscribed**: it stops receiving deltas and its cursor record is
-forgotten on the next §4.5 watermark computation. Windowing (§4.8)
-leans on exactly this replace-semantics: it subscribes and unsubscribes
-purely by including or omitting a unit's subscription.
-Steady-state pulls MUST carry the client's complete current subscription
-list; the one latitude — phased partial pulls that omit never-synced
-subscriptions — is stated in §4.7, and there is nothing to unregister in
-that case.
+**Registration list.** The client's units in **registration order**. The
+server answers unit sections in that order (§1.6), so registration order is
+the bootstrap priority order: a client that wants critical tables first
+registers their units first. A client keeps a unit registered while at least
+one local reference holds it: an explicit `subscribe` call or a window base
+whose family contains it (§4.8). Two references to one scope map hold one
+unit, and releasing one of them while the other remains changes nothing.
 
-**Sub-id derivation (non-normative guidance).** Because ids are opaque to
-the server, a windowed client MAY derive one deterministically per window
-unit so the same unit always maps to the same subscription — e.g.
-`w:<table>:<sha256(canonical scope map, §11.2)[0..16]>`. This is pure
-client convention; the server neither computes nor validates it. §4.8
-relies on it to turn a window change into a set difference on ids.
+**Registration digest.** SHA-256 over the canonical JSON (§11.2) of the
+array of the units' scope maps in registration order, carried as 32 raw
+bytes. Both sides compute it byte for byte:
+
+| Input | Canonical JSON | Result |
+|---|---|---|
+| unit A | `{"campaign_id":"c1"}` | id `47c583f8f997e2a55f46dc618c2f1969` |
+| unit B | `{"ruleset_id":"r1"}` | id `2aa6ecebeab5fd23a8d13f806b28e4c6` |
+| list `[A, B]` | `[{"campaign_id":"c1"},{"ruleset_id":"r1"}]` | digest `2d52a2d80eed610872ef7239611c9cf9d768a6bce24d222f2985b129d4c929bf` |
+| empty list | `[]` | digest `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+
+**Traveling and referenced lists.** A pull either carries the registration
+list as `UNIT` frames (§4.3) or refers to it by
+`PULL_HEADER.registrationDigest` (§4.2). The list **travels** when the
+request carries at least one `UNIT` frame, or when `registrationDigest` is
+the empty list's digest, which carries the empty list. For a traveling list
+the server computes the digest over the received units and fails the request
+with `sync.invalid_subscription` (`details.reason = "registration_digest"`)
+when it differs from `registrationDigest`. A traveling list replaces the list
+the server stores for the client (§4.5) when the round completes; a unit
+absent from it is unregistered. A request whose list does not travel changes
+no registration.
+
+The server answers a pull whose list does not travel with
+`LIVE_START.status = unregistered` (§4.4) when it stores no list for the
+client or when `registrationDigest` differs from the stored digest. That
+response carries no unit section and no `COMMIT`, and the server ignores the
+request's `PROGRESS` frames. The client sends its list in its next round and
+starts that round at once.
+
+A client sends its list in a pull when the list changed since the last
+response it processed through `LIVE_END`, after an `unregistered` answer,
+and after a §2.1 log reset. Every other pull refers to the list.
+
+**Validation.** On every pull the server takes the effective list (the
+traveling list, or the stored list a matching digest names), validates it
+against the request's schema version, calls the resolver once (§3.2 rule 3)
+and computes the effective scopes of every (unit, covered table) pair in
+memory. A unit with an empty scope map, a requested `'*'` value (§3.2 rule
+2), a variable no table declares, no covered table, or a scope map that
+appears twice in the list fails the request with
+`sync.invalid_subscription`. `maxSubscriptionsPerRequest` counts the `UNIT`
+frames of a traveling list (§1.7).
+
+**Live and catching-up units.** A registered unit is **live** or **catching
+up**. A live unit's changes are covered by the replica cursor (§4.5). A
+catching-up unit is **bootstrapping** while it holds cursor `-1` or a §4.7
+resume token, and **post-bootstrap** while it holds a cursor `P ≥ 0` and no
+token. A pull names every catching-up unit in exactly one `PROGRESS` frame
+(§4.3); a registered unit without one is live. The request is authoritative
+for these states: the server takes them from the request, and its own record
+(§4.5) serves realtime registration and pruning only. A `PROGRESS` id that
+names no unit of the effective list, or that appears twice, fails the request
+with `sync.invalid_subscription`. A newly registered unit is catching up with
+cursor `-1`.
+
+**Client state.** A client persists, per unit: the scope map, the status
+(`active`, `revoked` or `failed`) and reason code, whether it is live, the
+cursor and resume token while it catches up, the tables that received a
+segment in the current bootstrap (§5.6), and the last echo of each covered
+table (§4.4). Per replica it persists the replica cursor (§4.5) and the last
+`LIVE_END.echoDigest`. Registering a scope map that is already registered
+and active changes nothing and keeps all of this state.
 
 ### 4.2 `PULL_HEADER` frame
 
 | Field | Type | Semantics |
 |---|---|---|
-| `limitCommits` | `i32` | Max changes across returned commits per subscription. Server clamps to [1, 1000]; `0` = server default (1000) |
+| `limitCommits` | `i32` | Max changes across the commits of one live section. Server clamps to [1, 1000]; `0` = server default (1000) |
 | `limitSnapshotRows` | `i32` | Bootstrap page size in rows. Server clamps to [1, 50000]; `0` = default (1000) |
-| `maxSnapshotPages` | `i32` | Max bootstrap pages materialized per pull. Server clamps to [1, 50]; `0` = default (4) |
+| `maxSnapshotPages` | `i32` | Max bootstrap pages materialized per unit section. Server clamps to [1, 50]; `0` = default (4) |
 | `accept` | `u8` bitmask | Segment delivery capabilities: bit 0 = inline rows segments, bit 1 = external rows segments, bit 2 = sqlite segments, bit 3 = signed URLs; bits 4–7 MUST be 0 (a set unknown bit is a decode error). A client MUST set at least bits 0 and 1 (rows support is mandatory) |
+| `cursor` | `i64` | The replica cursor (§4.5); `-1` when no unit is live. A value below `-1` is a decode error |
+| `registrationDigest` | `bytes` | The digest of the client's registration list (§4.1). Exactly 32 bytes; any other length is a decode error |
+| `echoDigest` | `bytes` | The `echoDigest` of the last `LIVE_END` the client processed in a pull response (§4.4); empty before the first. A length other than 0 or 32 is a decode error |
 
 The clamp is silent (the
 response reflects the clamped behavior, not an error). **Deliberately,**
@@ -1581,49 +1695,157 @@ rule 5) rather than skip or guess — a server that ignores the mask is
 broken, and silently dropping a bootstrap segment would corrupt the
 snapshot.
 
-### 4.3 `SUBSCRIPTION` frame
+### 4.3 `UNIT` and `PROGRESS` frames
+
+**`UNIT`** (`0x04`), one per unit of a traveling list, in registration
+order:
 
 | Field | Type | Semantics |
 |---|---|---|
-| `id` | `str` | §4.1 |
-| `table` | `str` | Unknown table fails the **whole request**: `sync.unknown_table` (request-level, §1.7 — contrast the commit-level rule for push operations, §6.1) |
-| `scopes` | `map` of `str` → `list(str)` | Requested scopes (§3.2) |
-| `params` | `opt(json)` | Host-opaque snapshot parameters |
-| `cursor` | `i64` | Last fully-applied `commitSeq`; `-1` = never synced (bootstrap needed) |
-| `bootstrapState` | `opt(json)` | Resume token from a previous `SUB_END`, round-tripped **unchanged and uninspected** (§4.7) |
+| `scopes` | `map` of `str` → `str` | The unit's scope map: one value per requested variable (§4.1) |
 
-### 4.4 `SUB_START` and `SUB_END` frames
+**`PROGRESS`** (`0x06`), one per catching-up unit, in registration order:
+
+| Field | Type | Semantics |
+|---|---|---|
+| `id` | `str` | The unit id (§4.1): 32 lowercase hex characters; any other value is a decode error |
+| `cursor` | `i64` | `-1` for a unit without a cursor, the §4.7 pin while a resume token is held, otherwise the unit's cursor `P`. A value below `-1` is a decode error |
+| `bootstrapState` | `opt(json)` | The resume token of the unit's last `SUB_END`, round-tripped **unchanged and uninspected** (§4.7) |
+
+### 4.4 Section frames
+
+A response answers a pull with **unit sections** (`SUB_START`, segment
+frames, `SUB_END`) followed by one **live section** (`LIVE_START`, `COMMIT`
+frames, `LIVE_END`), §1.6.
+
+**Which units get a section.** The server emits a unit section, in
+registration order, for:
+
+1. every unit of the effective list when the list traveled or when
+   `PULL_HEADER.echoDigest` differs from the echo digest the server computes
+   for this request (below);
+2. every bootstrapping unit;
+3. every unit the server answers `revoked` or `reset`.
+
+A post-bootstrap or live unit outside these cases has no section; the live
+section carries its progress.
 
 **`SUB_START`:**
 
 | Field | Type | Semantics |
 |---|---|---|
-| `id` | `str` | Echo of the request subscription id |
+| `id` | `str` | The unit id (§4.1): 32 lowercase hex characters; any other value is a decode error |
 | `status` | `u8` | `1` = `active`, `2` = `revoked` (§3.3), `3` = `reset` (§4.6) |
-| `reasonCode` | `str` | Empty for `active`; a §10 code for `revoked` (`sync.scope_revoked`) and `reset` (`sync.cursor_expired`) |
-| `effectiveScopes` | `map` of `str` → `list(str)` | The computed effective scopes (empty when not `active`) |
-| `bootstrap` | `bool` | True iff this response delivers bootstrap segments for the subscription |
+| `reasonCode` | `str` | Empty for `active`; `sync.scope_revoked` for `revoked`; `sync.cursor_expired` for `reset` |
+| `bootstrap` | `bool` | True iff this section delivers bootstrap segments for the unit |
+| `fenced` | `u32` count × fenced record | The unit's **echo** (below). Empty when `status` is not `active` |
+
+Fenced record:
+
+| Field | Type | Semantics |
+|---|---|---|
+| `table` | `str` | A covered table |
+| `status` | `u8` | `1` = `active`, `2` = `revoked`: the §3.2 rule 4 wildcard fence revoked this (unit, table) pair (§3.3) |
+| `scopes` | `map` of `str` → `list(str)` | The effective lists of the variables the wildcard fence added for this table; empty when `status` is `revoked` |
+
+Fenced records appear in ascending code-unit order of `table`, each table at
+most once; a record out of order or repeated is a decode error.
+
+**Echo.** For an active unit the effective value of each unit variable on
+every covered table equals the requested value: a value outside the allowed
+list revokes the unit (§3.2 rule 5). The echo therefore lists only the
+covered tables where the wildcard fence added variables or revoked the pair.
+The effective scopes of an active (unit, table) pair are the unit's scope
+map, each value as a one-element list, plus the pair's fenced `scopes` when
+the table has a fenced record. The client persists the echo per covered
+table when it processes the unit's `SUB_END`.
+
+**Echo digest.** SHA-256 over the canonical JSON (§11.2) of the array, in
+registration order, of one object per unit of the effective list:
+`{"fenced":[…],"id":"<id>","status":"active"|"revoked"}`, where each fenced
+entry renders as `{"scopes":{…},"status":"active"|"revoked","table":"<t>"}`
+in the order of the fenced records. Only the server computes the echo
+digest; a client stores and returns it without inspection. Two echo digests
+are equal exactly when the server would emit identical echoes for every unit.
+A unit the server answers with `reset` enters the digest with the status it
+has after the reset, `active` or `revoked`; `reset` is a section status and
+never a digest value.
 
 **`SUB_END`:**
 
 | Field | Type | Semantics |
 |---|---|---|
-| `nextCursor` | `i64` | The cursor to persist and send next time (§4.5, §4.7) |
-| `bootstrapState` | `opt(json)` | Present iff the bootstrap is incomplete; round-trip in the next request. Absent = bootstrap complete (or not bootstrapping) |
+| `nextCursor` | `i64` | For a bootstrap section, the unit's pin (§4.7). Otherwise the cursor the request held for the unit: its `PROGRESS` cursor, or `PULL_HEADER.cursor` for a live unit |
+| `bootstrapState` | `opt(json)` | Present iff the unit's bootstrap is incomplete; round-trip it in the next `PROGRESS`. Absent = bootstrap complete (or not bootstrapping) |
 
-The client persists `nextCursor` / `bootstrapState` only on processing
-`SUB_END` (§1.4), and only into a registration that still exists. A
-section whose subscription the app removed while the round was in flight
-(`unsubscribe`, a window shrink) is skipped: its `SUB_END` never
-re-creates the registration.
+The client persists a unit's `nextCursor`, `bootstrapState` and echo only on
+processing its `SUB_END` (§1.4), and only into a unit that is still
+registered. A section for a unit the app unregistered while the round was in
+flight (`unsubscribe`, a window shrink) is skipped: its `SUB_END` never
+re-registers the unit. A unit the app released and registered again before
+the section's `SUB_END` is registered when the client processes it, so the
+section applies to the new registration.
 
-### 4.5 Incremental pull and `COMMIT` frames
+**`LIVE_START`** (`0x1C`):
 
-When the subscription is active, not bootstrapping, and
-`horizonSeq ≤ cursor ≤ maxCommitSeq`, the server returns the log window
-`cursor < commitSeq ≤ maxCommitSeq`, filtered to the effective scopes,
-oldest first, cut off at `limitCommits` total changes (never splitting a
-commit across responses).
+| Field | Type | Semantics |
+|---|---|---|
+| `status` | `u8` | `1` = `active`, `3` = `reset` (§4.6), `4` = `unregistered` (§4.1) |
+| `reasonCode` | `str` | `sync.cursor_expired` for `reset`; empty otherwise |
+
+**`LIVE_END`** (`0x1D`):
+
+| Field | Type | Semantics |
+|---|---|---|
+| `throughSeq` | `i64` | For `active`, the highest `commitSeq` through which the live section is complete (§4.5); `-1` for `reset` and `unregistered` |
+| `echoDigest` | `bytes` | The echo digest of this request (above); empty for `unregistered` and in realtime deltas (§8.2). A length other than 0 or 32 is a decode error |
+
+### 4.5 The replica cursor and the live section
+
+The **replica cursor** `R` is the one cursor a replica holds for all of its
+live units. The request carries it in `PULL_HEADER.cursor`.
+
+**Invariant C1 (replica cursor).** For `R ≥ 0`, the replica has applied
+every change with `commitSeq ≤ R` whose stored scopes match the effective
+scopes of an active (unit, table) pair of a live unit. A replica with no
+live unit holds `R = -1`.
+
+**Invariant C2 (post-bootstrap cursor).** For a post-bootstrap unit with
+cursor `P`, the replica reflects every change with `commitSeq ≤ P` that
+matches one of the unit's active pairs, through the unit's bootstrap
+segments (which hold rows at least as new as its pin, §4.7) and the live
+sections applied since.
+
+**Server rules a decoder does not check.** `SUB_START.fenced` is empty when
+the unit's status is not `active`, and `LIVE_END` carries `throughSeq = -1`
+for `reset` and `unregistered` and an empty `echoDigest` for `unregistered`
+(§4.4). A server MUST emit these values. A decoder accepts a frame that
+breaks them, and a client ignores `fenced` and `throughSeq` in those cases.
+
+**Section order.** A response carries `COMMIT` frames only between
+`LIVE_START` and `LIVE_END`. A `COMMIT` frame outside the live section, a
+`LIVE_END` without a preceding `LIVE_START`, a second live section, and a
+`PUSH_RESULT` frame after any unit or live section are decode errors, as are
+a segment frame or a `SUB_START` inside or after the live section (§1.6).
+
+**The scan set.** A pull whose live status is `active` scans the log for:
+every live unit with lower bound `R`; every post-bootstrap unit that the
+server does not answer `reset` or `revoked`, with lower bound `P`; and every
+unit whose bootstrap completes in this response, with lower bound its pin
+(§4.7). `L` is the lowest of these bounds. A bootstrapping unit is outside
+the scan and does not hold back `R`.
+
+**The live section.** It returns, oldest first, every commit with
+`L < commitSeq ≤ T` that carries at least one change matching the scan set,
+one `COMMIT` frame per commit. A change of table `t` matches when some unit
+of the scan set covers `t`, its pair for `t` is active, the change's stored
+scopes match the pair's effective scopes, and `commitSeq` exceeds that
+unit's lower bound. A `COMMIT` frame holds every matching change of its
+commit once, in the commit's change order, across tables; the frame's table
+dictionary carries every table it names. `T` is `maxCommitSeq` read at the
+start of the pull, or the `commitSeq` of the last delivered commit when the
+`limitCommits` budget cut the section. With an empty scan set the section
+carries no commit and `T = maxCommitSeq`. `LIVE_END.throughSeq = T`.
 
 **`COMMIT` frame payload** (one frame per commit):
 
@@ -1642,7 +1864,7 @@ Change record:
 | `tableIndex` | `u16` | Index into `tables`; out of range is a decode error |
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
-| `rowVersion` | `opt(i64)` | Present for upsert, absent for delete |
+| `rowVersion` | `i64` | The row's `server_version` after the write (§2.2): for an upsert the written row's, for a delete the version its tombstone records. A value below 1 is a decode error |
 | `scopes` | `map` of `str` → `str` | Stored scopes (§3.1) |
 | `row` | `opt(bytes)` | Present for upsert: the row encoded with the generated row codec (§2.4) for the response's schema version. Absent for delete |
 
@@ -1651,18 +1873,79 @@ a streaming reader can apply commit-by-commit — one representation,
 no cross-frame dictionaries, with transport compression absorbing the
 repetition.
 
-**Cursor advancement.** `nextCursor = max(request cursor, highest
-commitSeq scanned)` — the cursor advances even when no matching changes
-exist in the window (this is what makes quiet
-subscriptions cheap). If the change limit truncated the window,
-`nextCursor` is the last fully delivered `commitSeq`; the client observes
-`nextCursor < latest` only implicitly by pulling again — there is no
-`hasMore` flag. Clients SHOULD pull again immediately
-whenever a response contained commits.
+**Join rule J.** After processing `LIVE_END`, the client computes
+`R* = max(R, T)`. Every post-bootstrap unit of the scan set takes the cursor
+`max(P, T)` and becomes live iff `max(P, T) ≥ R*`; it then drops its cursor.
+The replica cursor becomes `R*` when at least one unit is live and `-1`
+otherwise. The server applies the same rule when it writes the client
+record. A unit joins in every response whose section was not cut (`T` is
+then at least every bound); a unit with `P < R` whose section was cut below
+`R` stays catching up and joins in a later round. A `reset` or
+`unregistered` live section joins no unit and changes no cursor beyond the
+§4.6 reset.
 
-The server records, per (partition, clientId), the minimum `nextCursor`
-across the request's active subscriptions, with a timestamp — this feeds
-the retention watermark (§4.6).
+**No change is lost across a join.** A joining unit with `P ≤ T` held every
+change through `P` (C2) and received every matching change in `(P, T]`, so
+it holds every change through `T = R*`. A joining unit with `P > T` holds
+every change through `P ≥ R*`. A live unit held every change through `R` and
+received every matching change in `(R, T]`. C1 therefore holds for `R*`.
+
+**Version guard.** The client applies a change of a live section, of a
+realtime delta (§8.2) and a segment row (§5.6) only when its version exceeds
+the `server_version` of the local row: an upsert or a delete at an equal or
+lower version is skipped, and a delete of an absent row is a no-op. An
+optimistic row the server never confirmed holds no server version (§7.1) and
+takes every change. A row's versions increase strictly across its writes and
+incarnations (§2.2), so the newest state the replica received survives in
+any delivery order, and applying a change, a segment block or a delta a
+second time changes nothing.
+
+**No state is lost to delivery order.** Units reach a row through scans with
+different lower bounds, so one unit can deliver a change older than one
+another unit already delivered. The guard skips an older upsert or delete
+of a row the replica holds. The client keeps no version for a deleted row,
+so an older upsert of a row a delete removed re-creates it. That upsert came
+from the scan of a unit whose pair matched the row at that version, and every
+later write of the row matches the same pair until a write takes the row out
+of it: a delete carries the row's stored scopes, and a scope move's delete
+half carries the old ones. The same scan therefore carries the write that
+removes the row again, at a higher version, before the unit's cursor passes
+it. Within an uncut live section that happens in the same response; a cut
+section shows the row until a later round of the scan reaches the removing
+write.
+
+**Client application.** The client applies a change of a live section only
+when it matches the persisted echo of a unit that is still registered and
+live, post-bootstrap, or completed its bootstrap in this response; it skips
+every other change of the frame. A change for a unit the app unregistered
+while the round was in flight therefore never re-creates its rows. A change
+that passes this rule then goes through the version guard.
+
+**Cursor advancement.** `T` advances even when no change in `(L, T]`
+matches, which makes a quiet replica cheap: its pull carries no `UNIT`
+frame, its response carries `LIVE_START`, `LIVE_END` and nothing between
+them. The client observes a cut section only implicitly by pulling again;
+there is no `hasMore` flag. Clients SHOULD pull again immediately whenever
+a response contained commits.
+
+**Order of work.** The server reads `maxCommitSeq` and `horizonSeq` once,
+resolves the effective list (§4.1), decides the live status and each
+catching-up unit's status (§4.6, §4.7), plans every unit section including
+whether its bootstrap completes, reads and buffers the live section, then
+rechecks `horizonSeq` (§4.6) before it emits the first unit section.
+
+**The client record.** The server persists per (partition, `clientId`): the
+actor binding, the accepted wire version, the stored registration list
+(scope maps in registration order) and its digest, the schema version of its
+latest completed round, the ids of the units still catching up after the
+last completed round, the **record cursor** with its timestamp, and the
+round outcome below. At the end of a completed pull the server writes the
+list and digest only when the list traveled, and always writes the
+catching-up ids and the record cursor: the lowest of `R*` when a unit is
+live, the cursor of every post-bootstrap unit still catching up, and the pin
+of every bootstrapping unit that holds one; `-1` when none exists. A pull
+answered `unregistered` writes only the round outcome. The record cursor
+feeds the retention watermark (§4.6) and realtime (§8.1, §8.2).
 
 The same record carries the client's last round outcome: the time of its last
 round (`lastRoundAtMs`), the catalog code when that round failed
@@ -1693,47 +1976,52 @@ Servers prune the commit log. The contract:
 - **`horizonSeq`** (per partition): every commit with
   `commitSeq ≤ horizonSeq` may have been deleted. `horizonSeq` starts
   at 0.
-- A server MUST NOT advance `horizonSeq` past
-  `min(active-client cursors) `, where "active" means clients whose
-  cursor record was updated within the **active window** (default 14
-  days); a record at cursor < 0 (a client that has not finished a
-  bootstrap) holds no cursor and does not count, except that it MAY force-advance past commits older than the
-  **age force limit** (default 30 days) regardless of laggard cursors.
-  A server MUST always retain at least the newest **1000** commits.
-  (Hosts may raise any of the defaults.)
-- Pull with `0 ≤ cursor < horizonSeq` ⇒ the server cannot compute deltas.
-  It MUST answer `SUB_START.status = reset` with
-  `reasonCode = "sync.cursor_expired"`, send no commits, and echo the
-  request cursor in `SUB_END`.
-- On `reset`, the client MUST discard its cursor and bootstrap state for
-  the subscription and re-request with `cursor = -1` (fresh bootstrap).
-  It SHOULD keep local rows in place until bootstrap application
-  replaces them (§5.6) — `reset` is a staleness signal, not a purge
-  signal; only `revoked` purges (§3.3).
+- A server MUST NOT advance `horizonSeq` past the lowest record cursor
+  (§4.5) of the active clients, where "active" means clients whose record
+  cursor was updated within the **active window** (default 14 days); a
+  record cursor of `-1` holds nothing and does not count. A server MAY
+  force-advance past commits older than the **age force limit** (default 30
+  days) regardless of laggard cursors. A server MUST always retain at least
+  the newest **1000** commits. (Hosts may raise any of the defaults.)
+- **Replica reset.** A pull with a live unit and `R < horizonSeq` (including
+  `R = -1`), or with `R > maxCommitSeq` (corrupt client state), cannot be
+  answered from the log. The server MUST answer `LIVE_START.status = reset`
+  with `reasonCode = "sync.cursor_expired"`, no `COMMIT` and
+  `LIVE_END.throughSeq = -1`. On `reset` the client MUST move every live unit
+  to catching up with cursor `-1` and set `R = -1`; post-bootstrap units keep
+  their cursors, and the next round bootstraps every reset unit (§4.7).
+- **Unit reset.** A post-bootstrap unit with `0 ≤ P < horizonSeq` gets
+  `SUB_START.status = reset` with `reasonCode = "sync.cursor_expired"`, no
+  segments, and its request cursor echoed in `SUB_END`. On `reset` the client
+  MUST discard the unit's cursor, resume token and first-page record and
+  send cursor `-1` next. It keeps the unit's persisted echo: a revocation or
+  eviction before the next bootstrap completes still matches the rows the
+  unit held.
+- A reset unit SHOULD keep its local rows until bootstrap application
+  replaces them (§5.6): `reset` is a staleness signal, not a purge signal;
+  only `revoked` purges (§3.3).
 - **Tombstones** (§2.2) prune in the same pass: a pruning run deletes every
   tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
   precedence rule of §6.2 no longer sees the delete, and the ordinary insert
   rule applies. Retention defaults therefore bound how long a delete beats a
-  concurrent unversioned upsert. A row recreated after its tombstone is
-  pruned starts at `server_version = 1`, so a `baseVersion` from the previous
-  incarnation can again match it. Such a `baseVersion` comes from an outbox
-  entry that stayed unpushed for the whole retention window, the same window
-  that bounds delete precedence; the client's cursor is then below
-  `horizonSeq`, so its next pull answers `sync.cursor_expired` and the client
-  re-bootstraps.
+  concurrent unversioned upsert. Pruning leaves the delete floor (§2.2) in
+  place, so a row recreated after its tombstone is pruned still starts above
+  every version of its previous incarnation.
 - Compaction (dropping superseded intermediate changes for the same
   (table, rowId, scope) older than a host-configured full-history window)
-  is allowed and invisible to correct clients: any client whose cursor is
+  is allowed and invisible to correct clients: any replica whose cursors are
   at or above the horizon still converges, because the latest change per
   row survives compaction. Normative rule: compaction MUST preserve, for
   every row, the change that a fresh scan from any cursor ≥ horizonSeq
   would need to converge.
 
-An incremental pull MUST read its commit window and then recheck the horizon
-before emitting `SUB_START`. If pruning advanced past the request cursor during
-that read, the server MUST use the reset response above. It MUST NOT emit an
-active section followed by a non-retryable cursor-expiry error. Once the window
-is buffered and continuity is verified, later pruning cannot remove its frames.
+A pull MUST read its live section and then recheck the horizon before it
+emits the first unit section (§4.5). A post-bootstrap unit whose cursor lies
+below the rechecked horizon is answered `reset` and leaves the scan set; when
+`R` lies below it, the live section is answered `reset`. The server MUST NOT
+emit an active section followed by a non-retryable cursor-expiry error. Once
+the live section is buffered and continuity is verified, later pruning cannot
+remove its frames.
 
 Pruning MUST capture the partition log epoch before reading retention inputs.
 The storage operation `pruneCommitsThrough(partition, { logEpoch, throughSeq })`
@@ -1742,8 +2030,9 @@ and `throughSeq`, and delete commit/change/scope-index records through that
 horizon in one transaction. It returns `previousHorizonSeq`, `horizonSeq`, and
 `removedCommits` from that transaction. Concurrent passes cannot lower the
 horizon. Retry the operation even when the horizon does not advance, so older
-incomplete cleanup can finish. Application rows, idempotency results, and durable
-reactions survive pruning.
+incomplete cleanup can finish. Application rows and durable reactions survive
+pruning. Idempotency results survive pruning; only the per-outbox watermark
+(§6.3.2) deletes them.
 
 Pruning and restore rotation MUST serialize. An epoch mismatch rejects the
 operation before any deletion; the host must recompute retention inputs.
@@ -1801,31 +2090,32 @@ like pruning.
 
 ### 4.7 Bootstrap state machine
 
-A subscription **bootstraps** when any of: the request carries a
-`bootstrapState` token (a resume — this is what keeps a part-way
-bootstrap in bootstrap mode, since its cursor already equals the pin);
-`cursor < 0`; `cursor < horizonSeq` (after the `reset` round-trip);
-`cursor > maxCommitSeq` (client from the future — treat as corrupt
-state); or the server has declared its log discontinuous
-(host-initiated resync).
+A catching-up unit **bootstraps** when any of: its `PROGRESS` carries a
+`bootstrapState` token (a resume; this keeps a part-way bootstrap in
+bootstrap mode, since its cursor already equals the pin); its cursor is
+`-1`; its cursor is above `maxCommitSeq` (a client from the future, treated
+as corrupt state); or the server has declared its log discontinuous
+(host-initiated resync). A unit whose cursor lies below `horizonSeq` first
+takes the §4.6 `reset` round trip.
 
 Bootstrap is **resumable, pinned, and paged**:
 
-- On start, the server pins `asOfCommitSeq = maxCommitSeq` and computes
-  the table list for the subscription (the handler-declared bootstrap
-  order — parents before children so foreign keys apply cleanly). A
-  bootstrap eligible for the sqlite lane (§5.3: the client advertised
-  `accept` bit 2 and the table has no encrypted column) instead pins at its
-  **scope pin**: the newest commit whose change to the table carries a value
-  of the subscription's first scope variable (keys sorted) in the inverted
-  change-scope index, raised to `horizonSeq` and capped at `maxCommitSeq`.
-  That index is the `readCommitWindow` candidate set, so no change the
-  subscription would receive lies in `(scope pin, maxCommitSeq]`: the
-  snapshot at the scope pin is the snapshot at `maxCommitSeq`, and the next
-  incremental pull replays an empty window. The scope pin keeps a stored
-  image's reuse key (§5.3) stable across commits outside the scope. The
-  server computes the scope pin at every sqlite-lane start; a resume
-  token's `asOfCommitSeq` never becomes an image reuse key.
+- On start, the server pins `asOfCommitSeq = maxCommitSeq` and computes the
+  unit's table list: its covered tables in the handler-declared bootstrap
+  order (parents before children, so foreign keys apply cleanly). The
+  unit's **pin** is that `asOfCommitSeq`.
+- A table eligible for the sqlite lane (§5.3: the client advertised
+  `accept` bit 2 and the table has no encrypted column) is served at its
+  **scope pin** when the bootstrap reaches the table's start: the newest
+  commit whose change to the table carries the unit's value of its first
+  scope variable (keys sorted) in the inverted change-scope index, raised to
+  `horizonSeq` and capped at `maxCommitSeq`. That index is the candidate set
+  of the live scan, so no change the unit would receive for the table lies
+  in `(scope pin, maxCommitSeq]`: the snapshot at the scope pin is the
+  table's snapshot at `maxCommitSeq`. The scope pin keeps a stored image's
+  reuse key (§5.3) stable across commits outside the scope. The server
+  computes the scope pin at every sqlite-lane table start; a resume token's
+  `asOfCommitSeq` never becomes an image reuse key.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
   shape `{ "asOfCommitSeq": i, "tables": [..], "tableIndex": i,
   "rowCursor": string|null }`. **Clients MUST treat it as opaque** and
@@ -1833,82 +2123,76 @@ Bootstrap is **resumable, pinned, and paged**:
   specified so vectors and tooling can render it, not for clients.)
 - Each pull continues from (`tableIndex`, `rowCursor`), emitting up to
   `maxSnapshotPages` pages of up to `limitSnapshotRows` rows as segments
-  (§5), then returns the advanced resume token — or omits it when every
-  table is exhausted, which is the completion signal. A table served as
-  a sqlite image (§5.3) is exhausted by that single segment: the image
-  is whole-table, counts as one page, and is only chosen when the resume
-  position is at the table's start (null row cursor).
+  (§5) in the unit's section, moving to the next table when one is
+  exhausted, then returns the advanced resume token, or omits it when every
+  table is exhausted, which is the completion signal. A table served as a
+  sqlite image (§5.3) is exhausted by that single segment: the image is
+  whole-table, counts as one page, and is only chosen when the resume
+  position is at the table's start (null row cursor). Every covered table
+  delivers at least one segment, an empty rows segment for a table with no
+  matching row, so its first-page clear runs (§5.6).
+- A segment's `asOfCommitSeq` (§5.4) is the unit's pin for a rows segment
+  and the table's scope pin for a sqlite image.
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
 - A `bootstrapState` that does not parse as the shape above, whose
   `asOfCommitSeq` is not an integer in `[0, maxCommitSeq]`, whose
-  `tableIndex` is not an index into `tables`, or whose `tables` do not
-  correspond to the subscription, MUST be handled the same way: silently
-  restart the bootstrap with a fresh pin. A present token keeps the
-  subscription bootstrapping even when its cursor lies in
-  `[horizonSeq, maxCommitSeq]`. An
-  unusable resume token is never a request error — clients round-trip
-  the token opaquely, so a bad token means corrupt client state, and
-  bootstrap is self-healing by construction (a fresh bootstrap always
-  converges).
-- **Every** bootstrap response — complete or not — sets
-  `SUB_END.nextCursor = asOfCommitSeq`. A resuming client therefore
-  presents `cursor = asOfCommitSeq` plus the round-tripped resume token;
-  the token, not the cursor, is what marks the subscription as still
-  bootstrapping.
-- On completion (`bootstrapState` omitted), incremental pulls take over
-  from the pinned point; nothing is lost between the pin and now because
-  the next pull replays `asOfCommitSeq < commitSeq ≤ latest`.
+  `tableIndex` is not an index into `tables`, or whose `tables` differ from
+  the unit's covered tables in bootstrap order, MUST be handled the same way:
+  silently restart the bootstrap with a fresh pin. A present token keeps the
+  unit bootstrapping even when its cursor lies in
+  `[horizonSeq, maxCommitSeq]`. An unusable resume token is never a request
+  error: clients round-trip the token opaquely, so a bad token means corrupt
+  client state, and bootstrap is self-healing by construction (a fresh
+  bootstrap always converges).
+- **Every** bootstrap section, complete or not, sets
+  `SUB_END.nextCursor` to the unit's pin. A resuming client therefore
+  presents `cursor` = pin plus the round-tripped resume token; the token,
+  not the cursor, marks the unit as still bootstrapping. The record cursor
+  (§4.5) holds the pruning horizon at the pin.
+- On completion (`bootstrapState` omitted) the unit is post-bootstrap with
+  `P` = its pin and enters the scan set of the same response (§4.5).
+  Nothing is lost between the pin and the join: the live section delivers
+  the unit's changes after the pin. A sqlite image whose scope pin lies
+  below the unit's pin already holds the table's state at `maxCommitSeq`; for
+  one whose scope pin lies above it, the live section delivers changes the
+  image already holds, and the version guard skips them (§4.5).
 
-**Phases.** SSP2 does not encode bootstrap phases (critical /
-interactive / background) in the protocol:
-subscription order in the request is the priority order, responses echo
-it (§1.6), and a client achieves phasing by pulling critical
-subscriptions first (even in a separate request) before enqueueing the
-rest. DECISION (recorded): phases are client policy, not wire state —
-one less coupled enum, same capability.
-
-One constraint bounds the "separate request" latitude: a pull's subscription
-list replaces both the
-persisted registration list (§8.1) and — for socket rounds — the live
-connection's registrations (§8.7), so **omission is unregistration**.
-Steady-state pulls MUST therefore carry the client's complete current
-subscription list; phased partial pulls are legal only while the
-omitted subscriptions have never synced (nothing registered, nothing to
-unregister).
+**Phases.** SSP2 does not encode bootstrap phases (critical / interactive /
+background) in the protocol: registration order is the priority order, and
+unit sections follow it (§1.6). DECISION (recorded): phases are client
+policy, not wire state — one less coupled enum, same capability.
 
 ### 4.8 Windowed subscriptions
 
 A **window** is a partial local replica: a client holds rows for a
 chosen set of scope values (hot projects, recent time buckets) while the
-server keeps everything. Windowing adds **no wire frames, fields, codes,
-or server behavior** beyond §8.1 replace-semantics and the §4.5
-watermark — it is built entirely on §3 scopes and §4 subscriptions. This
-section specifies the client contract; the server text confined here
-confirms existing rules already suffice.
+server keeps everything. Windowing adds no wire frame, field, code or
+server behavior: it is built on §3 scopes and §4.1 units. This section
+specifies the client contract.
 
-**The model.** A window is a set of **scope values** for one scope
-variable of a table (the *window unit* = one scope value, or an
-app-chosen group of values treated atomically). The client SDK manages a
-*family* of subscriptions, one per live unit, with deterministic ids
-(§4.1 guidance). A window change is a **set difference on that family**,
-never a mutation of an existing subscription:
+**The model.** A **window base** is a selected scope variable plus a map of
+fixed scope values; the client SDK manages its **family**: one unit per
+selected value, the base's fixed map plus `{ variable: value }`. Each unit
+covers every table declaring its variables (§4.1), so a base names no table.
+A window change is a **set difference on the family's unit ids**, never a
+mutation of a registered unit:
 
-- **Widen** (a unit enters): add its subscription with `cursor = -1`; it
-  fresh-bootstraps via the image lane (§5.3) / rows lane exactly like any
-  new subscription. Units already present are untouched — their cursors
-  stay honest. Because units are value-sharded, a widen re-downloads
-  **only** the entering unit; unchanged units are not re-bootstrapped.
-- **Shrink** (a unit leaves): stop including its subscription in pulls
-  (§4.1 omission-as-unregistration) and run **eviction** for it, fused
-  with the local unsubscription in one transaction (E3).
+- **Widen** (a value enters): register its unit, catching up with cursor
+  `-1`; it fresh-bootstraps through the image lane (§5.3) or rows lane
+  like any new unit. Units already registered are untouched and their
+  cursors stay honest. A widen downloads **only** the entering unit.
+- **Shrink** (a value leaves): release the base's reference to the unit.
+  When no reference remains (§4.1), the unit leaves the registration list,
+  which travels in the next pull, and the client runs **eviction** for it,
+  fused with the local unregistration in one transaction (E3).
 - **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
-re-bootstrapped nor evicted.
+  re-bootstrapped nor evicted.
 
 A window base contains its selected variable and any fixed scope variables
-requested by the query. It need not contain every variable declared by the
-table. The server authorizes all requested variables, and a request naming
+requested by the query. It need not contain every variable declared by a
+table. The server authorizes all requested variables, and a unit naming
 several variables retains their intersection semantics (§3.2). SYQL requires
 an explicit unit selection for a multi-scope table and emits only scope
 dimensions proven by the query ([SYQL.md §13.2](./SYQL.md#132-sync-query)).
@@ -1932,18 +2216,18 @@ window coordinator at an explicit lifecycle or calendar boundary. The core
 starts no timer. Shrink, outbox pinning, completeness, and re-entry retain the
 rules in this section.
 
-**Eviction (E1–E4).** When a unit leaves the window, the client
-performs the first bounded eviction chunk and unsubscription in **one atomic
-local transaction** (E3):
+**Eviction (E1–E4).** When a unit leaves the registration list through a
+shrink, the client performs the first bounded eviction chunk and the
+unregistration in **one atomic local transaction** (E3):
 
-- delete at most 1,024 local rows matching the departing unit's effective scopes,
-  by the §5.6 local-scope-column rule **including its fail-closed
-  clause** (no local mapping ⇒ do not clear, surface a configuration
-  error), **except** rows pinned by E1 and rows another subscription
-  owns (§3.3 row ownership);
-- discard that subscription's cursor, `bootstrapState`, and persisted
-  effective-scope echo, and remove it from the local registration list
-  (so it is omitted from the next pull, §4.1);
+- delete at most 1,024 local rows of the unit's covered tables that match
+  the unit's persisted echo per table (§4.4), by the §5.6
+  local-scope-column rule **including its fail-closed clause** (no local
+  mapping ⇒ do not clear, surface a configuration error), **except** rows
+  pinned by E1 and rows another unit owns (§3.3 row ownership);
+- discard the unit's cursor, `bootstrapState`, live membership and
+  persisted echo, and remove it from the registration list (so the next
+  pull carries the changed list, §4.1);
 - emit the deleted rows' invalidation keys through the client's single
   apply-path choke point, exactly like a purge (a live query over evicted
   rows MUST re-run; §3.3 invalidation);
@@ -1951,16 +2235,19 @@ local transaction** (E3):
   does: its `SUB_END` would otherwise mark a re-added unit complete
   without the rows this eviction removed.
 
-If matching rows remain, that same transaction MUST persist their effective
-scopes in the pending-eviction registry. Later chunks delete at most 1,024 rows
-and publish independent revisions. The host yields between committed chunks;
-readers see missing coverage from the first chunk onward. Each chunk rechecks
-outbox pins. Re-entry cancels the pending marker before adding a fresh
-subscription. Restart MUST schedule remaining work even with no active
-subscription or outbox; cleanup runs before the next network request and survives
-transport failure. A failed chunk rolls back its rows and revision while earlier
-chunks and the pending marker remain durable. Failure to read, save, or delete
-a pending marker MUST surface; it MUST NOT be treated as an empty cleanup queue.
+A unit without a persisted echo (no `SUB_END` processed since it was
+registered) evicts nothing: the client never recorded which rows it holds.
+If matching rows remain, that same transaction MUST persist the unit's
+per-table echo in the pending-eviction registry. Later chunks delete at most
+1,024 rows and publish independent revisions. The host yields between
+committed chunks; readers see missing coverage from the first chunk onward.
+Each chunk rechecks outbox pins. Re-entry cancels the pending marker before
+registering the unit again. Restart MUST schedule remaining work even with
+no registered unit or outbox; cleanup runs before the next network request
+and survives transport failure. A failed chunk rolls back its rows and
+revision while earlier chunks and the pending marker remain durable. Failure
+to read, save, or delete a pending marker MUST surface; it MUST NOT be
+treated as an empty cleanup queue.
 
 This chunking applies to cache eviction. Permission revocation and security
 purges retain their existing atomic deletion and availability rules.
@@ -1978,56 +2265,51 @@ purges retain their existing atomic deletion and availability rules.
   exclusively from its re-delivery (segment `serverVersion` §5.6, or a
   `COMMIT` change's `rowVersion` §4.5). There is no legal way to hold a
   `baseVersion` for a row you do not hold.
-- **E3 — Fusion with unsubscription** is the MUST (above): a client MUST
-  NOT keep syncing a subscription whose rows it partially evicted, and
-  MUST NOT keep a cursor for a unit it evicted (§4.5 C1 — the cursor
-  invariant is never weakened, only narrowed to match the replica).
+- **E3 — Fusion with unregistration** is the MUST (above): a client MUST
+  NOT keep a unit registered whose rows it partially evicted, and MUST NOT
+  keep it live or keep a cursor for it (§4.5 C1: the invariant is never
+  weakened, only narrowed to match the replica).
 - **E4 — Local-only rows** (optimistic, never server-confirmed) are
   covered by E1: they exist only because a pending commit wrote them, so
   they are pinned until the commit drains, then evicted like any row.
 
-**Re-entry is bootstrap.** A unit that re-enters after eviction is a
-**fresh bootstrap** of its subscription (`cursor = -1`): pinned snapshot,
-image lane, §5.6 first-page clear (which sweeps any straggler whose E1
-pin drained after the eviction), segment `serverVersion` re-seeding
-optimistic concurrency. It is correct at any distance — a bootstrap
-snapshots current state (§4.7) regardless of how much log was pruned
-since eviction — so a client MUST NOT attempt to resume a
-previously-evicted unit from a parked cursor (that cursor's possession
-claim was falsified by the eviction; §4.5 C1). Re-entry needs no new
+**Re-entry is bootstrap.** A unit that re-enters after eviction registers
+with cursor `-1` and fresh-bootstraps: pinned snapshot, image lane, §5.6
+first-page clear (which sweeps any straggler whose E1 pin drained after the
+eviction), segment `serverVersion` re-seeding optimistic concurrency. It is
+correct at any distance, because a bootstrap snapshots current state (§4.7)
+regardless of how much log was pruned since eviction. A client MUST NOT
+resume a previously evicted unit from a parked cursor: the eviction
+falsified that cursor's possession claim (§4.5 C2). Re-entry needs no new
 protocol object.
 
-**The window registry.** The client persists which units are live per
-window base (table + variable + the fixed remainder of the scope map).
-The registry is authoritative for two things: (i) which subscriptions the
-next pull carries (so omission-as-unregistration, §4.1, drives shrink),
-and (ii) whether a local query is **answerable in full**. Registration
-alone is not completeness: a registered unit is **pending** from
-`setWindow` until its subscription completes a bootstrap round — that
-is, while its cursor is `-1` (never synced, §4.3) or a §4.7 resume token
-is held (mid-bootstrap; a §4.6 reset re-enters this state). A unit is
-**complete** iff it is registered and not pending. A bootstrap round
-that finishes with zero rows completes its unit — an empty replica is a
-truthful one (emptiness ≠ pendency). A query is answerable in full iff
-every scope value its predicate touches is complete; otherwise the
-  result is partial and the client MUST be able to say so (never silently
-  return partial data as complete). A client MAY expose the per-unit
-  verdict to the host; it MUST NOT represent a windowed-out or
-  still-pending unit's result as complete. Because the verdict can flip
-  with no row changing (a zero-row bootstrap completing), a client that
-  exposes the local-observation seam (§7.5) MUST emit a **window-domain**
-  change for the subscription's base and unit when bootstrap completes.
-  It MUST NOT invent a row/table change for that transition. Coverage-aware
-  views re-read; unrelated table-only views do not, and no oracle is polled.
+**The window registry.** The client persists which units are registered per
+window base. The registry is authoritative for two things: (i) which units
+the window contributes to the registration list (so a shrink unregisters,
+§4.1), and (ii) whether a local query is **answerable in full**.
+Registration alone is not completeness: a registered unit is **pending**
+from `setWindow` until its bootstrap completes for every covered table,
+that is, while it is bootstrapping (§4.1; a §4.6 reset re-enters this
+state). A unit is **complete** iff it is registered, active and not
+pending. A bootstrap that finishes with zero rows completes its unit: an
+empty replica is a truthful one (emptiness ≠ pendency). A query is
+answerable in full iff every scope value its predicate touches belongs to a
+complete unit; otherwise the result is partial and the client MUST be able
+to say so (never silently return partial data as complete). A client MAY
+expose the per-unit verdict to the host; it MUST NOT represent a
+windowed-out or still-pending unit's result as complete. Because the
+verdict can flip with no row changing (a zero-row bootstrap completing), a
+client that exposes the local-observation seam (§7.5) MUST emit a
+**window-domain** change for the base and unit when the unit's bootstrap
+completes. It MUST NOT invent a row/table change for that transition.
+Coverage-aware views re-read; unrelated table-only views do not, and no
+oracle is polled.
 
-**Server confirmation (no new rules).** A newly widened unit's
-subscription is bootstrapping and not yet synced-once, so it is excluded
-from the §8.2 ack floor by the existing rule; a shrunk unit simply stops
-appearing in pulls and the §4.5 per-request cursor record forgets it on
-the next pull. A socket round's registration replace (§8.7) makes a
-window change take effect on the very round that carries it — no
-reconnect, no socket cycle. Nothing in §§4.5, 4.6, 8.1, 8.2, 8.7 is
-amended.
+**Server view.** A widened unit is catching up, so the server registers no
+realtime delivery for it until it joins (§8.1). A shrunk unit leaves the
+stored list when the changed list travels, and a socket round's
+registration replace (§8.7) applies a window change on the round that
+carries it, with no reconnect and no socket cycle.
 
 ---
 
@@ -2047,7 +2329,7 @@ one table at one `asOfCommitSeq`.
   `segmentId` before applying, and reject on mismatch
   (`sync.integrity_rejected` is *not* in the SSP2 catalog — the client
   fails the round with `sync.invalid_request`, discards the segment, and
-  re-pulls through a scheduled background retry (§7.6); a persistent mismatch is
+  re-pulls through a scheduled background retry (§7.7); a persistent mismatch is
   `sync.not_found` territory server-side).
 - Segments are cache entries, not durable state: servers MAY expire them
   at any time (default TTL 24 h). An expired segment yields
@@ -2155,8 +2437,8 @@ The segment bytes are a complete, well-formed **SQLite database file**
 (the motivating property: bootstrap becomes "import a database", not
 "insert N rows").
 
-**Whole-table, never paged.** A sqlite segment covers the subscription's
-**entire** effective-scope row set for one table at the bootstrap pin —
+**Whole-table, never paged.** A sqlite segment covers the unit's
+**entire** effective-scope row set for one table at the table's scope pin (§4.7) —
 the same rows a complete sequence of §5.2 rows pages would deliver (same
 matching rule, same `asOfCommitSeq`). Consequences, all normative:
 
@@ -2229,11 +2511,11 @@ against the generated schema, and total row count before
 writing. Apply the image in primary-key order, at most 1,024 rows per local
 transaction, with the first-page clear in the first transaction (§5.6). Publish
 a revision after each committed chunk, preserving optimistic writes. Yield
-between chunks; persist the subscription checkpoint only at `SUB_END`. Failure
+between chunks; persist the unit's checkpoint only at `SUB_END`. Failure
 rolls back the current chunk and leaves the committed prefix for safe retry
-(§7.7). Empty images still apply a required first-page clear. NULL primary keys MUST NOT
+(§7.8). Empty images still apply a required first-page clear. NULL primary keys MUST NOT
 be skipped by chunk boundaries, and the applied row count MUST equal the
-descriptor before a subscription checkpoint can advance.
+descriptor before a unit's checkpoint can advance.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version
@@ -2295,7 +2577,7 @@ lock across processes.
 | `table` | `str` | |
 | `byteLength` | `i64` | Uncompressed size: progress UI and the client's read cap (below) |
 | `rowCount` | `i64` | |
-| `asOfCommitSeq` | `i64` | MUST equal the bootstrap pin |
+| `asOfCommitSeq` | `i64` | MUST equal the table's pin: the unit's pin for a rows segment, the table's scope pin for a sqlite image (§4.7) |
 | `scopeDigest` | `str` | §3.5 |
 | `rowCursor` | `opt(str)` | Page start (absent = first page) |
 | `nextRowCursor` | `opt(str)` | Page continuation (absent = last page of the table) |
@@ -2327,7 +2609,7 @@ bit 3. Three MUSTs pin the url path:
   whole descriptor. The
   client MUST NOT fall through to the direct endpoint (a second
   delivery attempt under a different auth story is exactly the fallback
-  class SSP2 removes) and MUST abort the subscription per §1.4 rule 5;
+  class SSP2 removes) and MUST abort the unit section per §1.4 rule 5;
   recovery is the next pull, which re-authorizes and mints fresh
   descriptors (§5.5 recovery contract).
 
@@ -2404,8 +2686,8 @@ NOT retry a URL past `urlExpiresAtMs` regardless of issuer.
 for clients without signed-URL support.
 
 - The request carries normal host authentication plus the header
-  `X-Syncular-Scopes`: the canonical JSON (§11.2) of the requested scope
-  map for the owning subscription.
+  `X-Syncular-Scopes`: the canonical JSON (§11.2) of the owning unit's
+  scope map, each value as a one-element list.
 - The server MUST re-authorize on **every** download: run
   `resolveScopes` for the actor, compute effective scopes against the
   supplied requested scopes (§3.2), compute the scope digest (§3.5), and
@@ -2435,37 +2717,43 @@ for clients without signed-URL support.
 
 ### 5.6 Segment application contract (client)
 
-- Segments for a table upsert by primary key: an existing row with the same
-  primary key is updated and an absent row is inserted. Constraints outside
+- Segments for a table upsert by primary key under the §4.5 version guard:
+  an absent row is inserted, an existing row with the same primary key is
+  updated when the segment row's `serverVersion` exceeds the local row's
+  `server_version`, and skipped otherwise. Constraints outside
   the primary key retain their ordinary database semantics. In particular, a
   client MUST NOT use replace-style conflict handling that can delete a
   different row after a secondary unique-index collision; the colliding
   segment application aborts and preserves the existing row. On the **first page** of
-  a table in a **fresh** bootstrap, the client MUST first delete local
-  rows for the subscription's scope (same matching rule as the purge
-  contract, §3.3, against the `SUB_START` effective-scope echo) so
-  removed rows don't survive re-bootstrap. The clear keeps rows another
-  subscription owns (§3.3 row ownership): that owner holds a cursor, so
-  its own pulls deliver every change to those rows, and a row it owns is
+  each covered table in a unit's bootstrap, the client MUST first delete
+  local rows of that table in the unit's scope (same matching rule as the
+  purge contract, §3.3, against the effective scopes of the unit's echo for
+  the table, §4.4) so removed rows don't survive re-bootstrap. The clear
+  keeps rows another unit owns (§3.3 row ownership): that owner holds a
+  cursor, or joins the scan at its pin when its bootstrap completes, so
+  live sections deliver every change to those rows, and a row it owns is
   current whether or not this bootstrap delivers it.
-- **First-page detection.** A bootstrap is *fresh* iff the request
-  carried `cursor < 0` and no `bootstrapState` (a resumed bootstrap
-  never re-clears — its earlier pages already applied). For a
-  `SEGMENT_REF`, the first page is the descriptor with `rowCursor`
-  absent. A `SEGMENT_INLINE` carries no descriptor: the first segment
-  delivered for the subscription in the response is the first page.
+- **First-page detection.** The client records, with the unit's resume
+  token at each `SUB_END`, the tables that have received a segment in the
+  current bootstrap; a bootstrap that starts from cursor `-1` begins with
+  none. A segment of table `t` is a first page iff `t` has not yet received
+  a segment in the current bootstrap. A resumed table never re-clears: its
+  earlier pages already applied. Tables arrive in the unit's bootstrap
+  order (§4.7), so a `SEGMENT_REF` first page also has `rowCursor` absent,
+  and a `SEGMENT_INLINE`, which carries no descriptor, is a first page
+  exactly when it is the first segment of its table in the bootstrap.
 - **Fail closed at the clear too.** The first-page delete uses the §3.3
   matching rule *including its fail-closed clause*: with no local
   scope-column mapping for an effective key, the client MUST NOT clear
-  the table, MUST mark the subscription failed with
+  the table, MUST mark the unit failed with
   `sync.scope_revoked` (a fatal configuration error — stop syncing the
-  table), and MUST NOT persist the subscription's `SUB_END` values. The
-  failure is subscription-local: the rest of the response still
-  applies.
+  unit), and MUST NOT persist the unit's `SUB_END` values. The
+  failure is unit-local: the rest of the response still applies, and the
+  failed unit leaves the registration list.
 - Rows-segment blocks are applied transactionally per §1.4/§5.2; a
   SQLite image applies in committed chunks (§5.3). The resume token is
   persisted only at `SUB_END`, so a crash mid-segment resumes
-  conservatively (re-applying a block is safe by upsert idempotency).
+  conservatively (the version guard skips every row of a re-applied block).
 - **Segment rows carry their server version** (per-row `serverVersion`
   in SSG2, §5.2; the `_syncular_version` column in sqlite images, §5.3).
   A client MUST store it as the row's last-known `server_version`,
@@ -2715,7 +3003,8 @@ The grant flow, three hops, no new trust model:
    `{"present":true}` for the idempotent-skip case.
 3. **PUT direct.** The client `PUT`s the raw bytes to `url` with **no host
    authentication attached** and with the `x-amz-checksum-sha256` header
-   (the base64 SHA-256 of the body; `Content-Length` comes from the body)
+   (the `{blobId}` digest in the step 2 encoding, taken from the blob id
+   without hashing the body again; `Content-Length` comes from the body)
    — the presigned URL is the entire grant, the
    §5.4 rule verbatim: a signed URL points at an object host that must never
    see host auth. All §5.4 client URL MUSTs apply: no `PUT` at or past
@@ -3229,13 +3518,16 @@ mixes shared operational columns with an optional **non-NULL** protected value
 (a `NULL` encrypted value is not encrypted and needs no key), the supported
 shape is two tables: a **plaintext primary** that carries the shared columns
 and leaves `encryptedColumns` empty, and a **sidecar** table that carries the
-protected value under its own `encryptedColumns` entry, its own scope and its
-own subscription, keyed by the primary row id. The sidecar resolves its key by
+protected value under its own `encryptedColumns` entry and its own scope
+variable, keyed by the primary row id. The sidecar declares none of the
+variables of the units that cover the primary: a unit covers every table that
+declares all of its variables (§4.1), so a shared variable would put the
+sidecar under the primary's units. The sidecar resolves its key by
 the normal selection order (custom `keyIdFor`, configured `keyIdColumns`, then
 the per-table default `keyId = table`); the default is sufficient, and
-`keyIdColumns` is optional. A client without the sidecar key subscribes to the
-primary and reads every primary column. It **MUST NOT** subscribe to a sidecar
-it cannot decrypt: decrypt-on-apply runs at the whole-row boundary (§4.5,
+`keyIdColumns` is optional. A client without the sidecar key registers units
+that cover the primary and reads every primary column. It **MUST NOT**
+register a unit that covers a sidecar it cannot decrypt: decrypt-on-apply runs at the whole-row boundary (§4.5,
 §5.6), so an undecryptable sidecar row aborts the remainder of the sync round
 and starves unrelated frames in the same response. Presence metadata inside the
 encrypted sidecar row **MUST NOT** be the only presence signal for a no-key
@@ -3332,7 +3624,7 @@ exposing or transporting protected application data. Every shipped client host
 therefore implements the same two-state lifecycle:
 
 - `preflight`: local bookkeeping/schema open and migration are complete, but
-  protected queries, mutations, subscriptions/windows, outbox inspection,
+  protected queries, mutations, unit registrations and windows, outbox inspection,
   sync, realtime/presence, blobs, and automatic host-loop work fail with the
   stable client-local code `client.security_preflight_required`;
 - `active`: the accepted keyring is installed and the ordinary client surface
@@ -3374,24 +3666,24 @@ including SQL, columns, tables and replacement declarations, MUST fail with
 declared policy MUST return the same code. Ordinary Tauri bridges do not
 expose the authority method. The read returns every matching accepted base row,
 its server row version, `hasLocalIntent`, scoped `localIntentRowIds`, the local
-revision, and persisted requested/effective scopes, cursor, status and
+revision, and the persisted unit scope maps, echoes, cursor state, status and
 completeness from one SQLite snapshot. Pending, failed and protected ACK intent
 MUST NOT replace accepted base values. Local-only creations have no base row.
-The read MUST NOT disclose intended values, subscription params, bootstrap
+The read MUST NOT disclose intended values, bootstrap
 tokens, keys or internal credentials. Missing/corrupt revision or rollback
 base evidence MUST fail explicitly.
 
 Each table reports `coverage: complete | pending | missing`. Complete coverage
-requires the union of unfiltered, active, bootstrap-finished subscriptions to
-cover every requested scope tuple with persisted effective scopes. A registration,
-partial bootstrap, restricted effective scope or filtered subscription cannot
-prove completeness. Completed empty coverage returns an empty row set with
+requires the union of active units that finished their bootstrap (live or
+post-bootstrap, §4.1) to cover every requested scope tuple with persisted
+echoes. A registration, a partial bootstrap or a restricted effective scope
+cannot prove completeness. Completed empty coverage returns an empty row set with
 `complete`; an absent authority row still requires application rejection when
 the authority chain expects that row. The application validates actor, device,
 signed lease, trusted time, and independently accepted authority pins; the SDK
 MUST NOT infer application authorization from completeness or intent.
 
-The read MUST NOT write, register a subscription, install keys, open transport,
+The read MUST NOT write, register a unit, install keys, open transport,
 or change lifecycle. Native reads run on the serialized owner and MUST observe
 lock, purge, replacement and shutdown ordering. A closed native command returns
 `client.closed`; a bridge MUST discard a reply racing its local close. Ordinary
@@ -3405,7 +3697,7 @@ realtime, waits for already-started serialized/network/read-sidecar work to
 settle, and releases the core's keyring reference before resolving. Activation
 MUST NOT overtake that barrier. Entering preflight clears pending automatic
 sync/retry intents; activation emits one startup intent when persisted active
-subscriptions or outbox work exist. A Worker follower requesting preflight
+units or outbox work exist. A Worker follower requesting preflight
 applies it to the one shared origin leader, not merely to its local proxy.
 
 Native key buffers MUST be overwritten before replacement/drop where the
@@ -3503,6 +3795,7 @@ One frame per client commit, in client (outbox) order:
 | Field | Type | Semantics |
 |---|---|---|
 | `clientCommitId` | `str` | Idempotency key (§2.3), non-empty, unique per client |
+| `clientSeq` | `i64` | The commit's outbox sequence number (§6.3.2, §7.1); `0` for a sender without an outbox. A negative value is a decode error |
 | `operations` | `u32` count × operation record | MUST be ≥ 1 (`sync.empty_commit`) |
 
 Operation record:
@@ -3514,6 +3807,12 @@ Operation record:
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins. Presence is deliberately **not** tied to `op`: a `delete` operation MAY carry a `baseVersion`, which the codec accepts and preserves and the server ignores (deletes perform no version check, §6.2) |
 | `payload` | `opt(bytes)` | One **sparse row** (§2.4) encoded for the request's `schemaVersion`: the columns the operation writes — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail sparse-row decode, including a push admission value (§2.4), are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
+
+**Sequence rules.** When `REQ_HEADER.outboxId` is present, every
+`PUSH_COMMIT` carries `clientSeq ≥ 1` and the values strictly increase in
+frame order; when it is absent, every `clientSeq` is `0`. A request that
+breaks either rule fails request-level with `sync.invalid_request` before any
+commit is attempted.
 
 Servers MUST enforce an operation-count cap per request, counted as the
 **total operations across all `PUSH_COMMIT` frames in the request**
@@ -3561,7 +3860,7 @@ For an upsert against an **absent** row, the tombstone table decides
 
 | `baseVersion` | Tombstone within horizon | Outcome |
 |---|---|---|
-| `0` | any | insert — explicit intent recreates, with `server_version` one above the tombstone's (below) |
+| `0` | any | insert — explicit intent recreates, with `server_version` one above the delete floor (§2.2) |
 | `> 0` | any | error `sync.row_missing` (after payload authorization, so absence is not disclosed to an actor without the scope) |
 | absent | yes | reject `sync.row_deleted` — a delete beats a concurrent unversioned upsert (after payload authorization when the payload presents every scope column, below) |
 | absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
@@ -3581,18 +3880,18 @@ then authorizes the actor against the tombstone's stored scopes (§3.4 step
 3). A tombstone the actor fails is treated as absent: the operation takes
 the "absent, no tombstone" row, so a payload that omits a scope column gets
 the same `sync.row_missing` as for a row id that never existed, and a full
-payload inserts at `server_version = 1`. A tombstone without stored scopes
+payload inserts. A tombstone without stored scopes
 (written before servers recorded them) answers `sync.row_deleted` to any
 actor, and a partial upsert against it tells any actor that the row id was
 deleted within the horizon.
 
-An insert over a tombstone the actor passes starts at the tombstone's
-`server_version + 1`, and every column's `column_version` starts there too,
-so a `baseVersion` held from the previous incarnation is below every column
-of the new one and yields the ordinary conflict. A tombstone without a
-stored `server_version` recreates at 1. A recreated row clears its
-tombstone. Beyond the pruning horizon the tombstone is gone, the insert
-rule applies, and a recreate starts at 1 again (§4.6).
+Every insert starts one above the delete floor (§2.2), and every column's
+`column_version` starts there too, so a `baseVersion` held from a previous
+incarnation is below every column of the new one and yields the ordinary
+conflict, whether or not the actor passes the tombstone and after the
+tombstone is pruned. The start version discloses nothing about a row id: two
+inserts in one partition with no delete between them start at the same
+version. A recreated row clears its tombstone.
 
 A registered command's `upsert` mutation is unversioned unless it sets
 `insert`, which sends `baseVersion = 0` ([REMOTE.md](./REMOTE.md) §3).
@@ -3608,9 +3907,13 @@ A registered command's `upsert` mutation is unversioned unless it sets
   **existing** row authorizes against the stored row per §3.4; denial
   is `sync.forbidden` — which necessarily reveals that the row exists,
   the accepted cost of fail-loud authorization. Every applied delete,
-  including a §6.11 cascaded delete, records a tombstone (§2.2), except
-  the delete half of a §2.2 scope move: the same commit follows it with an
-  upsert for the row, so the row is live and no tombstone remains.
+  including a §6.11 cascaded delete, advances the row's `server_version`
+  by 1 and carries it as the change's `rowVersion`. When the row is absent
+  at the end of the commit, the delete raises the delete floor to that
+  version and records a tombstone (§2.2). When the same commit writes the
+  row again (the delete half of a §2.2 scope move, which carries the move's
+  version, or a delete followed by a recreate), the row is live, no
+  tombstone remains and the floor is unchanged.
 
 ### 6.3 `PUSH_RESULT` frame
 
@@ -3661,6 +3964,11 @@ Semantics:
 - A `clientCommitId` duplicated **within one request** is processed once;
   subsequent occurrences return the persisted result per the replay rule
   (§2.3): `cached` if it applied, `rejected` if it rejected.
+- A commit below its outbox's watermark without a retained result is
+  refused with `sync.commit_expired` (§6.3.2). Encoding: a `PUSH_RESULT` with
+  `status = rejected`, no `commitSeq`, and exactly one `error` result record
+  at `opIndex = 0` carrying `code = "sync.commit_expired"`,
+  `retryable = false`. The server MUST NOT persist this result.
 - Every apparently new push is serialized by partition before any operation
   read, authorization, conflict check, row validation, CRDT merge, or staged
   write. The server then re-checks the idempotency key while holding that
@@ -3724,6 +4032,69 @@ trusted display copy: an app SHOULD map known codes, paths, reasons, actions,
 and references to its own localized UI and MUST ignore unknown values. The
 legacy `message` remains diagnostic and MUST NOT be rendered directly to end
 users.
+
+#### 6.3.2 Per-outbox acknowledged watermark
+
+A client replica numbers its outbox commits with a strictly increasing
+sequence (§7.1) and names the sequence by `REQ_HEADER.outboxId`. The server
+uses the first sequence of a request to delete the idempotency results the
+replica can no longer ask for.
+
+Let `W(p, c, o)` be the stored watermark for partition `p`, client `c` and
+outbox `o`, `0` when absent. For a request with `outboxId = o` whose first
+`PUSH_COMMIT` carries `clientSeq = s₀`, after authentication, envelope
+validation, the clientId-actor binding (§1.5) and the `logEpoch` match
+(§2.1), and inside the partition serialization of §6.3, the server:
+
+1. sets `W ← max(W, s₀)` and stores the watermark row;
+2. deletes every result of `(p, c, o)` whose sequence is below `W`;
+3. for each commit with sequence `s`, in frame order: replays a retained
+   result by its idempotency key (§2.3); otherwise answers a commit with
+   `s < W` with the `sync.commit_expired` result of §6.3, unpersisted;
+   otherwise processes the commit and stores its result with `o` and `s`.
+
+Steps 1 and 2 commit in the same transaction as the request's first stored
+commit result, or alone when no commit stores a result. A result stored
+without an outbox (`outboxId` absent) carries no sequence and is never
+deleted by step 2.
+
+**Invariant W1.** The replica holding outbox `o` of client `c` in partition
+`p` never sends a commit with `clientSeq < W(p, c, o)` again. `W` is the
+first sequence of a request the replica built. At build time that commit was
+the oldest commit in the outbox (§7.1: a request carries a contiguous
+prefix), so every commit with a smaller sequence had left the outbox, and a
+commit that leaves the outbox never returns. Sequences under one `outboxId`
+never repeat (§7.1), and `W` only grows.
+
+Consequences:
+
+- Step 2 never deletes a result the replica can still request: a lost-ack
+  retry carries a commit that is still in the outbox, so its sequence is at
+  least `W` and its result is retained.
+- A commit with `clientSeq < W` and no retained result comes from a delayed
+  copy of an abandoned request or from a copied replica. Refusing it never
+  applies a commit twice.
+- A delayed request with a lower `s₀` does not lower `W`.
+- An actor raises only the watermark of a `clientId` bound to itself
+  (§1.5); a higher value harms only that actor's own replica.
+
+A replica copied with its database shares `clientId`, `outboxId` and the
+sequence with its original. Its commits below the other copy's watermark
+receive `sync.commit_expired`, and new commits that reuse sequences the
+other copy passed are refused the same way. An app that restores or copies a
+replica onto a second device MUST reset that replica: a new `clientId`, a new
+`outboxId` and an empty outbox.
+
+The server keeps one watermark row per (client, outbox) for as long as the
+partition exists. A watermark row is the only proof that a commit below it
+was settled, so no rule deletes it: the row count is bounded by the number
+of outboxes that ever pushed. The
+reference server's `admin.findWrite` reports, for a commit whose result the
+watermark deleted, the outbox's watermark (`expired below sequence N`). A
+`logEpoch` rotation (§2.1) deletes client records and leaves watermark rows
+in place. A database-less
+producer (§6.10) and an attach upload (§12.3) send no `outboxId`, so their
+results stay until their partition is reset.
 
 ### 6.4 Atomicity and ordering
 
@@ -4267,6 +4638,8 @@ fire-and-forget operational events and do not replace reaction storage.
 A process MAY submit ordinary commits without maintaining a local replica.
 It sends a push-only SSP2 request to `POST <mount>/sync`: `REQ_HEADER`, one or
 more `PUSH_COMMIT` frames, and `END`. A `PULL_HEADER` is unnecessary. The
+`REQ_HEADER` carries no `outboxId` and every `PUSH_COMMIT` carries
+`clientSeq = 0`, so the watermark of §6.3.2 never deletes its results. The
 server applies the same authorization, conflict, validation, atomicity,
 idempotency, commit-log, and realtime rules as every replica-originated push.
 
@@ -4277,7 +4650,7 @@ the original `(partition, clientId, clientCommitId)` key (§2.3). The caller is
 responsible for retaining or deterministically deriving that identity because
 there is no Syncular outbox.
 
-A database-less producer has no local rows, subscriptions, cursor, optimistic
+A database-less producer has no local rows, units, cursors, optimistic
 state, rollback journal, or offline queue. It receives the terminal
 `PUSH_RESULT` directly. A conflict record carries the authoritative row bytes
 and version exactly as it does for a replica client. The caller decides
@@ -4427,6 +4800,17 @@ documents: a JSON boolean for a `boolean` column.
   client-generated `clientCommitId`s (unique forever per client; UUIDs
   recommended). The outbox is schema-agnostic (§0): it survives a schema
   bump and replays on top of the fresh re-bootstrap (§7.4).
+- The outbox numbers its commits with a sequence `seq` that strictly
+  increases in creation order and never repeats under one `outboxId`. A
+  client generates a random `outboxId` when it creates its outbox and
+  persists it in the same transaction; an operation that could restart the
+  sequence (recreating the outbox table, losing its sequence counter) MUST
+  replace `outboxId` in the same transaction. A replica sends `outboxId` in
+  every `REQ_HEADER` and each commit's `seq` as `PUSH_COMMIT.clientSeq`
+  (§6.3.2); encoding at send time (§7.4.4) keeps the sequence. A client
+  handles `sync.commit_expired` as a rejection (§7.2): the commit leaves the
+  outbox, the overlay rebuilds and the outcome journal records it. If the
+  commit had applied, a later pull delivers its rows.
 - The outbox is FIFO: commits are pushed strictly in creation order, and
   a client MUST NOT reorder or coalesce commits once a push containing
   them may have reached the server (the idempotency key pins their
@@ -4445,7 +4829,7 @@ documents: a JSON boolean for a `boolean` column.
 
   The encoded byte budget counts the complete encoded SSP2 request: the
   8-byte envelope, every frame header and payload (request header, push
-  commits, pull header, subscriptions), and the 5-byte END frame, including
+  commits, pull header, unit and progress frames), and the 5-byte END frame, including
   any §5.11 ciphertext. The byte count and the transmitted request reuse the
   same encoded frame, so measuring a commit never re-encrypts it. The client
   admits whole commits in FIFO order while they fit the remaining byte
@@ -4456,7 +4840,7 @@ documents: a JSON boolean for a `boolean` column.
   `{ kind: "bytes", limit, size, clientCommitId? }` (non-retryable,
   client-local), keeps the commit in the outbox, and leaves its optimistic
   rows applied. `size` is the full projected request byte count including the
-  request header, pull header, and subscription frames. The same error
+  request header, pull header, and unit and progress frames. The same error
   without `clientCommitId` reports a request whose fixed frames alone exceed
   the byte budget; a client MUST NOT silently ignore the configured budget on
   such a round.
@@ -4473,7 +4857,7 @@ documents: a JSON boolean for a `boolean` column.
   replay that intent until an authoritative change for the same row has a
   `commitSeq` at least equal to the acknowledgement's `commitSeq`, or a
   completed bootstrap covers that row's scope at that sequence or later.
-  Empty incremental sections and their cursors do not prove row delivery.
+  An empty live section and its cursor do not prove row delivery.
   Whole-replica schema, log-epoch and authorized rebootstrap resets discard
   acknowledged intent with the replicated data; only pending outbox intent
   survives those resets (§7.4).
@@ -4491,7 +4875,7 @@ documents: a JSON boolean for a `boolean` column.
   in that commit, including when rejection, resolution or revocation removes it.
   Imports MUST restrict protected-journal reads and replay to affected rows or
   tables, including empty bootstrap clears. Unique constraints can require
-  same-table peer reconciliation. Unrelated subscriptions MUST NOT restore or
+  same-table peer reconciliation. Imports for unrelated units MUST NOT restore or
   rewrite protected rows. A committed import restores each affected base once
   and replays its intent once before publishing the observation batch.
 - Overlay replay MUST propagate SQL reads, row decoding, writes, savepoint,
@@ -4549,15 +4933,15 @@ replica. Direct database opens remain single attempts. This policy is specific
 to browser OPFS ownership and does not alter either core's sync retry semantics.
 
 `syncUntilIdle` continues while the core's sync-needed flag is raised,
-including an epoch handshake with no subscriptions. A persisted outbox can
-therefore drain after startup without requiring a subscription to trigger a
+including an epoch handshake with no registered unit. A persisted outbox can
+therefore drain after startup without requiring a unit to trigger a
 second request.
 
-A pull response that omits a completed section for any subscription sent in
-that request leaves sync-needed raised. An idle drive MUST retry that pull;
-it cannot report idle while a sent subscription's section is missing. A
-revoked or failed subscription is reported as such and is not evidence of an
-authorized current base.
+A pull response that ends without `LIVE_END`, that answers `unregistered` or
+`reset`, or after which a unit is still catching up leaves sync-needed
+raised. An idle drive MUST retry that pull; it cannot report idle while a
+registered unit is catching up. A revoked or failed unit is reported as such
+and is not evidence of an authorized current base.
 
 ### 7.2 Replay and idempotent retry
 
@@ -4660,7 +5044,7 @@ conflict callbacks retain their separate durability boundary.
 A failed run restores every affected pending commit and emits no acknowledgement
 batch. A crash before local commit retries every original ID in the run; a crash
 after commit recovers all its durable outcomes. A later response error preserves
-completed runs. Clients MUST NOT include a server row `COMMIT`, subscription
+completed runs. Clients MUST NOT include a server row `COMMIT`, unit or live
 section, lease, purge, reset, or network wait in this transaction. Server commit
 atomicity, authorization, partition locks, and realtime notifications remain
 per server commit as specified in §6.4.
@@ -4710,8 +5094,8 @@ can precede the pull section of the same round, so the base is not evidence of
 the row current at rejection. To obtain a base at least as recent as a
 rejection, an application waits for the active sync drive to finish, then runs
 a new `syncUntilIdle` drive. It requires a non-exhausted successful drive with
-no schema floor and verifies that a complete active subscription covers the
-row under its effective scopes. It reads the active outcome again after the
+no schema floor and verifies that an active unit that completed its
+bootstrap covers the row under its echo. It reads the active outcome again after the
 drive; failure, offline transport, missing coverage, or revocation cannot prove
 the base. The server can accept another write after the pull, so a replacement
 still uses the domain's normal version check.
@@ -4719,16 +5103,15 @@ still uses the domain's normal version check.
 `proveCurrentBase(outcome)` owns this recovery sequence. It accepts the
 client commit id and journal sequence of an active conflict or rejection,
 waits for an earlier drive, and completes a new bounded idle drive. It reads
-subscription catch-up and outcome delivery from one §7.5 snapshot, then
+unit catch-up and outcome delivery from one §7.5 snapshot, then
 re-reads the retained outcome for the same journal entry. A covering
-subscription must have been registered before the drive, have the same
-intent after it, be active and bootstrap-complete, and cover the row under its
-effective scopes. The client checks every retained row and every returned
+unit must have been registered before the drive and still be registered after
+it, be active and bootstrap-complete, and cover the row under its echo. The client checks every retained row and every returned
 unique-conflict row. A deletion with neither a local nor a server row has no
 scope evidence and cannot be proven. An absent authorized base is not proof
 that a row with the same primary key does not exist outside the actor's scopes.
-The client refuses the proof if subscription registrations change during the
-drive, including removal and recreation with the same id and intent.
+The client refuses the proof if unit registrations change during the
+drive, including removal and recreation of the same unit.
 It also refuses a proof if the transport gate or security preflight changes
 during the drive.
 
@@ -4782,7 +5165,7 @@ non-goals here, noted so the skeleton stays a skeleton:
   or client.
 - **Fine-grained per-scope TTLs and per-operation grants.** The lease
   carries the actor's whole resolved allowed-scope map and one TTL — no
-  per-subscription operation grants, no per-scope coverage checks. A
+  per-unit operation grants, no per-scope coverage checks. A
   future rung MAY narrow this; the skeleton does not.
 
 The lease is **not a fallback path** in the §0 no-fallback sense. When
@@ -4814,7 +5197,7 @@ revoked (§7.3.4).
 
 A lease is delivered to the client in a new response frame, `LEASE`
 (`frameType 0x19`), carried in the pull/round response after
-`RESP_HEADER` and before the first `PUSH_RESULT`/subscription section.
+`RESP_HEADER` and before the first `PUSH_RESULT` or section.
 Per §9 (new data = new frame type, never a field appended to an existing
 frame), the lease is **not** an added `RESP_HEADER` field; it is its own
 frame, so a feature-off client skips it by length (§1.2 rule 2) with zero
@@ -4898,7 +5281,7 @@ means: the next round that would be *lease-authorized* fails
 request-level with `sync.auth_lease_revoked` (§10.2, category
 `auth-required`, action `refreshAuth`). It does **not** by itself purge
 the client's local rows — that is the scope-revocation contract (§3.3),
-which fires per subscription via `SUB_START.status = revoked` when the
+which fires per revoked pair (§3.3) when the
 live resolver narrows. The two are distinct: `sync.scope_revoked` is
 "this scope is no longer yours, purge it" (§3.3); `sync.auth_lease_revoked`
 is "your offline grant was pulled, you cannot sync on it anymore — get a
@@ -5009,7 +5392,7 @@ converge on the identical wipe-re-bootstrap-replay:
    behavior.
 
    The marker guard and every write it authorizes (bookkeeping, schema
-   replacement, previous-version capture, outbox replay, subscription pruning)
+   replacement, previous-version capture, outbox replay, unit pruning)
    MUST run under one transaction whose first statement is the marker read, so
    the version the writes commit under is the version the guard validated. A
    concurrent upgrade that commits after that read leaves the writing
@@ -5059,21 +5442,26 @@ the **outbox**, the **client identity** (`clientId`), and the **auth
 lease** (`leaseState`). Everything else is destroyed and rebuilt:
 
 - **Dropped and recreated:** every synced table, and all
-  subscription-derived state — cursors, bootstrap resume tokens
-  (`bootstrapState`), the persisted effective-scope map (§3.3), and the
-  `active`/`revoked`/`failed` status. The subscription *registrations*
-  themselves (id, table, requested scopes, params) are **kept only when compatible** — they
-  are the app's declared intent, not synced data — but each is reset to
-  `cursor = -1`, no resume token, `status = active`, so the next round
-  is a fresh bootstrap of exactly the subscriptions the app still wants.
-  Compatibility requires the table and every requested scope variable to exist
-  with the same declared prefix and column mapping. For an empty scope request,
-  the whole table's scope declaration must match. Incompatible registrations,
-  their windows and pending evictions are deleted atomically; values MUST NOT
-  be translated. The app registers subscriptions for its current schema.
-  Clients persist declaration evidence alongside the schema marker. A replica
-  written by a binary without that evidence requires re-registration on its
-  next version bump. Same-version opens retain compatible cursors unchanged.
+  unit-derived state — the replica cursor, unit cursors, bootstrap resume
+  tokens (`bootstrapState`), the persisted echoes (§3.3), the echo digest,
+  and the `active`/`revoked`/`failed` status. The unit *registrations*
+  themselves (scope maps) are **kept only when compatible** — they are the
+  app's declared intent, not synced data — but each is reset to catching
+  up with cursor `-1`, no resume token, `status = active`, so the next
+  round is a fresh bootstrap of exactly the units the app still wants.
+  Compatibility requires every variable of the unit to exist with the same
+  declared prefix and column mapping on every table it covered, and the
+  unit to cover at least one table under the new schema. Incompatible
+  units, their windows and pending evictions are deleted atomically; values
+  MUST NOT be translated. A pending eviction (§4.8) survives only when the
+  new schema declares every variable of its stored scopes on its table with
+  the same prefix and column mapping; otherwise the reset deletes it with
+  its unit's windows and pending evictions, because the eviction would later
+  delete rows by the outdated scope rule. The app registers units for its current schema.
+  Clients persist declaration evidence alongside the schema marker. A
+  replica written by a binary without that evidence requires
+  re-registration on its next version bump. Same-version opens retain
+  compatible cursors unchanged.
   Blob bodies and pending commit dependencies (§5.9.7) remain durable;
   retention reads references directly from the re-bootstrapped rows.
 - **Preserved:** the outbox (schema-agnostic by construction, §0 /
@@ -5097,8 +5485,8 @@ same path every fresh client runs.
    `schemaFloor` stop state carried over — the client now ships a schema
    the server serves.
 2. Drop every synced local table and recreate it from the *new*
-   generated schema; clear each subscription's cursor / resume token /
-   effective-scope / status to the fresh-bootstrap defaults, keeping the
+   generated schema; reset the replica cursor and each unit's cursor /
+   resume token / echo / status to the fresh-bootstrap defaults, keeping the
    registration.
 3. Rewrite the persisted marker (§7.4.1) to the new generated version.
 4. Surface the `upgrading` state (§7.4.5) across steps 1–3; clear it
@@ -5173,7 +5561,7 @@ and know when it is safe to render:
 
 - `upgrading` — true from the moment the reset begins (§7.4.3 step 1)
   until the first post-reset bootstrap round completes (every
-  subscription past its fresh bootstrap, or the round reaching idle,
+  unit past its fresh bootstrap, or the round reaching idle,
   §4.5). It is the schema-bump mirror of `schemaFloor` / `leaseState`:
   a small, queryable client state, not a wire concept.
 - A completion signal fires when `upgrading` clears — the app's cue to
@@ -5365,10 +5753,10 @@ encodes.
 file removed, the records deleted in one transaction — on ANY of:
 
 - **replacement coverage complete** — the §7.4.5 predicate: every
-  `active` subscription has `cursor >= 0` and no resume token. An empty
+  `active` unit is live or post-bootstrap (§4.1). An empty
   active set is not completion;
 - **lease stop state or expiry** (§7.3.5) or **scope revocation** (§3.3 —
-  any revoked subscription);
+  any revoked pair);
 - **`purgeLocalData`** — always and unconditionally, as a fixed step
   before any mirror row is touched. The container cannot be expressed as
   a purge target (its name is not in the running schema and its table is
@@ -5459,7 +5847,7 @@ clears retained observations; provider restart reestablishes them.
 **Revision.** Each client database persists an unsigned 64-bit `localRevision`
 in durable bookkeeping state. It starts at zero and increases exactly once in
 the same SQLite transaction as each committed observer-visible change. Such a
-change includes materialized or optimistic rows, subscription/window
+change includes materialized or optimistic rows, unit/window
 registration or completeness, deferred eviction, outbox/status state exposed
 by the client, conflicts/rejections/outcome-resolution state, auth-lease or schema-floor state, and
 schema-reset/upgrading state. A transaction which rolls back consumes no
@@ -5473,7 +5861,7 @@ an unsafe JSON number.
 **Atomic query snapshot.** A reactive local read returns its SQL rows, required
 window coverage, and `localRevision` from one SQLite read transaction. Coverage
 names each required window base/unit and classifies it complete, pending, or
-missing by the §4.8 registry and subscription state. A client MUST NOT compose
+missing by the §4.8 registry and unit state. A client MUST NOT compose
 rows from one read with coverage or revision from another. A result at revision
 `r` cannot be published as current after a matching change at revision `> r`;
 promise completion order, IPC order, frame scheduling, and render timing never
@@ -5482,38 +5870,37 @@ override revision order.
 **Snapshot read request.** A host read over the shared read-only sidecar
 resolves one request in a single SQLite read transaction and returns its
 `localRevision`, the rows of every requested read-only statement, the
-requested window coverage, the requested subscription catch-up states, and
+requested window coverage, the requested unit catch-up states, and
 the requested commit deliveries. Every statement passes the read-only
 guard, and any statement's failure rolls the whole read back and releases
 the connection. A host that needs several statements uses this one request
 and MUST NOT compose them from separate reads.
 
-**Subscription catch-up state.** A catch-up read reports, for one
-subscription id, the state persisted in the same snapshot, never the
-mutable owner cache. It serializes with a `state` discriminant:
+**Unit catch-up state.** A catch-up read reports, for one unit id, the
+state persisted in the same snapshot, never the mutable owner cache. It
+serializes with a `state` discriminant:
 
-- `state: "unknown"`: the client does not currently hold the subscription.
+- `state: "unknown"`: the client does not currently hold the unit.
   This covers an id that was never registered and one that was forgotten
-  or removed. It carries the id and no fabricated table or cursor.
+  or removed. It carries the id and no fabricated cursor.
 - `state: "known"`: the persisted `status` (`active`, `revoked`, or
-  `failed`; a reset stays `active` with `cursor < 0`), `cursor`, whether a
-  resume token is held, and two derived booleans.
+  `failed`; a reset stays `active` and catches up from cursor `-1`),
+  whether the unit is live, its cursor while it catches up (the replica
+  cursor while it is live), whether a resume token is held, and two derived
+  booleans.
 
 For a known state:
 
-- `bootstrapComplete` is true only for an `active` subscription with
-  `cursor >= 0` and no resume token. A failed, revoked, or reset
-  subscription is never complete.
-- `knownPendingPages` is true only for an `active` subscription while a
-  resume token remains or `cursor < 0`. A reset subscription stays
-  `active` with `cursor < 0` (reason `sync.cursor_expired`), so it reads
-  `knownPendingPages: true` while it bootstraps. A failed or revoked
-  subscription reads false.
+- `bootstrapComplete` is true only for an `active` unit that is live or
+  post-bootstrap. A failed, revoked, or reset unit is never complete.
+- `knownPendingPages` is true only for an `active` bootstrapping unit
+  (cursor `-1` or a resume token). A reset unit stays `active` with cursor
+  `-1` (reason `sync.cursor_expired`), so it reads `knownPendingPages: true`
+  while it bootstraps. A failed or revoked unit reads false.
 
-These fields name local bootstrap progress. `SUB_END` carries the next
-cursor and the bootstrap page state, so an absent token alone never proves
-that the subscription reached the server head: a delta page may remain
-after a limit. Nothing in the read asserts server freshness. The existing
+These fields name local bootstrap progress. A completed bootstrap never
+proves that the unit reached the server head: a live section cut by
+`limitCommits` leaves later commits for the next round. Nothing in the read asserts server freshness. The existing
 atomicity rule still holds: rows, coverage, and revision come from one
 read, so a host that needs those together reads them together.
 
@@ -5535,7 +5922,13 @@ results and omits retained operations while preserving the outcome status; that
 redacted journal entry remains readable. Stored operations, including
 those nested in results, require row values for upserts and omit them for
 deletes. Effective catch-up scopes are absent or maps of string arrays.
-Malformed journal
+A persisted unit (§4.1) holds its scope map as JSON text of an object with
+string values, its status as the text `active`, `revoked` or `failed`, its
+cursor as an integer or NULL, its reason code and resume token as text or
+NULL, its seeded tables as JSON text of a string array, and its echo as NULL
+or JSON text of an array of records, each with a string `table`, a `status`
+of `active` or `revoked` and `scopes` as a map of string arrays.
+Malformed journal or unit
 metadata fails with `sync.local_corrupt`; recognized SQLite storage errors
 retain their storage classification.
 
@@ -5600,7 +5993,7 @@ visible row from the failed commit, and no local revision publication; once
 the fault clears, a retry enqueues the commit once.
 
 **Failed transfer.** A reactive observation whose latest successful read has
-incomplete coverage waits on sync attempts (§7.6 progress). When the latest
+incomplete coverage waits on sync attempts (§7.7 progress). When the latest
 attempt ends `failed`, the observation publishes phase `error` with a
 `ClientSyncError` whose `code` is the attempt's `errorCode`, whose
 `attempt` is the attempt number, whose `retryable` is true exactly when the
@@ -5622,15 +6015,16 @@ one batch carrying its revision and the domains changed by that transaction:
 
 - table changes associate every optional `prefix:value` scope key with its
   table; an omitted scope-key set means honestly table-wide;
-- window changes identify canonical base, table, and changed unit(s);
+- window changes identify the canonical base and the changed unit values;
+  a base names no table (§4.8);
 - status carries the complete post-commit client status when status changed;
 - conflict/rejection flags identify their collection domains;
 - `outcomesChanged` identifies durable journal insertion, resolution, or
   retention changes.
 
 When a transaction applies a `COMMIT` frame, its change batch also carries
-`appliedCommits`: entries containing the subscription id, affected table,
-`commitSeq`, and source (`delta` or `pull`). An entry identifies a committed
+`appliedCommits`: entries containing the affected tables, `commitSeq`, and
+source (`delta` or `pull`). An entry identifies a committed
 local transaction, not completion of the enclosing response. A later frame can
 fail the round while earlier transactions remain committed (§1.4). A rolled
 back transaction publishes no entry. Snapshot segments, cursor advances,
@@ -5655,7 +6049,7 @@ an obligation to run a sync round after `delayMs`, independent of the realtime
 state. A server that answers a round with a retryable in-band error
 (`sync.schema_not_ready`, `sync.internal_error`) leaves the socket
 `connected`, so a socket reconnect never satisfies the intent; only a round
-does. The failed round's `retryDelayMs` (§7.6) carries the same delay for a host
+does. The failed round's `retryDelayMs` (§7.7) carries the same delay for a host
 that reads it after the intent was drained. The cores own no timer: the host
 owns the deadline, and a host that drops the intent leaves the client idle until
 the next wake-up. Realtime reconnect/catch-up jitter
@@ -5664,10 +6058,10 @@ window changes are not delayed by that jitter. Manual-sync hosts may expose but
 not consume the intent.
 
 **Persistent-open sync intent.** Opening a client on durable state with at
-least one active subscription or pending outbox commit MUST expose
+least one active unit or pending outbox commit MUST expose
 `syncNeeded = true` and one coalescible interactive intent. This guarantees a
 catch-up pull after process restart; realtime covers only changes after its
-connection, and an idempotent re-declaration of the same subscription/window
+connection, and an idempotent re-declaration of the same unit/window
 does not manufacture command work. Automatic hosts consume the startup intent
 through the same owner loop as command effects. Manual-sync hosts preserve it
 for observability until the application runs sync.
@@ -5677,7 +6071,7 @@ for observability until the application runs sync.
 This section specifies a client-local support contract. It adds no SSP2 frame,
 server authority, telemetry upload, or permission to inspect application rows.
 Every direct, Worker leader/follower, Tauri, and React Native host MUST expose
-`diagnosticsSnapshot(request?)` with `version: 1` and an `onDiagnostics`
+`diagnosticsSnapshot()` with `version: 2` and an `onDiagnostics`
 change signal. React integrations SHOULD expose the same evidence through a
 hook. A host wrapper changes only topology facts (`kind`, `role`, connectivity,
 realtime); the underlying evidence remains equivalent.
@@ -5701,9 +6095,12 @@ The snapshot is one bounded observation containing:
 - decimal local revision, sync-needed state, and pending outbox commit count;
 - lease health (`none`, `active`, `expired`, or `stopped`), expiry, and a
   stable error code, never the lease id;
-- every registered subscription's application id, generated table, cursor,
-  completeness, state (`bootstrapping`, `complete`, `reset`, `revoked`, or
-  `failed`), and optional stable reason code;
+- `units`: the registered units as counts per state (`bootstrapping`,
+  `complete`, `reset`, `revoked`, or `failed`) with the stable reason codes
+  present, ascending; `activeUnits`: every unit the registration list
+  carries (the §1.7 `maxSubscriptionsPerRequest` limit applies to this
+  count); and `replicaCursor` (§4.5). A unit id is derived from scope values
+  (§4.1), so no unit id enters diagnostics;
 - the last sync round as bounded counters or a stable failure code with the
   optional transport evidence below, and the last revisioned change as
   generated table/window names plus changed-domain booleans;
@@ -5725,16 +6122,7 @@ The snapshot is one bounded observation containing:
   connection report each owned failure, and the first success after it, to
   the owning core.
 
-`request.expectedSubscriptions` MAY name at most 256 application-owned,
-PHI-free `{id, table}` pairs. A missing registration is returned as
-`unregistered`, which is distinct from a registered bootstrap that completed
-with zero rows. An id registered against a different table is `failed` with
-`client.subscription_intent_mismatch`. The request cannot carry scopes or
-scope values. The result prioritizes expected ids, returns at most 256
-subscriptions, and sets `subscriptionsTruncated` when other registrations were
-omitted. `activeSubscriptions` counts every registration the next pull sends
-(state `active`), including those omitted from the list; the §1.7
-`maxSubscriptionsPerRequest` limit applies to this count. Last-change table and window domains are independently capped at 256
+Last-change table and window domains are independently capped at 256
 and set `domainsTruncated` when clipped.
 
 Diagnostics MUST NOT contain requested/effective scope values, row ids, row
@@ -5742,18 +6130,16 @@ values, clinical/domain row counts, SQL, database paths or filenames, client
 ids, actor ids, lease ids, auth headers/tokens, encryption keys, mutation or
 rollback bodies, stack traces, arbitrary server/transport prose, or
 application-defined metadata. Error/reason fields are bounded code-like
-values; an invalid value becomes `client.unknown_failure`. Subscription ids
-and query owner ids are returned by design, so applications MUST keep them stable, code-like, and
+values; an invalid value becomes `client.unknown_failure`. Query owner ids
+are returned by design, so applications MUST keep them stable, code-like, and
 free of patient/user data.
 
 The core emits diagnostics only after the state it describes is committed.
 Native hosts fingerprint snapshots without `capturedAtMs` and emit only when
 evidence changes; read-only calls do not create noise. Worker and native
 bridges forward core evidence and MUST NOT reconstruct it from command names.
-An expected-subscription-aware observer treats the event as invalidation and
-requests a fresh snapshot with its intent list. Diagnostics remains a
-protected operation during security preflight because table/subscription
-evidence belongs to the quarantined replica.
+Diagnostics remains a protected operation during security preflight because
+table and unit evidence belongs to the quarantined replica.
 
 A failed round's `lastRound` and terminal progress MAY carry `causeKind`
 from §1.8 and `httpStatus`. The client copies `causeKind` only when the
@@ -5776,7 +6162,7 @@ delay does not classify the failure.
 
 ---
 
-### 7.6 Live sync progress
+### 7.7 Live sync progress
 
 TS and Rust clients expose a client-local progress snapshot and a listener API.
 Progress is ephemeral, bounded to the latest snapshot, and independent of the
@@ -5788,10 +6174,10 @@ its command response. Unsubscribing stops observation and does not cancel sync.
 Each `sync` round starts a new monotonically increasing `attempt` scoped to the
 client instance. `syncUntilIdle` starts an attempt for each round. `state` is
 `running`, `complete`, or `failed`; `phase` is `request`, `download`, or `import`.
-A new attempt resets counters and failure state. `subscriptionId`, `table`, and
+A new attempt resets counters and failure state. `unitId`, `table`, and
 `segmentId` identify the current payload when present. Payload counters reset
 when the current payload changes. They are not an aggregate percentage across
-subscriptions or rounds. Unknown totals remain absent.
+units or rounds. Unknown totals remain absent.
 
 `bytesReceived` counts decoded response-body bytes, with optional `bytesTotal`.
 HTTP segment transports report intermediate bytes at 64 KiB boundaries (or
@@ -5800,13 +6186,13 @@ byte count. Both direct and signed-URL downloads follow this contract.
 `rowsProcessed` counts imported rows, with optional `rowsTotal`. Import reports
 intermediate updates every 1,024 rows and the final count. These are work counters:
 rows within the current chunk remain uncommitted until that chunk commits.
-Progress MUST NOT advance a subscription cursor. Rows segments retain their
+Progress MUST NOT advance a cursor. Rows segments retain their
 per-block transactions; SQLite images commit in chunks of at most 1,024 rows
-(§7.7). Earlier committed chunks survive a later interruption.
+(§7.8). Earlier committed chunks survive a later interruption.
 
-`complete` is emitted only after the round has applied subscription checkpoints
+`complete` is emitted only after the round has applied its section trailers
 and reconciled the optimistic read model. It means the round completed, not that
-all subscriptions have finished bootstrap. `failed` carries a static `errorCode`
+all units have finished bootstrap. `failed` carries a static `errorCode`
 and retains the last observed counters; processed rows may have rolled back.
 It also carries the bounded `causeKind` and `httpStatus` described above when
 the failed round provides them.
@@ -5819,12 +6205,12 @@ interactive sync) or later (a suspended process); an absolute time would claim
 a deadline the core does not control, and it would cross worker and native
 bridges whose clocks the core does not share. A failure without a scheduled
 retry omits `retryDelayMs`.
-A failed subscription makes the progress attempt failed even when the ordinary
-sync summary returns that subscription failure without throwing. Progress does
+A failed unit makes the progress attempt failed even when the ordinary
+sync summary returns that unit failure without throwing. Progress does
 not claim cancellation or recovery when a worker or process disappears.
 
 
-### 7.7 Responsive local reads
+### 7.8 Responsive local reads
 
 Reactive queries request a local snapshot while their window claim is registering.
 They MUST retain security/availability checks, revision ordering, and the snapshot's
@@ -5834,7 +6220,7 @@ even when a prior snapshot contained rows. Unmounted or replaced observers MUST
 ignore late registration results. A rejected claim MUST NOT persist for the
 observer's lifetime: the store claims again when a committed row change of one
 of the observer's dependency tables arrives, when a sync attempt starts (once
-per attempt, so the client's retry schedule of §7.6 paces it), when a leader
+per attempt, so the client's retry schedule of §7.7 paces it), when a leader
 serves the tab again, and when the application calls `refresh`. A window-only
 change batch does not claim again, because a failed window edit can produce
 one. Reads keep reporting the rejection until a claim succeeds.
@@ -5857,8 +6243,8 @@ until `SUB_END` commits; readers never see an open transaction's writes. A local
 reset invalidates the remaining chunks of the older response. Image attachment lifetime spans all
 chunks, with no write transaction held across a yield.
 
-An interrupted import retains its committed prefix and the previous subscription
-checkpoint. A fresh retry clears that subscription's effective scope with its
+An interrupted import retains its committed prefix and the unit's previous
+checkpoint. A fresh retry clears that table's unit scope with its
 first chunk and reapplies the snapshot; a checkpointed rows-page retry resumes
 through the existing token. A failing chunk rolls back its rows, FTS maintenance,
 and revision. Metadata and total image row count are validated before any writes.
@@ -5904,7 +6290,7 @@ answer a retryable drive rejection that left no background intent pending with
 one background intent of their own: 250 ms, doubling per further rejection up
 to 30,000 ms, and back to 250 ms after a drive resolves. A rejection whose
 `causeKind` is `network` or `connect` is excluded (§1.8). A round after which a
-subscription still holds a resume token keeps sync-needed raised. A
+unit is still catching up keeps sync-needed raised. A
 caller-supplied deadline MUST be a positive finite number or `Infinity`;
 anything else is `sync.invalid_request`. The Rust client exposes the same
 bound as `sync_until_idle_with_deadline` (`sync_until_idle` defaults to 60 s)
@@ -5923,34 +6309,31 @@ source-identity projection. Rebuild/reset keeps the mapping and projection align
 
 WebSocket at `GET <mount>/realtime?clientId=<id>`. Host authentication
 runs at upgrade; the server resolves the actor's effective scopes for the
-client's known subscriptions and registers the connection against the
-matching scope keys.
+client's live units and registers the connection against the matching
+scope keys.
 
-**Where "known subscriptions" come from:** the subscription list (ids,
-tables, requested scopes) of the client's most recent pull. Servers
-MUST persist that list per (partition, `clientId`) when processing a
-pull alongside the cursor record of §4.5 and the accepted SSP2 wire
-version, then load it at WebSocket
-upgrade. A client that has never pulled
-has no registered subscriptions: it receives `hello` with
-`requiresSync: true` and no deltas until a pull registers them — which,
-for a socket-syncing client, is its first sync round on this very
-connection (§8.7), so connect-then-sync is the reference boot order.
-Before the first socket sync round, the server encodes deltas with the wire
-version stored by the client's most recent HTTP round. A completed socket
-round replaces that version for later deltas.
+**Registrations** come from the client record (§4.5): the stored
+registration list minus the units still catching up, each live unit
+contributing its active (unit, table) pairs with their effective scopes
+(§3.2). A catching-up unit has no registration; it joins realtime delivery
+when it joins the live set. The server loads the record at WebSocket
+upgrade and resolves the scopes once. A client that has never pulled has no
+registrations: it receives `hello` with `requiresSync: true` and no deltas
+until a pull registers its units — which, for a socket-syncing client, is its
+first sync round on this very connection (§8.7), so connect-then-sync is
+the reference boot order. Deltas use the codec of the schema version the
+record stores (§9).
 A sync round completed **on the connection itself** replaces the
 registrations at round end (§8.7), the reference client path. A pull over
-`POST /sync` that changes the persisted subscription list re-registers the
-client's connections on the hub that served the pull, with the round-end
-rule's semantics (§8.7). A deployment whose sockets live on a different
-node than the pull applies the change at that connection's next round or
-connect.
-This is what lets a **window change** (§4.8) take effect immediately: the
-socket round whose subscription list added a widened unit and dropped a
-shrunk one re-registers on that same round, so a widened unit begins
-receiving deltas and a shrunk one stops with no reconnect or socket
-cycle.
+`POST /sync` whose list traveled or whose units joined or left the live set
+re-registers the client's connections on the hub that served the pull, with
+the round-end rule's semantics (§8.7). A deployment whose sockets live on a
+different node than the pull applies the change at that connection's next
+round or connect.
+This is what lets a **window change** (§4.8) take effect promptly: the
+socket round whose list dropped a shrunk unit stops its deltas on that same
+round, and a widened unit begins receiving deltas on the round it joins,
+with no reconnect or socket cycle.
 
 Control messages are JSON text frames. Binary WebSocket messages carry
 a one-byte **channel tag** followed by their payload (§8.7): tag `0x00`
@@ -5974,27 +6357,31 @@ Server → client on connect:
 
 ```json
 {"event":"hello","data":{"protocolVersion":1,"sessionId":"…",
- "actorId":"…","clientId":"…","cursor":<lastAckedCursor>,
+ "actorId":"…","clientId":"…","cursor":<recordCursor>,
  "latestCursor":<serverLatest>,"requiresSync":<bool>,"timestamp":<ms>}}
 ```
 
-`requiresSync: true` ⇒ the client MUST run a sync round (a socket round
-per §8.7, or `POST /sync`) before trusting the socket for continuity.
+`cursor` is the client record cursor (§4.5) and `latestCursor` the
+partition's `maxCommitSeq`. `requiresSync: true` ⇒ the client MUST run a
+sync round (a socket round per §8.7, or `POST /sync`) before trusting the
+socket for continuity.
 
 ### 8.2 Delta delivery and acks
 
 - After a commit, the server pushes to each registered connection whose
-  effective scopes match any of the commit's stored scope keys a binary
-  delta (`0x00`-tagged, §8.7): an SSP2 response containing, per affected subscription,
-  `SUB_START` / `COMMIT`(s) / `SUB_END` with the advanced `nextCursor`.
+  registrations match any change of the commit a binary delta
+  (`0x00`-tagged, §8.7): an SSP2 response of `RESP_HEADER`, `LIVE_START`
+  (`active`), one `COMMIT` holding every change of the commit that matches
+  a registration of the connection, once each, in change order, and
+  `LIVE_END` with `throughSeq` = the commit's `commitSeq` and an empty
+  `echoDigest`. A commit touching three tables of one unit is one frame.
 - Deltas MUST be cursor-contiguous per connection: a delta starting past
   the client's last delivered cursor is forbidden — the server sends a
   wake-up (§8.3) instead when it cannot bridge the gap. The other
-  direction is harmless: a delta section whose `SUB_END.nextCursor` is
-  ≤ the subscription's local cursor is a duplicate and is idempotently
-  skipped (or re-applied — upserts and deletes are idempotent, §5.6);
-  it advances nothing and is **not** a drop, so it MUST NOT set the
-  sync-needed signal. A per-connection
+  direction is harmless: a delta whose `LIVE_END.throughSeq` is ≤ the
+  replica cursor is a duplicate and is skipped (re-applying it changes
+  nothing under the §4.5 version guard); it advances nothing and is
+  **not** a drop, so it MUST NOT set the sync-needed signal. A per-connection
   replay buffer is an OPTIONAL optimization; the reference server keeps
   **none**: a session that is behind at connect
   (`cursor < latestCursor`) or that dropped a delta (flow control,
@@ -6008,10 +6395,12 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   registered scopes still advance this sequence. A catch-up acknowledgment
   MUST advance the notification sequence to at least its cursor.
 - Acknowledgment persistence MUST update only the existing client record's
-  cursor and timestamp, monotonically and atomically. It MUST preserve the
-  subscriptions, actor, and wire version written by a concurrent sync round.
-  A full sync round remains authoritative for its subscription cursor floor;
-  replacing subscriptions can lower that floor.
+  cursor and timestamp, monotonically and atomically. It raises the record
+  cursor to the acked value, capped at the lowest cursor among the record's
+  catching-up units (§4.5). It MUST preserve the registration list,
+  catching-up ids, actor, and wire version written by a concurrent sync
+  round. A full sync round remains authoritative for the record cursor; a
+  round that registers new units can lower it.
 - The client acknowledges applied deltas:
   `{"type":"ack","cursor":<highest contiguously applied commitSeq>}`.
   The ack is the sole client→server control message and is recognized
@@ -6021,38 +6410,29 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   keeps one) and to update the client cursor record (§4.5) without an
   HTTP pull. The storage update MUST atomically advance the cursor and
   activity timestamp with their respective maxima, preserve registration
-  fields (actor, wire version, subscriptions), and require the session's
+  fields (actor, wire version, registration list), and require the session's
   actor and current partition log epoch. It MUST NOT create a missing client
   record. A delayed ack from before an epoch rotation cannot update a newly
   registered client. HTTP registration retains its existing cursor rules.
-- **Client-side application.** A delta applies exactly like a pull
-  response (§4.5), per section: only subscriptions that are locally
-  `active`, hold a cursor (`cursor >= 0`), and are not mid-bootstrap (no
-  resume token pending, §4.7) apply. A subscription at cursor `-1`
-  (never synced, a §4.6 reset, a local rebootstrap) skips the section:
-  applying it would let its `SUB_END` mark the subscription bootstrapped
-  with only the delta's rows. Skipped sections advance nothing and are
-  repaired by the subscription's own next pull (a bootstrapping
-  subscription's post-pin replay already covers the window). A skipped
-  section is a drop, as is a received delta message the client does not
-  apply at all (a pull in flight over the same database, a decode or
-  apply failure). The client MUST treat every drop as a wake-up (§8.3:
-  run a pull soon), also when other sections of the same message
-  applied. A server without a replay buffer never resends, and later
-  deltas would otherwise apply over the gap silently.
-- **Ack points.** After applying a delta, the client acks the highest
-  applied `SUB_END.nextCursor` in it. After a pull round — a socket
-  round (§8.7) or an HTTP pull — while the
-  connection is live, the client acks the minimum cursor across its
-  active, non-bootstrapping subscriptions that have synced at least
-  once — the contiguity-safe floor, and the ack that lifts the
-  reference server's delta suppression after a catch-up pull. No such
-  subscription, no ack. "Synced at least once" means the subscription
-  has processed its **first `SUB_END`** (§4.4) — the earliest point at
-  which a persisted cursor exists to ack. (Origin: stage-2 conformance —
-  a never-synced subscription has no cursor, and inventing `-1`/`0`
-  there would drag the ack floor below commits the connection already
-  observed.)
+- **Client-side application.** A delta applies exactly like a live
+  section (§4.5), including the rule that skips changes matching no live
+  unit, and sets the replica cursor to `throughSeq`. A catching-up unit
+  receives no delta, because the server registers only live units. A
+  delta that arrives while the replica cursor is `-1` (no live unit) is
+  not applied. A received delta the client does not apply (no live unit,
+  a pull in flight over the same database, a decode or apply failure) is a
+  **drop**. The client MUST treat every drop as a wake-up (§8.3: run a pull
+  soon). A server without a replay buffer never resends, and later deltas
+  would otherwise apply over the gap silently. A delta's `RESP_HEADER` means
+  what a pull response's header means (§1.6): with `requiredSchemaVersion`
+  present the client records the floor, applies nothing and stops syncing,
+  and the delta is not a drop.
+- **Ack points.** After applying a delta, the client acks its
+  `throughSeq`. After a pull round — a socket round (§8.7) or an HTTP pull
+  — while the connection is live, the client acks the replica cursor when
+  it is at least `0`: the contiguity-safe value, and the ack that lifts the
+  reference server's delta suppression after a catch-up pull. A replica
+  cursor of `-1` sends no ack.
 - Flow control: the server bounds in-flight unacked deltas and per-window
   message counts (host-configured); when exceeded, or when a delta would
   exceed the host's max message size, it drops to a wake-up. The reference
@@ -6124,7 +6504,7 @@ pinned, never interpreted.
   version, cursor, schema and content-address checks. Only commits captured in
   that request can be acknowledged by that round. Later local commits remain
   in the outbox for the next round. Apply replays them over the server base.
-  Teardown, security preflight, purge and released subscription contexts
+  Teardown, security preflight, purge and released unit contexts
   invalidate their in-flight result. A local purge or rebootstrap that rolls
   back MUST preserve the captured round so its response can still apply.
   Socket deltas buffered during a round
@@ -6140,12 +6520,11 @@ pinned, never interpreted.
   round and triggers another pull. Aggregate drive-to-idle helpers
   (e.g. a conformance driver's `syncUntilIdle`) are part of the
   driver/host contract, not the protocol.
-- **Catch-up prefers segments**: when a recovery pull arrives with a
-  cursor far behind (server heuristic; suggested threshold: the gap
-  exceeds `limitCommits` or a host-set row estimate), the server SHOULD
-  answer with bootstrap segments (fresh pin, §4.7) instead of replaying a
-  long commit window — reconnect storms then hit the CDN/segment cache,
-  not the log scan path.
+- **Catch-up replays the log.** A recovery pull whose replica cursor lies
+  at or above `horizonSeq` is answered from the log in live sections of at
+  most `limitCommits` changes, one round after another; only a replica
+  cursor below the horizon re-bootstraps (§4.6). A backlog in one unit
+  therefore delays newer changes of every live unit until it drains (§0).
 
 ### 8.5 Heartbeat
 
@@ -6511,12 +6890,12 @@ segments-for-bulk rule above, this bounds both memory and message
 sizes without a protocol-level flow-control scheme.
 
 **Registration at round end.** On completion of a socket round whose
-request carried a `PULL_HEADER`, the request's subscription list
-**replaces** the connection's registrations, effective scopes
-re-resolved, effective immediately for subsequent fanout. This is the
-socket-native form of §8.1's persistence rule: the same list the
-server persists per (partition, `clientId`) registers on the
-connection that ran the round, with no reconnect. A round that fails
+request carried a `PULL_HEADER`, the live units of the client record the
+round wrote (§4.5) **replace** the connection's registrations, effective
+scopes re-resolved, effective immediately for subsequent fanout. This is
+the socket-native form of §8.1: the same record the server persists per
+(partition, `clientId`) registers on the connection that ran the round,
+with no reconnect. A round that fails
 (request-level failure or in-band `ERROR`) or carries no `PULL_HEADER`
 leaves registrations unchanged — matching §4.5/§8.1 persistence, and
 the reference server implements it exactly that way: it reloads the
@@ -6543,7 +6922,7 @@ previous registrations when a round fails.
 Construction accepts `transportEnabled: false` before startup can schedule work.
 The gate defaults open on each new client instance and is never persisted.
 Security activation, header replacement, owner-loop rounds and schema resets MUST
-NOT reopen it. A closed gate keeps authorized local reads, keys, subscriptions,
+NOT reopen it. A closed gate keeps authorized local reads, keys, units,
 mutations and staged blob uploads available. Commits remain durable and ordered.
 New sync rounds, realtime connects, presence sends and uncached blob downloads
 fail with client-local `sync.offline` before invoking transport; automatic hosts
@@ -6688,11 +7067,11 @@ and no HTTP fallback.
 
   Storage, write fences, authorization and validators always use the current
   schema. Pull rows, incremental changes, conflict rows, rows segments and SQLite
-  images use the requesting version's codec and version stamp. Realtime records
-  the last accepted codec with each subscription and projects each delta through
-  that codec. Unversioned legacy registrations on a window host register nothing
-  until a new pull records their version. Tables absent from the client schema
-  receive no changes. Old pushes decode with the client codec; new nullable
+  images use the requesting version's codec and version stamp. The client
+  record stores the schema version of the client's latest completed round
+  (§4.5), and realtime projects each delta through that version's codec. A
+  unit covers the tables of the requesting schema version (§4.1); tables
+  absent from the client schema receive no changes. Old pushes decode with the client codec; new nullable
   columns are null on insert and absent on update. Current validators inspect
   the resulting canonical row. A floor response names the window's oldest
   served version as required and the current version as latest.
@@ -6704,19 +7083,62 @@ and no HTTP fallback.
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
-Wire version 3 changes the push operation `payload` to the sparse row codec
-(§2.4), adds `conflictColumns` to the conflict result record (§6.3), and
-introduces column versions (§2.2) and delete-precedence tombstones (§6.2).
-A reference server reads only version 3; reference clients write version 3.
-Versions 1 and 2 are rejected as unknown (§1.2): keeping them serviceable
-alongside version 3 would require two conflict-detection semantics in one
-server.
+Wire version 4 replaces per-table subscriptions with units (§4.1), per-subscription
+cursors with the replica cursor and one live section (§4.5), and adds
+registration by digest (§4.1) and the per-outbox watermark (`outboxId`,
+`clientSeq`, §6.3.2). A reference server reads only version 4; reference
+clients write version 4. Earlier versions are rejected as unknown (§1.2):
+serving two subscription models side by side was rejected (§0).
 
 The reference codec publishes its ordered compatibility window as
 `SUPPORTED_PROTOCOL_WIRE_VERSIONS`. A reference server MUST decode every
 version in that window and encode the response with the request's version.
-The current window has N = 1 version, `[3]`. Adding a version extends the
+The current window has N = 1 version, `[4]`. Adding a version extends the
 window and its golden vectors before a later release can advance the minimum.
+
+**Migration from wire version 3.** These rules exist only to recognize a
+version 3 peer or state written before the upgrade:
+
+- A version 3 request fails decoding (§1.2) and receives the HTTP-level
+  `sync.invalid_request` (§1.1); a version 3 client stops syncing until it
+  updates.
+- A client that opens a replica written under version 3 keeps its outbox,
+  outcome journal, acknowledged intent, rows, row versions, `clientId`,
+  `logEpoch` and pending evictions, creates its `outboxId` (§7.1), and
+  deletes its version 3 subscription registrations, cursors, effective-scope
+  echoes, resume tokens and window registry entries in the same
+  transaction. Its replica cursor is `-1`. The app registers its units, and
+  each unit bootstraps once; its first-page clears (§5.6) replace the rows
+  of its scope. Units left from an earlier version 4 life of the replica
+  (opened by a version 4 build, then by a version 3 build) restart in the
+  same transaction: each becomes `active` without a reason code and catches
+  up from cursor `-1` with no resume token, first-page record or echo, and
+  the replica cursor, echo digest and stored registration digest are
+  cleared.
+- A client record written under version 3 holds no registration list. The
+  server answers a pull that refers to a list for it `unregistered` (§4.1)
+  and registers no realtime delivery for it until a version 4 round writes
+  the record.
+- A delete logged before version 4 carries no row version, so no `COMMIT`
+  frame (§4.5) can carry it. The storage migration to version 4 sets each
+  partition's `horizonSeq` (§4.6) to its last commit at the upgrade, so a
+  cursor into that history receives the §4.6 reset and the next pruning pass
+  deletes it.
+- An idempotency result stored under version 3 carries no outbox sequence.
+  When a request with `outboxId = o` carries `PUSH_COMMIT` frames and client
+  `c` holds such results, the server, inside the serialization of §6.3.2 and
+  before its step 1: (a) assigns `o` and the matching `clientSeq` to each
+  such result of `c` whose `clientCommitId` names a commit of the request;
+  (b) when the request's last commit matched no such result in (a), deletes
+  every remaining such result of `c`. The outbox commits that hold a stored
+  result always form a prefix of the outbox, because every request carried
+  a prefix and a commit leaves the outbox only after its result. When the
+  last commit of a request holds no pre-upgrade result, every outbox commit
+  that holds one is in the request and was matched in (a); an unmatched
+  result belongs to a commit that left the outbox for good. A request that a
+  push budget (§7.1) cut before the end of that prefix matches its last
+  commit and defers (b) to a later request. The pre-upgrade results of a
+  client that sends no further commit stay.
 
 ---
 
@@ -6744,7 +7166,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 `rebootstrap`, `forceResync`, `retryLater`, `splitBatch`,
 `inspectServer`.
 
-### 10.2 Codes (wire version 3)
+### 10.2 Codes (wire version 4)
 
 | Code | Category | Retryable | Action | Produced when |
 |---|---|---|---|---|
@@ -6761,9 +7183,9 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5); `resolveScopes` threw on a write |
 | `sync.invalid_request` | invalid-request | no | fixRequest | Malformed envelope/frame, bad content type, missing required fields |
 | `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor or uses the reserved server-command namespace (§1.5) |
-| `sync.invalid_subscription` | invalid-request | no | fixRequest | Duplicate subscription id; undeclared scope key (requested **or** resolved — §3.2) |
+| `sync.invalid_subscription` | invalid-request | no | fixRequest | A unit with an empty scope map, a requested `'*'`, a variable no table declares, or no covered table; a scope map listed twice; a registration digest that differs from a traveling list (`details.reason = "registration_digest"`); a `PROGRESS` id that names no registered unit or appears twice (§4.1); an undeclared resolved scope key (§3.2) |
 | `sync.empty_commit` | invalid-request | no | fixRequest | `PUSH_COMMIT` with zero operations |
-| `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription (request-level) or push operation (commit-level, §1.7) names a table the server doesn't handle |
+| `sync.unknown_table` | schema-mismatch | no | regenerateClient | A push operation (commit-level, §1.7) names a table the server doesn't handle |
 | `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row, or a partial payload targeting an absent row without a tombstone (§6.2) |
 | `sync.row_deleted` | not-found | no | fixRequest | An unversioned upsert targeting a row deleted inside the tombstone horizon (§6.2) — the delete wins; the client drops the operation on rebuild — *new in wire version 3*; a push operation-result `error` record only |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
@@ -6773,16 +7195,17 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
+| `sync.commit_expired` | invalid-request | no | resetClientId | A commit whose `clientSeq` lies below its outbox's watermark and that has no retained result (§6.3.2): a delayed copy of an abandoned request or a copied replica — *new in wire version 4*; a push operation-result `error` record only, never persisted |
 | `sync.internal_error` | internal | yes | retryLater | An exception outside this catalog (host code, storage, network) ended the request or socket round (HTTP 500 or an in-band `ERROR` before the first response byte). The message never carries the exception text; the host receives the original through its error hook |
 | `sync.storage_stale_read` | internal | no | inspectServer | Storage maximum precedes a push accepted in the same request; disable query caching for sync storage |
 | `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.authority_unavailable` | internal | no | inspectServer | A local authority is attaching or attached (§12.3) and serves no sync or segment request; `details.state` is `attaching` or `attached` |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
-| `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes, subscriptions per request, or scope values per subscription (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
+| `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes or `UNIT` frames per request (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
-| `sync.cursor_expired` | reset-required | no | rebootstrap | Cursor behind the pruning horizon (§4.6) — *new in SSP2*; delivered as `SUB_START` reason code |
-| `sync.scope_revoked` | scope-revoked | no | checkPermissions | Subscription revoked (§3.3) — delivered as `SUB_START` reason code |
+| `sync.cursor_expired` | reset-required | no | rebootstrap | Replica cursor or unit cursor behind the pruning horizon (§4.6) — *new in SSP2*; delivered as `LIVE_START` or `SUB_START` reason code |
+| `sync.scope_revoked` | scope-revoked | no | checkPermissions | Unit revoked (§3.3) — delivered as `SUB_START` reason code; a revoked (unit, table) pair travels as a revoked fenced record (§4.4) |
 | `sync.rate_limited` | rate-limited | yes | retryLater | Request or connection rate cap |
 | `sync.schema_mismatch` | schema-mismatch | no | regenerateClient | Generated client artifacts incompatible with the server (e.g., segment column-table mismatch, §5.2) |
 | `sync.client_schema_unsupported` | schema-mismatch | no | upgradeClient | `schemaVersion` below the server floor (accompanies `requiredSchemaVersion`) |
@@ -6838,9 +7261,7 @@ encode seam as a durable per-commit rejection, never on the wire], `client.decry
 decrypt on apply: unknown envelope version, unknown `keyId`, GCM
 authentication failure (wrong key), a malformed envelope, or a post-decrypt
 value-parse failure; category `crypto`, non-retryable, raised at the apply
-seam, never on the wire], `client.subscription_intent_mismatch` [§4.1 — one
-registered subscription id was re-declared with a different table, canonical
-scope map, or params], `sync.local_corrupt` [protected client-local state or a
+seam, never on the wire], `sync.local_corrupt` [protected client-local state or a
 durable local-recovery receipt is malformed or unreadable; non-retryable and
 sanitized before application code], `client.invalid_host_response` [a Worker or native
 command bridge returned a malformed value for a strictly decoded public
@@ -6853,7 +7274,7 @@ carried no transport code; the diagnostics reason for state `lost`],
 `sync.realtime_unavailable` [§8.8 — a round under the `required` realtime
 policy was refused because the socket is not connected; client-local,
 retryable, and never on the wire],
-`sync.idle_timeout` [§7.7 — one idle drive exceeded its total deadline;
+`sync.idle_timeout` [§7.8 — one idle drive exceeded its total deadline;
 client-local, retryable, and never on the wire],
 `client.worker_failed` [a browser worker failed outside wire semantics],
 `client.push_request_too_large` [§7.1: the first queued commit alone
@@ -6930,7 +7351,7 @@ silently).
 ### 11.1 Rendering rules
 
 1. One JSON document per SSP2 message:
-   `{"magic":"SSP2","wireVersion":1,"msgKind":"request"|"response",
+   `{"magic":"SSP2","wireVersion":4,"msgKind":"request"|"response",
    "frames":[…]}` — frames as an array in wire order, each
    `{"type":"<FRAME_NAME>", …fields}`; `END` is omitted.
 2. Field order within a frame object follows the field tables in this
@@ -6940,7 +7361,9 @@ silently).
    including the whole `SEGMENT_INLINE` frame payload, which renders as
    `{"type":"SEGMENT_INLINE","payload":"<base64>"}`, never as a nested
    rule-8 object) are standard **base64** strings; hashes and
-   `segmentId` stay in their native hex/string form.
+   `segmentId` stay in their native hex/string form. The 32-byte
+   `registrationDigest` and `echoDigest` are hashes: they render as 64
+   lowercase hex characters, and an empty digest renders as `""`.
 5. Enums render as their spec names (`"upsert"`, `"active"`,
    `"sqlite"`, …), not their byte values. Bitmask fields (`accept`) are
    not enums and render as their numeric value.
@@ -6974,9 +7397,10 @@ silently).
 
 ### 11.2 Canonical JSON (for digests)
 
-Where this spec hashes JSON (scope digest §3.5, `X-Syncular-Scopes`
-§5.5): UTF-8, no insignificant whitespace, object keys sorted by
-code-unit, scope value lists sorted and deduplicated, numbers in
+Where this spec hashes JSON (unit id, registration digest and echo digest
+§4.1 and §4.4, scope digest §3.5, `X-Syncular-Scopes` §5.5): UTF-8, no
+insignificant whitespace, object keys sorted by code-unit, scope value lists
+sorted and deduplicated, every other array in its stated order, numbers in
 shortest-round-trip form. This sub-format IS contractual (digests must
 match across implementations).
 
@@ -7004,8 +7428,11 @@ use the same replica, authorization, observation, and transport contracts.
 ### 12.2 Profile
 
 A local authority follows every server rule of §2.1 to §2.3, §4.1 to §4.7,
-§5.1, §5.2, §5.6 to §5.8, §5.10, §6.1 to §6.4 and §6.11 for its partition. It
-MAY produce SQLite segments (§5.3). It authenticates every request to
+§5.1, §5.2, §5.6 to §5.8, §5.10, §6.1 to §6.4 and §6.11 for its partition:
+it answers units with one live section, stores its client's registration
+list, digest and record cursor (§4.5), and keeps the per-outbox watermark
+(§6.3.2), so it retains the results of at most one push request of its one
+replica. It MAY produce SQLite segments (§5.3). It authenticates every request to
 partition `local` and actor `local`, resolves every declared scope variable to
 all values, and issues no lease. It has no realtime channel (§8), blob routes
 (§5.9), write or commit validators (§6.7, §6.8), reactions (§6.9) or remote
@@ -7116,6 +7543,7 @@ Directory layout (message kind = top-level directory):
 ```
 spec/vectors/
   request/    response/    segment/    realtime/    crypto/    push/
+  registration/
     <case>.bin  <case>.json  manifest.json  invalid/…
 ```
 
@@ -7126,18 +7554,18 @@ byte-identical output):
 
 | # | Case | Covers |
 |---|---|---|
-| 1 | `request/pull-minimal` | Smallest legal request: header + pull + one caught-up subscription |
-| 2 | `request/pull-bootstrap` | Two subscriptions — a single subscription cannot carry both: fresh bootstrap (`cursor = -1`, `params`) + resumed bootstrap (`cursor` at the §4.7 pin, `bootstrapState` round-trip); `accept` bits incl. sqlite + signed URLs |
-| 3 | `request/push-multi-commit` | Two commits: upsert with `baseVersion`, delete, sparse-row payload edge cases (presence and NULL bitmaps, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
+| 1 | `request/pull-minimal` | Smallest legal pull: header + `PULL_HEADER` that refers to the list by digest, with a replica cursor and an echo digest; no `UNIT` frame |
+| 2 | `request/pull-bootstrap` | A traveling list of two units + two `PROGRESS` frames: a fresh bootstrap (`cursor = -1`) and a resumed bootstrap (`cursor` at the §4.7 pin, `bootstrapState` round-trip); `accept` bits incl. sqlite + signed URLs |
+| 3 | `request/push-multi-commit` | `outboxId` + two commits with increasing `clientSeq`: upsert with `baseVersion`, delete, sparse-row payload edge cases (presence and NULL bitmaps, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
 | 4 | `request/combined` | Push + pull in one envelope (§1.5 ordering) |
-| 5 | `response/pull-empty` | Active subscription, zero commits, cursor advanced anyway (§4.5) |
-| 6 | `response/commits-incremental` | Two `COMMIT` frames; row codec exercising every column type incl. NULLs, `bytes`, non-BMP strings; scope map on changes |
-| 7 | `response/bootstrap-segments` | `SEGMENT_REF` (sqlite, with signed URL) + `SEGMENT_REF` (rows, no URL) + `SEGMENT_INLINE`; incomplete `bootstrapState` in `SUB_END` |
+| 5 | `response/pull-empty` | Quiet replica: `LIVE_START` active, no `COMMIT`, `LIVE_END` with `throughSeq` advanced (§4.5) |
+| 6 | `response/commits-incremental` | A live section of two `COMMIT` frames, one spanning two tables; row codec exercising every column type incl. NULLs, `bytes`, non-BMP strings; scope map on changes; a delete carrying its `rowVersion` (§4.5) |
+| 7 | `response/bootstrap-segments` | One unit section with `SEGMENT_REF` (sqlite, with signed URL) + `SEGMENT_REF` (rows, no URL) + `SEGMENT_INLINE` across two tables; incomplete `bootstrapState` in `SUB_END`; then an empty live section |
 | 8 | `response/push-applied` | All-applied result with `commitSeq` |
 | 9 | `response/push-conflict` | `rejected` commit; conflict record with `serverVersion`, full-row `serverRow`, and the `conflictColumns` bitmap (§6.3) |
 | 10 | `response/push-cached` | Idempotent replay: `status = cached`, original results |
-| 11 | `response/subscription-revoked` | `SUB_START` status `revoked`, reason `sync.scope_revoked`, empty effective scopes |
-| 12 | `response/cursor-reset` | `SUB_START` status `reset`, reason `sync.cursor_expired` (horizon signal) |
+| 11 | `response/unit-revoked` | `SUB_START` status `revoked`, reason `sync.scope_revoked`, no fenced record; an active unit whose echo carries one active and one revoked fenced record |
+| 12 | `response/cursor-reset` | A unit section with `SUB_START` status `reset` and `LIVE_START` status `reset`, both reason `sync.cursor_expired` (horizon signal), `throughSeq = -1` |
 | 13 | `response/error-mid-stream` | `RESP_HEADER` + `SUB_START` + `ERROR` + `END`: partially streamed failure (§1.4 abort rule) |
 | 14 | `response/unknown-frame-skip` | A reserved/unknown frame type between known frames — MUST decode with the frame skipped (§9) |
 | 15 | `response/schema-floor` | `requiredSchemaVersion` present |
@@ -7145,7 +7573,7 @@ byte-identical output):
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
 | 18 | `segment/crdt-column` | SSG2 for a table with a `crdt` column (§2.4 tag 8): the crdt value rides the `bytes` machinery (opaque bytes, incl. NULL and empty), pinning the new tag without touching existing fixtures |
 | 19 | `response/commit-crdt-merge` | A `COMMIT` upsert whose row carries a merged `crdt` column (§5.10.3): the merged bytes ride the ordinary change payload, no CRDT-specific frame |
-| 20 | `response/lease-issued` | `RESP_HEADER` + `LEASE` (§7.3.2) + an active subscription section: pins the new `0x19` frame (`leaseId`, `expiresAtMs`) in its grammar position; existing fixtures untouched (the §9 new-tag-needs-pinning rule met by a new case) |
+| 20 | `response/lease-issued` | `RESP_HEADER` + `LEASE` (§7.3.2) + an empty live section: pins the `0x19` frame (`leaseId`, `expiresAtMs`) in its grammar position |
 | 21 | `realtime/presence-publish` + `realtime/presence-fanout` | JSON control vectors (`.json` only — no binary form): a client→server publish (§8.6.2 `{scopeKey, doc}`) and a server→client `join` fanout (`{scopeKey, kind, actorId, clientId, doc, timestamp}`). Pins the new `presence` event shape in both directions; a feature-off peer ignores it by event name (§8.6), so no binary vector or wire-version bump |
 | 22 | `crypto/aes-gcm-*` | §5.11 ciphertext envelope, byte-pinned per `declaredType` with a **fixed** key and nonce (test-only injection): one case per value type (`string`, `json`, `integer`, `float`, `boolean`, `bytes`) — plaintext value, key, nonce, and expected envelope bytes. Both cores reproduce the envelope byte-for-byte and round-trip decrypt. A separate `crypto/` kind (not a wire message; the envelope is a codec-level value, exercised directly, not inside an SSP2 frame) |
 | 23 | `crypto/x25519-wrap` | §5.11 X25519 sealed-box key wrap: a fixed recipient keypair, a fixed ephemeral secret and nonce, a fixed 32-byte symmetric key, and the expected wrap envelope; both cores wrap to the same bytes and unwrap back to the key. Proves the async-encryption utilities are cross-core byte-compatible |
@@ -7153,11 +7581,16 @@ byte-identical output):
 | 25 | `response/epoch-reset` | Header-only response with a new `logEpoch` and `resetRequired = true` |
 | 26 | `push/sparse-row` + `push/sparse-row-full` | Sparse row push payloads (RFC §6.1), exercised at the codec level (not inside an SSP2 frame): a partial row with a present-NULL column, and the full-row case with every presence bit set. Nine columns covering every §2.4 type, so the presence bitmap spans two bytes and both bitmaps carry padding bits |
 | 27 | `request/round-failure-report` | A request with the optional `ROUND_FAILURE` frame (§1.5) directly after `REQ_HEADER`, followed by a pull: pins the `0x05` frame and its grammar position |
-| 28 | `request/json-boundaries` | The Conventions JSON validity rule at its accepting edge: `params` nested exactly 64 containers deep, `bootstrapState` with whitespace, a duplicate key, the largest finite binary64 and escapes |
+| 28 | `request/json-boundaries` | The Conventions JSON validity rule at its accepting edge: `PROGRESS.bootstrapState` nested exactly 64 containers deep, and a second one with whitespace, a duplicate key, the largest finite binary64 and escapes |
 | 29 | `push/admission-*` | Push admission values (§2.4) over a five-column table the manifest carries per case: `json` nested 64 deep, `json` with whitespace and a duplicate key, a `float` holding the largest finite binary64, and a canonical `blob_ref` whose `name` exercises every escape class of §5.9.1 |
 | 30 | `segment/full-row-admission-values` | A full row keeps decoding a `string` holding U+0000 (the push admission values apply to sparse rows only) next to the canonical `blob_ref` of case 29 |
-| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `SUBSCRIPTION.params` holding `1e999`, `SUBSCRIPTION.bootstrapState` nested 65 deep |
-| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape |
+| 31 | `request/empty-registration` | A pull whose `registrationDigest` is the empty list's digest and which carries no `UNIT` frame: the empty list travels (§4.1) |
+| 32 | `response/unregistered` | `LIVE_START` status `unregistered`, `LIVE_END` with `throughSeq = -1` and an empty `echoDigest` (§4.1) |
+| 33 | `request/producer-push` | A database-less producer push: no `outboxId`, `clientSeq = 0` (§6.10) |
+| 34 | `response/realtime-delta` | A delta: `LIVE_START`, one `COMMIT` spanning three tables, `LIVE_END` with `throughSeq` = its `commitSeq` and an empty `echoDigest` (§8.2) |
+| 35 | `registration/digests` | JSON only, one object `{"units":[{"scopes","canonicalJson","id"}],"registrations":[{"units","canonicalJson","digest"}],"echoes":[{"units","canonicalJson","digest"}]}`: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4). Digests render as 64 lowercase hex characters |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1` |
+| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
 | — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key, and `1e999`, an unpaired surrogate, a `\u0000` escape, nesting 65 deep or nesting 128 deep inside a value that a later duplicate key shadows; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |
@@ -7177,11 +7610,11 @@ Implementation-agnostic scenario definitions executed by
 loopback transport, with fault injection at the transport interface.
 Each is a driver-interface script, not a prose test.
 
-1. **Two-client convergence.** Clients A and B subscribe to the same
-   scope; A pushes interleaved upserts/deletes while B pulls (and vice
-   versa); after quiescence both local databases are row- and
-   version-identical to the server. Exercises §4.5 cursor advancement,
-   §2.2 versioning, and commit atomicity under concurrency.
+1. **Two-client convergence.** Clients A and B register the same unit;
+   A pushes interleaved upserts/deletes while B pulls (and vice versa);
+   after quiescence both local databases are row- and version-identical to
+   the server. Exercises §4.5 replica-cursor advancement, §2.2 versioning,
+   and commit atomicity under concurrency.
 
 2. **Offline replay.** Client A goes offline, accumulates a multi-commit
    outbox (including writes to rows B concurrently modifies), reconnects,
@@ -7195,19 +7628,22 @@ Each is a driver-interface script, not a prose test.
    apply, no duplicate `commitSeq`, and a concurrent observer sees the
    commit exactly once (§2.3, §6.3).
 
-4. **Scope revocation purge.** Client syncs a project scope; the host
+4. **Scope revocation purge.** Client syncs a project unit; the host
    revokes membership; next pull returns `revoked` with reason
-   `sync.scope_revoked`. Client purges exactly the scoped rows (other
-   scopes' rows untouched), stops pulling the subscription, and drops
-   pending outbox writes into the revoked scope; a table without a local
-   scope-column mapping fails closed instead of clearing (§3.3).
+   `sync.scope_revoked`. Client purges exactly the scoped rows of every
+   covered table (other scopes' rows untouched), drops the unit from its
+   registration list, and drops pending outbox writes into the revoked
+   scope; a fence revocation of one table purges that table only; a table
+   without a local scope-column mapping fails closed instead of clearing
+   (§3.3).
 
-5. **Bootstrap resume mid-stream.** A large multi-table bootstrap is
+5. **Bootstrap resume mid-stream.** A large multi-table unit bootstrap is
    interrupted (transport cut) after N pages; the client re-pulls with
    the last persisted `bootstrapState`. The server resumes at the pinned
    `asOfCommitSeq` from the recorded table/row cursor; no rows are lost
-   or duplicated versus an uninterrupted bootstrap, and completion hands
-   off to incremental pulls at the pin (§4.7, §5.6, §1.4 abort rule).
+   or duplicated versus an uninterrupted bootstrap, every covered table
+   runs its first-page clear exactly once, and completion joins the live
+   section at the pin (§4.5, §4.7, §5.6, §1.4 abort rule).
 
 6. **Conflict resolve and rebase.** Clients A and B edit the same row
    from the same `baseVersion`; the loser receives a `rejected` commit
@@ -7217,18 +7653,19 @@ Each is a driver-interface script, not a prose test.
    rejected commit are verified rolled back and re-applied by the rebase
    (§6.2–6.5).
 
-7. **Reconnect catch-up via segments.** A client disconnects while the
-   server advances the log far past `limitCommits` (but not past the
-   horizon); on reconnect the realtime channel answers `requiresSync` /
-   `catchup-required` and the recovery pull delivers bootstrap segments
-   (fresh pin) rather than a long commit replay; the client converges and
-   resumes cursor-contiguous deltas (§8.4, §4.7).
+7. **Reconnect catch-up.** A client disconnects while the server
+   advances the log far past `limitCommits` (but not past the horizon);
+   on reconnect the realtime channel answers `requiresSync` /
+   `catchup-required`, the recovery pulls replay the log in cut live
+   sections round after round, the client converges and resumes
+   cursor-contiguous deltas (§8.4, §4.5).
 
 8. **Horizon-forced re-bootstrap.** The server prunes past an absent
-   client's cursor (respecting the §4.6 retention floors); the returning
-   client receives `reset`/`sync.cursor_expired`, discards its cursor,
-   re-bootstraps, and converges — while a second client whose cursor is
-   at the horizon boundary (`cursor = horizonSeq`) still pulls
+   client's replica cursor (respecting the §4.6 retention floors); the
+   returning client receives a `reset` live section with
+   `sync.cursor_expired`, moves every live unit to cursor `-1`,
+   re-bootstraps, and converges — while a second client whose replica
+   cursor is at the horizon boundary (`R = horizonSeq`) still pulls
    incrementally (§4.6 boundary condition).
 
 9. **Bootstrap-seeded optimistic concurrency.** A fresh client
@@ -7246,7 +7683,7 @@ Each is a driver-interface script, not a prose test.
     incremental handoff at the pin (§5.3, §5.6, §4.7). (b) Descriptor
     shape and reuse: the sqlite `SEGMENT_REF` carries no
     `rowCursor`/`nextRowCursor`, and a second client with the same
-    scopes at the same pin receives the **same** `segmentId` (server
+    unit at the same scope pin receives the **same** `segmentId` (server
     reuse, §5.3 determinism rule). (c) Integrity: corrupted image bytes
     fail the content address, abort per §1.4 rule 5 with
     `sync.invalid_request`, persist nothing, and the re-pull converges.
@@ -7259,9 +7696,9 @@ Each is a driver-interface script, not a prose test.
     over the socket binding (§8.7) and a control client syncing over
     the transport binding end state-identical — rows, versions,
     cursors, outbox drained. (b) Registration at round end: a client
-    that connects realtime BEFORE its first-ever pull, subscribes, and
-    runs its first round over the socket receives subsequent deltas
-    with no reconnect (the §8.1 silent-no-fanout footgun is
+    that connects realtime BEFORE its first-ever pull, registers a unit,
+    and runs its rounds over the socket receives deltas once the unit
+    joins, with no reconnect (the §8.1 silent-no-fanout footgun is
     structurally dead). (c) One round in flight: round bytes arriving
     while a response stream is in flight are not processed and drop
     the connection. (d) Interleaving: a commit landing during an
@@ -7417,14 +7854,14 @@ Each is a driver-interface script, not a prose test.
 18. **Windowed sync (§4.8).** A client holds a partial replica keyed by
     window units (scope values), the family managed through `setWindow`.
     (a) **Widen bootstraps only the new unit**: a client windowed on
-    `{p1}` widens to `{p1, p2}`; the p2 subscription fresh-bootstraps
-    while p1's subscription and cursor are untouched — after sync, p2's
-    rows are present, p1's cursor is unchanged, and the widen applied
-    segment rows for p2 only (no re-download of p1, asserted on the
-    bootstrap-rows-applied counter). (b) **Shrink evicts exactly the
-    departed unit**: windowed on `{p1, p2}`, the client shrinks to
-    `{p2}`; p1's rows are deleted, p1's subscription/cursor/effective-echo
-    are discarded, p2's rows and every other unit are untouched, and the
+    `{p1}` widens to `{p1, p2}`; the p2 unit fresh-bootstraps every
+    covered table while p1 stays live; after sync, p2's rows are present,
+    p2 joined the live set, and the widen applied segment rows for p2
+    only (no re-download of p1, asserted on the bootstrap-rows-applied
+    counter). (b) **Shrink evicts exactly the departed unit**: windowed on
+    `{p1, p2}`, the client shrinks to `{p2}`; p1's rows are deleted in
+    every covered table, p1's registration, cursor state and echo are
+    discarded, p2's rows and every other unit are untouched, and the
     eviction emits an invalidation for the evicted table (I1). A live
     query over p1 re-runs and returns empty; the registry reports p1 as a
     window miss (oracle truthfulness) while p2 stays complete. (c)
@@ -7434,17 +7871,17 @@ Each is a driver-interface script, not a prose test.
     outbox drains, the deferred eviction completes and the row is gone —
     while a still-pinned sibling p2 write is unaffected. (d)
     **Re-entry is a fresh bootstrap with writable versions (E2)**:
-    evict p1, then re-enter `{p2}→{p1, p2}`; p1's subscription
+    evict p1, then re-enter `{p2}→{p1, p2}`; p1's unit
     fresh-bootstraps, its rows and `server_version`s equal the server's,
     and an immediate `baseVersion`-carrying write on a re-entered row
     using the segment-seeded version applies cleanly (no commit delivery
     in between) — proving E2's "version from re-delivery only". (e)
     **Value-sharded replace touches only the delta**: `{p1, p2}→{p2, p3}`
-    evicts p1, bootstraps p3, and leaves p2 entirely alone — p2's cursor
-    unchanged and zero segment rows re-applied for p2 (the sharding proof;
+    evicts p1, bootstraps p3, and leaves p2 entirely alone: p2 stays live
+    and zero segment rows re-applied for p2 (the sharding proof;
     the naive "new window = re-download everything" cost is dissolved by
     the unit grain). (f) **Re-entry across a pruned horizon converges**:
-    evict p1, advance and prune the server log past p1's old cursor, then
+    evict p1, advance and prune the server log past the replica cursor p1 last held, then
     re-enter p1; the fresh bootstrap (snapshotting current state, §4.7)
     converges with no dependence on the pruned log. (g) **Completeness is
     pending until bootstrap, and zero rows still complete**: immediately
@@ -7543,3 +7980,43 @@ Each is a driver-interface script, not a prose test.
     the remote unchanged (§5.10.2), and concurrent edits from the rebound
     client and a second remote client merge into it without a conflict and
     converge. Both pairings (TS×TS, Rust×TS).
+
+25. **Units and the replica cursor (§4.1, §4.5).** (a) A unit covers every
+    table declaring its variables, and a commit touching three covered
+    tables arrives as one `COMMIT` frame, in pulls and in deltas. (b) A
+    unit registered while others are live bootstraps over several rounds,
+    completes with a pin below the replica cursor, and joins in the same
+    response with no lost change. (c) With `limitCommits` forcing a cut
+    below the replica cursor, a completed unit stays catching up and joins
+    in the next round, converged. (d) Two units share a row; evicting one
+    keeps the row, and the survivor receives its next change. (e) A
+    change for a unit unregistered while its round was in flight never
+    re-creates its rows. (f) A request whose `PROGRESS` names an
+    unregistered id, or whose list repeats a scope map, fails with
+    `sync.invalid_subscription`; the `UNIT` cap counts units. Both
+    pairings (TS×TS, Rust×TS), every server storage.
+
+26. **Registration by reference (§4.1, §4.4).** (a) A quiet replica pulls
+    with no `UNIT` frame and receives only `LIVE_START` and `LIVE_END`.
+    (b) A server whose stored digest differs (a fresh server record, a
+    second copy of the replica) answers `unregistered`; the resend in the
+    next round restores sync. (c) A traveling list whose digest differs
+    from the units fails with `sync.invalid_subscription`. (d) A resolver
+    change that alters a fence list reaches the client through a changed
+    echo digest, and a fence revocation followed by a regrant
+    re-bootstraps the unit. (e) The empty list travels by digest alone.
+    Both pairings (TS×TS, Rust×TS).
+
+27. **Idempotency watermark (§6.3.2, §9 migration).** (a) Lost
+    acknowledgement: push A, drop the response, push again with A still
+    first; A replays `cached`, and its result survives until a request
+    whose first commit follows A. (b) Late duplicate: push [A, B], then
+    [C]; replay the first request; A and B return `sync.commit_expired`
+    and no row changes. (c) A new outbox under an old `clientId` (a
+    restarted in-memory replica with a new `outboxId`) pushes from
+    sequence 1 and applies. (d) Pre-upgrade results: results stored
+    without a sequence are assigned sequences by the first request that
+    carries their commits and deleted once a request's last commit holds
+    none. (e) After N pushes from one replica the server holds the results
+    of the last request plus one watermark row, on SQLite, PostgreSQL, D1
+    and the Rust authority. Both pairings (TS×TS, Rust×TS).

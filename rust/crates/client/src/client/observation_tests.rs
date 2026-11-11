@@ -66,7 +66,7 @@ fn authority_snapshot_observes_one_file_transaction_during_concurrent_writes() {
             [revision.to_string()],
         )
         .unwrap();
-        conn.execute("INSERT OR REPLACE INTO _syncular_subscriptions VALUES('s','authority',?1)", [json!({"requested": {"actor_id": ["a"]}, "effectiveScopes": {"actor_id": ["a"]}, "status": "active", "cursor": revision}).to_string()]).unwrap();
+        conn.execute("INSERT OR REPLACE INTO _syncular_units(id,scopes,explicit,status,cursor,seeded,echo) VALUES('u','{\"actor_id\":\"a\"}',1,'active',?1,'[]','[]')", [revision]).unwrap();
         conn.execute_batch("COMMIT").unwrap();
     };
     update(&client.conn, 1);
@@ -123,6 +123,53 @@ fn client() -> SyncClient {
     .expect("test client")
 }
 
+/// A live unit with an empty echo, as after a bootstrap that joined; the
+/// replica cursor is at least `0`.
+fn live_unit(client: &SyncClient, scopes: &[(&str, &str)]) -> String {
+    let scopes: UnitScopes = scopes
+        .iter()
+        .map(|(variable, value)| ((*variable).to_owned(), (*value).to_owned()))
+        .collect();
+    let id = ssp2::registration::unit_id(&scope_pairs(&scopes));
+    save_unit(
+        &client.conn,
+        &UnitRecord {
+            id: id.clone(),
+            scopes,
+            explicit: true,
+            status: UnitStatus::Active,
+            reason_code: None,
+            cursor: None,
+            bootstrap_state: None,
+            seeded: Vec::new(),
+            echo: Some(Vec::new()),
+        },
+    )
+    .unwrap();
+    if replica_cursor(&client.conn).unwrap() < 0 {
+        client.set_meta(REPLICA_CURSOR_KEY, "0").unwrap();
+    }
+    id
+}
+
+/// One active live section around `commits` (§4.4).
+fn live_section(through_seq: i64, commits: Vec<Frame>) -> Vec<Frame> {
+    let mut frames = vec![Frame::LiveStart {
+        status: LiveStatus::Active,
+        reason_code: String::new(),
+    }];
+    frames.extend(commits);
+    frames.push(Frame::LiveEnd {
+        through_seq,
+        echo_digest: None,
+    });
+    frames
+}
+
+fn unit_scopes(variable: &str, value: &str) -> UnitScopes {
+    UnitScopes::from([(variable.to_owned(), value.to_owned())])
+}
+
 fn round_error(outcome: SyncOutcome) -> TransportError {
     match outcome {
         SyncOutcome::Failed {
@@ -172,32 +219,24 @@ fn flush_blob_uploads(
 
 #[test]
 fn subscribe_many_registers_all_or_nothing() {
-    let request = |id: &str, project: &str| SubscriptionRequest {
-        id: id.to_owned(),
-        table: "tasks".to_owned(),
-        scopes: vec![("project_id".to_owned(), vec![project.to_owned()])],
-        params: None,
-    };
     let mut client = client();
     client
-        .subscribe_many(vec![request("a", "p1"), request("b", "p2")])
+        .subscribe_many(vec![
+            unit_scopes("project_id", "p1"),
+            unit_scopes("project_id", "p2"),
+        ])
         .unwrap();
-    let persisted = |client: &SyncClient| -> i64 {
-        client
-            .conn
-            .query_row("SELECT count(*) FROM _syncular_subscriptions", [], |row| {
-                row.get(0)
-            })
-            .unwrap()
-    };
-    assert_eq!(persisted(&client), 2);
-    // `b` names another project: the whole call fails, `c` stays out.
+    assert_eq!(client.units().unwrap().len(), 2);
+    // The second unit names no declared variable: the whole call fails and
+    // the first stays out.
     let error = client
-        .subscribe_many(vec![request("c", "p3"), request("b", "p9")])
+        .subscribe_many(vec![
+            unit_scopes("project_id", "p3"),
+            unit_scopes("tenant_id", "t1"),
+        ])
         .unwrap_err();
-    assert!(error.starts_with("client.subscription_intent_mismatch:"));
-    assert!(client.subscription_state("c").is_none());
-    assert_eq!(persisted(&client), 2);
+    assert!(error.starts_with("sync.invalid_subscription:"), "{error}");
+    assert_eq!(client.units().unwrap().len(), 2);
     assert!(client.conn.is_autocommit());
 }
 
@@ -780,42 +819,23 @@ fn blob_upload_failures_preserve_pins_and_original_commits_after_file_reopen() {
     }
 }
 
-/// §1.4 rule 4: `sections` subscriptions, each with `commits` COMMIT
-/// frames of `rows` rows. Returns the client with its subscriptions
+/// §1.4 rule 4: `units` live units, each with `commits` COMMIT frames of
+/// `rows` rows in one live section. Returns the client with its units
 /// registered and the response.
-fn coalesced_fixture(sections: usize, commits: usize, rows: usize) -> (SyncClient, Message) {
-    let mut client = client();
+fn coalesced_fixture(units: usize, commits: usize, rows: usize) -> (SyncClient, Message) {
+    let client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    let mut response = Message {
-        wire_version: WIRE_VERSION,
-        msg_kind: MsgKind::Response,
-        frames: vec![Frame::RespHeader {
-            required_schema_version: None,
-            latest_schema_version: None,
-            log_epoch: "epoch-1".into(),
-            reset_required: false,
-        }],
-    };
+    let mut frames = vec![Frame::RespHeader {
+        required_schema_version: None,
+        latest_schema_version: None,
+        log_epoch: "epoch-1".into(),
+        reset_required: false,
+    }];
     let mut seq = 0;
-    for section in 0..sections {
-        let project = format!("p{section}");
-        let scopes = vec![("project_id".to_owned(), vec![project.clone()])];
-        client
-            .register_subscription(format!("s{section}"), "tasks".into(), scopes.clone(), None)
-            .unwrap();
-        let sub = client.subs.last_mut().unwrap();
-        sub.cursor = 0;
-        sub.synced_once = true;
-        sub.effective = Some(scopes.clone());
-        let sub = sub.clone();
-        client.persist_sub(&sub).unwrap();
-        response.frames.push(Frame::SubStart {
-            id: format!("s{section}"),
-            status: SubStatus::Active,
-            reason_code: "".into(),
-            effective_scopes: scopes,
-            bootstrap: false,
-        });
+    let mut live = Vec::new();
+    for unit in 0..units {
+        let project = format!("p{unit}");
+        live_unit(&client, &[("project_id", &project)]);
         for _ in 0..commits {
             seq += 1;
             let changes = (0..rows)
@@ -829,7 +849,7 @@ fn coalesced_fixture(sections: usize, commits: usize, rows: usize) -> (SyncClien
                         table_index: 0,
                         row_id: id.clone(),
                         op: Op::Upsert,
-                        row_version: Some(seq),
+                        row_version: seq,
                         scopes: vec![("project_id".into(), project.clone())],
                         row: Some(
                             encode_row_json(
@@ -843,7 +863,7 @@ fn coalesced_fixture(sections: usize, commits: usize, rows: usize) -> (SyncClien
                     }
                 })
                 .collect();
-            response.frames.push(Frame::Commit {
+            live.push(Frame::Commit {
                 commit_seq: seq,
                 actor_id: "writer".into(),
                 created_at_ms: 1,
@@ -851,13 +871,18 @@ fn coalesced_fixture(sections: usize, commits: usize, rows: usize) -> (SyncClien
                 changes,
             });
         }
-        response.frames.push(Frame::SubEnd {
-            next_cursor: seq,
-            bootstrap_state: None,
-        });
     }
+    frames.extend(live_section(seq, live));
+    let mut client = client;
     client.drain_change_batches();
-    (client, response)
+    (
+        client,
+        Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames,
+        },
+    )
 }
 
 fn count_commits(client: &mut SyncClient) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
@@ -896,7 +921,7 @@ fn a_response_of_many_small_sections_commits_once() {
             "{realtime}"
         );
         assert!(client.conn.is_autocommit());
-        assert!(client.subs.iter().all(|sub| sub.cursor > 0));
+        assert_eq!(replica_cursor(&client.conn).unwrap(), 70);
         // Every frame keeps its own revision, published in order.
         let revisions = client
             .drain_change_batches()
@@ -938,7 +963,7 @@ fn a_response_past_the_row_bound_commits_per_bound() {
         client.query("SELECT id FROM tasks", &[]).unwrap().len(),
         1800
     );
-    assert_eq!(client.subs[0].cursor, 3);
+    assert_eq!(replica_cursor(&client.conn).unwrap(), 3);
 }
 
 #[test]
@@ -955,7 +980,6 @@ fn a_failed_coalesced_commit_restores_memory_and_publishes_nothing() {
         .unwrap();
     let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
     let (_, meta) = client.build_request(false).unwrap();
-    let subs = client.subs.clone();
     let revision = client.local_revision().unwrap();
     let outcome = client.process_response(&mut transport, response.clone(), &meta);
     assert!(
@@ -973,10 +997,7 @@ fn a_failed_coalesced_commit_restores_memory_and_publishes_nothing() {
         .query("SELECT id FROM tasks", &[])
         .unwrap()
         .is_empty());
-    assert_eq!(
-        client.subs.iter().map(|s| s.cursor).collect::<Vec<_>>(),
-        subs.iter().map(|s| s.cursor).collect::<Vec<_>>()
-    );
+    assert_eq!(replica_cursor(&client.conn).unwrap(), 0);
     // The next response applies in full.
     client
         .conn
@@ -1021,18 +1042,7 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
             )
             .unwrap();
             client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-            client
-                .register_subscription(
-                    "tasks".into(),
-                    "tasks".into(),
-                    vec![("project_id".into(), vec!["p1".into()])],
-                    None,
-                )
-                .unwrap();
-            client.subs[0].cursor = 0;
-            client.subs[0].synced_once = true;
-            client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-            client.persist_sub(&client.subs[0]).unwrap();
+            live_unit(&client, &[("project_id", "p1")]);
             client.realtime_state = RealtimeState::Connected;
             client.realtime_reason_code = None;
             client.drain_change_batches();
@@ -1048,12 +1058,9 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                         log_epoch: "epoch-1".into(),
                         reset_required: false,
                     },
-                    Frame::SubStart {
-                        id: "tasks".into(),
-                        status: SubStatus::Active,
-                        reason_code: "".into(),
-                        effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
-                        bootstrap: false,
+                    Frame::LiveStart {
+                        status: LiveStatus::Active,
+                        reason_code: String::new(),
                     },
                 ],
             };
@@ -1071,7 +1078,7 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                         table_index: 0,
                         row_id: (*id).into(),
                         op: Op::Upsert,
-                        row_version: Some(index as i64 + 1),
+                        row_version: index as i64 + 1,
                         scopes: vec![("project_id".into(), "p1".into())],
                         row: Some(
                             encode_row_json(
@@ -1085,9 +1092,9 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                     }],
                 });
             }
-            response.frames.push(Frame::SubEnd {
-                next_cursor: 2,
-                bootstrap_state: None,
+            response.frames.push(Frame::LiveEnd {
+                through_seq: 2,
+                echo_digest: None,
             });
             let valid = response.clone();
             match fault {
@@ -1097,7 +1104,7 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                 },
                 "revision" => client.conn.execute_batch("CREATE TRIGGER fail_frame BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' AND NEW.value = '2' AND EXISTS (SELECT 1 FROM _syncular_base_tasks WHERE id = 'second') BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END").unwrap(),
                 "commit" => client.conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE frame_parent(id INTEGER PRIMARY KEY); CREATE TABLE frame_child(id INTEGER REFERENCES frame_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_frame AFTER INSERT ON _syncular_base_tasks WHEN NEW.id = 'second' BEGIN INSERT INTO frame_child VALUES(1); END").unwrap(),
-                "cursor" => client.conn.execute_batch("CREATE TRIGGER fail_frame BEFORE INSERT ON _syncular_subscriptions BEGIN SELECT RAISE(FAIL, 'injected cursor failure'); END").unwrap(),
+                "cursor" => client.conn.execute_batch("CREATE TRIGGER fail_frame BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'replicaCursor' AND NEW.value = '2' BEGIN SELECT RAISE(FAIL, 'injected cursor failure'); END").unwrap(),
                 "error" => {response.frames.truncate(3);response.frames.push(Frame::Error {code:"sync.invalid_request".into(),message:"later error".into(),category:"protocol".into(),retryable:false,recommended_action:"retry".into(),details:None});},
                 "missing-end" => {response.frames.truncate(3);},
                 _ => {}
@@ -1105,12 +1112,14 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
             if realtime {
                 client.on_realtime_binary(&mut transport, &encode_message(&response));
             } else {
+                // §7.1: a response without LIVE_END completes and leaves
+                // sync-needed raised.
                 assert_eq!(
                     matches!(
                         client.process_response(&mut transport, response, &meta),
                         SyncOutcome::Ok(_)
                     ),
-                    fault == "none",
+                    matches!(fault, "none" | "missing-end"),
                     "{fault}"
                 );
             }
@@ -1126,7 +1135,10 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                 "commit" => 0,
                 _ => 1,
             };
-            let expected_revision = count + u64::from(realtime && fault != "none");
+            // A dropped delta and a pull without LIVE_END raise sync-needed,
+            // which publishes one status revision (§7.1, §8.2).
+            let expected_revision =
+                count + u64::from((realtime && fault != "none") || fault == "missing-end");
             assert_eq!(
                 client.local_revision().unwrap(),
                 expected_revision,
@@ -1161,14 +1173,18 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                     "{realtime}/{fault}/{table}"
                 );
             }
-            assert_eq!(client.subs[0].cursor, if fault == "none" { 2 } else { 0 });
+            assert_eq!(
+                replica_cursor(&client.conn).unwrap(),
+                if fault == "none" { 2 } else { 0 }
+            );
             assert_eq!(
                 transport
                     .messages
                     .iter()
                     .filter(|m| m.contains("\"ack\""))
                     .count(),
-                usize::from(fault == "none")
+                // §8.2: a completed pull acks the replica cursor.
+                usize::from(matches!(fault, "none" | "missing-end"))
             );
             if matches!(fault, "revision" | "commit" | "cursor") {
                 client
@@ -1192,7 +1208,10 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                     .len(),
                 count as usize
             );
-            assert_eq!(reopened.subs[0].cursor, if fault == "none" { 2 } else { 0 });
+            assert_eq!(
+                replica_cursor(&reopened.conn).unwrap(),
+                if fault == "none" { 2 } else { 0 }
+            );
             let (_, meta) = reopened.build_request(false).unwrap();
             assert!(matches!(
                 reopened.process_response(&mut transport, valid, &meta),
@@ -1205,7 +1224,7 @@ fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen(
                     .len(),
                 2
             );
-            assert_eq!(reopened.subs[0].cursor, 2);
+            assert_eq!(replica_cursor(&reopened.conn).unwrap(), 2);
             drop(reopened);
             std::fs::remove_file(path).unwrap();
         }
@@ -1217,18 +1236,7 @@ fn failed_subscription_control_persistence_rolls_back_rows_outbox_and_memory() {
     for status in [SubStatus::Reset, SubStatus::Revoked] {
         for fault in ["subscription", "revision"] {
             let mut client = client();
-            client
-                .subscribe(
-                    "tasks".into(),
-                    "tasks".into(),
-                    vec![("project_id".into(), vec!["p1".into()])],
-                    None,
-                )
-                .unwrap();
-            client.subs[0].cursor = 41;
-            client.subs[0].synced_once = true;
-            client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-            client.persist_sub(&client.subs[0]).unwrap();
+            let id = live_unit(&client, &[("project_id", "p1")]);
             client
                 .mutate(vec![Mutation::Upsert {
                     table: "tasks".into(),
@@ -1245,7 +1253,7 @@ fn failed_subscription_control_persistence_rolls_back_rows_outbox_and_memory() {
             client.drain_change_batches();
             let (_, meta) = client.build_request(false).unwrap();
             client.conn.execute_batch(if fault == "subscription" {
-                "CREATE TRIGGER fail_control BEFORE INSERT ON _syncular_subscriptions BEGIN SELECT RAISE(FAIL, 'injected subscription failure'); END"
+                "CREATE TRIGGER fail_control BEFORE INSERT ON _syncular_units BEGIN SELECT RAISE(FAIL, 'injected unit failure'); END"
             } else {
                 "CREATE TRIGGER fail_control BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END"
             }).unwrap();
@@ -1253,24 +1261,32 @@ fn failed_subscription_control_persistence_rolls_back_rows_outbox_and_memory() {
             let mut report = SyncReport::default();
             // Reset changes window completeness and therefore needs a revision.
             if status == SubStatus::Reset {
-                client.conn.execute("INSERT INTO _syncular_windows(base,unit,sub_id) VALUES ('base','p1','tasks')", []).unwrap();
+                client
+                    .conn
+                    .execute(
+                        "INSERT INTO _syncular_windows(base,unit,sub_id) VALUES ('base','p1',?1)",
+                        [&id],
+                    )
+                    .unwrap();
             }
             let result = client.process_section(
                 &mut transport,
-                "tasks",
-                status,
-                "sync.scope_revoked",
-                vec![],
+                &SectionStart {
+                    id: id.clone(),
+                    status,
+                    reason_code: "sync.scope_revoked".into(),
+                    bootstrap: false,
+                    fenced: Vec::new(),
+                },
                 vec![],
                 Some((42, None)),
                 &meta,
                 &mut report,
-                &HashSet::new(),
             );
             assert!(result.is_err(), "{status:?}/{fault}");
             assert!(client.conn.is_autocommit());
-            assert_eq!(client.subs[0].cursor, 41);
-            assert_eq!(client.subs[0].state, SubState::Active);
+            let unit = client.unit(&id).unwrap().unwrap();
+            assert_eq!((unit.cursor, unit.status), (None, UnitStatus::Active));
             assert_eq!(client.pending_commit_ids(), ids);
             assert!(client.commit_outcome(&ids[0]).unwrap().is_none());
             assert!(client.rejections.is_empty());
@@ -1285,15 +1301,8 @@ fn failed_subscription_control_persistence_rolls_back_rows_outbox_and_memory() {
 #[test]
 fn rows_segment_blocks_commit_independently_and_clear_with_the_first_block() {
     let mut client = client();
-    client
-        .register_subscription(
-            "tasks".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["p1".into()])],
-            None,
-        )
-        .unwrap();
-    client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+    let table = client.schema.table("tasks").unwrap().clone();
+    let effective = vec![("project_id".to_owned(), vec!["p1".to_owned()])];
     client.conn.execute_batch("INSERT INTO _syncular_base_tasks VALUES ('stale','p1',1); INSERT INTO tasks VALUES ('stale','p1',1);
         CREATE TRIGGER fail_block BEFORE INSERT ON _syncular_base_tasks WHEN NEW.id = 'bad' BEGIN SELECT RAISE(FAIL,'injected later block failure'); END").unwrap();
     let row = |id: &str| ssp2::segment::SegmentRow {
@@ -1309,7 +1318,9 @@ fn rows_segment_blocks_commit_independently_and_clear_with_the_first_block() {
         columns: client.schema.table("tasks").unwrap().wire_columns.clone(),
         blocks: vec![vec![row("first")], vec![row("second"), row("bad")]],
     };
-    assert!(client.apply_segment(0, &segment, true).is_err());
+    assert!(client
+        .apply_segment(&table, &segment, true, &effective, &[])
+        .is_err());
     assert!(client.conn.is_autocommit());
     assert_eq!(
         client
@@ -1319,12 +1330,14 @@ fn rows_segment_blocks_commit_independently_and_clear_with_the_first_block() {
     );
     assert_eq!(client.local_revision().unwrap(), 1);
     assert_eq!(client.drain_change_batches().len(), 1);
-    assert_eq!(client.subs[0].cursor, -1);
     client
         .conn
         .execute_batch("DROP TRIGGER fail_block")
         .unwrap();
-    assert!(matches!(client.apply_segment(0, &segment, true), Ok(3)));
+    assert!(matches!(
+        client.apply_segment(&table, &segment, true, &effective, &[]),
+        Ok(3)
+    ));
     assert_eq!(client.local_revision().unwrap(), 3);
     assert_eq!(client.drain_change_batches().len(), 2);
 }
@@ -1405,18 +1418,9 @@ impl Transport for SegmentBatchTransport {
 fn a_response_fetches_all_its_segment_pages_in_one_ordered_batch() {
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    client
-        .subscribe(
-            "tasks".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["p1".into()])],
-            None,
-        )
+    let id = client
+        .subscribe(UnitScopes::from([("project_id".to_owned(), "p1".into())]))
         .unwrap();
-    client.subs[0].cursor = 0;
-    client.subs[0].synced_once = true;
-    client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-    client.persist_sub(&client.subs[0]).unwrap();
     client.drain_change_batches();
     let columns = client.schema.table("tasks").unwrap().wire_columns.clone();
 
@@ -1450,11 +1454,11 @@ fn a_response_fetches_all_its_segment_pages_in_one_ordered_batch() {
             reset_required: false,
         },
         Frame::SubStart {
-            id: "tasks".into(),
+            id: id.clone(),
             status: SubStatus::Active,
             reason_code: String::new(),
-            effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
-            bootstrap: false,
+            bootstrap: true,
+            fenced: Vec::new(),
         },
     ];
     for (segment_id, bytes) in &pages {
@@ -1476,6 +1480,7 @@ fn a_response_fetches_all_its_segment_pages_in_one_ordered_batch() {
         next_cursor: 1,
         bootstrap_state: None,
     });
+    frames.extend(live_section(1, Vec::new()));
     let mut transport = SegmentBatchTransport {
         response: Message {
             wire_version: WIRE_VERSION,
@@ -1512,7 +1517,8 @@ fn a_response_fetches_all_its_segment_pages_in_one_ordered_batch() {
             .map(|id| Map::from_iter([("id".to_owned(), Value::from(id))]))
             .to_vec()
     );
-    assert_eq!(client.subs[0].cursor, 1);
+    assert_eq!(client.unit(&id).unwrap().unwrap().cursor, None);
+    assert_eq!(replica_cursor(&client.conn).unwrap(), 1);
 }
 
 #[test]
@@ -1720,7 +1726,7 @@ fn retryable_server_error_schedules_a_background_retry() {
 
 #[test]
 fn sync_until_idle_reports_budget_exhaustion_or_failure() {
-    // §7.7: the exhausted outcome is a partial success, not a failure,
+    // §7.8: the exhausted outcome is a partial success, not a failure,
     // and serializes with an explicit flag.
     let exhausted = SyncOutcome::BudgetExhausted(SyncReport::default()).to_json();
     assert_eq!(exhausted["ok"], json!(true));
@@ -1825,30 +1831,29 @@ fn a_subscription_holding_a_resume_token_raises_sync_needed() {
     // drive that started it ends early.
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    let p1 = vec![("project_id".to_owned(), vec!["p1".to_owned()])];
-    client
-        .subscribe("paged".into(), "tasks".into(), p1.clone(), None)
-        .unwrap();
-    let mut transport = failure_transport([Ok(completed_response(vec![
+    let id = client.subscribe(unit_scopes("project_id", "p1")).unwrap();
+    let mut frames = vec![
         Frame::SubStart {
-            id: "paged".into(),
+            id: id.clone(),
             status: SubStatus::Active,
             reason_code: String::new(),
-            effective_scopes: p1,
             bootstrap: true,
+            fenced: Vec::new(),
         },
         Frame::SubEnd {
             next_cursor: 0,
             bootstrap_state: Some(RawJson(r#"{"page":1}"#.into())),
         },
-    ]))]);
+    ];
+    frames.extend(live_section(0, Vec::new()));
+    let mut transport = failure_transport([Ok(completed_response(frames))]);
 
     let outcome = client.sync(&mut transport);
 
     let SyncOutcome::Ok(report) = outcome else {
         panic!("the paged round succeeds: {outcome:?}")
     };
-    assert_eq!(report.bootstrapping, vec!["paged".to_owned()]);
+    assert_eq!(report.bootstrapping, vec![id]);
     assert!(client.sync_needed());
 }
 
@@ -1943,18 +1948,7 @@ fn sync_until_idle_success_then_failure_keeps_earlier_work() {
     )
     .expect("open client");
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    client
-        .subscribe(
-            "tasks".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["p1".into()])],
-            None,
-        )
-        .unwrap();
-    client.subs[0].cursor = 0;
-    client.subs[0].synced_once = true;
-    client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-    client.persist_sub(&client.subs[0]).unwrap();
+    live_unit(&client, &[("project_id", "p1")]);
     client.drain_change_batches();
 
     let row = encode_row_json(
@@ -1977,12 +1971,9 @@ fn sync_until_idle_success_then_failure_keeps_earlier_work() {
                 log_epoch: "epoch-1".into(),
                 reset_required: false,
             },
-            Frame::SubStart {
-                id: "tasks".into(),
-                status: SubStatus::Active,
+            Frame::LiveStart {
+                status: LiveStatus::Active,
                 reason_code: String::new(),
-                effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
-                bootstrap: false,
             },
             Frame::Commit {
                 commit_seq: 1,
@@ -1993,14 +1984,14 @@ fn sync_until_idle_success_then_failure_keeps_earlier_work() {
                     table_index: 0,
                     row_id: "kept".into(),
                     op: Op::Upsert,
-                    row_version: Some(1),
+                    row_version: 1,
                     scopes: vec![("project_id".into(), "p1".into())],
                     row: Some(row),
                 }],
             },
-            Frame::SubEnd {
-                next_cursor: 1,
-                bootstrap_state: None,
+            Frame::LiveEnd {
+                through_seq: 1,
+                echo_digest: None,
             },
         ],
     };
@@ -2250,9 +2241,7 @@ fn transport_diagnostics_bound_evidence_and_clear_it_after_recovery() {
         assert_eq!(progress.cause_kind, expected_cause);
         assert_eq!(progress.http_status, expected_status);
         assert_eq!(progress.retry_delay_ms, retry);
-        let snapshot = client
-            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-            .unwrap();
+        let snapshot = client.diagnostics_snapshot().unwrap();
         assert_eq!(snapshot.host.connectivity, connectivity);
         let last_round = snapshot.last_round.as_ref().unwrap();
         assert_eq!(last_round.cause_kind, expected_cause);
@@ -2264,9 +2253,7 @@ fn transport_diagnostics_bound_evidence_and_clear_it_after_recovery() {
         let progress = client.progress().snapshot().unwrap();
         assert_eq!(progress.cause_kind, None);
         assert_eq!(progress.http_status, None);
-        let snapshot = client
-            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-            .unwrap();
+        let snapshot = client.diagnostics_snapshot().unwrap();
         assert_eq!(snapshot.host.connectivity, "online");
         let last_round = snapshot.last_round.unwrap();
         assert_eq!(last_round.cause_kind, None);
@@ -2362,28 +2349,17 @@ fn an_in_band_error_completes_the_round_and_is_never_reported() {
 fn a_silent_segment_fetch_is_retryable_and_reported_on_the_next_request() {
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    client
-        .subscribe(
-            "tasks".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["p1".into()])],
-            None,
-        )
-        .unwrap();
-    client.subs[0].cursor = 0;
-    client.subs[0].synced_once = true;
-    client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-    client.persist_sub(&client.subs[0]).unwrap();
+    let id = client.subscribe(unit_scopes("project_id", "p1")).unwrap();
     client.drain_change_batches();
     client.drain_sync_intents();
     let mut transport = failure_transport([
         Ok(completed_response(vec![
             Frame::SubStart {
-                id: "tasks".into(),
+                id,
                 status: SubStatus::Active,
                 reason_code: String::new(),
-                effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
-                bootstrap: false,
+                bootstrap: true,
+                fenced: Vec::new(),
             },
             Frame::SegmentRef {
                 segment_id: "sha256:stalled".into(),
@@ -2421,9 +2397,7 @@ fn a_silent_segment_fetch_is_retryable_and_reported_on_the_next_request() {
     let progress = client.progress().snapshot().unwrap();
     assert_eq!(progress.cause_kind, Some(crate::TransportCauseKind::Status));
     assert_eq!(progress.http_status, Some(500));
-    let diagnostics = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .unwrap();
+    let diagnostics = client.diagnostics_snapshot().unwrap();
     assert_eq!(diagnostics.host.connectivity, "online");
     let round = diagnostics.last_round.as_ref().unwrap();
     assert_eq!(round.cause_kind, Some(crate::TransportCauseKind::Status));
@@ -2750,12 +2724,10 @@ fn log_epoch_reset_requests_an_immediate_follow_up_round() {
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
     client
-        .subscribe(
-            "epoch-tasks".to_owned(),
-            "tasks".to_owned(),
-            vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-            None,
-        )
+        .subscribe(UnitScopes::from([(
+            "project_id".to_owned(),
+            "p1".to_owned(),
+        )]))
         .expect("subscribe");
     client.drain_sync_intents();
 
@@ -3005,12 +2977,7 @@ fn closed_transport_never_invokes_network_and_reopen_is_host_owned() {
     client.begin_security_preflight().unwrap();
     client.activate_security(Default::default()).unwrap();
     client
-        .subscribe(
-            "tasks".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["p1".into()])],
-            None,
-        )
+        .subscribe(UnitScopes::from([("project_id".to_owned(), "p1".into())]))
         .unwrap();
     for id in ["one", "two"] {
         client
@@ -3125,9 +3092,7 @@ fn required_policy_refuses_a_round_without_a_socket_and_never_uses_http() {
         client.drain_sync_intents().as_slice(),
         [SyncIntent::Background { delay_ms: 250 }]
     ));
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .expect("diagnostics");
+    let snapshot = client.diagnostics_snapshot().expect("diagnostics");
     assert_eq!(snapshot.host.realtime, RealtimeState::Disconnected);
     assert_eq!(snapshot.host.realtime_policy, RealtimePolicy::Required);
     assert_eq!(snapshot.host.realtime_reason_code, None);
@@ -3153,9 +3118,7 @@ fn refused_handshake_is_a_visible_state_and_a_required_round_does_not_fall_back(
     };
     assert!(client.connect_realtime(&mut transport).is_err());
     assert_eq!(client.realtime_state(), RealtimeState::Refused);
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .expect("diagnostics");
+    let snapshot = client.diagnostics_snapshot().expect("diagnostics");
     assert_eq!(
         snapshot.host.realtime_reason_code.as_deref(),
         Some("transport.failed")
@@ -3194,9 +3157,7 @@ fn an_unsolicited_socket_end_is_lost_with_the_transport_code_and_a_retry_intent(
         client.drain_sync_intents().as_slice(),
         [SyncIntent::Background { delay_ms: 250 }]
     ));
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .expect("diagnostics");
+    let snapshot = client.diagnostics_snapshot().expect("diagnostics");
     assert_eq!(snapshot.host.realtime, RealtimeState::Lost);
     assert_eq!(
         snapshot.host.realtime_reason_code.as_deref(),
@@ -3233,9 +3194,7 @@ fn a_failed_socket_round_is_lost_and_the_next_required_round_refuses_http() {
     assert_eq!(client.realtime_state(), RealtimeState::Lost);
     assert_eq!(transport.realtime_sync_calls, 1);
     assert_eq!(transport.sync_calls, 0);
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .expect("diagnostics");
+    let snapshot = client.diagnostics_snapshot().expect("diagnostics");
     assert_eq!(
         snapshot.host.realtime_reason_code.as_deref(),
         Some("sync.transport_failed")
@@ -3274,9 +3233,7 @@ fn off_policy_uses_http_and_refuses_an_explicit_connect() {
     ));
     assert_eq!(transport.sync_calls, 1);
     assert_eq!(transport.realtime_sync_calls, 0);
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .expect("diagnostics");
+    let snapshot = client.diagnostics_snapshot().expect("diagnostics");
     assert_eq!(snapshot.host.realtime, RealtimeState::Disabled);
     assert_eq!(snapshot.host.realtime_policy, RealtimePolicy::Off);
 }
@@ -3291,9 +3248,7 @@ fn optional_policy_keeps_the_http_round() {
     ));
     assert_eq!(transport.sync_calls, 1);
     assert_eq!(transport.realtime_sync_calls, 0);
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .expect("diagnostics");
+    let snapshot = client.diagnostics_snapshot().expect("diagnostics");
     assert_eq!(snapshot.host.realtime, RealtimeState::Disconnected);
     assert_eq!(snapshot.host.realtime_policy, RealtimePolicy::Optional);
 }
@@ -3301,25 +3256,7 @@ fn optional_policy_keeps_the_http_round() {
 #[test]
 fn local_rebootstrap_is_atomic_idempotent_and_preserves_offline_work() {
     let mut client = client();
-    client
-        .subscribe(
-            "repair-tasks".to_owned(),
-            "tasks".to_owned(),
-            vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-            None,
-        )
-        .expect("subscribe");
-    {
-        let sub = client
-            .subs
-            .iter_mut()
-            .find(|sub| sub.id == "repair-tasks")
-            .expect("subscription");
-        sub.cursor = 42;
-        sub.synced_once = true;
-        let persisted = sub.clone();
-        client.persist_sub(&persisted).unwrap();
-    }
+    let id = live_unit(&client, &[("project_id", "p1")]);
     for table in ["_syncular_base_tasks", "tasks"] {
         client
             .conn
@@ -3366,13 +3303,7 @@ fn local_rebootstrap_is_atomic_idempotent_and_preserves_offline_work() {
         .expect("collect visible ids");
     assert_eq!(visible_ids, vec!["offline-row"]);
     assert_eq!(client.pending_commit_ids(), vec![pending]);
-    assert_eq!(
-        client
-            .subscription_state("repair-tasks")
-            .expect("subscription")
-            .cursor,
-        -1
-    );
+    assert_eq!(client.unit(&id).unwrap().expect("unit").cursor, Some(-1));
     assert!(client.upgrading());
     assert!(client.sync_needed());
     assert!(matches!(
@@ -3450,12 +3381,10 @@ fn local_rebootstrap_replays_the_original_receipt_after_reopen() {
         )
         .expect("first open");
         first
-            .subscribe(
-                "repair-tasks".to_owned(),
-                "tasks".to_owned(),
-                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-                None,
-            )
+            .subscribe(UnitScopes::from([(
+                "project_id".to_owned(),
+                "p1".to_owned(),
+            )]))
             .expect("subscribe");
         first
             .mutate(vec![Mutation::Upsert {
@@ -3511,13 +3440,11 @@ fn local_rebootstrap_replays_the_original_receipt_after_reopen() {
 #[test]
 fn local_rebootstrap_fails_closed_on_malformed_or_unreadable_receipts() {
     let mut malformed = client();
-    malformed
-        .subscribe(
-            "repair-tasks".to_owned(),
-            "tasks".to_owned(),
-            vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-            None,
-        )
+    let unit = malformed
+        .subscribe(UnitScopes::from([(
+            "project_id".to_owned(),
+            "p1".to_owned(),
+        )]))
         .expect("subscribe");
     malformed
         .set_meta("localRebootstrap:malformed", "{\"version\":2}")
@@ -3536,10 +3463,11 @@ fn local_rebootstrap_fails_closed_on_malformed_or_unreadable_receipts() {
     assert!(!malformed.upgrading());
     assert_eq!(
         malformed
-            .subscription_state("repair-tasks")
-            .expect("unchanged subscription")
+            .unit(&unit)
+            .unwrap()
+            .expect("unchanged unit")
             .cursor,
-        -1
+        Some(-1)
     );
     assert!(malformed.drain_change_batches().is_empty());
     assert!(malformed.drain_sync_intents().is_empty());
@@ -3687,13 +3615,8 @@ fn diego_applied_sparse_moves_stay_visible_until_pull_image_arrives() {
 fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
     for stored in [None, Some("epoch-old")] {
         let mut client = client();
-        client
-            .subscribe(
-                "tasks".into(),
-                "tasks".into(),
-                vec![("project_id".into(), vec!["p1".into()])],
-                None,
-            )
+        let unit = client
+            .subscribe(UnitScopes::from([("project_id".to_owned(), "p1".into())]))
             .unwrap();
         client
             .conn
@@ -3714,7 +3637,7 @@ fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
         if let Some(epoch) = stored {
             client.set_meta(LOG_EPOCH_KEY, epoch).unwrap();
         }
-        let before = serde_json::to_value(client.subscription_state("tasks")).unwrap();
+        let before = client.unit(&unit).unwrap();
         let (_, meta) = client.build_request(false).unwrap();
         client.drain_change_batches();
         client.drain_sync_intents();
@@ -3738,7 +3661,7 @@ fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
             if stored.is_none() {
                 Vec::<String>::new()
             } else {
-                vec!["tasks".into()]
+                vec![unit.clone()]
             }
         );
         assert_eq!(
@@ -3764,10 +3687,7 @@ fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
                 .drain_change_batches()
                 .iter()
                 .all(|batch| batch.status.as_ref().is_none_or(|status| !status.upgrading)));
-            assert_eq!(
-                serde_json::to_value(client.subscription_state("tasks")).unwrap(),
-                before
-            );
+            assert_eq!(client.unit(&unit).unwrap(), before);
             assert_eq!(trigger, 1, "acquisition must not drop the synced table");
         } else {
             assert!(client.upgrading);
@@ -3948,18 +3868,9 @@ fn acknowledged_restore_and_replay_ignore_unrelated_subscription_count() {
         );
         client.conn.execute("DELETE FROM ack_writes", []).unwrap();
         client.acknowledged_replay_count.set(0);
+        let docs = client.schema.table("docs").unwrap().clone();
         for index in 0..subscriptions {
-            client
-                .subscribe(
-                    format!("docs-{index}"),
-                    "docs".into(),
-                    vec![("project_id".into(), vec![format!("scope-{index}")])],
-                    None,
-                )
-                .unwrap();
-            let sub = client.subs.len() - 1;
-            client.subs[sub].effective =
-                Some(vec![("project_id".into(), vec![format!("scope-{index}")])]);
+            let effective = vec![("project_id".to_owned(), vec![format!("scope-{index}")])];
             let segment = RowsSegment {
                 table: "docs".into(),
                 schema_version: 1,
@@ -3976,7 +3887,9 @@ fn acknowledged_restore_and_replay_ignore_unrelated_subscription_count() {
                     vec![]
                 },
             };
-            assert!(client.apply_segment(sub, &segment, true).is_ok());
+            assert!(client
+                .apply_segment(&docs, &segment, true, &effective, &[])
+                .is_ok());
         }
         assert_eq!(
             client
@@ -4110,7 +4023,7 @@ fn clean_commit_mirroring_matches_full_replay_with_fts_and_unique_indexes() {
             } else {
                 Op::Upsert
             },
-            row_version: Some(index + 1),
+            row_version: index + 1,
             scopes: vec![("project_id".to_owned(), format!("p{}", index % 2))],
             row: Some(payload),
         };
@@ -4265,7 +4178,7 @@ fn row_id_lookups_preserve_text_matching_and_seek_lossless_keys() {
                     .execute_batch("SAVEPOINT lookup_delete")
                     .unwrap();
                 if base {
-                    client.delete_base_row("tasks", row_id).unwrap();
+                    client.delete_base_row("tasks", row_id, i64::MAX).unwrap();
                 } else {
                     client
                         .apply_outbox_ops(&[OutboxOp {
@@ -4463,7 +4376,7 @@ fn pending_row_reconciliation_matches_full_fifo_replay() {
                         } else {
                             Op::Upsert
                         },
-                        row_version: Some(index as i64 + 2),
+                        row_version: index as i64 + 2,
                         scopes: vec![],
                         row: Some(
                             encode_row_json(
@@ -4479,11 +4392,9 @@ fn pending_row_reconciliation_matches_full_fifo_replay() {
                 .collect::<Vec<_>>();
             reference.overlay_dirty.set(true);
             incremental
-                .apply_commit_frame(&tables, &changes, None)
+                .apply_commit_frame(&tables, &changes, 0)
                 .unwrap();
-            reference
-                .apply_commit_frame(&tables, &changes, None)
-                .unwrap();
+            reference.apply_commit_frame(&tables, &changes, 0).unwrap();
             for table in &tables {
                 for sql in [format!("SELECT * FROM {table} ORDER BY id"),
                     format!("SELECT * FROM _syncular_base_{table} ORDER BY id"),
@@ -4550,12 +4461,14 @@ fn remote_unique_values_reconsider_pending_writes_on_other_rows() {
             .unwrap(),
         "available"
     );
-    for (title, expected) in [("available", "original"), ("occupied", "available")] {
+    for (row_version, title, expected) in
+        [(2, "available", "original"), (3, "occupied", "available")]
+    {
         let change = ssp2::model::Change {
             table_index: 0,
             row_id: "b".into(),
             op: Op::Upsert,
-            row_version: Some(2),
+            row_version,
             scopes: vec![],
             row: Some(
                 encode_row_json(
@@ -4571,7 +4484,7 @@ fn remote_unique_values_reconsider_pending_writes_on_other_rows() {
             ),
         };
         client
-            .apply_commit_frame(&["tasks".into()], &[change], None)
+            .apply_commit_frame(&["tasks".into()], &[change], 0)
             .unwrap();
         assert_eq!(
             client
@@ -4714,13 +4627,8 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
     ] {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
-        client
-            .subscribe(
-                "tasks".into(),
-                "tasks".into(),
-                vec![("project_id".into(), vec!["p1".into()])],
-                None,
-            )
+        let unit = client
+            .subscribe(UnitScopes::from([("project_id".to_owned(), "p1".into())]))
             .unwrap();
         let commit = client
             .mutate(vec![Mutation::Upsert {
@@ -4766,11 +4674,19 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
                             results: vec![OpResult::Applied { op_index: 0 }],
                         },
                         Frame::SubStart {
-                            id: "tasks".into(),
+                            id: unit.clone(),
                             status: SubStatus::Active,
                             reason_code: String::new(),
-                            effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
                             bootstrap: true,
+                            fenced: Vec::new(),
+                        },
+                        Frame::SubEnd {
+                            next_cursor: 0,
+                            bootstrap_state: None,
+                        },
+                        Frame::LiveStart {
+                            status: LiveStatus::Active,
+                            reason_code: String::new(),
                         },
                         Frame::Commit {
                             commit_seq: 1,
@@ -4781,14 +4697,14 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
                                 table_index: 0,
                                 row_id: "server".into(),
                                 op: Op::Upsert,
-                                row_version: Some(1),
+                                row_version: 1,
                                 scopes: vec![("project_id".into(), "p1".into())],
                                 row: Some(payload),
                             }],
                         },
-                        Frame::SubEnd {
-                            next_cursor: 1,
-                            bootstrap_state: None,
+                        Frame::LiveEnd {
+                            through_seq: 1,
+                            echo_digest: None,
                         },
                     ],
                 }),
@@ -4870,15 +4786,31 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
                 continue;
             }
             "subscription" => {
-                client.unsubscribe("tasks").unwrap();
+                // §4.4: the released unit's section and its change are
+                // skipped; the round completes and its ack applies.
+                client.unsubscribe(&unit).unwrap();
                 client
-                    .subscribe(
-                        "tasks".into(),
-                        "tasks".into(),
-                        vec![("project_id".into(), vec!["p2".into()])],
-                        None,
-                    )
+                    .subscribe(UnitScopes::from([("project_id".to_owned(), "p2".into())]))
                     .unwrap();
+                let applied = client.apply_sync_round(completed);
+                assert!(matches!(
+                    applied,
+                    crate::AppliedSyncRound::Complete {
+                        outcome: SyncOutcome::Ok(_),
+                        ..
+                    }
+                ));
+                assert!(client.pending_commit_ids().is_empty());
+                assert!(client
+                    .query("SELECT id FROM tasks WHERE id = 'server'", &[])
+                    .unwrap()
+                    .is_empty());
+                assert!(!client
+                    .units()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == unit));
+                continue;
             }
             _ => unreachable!(),
         }
@@ -5180,7 +5112,7 @@ fn pending_row_reconciliation_failure_preserves_queue_and_frame_state() {
             table_index: 0,
             row_id: "t1".into(),
             op: Op::Upsert,
-            row_version: Some(2),
+            row_version: 2,
             scopes: vec![],
             row: Some(
                 encode_row_json(
@@ -5196,7 +5128,7 @@ fn pending_row_reconciliation_failure_preserves_queue_and_frame_state() {
             ),
         };
         assert!(client
-            .apply_commit_frame(&["tasks".into()], std::slice::from_ref(&change), None)
+            .apply_commit_frame(&["tasks".into()], std::slice::from_ref(&change), 0)
             .is_err());
         assert!(client.conn.is_autocommit());
         assert!(!client.overlay_dirty.get());
@@ -5213,7 +5145,7 @@ fn pending_row_reconciliation_failure_preserves_queue_and_frame_state() {
             .execute_batch("DROP TRIGGER fail_pending")
             .unwrap();
         client
-            .apply_commit_frame(&["tasks".into()], &[change], None)
+            .apply_commit_frame(&["tasks".into()], &[change], 0)
             .unwrap();
         assert_eq!(client.local_revision().unwrap(), revision + 1);
         assert_eq!(client.pending_commit_ids(), vec![id]);
@@ -5383,7 +5315,7 @@ fn mirrored_commit_failure_rolls_back_base_visible_and_revision() {
         table_index: 0,
         row_id: "t1".to_owned(),
         op: Op::Upsert,
-        row_version: Some(1),
+        row_version: 1,
         scopes: vec![("project_id".to_owned(), "p1".to_owned())],
         row: Some(payload),
     };
@@ -5618,6 +5550,14 @@ fn failed_push_result_preserves_memory_disk_and_retry_identity() {
                         commit_seq: Some(1),
                         results,
                     },
+                    Frame::LiveStart {
+                        status: LiveStatus::Active,
+                        reason_code: String::new(),
+                    },
+                    Frame::LiveEnd {
+                        through_seq: 1,
+                        echo_digest: None,
+                    },
                 ],
             };
             client.conn.execute_batch(match failure {
@@ -5844,35 +5784,39 @@ fn aborted_schema_and_epoch_resets_restore_memory_and_durable_intent() {
 fn cached_blob_cleanup_propagates_delete_failures() {
     let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
         {"name":"id","type":"string","nullable":false},
-        {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        {"name":"owner_id","type":"string","nullable":false},
+        {"name":"file","type":"blob_ref","nullable":true}],
+        "scopes":[{"pattern":"owner:{owner_id}"}]}]});
     let mut client =
         SyncClient::new("blob-cleanup".into(), &schema, ClientLimits::default()).unwrap();
     client.conn.execute_batch("CREATE TRIGGER refuse_blob_cleanup BEFORE DELETE ON _syncular_blobs BEGIN SELECT RAISE(ABORT,'blob cleanup failed'); END;").unwrap();
     client.conn.execute("INSERT INTO _syncular_blobs(blob_id,bytes,byte_length,created_at_ms) VALUES ('test',X'01',1,0)", []).unwrap();
-    client
-        .subscribe("attachments".into(), "attachments".into(), vec![], None)
-        .unwrap();
-    client.subs[0].effective = Some(vec![]);
-    client.persist_sub(&client.subs[0]).unwrap();
+    let id = live_unit(&client, &[("owner_id", "o1")]);
     let revision = client.local_revision().unwrap();
     let (_, meta) = client.build_request(false).unwrap();
     let mut transport = CountingRealtimeTransport::default();
     let mut report = SyncReport::default();
+    let revoked = SectionStart {
+        id: id.clone(),
+        status: SubStatus::Revoked,
+        reason_code: "sync.scope_revoked".into(),
+        bootstrap: false,
+        fenced: Vec::new(),
+    };
     assert!(client
         .process_section(
             &mut transport,
-            "attachments",
-            SubStatus::Revoked,
-            "sync.scope_revoked",
-            vec![],
+            &revoked,
             vec![],
             Some((0, None)),
             &meta,
-            &mut report,
-            &HashSet::new()
+            &mut report
         )
         .is_err());
-    assert_eq!(client.subs[0].state, SubState::Active);
+    assert_eq!(
+        client.unit(&id).unwrap().unwrap().status,
+        UnitStatus::Active
+    );
     assert_eq!(client.local_revision().unwrap(), revision);
     assert!(report.revoked.is_empty());
     assert!(client.conn.is_autocommit());
@@ -5883,18 +5827,17 @@ fn cached_blob_cleanup_propagates_delete_failures() {
     assert!(client
         .process_section(
             &mut transport,
-            "attachments",
-            SubStatus::Revoked,
-            "sync.scope_revoked",
-            vec![],
+            &revoked,
             vec![],
             Some((0, None)),
             &meta,
-            &mut report,
-            &HashSet::new()
+            &mut report
         )
         .is_ok());
-    assert_eq!(client.subs[0].state, SubState::Revoked);
+    assert_eq!(
+        client.unit(&id).unwrap().unwrap().status,
+        UnitStatus::Revoked
+    );
     assert_eq!(
         client
             .conn
@@ -6038,12 +5981,12 @@ fn overlay_replay_failure_rolls_back_push_and_pull_apply_boundaries() {
         table_index: 0,
         op: Op::Upsert,
         row_id: "queued".into(),
-        row_version: Some(2),
+        row_version: 2,
         scopes: vec![("project_id".into(), "p1".into())],
         row: Some(bytes),
     };
     assert!(client
-        .apply_commit_frame(&["tasks".into()], std::slice::from_ref(&change), Some(2))
+        .apply_commit_frame(&["tasks".into()], std::slice::from_ref(&change), 2)
         .is_err());
     assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
     assert_eq!(
@@ -6110,7 +6053,7 @@ fn overlay_replay_failure_rolls_back_push_and_pull_apply_boundaries() {
         SyncOutcome::Ok(_)
     ));
     client
-        .apply_commit_frame(&["tasks".into()], &[change], Some(2))
+        .apply_commit_frame(&["tasks".into()], &[change], 2)
         .unwrap();
     assert!(client.pending_commit_ids().is_empty());
     assert_eq!(
@@ -6206,7 +6149,7 @@ fn overlay_replay_keeps_secondary_unique_deferral_and_lazy_base_precedence() {
         .unwrap()
         .is_none());
     assert!(client.rejections().is_empty());
-    client.delete_base_row("tasks", "server").unwrap();
+    client.delete_base_row("tasks", "server", i64::MAX).unwrap();
     client.rebuild_overlay_if_dirty().unwrap();
     assert!(client
         .visible_row(client.schema.table("tasks").unwrap(), "queued")
@@ -6403,10 +6346,8 @@ fn reopening_active_subscriptions_emits_a_catch_up_intent() {
         first
             .set_window(
                 &WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: Vec::new(),
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 &["persisted".to_owned()],
             )
@@ -6430,40 +6371,24 @@ fn reopening_active_subscriptions_emits_a_catch_up_intent() {
 }
 
 #[test]
-fn reopening_preserves_immutable_subscription_identity_and_progress() {
+fn reopening_preserves_unit_progress_and_registering_again_changes_nothing() {
     let path = std::env::temp_dir().join(format!(
-        "syncular-subscription-identity-{}.db",
+        "syncular-unit-progress-{}.db",
         uuid::Uuid::new_v4()
     ));
     let schema = json!({
         "version": 1,
-        "tables": [
-            {
-                "name": "tasks",
-                "primaryKey": "id",
-                "columns": [
-                    { "name": "id", "type": "string", "nullable": false },
-                    { "name": "project_id", "type": "string", "nullable": false }
-                ],
-                "scopes": [{ "pattern": "project:{project_id}" }]
-            },
-            {
-                "name": "docs",
-                "primaryKey": "id",
-                "columns": [
-                    { "name": "id", "type": "string", "nullable": false },
-                    { "name": "org_id", "type": "string", "nullable": false },
-                    { "name": "project_id", "type": "string", "nullable": false }
-                ],
-                "scopes": [
-                    { "pattern": "org:{org_id}" },
-                    { "pattern": "project:{projectId}", "column": "project_id" }
-                ]
-            }
-        ]
+        "tables": [{
+            "name": "tasks",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "project_id", "type": "string", "nullable": false }
+            ],
+            "scopes": [{ "pattern": "project:{project_id}" }]
+        }]
     });
-
-    {
+    let id = {
         let mut first = SyncClient::open_path_with_identity(
             None,
             &schema,
@@ -6471,34 +6396,22 @@ fn reopening_preserves_immutable_subscription_identity_and_progress() {
             path.to_str().expect("UTF-8 temp path"),
         )
         .expect("first open");
-        first
-            .subscribe(
-                "stable-subscription".to_owned(),
-                "tasks".to_owned(),
-                vec![(
-                    "project_id".to_owned(),
-                    vec!["p2".to_owned(), "p1".to_owned()],
-                )],
-                Some(r#"{"view":"v1"}"#.to_owned()),
-            )
-            .expect("persist subscription");
-        let persisted = {
-            let subscription = first
-                .subs
-                .iter_mut()
-                .find(|subscription| subscription.id == "stable-subscription")
-                .expect("subscription");
-            subscription.cursor = 41;
-            subscription.bootstrap_state = Some("resume-token".to_owned());
-            subscription.effective = Some(vec![(
-                "project_id".to_owned(),
-                vec!["p1".to_owned(), "p2".to_owned()],
-            )]);
-            subscription.synced_once = true;
-            subscription.clone()
-        };
-        first.persist_sub(&persisted).unwrap();
-    }
+        let id = first
+            .subscribe(unit_scopes("project_id", "p1"))
+            .expect("register");
+        let unit = first.unit(&id).unwrap().expect("unit");
+        save_unit(
+            &first.conn,
+            &UnitRecord {
+                cursor: Some(41),
+                bootstrap_state: Some("resume-token".to_owned()),
+                seeded: vec!["tasks".to_owned()],
+                ..unit
+            },
+        )
+        .unwrap();
+        id
+    };
 
     let mut reopened = SyncClient::open_path_with_identity(
         None,
@@ -6507,71 +6420,15 @@ fn reopening_preserves_immutable_subscription_identity_and_progress() {
         path.to_str().expect("UTF-8 temp path"),
     )
     .expect("reopen");
-    let progress = reopened
-        .subscription_state("stable-subscription")
-        .expect("persisted state");
-    assert_eq!(progress.cursor, 41);
-    assert!(progress.has_resume_token);
-
-    reopened
-        .subscribe(
-            "stable-subscription".to_owned(),
-            "tasks".to_owned(),
-            vec![(
-                "project_id".to_owned(),
-                vec!["p1".to_owned(), "p2".to_owned(), "p1".to_owned()],
-            )],
-            Some(r#"{"view":"v1"}"#.to_owned()),
-        )
-        .expect("canonical intent is idempotent");
+    let progress = reopened.unit(&id).unwrap().expect("persisted state");
+    assert_eq!(progress.cursor, Some(41));
+    assert_eq!(progress.bootstrap_state.as_deref(), Some("resume-token"));
+    // §4.1: registering an active unit again keeps all of its state.
     assert_eq!(
-        reopened
-            .subscription_state("stable-subscription")
-            .expect("unchanged state")
-            .cursor,
-        progress.cursor
+        reopened.subscribe(unit_scopes("project_id", "p1")).unwrap(),
+        id
     );
-
-    for (table, scopes, params) in [
-        (
-            "tasks",
-            vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-            Some(r#"{"view":"v1"}"#.to_owned()),
-        ),
-        (
-            "tasks",
-            vec![(
-                "project_id".to_owned(),
-                vec!["p2".to_owned(), "p1".to_owned()],
-            )],
-            Some(r#"{"view":"v2"}"#.to_owned()),
-        ),
-        (
-            "docs",
-            vec![
-                ("org_id".to_owned(), vec!["o1".to_owned()]),
-                ("projectId".to_owned(), vec!["p1".to_owned()]),
-            ],
-            Some(r#"{"view":"v1"}"#.to_owned()),
-        ),
-    ] {
-        let error = reopened
-            .subscribe(
-                "stable-subscription".to_owned(),
-                table.to_owned(),
-                scopes,
-                params,
-            )
-            .expect_err("identity rebind must fail");
-        assert!(error.starts_with("client.subscription_intent_mismatch:"));
-        assert_eq!(
-            reopened
-                .subscription_state("stable-subscription")
-                .expect("unchanged state")
-                .cursor,
-            progress.cursor
-        );
-    }
+    assert_eq!(reopened.unit(&id).unwrap(), Some(progress));
 
     drop(reopened);
     std::fs::remove_file(path).expect("remove temp database");
@@ -6605,12 +6462,10 @@ fn reopening_clears_a_schema_floor_the_running_app_already_satisfies() {
         )
         .expect("first open");
         first
-            .subscribe(
-                "tasks".to_owned(),
-                "tasks".to_owned(),
-                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-                None,
-            )
+            .subscribe(UnitScopes::from([(
+                "project_id".to_owned(),
+                "p1".to_owned(),
+            )]))
             .expect("persist subscription");
         first
             .set_schema_floor(Some(SchemaFloor {
@@ -6666,12 +6521,10 @@ fn reopening_keeps_an_unsatisfied_schema_floor_stopped() {
         )
         .expect("first open");
         first
-            .subscribe(
-                "tasks".to_owned(),
-                "tasks".to_owned(),
-                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-                None,
-            )
+            .subscribe(UnitScopes::from([(
+                "project_id".to_owned(),
+                "p1".to_owned(),
+            )]))
             .expect("persist subscription");
         first
             .set_schema_floor(Some(SchemaFloor {
@@ -6738,12 +6591,10 @@ fn schema_bump_precedes_index_ddl_and_prunes_removed_subscriptions() {
         )
         .expect("open old schema");
         first
-            .subscribe(
-                "legacy-sub".to_owned(),
-                "legacy".to_owned(),
-                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
-                None,
-            )
+            .subscribe(UnitScopes::from([(
+                "project_id".to_owned(),
+                "p1".to_owned(),
+            )]))
             .expect("persist legacy subscription");
     }
 
@@ -6790,7 +6641,8 @@ fn schema_bump_precedes_index_ddl_and_prunes_removed_subscriptions() {
         )
         .expect("query index");
     assert_eq!(index_count, 1);
-    assert!(upgraded.subscription_state("legacy-sub").is_none());
+    // The unit covered `legacy`, which the bump removed (§7.4.3).
+    assert!(upgraded.units().unwrap().is_empty());
     drop(upgraded);
     std::fs::remove_file(path).expect("remove temp database");
 }
@@ -7151,10 +7003,8 @@ fn file_snapshot_reader_matches_owner_rows_revision_and_coverage() {
     )
     .expect("open owner");
     let base = WindowBase {
-        table: "tasks".to_owned(),
         variable: "project_id".to_owned(),
-        fixed_scopes: Vec::new(),
-        params: None,
+        fixed_scopes: UnitScopes::new(),
     };
     client
         .set_window(&base, &["one".to_owned()])
@@ -7232,13 +7082,8 @@ fn file_snapshot_reader_reports_catchup_delivery_and_multi_statement() {
         path.to_str().expect("UTF-8 temp path"),
     )
     .expect("open owner");
-    client
-        .subscribe(
-            "s1".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["one".into()])],
-            None,
-        )
+    let unit = client
+        .subscribe(UnitScopes::from([("project_id".to_owned(), "one".into())]))
         .expect("subscribe");
     let commit_id = client
         .mutate(vec![Mutation::Upsert {
@@ -7268,7 +7113,7 @@ fn file_snapshot_reader_reports_catchup_delivery_and_multi_statement() {
                 },
             ],
             coverage: &[],
-            subscriptions: vec!["s1".to_owned(), "absent".to_owned()],
+            units: vec![unit.clone(), "absent".to_owned()],
             commit_ids: vec![commit_id.clone(), "never-known".to_owned()],
         })
         .expect("snapshot read");
@@ -7276,24 +7121,24 @@ fn file_snapshot_reader_reports_catchup_delivery_and_multi_statement() {
     assert_eq!(read.queries.len(), 2);
     assert_eq!(read.queries[0][0]["n"], 1);
     assert_eq!(read.queries[1][0]["id"], "t1");
-    match &read.subscriptions[0] {
-        SubscriptionCatchup::Known {
+    match &read.units[0] {
+        UnitCatchup::Known {
             status,
             cursor,
             bootstrap_complete,
             known_pending_pages,
             ..
         } => {
-            assert_eq!(status, "active");
+            assert_eq!(*status, UnitStatus::Active);
             assert_eq!(*cursor, -1);
             assert!(!bootstrap_complete);
             assert!(known_pending_pages);
         }
-        other => panic!("expected a known subscription: {other:?}"),
+        other => panic!("expected a known unit: {other:?}"),
     }
     assert!(matches!(
-        &read.subscriptions[1],
-        SubscriptionCatchup::Unknown { id } if id.as_str() == "absent"
+        &read.units[1],
+        UnitCatchup::Unknown { id } if id.as_str() == "absent"
     ));
     assert!(matches!(
         &read.deliveries[0],
@@ -7542,7 +7387,7 @@ fn snapshot_read_isolates_a_concurrent_writer_commit() {
                 },
             ],
             coverage: &[],
-            subscriptions: Vec::new(),
+            units: Vec::new(),
             commit_ids: Vec::new(),
         })
         .expect("snapshot read");
@@ -7650,9 +7495,9 @@ fn snapshot_read_rejects_every_non_canonical_revision() {
 }
 
 #[test]
-fn snapshot_read_rejects_corrupt_subscription_state() {
+fn snapshot_read_rejects_corrupt_unit_state() {
     let path = std::env::temp_dir().join(format!(
-        "syncular-read-substate-{}.db",
+        "syncular-read-unitstate-{}.db",
         uuid::Uuid::new_v4()
     ));
     let schema = json!({
@@ -7668,57 +7513,41 @@ fn snapshot_read_rejects_corrupt_subscription_state() {
         }]
     });
     let mut client = SyncClient::open_path_with_identity(
-        Some("sidecar-substate".to_owned()),
+        Some("sidecar-unitstate".to_owned()),
         &schema,
         ClientLimits::default(),
         path.to_str().expect("UTF-8 temp path"),
     )
     .expect("open owner");
-    client
-        .subscribe(
-            "s1".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["one".into()])],
-            None,
-        )
+    let id = client
+        .subscribe(UnitScopes::from([("project_id".to_owned(), "one".into())]))
         .expect("subscribe");
     let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
-    for bad in [
-        "not json".to_owned(),
-        "{}".to_owned(),
-        json!({ "status": "bogus", "cursor": 0 }).to_string(),
-        json!({ "status": "active", "cursor": "x" }).to_string(),
-        json!({ "status": "active", "cursor": 0, "bootstrapState": 7 }).to_string(),
-        json!({ "status": "active", "cursor": 0, "reasonCode": 7 }).to_string(),
+    for assignment in [
+        "scopes='not json'",
+        "scopes='[]'",
+        "status='bogus'",
+        "cursor='x'",
+        "cursor=0.5",
+        "scopes='{\"project_id\":[\"one\"]}'",
+        "echo='[{\"table\":\"tasks\",\"status\":\"paused\",\"scopes\":{}}]'",
+        "bootstrap_state=X'00'",
+        "reason_code=X'00'",
+        "seeded='{}'",
+        "echo='[1]'",
+        "scopes=X'7b7d'",
+        "scopes=CAST(X'FF' AS TEXT)",
     ] {
         client
             .conn
-            .execute(
-                "UPDATE _syncular_subscriptions SET state_json = ?1 WHERE id = 's1'",
-                rusqlite::params![bad],
-            )
-            .expect("corrupt subscription state");
-        let failure = reader
-            .subscription_catchup("s1")
-            .expect_err("corrupt state fails");
-        assert_eq!(failure.code, Some("sync.local_corrupt"), "{bad}");
-    }
-
-    for assignment in [
-        "tbl=X'7461736b73'",
-        "state_json=X'7b7d'",
-        "state_json=CAST(X'FF' AS TEXT)",
-    ] {
-        client.conn.execute_batch(&format!(
-            "UPDATE _syncular_subscriptions SET tbl='tasks',state_json='{{\"status\":\"active\",\"cursor\":0}}'; UPDATE _syncular_subscriptions SET {assignment} WHERE id='s1'"
-        )).expect("corrupt stored subscription type");
-        assert_eq!(
-            reader
-                .subscription_catchup("s1")
-                .expect_err("invalid SQL field")
-                .code,
-            Some("sync.local_corrupt")
-        );
+            .execute_batch(&format!(
+                "UPDATE _syncular_units SET scopes='{{\"project_id\":\"one\"}}', status='active',
+                   cursor=-1, bootstrap_state=NULL, reason_code=NULL, seeded='[]', echo=NULL;
+                 UPDATE _syncular_units SET {assignment} WHERE id='{id}'"
+            ))
+            .expect("corrupt stored unit");
+        let failure = reader.unit_catchup(&id).expect_err("corrupt state fails");
+        assert_eq!(failure.code, Some("sync.local_corrupt"), "{assignment}");
     }
 
     drop(reader);
@@ -7779,7 +7608,7 @@ fn snapshot_read_rolls_back_a_later_invalid_statement_and_guards_every_write() {
                 },
             ],
             coverage: &[],
-            subscriptions: Vec::new(),
+            units: Vec::new(),
             commit_ids: vec![commit_id.clone()],
         })
         .expect_err("second statement fails");
@@ -7807,7 +7636,7 @@ fn snapshot_read_rolls_back_a_later_invalid_statement_and_guards_every_write() {
                 params: &[],
             }],
             coverage: &[],
-            subscriptions: Vec::new(),
+            units: Vec::new(),
             commit_ids: Vec::new(),
         })
         .expect_err("write guard");
@@ -7878,7 +7707,7 @@ fn owned_query_failures_classify_order_bound_and_clear() {
         Some(&io),
     );
     let failures = &client
-        .diagnostics_snapshot(&Default::default())
+        .diagnostics_snapshot()
         .expect("diagnostics")
         .query_failures;
     assert_eq!(
@@ -7901,7 +7730,7 @@ fn owned_query_failures_classify_order_bound_and_clear() {
         );
     }
     let failures = &client
-        .diagnostics_snapshot(&Default::default())
+        .diagnostics_snapshot()
         .expect("bounded diagnostics")
         .query_failures;
     assert_eq!(failures.len(), MAX_DIAGNOSTIC_QUERY_FAILURES);
@@ -7919,7 +7748,7 @@ fn owned_query_failures_classify_order_bound_and_clear() {
         )
         .expect("successful owned read");
     assert!(client
-        .diagnostics_snapshot(&Default::default())
+        .diagnostics_snapshot()
         .expect("cleared diagnostics")
         .query_failures
         .iter()
@@ -7968,13 +7797,15 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
 fn eviction_chunks_commit_before_failure_and_resume_with_exact_scope() {
     let mut client = client();
     let base = WindowBase {
-        table: "tasks".into(),
         variable: "project_id".into(),
-        fixed_scopes: Vec::new(),
-        params: None,
+        fixed_scopes: UnitScopes::new(),
     };
     client
         .set_window(&base, &["p1".into(), "p2".into()])
+        .unwrap();
+    client
+        .conn
+        .execute("UPDATE _syncular_units SET echo='[]', cursor=NULL", [])
         .unwrap();
     client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050)
         INSERT INTO _syncular_base_tasks SELECT printf('%05d',x),'p1',1 FROM n;
@@ -7990,7 +7821,7 @@ fn eviction_chunks_commit_before_failure_and_resume_with_exact_scope() {
             .unwrap()[0]["n"],
         1027
     );
-    assert_eq!(client.window_state(&base).units, vec!["p2"]);
+    assert_eq!(client.window_state(&base).unwrap().units, vec!["p2"]);
     assert_eq!(client.load_pending_evictions().unwrap().len(), 1);
     assert_eq!(client.drain_change_batches().len(), 1);
     client
@@ -8010,16 +7841,19 @@ fn eviction_chunks_commit_before_failure_and_resume_with_exact_scope() {
 fn eviction_marker_failures_roll_back_window_changes() {
     let mut client = client();
     let base = WindowBase {
-        table: "tasks".into(),
         variable: "project_id".into(),
-        fixed_scopes: Vec::new(),
-        params: None,
+        fixed_scopes: UnitScopes::new(),
     };
     client.set_window(&base, &["p1".into()]).unwrap();
+    // A unit evicts only the rows of its persisted echo (§4.8).
+    client
+        .conn
+        .execute("UPDATE _syncular_units SET echo='[]', cursor=NULL", [])
+        .unwrap();
     client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050)
         INSERT INTO _syncular_base_tasks SELECT printf('%05d',x),'p1',1 FROM n;
         INSERT INTO tasks SELECT * FROM _syncular_base_tasks;
-        CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
+        CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_pending_evictions BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
     let revision = client.local_revision().unwrap();
     assert!(client.set_window(&base, &[]).is_err());
     assert!(client.conn.is_autocommit());
@@ -8030,12 +7864,12 @@ fn eviction_marker_failures_roll_back_window_changes() {
             .unwrap()[0]["n"],
         2050
     );
-    assert_eq!(client.window_state(&base).units, vec!["p1"]);
+    assert_eq!(client.window_state(&base).unwrap().units, vec!["p1"]);
     client.conn.execute_batch("DROP TRIGGER fail_marker;
         CREATE TRIGGER interrupt_evict BEFORE DELETE ON tasks WHEN old.id='01500' BEGIN SELECT RAISE(ABORT,'interrupted chunk'); END;").unwrap();
     assert!(client.set_window(&base, &[]).is_err());
     client.conn.execute_batch("DROP TRIGGER interrupt_evict;
-        CREATE TRIGGER fail_marker BEFORE DELETE ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
+        CREATE TRIGGER fail_marker BEFORE DELETE ON _syncular_pending_evictions BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
     assert!(client.drain_pending_evictions().is_err());
     assert!(client.conn.is_autocommit());
     assert_eq!(
@@ -8046,14 +7880,11 @@ fn eviction_marker_failures_roll_back_window_changes() {
     );
     assert!(client.set_window(&base, &["p1".into()]).is_err());
     assert!(client.conn.is_autocommit());
-    assert!(client.window_state(&base).units.is_empty());
-    assert!(client.subs.is_empty());
+    assert!(client.window_state(&base).unwrap().units.is_empty());
+    assert!(client.units().unwrap().is_empty());
     assert_eq!(
         client
-            .query(
-                "SELECT count(*) AS n FROM _syncular_window_pending_evict",
-                &[]
-            )
+            .query("SELECT count(*) AS n FROM _syncular_pending_evictions", &[])
             .unwrap()[0]["n"],
         1
     );
@@ -8062,7 +7893,7 @@ fn eviction_marker_failures_roll_back_window_changes() {
         .execute_batch("DROP TRIGGER fail_marker")
         .unwrap();
     client.set_window(&base, &["p1".into()]).unwrap();
-    assert_eq!(client.window_state(&base).units, vec!["p1"]);
+    assert_eq!(client.window_state(&base).unwrap().units, vec!["p1"]);
 }
 
 #[test]
@@ -8071,7 +7902,7 @@ fn malformed_eviction_marker_is_reported_without_starting_cleanup() {
     client
         .conn
         .execute(
-            "INSERT INTO _syncular_window_pending_evict VALUES ('broken','tasks','{')",
+            "INSERT INTO _syncular_pending_evictions VALUES ('broken','tasks','{')",
             [],
         )
         .unwrap();
@@ -8132,10 +7963,6 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
             SyncClient::new("reference".into(), &schema, ClientLimits::default()).unwrap();
         let scopes = vec![("project_id".into(), vec!["p1".into()])];
         for client in [&mut actual, &mut reference] {
-            client
-                .subscribe("tasks".into(), "tasks".into(), scopes.clone(), None)
-                .unwrap();
-            client.subs[0].effective = Some(scopes.clone());
             for (table, id, title) in [
                 ("tasks", "a", "original"),
                 ("tasks", "b", "occupied"),
@@ -8194,14 +8021,15 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
         }
         let pending = actual.pending_commit_ids();
         actual.overlay_rebuild_count.set(0);
-        for (id, title) in [
+        // §4.5: every server write of a row carries a higher version.
+        for (version, (id, title)) in (2..).zip([
             ("b", "available"),
             ("b", "occupied"),
             ("a", "server original"),
             ("d", "local value"),
             ("d", "released"),
             ("c", "redelivered"),
-        ] {
+        ]) {
             let table = actual.schema.table("tasks").unwrap().clone();
             let values = vec![
                 Some(ColumnValue::String(id.into())),
@@ -8214,7 +8042,10 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                     CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
                     INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1);").unwrap();
                 image
-                    .execute("INSERT INTO tasks VALUES (?1,'p1',?2,2)", [id, title])
+                    .execute(
+                        "INSERT INTO tasks VALUES (?1,'p1',?2,?3)",
+                        rusqlite::params![id, title, version],
+                    )
                     .unwrap();
                 assert!(matches!(
                     actual.apply_sqlite_image(&image, &table, false, &scopes, &[], 1, 7, "digest"),
@@ -8226,13 +8057,16 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                     schema_version: 1,
                     columns: table.wire_columns.clone(),
                     blocks: vec![vec![ssp2::segment::SegmentRow {
-                        server_version: 2,
+                        server_version: version,
                         values: values.clone(),
                     }]],
                 };
-                assert!(matches!(actual.apply_segment(0, &segment, false), Ok(1)));
+                assert!(matches!(
+                    actual.apply_segment(&table, &segment, false, &scopes, &[]),
+                    Ok(1)
+                ));
             }
-            reference.write_base_row("tasks", &values, 2).unwrap();
+            reference.write_base_row("tasks", &values, version).unwrap();
             reference.rebuild_overlay().expect("rebuild overlay");
             for table in ["tasks", "notes"] {
                 for sql in [format!("SELECT * FROM {table} ORDER BY id"),format!("SELECT _syncular_source_id,title FROM {table}_fts ORDER BY _syncular_source_id"),format!("SELECT source_id FROM _syncular_fts_{table}_fts ORDER BY source_id")] {
@@ -8260,7 +8094,7 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
             schema_version: 1,
             columns: table.wire_columns.clone(),
             blocks: vec![vec![ssp2::segment::SegmentRow {
-                server_version: 3,
+                server_version: 9,
                 values: vec![
                     Some(ColumnValue::String("b".into())),
                     Some(ColumnValue::String("p1".into())),
@@ -8268,7 +8102,9 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                 ],
             }]],
         };
-        assert!(actual.apply_segment(0, &segment, false).is_err());
+        assert!(actual
+            .apply_segment(&table, &segment, false, &scopes, &[])
+            .is_err());
         assert!(actual.conn.is_autocommit());
         assert_eq!(
             actual
@@ -8300,9 +8136,6 @@ fn import_reconciliation_preserves_typed_pending_primary_keys() {
             let mut client =
                 SyncClient::new("typed".into(), &schema, ClientLimits::default()).unwrap();
             let table = client.schema.table("tasks").unwrap().clone();
-            client
-                .subscribe("tasks".into(), "tasks".into(), vec![], None)
-                .unwrap();
             for (id, title) in [(&a, "original"), (&b, "occupied")] {
                 client
                     .write_base_row(
@@ -8327,7 +8160,9 @@ fn import_reconciliation_preserves_typed_pending_primary_keys() {
                 }])
                 .unwrap();
             client.overlay_rebuild_count.set(0);
-            for (title, expected) in [("available", "original"), ("occupied", "available")] {
+            for (version, title, expected) in
+                [(2, "available", "original"), (3, "occupied", "available")]
+            {
                 let values = vec![
                     json_to_column_value(&table.columns[0], Some(&b)).unwrap(),
                     Some(ColumnValue::String(title.into())),
@@ -8339,8 +8174,8 @@ fn import_reconciliation_preserves_typed_pending_primary_keys() {
                         INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1);").unwrap();
                     image
                         .execute(
-                            "INSERT INTO tasks VALUES (?1,?2,2)",
-                            rusqlite::params![RowParam::Cell(&values[0]), title],
+                            "INSERT INTO tasks VALUES (?1,?2,?3)",
+                            rusqlite::params![RowParam::Cell(&values[0]), title, version],
                         )
                         .unwrap();
                     assert!(
@@ -8365,12 +8200,15 @@ fn import_reconciliation_preserves_typed_pending_primary_keys() {
                         schema_version: 1,
                         columns: table.wire_columns.clone(),
                         blocks: vec![vec![ssp2::segment::SegmentRow {
-                            server_version: 2,
+                            server_version: version,
                             values,
                         }]],
                     };
                     assert!(
-                        matches!(client.apply_segment(0, &segment, false), Ok(1)),
+                        matches!(
+                            client.apply_segment(&table, &segment, false, &[], &[]),
+                            Ok(1)
+                        ),
                         "{kind}"
                     );
                 }
@@ -10283,6 +10121,7 @@ impl SplitParityTransport {
                     if let Frame::PushCommit {
                         client_commit_id,
                         operations,
+                        ..
                     } = frame
                     {
                         commit_seq += 1;
@@ -10298,17 +10137,7 @@ impl SplitParityTransport {
                         });
                     }
                 }
-                frames.push(Frame::SubStart {
-                    id: "tasks".into(),
-                    status: SubStatus::Active,
-                    reason_code: String::new(),
-                    effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
-                    bootstrap: false,
-                });
-                frames.push(Frame::SubEnd {
-                    next_cursor: 0,
-                    bootstrap_state: None,
-                });
+                frames.extend(live_section(commit_seq, Vec::new()));
                 Ok(encode_message(&Message {
                     wire_version: WIRE_VERSION,
                     msg_kind: MsgKind::Response,
@@ -10417,18 +10246,7 @@ fn parity_clients() -> (SyncClient, SyncClient) {
     let [exchange, split] = ["parity-exchange", "parity-split"].map(|id| {
         let mut client = SyncClient::new(id.to_owned(), &schema, ClientLimits::default()).unwrap();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-        client
-            .subscribe(
-                "tasks".into(),
-                "tasks".into(),
-                vec![("project_id".into(), vec!["p1".into()])],
-                None,
-            )
-            .unwrap();
-        client.subs[0].cursor = 0;
-        client.subs[0].synced_once = true;
-        client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-        client.persist_sub(&client.subs[0]).unwrap();
+        live_unit(&client, &[("project_id", "p1")]);
         client.drain_change_batches();
         client
     });
@@ -10456,12 +10274,9 @@ fn pull_response(client: &SyncClient) -> Message {
                 log_epoch: "epoch-1".into(),
                 reset_required: false,
             },
-            Frame::SubStart {
-                id: "tasks".into(),
-                status: SubStatus::Active,
+            Frame::LiveStart {
+                status: LiveStatus::Active,
                 reason_code: String::new(),
-                effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
-                bootstrap: false,
             },
             Frame::Commit {
                 commit_seq: 1,
@@ -10472,14 +10287,14 @@ fn pull_response(client: &SyncClient) -> Message {
                     table_index: 0,
                     row_id: "kept".into(),
                     op: Op::Upsert,
-                    row_version: Some(1),
+                    row_version: 1,
                     scopes: vec![("project_id".into(), "p1".into())],
                     row: Some(row),
                 }],
             },
-            Frame::SubEnd {
-                next_cursor: 1,
-                bootstrap_state: None,
+            Frame::LiveEnd {
+                through_seq: 1,
+                echo_digest: None,
             },
         ],
     }
@@ -10519,12 +10334,7 @@ fn split_round_matches_exchange_for_a_push_with_an_upload() {
         let mut client = SyncClient::new(id.to_owned(), &schema, ClientLimits::default()).unwrap();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         client
-            .subscribe(
-                "attachments".into(),
-                "attachments".into(),
-                vec![("project_id".into(), vec!["p1".into()])],
-                None,
-            )
+            .subscribe(UnitScopes::from([("project_id".to_owned(), "p1".into())]))
             .unwrap();
         client
     });
@@ -10739,11 +10549,11 @@ fn split_round_matches_exchange_for_a_segment_download() {
                 reset_required: false,
             },
             Frame::SubStart {
-                id: "tasks".into(),
+                id: ssp2::registration::unit_id(&[("project_id".into(), "p1".into())]),
                 status: SubStatus::Active,
                 reason_code: String::new(),
-                effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
                 bootstrap: true,
+                fenced: Vec::new(),
             },
             Frame::SegmentRef {
                 segment_id: segment_id.clone(),
@@ -10761,6 +10571,14 @@ fn split_round_matches_exchange_for_a_segment_download() {
             Frame::SubEnd {
                 next_cursor: 1,
                 bootstrap_state: None,
+            },
+            Frame::LiveStart {
+                status: LiveStatus::Active,
+                reason_code: String::new(),
+            },
+            Frame::LiveEnd {
+                through_seq: 1,
+                echo_digest: None,
             },
         ],
     };
@@ -10939,16 +10757,9 @@ fn bootstrap_stays_incremental_beside_protected_intent_on_another_table() {
         answer_pushes(&mut client, 1, |_| PushStatus::Applied),
         SyncOutcome::Ok(_)
     ));
-    client
-        .register_subscription(
-            "tasks".into(),
-            "tasks".into(),
-            vec![("project_id".into(), vec!["p1".into()])],
-            None,
-        )
-        .unwrap();
-    client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
-    let columns = client.schema.table("tasks").unwrap().wire_columns.clone();
+    let tasks = client.schema.table("tasks").unwrap().clone();
+    let effective = vec![("project_id".to_owned(), vec!["p1".to_owned()])];
+    let columns = tasks.wire_columns.clone();
     let segment = |from: usize, blocks: usize| RowsSegment {
         table: "tasks".into(),
         schema_version: 1,
@@ -10972,7 +10783,10 @@ fn bootstrap_stays_incremental_beside_protected_intent_on_another_table() {
     };
     let first = segment(0, 49);
     client.overlay_rebuild_count.set(0);
-    assert!(matches!(client.apply_segment(0, &first, true), Ok(50176)));
+    assert!(matches!(
+        client.apply_segment(&tasks, &first, true, &effective, &[]),
+        Ok(50176)
+    ));
     assert_eq!(
         client.overlay_rebuild_count.get(),
         0,
@@ -10986,7 +10800,10 @@ fn bootstrap_stays_incremental_beside_protected_intent_on_another_table() {
     assert_eq!(client.failed_commits.len(), 1);
     let second = segment(50176, 8);
     client.overlay_rebuild_count.set(0);
-    assert!(matches!(client.apply_segment(0, &second, false), Ok(8192)));
+    assert!(matches!(
+        client.apply_segment(&tasks, &second, false, &effective, &[]),
+        Ok(8192)
+    ));
     assert_eq!(
         client.overlay_rebuild_count.get(),
         0,
@@ -11058,7 +10875,7 @@ fn keyed_push_result_reconciliation_matches_a_full_rebuild() {
                 } else {
                     Op::Upsert
                 },
-                row_version: Some(seq),
+                row_version: seq,
                 scopes: vec![("project_id".into(), "p1".into())],
                 row: Some(
                     encode_row_json(
@@ -11070,9 +10887,7 @@ fn keyed_push_result_reconciliation_matches_a_full_rebuild() {
                     .unwrap(),
                 ),
             };
-            client
-                .apply_commit_frame(&tables, &[change], Some(seq))
-                .unwrap();
+            client.apply_commit_frame(&tables, &[change], seq).unwrap();
         }
         for commit in 0..3 {
             let n = round * 3 + commit;
@@ -11218,11 +11033,11 @@ fn failed_operations_restore_every_mirror_through_one_rollback() {
 }
 
 #[test]
-fn a_subscription_limit_refusal_reaches_the_app_with_its_details_and_is_not_retried() {
+fn a_unit_limit_refusal_reaches_the_app_with_its_details_and_is_not_retried() {
     // The error the native transport builds from the server's HTTP 413 body.
     let mut refusal = TransportError::new(
         "sync.limit_exceeded",
-        "request carries more subscriptions than the server accepts (§1.7)",
+        "request carries more units than the server accepts (§1.7)",
     );
     refusal.details = Some(json!({
         "category": "invalid-request",
@@ -11238,24 +11053,9 @@ fn a_subscription_limit_refusal_reaches_the_app_with_its_details_and_is_not_retr
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
     client
-        .subscribe_many(
-            ["a", "b"]
-                .map(|id| SubscriptionRequest {
-                    id: id.to_owned(),
-                    table: "tasks".to_owned(),
-                    scopes: vec![("project_id".to_owned(), vec![id.to_owned()])],
-                    params: None,
-                })
-                .to_vec(),
-        )
+        .subscribe_many(["a", "b"].map(|id| unit_scopes("project_id", id)).to_vec())
         .unwrap();
-    assert_eq!(
-        client
-            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-            .unwrap()
-            .active_subscriptions,
-        2
-    );
+    assert_eq!(client.diagnostics_snapshot().unwrap().active_units, 2);
     client.drain_sync_intents();
     let outcome = client.sync(&mut transport);
     let SyncOutcome::Failed {
@@ -11277,9 +11077,7 @@ fn a_subscription_limit_refusal_reaches_the_app_with_its_details_and_is_not_retr
     assert_eq!(details["httpStatus"], 413);
     assert!(client.drain_sync_intents().is_empty());
     assert_eq!(client.progress().snapshot().unwrap().retry_delay_ms, None);
-    let snapshot = client
-        .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
-        .unwrap();
+    let snapshot = client.diagnostics_snapshot().unwrap();
     assert_eq!(
         snapshot.last_round.unwrap().error_code.as_deref(),
         Some("sync.limit_exceeded")

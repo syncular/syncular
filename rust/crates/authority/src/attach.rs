@@ -234,12 +234,16 @@ impl<'r, 'a> Remote<'r, 'a> {
                     client_id: client_id.clone(),
                     schema_version,
                     log_epoch: None,
+                    outbox_id: None,
                 },
                 Frame::PullHeader {
                     limit_commits: 0,
                     limit_snapshot_rows: 0,
                     max_snapshot_pages: 0,
                     accept: 0b0011,
+                    cursor: -1,
+                    registration_digest: ssp2::registration_digest(std::iter::empty()),
+                    echo_digest: None,
                 },
             ],
         )?;
@@ -267,9 +271,12 @@ impl<'r, 'a> Remote<'r, 'a> {
                     client_id: self.client_id.clone(),
                     schema_version: self.schema_version,
                     log_epoch: Some(self.log_epoch.clone()),
+                    outbox_id: None,
                 },
+                // §6.10: a producer without an outbox sends `clientSeq = 0`.
                 Frame::PushCommit {
                     client_commit_id: commit.0.clone(),
+                    client_seq: 0,
                     operations: commit.1.clone(),
                 },
             ],

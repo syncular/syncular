@@ -3,10 +3,20 @@
  * unwrapping, and convergence assertions (client mirror ≡ server state,
  * row for row and version for version).
  */
+import {
+  type PushResultFrame,
+  type ResponseMessage,
+  unitId,
+} from '@syncular/core';
 import { check, checkEqual } from '../checks';
-import type { ClientSyncReport, DriverRow } from '../driver';
+import type { ClientSyncReport, DriverRow, DriverUnitScopes } from '../driver';
 import { ALL_SCOPES } from '../fixture';
-import { rawPushCommit, rawUpsert, responsePushResults } from '../raw';
+import {
+  decodeResponse,
+  rawPushCommit,
+  rawUpsert,
+  responsePushResults,
+} from '../raw';
 import type { ClientHandle, ScenarioContext } from '../scenario';
 
 export async function syncOk(handle: ClientHandle): Promise<ClientSyncReport> {
@@ -43,6 +53,67 @@ export async function syncFails(
   if (!result.ok) {
     checkEqual(result.errorCode, expectedCode, `${what}: error code`);
   }
+}
+
+/**
+ * The cursor through which a unit's rows are complete (§4.5): its own cursor
+ * while it catches up, the replica cursor while it is live. `undefined` when
+ * the client holds no such unit.
+ */
+export async function unitCursor(
+  handle: ClientHandle,
+  unit: DriverUnitScopes,
+): Promise<number | undefined> {
+  const state = await handle.api.unitState(unitId(unit));
+  if (state === undefined) return undefined;
+  return state.cursor ?? (await handle.api.replicaCursor());
+}
+
+/** A unit's state with the replica cursor: everything a round can advance. */
+export async function unitProgress(
+  handle: ClientHandle,
+  unit: DriverUnitScopes,
+): Promise<unknown> {
+  return {
+    unit: await handle.api.unitState(unitId(unit)),
+    replicaCursor: await handle.api.replicaCursor(),
+  };
+}
+
+/** A `PUSH_RESULT` reduced to what §6.3 pins: status, `commitSeq`, and one
+ * `opIndex:status` (or `opIndex:code:retryable|final`) entry per result. */
+export function pushOutcome(push: PushResultFrame | undefined): unknown {
+  return (
+    push && {
+      status: push.status,
+      ...(push.commitSeq !== undefined ? { commitSeq: push.commitSeq } : {}),
+      results: push.results.map((result) =>
+        result.status === 'error'
+          ? `${result.opIndex}:${result.code}:${result.retryable ? 'retryable' : 'final'}`
+          : `${result.opIndex}:${result.status}`,
+      ),
+    }
+  );
+}
+
+/**
+ * Every round response `handle` receives from now on, decoded: its HTTP
+ * responses, then its socket rounds (§8.7). A scenario drives one of the two.
+ */
+export function captureResponses(
+  ctx: ScenarioContext,
+  handle: ClientHandle,
+): () => ResponseMessage[] {
+  const http: ResponseMessage[] = [];
+  const original = ctx.server.handleSyncRequest.bind(ctx.server);
+  ctx.server.handleSyncRequest = async (actor, request) => {
+    const result = await original(actor, request);
+    if (result.ok && actor === handle.actorId)
+      http.push(decodeResponse(result.bytes));
+    return result;
+  };
+  const from = handle.realtime.roundResponses.length;
+  return () => [...http, ...handle.realtime.roundResponses.slice(from)];
 }
 
 let seedCounter = 0;

@@ -65,7 +65,7 @@ Prepared bytes bind the request to that epoch.
 ## Database-less ordinary commits
 
 The client uses the existing `/sync` push path. It does not create a local
-database, subscription cursor, or outbox.
+database, replica cursor, or outbox.
 
 ```ts
 const prepared = await client.prepareCommit({
@@ -250,8 +250,8 @@ run: async (command, input) => {
 A `rescope` mutation changes a row's scope values without recreating it. Pass
 the complete row; only the scope columns may differ from the stored row. The
 server authorizes both the old and the new values, emits the delete under the
-old scopes and the upsert under the new ones in one commit, keeps the row's
-`server_version`, and leaves no tombstone. The row can move again without a
+old scopes and the upsert under the new ones in one commit, advances the row's
+`server_version` by 1, and leaves no tombstone. The row can move again without a
 `baseVersion = 0` insert.
 
 ```ts

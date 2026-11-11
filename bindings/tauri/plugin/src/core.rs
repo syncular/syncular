@@ -28,8 +28,7 @@ use std::collections::VecDeque;
 
 use serde_json::{json, Value};
 use syncular_client::{
-    ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, QueryOwner, QueryReadFailure, SyncClient,
-    SyncIntent,
+    ClientDiagnosticsSnapshot, QueryOwner, QueryReadFailure, SyncClient, SyncIntent,
 };
 use syncular_command::{dispatch, CreateEffects};
 
@@ -476,12 +475,11 @@ impl SyncularCore {
 
     /// Emit one privacy-safe snapshot only when a diagnostics consumer has
     /// registered (`diagnostics_observed`) AND durable/client status changed.
-    /// The observer gate keeps the per-command snapshot work (subscription
-    /// scan, PRAGMA page counts, SUM aggregates, serialization) off every
-    /// unobserved command and transport poll.
+    /// The observer gate keeps the per-command snapshot work (unit scan,
+    /// PRAGMA page counts, SUM aggregates, serialization) off every unobserved
+    /// command and transport poll.
     /// `capturedAtMs` is excluded from the fingerprint so polling and read-only
-    /// commands do not create event noise. Expected-but-unregistered intent is
-    /// request-local and is obtained through `diagnosticsSnapshot` directly.
+    /// commands do not create event noise.
     fn emit_diagnostics_if_changed(&mut self) {
         if !self.diagnostics_observed {
             return;
@@ -492,7 +490,7 @@ impl SyncularCore {
         if client.security_preflight() {
             return;
         }
-        let Ok(snapshot) = client.diagnostics_snapshot(&ClientDiagnosticsRequest::default()) else {
+        let Ok(snapshot) = client.diagnostics_snapshot() else {
             return;
         };
         if let Some(previous) = &mut self.last_diagnostics_snapshot {
@@ -572,7 +570,7 @@ mod tests {
                     { "name": "title", "type": "string", "nullable": false },
                     { "name": "done", "type": "boolean", "nullable": false }
                 ],
-                "scopes": []
+                "scopes": [{ "pattern": "todo:{id}" }]
             }]
         })
     }
@@ -661,9 +659,9 @@ mod tests {
 
         let sub = core.command(&json!({
             "method": "subscribe",
-            "params": { "id": "s1", "table": "todo", "scopes": {} }
+            "params": { "scopes": { "id": "t1" } }
         }));
-        assert_eq!(sub["result"], json!({}));
+        assert!(sub["result"]["id"].is_string(), "{sub}");
 
         let mutate = core.command(&json!({
             "method": "mutate",
@@ -766,7 +764,7 @@ mod tests {
             core.client
                 .as_ref()
                 .unwrap()
-                .diagnostics_snapshot(&Default::default())
+                .diagnostics_snapshot()
                 .unwrap(),
         )
         .unwrap();
@@ -795,7 +793,7 @@ mod tests {
             core.client
                 .as_ref()
                 .unwrap()
-                .diagnostics_snapshot(&Default::default())
+                .diagnostics_snapshot()
                 .unwrap(),
         )
         .unwrap();
@@ -918,7 +916,7 @@ mod tests {
         create(&mut core);
         let _ = core.drain_events();
         let reply = core.command(&json!({ "method": "diagnosticsSnapshot", "params": {} }));
-        assert_eq!(reply["result"]["version"], 1);
+        assert_eq!(reply["result"]["version"], 2);
         let _ = core.drain_events();
         core.command(&json!({
             "method": "mutate",
@@ -938,14 +936,11 @@ mod tests {
     fn diagnostics_are_versioned_bounded_and_payload_free() {
         let mut core = SyncularCore::new(&json!({})).unwrap();
         create(&mut core);
-        let reply = core.command(&json!({
-            "method": "diagnosticsSnapshot",
-            "params": {
-                "expectedSubscriptions": [{ "id": "membership", "table": "todo" }]
-            }
-        }));
-        assert_eq!(reply["result"]["version"], 1);
-        assert_eq!(reply["result"]["subscriptions"][0]["state"], "unregistered");
+        core.command(&json!({ "method": "subscribe", "params": { "scopes": { "id": "t1" } } }));
+        let reply = core.command(&json!({ "method": "diagnosticsSnapshot", "params": {} }));
+        assert_eq!(reply["result"]["version"], 2);
+        assert_eq!(reply["result"]["units"]["bootstrapping"], 1);
+        assert_eq!(reply["result"]["activeUnits"], 1);
         let encoded = reply.to_string();
         assert!(!encoded.contains("clientId"));
         assert!(!encoded.contains("dbPath"));
@@ -1055,9 +1050,7 @@ mod tests {
         let state = core.command(&json!({ "method": "localAuthorityState", "params": {} }));
         assert_eq!(state["result"]["state"], "local");
         for command in [
-            json!({ "method": "subscribe", "params": {
-                "id": "s1", "table": "todo", "scopes": { "list_id": ["l1"] }
-            }}),
+            json!({ "method": "subscribe", "params": { "scopes": { "list_id": "l1" } } }),
             json!({ "method": "mutate", "params": { "mutations": [
                 { "op": "upsert", "table": "todo", "values": { "id": "t1", "list_id": "l1" } }
             ]}}),

@@ -12,10 +12,16 @@
  * index-first fanout and dense per-partition commitSeq allocation.
  */
 import { describe, expect, test } from 'bun:test';
-import { encodeRow, type RowColumn } from '@syncular/core';
+import {
+  encodeRow,
+  registrationDigest,
+  type RowColumn,
+  unitId,
+} from '@syncular/core';
 import {
   type ClientRecord,
   compileSchema,
+  type NewChange,
   type NewReaction,
   PARTITION_TOUCH_INTERVAL_MS,
   prepareAuthorityTransaction,
@@ -313,6 +319,7 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            rowVersion: 2,
             scopes: { project_id: 'p1' },
           },
           {
@@ -346,14 +353,14 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
-            deletedVersion: 1,
+            rowVersion: 1,
             scopes: { project_id: 'p1' },
           },
           {
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
-            deletedVersion: 3,
+            rowVersion: 3,
             scopes: { project_id: 'p2' },
           },
         ],
@@ -919,10 +926,90 @@ export function runStorageContract(
 
     // --- Inverted scope index (§3.1) — the reason Postgres storage exists ---
 
-    test('readCommitWindow selects by scope, oldest first, honoring limit', async () => {
+    test('readLiveWindow scans unit keys across tables, oldest first, never splitting a commit', async () => {
       const storage = await make();
-      // Three commits: p1, p2, p1 again.
-      for (const [i, project] of ['p1', 'p2', 'p1'].entries()) {
+      const changes: [string, string, Record<string, string>][][] = [
+        [
+          ['tasks', 't1', { project_id: 'p1' }],
+          ['tasks', 'x1', { project_id: 'p2' }],
+          ['docs', 'd1', { org_id: 'o1', project_id: 'p1' }],
+        ],
+        [['tasks', 't2', { project_id: 'p2' }]],
+        [['docs', 'd3', { org_id: 'o1', project_id: 'p1' }]],
+      ];
+      for (const [i, commit] of changes.entries()) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: `k${i}`,
+          actorId: 'a',
+          createdAtMs: NOW + i,
+          changes: commit.map(([table, rowId, scopes]) => ({
+            table,
+            rowId,
+            op: 'upsert',
+            rowVersion: 1,
+            scopes,
+            payload: bytes(i),
+          })),
+        });
+        await tx.commit();
+      }
+      const unit = {
+        scopes: { project_id: 'p1' },
+        afterSeq: 0,
+        tables: new Map([
+          ['tasks', { project_id: ['p1'] }],
+          ['docs', { project_id: ['p1'] }],
+        ]),
+      };
+      const window = await storage.readLiveWindow(PARTITION, {
+        units: [unit],
+        throughSeq: 3,
+        limitChanges: 10,
+      });
+      // One commit per entry with every matching change in change order.
+      expect(
+        window.commits.map((commit) => [
+          commit.commitSeq,
+          commit.actorId,
+          commit.createdAtMs,
+          commit.changes.map((change) => change.rowId),
+        ]),
+      ).toEqual([
+        [1, 'a', NOW, ['t1', 'd1']],
+        [3, 'a', NOW + 2, ['d3']],
+      ]);
+      expect(window.throughSeq).toBe(3);
+      // The budget stops after the commit that reaches it: T is that commit.
+      const cut = await storage.readLiveWindow(PARTITION, {
+        units: [unit],
+        throughSeq: 3,
+        limitChanges: 1,
+      });
+      expect(cut.commits.map((commit) => commit.commitSeq)).toEqual([1]);
+      expect(cut.commits[0]?.changes).toHaveLength(2);
+      expect(cut.throughSeq).toBe(1);
+      // An empty scan set reads nothing and completes through the bound.
+      expect(
+        await storage.readLiveWindow(PARTITION, {
+          units: [{ ...unit, tables: new Map() }],
+          throughSeq: 3,
+          limitChanges: 10,
+        }),
+      ).toEqual({ commits: [], throughSeq: 3 });
+    });
+
+    test('readLiveWindow applies each unit bound and its effective scopes', async () => {
+      const storage = await make();
+      const changes: [string, string, Record<string, string>][] = [
+        ['tasks', 't1', { project_id: 'p1' }],
+        ['tasks', 't2', { project_id: 'p2' }],
+        ['docs', 'd1', { org_id: 'o1', project_id: 'p1' }],
+        ['docs', 'd2', { org_id: 'o2', project_id: 'p1' }],
+        ['docs', 'd3', { org_id: 'o1', project_id: 'p2' }],
+      ];
+      for (const [i, [table, rowId, scopes]] of changes.entries()) {
         const tx = await storage.begin(PARTITION);
         await tx.appendCommit({
           clientId: 'c',
@@ -931,74 +1018,400 @@ export function runStorageContract(
           createdAtMs: NOW + i,
           changes: [
             {
-              table: 'tasks',
-              rowId: `r${i}`,
+              table,
+              rowId,
               op: 'upsert',
               rowVersion: 1,
-              scopes: { project_id: project },
+              scopes,
               payload: bytes(i),
             },
           ],
         });
         await tx.commit();
       }
-      const window = await storage.readCommitWindow(PARTITION, {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p1'] },
-        afterSeq: 0,
-        throughSeq: 3,
-        limitChanges: 10,
-      });
-      // Only commits 1 and 3 (p1), oldest first, p2 excluded by the index.
-      expect(window.map((c) => c.commitSeq)).toEqual([1, 3]);
-      const limited = await storage.readCommitWindow(PARTITION, {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p1'] },
-        afterSeq: 0,
-        throughSeq: 3,
-        limitChanges: 1,
-      });
-      expect(limited.map((c) => c.commitSeq)).toEqual([1]);
-    });
-
-    test('readCommitWindow verifies the full multi-variable match', async () => {
-      const storage = await make();
-      const tx = await storage.begin(PARTITION);
-      await tx.appendCommit({
-        clientId: 'c',
-        clientCommitId: 'k',
-        actorId: 'a',
-        createdAtMs: NOW,
-        changes: [
+      const window = await storage.readLiveWindow(PARTITION, {
+        units: [
+          // Post-bootstrap at 1: t1 lies at its bound. The wildcard fence
+          // narrows docs to org o2.
           {
-            table: 'docs',
-            rowId: 'd1',
-            op: 'upsert',
-            rowVersion: 1,
-            scopes: { org_id: 'o1', project_id: 'p1' },
-            payload: bytes(1),
+            scopes: { project_id: 'p1' },
+            afterSeq: 1,
+            tables: new Map([
+              ['tasks', { project_id: ['p1'] }],
+              ['docs', { project_id: ['p1'], org_id: ['o2'] }],
+            ]),
           },
+          // A two-variable unit: its first variable (org_id) is the index
+          // key, and code verifies project_id.
           {
-            table: 'docs',
-            rowId: 'd2',
-            op: 'upsert',
-            rowVersion: 1,
             scopes: { org_id: 'o1', project_id: 'p2' },
-            payload: bytes(2),
+            afterSeq: 0,
+            tables: new Map([['docs', { org_id: ['o1'], project_id: ['p2'] }]]),
           },
         ],
-      });
-      await tx.commit();
-      // org_id matches both, but project_id narrows to d1 only.
-      const window = await storage.readCommitWindow(PARTITION, {
-        table: 'docs',
-        scopeFilter: { org_id: ['o1'], project_id: ['p1'] },
-        afterSeq: 0,
-        throughSeq: 1,
+        throughSeq: 5,
         limitChanges: 10,
       });
-      expect(window.length).toBe(1);
-      expect(window[0]?.changes.map((c) => c.rowId)).toEqual(['d1']);
+      expect(
+        window.commits.map((commit) => [
+          commit.commitSeq,
+          commit.changes.map((change) => change.rowId),
+        ]),
+      ).toEqual([
+        [4, ['d2']],
+        [5, ['d3']],
+      ]);
+      expect(window.throughSeq).toBe(5);
+    });
+
+    test('readLiveWindow pages past candidates that do not match', async () => {
+      const storage = await make();
+      for (let i = 0; i < 70; i++) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: `k${i}`,
+          actorId: 'a',
+          createdAtMs: NOW + i,
+          changes: [
+            {
+              table: 'docs',
+              rowId: `d${i}`,
+              op: 'upsert',
+              rowVersion: 1,
+              scopes: { org_id: i === 69 ? 'o1' : 'o9', project_id: 'p1' },
+              payload: bytes(i),
+            },
+          ],
+        });
+        await tx.commit();
+      }
+      const window = await storage.readLiveWindow(PARTITION, {
+        units: [
+          {
+            scopes: { project_id: 'p1' },
+            afterSeq: 0,
+            tables: new Map([['docs', { project_id: ['p1'], org_id: ['o1'] }]]),
+          },
+        ],
+        throughSeq: 70,
+        limitChanges: 1,
+      });
+      expect(window.commits.map((commit) => commit.commitSeq)).toEqual([70]);
+      expect(window.throughSeq).toBe(70);
+    });
+
+    test('latestScopedChangeSeq reads the newest commit of a table for the unit key', async () => {
+      const storage = await make();
+      for (const [i, [table, project]] of [
+        ['tasks', 'p1'],
+        ['docs', 'p1'],
+        ['tasks', 'p2'],
+      ].entries()) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: `k${i}`,
+          actorId: 'a',
+          createdAtMs: NOW + i,
+          changes: [
+            {
+              table: table ?? 'tasks',
+              rowId: `r${i}`,
+              op: 'upsert',
+              rowVersion: 1,
+              scopes:
+                table === 'docs'
+                  ? { org_id: 'o1', project_id: project ?? '' }
+                  : { project_id: project ?? '' },
+              payload: bytes(i),
+            },
+          ],
+        });
+        await tx.commit();
+      }
+      const latest = (table: string, scopes: Record<string, string>) =>
+        storage.latestScopedChangeSeq(PARTITION, { table, scopes });
+      expect(await latest('tasks', { project_id: 'p1' })).toBe(1);
+      expect(await latest('docs', { project_id: 'p1' })).toBe(2);
+      expect(await latest('docs', { org_id: 'o1', project_id: 'p1' })).toBe(2);
+      expect(await latest('tasks', { project_id: 'p9' })).toBe(0);
+    });
+
+    // --- Per-outbox acknowledged watermark (§6.3.2) and §9 settlement ---
+
+    /**
+     * One push request as the push path drives it: the first commit's
+     * transaction carries the settlement and commits whatever the outcome; a
+     * commit below the watermark without a result is expired, unpersisted.
+     */
+    async function push(
+      storage: ServerStorage,
+      outboxId: string,
+      commits: readonly (readonly [string, number])[],
+    ): Promise<{ watermark: number; outcomes: string[] }> {
+      let watermark = 0;
+      const outcomes: string[] = [];
+      for (const [i, [clientCommitId, clientSeq]] of commits.entries()) {
+        const tx = await storage.begin(PARTITION);
+        const prepared = await tx.preparePushApply(
+          'c1',
+          clientCommitId,
+          1,
+          [],
+          i === 0
+            ? {
+                outboxId,
+                commits: commits.map(([id, seq]) => ({
+                  clientCommitId: id,
+                  clientSeq: seq,
+                })),
+              }
+            : undefined,
+        );
+        if (i === 0) watermark = prepared.watermark ?? -1;
+        if (prepared.persisted !== undefined) {
+          outcomes.push(`cached:${prepared.persisted.commitSeq}`);
+        } else if (clientSeq < watermark) {
+          outcomes.push('expired');
+        } else {
+          const commitSeq = await tx.appendCommit({
+            clientId: 'c1',
+            clientCommitId,
+            actorId: 'a1',
+            createdAtMs: NOW,
+            changes: [],
+          });
+          await tx.putPushResult(
+            'c1',
+            clientCommitId,
+            {
+              status: 'applied',
+              commitSeq,
+              results: [],
+            },
+            { outboxId, clientSeq },
+          );
+          outcomes.push(`applied:${commitSeq}`);
+        }
+        await tx.commit();
+      }
+      return { watermark, outcomes };
+    }
+
+    test('the watermark deletes results the replica cannot resend and refuses late duplicates', async () => {
+      const storage = await make();
+      expect(
+        await push(storage, 'o1', [
+          ['A', 1],
+          ['B', 2],
+        ]),
+      ).toEqual({
+        watermark: 1,
+        outcomes: ['applied:1', 'applied:2'],
+      });
+      // Lost acknowledgement: A is still first, so both results replay.
+      expect(
+        await push(storage, 'o1', [
+          ['A', 1],
+          ['B', 2],
+        ]),
+      ).toEqual({
+        watermark: 1,
+        outcomes: ['cached:1', 'cached:2'],
+      });
+      expect(await push(storage, 'o1', [['C', 3]])).toEqual({
+        watermark: 3,
+        outcomes: ['applied:3'],
+      });
+      expect(await storage.getPushResult(PARTITION, 'c1', 'A')).toBeUndefined();
+      expect(await storage.getPushResult(PARTITION, 'c1', 'B')).toBeUndefined();
+      // A delayed copy of the first request neither lowers W nor applies.
+      expect(
+        await push(storage, 'o1', [
+          ['A', 1],
+          ['B', 2],
+        ]),
+      ).toEqual({
+        watermark: 3,
+        outcomes: ['expired', 'expired'],
+      });
+      expect(await storage.getMaxCommitSeq(PARTITION)).toBe(3);
+      // A new outbox under the same clientId starts its own sequence.
+      expect(await push(storage, 'o2', [['D', 1]])).toEqual({
+        watermark: 1,
+        outcomes: ['applied:4'],
+      });
+      expect(
+        (await storage.getPushResult(PARTITION, 'c1', 'C'))?.commitSeq,
+      ).toBe(3);
+      expect(await storage.listPushWatermarks?.(PARTITION, 'A')).toEqual([
+        { clientId: 'c1', outboxId: 'o1', throughSeq: 3 },
+        { clientId: 'c1', outboxId: 'o2', throughSeq: 1 },
+      ]);
+      // A log epoch rotation deletes the client records and keeps watermarks.
+      await storage.rotatePartitionLogEpoch(PARTITION, 'epoch-b', NOW);
+      expect((await push(storage, 'o1', [['E', 2]])).outcomes).toEqual([
+        'expired',
+      ]);
+    });
+
+    test('after N requests one replica holds the last request results and one watermark row', async () => {
+      const storage = await make();
+      // A result without an outbox (a §6.10 producer) is never deleted.
+      const producer = await storage.begin(PARTITION);
+      await producer.putPushResult('producer', 'P', {
+        status: 'applied',
+        commitSeq: 0,
+        results: [],
+      });
+      await producer.commit();
+      for (let request = 0; request < 5; request++) {
+        await push(storage, 'o1', [
+          [`r${request}a`, 2 * request + 1],
+          [`r${request}b`, 2 * request + 2],
+        ]);
+      }
+      const retained: string[] = [];
+      for (let request = 0; request < 5; request++) {
+        for (const id of [`r${request}a`, `r${request}b`]) {
+          if ((await storage.getPushResult(PARTITION, 'c1', id)) !== undefined)
+            retained.push(id);
+        }
+      }
+      expect(retained).toEqual(['r4a', 'r4b']);
+      expect(await storage.listPushWatermarks?.(PARTITION, 'r4b')).toEqual([
+        { clientId: 'c1', outboxId: 'o1', throughSeq: 9 },
+      ]);
+      expect(
+        await storage.getPushResult(PARTITION, 'producer', 'P'),
+      ).toBeDefined();
+    });
+
+    test('results stored before wire version 4 are sequenced by their request and deleted once the last commit holds none', async () => {
+      const storage = await make();
+      const before = await storage.begin(PARTITION);
+      for (const [id, commitSeq] of [
+        ['X', 1],
+        ['Y', 2],
+        ['Z', 3],
+      ] as const) {
+        await before.putPushResult('c1', id, {
+          status: 'applied',
+          commitSeq,
+          results: [],
+        });
+      }
+      await before.commit();
+      // X left the outbox; a push budget cut the request after Y. Y's last
+      // commit holds a pre-upgrade result, so Z stays.
+      expect(await push(storage, 'o1', [['Y', 5]])).toEqual({
+        watermark: 5,
+        outcomes: ['cached:2'],
+      });
+      expect(await storage.getPushResult(PARTITION, 'c1', 'X')).toBeDefined();
+      expect(await storage.getPushResult(PARTITION, 'c1', 'Z')).toBeDefined();
+      // The next request ends with a new commit: X is deleted, Z takes its
+      // sequence and replays, and the watermark deletes Y.
+      expect(
+        await push(storage, 'o1', [
+          ['Z', 6],
+          ['N', 7],
+        ]),
+      ).toEqual({
+        watermark: 6,
+        outcomes: ['cached:3', 'applied:1'],
+      });
+      expect(await storage.getPushResult(PARTITION, 'c1', 'X')).toBeUndefined();
+      expect(await storage.getPushResult(PARTITION, 'c1', 'Y')).toBeUndefined();
+      expect(await push(storage, 'o1', [['N', 7]])).toEqual({
+        watermark: 7,
+        outcomes: ['cached:1'],
+      });
+      expect(await storage.getPushResult(PARTITION, 'c1', 'Z')).toBeUndefined();
+    });
+
+    test('a late request expires a pre-upgrade result its watermark passed', async () => {
+      const storage = await make();
+      const before = await storage.begin(PARTITION);
+      for (const [id, commitSeq] of [
+        ['X', 1],
+        ['Y', 2],
+      ] as const) {
+        await before.putPushResult('c1', id, {
+          status: 'applied',
+          commitSeq,
+          results: [],
+        });
+      }
+      await before.commit();
+      // Y's request ends on a pre-upgrade result, so X keeps its result.
+      expect(await push(storage, 'o1', [['Y', 4]])).toEqual({
+        watermark: 4,
+        outcomes: ['cached:2'],
+      });
+      // A delayed request built before Y's: X takes sequence 2, below W, and
+      // its result is deleted in the same transaction, so X expires.
+      expect(
+        await push(storage, 'o1', [
+          ['X', 2],
+          ['Y', 4],
+        ]),
+      ).toEqual({
+        watermark: 4,
+        outcomes: ['expired', 'cached:2'],
+      });
+      expect(await storage.getPushResult(PARTITION, 'c1', 'X')).toBeUndefined();
+    });
+
+    test('a reused commit id above its stored sequence is processed, never replayed from a deleted result', async () => {
+      const storage = await make();
+      await push(storage, 'o1', [['A', 1]]);
+      // Step 2 deletes A's result (sequence 1 < W = 3); step 3 finds no
+      // retained result and processes the commit.
+      expect(await push(storage, 'o1', [['A', 3]])).toEqual({
+        watermark: 3,
+        outcomes: ['applied:2'],
+      });
+      expect(
+        (await storage.getPushResult(PARTITION, 'c1', 'A'))?.commitSeq,
+      ).toBe(2);
+    });
+
+    test('the settlement survives a rejected first commit', async () => {
+      const storage = await make();
+      await push(storage, 'o1', [['A', 1]]);
+      const tx = await storage.begin(PARTITION);
+      const prepared = await tx.preparePushApply('c1', 'B', 1, [], {
+        outboxId: 'o1',
+        commits: [{ clientCommitId: 'B', clientSeq: 2 }],
+      });
+      expect(prepared).toMatchObject({ persisted: undefined, watermark: 2 });
+      await tx.upsertRow('tasks', taskRow('candidate', 'p1'));
+      await tx.commitRejectedPushResult(
+        'c1',
+        'B',
+        {
+          status: 'rejected',
+          results: [
+            {
+              opIndex: 0,
+              status: 'error',
+              code: 'app.rejected',
+              message: 'diagnostic only',
+              retryable: false,
+            },
+          ],
+        },
+        { outboxId: 'o1', clientSeq: 2 },
+      );
+      expect(await storage.getPushResult(PARTITION, 'c1', 'A')).toBeUndefined();
+      expect(
+        await storage.getRow(PARTITION, 'tasks', 'candidate'),
+      ).toBeUndefined();
+      expect((await push(storage, 'o1', [['B', 2]])).outcomes).toEqual([
+        'cached:undefined',
+      ]);
     });
 
     test('scanRows selects by scope ordered by rowId, resumable', async () => {
@@ -1310,6 +1723,59 @@ export function runStorageContract(
 
     // --- Horizon / pruning (§4.6) ---
 
+    test('the delete floor rises with each tombstoned delete and never falls (§2.2)', async () => {
+      const storage = await make();
+      const floor = async (): Promise<number> => {
+        const tx = await storage.begin(PARTITION);
+        const prepared = await tx.preparePushApply('c', 'floor-probe', 1);
+        await tx.rollback();
+        return prepared.deleteFloor;
+      };
+      const append = async (id: string, changes: NewChange[]) => {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: id,
+          actorId: 'a',
+          createdAtMs: NOW,
+          changes,
+        });
+        await tx.commit();
+      };
+      const del = (rowId: string, rowVersion: number): NewChange => ({
+        table: 'tasks',
+        rowId,
+        op: 'delete',
+        rowVersion,
+        scopes: { project_id: 'p1' },
+      });
+      expect(await floor()).toBe(0);
+      await append('d1', [del('r1', 4), del('r2', 3)]);
+      expect(await floor()).toBe(4);
+      // A scope move's delete half leaves no tombstone and no floor.
+      await append('move', [
+        del('r3', 9),
+        {
+          table: 'tasks',
+          rowId: 'r3',
+          op: 'upsert',
+          rowVersion: 9,
+          scopes: { project_id: 'p2' },
+          payload: bytes(3),
+        },
+      ]);
+      expect(await floor()).toBe(4);
+      await append('d2', [del('r4', 2)]);
+      expect(await floor()).toBe(4);
+      const { logEpoch } = await storage.touchPartition(
+        PARTITION,
+        NOW,
+        'floor-epoch',
+      );
+      await storage.pruneCommitsThrough(PARTITION, { logEpoch, throughSeq: 3 });
+      expect(await floor()).toBe(4);
+    });
+
     test('horizon set/get and pruneCommitsThrough', async () => {
       const storage = await make();
       for (let i = 0; i < 5; i++) {
@@ -1350,14 +1816,18 @@ export function runStorageContract(
         removedCommits: 2,
       });
       // Pruned commits vanish from the window; retained ones remain.
-      const window = await storage.readCommitWindow(PARTITION, {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p1'] },
-        afterSeq: 0,
+      const window = await storage.readLiveWindow(PARTITION, {
+        units: [
+          {
+            scopes: { project_id: 'p1' },
+            afterSeq: 0,
+            tables: new Map([['tasks', { project_id: ['p1'] }]]),
+          },
+        ],
         throughSeq: 5,
         limitChanges: 100,
       });
-      expect(window.map((c) => c.commitSeq)).toEqual([3, 4, 5]);
+      expect(window.commits.map((c) => c.commitSeq)).toEqual([3, 4, 5]);
     });
 
     test('atomic pruning is monotonic, epoch-fenced, and repeatable after a lost reply', async () => {
@@ -1456,10 +1926,10 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'inactive',
         actorId: 'a',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: -99,
         updatedAtMs: NOW - 1,
-        subscriptions: [],
+        catchingUp: [],
       };
       await storage.putClientRecord(PARTITION, record);
       expect(
@@ -1495,10 +1965,10 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 42,
         updatedAtMs: NOW,
-        subscriptions: [],
+        catchingUp: [],
       };
       await storage.putClientRecord(PARTITION, record);
       await storage.recordClientRoundFailure(
@@ -1568,17 +2038,18 @@ export function runStorageContract(
       });
     });
 
-    test('client record + cursors round-trip', async () => {
+    test('client record + cursors round-trip; a list is written only when it travels', async () => {
       const storage = await make();
+      const units = [{ project_id: 'p1' }, { project_id: 'p2' }];
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 42,
         updatedAtMs: NOW,
-        subscriptions: [
-          { id: 's1', table: 'tasks', scopes: { project_id: ['p1'] } },
-        ],
+        schemaVersion: 1,
+        registration: { units, digest: registrationDigest(units) },
+        catchingUp: [{ id: unitId({ project_id: 'p2' }), cursor: 40 }],
       };
       await storage.putClientRecord(PARTITION, record);
       const got = await storage.getClientRecord(PARTITION, 'c1');
@@ -1587,24 +2058,54 @@ export function runStorageContract(
       expect(cursors).toEqual([
         { clientId: 'c1', cursor: 42, updatedAtMs: NOW },
       ]);
-      // Update in place.
-      await storage.putClientRecord(PARTITION, { ...record, cursor: 99 });
-      const updated = await storage.getClientRecord(PARTITION, 'c1');
-      expect(updated?.cursor).toBe(99);
+      // A round whose list did not travel keeps the stored list and digest
+      // and replaces the catching-up units, cursor and schema version.
+      const { registration: _kept, ...referenced } = record;
+      await storage.putClientRecord(PARTITION, {
+        ...referenced,
+        cursor: 99,
+        schemaVersion: 2,
+        catchingUp: [],
+      });
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        cursor: 99,
+        schemaVersion: 2,
+        catchingUp: [],
+        lastRoundAtMs: NOW,
+      });
+      // A traveling empty list replaces the stored one.
+      const empty = { units: [], digest: registrationDigest([]) };
+      await storage.putClientRecord(PARTITION, {
+        ...record,
+        registration: empty,
+      });
+      expect(
+        (await storage.getClientRecord(PARTITION, 'c1'))?.registration,
+      ).toEqual(empty);
+      // A record created without a list holds none.
+      await storage.putClientRecord(PARTITION, {
+        ...referenced,
+        clientId: 'c2',
+      });
+      expect(
+        (await storage.getClientRecord(PARTITION, 'c2'))?.registration,
+      ).toBeUndefined();
     });
 
     test('cursor acknowledgements advance atomically and preserve registration fields', async () => {
       const storage = await make();
       await storage.touchPartition(PARTITION, NOW, 'epoch-a');
+      const units = [{ project_id: 'p2' }];
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: -1,
         updatedAtMs: NOW,
-        subscriptions: [
-          { id: 'new-sub', table: 'tasks', scopes: { project_id: ['p2'] } },
-        ],
+        schemaVersion: 1,
+        registration: { units, digest: registrationDigest(units) },
+        catchingUp: [],
       };
       await storage.putClientRecord(PARTITION, record);
       await storage.putClientRecord('other', record);
@@ -1650,16 +2151,61 @@ export function runStorageContract(
       });
     });
 
+    test('an acknowledgement is capped at the lowest cursor of a catching-up unit', async () => {
+      const storage = await make();
+      await storage.touchPartition(PARTITION, NOW, 'epoch-a');
+      const record: ClientRecord = {
+        clientId: 'c1',
+        actorId: 'a1',
+        wireVersion: 4,
+        cursor: 10,
+        updatedAtMs: NOW,
+        catchingUp: [
+          { id: 'bootstrapping', cursor: -1 },
+          { id: 'post-bootstrap', cursor: 15 },
+          { id: 'pinned', cursor: 20 },
+        ],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      const ack = (cursor: number, atMs: number) =>
+        storage.advanceClientCursor(
+          PARTITION,
+          'c1',
+          'a1',
+          'epoch-a',
+          cursor,
+          atMs,
+        );
+      // §8.2: a unit without a cursor (-1) holds nothing; 15 caps the ack.
+      await ack(30, NOW + 1);
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toMatchObject({
+        cursor: 15,
+        updatedAtMs: NOW + 1,
+      });
+      // Without a catching-up cursor the ack applies in full.
+      await storage.putClientRecord(PARTITION, { ...record, catchingUp: [] });
+      await ack(30, NOW + 2);
+      expect((await storage.getClientRecord(PARTITION, 'c1'))?.cursor).toBe(30);
+      // A record below the cap rises to it, never past it, never down.
+      await storage.putClientRecord(PARTITION, {
+        ...record,
+        cursor: 18,
+        catchingUp: [{ id: 'pinned', cursor: 12 }],
+      });
+      await ack(30, NOW + 3);
+      expect((await storage.getClientRecord(PARTITION, 'c1'))?.cursor).toBe(18);
+    });
+
     test('cursor acknowledgements require the registered actor and current epoch', async () => {
       const storage = await make();
       await storage.touchPartition(PARTITION, NOW, 'epoch-a');
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 0,
         updatedAtMs: NOW,
-        subscriptions: [],
+        catchingUp: [],
       };
       await storage.putClientRecord(PARTITION, record);
       await storage.advanceClientCursor(
@@ -1732,54 +2278,27 @@ export function runStorageContract(
       });
     });
 
-    test('cursor-only updates are absent-safe and monotonic', async () => {
+    test('a traveling list can lower the record cursor after an ACK', async () => {
       const storage = await make();
-
-      await storage.updateClientCursor(PARTITION, 'missing', 8, NOW + 8);
-      expect(
-        await storage.getClientRecord(PARTITION, 'missing'),
-      ).toBeUndefined();
-
-      const record: ClientRecord = {
-        clientId: 'cursor-only',
-        actorId: 'actor-old',
-        wireVersion: 3,
-        cursor: 2,
-        updatedAtMs: NOW,
-        subscriptions: [
-          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
-        ],
-      };
-      await storage.putClientRecord(PARTITION, record);
-      await storage.updateClientCursor(PARTITION, record.clientId, 9, NOW + 20);
-      await storage.updateClientCursor(PARTITION, record.clientId, 4, NOW + 10);
-
-      expect(await storage.getClientRecord(PARTITION, record.clientId)).toEqual(
-        {
-          ...record,
-          cursor: 9,
-          updatedAtMs: NOW + 20,
-          lastRoundAtMs: NOW,
-        },
-      );
-    });
-
-    test('full subscription replacement can lower the retention floor after an ACK', async () => {
-      const storage = await make();
+      await storage.touchPartition(PARTITION, NOW, 'epoch-a');
       const original: ClientRecord = {
-        clientId: 'changed-subscriptions',
+        clientId: 'changed-units',
         actorId: 'actor-1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 10,
         updatedAtMs: NOW,
-        subscriptions: [
-          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
-        ],
+        registration: {
+          units: [{ project_id: 'p1' }],
+          digest: registrationDigest([{ project_id: 'p1' }]),
+        },
+        catchingUp: [],
       };
       await storage.putClientRecord(PARTITION, original);
-      await storage.updateClientCursor(
+      await storage.advanceClientCursor(
         PARTITION,
         original.clientId,
+        original.actorId,
+        'epoch-a',
         20,
         NOW + 1,
       );
@@ -1787,9 +2306,11 @@ export function runStorageContract(
         ...original,
         cursor: 2,
         updatedAtMs: NOW + 2,
-        subscriptions: [
-          { id: 'new', table: 'tasks', scopes: { project_id: ['p2'] } },
-        ],
+        registration: {
+          units: [{ project_id: 'p2' }],
+          digest: registrationDigest([{ project_id: 'p2' }]),
+        },
+        catchingUp: [{ id: unitId({ project_id: 'p2' }), cursor: 2 }],
       };
       await storage.putClientRecord(PARTITION, replacement);
       expect(
@@ -1953,12 +2474,10 @@ export function runStorageContract(
       await storage.putClientRecord(PARTITION, {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 2,
         updatedAtMs: NOW,
-        subscriptions: [
-          { id: 's1', table: 'tasks', scopes: { project_id: ['p1'] } },
-        ],
+        catchingUp: [],
       });
 
       const clients = await storage.listClientRecords(PARTITION);
@@ -2048,6 +2567,7 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            rowVersion: 2,
             scopes: { project_id: 'p2' },
           },
         ],
@@ -2080,11 +2600,11 @@ export function runStorageContract(
         scopes: { project_id: 'p1' },
       });
       expect(detail?.changes[1]?.payload).toEqual(bytes(7));
-      // A delete carries no rowVersion.
+      // §2.2: a delete carries its version.
       expect(detail?.changes[2]).toMatchObject({
         scopes: { project_id: 'p2' },
+        rowVersion: 2,
       });
-      expect(detail?.changes[2]?.rowVersion).toBeUndefined();
       expect(await storage.getCommit(PARTITION, multiSeq + 1)).toBeUndefined();
 
       // Row history: newest first, bounded by `limit`, one row only.
@@ -2125,8 +2645,11 @@ export function runStorageContract(
       });
       // The earlier loop upserted r1 in commit 2; the delete is newest.
       expect(deleted.map((h) => h.commitSeq)).toEqual([multiSeq, 2]);
-      expect(deleted[0]).toMatchObject({ commitSeq: multiSeq, op: 'delete' });
-      expect(deleted[0]?.rowVersion).toBeUndefined();
+      expect(deleted[0]).toMatchObject({
+        commitSeq: multiSeq,
+        op: 'delete',
+        rowVersion: 2,
+      });
       expect(deleted[1]).toMatchObject({
         commitSeq: 2,
         op: 'upsert',
@@ -2189,6 +2712,7 @@ export function runStorageContract(
             table: 'tasks',
             rowId: 'r1',
             op: 'delete',
+            rowVersion: 2,
             scopes: { project_id: 'p1' },
           },
         ],
@@ -2365,10 +2889,10 @@ export function runStorageContract(
       await storage.putClientRecord('part-a', {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 3,
+        wireVersion: 4,
         cursor: 12,
         updatedAtMs: NOW,
-        subscriptions: [],
+        catchingUp: [],
       });
       expect(
         await storage.rotatePartitionLogEpoch(

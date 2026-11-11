@@ -1,7 +1,7 @@
 import type { SyncProgress, SyncProgressListener } from '@syncular/client';
 import { useCallback, useSyncExternalStore } from 'react';
 
-/** Live work snapshots; completion refers to one round (SPEC §7.6). */
+/** Live work snapshots; completion refers to one round (SPEC §7.7). */
 export function useSyncProgress(client: {
   onProgress(listener: SyncProgressListener): () => void;
   progressSnapshot(): SyncProgress | undefined;

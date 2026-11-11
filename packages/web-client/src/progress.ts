@@ -1,11 +1,11 @@
 import type { TransportCauseKind } from './diagnostics';
 
-/** Ephemeral sync work, independent of committed change notifications (SPEC §7.6). */
+/** Ephemeral sync work, independent of committed change notifications (SPEC §7.7). */
 export interface SyncProgress {
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
   readonly phase: 'request' | 'download' | 'import';
-  readonly subscriptionId?: string;
+  readonly unitId?: string;
   readonly table?: string;
   readonly segmentId?: string | undefined;
   readonly bytesReceived: number;

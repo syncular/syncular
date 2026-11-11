@@ -16,8 +16,7 @@
   "subscriptions": [
     {
       "name": "todosInList",
-      "table": "todos",
-      "scopes": { "list_id": ["{listId}"] }
+      "scopes": { "list_id": "{listId}" }
     }
   ]
 }

@@ -31,7 +31,7 @@ const client = new SyncClient({
 });
 await client.start();
 
-client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+client.subscribe({ list_id: 'groceries' });
 
 client.mutate([{
   table: 'todos',
@@ -91,7 +91,7 @@ let client = try SyncularClient(
     )
 )
 
-try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["groceries"]])
+try client.subscribe(scopes: ["list_id": "groceries"])
 
 try client.mutate([.object([
     "op": "upsert", "table": "todos",
@@ -121,7 +121,7 @@ val client = SyncularClient.create(
     ),
 )
 
-client.subscribe(id = "todos", table = "todos", scopes = mapOf("list_id" to listOf("groceries")))
+client.subscribe(mapOf("list_id" to "groceries"))
 
 client.mutate(listOf(JsonValue.obj(
     "op" to JsonValue.of("upsert"), "table" to JsonValue.of("todos"),
@@ -152,7 +152,7 @@ final client = SyncularClient.create(
   ),
 );
 
-client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
+client.subscribe({'list_id': 'groceries'});
 
 client.mutate([
   {'op': 'upsert', 'table': 'todos',
@@ -172,15 +172,14 @@ client.events.listen((e) {
     label: 'RUST',
     core: 'RUST CORE · NATIVE',
     lang: 'rust',
-    code: `use syncular_client::{ClientLimits, Mutation, SyncClient};
+    code: `use std::collections::BTreeMap;
+use syncular_client::{ClientLimits, Mutation, SyncClient};
 use syncular_queries::list_todos;
 
 let mut client = SyncClient::open_path(
     "device-1".into(), &schema_json, ClientLimits::default(), "todos.db")?;
 
-client.subscribe(
-    "todos".into(), "todos".into(),
-    vec![("list_id".into(), vec!["groceries".into()])], None)?;
+client.subscribe(BTreeMap::from([("list_id".into(), "groceries".into())]))?;
 
 client.mutate(vec![Mutation::Upsert {
     table: "todos".into(),

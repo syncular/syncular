@@ -117,7 +117,7 @@ supervisor are safe together because realtime connection ownership is
 idempotent; the supervisor adds the retry/catch-up policy that one-shot resume
 does not provide.
 
-`snapshotRead({ statements, coverage, subscriptions, commitIds, owner })`
+`snapshotRead({ statements, coverage, units, commitIds, owner })`
 returns every requested read under one native transaction and one `bigint`
 revision. The bridge decodes query cells and conflict row images, and preserves
 native error codes, retryability, and structured details.
@@ -133,14 +133,14 @@ protocol or ordinary application preferences.
 bounded local purge to the native core. It removes exact synced rows and FTS
 documents, rejects whole affected pending commits, replays safe optimistic
 work, reconciles blob references, and returns counts only. The app must first
-validate the directive and gate subscriptions, then separately remove
+validate the directive and gate the affected units, then separately remove
 app-owned files and OS-secure-store keys.
 
 `rebootstrapLocalData({ rebootstrapId })` provides the matching native recovery
 path for a damaged replicated projection. One transaction recreates synced
-tables, rewinds retained subscriptions, persists the idempotency key, and
-replays pending offline commits. Device identity, lease state, outcomes,
-subscription intent, and protected bookkeeping remain intact. The counts-only
+tables, rewinds every registered unit to cursor `-1`, persists the idempotency
+key, and replays pending offline commits. Device identity, lease state,
+outcomes, the registration list, and protected bookkeeping remain intact. The counts-only
 result is safe for a support UI. The native receipt persists the original
 counts in the same transaction, so a replay after app recreation returns
 `alreadyApplied: true` with the first acknowledgement. Malformed or unreadable
@@ -162,10 +162,11 @@ activation, protected operations and automatic sync intents fail closed with
 the bounded purge remain available. `beginSecurityPreflight()` provides the
 live rotation/revocation barrier, while `close()` releases the entire FFI core.
 
-`diagnosticsSnapshot({ expectedSubscriptions })`, `onDiagnostics`, and the
-shared React `useDiagnostics` hook expose the same versioned Rust-core evidence
-as Tauri and browser hosts, with `{ kind: 'react-native', role: 'single' }`.
-Expected ids must be stable and PHI-free. The snapshot excludes scope values,
+`diagnosticsSnapshot()`, `onDiagnostics`, and the shared React
+`useDiagnostics` hook expose the same version 2 Rust-core evidence as Tauri and
+browser hosts, with `{ kind: 'react-native', role: 'single' }`: registered units
+counted per state, `activeUnits` and the `replicaCursor`. The snapshot excludes
+unit ids, scope values,
 rows and clinical counts, SQL, paths, device/client/lease ids, auth, keys,
 mutation bodies, stack traces, and arbitrary prose, so it can back a redacted
 copy-to-support action. Never attach the SQLite database, native logs, or app

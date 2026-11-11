@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { unitId, decodeMessage, encodeMessage } from '@syncular/core';
 import { dirname, join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
 import { build as viteBuild } from 'vite';
-import { decodeMessage, encodeMessage } from '@syncular/core';
 import {
   handleSegmentDownload,
   compileSchema,
@@ -505,11 +505,7 @@ for (const point of [
       const originalId = await page.evaluate(async () => {
         const client = await window.opfsTest.ready;
         await client.sync(); // Acquire the server log epoch before bootstrap.
-        await client.subscribe({
-          id: 'catalogue',
-          table: 'catalogue',
-          scopes: { project_id: ['p1'] },
-        });
+        await client.subscribe({ project_id: 'p1' });
         return client.clientId;
       });
       evidence.before = await page.evaluate(() => window.opfsTest.probe());
@@ -558,23 +554,28 @@ for (const point of [
       // worker handles outlive its close event. Production startup retries.
       await page.evaluate(() => window.opfsTest.open());
       evidence.immediateReload = { status: 'ready' };
-      const recovered = await page.evaluate(async () => {
-        const client = await window.opfsTest.ready;
-        return {
-          id: client.clientId,
-          subscription: await client.subscription('catalogue'),
-          rows: await client.query(
-            'SELECT id, project_id, title FROM catalogue ORDER BY id',
-          ),
-          probe: await window.opfsTest.probe(),
-        };
-      });
+      const recovered = await page.evaluate(
+        async (unit) => {
+          const client = await window.opfsTest.ready;
+          return {
+            id: client.clientId,
+            catchup: (
+              await client.snapshotRead({ statements: [], units: [unit] })
+            ).units[0],
+            rows: await client.query(
+              'SELECT id, project_id, title FROM catalogue ORDER BY id',
+            ),
+            probe: await window.opfsTest.probe(),
+          };
+        },
+        unitId({ project_id: 'p1' }),
+      );
       evidence.recovered = recovered;
       expect(recovered.id).toBe(originalId);
-      expect(recovered.subscription?.cursor).toBe(
-        point === 'after-checkpoint' ? pin : -1,
-      );
-      expect(recovered.subscription?.bootstrapState).toBeUndefined();
+      expect(recovered.catchup).toMatchObject({
+        cursor: point === 'after-checkpoint' ? pin : -1,
+        hasResumeToken: false,
+      });
       expect(recovered.rows).toEqual(
         point === 'after-import' || point === 'after-checkpoint'
           ? expected
@@ -587,18 +588,23 @@ for (const point of [
       expect(recovered.probe.synchronous).toEqual([{ synchronous: 2 }]);
       expect(recovered.probe.ftsCount).toBe(recovered.rows.length);
       expect(recovered.probe.ftsIntegrity).toBe('ok');
-      const complete = await page.evaluate(async () => {
-        const client = await window.opfsTest.ready;
-        await client.syncUntilIdle();
-        return {
-          rows: await client.query(
-            'SELECT id, project_id, title FROM catalogue ORDER BY id',
-          ),
-          subscription: await client.subscription('catalogue'),
-          probe: await window.opfsTest.probe(),
-          pending: await client.pendingCommits(),
-        };
-      });
+      const complete = await page.evaluate(
+        async (unit) => {
+          const client = await window.opfsTest.ready;
+          await client.syncUntilIdle();
+          return {
+            rows: await client.query(
+              'SELECT id, project_id, title FROM catalogue ORDER BY id',
+            ),
+            catchup: (
+              await client.snapshotRead({ statements: [], units: [unit] })
+            ).units[0],
+            probe: await window.opfsTest.probe(),
+            pending: await client.pendingCommits(),
+          };
+        },
+        unitId({ project_id: 'p1' }),
+      );
       if (point !== 'after-checkpoint') {
         const updates = await page.evaluate(() => window.opfsTest.progress);
         expect(
@@ -625,8 +631,11 @@ for (const point of [
         expect(imported?.rowsProcessed).toBe(expected.length);
       }
       expect(complete.rows).toEqual(expected);
-      expect(complete.subscription?.cursor).toBe(pin);
-      expect(complete.subscription?.bootstrapState).toBeUndefined();
+      expect(complete.catchup).toMatchObject({
+        live: true,
+        cursor: pin,
+        hasResumeToken: false,
+      });
       expect(complete.probe.integrity).toEqual([{ integrity_check: 'ok' }]);
       expect(complete.probe.ftsCount).toBe(expected.length);
       expect(complete.probe.ftsIntegrity).toBe('ok');
@@ -730,11 +739,7 @@ test('OPFS worker forwards intermediate signed-URL download progress', async () 
     const syncing = page.evaluate(async () => {
       await window.opfsTest.open();
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'catalogue',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
     });
     await page.waitForFunction(() =>
@@ -784,9 +789,7 @@ test('the default worker serves a queued snapshot between committed image chunks
     await page.evaluate(async () => {
       await window.opfsTest.open();
       const client = await window.opfsTest.ready;
-      await client.setWindow({ table: 'catalogue', variable: 'project_id' }, [
-        'p1',
-      ]);
+      await client.setWindow({ variable: 'project_id' }, ['p1']);
     });
     const importing = page.evaluate(async () =>
       (await window.opfsTest.ready).syncUntilIdle(),
@@ -800,7 +803,7 @@ test('the default worker serves a queued snapshot between committed image chunks
         sql: 'SELECT count(*) AS n FROM catalogue',
         coverage: [
           {
-            base: { table: 'catalogue', variable: 'project_id' },
+            base: { variable: 'project_id' },
             units: ['p1'],
           },
         ],
@@ -845,11 +848,7 @@ for (const atCommit of [false, true])
       const failure = await page.evaluate(async (atCommit) => {
         const client = await window.opfsTest.ready;
         await client.sync();
-        await client.subscribe({
-          id: 'catalogue',
-          table: 'catalogue',
-          scopes: { project_id: ['p1'] },
-        });
+        await client.subscribe({ project_id: 'p1' });
         await window.opfsTest.limitStorage(atCommit ? 1073741823 : 1, atCommit);
         try {
           await client.syncUntilIdle();
@@ -911,11 +910,7 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
     await page.evaluate(() => window.opfsTest.open());
     await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'catalogue',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
     });
     await context.setOffline(true);
@@ -998,11 +993,7 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
         ),
       ),
     ).toEqual([{ title: 'offline sibling' }]);
-    winner.client.subscribe({
-      id: 'catalogue',
-      table: 'catalogue',
-      scopes: { project_id: ['p1'] },
-    });
+    winner.client.subscribe({ project_id: 'p1' });
     await winner.client.syncUntilIdle();
     winner.client.patch(
       'catalogue',
@@ -1123,11 +1114,7 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
     await page.evaluate(async () => {
       await window.opfsTest.open();
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'catalogue',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
     });
     const losing = await page.evaluate(async () =>
@@ -1155,6 +1142,13 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
       },
     ]);
     await winner.client.syncUntilIdle();
+    // An insert starts one above the partition's delete floor (§2.2), which
+    // earlier tests on the shared server raised.
+    const winnerVersion = (await source.storage.getRow(
+      PARTITION,
+      'catalogue',
+      'unique-winner',
+    ))!.serverVersion;
     await page.evaluate(async () => {
       await (await window.opfsTest.ready).syncUntilIdle();
     });
@@ -1167,7 +1161,7 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
           index: 'catalogue_unique_title',
           columns: ['project_id', 'title'],
           rowId: 'unique-winner',
-          serverVersion: 1,
+          serverVersion: winnerVersion,
           serverRow: { id: 'unique-winner', title: 'unique-publication' },
         },
       ],
@@ -1192,21 +1186,24 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
         losing,
       ),
     ).toMatchObject({ retainedRows: [expected] });
-    await page.evaluate(async (id) => {
-      const client = await window.opfsTest.ready;
-      const replacement = await client.patch(
-        'catalogue',
-        'unique-winner',
-        { title: 'reviewed-mine' },
-        { baseVersion: 1 },
-      );
-      await client.resolveCommitOutcome({
-        clientCommitId: id,
-        resolution: 'superseded',
-        replacementClientCommitId: replacement,
-      });
-      await client.syncUntilIdle();
-    }, losing);
+    await page.evaluate(
+      async ({ id, baseVersion }) => {
+        const client = await window.opfsTest.ready;
+        const replacement = await client.patch(
+          'catalogue',
+          'unique-winner',
+          { title: 'reviewed-mine' },
+          { baseVersion },
+        );
+        await client.resolveCommitOutcome({
+          clientCommitId: id,
+          resolution: 'superseded',
+          replacementClientCommitId: replacement,
+        });
+        await client.syncUntilIdle();
+      },
+      { id: losing, baseVersion: winnerVersion },
+    );
     expect(
       await page.evaluate(async () =>
         (await window.opfsTest.ready).query(
@@ -1245,11 +1242,7 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
     await page.evaluate(() => window.opfsTest.open());
     await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'single',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
     });
     seed.client.patch('catalogue', 'row', { title: 'winner' });
@@ -1353,11 +1346,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
       },
     ]);
     await seed.client.syncUntilIdle();
-    reader.client.subscribe({
-      id: 'exact',
-      table: 'catalogue',
-      scopes: { row_id: ['old'] },
-    });
+    reader.client.subscribe({ row_id: 'old' });
     await reader.client.syncUntilIdle();
     expect(reader.client.query('SELECT id FROM catalogue')).toEqual([
       { id: 'old' },
@@ -1370,7 +1359,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
     );
     const coverageBefore = await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      const base = { table: 'catalogue', variable: 'project_id' };
+      const base = { variable: 'project_id' };
       await client.setWindow(base, ['p1']);
       return (
         await client.snapshotRead({
@@ -1383,7 +1372,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
     await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
       await client.syncUntilIdle();
-      const base = { table: 'catalogue', variable: 'project_id' };
+      const base = { variable: 'project_id' };
       if (
         !(
           await client.snapshotRead({
@@ -1440,7 +1429,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
     expect(
       await page.evaluate(async () => {
         const client = await window.opfsTest.ready;
-        const base = { table: 'catalogue', variable: 'project_id' };
+        const base = { variable: 'project_id' };
         return (
           await client.snapshotRead({
             statements: [],
@@ -1475,15 +1464,8 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
     );
     const id = await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'old',
-        table: 'catalogue',
-        scopes: { theatre_calendar_id: ['p1'] },
-      });
-      await client.setWindow(
-        { table: 'catalogue', variable: 'theatre_calendar_id' },
-        ['p1'],
-      );
+      await client.subscribe({ theatre_calendar_id: 'p1' });
+      await client.setWindow({ variable: 'theatre_calendar_id' }, ['p1']);
       await client.mutate([
         {
           table: 'catalogue',
@@ -1499,18 +1481,20 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
       OPFS_SCOPE_SCHEMAS[1]!,
     );
     expect(
-      await page.evaluate(async () => {
-        const client = await window.opfsTest.ready;
-        return {
-          id: client.clientId,
-          old: await client.subscription('old'),
-          window: await client.windowState({
-            table: 'catalogue',
-            variable: 'theatre_calendar_id',
-          }),
-          pending: (await client.pendingCommits()).length,
-        };
-      }),
+      await page.evaluate(
+        async (unit) => {
+          const client = await window.opfsTest.ready;
+          return {
+            id: client.clientId,
+            old: await client.unit(unit),
+            window: await client.windowState({
+              variable: 'theatre_calendar_id',
+            }),
+            pending: (await client.pendingCommits()).length,
+          };
+        },
+        unitId({ theatre_calendar_id: 'p1' }),
+      ),
     ).toEqual({
       id,
       old: undefined,
@@ -1519,39 +1503,34 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
     });
     await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'current',
-        table: 'catalogue',
-        scopes: { calendar_theatre_id: ['p1'] },
-      });
+      await client.subscribe({ calendar_theatre_id: 'p1' });
       await client.syncUntilIdle();
     });
-    const cursor = await page.evaluate(
-      async () =>
-        (await (await window.opfsTest.ready).subscription('current'))?.cursor,
-    );
+    const calendar = unitId({ calendar_theatre_id: 'p1' });
+    const catchup = (unit: string) =>
+      page.evaluate(
+        async (id) =>
+          (
+            await (
+              await window.opfsTest.ready
+            ).snapshotRead({ statements: [], units: [id] })
+          ).units[0],
+        unit,
+      );
+    const settled = await catchup(calendar);
+    expect(settled).toMatchObject({ live: true });
     await page.reload({ waitUntil: 'load' });
     await page.evaluate(
       (schema) => window.opfsTest.open(false, schema),
       OPFS_SCOPE_SCHEMAS[1]!,
     );
-    expect(
-      await page.evaluate(
-        async () =>
-          (await (await window.opfsTest.ready).subscription('current'))?.cursor,
-      ),
-    ).toBe(cursor);
+    expect(await catchup(calendar)).toEqual(settled);
     await page.reload({ waitUntil: 'load' });
     await page.evaluate(
       (schema) => window.opfsTest.open(false, schema),
       OPFS_SCOPE_SCHEMAS[2]!,
     );
-    expect(
-      await page.evaluate(
-        async () =>
-          (await (await window.opfsTest.ready).subscription('current'))?.cursor,
-      ),
-    ).toBe(-1);
+    expect(await catchup(calendar)).toMatchObject({ cursor: -1 });
     // A reload immediately after the schema reset, followed by a second reload.
     for (let i = 0; i < 2; i++) {
       await page.reload({ waitUntil: 'load' });
@@ -1607,8 +1586,8 @@ test('production Vite direct client refuses an explicitly configured development
     expect(observed.rows).toEqual([{ id: 'local-direct', title: 'private' }]);
     expect(observed.scopes).toContainEqual(
       expect.objectContaining({
-        id: 'direct-scope',
-        scopes: { project_id: ['p1'] },
+        id: unitId({ project_id: 'p1' }),
+        scopes: { project_id: 'p1' },
       }),
     );
   } finally {
@@ -1625,11 +1604,7 @@ test('production Vite leader and follower expose no development registry', async
     await owner.evaluate(() => window.opfsTest.open());
     await owner.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'production-scope',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
     });
     const follower = await context.newPage();
@@ -1648,7 +1623,7 @@ test('production Vite leader and follower expose no development registry', async
           rows: await client.query(
             "SELECT id FROM catalogue WHERE id >= 'code-03997' ORDER BY id LIMIT 3",
           ),
-          subscriptions: await client.subscriptions(),
+          units: await client.units(),
         };
       });
       expect(observed.role).toBe(role);
@@ -1659,11 +1634,10 @@ test('production Vite leader and follower expose no development registry', async
         { id: 'code-03998' },
         { id: 'code-03999' },
       ]);
-      expect(observed.subscriptions).toContainEqual(
+      expect(observed.units).toContainEqual(
         expect.objectContaining({
-          id: 'production-scope',
-          scopes: { project_id: ['p1'] },
-          effectiveScopes: { project_id: ['p1'] },
+          id: unitId({ project_id: 'p1' }),
+          scopes: { project_id: 'p1' },
         }),
       );
     }
@@ -1820,11 +1794,7 @@ test('OPFS pagehide closes handles during bootstrap and survives a double reload
     const id = await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
       await client.sync();
-      await client.subscribe({
-        id: 'catalogue',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await window.opfsTest.arm('after-chunk');
       void client.syncUntilIdle().catch(() => {});
       await window.opfsTest.crash;
@@ -1882,11 +1852,7 @@ test('OPFS ACK-only sparse moves survive reload and fetch their own images next 
     await page.evaluate(async () => {
       await window.opfsTest.open();
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'catalogue',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
       await client.mutate([
         {
@@ -2014,11 +1980,7 @@ test('OPFS ACK automatically pulls its own image without a realtime wake', async
     const seedVersion = await page.evaluate(async () => {
       await window.opfsTest.open(false, undefined, true);
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'catalogue',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
+      await client.subscribe({ project_id: 'p1' });
       await client.syncUntilIdle();
       await client.mutate([
         {

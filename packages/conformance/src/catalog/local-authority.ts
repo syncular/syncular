@@ -11,6 +11,7 @@ import type {
   DriverSchema,
   DriverTable,
   LocalAuthorityInstance,
+  DriverUnitScopes,
 } from '../driver';
 import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
 import {
@@ -26,6 +27,7 @@ import { E2EE_SCHEMA, goodKeys, utf8Hex } from './encryption';
 import { expectConverged, syncFails, syncIdle } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 const LOCAL_SCHEMA: DriverSchema = {
   version: 1,
@@ -115,7 +117,7 @@ async function localClient(
   ctx: ScenarioContext,
   authority: LocalAuthorityInstance,
   schema: DriverSchema = LOCAL_SCHEMA,
-  scopes: Readonly<Record<string, readonly string[]>> = P1,
+  units: readonly DriverUnitScopes[] = [{ project_id: 'p1' }],
 ): Promise<ClientHandle> {
   const handle = await ctx.newClient({
     actorId: 'owner',
@@ -123,9 +125,7 @@ async function localClient(
     server: authority,
     schema,
   });
-  for (const table of ['projects', 'nodes']) {
-    await handle.api.subscribe({ id: table, table, scopes });
-  }
+  await handle.api.subscribeMany(units);
   await syncIdle(handle);
   return handle;
 }
@@ -329,9 +329,10 @@ export const localAuthorityScenarios: readonly Scenario[] = [
     server: { schema: LOCAL_SCHEMA },
     async run(ctx) {
       const authority = await ctx.newLocalAuthority(LOCAL_SCHEMA);
-      const a = await localClient(ctx, authority, LOCAL_SCHEMA, {
-        project_id: ['p1', 'p2'],
-      });
+      const a = await localClient(ctx, authority, LOCAL_SCHEMA, [
+        { project_id: 'p1' },
+        { project_id: 'p2' },
+      ]);
       // 500 rows fill the first upload commit; the p2 row lands in the second.
       await a.api.mutate(
         Array.from({ length: 500 }, (_, i) => ({
@@ -594,7 +595,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         schema: E2EE_SCHEMA,
         encryption: goodKeys,
       });
-      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       await a.api.mutate([
         {
@@ -663,7 +664,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: goodKeys,
       });
-      await b.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await b.api.subscribe(U1);
       await syncIdle(b);
       checkEqual(
         (await b.api.readRows('secrets')).map((row) => row.values),
@@ -678,7 +679,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: { keys: {} },
       });
-      await locked.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await locked.api.subscribe(U1);
       await syncFails(
         locked,
         'client.decrypt_failed',
@@ -707,7 +708,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         server: authority,
         schema: CRDT_SCHEMA,
       });
-      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
       await a.api.mutate([
         {
@@ -755,7 +756,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         schema: CRDT_SCHEMA,
         allowed: P1,
       });
-      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await b.api.subscribe(U1);
       await syncIdle(b);
 
       // Concurrent baseVersion-less edits on top of the attached state.

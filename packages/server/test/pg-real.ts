@@ -40,3 +40,13 @@ export function bunSqlExecutor(
     },
   };
 }
+
+/**
+ * Empty the `public` schema of the shared database. Each real-Postgres test
+ * file starts from an empty schema and leaves one for the next file, so the
+ * files pass alone, combined, and as consecutive CI steps on one database.
+ */
+export async function resetPublicSchema(sql: any): Promise<void> {
+  await sql.unsafe('DROP SCHEMA public CASCADE');
+  await sql.unsafe('CREATE SCHEMA public');
+}

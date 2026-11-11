@@ -37,7 +37,7 @@ let client = try SyncularClient(
     schema: SyncularSchema.schema,
     config: SyncularConfig(baseUrl: "http://localhost:8787", dbPath: dbPath)
 )
-try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["groceries"]])
+try client.subscribe(scopes: ["list_id": "groceries"])
 try client.mutate([.object([
     "table": .string("todos"), "op": .string("upsert"),
     "values": .object(["id": .string("t1"), "list_id": .string("groceries"),
@@ -48,12 +48,12 @@ try client.syncUntilIdle()
 print(try client.query("SELECT id, title FROM todos"))
 ```
 
-`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the subscribed list, so a second device with the same subscription reads `t1`.
+`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the list's unit, so a second device that registers the same unit reads `t1`.
 
 ## The pages
 
 - **[Install & first sync](/platform-swift-install/)**: link the core, create a client against the quickstart server.
-- **[Reads & writes](/platform-swift-reads-writes/)**: subscribe, mutate, query, and collaborative text.
+- **[Reads & writes](/platform-swift-reads-writes/)**: units, mutate, query, and collaborative text.
 - **[Realtime & lifecycle](/platform-swift-realtime/)**: events, `pause()`, `resume()`, `close()`, and the `NWPathMonitor` adapter.
 - **[Platform specifics](/platform-swift-specifics/)**: linkage modes, transport policy, threading, and the example app.
 - **[Troubleshooting](/platform-swift-troubleshooting/)**: link errors, `client.failed`, and offline results.

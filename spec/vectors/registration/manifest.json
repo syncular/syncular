@@ -1,0 +1,12 @@
+{
+  "kind": "registration",
+  "generatedBy": "packages/core/scripts/generate-vectors.ts",
+  "cases": [
+    {
+      "name": "digests",
+      "json": "digests.json",
+      "covers": "Unit ids (§4.1), registration digests (§4.1: the golden example, the empty list, non-BMP and integer-like keys, an integer-text value, JSON escapes, reversed order) and echo digests (§4.4: sorted unique scope lists, revoked units and fenced records)"
+    }
+  ],
+  "invalid": []
+}

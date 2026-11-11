@@ -6,6 +6,7 @@ import type { Scenario, ScenarioContext } from '../scenario';
 import { syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 const AUDIT_CODE = 'app.completion_audit_required';
 
 async function install(
@@ -25,7 +26,7 @@ async function bootstrapped(ctx: ScenarioContext) {
     clientId: 'client-a',
     allowed: P1,
   });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -278,11 +279,7 @@ export const commitValidatorScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1'] },
         schema: REFERENCE_FIXTURE_SCHEMA,
       });
-      await a.api.subscribe({
-        id: 'items',
-        table: 'items',
-        scopes: { project_id: ['p1'] },
-      });
+      await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
       await syncOk(a);
       const seeded = await a.api.mutate([

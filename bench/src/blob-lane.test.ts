@@ -349,11 +349,6 @@ for (const core of ['ts', 'rust'] as const)
         );
         clients.push(reader);
         expect(reader.pid).not.toBe(reopened.pid);
-        await reader.invoke('subscribe', {
-          id: 'attachments',
-          table: 'attachments',
-          scopes: { project_id: [PROJECT_ID] },
-        });
         assertProcessSync(await reader.invoke('syncUntilIdle'));
         expect(
           processObject(

@@ -37,7 +37,7 @@ val client = SyncularClient.create(
     schema = SyncularSchema.schema,
     config = SyncularConfig(baseUrl = "http://localhost:8787", dbPath = dbPath),
 )
-client.subscribe("todos", "todos", mapOf("list_id" to listOf("groceries")))
+client.subscribe(mapOf("list_id" to "groceries"))
 client.mutate(listOf(JsonValue.obj(
     "table" to JsonValue.of("todos"), "op" to JsonValue.of("upsert"),
     "values" to JsonValue.obj(
@@ -50,12 +50,12 @@ client.syncUntilIdle()
 println(client.query("SELECT id, title FROM todos"))
 ```
 
-`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the subscribed list, so a second device with the same subscription reads `t1`.
+`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the list's unit, so a second device that registers the same unit reads `t1`.
 
 ## The pages
 
 - **[Install & first sync](/platform-kotlin-install/)**: JDK flags, loading the core, and a first client.
-- **[Reads & writes](/platform-kotlin-reads-writes/)**: subscribe, mutate, query, `JsonValue`, and collaborative text.
+- **[Reads & writes](/platform-kotlin-reads-writes/)**: units, mutate, query, `JsonValue`, and collaborative text.
 - **[Realtime & lifecycle](/platform-kotlin-realtime/)**: events, `pause()`, `resume()`, `close()`, and the Android connectivity adapter.
 - **[Platform specifics](/platform-kotlin-specifics/)**: library loading, Android packaging, transport policy, and threading.
 - **[Troubleshooting](/platform-kotlin-troubleshooting/)**: FFM errors, missing library, and offline results.

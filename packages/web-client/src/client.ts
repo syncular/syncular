@@ -29,11 +29,11 @@ import {
 import {
   type CommitFrame,
   canonicalScopeJson,
-  decodeMessage,
+  decodeResponse,
   DecodeError,
   decodeRow,
   decodeRowsSegment,
-  encodeMessage,
+  encodeRequest,
   encodeRow,
   encodeSparseRow,
   encodePresencePublish,
@@ -52,9 +52,15 @@ import {
   type ResponseMessage,
   type RowColumn,
   type RowValue,
+  type LiveStartFrame,
+  type PullHeaderFrame,
+  registrationDigest,
   type ScopeMap,
   type SegmentRefFrame,
+  type SubEndFrame,
   type SubStartFrame,
+  unitId,
+  type UnitScopes,
   type WakeReason,
 } from '@syncular/core';
 import { EncryptError } from '@syncular/core';
@@ -94,16 +100,13 @@ import {
   CLIENT_DIAGNOSTICS_VERSION,
   ClientDiagnosticsEmitter,
   type ClientDiagnosticsListener,
-  type ClientDiagnosticsRequest,
   type ClientDiagnosticsSnapshot,
   type ClientDiagnosticsStorage,
   type DiagnosticLastChange,
   type DiagnosticLastRound,
   type DiagnosticQueryFailure,
   type DiagnosticRoundCounters,
-  type DiagnosticSubscription,
   MAX_DIAGNOSTIC_DOMAINS,
-  MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
   MAX_DIAGNOSTIC_QUERY_FAILURES,
   type RealtimePolicy,
   type RealtimeState,
@@ -211,10 +214,12 @@ import {
   writePreviousVersionRefusal,
 } from './previous-version';
 import {
+  bytesToHex,
   type ClientSchema,
   type CompiledClientSchema,
   type CompiledClientTable,
   compileClientSchema,
+  hexToBytes,
   matchesLocalScopes,
   dropAndRecreateSyncedTables,
   ensureLocalBookkeepingSchema,
@@ -234,19 +239,28 @@ import {
   stripSyncColumns,
 } from './schema';
 import {
+  bootstrapping,
   bumpLocalRevision,
-  deleteSubscription,
+  covers,
+  deleteUnit,
+  ECHO_DIGEST_KEY,
   getLocalRevision,
   getMeta,
-  getSubscription,
-  loadSubscriptions,
-  pruneUnknownSubscriptions,
-  saveSubscriptionScopeSchema,
-  resetSubscriptionsForBump,
-  type SubscriptionRecord,
-  saveSubscription,
+  getUnit,
+  loadUnits,
+  META_TABLE,
+  owning,
+  pairScopes,
+  pruneUnknownUnits,
+  REGISTERED_DIGEST_KEY,
+  REPLICA_CURSOR_KEY,
+  replicaCursor,
+  resetUnits,
+  saveUnit,
+  saveUnitScopeSchema,
   setMeta,
-  SUBSCRIPTIONS_TABLE,
+  type UnitRecord,
+  unitOwners,
 } from './state';
 import type {
   RealtimeConnector,
@@ -256,16 +270,14 @@ import type {
 } from './transport';
 import {
   deletePendingEviction,
-  deleteWindowUnit,
-  deriveSubId,
-  getWindowUnitBySubId,
-  insertWindowUnit,
   loadPendingEvictions,
   loadWindowUnits,
   savePendingEviction,
-  unitScopes,
   type WindowBase,
   windowBaseKey,
+  windowRefs,
+  WINDOWS_TABLE,
+  windowUnitScopes,
 } from './window';
 
 // ---------------------------------------------------------------------------
@@ -332,14 +344,14 @@ export interface SyncSummary {
   readonly commitsApplied: number;
   /** Snapshot rows applied from segments. */
   readonly segmentRowsApplied: number;
-  /** Subscriptions still mid-bootstrap (resume token pending). */
+  /** Ids of the units still catching up after the round (§4.1). */
   readonly bootstrapping: readonly string[];
-  /** Subscriptions reset via `sync.cursor_expired` (re-pull needed). */
+  /** Units reset via `sync.cursor_expired` (§4.6). */
   readonly resets: readonly string[];
-  /** Subscriptions revoked this round (§3.3 purge ran). */
+  /** Units revoked this round (§3.3 purge ran). */
   readonly revoked: readonly string[];
-  /** Subscriptions stopped by a fatal configuration error (§3.3/§5.6
-   * fail-closed: no local scope-column mapping). */
+  /** Units stopped by a fatal configuration error (§3.3/§5.6 fail-closed:
+   * no local scope-column mapping). */
   readonly failed: readonly string[];
   /** Present when the server declared a schema floor — syncing stopped. */
   readonly schemaFloor?: SchemaFloor;
@@ -359,7 +371,7 @@ export interface SyncIdleResult extends SyncSummary {
 }
 
 export interface SyncIdleOptions {
-  /** §7.7: a strict positive round count. Default: 20. */
+  /** §7.8: a strict positive round count. Default: 20. */
   readonly maxRounds?: number;
   /**
    * Total wall-clock budget for one drive, across every round. When it
@@ -391,7 +403,7 @@ export interface SyncClientLimits {
   /**
    * §4.2 accept bitmask; defaults to inline + external rows (0b0011)
    * plus SQLite images and signed URLs when supported. Both image chunks
-   * and rows blocks commit before yielding to local reads (§7.7).
+   * and rows blocks commit before yielding to local reads (§7.8).
    */
   readonly accept?: number;
   /**
@@ -410,7 +422,8 @@ export interface SyncClientLimits {
   readonly maxPushOperationsPerRequest?: number;
   /**
    * §7.1: maximum bytes of the complete encoded SSP2 request (8-byte
-   * envelope, request header, push commits, pull header, subscriptions,
+   * envelope, request header, push commits, pull header, unit and progress
+   * frames,
    * framing, and any §5.11 ciphertext). Default: unbounded. A request whose
    * fixed frames alone exceed it, or whose first commit alone does not fit,
    * raises `client.push_request_too_large` and stays queued.
@@ -549,13 +562,6 @@ export interface PresencePeer {
   readonly doc: Record<string, unknown>;
 }
 
-export interface SubscribeInput {
-  readonly id: string;
-  readonly table: string;
-  readonly scopes: ScopeMap;
-  readonly params?: string;
-}
-
 /**
  * The live state of a window base (§4.8) — the completeness oracle (I3),
  * as plain serializable data so it crosses the worker/follower boundary
@@ -568,11 +574,10 @@ export interface WindowState {
   /** Windowed-in units for this base, ordered by value. */
   readonly units: readonly string[];
   /**
-   * Registered units whose bootstrap has not yet completed (§4.8): the
-   * unit's subscription still has `cursor: -1` (never synced) or holds a
-   * resume token (mid-bootstrap). Between `setWindow` and the bootstrap
-   * landing, the local replica for a pending unit may be empty or partial —
-   * it MUST NOT be rendered as complete.
+   * Windowed-in values whose unit is not complete (§4.8): bootstrapping
+   * (cursor `-1` or a resume token), revoked or failed. Between `setWindow`
+   * and the bootstrap landing, the local replica for a pending value may be
+   * empty or partial; it MUST NOT be rendered as complete.
    */
   readonly pending: readonly string[];
 }
@@ -624,25 +629,24 @@ export interface SnapshotStatement {
 }
 
 /**
- * §7.5: the catch-up state of one subscription as persisted in the snapshot,
- * never the mutable owner cache. `unknown` means the client does not currently
- * hold the subscription (never registered, forgotten, or removed) and carries
- * no fabricated table or cursor.
+ * §7.5: the catch-up state of one unit as persisted in the snapshot, never
+ * the mutable owner cache. `unknown` means the client does not currently hold
+ * the unit (never registered, released, or removed).
  */
-export type SubscriptionCatchup =
+export type UnitCatchup =
   | { readonly state: 'unknown'; readonly id: string }
   | {
       readonly state: 'known';
       readonly id: string;
-      readonly table: string;
       readonly status: 'active' | 'revoked' | 'failed';
+      readonly live: boolean;
+      /** The unit's cursor while it catches up, the replica cursor while live. */
       readonly cursor: number;
       readonly hasResumeToken: boolean;
-      /** True only for `active` with `cursor >= 0` and no resume token. */
+      /** True only for an `active` unit that is live or post-bootstrap. */
       readonly bootstrapComplete: boolean;
-      /** True only for `active` while a resume token remains or `cursor < 0`. */
+      /** True only for an `active` unit with cursor `-1` or a resume token. */
       readonly knownPendingPages: boolean;
-      readonly effectiveScopes?: unknown;
       readonly reasonCode?: string;
     };
 
@@ -665,7 +669,8 @@ export type CommitDelivery =
 export interface SnapshotReadRequest {
   readonly statements: readonly SnapshotStatement[];
   readonly coverage?: readonly WindowCoverage[];
-  readonly subscriptions?: readonly string[];
+  /** Unit ids whose catch-up state the read reports. */
+  readonly units?: readonly string[];
   readonly commitIds?: readonly string[];
   /** §7.5 owner: a failed owned read is reported in `queryFailures`. */
   readonly owner?: QueryOwner;
@@ -677,7 +682,7 @@ export interface SnapshotRead<Row = SqlRow> {
   readonly revision: LocalRevision;
   readonly queries: readonly (readonly Row[])[];
   readonly coverage: CoverageSnapshot;
-  readonly subscriptions: readonly SubscriptionCatchup[];
+  readonly units: readonly UnitCatchup[];
   readonly deliveries: readonly CommitDelivery[];
 }
 
@@ -728,12 +733,11 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 interface OpenSection {
   readonly start: SubStartFrame;
-  readonly sub: SubscriptionRecord | undefined;
-  /** Fresh bootstrap (§5.6): request had cursor < 0 and no resume token. */
-  readonly fresh: boolean;
-  /** Skip application entirely (unknown sub, delta during bootstrap, …). */
+  readonly unit: UnitRecord;
+  /** Tables that received a segment in the current bootstrap (§5.6). */
+  readonly seeded: Set<string>;
+  /** A unit unregistered in flight or failed closed applies nothing. */
   skip: boolean;
-  cleared: boolean;
 }
 
 /** §8.7 client side: one in-flight socket round's response assembly. */
@@ -773,7 +777,7 @@ function emptySummary(pushed: number): MutableSummary {
 
 const LOG_EPOCH_META_KEY = 'logEpoch';
 
-/** §7.7: one `syncUntilIdle` drive's default total deadline. */
+/** §7.8: one `syncUntilIdle` drive's default total deadline. */
 const SYNC_IDLE_TIMEOUT_MS = 60_000;
 
 /** RFC 0005 defaults (D2/A4/D7). */
@@ -783,7 +787,7 @@ const PREVIOUS_VERSION_DEFAULT_MAX_TABLES = 32;
 const PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES = 1024 * 1024;
 const PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** §7.7: an explicit round budget is a strict positive u32 count. */
+/** §7.8: an explicit round budget is a strict positive u32 count. */
 function requireRoundBudget(maxRounds: number | undefined): void {
   if (
     maxRounds !== undefined &&
@@ -918,7 +922,7 @@ export class SyncClient {
   #securityEpoch = 0;
   #transportEnabled: boolean;
   #transportEpoch = 0;
-  #subscriptionEpoch = 0;
+  #registrationEpoch = 0;
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
   readonly #retainFailedCommits: boolean;
@@ -1148,7 +1152,6 @@ export class SyncClient {
     // BUSY/BUSY_SNAPSHOT), and one upgraded before the read refuses with
     // `client.schema_downgrade`. The batch emits its change event only after
     // the commit. The onUpgrading callback still reports reset intent.
-    let subscriptions!: ReturnType<typeof pruneUnknownSubscriptions>;
     try {
       this.#applyBatch(() => {
         // §7.4.1/§7.4.2: this is the transaction's first read, so it pins the
@@ -1264,11 +1267,7 @@ export class SyncClient {
         this.#reconcilePreviousVersionAtBoot();
         // A registration remains app intent only while its table exists in the
         // running schema. Removed-table registrations would poison every pull.
-        subscriptions = pruneUnknownSubscriptions(
-          this.#db,
-          loadSubscriptions(this.#db),
-          this.#schema,
-        );
+        pruneUnknownUnits(this.#db, this.#schema);
       });
     } catch (error) {
       await this.#lease.release();
@@ -1289,7 +1288,7 @@ export class SyncClient {
           `SELECT 1 FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL LIMIT 1`,
         ).length > 0 ||
         loadPendingEvictions(this.#db).length > 0 ||
-        subscriptions.some((sub) => sub.status === 'active'));
+        loadUnits(this.#db).some((unit) => unit.status === 'active'));
     if (startupWork && this.#securityLifecycle === 'active') {
       this.#needsPull = true;
       this.#emitSyncNeeded('startup');
@@ -1302,7 +1301,7 @@ export class SyncClient {
       clientId: () => this.#clientId,
       role: () => 'direct',
       outbox: async () => this.pendingCommits().length,
-      subscriptions: async () => this.subscriptions(),
+      units: async () => this.units(),
       conflicts: async () => this.conflicts().length,
       rejections: async () => this.rejections().length,
       syncNeeded: async () => this.statusSnapshot().syncNeeded,
@@ -1331,7 +1330,7 @@ export class SyncClient {
           String(this.#schema.version),
         );
         setLocalSchemaDescriptor(this.#db, this.#schema);
-        saveSubscriptionScopeSchema(this.#db, this.#schema);
+        saveUnitScopeSchema(this.#db, this.#schema);
       });
       return;
     }
@@ -1342,7 +1341,7 @@ export class SyncClient {
       this.#db.transaction(() => {
         ensureLocalSyncedSchema(this.#db, this.#schema);
         setLocalSchemaDescriptor(this.#db, this.#schema);
-        saveSubscriptionScopeSchema(this.#db, this.#schema);
+        saveUnitScopeSchema(this.#db, this.#schema);
       });
       return;
     }
@@ -1382,15 +1381,10 @@ export class SyncClient {
             ),
           );
         }
-        pruneUnknownSubscriptions(
-          this.#db,
-          loadSubscriptions(this.#db),
-          this.#schema,
-          true,
-        );
+        pruneUnknownUnits(this.#db, this.#schema, true);
         this.#discardAcknowledgedRows();
         dropAndRecreateSyncedTables(this.#db, this.#schema);
-        resetSubscriptionsForBump(this.#db);
+        resetUnits(this.#db);
         this.#replayOutbox();
         setMeta(
           this.#db,
@@ -1398,7 +1392,7 @@ export class SyncClient {
           String(this.#schema.version),
         );
         setLocalSchemaDescriptor(this.#db, this.#schema);
-        saveSubscriptionScopeSchema(this.#db, this.#schema);
+        saveUnitScopeSchema(this.#db, this.#schema);
       });
       // Whole-DB reset: every synced table's rows changed (I1 eviction-shaped).
       for (const table of this.#schema.tables.values()) batch.table(table.name);
@@ -1488,7 +1482,7 @@ export class SyncClient {
       this.#emitSyncIntent({ kind: 'interactive' });
       return [];
     }
-    const subscriptions = loadSubscriptions(this.#db);
+    const units = loadUnits(this.#db);
     this.#setUpgrading(true);
     // RFC 0005 D5: the log-epoch reset is not a schema bump. It performs the
     // orphan sweep but captures no new shadow.
@@ -1499,7 +1493,7 @@ export class SyncClient {
         this.#db.transaction(() => {
           this.#discardAcknowledgedRows();
           dropAndRecreateSyncedTables(this.#db, this.#schema);
-          resetSubscriptionsForBump(this.#db);
+          resetUnits(this.#db);
           setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
           // §7.1/§7.4.4: recover codec-invalid persisted values in this reset
           // transaction before they replay, so the reset boundary never fails on
@@ -1525,7 +1519,7 @@ export class SyncClient {
     this.#setSyncNeeded(true);
     this.#emitSyncNeeded('startup');
     this.#emitSyncIntent({ kind: 'interactive' });
-    return subscriptions.map((subscription) => subscription.id);
+    return units.map((unit) => unit.id);
   }
 
   #setUpgrading(upgrading: boolean): void {
@@ -1681,7 +1675,7 @@ export class SyncClient {
           `SELECT 1 FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL LIMIT 1`,
         ).length > 0 ||
         loadPendingEvictions(this.#db).length > 0 ||
-        loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
+        loadUnits(this.#db).some((unit) => unit.status === 'active'));
     if (startupWork) {
       this.#setSyncNeeded(true);
       this.#emitSyncNeeded('startup');
@@ -1786,7 +1780,7 @@ export class SyncClient {
   }
 
   /**
-   * §7.5: resolve several read-only statements, window coverage, subscription
+   * §7.5: resolve several read-only statements, window coverage, unit
    * catch-up states, and commit deliveries from one SQLite read transaction
    * and one revision. A host that needs those together reads them together;
    * every statement passes the read-only guard and any failure rolls the whole
@@ -1797,10 +1791,9 @@ export class SyncClient {
     return this.#readSnapshot(spec);
   }
 
-  /** §7.5: one subscription's persisted catch-up state (never the owner cache). */
-  subscriptionCatchup(id: string): SubscriptionCatchup {
-    return this.#readSnapshot({ statements: [], subscriptions: [id] })
-      .subscriptions[0]!;
+  /** §7.5: one unit's persisted catch-up state (never the owner cache). */
+  unitCatchup(id: string): UnitCatchup {
+    return this.#readSnapshot({ statements: [], units: [id] }).units[0]!;
   }
 
   /** §7.5: one client commit's delivery status: pending, its retained outcome,
@@ -1812,75 +1805,35 @@ export class SyncClient {
 
   /**
    * §7.5: the one atomic read primitive. Every public read (`querySnapshot`,
-   * `snapshotRead`, `subscriptionCatchup`, `commitDelivery`) enters here, so
+   * `snapshotRead`, `unitCatchup`, `commitDelivery`) enters here, so
    * the read-only guard, transaction, revision, coverage, catch-up, delivery,
    * and owner-failure observation exist once.
    */
   #readSnapshot(request: SnapshotReadRequest): SnapshotRead {
     this.#requireActive();
     const owner = request.owner;
-    const catchupOf = (id: string): SubscriptionCatchup => {
-      function corrupt(): never {
+    const catchupOf = (id: string): UnitCatchup => {
+      const unit = getUnit(this.#db, id);
+      if (unit === undefined) return { state: 'unknown', id };
+      const cursor = unit.cursor ?? replicaCursor(this.#db);
+      if (!Number.isSafeInteger(cursor))
         throw new ClientSyncError(
           'sync.local_corrupt',
-          'persisted subscription state is invalid',
+          'persisted unit state is invalid',
         );
-      }
-      const row = this.#db.query(
-        `SELECT tbl,status,cursor,bootstrap_state,effective_scopes,reason_code FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`,
-        [id],
-      )[0];
-      if (row === undefined) return { state: 'unknown', id };
-      const table = row.tbl;
-      const status = row.status;
-      const cursor = row.cursor;
-      if (
-        typeof table !== 'string' ||
-        (status !== 'active' && status !== 'revoked' && status !== 'failed') ||
-        typeof cursor !== 'number' ||
-        !Number.isSafeInteger(cursor)
-      ) {
-        corrupt();
-      }
-      const token = row.bootstrap_state;
-      if (token !== null && typeof token !== 'string') corrupt();
-      const rawScopes = row.effective_scopes;
-      let effectiveScopes: unknown;
-      if (rawScopes !== null) {
-        if (typeof rawScopes !== 'string') corrupt();
-        try {
-          effectiveScopes = JSON.parse(rawScopes);
-          if (effectiveScopes === null) effectiveScopes = undefined;
-          else if (
-            typeof effectiveScopes !== 'object' ||
-            Array.isArray(effectiveScopes) ||
-            !Object.values(effectiveScopes).every(
-              (values) =>
-                Array.isArray(values) &&
-                values.every((value) => typeof value === 'string'),
-            )
-          )
-            corrupt();
-        } catch {
-          corrupt();
-        }
-      }
-      const reasonCode = row.reason_code;
-      if (reasonCode !== null && typeof reasonCode !== 'string') corrupt();
-      const active = status === 'active';
-      const hasResumeToken = token !== null;
-      return {
+      const active = unit.status === 'active';
+      const pending = bootstrapping(unit);
+      return definedObject({
         state: 'known',
         id,
-        table,
-        status,
+        status: unit.status,
+        live: unit.cursor === undefined,
         cursor,
-        hasResumeToken,
-        bootstrapComplete: active && cursor >= 0 && !hasResumeToken,
-        knownPendingPages: active && (hasResumeToken || cursor < 0),
-        ...(effectiveScopes !== undefined ? { effectiveScopes } : {}),
-        ...(reasonCode !== null ? { reasonCode } : {}),
-      };
+        hasResumeToken: unit.bootstrapState !== undefined,
+        bootstrapComplete: active && !pending,
+        knownPendingPages: active && pending,
+        reasonCode: unit.reasonCode,
+      });
     };
     const deliveryOf = (id: string): CommitDelivery => {
       const pending =
@@ -1922,7 +1875,7 @@ export class SyncClient {
             pending,
             missing,
           },
-          subscriptions: (request.subscriptions ?? []).map(catchupOf),
+          units: (request.units ?? []).map(catchupOf),
           deliveries: (request.commitIds ?? []).map(deliveryOf),
         };
       });
@@ -1992,7 +1945,7 @@ export class SyncClient {
       this.#discardPreviousVersion();
       return this.#previousVersionUnavailable(currentVersion, 'lease-inactive');
     }
-    if (loadSubscriptions(this.#db).some((sub) => sub.status === 'revoked')) {
+    if (loadUnits(this.#db).some((unit) => unit.status === 'revoked')) {
       this.#discardPreviousVersion();
       return this.#previousVersionUnavailable(currentVersion, 'scope-revoked');
     }
@@ -2114,19 +2067,15 @@ export class SyncClient {
   }
 
   /**
-   * RFC 0005 D7: the §7.4.5 replacement-coverage predicate — every active
-   * subscription has `cursor >= 0` and no resume token. Window units own
-   * subscriptions, so their pendency is included. An empty active set is not
-   * completion.
+   * RFC 0005 D7: the §7.4.5 replacement-coverage predicate: no active unit
+   * is bootstrapping. Window units are units, so their pendency is included.
+   * An empty active set is not completion.
    */
   #previousVersionCoverageComplete(): boolean {
-    const active = loadSubscriptions(this.#db).filter(
-      (sub) => sub.status === 'active',
+    const active = loadUnits(this.#db).filter(
+      (unit) => unit.status === 'active',
     );
-    if (active.length === 0) return false;
-    return active.every(
-      (sub) => sub.cursor >= 0 && sub.bootstrapState === undefined,
-    );
+    return active.length > 0 && !active.some(bootstrapping);
   }
 
   /**
@@ -2162,7 +2111,7 @@ export class SyncClient {
     }
     const record = this.#readPreviousVersionRecord();
     if (record === undefined) return;
-    if (loadSubscriptions(this.#db).some((sub) => sub.status === 'revoked')) {
+    if (loadUnits(this.#db).some((unit) => unit.status === 'revoked')) {
       this.#discardPreviousVersion();
       return;
     }
@@ -2257,75 +2206,26 @@ export class SyncClient {
    * One atomic support/product-health view. It never returns scope values,
    * rows, SQL, paths, auth material, lease ids, keys, or mutation bodies.
    */
-  diagnosticsSnapshot(
-    request: ClientDiagnosticsRequest = {},
-  ): ClientDiagnosticsSnapshot {
+  diagnosticsSnapshot(): ClientDiagnosticsSnapshot {
     this.#requireActive();
-    const expected = request.expectedSubscriptions ?? [];
-    if (expected.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS) {
-      throw invalidRequest(
-        `diagnosticsSnapshot accepts at most ${MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS} expected subscriptions`,
-      );
-    }
-    const registered = loadSubscriptions(this.#db);
-    const subscriptions = new Map<string, DiagnosticSubscription>();
-    for (const sub of registered) {
-      const reset = sub.cursor < 0 && sub.reasonCode === 'sync.cursor_expired';
-      const complete =
-        sub.status === 'active' &&
-        sub.cursor >= 0 &&
-        sub.bootstrapState === undefined;
-      subscriptions.set(sub.id, {
-        id: sub.id,
-        table: sub.table,
-        state:
-          sub.status === 'revoked'
-            ? 'revoked'
-            : sub.status === 'failed'
-              ? 'failed'
-              : reset
-                ? 'reset'
-                : complete
-                  ? 'complete'
-                  : 'bootstrapping',
-        complete,
-        cursor: sub.cursor,
-        ...(sub.reasonCode !== undefined
-          ? { reasonCode: this.#diagnosticCode(sub.reasonCode) }
-          : {}),
-      });
-    }
-    for (const item of expected) {
-      if (
-        typeof item.id !== 'string' ||
-        item.id.length === 0 ||
-        typeof item.table !== 'string' ||
-        item.table.length === 0
-      ) {
-        throw invalidRequest(
-          'diagnosticsSnapshot needs subscription id and table',
-        );
-      }
-      const registeredSubscription = subscriptions.get(item.id);
-      if (
-        registeredSubscription !== undefined &&
-        registeredSubscription.table !== item.table
-      ) {
-        subscriptions.set(item.id, {
-          id: item.id,
-          table: item.table,
-          state: 'failed',
-          complete: false,
-          reasonCode: 'client.subscription_intent_mismatch',
-        });
-      } else if (registeredSubscription === undefined) {
-        subscriptions.set(item.id, {
-          id: item.id,
-          table: item.table,
-          state: 'unregistered',
-          complete: false,
-        });
-      }
+    const registered = loadUnits(this.#db);
+    const units = {
+      bootstrapping: 0,
+      complete: 0,
+      reset: 0,
+      revoked: 0,
+      failed: 0,
+    };
+    for (const unit of registered) {
+      units[
+        unit.status !== 'active'
+          ? unit.status
+          : !bootstrapping(unit)
+            ? 'complete'
+            : unit.reasonCode === 'sync.cursor_expired'
+              ? 'reset'
+              : 'bootstrapping'
+      ] += 1;
     }
     const capturedAtMs = this.#now();
     const leaseState = this.#diagnosticLease(capturedAtMs);
@@ -2340,20 +2240,6 @@ export class SyncClient {
           : round?.status === 'failed' && round.httpStatus !== undefined
             ? 'online'
             : 'unknown';
-    const expectedOrder = new Map(
-      expected.map((item, index) => [item.id, index] as const),
-    );
-    const allSubscriptions = [...subscriptions.values()].sort((a, b) => {
-      const aExpected = expectedOrder.get(a.id);
-      const bExpected = expectedOrder.get(b.id);
-      if (aExpected !== undefined || bExpected !== undefined) {
-        return (
-          (aExpected ?? Number.MAX_SAFE_INTEGER) -
-          (bExpected ?? Number.MAX_SAFE_INTEGER)
-        );
-      }
-      return a.id.localeCompare(b.id);
-    });
     return definedObject({
       version: CLIENT_DIAGNOSTICS_VERSION,
       capturedAtMs,
@@ -2379,14 +2265,20 @@ export class SyncClient {
         pendingOutbox: countOutbox(this.#db),
       },
       lease: leaseState,
-      subscriptions: allSubscriptions.slice(
-        0,
-        MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
-      ),
-      subscriptionsTruncated:
-        allSubscriptions.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
-      activeSubscriptions: registered.filter((sub) => sub.status === 'active')
-        .length,
+      units: {
+        ...units,
+        reasonCodes: [
+          ...new Set(
+            registered.flatMap((unit) =>
+              unit.reasonCode === undefined
+                ? []
+                : [this.#diagnosticCode(unit.reasonCode)],
+            ),
+          ),
+        ].sort(),
+      },
+      activeUnits: registered.filter((unit) => unit.status === 'active').length,
+      replicaCursor: replicaCursor(this.#db),
       lastRound: this.#lastRound,
       lastChange: this.#lastChange,
       storage: this.#diagnosticStorage(),
@@ -2418,13 +2310,10 @@ export class SyncClient {
       const pageSize = Number(
         this.#db.query('PRAGMA page_size')[0]?.page_size ?? 0,
       );
-      const outboxBytes = Number(
-        this.#db.query(
-          `SELECT COALESCE(SUM(LENGTH(operations)),0)AS bytes FROM ${OUTBOX_TABLE}`,
-        )[0]?.bytes ?? 0,
-      );
-      const outcome = this.#db.query(
-        `SELECT COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM ${OUTCOMES_TABLE}`,
+      // One statement for the outbox and outcome-journal sums keeps the
+      // snapshot at its pre-version-4 statement count.
+      const sums = this.#db.query(
+        `SELECT (SELECT COALESCE(SUM(LENGTH(operations)),0) FROM ${OUTBOX_TABLE})AS outbox,COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM ${OUTCOMES_TABLE}`,
       )[0];
       const blobBytes = this.#hasBlobs
         ? Number(
@@ -2439,9 +2328,9 @@ export class SyncClient {
       return {
         status: pressure ? 'pressure' : 'healthy',
         databaseBytesApprox: Math.max(0, pageCount * pageSize),
-        pendingOutboxBytesApprox: Math.max(0, outboxBytes),
-        retainedOutcomeBytesApprox: Math.max(0, Number(outcome?.bytes ?? 0)),
-        retainedOutcomeEntries: Math.max(0, Number(outcome?.entries ?? 0)),
+        pendingOutboxBytesApprox: Math.max(0, Number(sums?.outbox ?? 0)),
+        retainedOutcomeBytesApprox: Math.max(0, Number(sums?.bytes ?? 0)),
+        retainedOutcomeEntries: Math.max(0, Number(sums?.entries ?? 0)),
         blobCacheBytesApprox: Math.max(0, blobBytes),
         ...(pressure
           ? { pressureReasonCode: 'client.blob_cache_over_limit' as const }
@@ -2545,7 +2434,9 @@ export class SyncClient {
     if (revision !== undefined) {
       const event = batch.finish(revision, status);
       const tables = [...new Set(event.tables.map((entry) => entry.table))];
-      const windows = [...new Set(event.windows.map((entry) => entry.table))];
+      const windows = [
+        ...new Set(event.windows.map((entry) => entry.baseKey.split('\0')[0]!)),
+      ];
       this.#lastChange = {
         revision: revision.toString(),
         recordedAtMs: this.#now(),
@@ -2826,7 +2717,13 @@ export class SyncClient {
           grant.urlExpiresAtMs > this.#now()
         ) {
           try {
-            await transport.uploadToUrl(grant.url, bytes, mediaType, signal);
+            await transport.uploadToUrl(
+              blobId,
+              grant.url,
+              bytes,
+              mediaType,
+              signal,
+            );
             return;
           } catch {
             // Grant PUT failed — stream through the direct endpoint below.
@@ -2888,11 +2785,11 @@ export class SyncClient {
     await this.#opChain;
     if (!this.#transportEnabled) return { proven: false, reason: 'offline' };
     const epoch = this.#transportEpoch;
-    const subscriptionEpoch = this.#subscriptionEpoch;
+    const registrationEpoch = this.#registrationEpoch;
     const securityEpoch = this.#securityEpoch;
-    let before: SubscriptionRecord[];
+    let before: UnitRecord[];
     try {
-      before = loadSubscriptions(this.#db);
+      before = loadUnits(this.#db);
     } catch {
       return { proven: false, reason: 'snapshot_failed' };
     }
@@ -2905,14 +2802,14 @@ export class SyncClient {
         reason:
           !this.#transportEnabled || epoch !== this.#transportEpoch
             ? 'offline'
-            : subscriptionEpoch !== this.#subscriptionEpoch
+            : registrationEpoch !== this.#registrationEpoch
               ? 'missing_coverage'
               : 'sync_failed',
       };
     }
     if (!this.#transportEnabled || epoch !== this.#transportEpoch)
       return { proven: false, reason: 'offline' };
-    if (subscriptionEpoch !== this.#subscriptionEpoch)
+    if (registrationEpoch !== this.#registrationEpoch)
       return { proven: false, reason: 'missing_coverage' };
     if (
       this.#securityLifecycle !== 'active' ||
@@ -2927,7 +2824,7 @@ export class SyncClient {
       return this.#db.transaction(() => {
         const snapshot = this.#readSnapshot({
           statements: [],
-          subscriptions: before.map((sub) => sub.id),
+          units: before.map((unit) => unit.id),
           commitIds: [clientCommitId],
         });
         const delivery = snapshot.deliveries[0];
@@ -2939,24 +2836,20 @@ export class SyncClient {
               report.revoked.length > 0 ? 'revoked' : 'outcome_unavailable',
           };
         const after = new Map(
-          loadSubscriptions(this.#db).map((sub) => [sub.id, sub]),
+          loadUnits(this.#db).map((unit) => [unit.id, unit]),
         );
-        const states = new Map(
-          snapshot.subscriptions.map((sub) => [sub.id, sub]),
+        const complete = new Set(
+          snapshot.units.flatMap((state) =>
+            state.state === 'known' && state.bootstrapComplete
+              ? [state.id]
+              : [],
+          ),
         );
+        // A unit id names one scope map (§4.1), so the same id before and
+        // after the drive is the same registration.
         const candidates = before.flatMap((previous) => {
-          const sub = after.get(previous.id);
-          const state = states.get(previous.id);
-          return sub !== undefined &&
-            sub.table === previous.table &&
-            sub.params === previous.params &&
-            canonicalScopeJson(sub.scopes) ===
-              canonicalScopeJson(previous.scopes) &&
-            sub.effectiveScopes !== undefined &&
-            state?.state === 'known' &&
-            state.bootstrapComplete
-            ? [{ table: sub.table, scopes: sub.effectiveScopes }]
-            : [];
+          const unit = after.get(previous.id);
+          return unit !== undefined && complete.has(unit.id) ? [unit] : [];
         });
         const covered = (
           tableName: string,
@@ -2970,10 +2863,13 @@ export class SyncClient {
               rowValueToJson(value),
             ]),
           );
-          return candidates.some((candidate) => {
+          return candidates.some((unit) => {
+            const scopes = covers(table, unit.scopes)
+              ? pairScopes(unit.scopes, tableName, unit.echo)
+              : undefined;
             return (
-              candidate.table === tableName &&
-              Object.keys(candidate.scopes).every((variable) => {
+              scopes !== undefined &&
+              Object.keys(scopes).every((variable) => {
                 const column = table.scopeColumnByVariable.get(variable);
                 const value = column === undefined ? undefined : row[column];
                 return (
@@ -2982,7 +2878,7 @@ export class SyncClient {
                   typeof value === 'boolean'
                 );
               }) &&
-              matchesLocalScopes(table, candidate.scopes, values)
+              matchesLocalScopes(table, scopes, values)
             );
           });
         };
@@ -3180,14 +3076,15 @@ export class SyncClient {
     );
   }
 
-  subscriptions(): SubscriptionRecord[] {
+  /** Every unit in registration order (§4.1), including revoked and failed. */
+  units(): UnitRecord[] {
     this.#requireActive();
-    return loadSubscriptions(this.#db);
+    return loadUnits(this.#db);
   }
 
-  subscription(id: string): SubscriptionRecord | undefined {
+  unit(id: string): UnitRecord | undefined {
     this.#requireActive();
-    return getSubscription(this.#db, id);
+    return getUnit(this.#db, id);
   }
 
   pendingCommits(): OutboxCommit[] {
@@ -3195,94 +3092,106 @@ export class SyncClient {
     return listOutbox(this.#db);
   }
 
-  // -- subscriptions ----------------------------------------------------------
+  // -- units (§4.1) -----------------------------------------------------------
 
-  subscribe(input: SubscribeInput): void {
-    this.subscribeMany([input]);
+  /** Register one unit (§4.1) and return its id. */
+  subscribe(scopes: UnitScopes): string {
+    return this.subscribeMany([scopes])[0]!;
   }
 
   /**
-   * Register several subscriptions in one local transaction: the same rules
-   * as `subscribe` for each input, and one commit for all of them (on OPFS a
-   * commit costs milliseconds, so a cold start with hundreds of
-   * registrations pays it once). An error rolls back every registration of
-   * the call.
+   * Register several units in one local transaction and return their ids:
+   * one commit for all of them (on OPFS a commit costs milliseconds, so a
+   * cold start with hundreds of units pays it once). An error rolls back every
+   * registration of the call. Registering an active unit again changes
+   * nothing; a revoked unit re-arms (§3.3).
    */
-  subscribeMany(inputs: readonly SubscribeInput[]): void {
+  subscribeMany(units: readonly UnitScopes[]): string[] {
     this.#requireActive();
     let registered = false;
-    this.#db.transaction(() => {
-      for (const input of inputs) {
-        if (!this.#schema.tables.has(input.table)) {
-          throw new ClientSyncError(
-            'sync.unknown_table',
-            `subscribe: unknown local table ${JSON.stringify(input.table)}`,
-          );
-        }
-        const existing = getSubscription(this.#db, input.id);
-        if (existing !== undefined) {
-          const sameIntent =
-            existing.table === input.table &&
-            canonicalScopeJson(existing.scopes) ===
-              canonicalScopeJson(input.scopes) &&
-            existing.params === input.params;
-          if (!sameIntent) {
-            throw new ClientSyncError(
-              'client.subscription_intent_mismatch',
-              'subscription id already names different table, scopes, or params',
-            );
-          }
-          // §3.3: a revoked registration keeps its id and intent but no
-          // progress. Subscribing again with the same intent re-arms it, so
-          // the next pull resolves its scopes from scratch. A `failed`
-          // registration is a configuration error and stays put.
-          if (existing.status !== 'revoked') continue;
-        }
-        saveSubscription(
-          this.#db,
-          definedObject({
-            id: input.id,
-            table: input.table,
-            scopes: input.scopes,
-            params: input.params,
-            cursor: -1,
-            status: 'active',
-          }),
-        );
-        registered = true;
-      }
-    });
-    if (!registered) return;
-    this.#subscriptionEpoch += 1;
-    this.#setSyncNeeded(true);
-    this.#emitSyncIntent({ kind: 'interactive' });
-    this.#emitDiagnostics();
+    const ids = this.#db.transaction(() =>
+      units.map((scopes) => {
+        const { id, changed } = this.#holdUnit(scopes, true);
+        registered ||= changed;
+        return id;
+      }),
+    );
+    if (registered) {
+      this.#registrationEpoch += 1;
+      this.#setSyncNeeded(true);
+      this.#emitSyncIntent({ kind: 'interactive' });
+      this.#emitDiagnostics();
+    }
+    return ids;
   }
-
-  unsubscribe(id: string): void {
-    this.#requireActive();
-    if (getSubscription(this.#db, id) === undefined) return;
-    deleteSubscription(this.#db, id);
-    this.#subscriptionEpoch += 1;
-    this.#setSyncNeeded(true);
-    this.#emitSyncIntent({ kind: 'interactive' });
-    this.#emitDiagnostics();
-  }
-
-  // -- windowed subscriptions (§4.8) ------------------------------------------
 
   /**
-   * Set the live window units for a base (§4.8): a value-sharded family of
-   * subscriptions, one per unit. Computes the diff against the registry —
-   * added units get fresh subscriptions (image-lane bootstrap on the next
-   * sync); removed units are unsubscribed with their first eviction chunk
-   * in one local transaction (E1–E4). Idempotent: calling with the same units is a
-   * no-op. Re-entry (a unit removed then re-added) cancels any deferred
-   * eviction and fresh-bootstraps.
-   *
-   * The change takes effect on the next `sync()`/socket round — the pull's
-   * subscription list (now with the added unit, without the removed one)
-   * re-registers realtime at round end (§8.7). No socket cycle needed.
+   * Release the explicit reference to a unit. The unit leaves the
+   * registration list when no window base holds it (§4.1); its rows stay.
+   */
+  unsubscribe(id: string): void {
+    this.#requireActive();
+    const unit = getUnit(this.#db, id);
+    if (unit === undefined || !unit.explicit) return;
+    if (windowRefs(this.#db, id).length > 0) {
+      saveUnit(this.#db, { ...unit, explicit: false });
+      return;
+    }
+    deleteUnit(this.#db, id);
+    this.#registrationEpoch += 1;
+    if (unit.status !== 'active') return;
+    this.#setSyncNeeded(true);
+    this.#emitSyncIntent({ kind: 'interactive' });
+    this.#emitDiagnostics();
+  }
+
+  /**
+   * Take one reference on a unit (§4.1): validate the scope map, register
+   * a new unit catching up with cursor `-1`, re-arm a revoked one (§3.3).
+   * `changed` reports whether the registration list changed.
+   */
+  #holdUnit(
+    scopes: UnitScopes,
+    explicit: boolean,
+  ): { id: string; changed: boolean } {
+    const entries = Object.entries(scopes ?? {});
+    if (
+      entries.length === 0 ||
+      entries.some(([, value]) => typeof value !== 'string' || value === '*') ||
+      ![...this.#schema.tables.values()].some((table) => covers(table, scopes))
+    )
+      throw new ClientSyncError(
+        'sync.invalid_subscription',
+        'a unit names one non-wildcard value per variable and covers a table',
+      );
+    const id = unitId(scopes);
+    const existing = getUnit(this.#db, id);
+    if (existing !== undefined && existing.status !== 'revoked') {
+      if (explicit && !existing.explicit)
+        saveUnit(this.#db, { ...existing, explicit });
+      return { id, changed: false };
+    }
+    deletePendingEviction(this.#db, id);
+    saveUnit(this.#db, {
+      id,
+      scopes: Object.fromEntries(entries),
+      explicit: explicit || existing?.explicit === true,
+      status: 'active',
+      cursor: -1,
+      seeded: [],
+    });
+    return { id, changed: true };
+  }
+
+  // -- windows (§4.8) ---------------------------------------------------------
+
+  /**
+   * Set the windowed-in values of a base (§4.8): one unit per value. Added
+   * values take a reference on their unit (a new unit bootstraps on the next
+   * sync); removed values release theirs, and a unit no reference holds leaves
+   * the registration list fused with its first eviction chunk (E1–E4).
+   * Idempotent; re-entry cancels a deferred eviction and fresh-bootstraps.
+   * The change reaches the server with the next round's list (§8.7).
    */
   async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
     await this.setWindowCommand(base, units);
@@ -3294,147 +3203,121 @@ export class SyncClient {
     units: readonly string[],
   ): Promise<CommandResult<void>> {
     this.#requireActive();
-    const table = this.#table(base.table);
-    if (!table.scopeColumnByVariable.has(base.variable)) {
-      throw invalidRequest(
-        `${base.table}: unknown scope variable ${base.variable} (§4.8)`,
-      );
-    }
-    // Serialize the whole window edit: it spans an `await deriveSubId` between
-    // db transactions, so without the chain a delta apply (or a concurrent
-    // setWindow) could interleave its transactions and corrupt the registry.
     let changed = false;
-    let widened = false;
+    // Serialize the whole edit: a shrink yields between eviction chunks, so
+    // without the chain a delta apply or another setWindow could interleave.
     await this.#serialize(async () => {
       const baseKey = windowBaseKey(base);
       const wanted = new Set(units);
       const live = loadWindowUnits(this.#db, baseKey);
-      const liveByUnit = new Map(live.map((u) => [u.unit, u.subId]));
-
-      // Widen: units wanted but not live → fresh subscription + registry row.
-      for (const unit of wanted) {
-        if (liveByUnit.has(unit)) continue;
-        const subId = await deriveSubId(base, unit);
+      const held = new Set(live.map((entry) => entry.value));
+      for (const value of wanted) {
+        if (held.has(value)) continue;
         this.#applyBatch((batch) => {
-          this.#db.transaction(() => {
-            // Re-entry cancels any deferred eviction for this sub id.
-            deletePendingEviction(this.#db, subId);
-            insertWindowUnit(this.#db, baseKey, unit, subId);
-            saveSubscription(
-              this.#db,
-              definedObject({
-                id: subId,
-                table: base.table,
-                scopes: unitScopes(base, unit),
-                params: base.params,
-                cursor: -1,
-                status: 'active',
-              }),
-            );
-          });
-          this.#needsPull = true;
-          batch.window(baseKey, base.table, unit);
+          const { id, changed: registered } = this.#holdUnit(
+            windowUnitScopes(base, value),
+            false,
+          );
+          this.#db.exec(
+            `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
+            [baseKey, value, id],
+          );
+          if (registered) this.#needsPull = true;
+          batch.window(baseKey, value);
           batch.status();
         });
         changed = true;
-        widened = true;
-        this.#subscriptionEpoch += 1;
+        this.#registrationEpoch += 1;
       }
-
-      // Shrink: units live but not wanted → unsubscribe fused with eviction.
-      for (const { unit, subId } of live) {
-        if (wanted.has(unit)) continue;
-        await this.#evictUnit(baseKey, base, unit, subId);
+      for (const { value, unitId: id } of live) {
+        if (wanted.has(value)) continue;
+        await this.#releaseWindowUnit(baseKey, value, id);
         changed = true;
-        this.#subscriptionEpoch += 1;
+        this.#registrationEpoch += 1;
       }
     });
     const effects: CommandEffects = {
       sync:
-        this.#transportEnabled && (changed || widened)
+        this.#transportEnabled && changed
           ? { kind: 'interactive' }
           : { kind: 'none' },
     };
-    if (effects.sync.kind === 'interactive') {
-      this.#emitSyncIntent(effects.sync);
-    }
+    if (effects.sync.kind === 'interactive') this.#emitSyncIntent(effects.sync);
     return { value: undefined, effects };
   }
 
   /**
-   * The completeness oracle (§4.8 I3): which units of a base are windowed-in
-   * locally, which of those are still bootstrap-pending, and thereby the
-   * per-unit verdict a live query renders "may be partial" from. A query
-   * whose scope footprint includes an un-windowed OR still-pending unit is
-   * NOT answerable in full — the host widens or shows partial, never
-   * silently-complete. Registration alone is not completeness: a unit is
-   * pending until its subscription completes a bootstrap round (cursor
-   * advances past -1 with no resume token held).
+   * The completeness oracle (§4.8): which values of a base are windowed-in
+   * and which of those are pending. A value is complete once its unit is
+   * active and no longer bootstrapping; registration alone is not
+   * completeness.
    */
   windowState(base: WindowBase): WindowState {
     this.#requireActive();
-    const baseKey = windowBaseKey(base);
-    const live = loadWindowUnits(this.#db, baseKey);
-    const pending: string[] = [];
-    for (const { unit, subId } of live) {
-      const sub = getSubscription(this.#db, subId);
-      if (
-        sub === undefined ||
-        sub.status !== 'active' ||
-        sub.cursor < 0 ||
-        sub.bootstrapState !== undefined
-      ) {
-        pending.push(unit);
-      }
-    }
-    return { units: live.map((u) => u.unit), pending };
+    const live = loadWindowUnits(this.#db, windowBaseKey(base));
+    const pending = live.flatMap(({ value, unitId: id }) => {
+      const unit = getUnit(this.#db, id);
+      return unit === undefined ||
+        unit.status !== 'active' ||
+        bootstrapping(unit)
+        ? [value]
+        : [];
+    });
+    return { units: live.map((entry) => entry.value), pending };
   }
 
   /**
-   * §4.8 E1–E4: evict one departing unit in committed chunks, fusing
-   * its first chunk with unsubscription. Deletes the unit's rows EXCEPT those pinned by a
-   * pending outbox commit (E1); if any pin remains, records a deferred
-   * eviction retried on the next outbox drain. Discards the subscription's
-   * cursor/resume/effective-echo (E3) and its version state with the rows
-   * (E2). Emits the evicted table's invalidation keys (I1). Fail-closed:
-   * with no local scope-column mapping, surfaces a configuration error and
-   * evicts nothing (§4.8/§3.3).
+   * §4.8: release a window value's reference. When no reference holds the
+   * unit, unregister it fused with its first eviction chunk (E3): delete the
+   * rows of every covered table matching the persisted echo, except rows
+   * pinned by the outbox (E1) or owned by another unit (§3.3), and park the
+   * per-table scopes of what remains in the pending-eviction registry. Fails
+   * closed without a local scope-column mapping.
    */
-  async #evictUnit(
+  async #releaseWindowUnit(
     baseKey: string,
-    base: WindowBase,
-    unit: string,
-    subId: string,
+    value: string,
+    id: string,
   ): Promise<void> {
-    const table = this.#table(base.table);
-    const sub = getSubscription(this.#db, subId);
-    // The rows a unit holds live under its LAST effective scopes if it ever
-    // synced; before first sync, the requested unit scopes are the match.
-    const effective = sub?.effectiveScopes ?? unitScopes(base, unit);
-    const pinned = this.#pinnedRowIds(base.table);
     let remaining = false;
     this.#applyBatch((batch) => {
-      this.#db.transaction(() => {
+      this.#db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE base=? AND unit=?`, [
+        baseKey,
+        value,
+      ]);
+      batch.window(baseKey, value);
+      batch.status();
+      const unit = getUnit(this.#db, id);
+      if (
+        unit === undefined ||
+        unit.explicit ||
+        windowRefs(this.#db, id).length > 0
+      )
+        return;
+      const units = loadUnits(this.#db);
+      deleteUnit(this.#db, id);
+      this.#needsPull = true;
+      for (const table of this.#schema.tables.values()) {
+        const effective = covers(table, unit.scopes)
+          ? pairScopes(unit.scopes, table.name, unit.echo)
+          : undefined;
+        if (unit.echo === undefined || effective === undefined) continue;
         const result = evictScopedRows(
           this.#db,
           table,
           effective,
-          this.#scopeOwners(base.table, subId),
-          pinned,
+          unitOwners(units, table, id),
+          this.#pinnedRowIds(table.name),
         );
-        remaining = result.remaining;
-        deleteWindowUnit(this.#db, baseKey, unit);
-        deleteSubscription(this.#db, subId);
-        if (result.deferred) {
-          savePendingEviction(this.#db, subId, base.table, effective);
-        } else {
-          deletePendingEviction(this.#db, subId);
-        }
-      });
-      batch.scopeMap(table, effective);
-      batch.window(baseKey, table.name, unit);
-      this.#needsPull = true;
-      batch.status();
+        remaining ||= result.remaining;
+        if (result.deferred)
+          savePendingEviction(this.#db, {
+            unitId: id,
+            table: table.name,
+            effective,
+          });
+        batch.scopeMap(table, effective);
+      }
     });
     if (remaining) {
       await yieldToHost();
@@ -3443,28 +3326,26 @@ export class SyncClient {
   }
 
   /**
-   * §4.8 E1: retry deferred evictions after the outbox drains. A pinned
-   * unit's rows are removed once no pending commit references them; a unit
-   * that re-entered the window in the meantime has no pending record left.
+   * §4.8 E1: continue deferred evictions after the outbox drains or between
+   * chunks. A unit that re-entered the window has no pending entry left.
    */
   async #drainPendingEvictions(): Promise<void> {
-    const pending = loadPendingEvictions(this.#db);
-    if (pending.length === 0) return;
-    for (const entry of pending) {
+    for (const entry of loadPendingEvictions(this.#db)) {
       const table = this.#schema.tables.get(entry.table);
       if (table === undefined) {
-        deletePendingEviction(this.#db, entry.subId);
+        deletePendingEviction(this.#db, entry.unitId, entry.table);
         continue;
       }
       let remaining: boolean;
       do {
         if (
           !loadPendingEvictions(this.#db).some(
-            (item) => item.subId === entry.subId,
+            (item) =>
+              item.unitId === entry.unitId && item.table === entry.table,
           )
         )
           break;
-        // Local writes may add pins while the worker yields between chunks.
+        // Local writes may add pins while the host yields between chunks.
         const pinned = this.#pinnedRowIds(entry.table);
         remaining = false;
         this.#applyBatch((batch) => {
@@ -3472,33 +3353,17 @@ export class SyncClient {
             this.#db,
             table,
             entry.effective,
-            this.#scopeOwners(entry.table, entry.subId),
+            unitOwners(loadUnits(this.#db), table, entry.unitId),
             pinned,
           );
           remaining = result.remaining;
-          if (!result.deferred) deletePendingEviction(this.#db, entry.subId);
+          if (!result.deferred)
+            deletePendingEviction(this.#db, entry.unitId, entry.table);
           batch.scopeMap(table, entry.effective);
         });
         if (remaining) await yieldToHost();
       } while (remaining);
     }
-  }
-
-  /**
-   * §3.3/§4.8/§5.6 row ownership: the effective scopes of every other
-   * active subscription on `table` that holds rows (`cursor >= 0`). A
-   * scoped delete keeps every row one of them still covers.
-   */
-  #scopeOwners(table: string, exceptId: string): ScopeMap[] {
-    return loadSubscriptions(this.#db).flatMap((sub) =>
-      sub.id !== exceptId &&
-      sub.table === table &&
-      sub.status === 'active' &&
-      sub.cursor >= 0 &&
-      sub.effectiveScopes !== undefined
-        ? [sub.effectiveScopes]
-        : [],
-    );
   }
 
   /**
@@ -3950,7 +3815,7 @@ export class SyncClient {
     }
 
     const pending = listOutbox(this.#db);
-    const resetSubscriptions = loadSubscriptions(this.#db).length;
+    const resetSubscriptions = loadUnits(this.#db).length;
     const priorUpgrading = this.#upgrading;
     const priorNeedsPull = this.#needsPull;
     try {
@@ -3960,7 +3825,7 @@ export class SyncClient {
         batch.status();
         this.#discardAcknowledgedRows();
         dropAndRecreateSyncedTables(this.#db, this.#schema);
-        resetSubscriptionsForBump(this.#db);
+        resetUnits(this.#db);
         for (const table of this.#schema.tables.values()) {
           batch.table(table.name);
         }
@@ -4099,7 +3964,7 @@ export class SyncClient {
     const baseBytes =
       byteCap === undefined
         ? 0
-        : encodeMessage({
+        : encodeRequest({
             wireVersion: PROTOCOL_WIRE_VERSION,
             msgKind: 'request',
             frames: [header, pull],
@@ -4192,7 +4057,7 @@ export class SyncClient {
       const frame =
         byteCap === undefined
           ? 0
-          : encodeMessage({
+          : encodeRequest({
               wireVersion: PROTOCOL_WIRE_VERSION,
               msgKind: 'request',
               frames: [header, pushFrame, pull],
@@ -4315,7 +4180,7 @@ export class SyncClient {
     return this.#sync();
   }
 
-  /** `signal` is the `syncUntilIdle` deadline (§7.7); `sync()` has none. */
+  /** `signal` is the `syncUntilIdle` deadline (§7.8); `sync()` has none. */
   #sync(signal?: AbortSignal): Promise<SyncSummary> {
     this.#requireActive();
     if (this.#syncOutstanding) {
@@ -4480,13 +4345,18 @@ export class SyncClient {
         clientId: this.#clientId,
         schemaVersion: this.#schema.version,
         logEpoch: logEpoch,
+        outboxId: getMeta(this.#db, 'outboxId'),
       });
-      const pull: RequestFrame = {
+      // The registration fields are set after encoding (below).
+      const pull: PullHeaderFrame = {
         type: 'PULL_HEADER',
         limitCommits: limits?.limitCommits ?? 0,
         limitSnapshotRows: limits?.limitSnapshotRows ?? 0,
         maxSnapshotPages: limits?.maxSnapshotPages ?? 0,
         accept: this.#acceptMask(),
+        cursor: -1,
+        registrationDigest: registrationDigest([]),
+        echoDigest: new Uint8Array(),
       };
       const {
         pushFrames,
@@ -4516,9 +4386,19 @@ export class SyncClient {
       // encryption await must not make the final request exceed the byte
       // budget, and the reset epoch must be the one the response apply checks.
       const resetEpoch = this.#localResetEpoch;
-      const subs = loadSubscriptions(this.#db).filter(
-        (sub) => sub.status === 'active',
+      const registered = loadUnits(this.#db).filter(
+        (unit) => unit.status === 'active',
       );
+      pull.cursor = replicaCursor(this.#db);
+      pull.registrationDigest = registrationDigest(
+        registered.map((unit) => unit.scopes),
+      );
+      pull.echoDigest = hexToBytes(getMeta(this.#db, ECHO_DIGEST_KEY) ?? '');
+      // §4.1: the list travels when it changed since the server stored it,
+      // after `unregistered` and after a reset (both clear the stored digest).
+      const travels =
+        getMeta(this.#db, REGISTERED_DIGEST_KEY) !==
+        bytesToHex(pull.registrationDigest);
       // §1.5: a kept round-failure code rides every request until a round
       // completes, immediately after REQ_HEADER.
       const report = this.#roundFailureCode;
@@ -4528,29 +4408,35 @@ export class SyncClient {
           ? [{ type: 'ROUND_FAILURE' as const, code: report }]
           : []),
         pull,
-        ...subs.map(
-          (sub): RequestFrame =>
-            definedObject({
-              type: 'SUBSCRIPTION',
-              id: sub.id,
-              table: sub.table,
-              scopes: sub.scopes,
-              params: sub.params,
-              cursor: sub.cursor,
-              bootstrapState: sub.bootstrapState,
-            }),
+        ...(travels
+          ? registered.map(
+              (unit): RequestFrame => ({ type: 'UNIT', scopes: unit.scopes }),
+            )
+          : []),
+        // §4.3: one PROGRESS per catching-up unit, in registration order.
+        ...registered.flatMap((unit): RequestFrame[] =>
+          unit.cursor === undefined
+            ? []
+            : [
+                definedObject({
+                  type: 'PROGRESS',
+                  id: unit.id,
+                  cursor: unit.cursor,
+                  bootstrapState: unit.bootstrapState,
+                }),
+              ],
         ),
       ];
       // The header [+ the report frame] lead the request; PUSH_COMMIT frames
-      // sit between them and the pull/subscription tail (§1.5 ordering).
+      // sit between them and the pull/unit/progress tail (§1.5 ordering).
       const lead = fixedFrames.slice(0, report !== undefined ? 2 : 1);
       let admitted = pushFrames.length;
       let deferred = encodedDeferred;
       if (byteCap !== undefined) {
         // The fixed frames encode as envelope + fixed frames + END; each
         // admitted push frame adds its own (5 + payload). Trimming the tail
-        // re-fits the request to the final subscription state.
-        const fixedBytes = encodeMessage({
+        // re-fits the request to the final registration state.
+        const fixedBytes = encodeRequest({
           wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'request',
           frames: fixedFrames,
@@ -4580,22 +4466,19 @@ export class SyncClient {
         ...pushFrames,
         ...fixedFrames.slice(lead.length),
       ];
-      const requestBytes = encodeMessage({
+      const requestBytes = encodeRequest({
         wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'request',
         frames,
       });
       const responseBytes = await this.#roundTrip(requestBytes, signal);
-      const message = decodeMessage(responseBytes);
-      if (message.msgKind !== 'response') {
-        throw invalidRequest('transport returned a non-response message');
-      }
+      const message = decodeResponse(responseBytes);
       // §1.5: a complete, decodable response ends the report obligation.
       this.#roundFailureCode = undefined;
       const summary = await this.#processResponse(
         message,
         outbox,
-        subs,
+        bytesToHex(pull.registrationDigest),
         'pull',
         resetEpoch,
         signal,
@@ -4609,8 +4492,8 @@ export class SyncClient {
           : { state: 'complete' },
       );
       this.#retryDelayMs = 250;
-      // §4.7: a subscription that still holds a resume token needs another
-      // round, also when the drive that started its bootstrap ends early.
+      // §7.1: a unit still catching up needs another round, also when the
+      // drive that started its bootstrap ends early.
       if (summary.bootstrapping.length > 0) this.#setSyncNeeded(true);
       if (deferred > 0) {
         // §6.1 splitBatch remainder: more queued commits than this request
@@ -4624,7 +4507,7 @@ export class SyncClient {
       // failure the server could not see — keep its code for the next request.
       const unseen = this.#unseenRoundFailureCode(caught);
       if (unseen !== undefined) this.#roundFailureCode = unseen;
-      // §7.7: a round the drive deadline aborted ends with the deadline's
+      // §7.8: a round the drive deadline aborted ends with the deadline's
       // error, whichever transport call observed the abort.
       const error: unknown = signal?.aborted === true ? signal.reason : caught;
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
@@ -4698,7 +4581,7 @@ export class SyncClient {
    * Callers that arrive during the same drive with the same budget share that
    * single follow-up. `sync()` keeps rejecting a concurrent `sync()`.
    *
-   * §7.7: one drive is bounded by a total deadline (`timeoutMs`, default
+   * §7.8: one drive is bounded by a total deadline (`timeoutMs`, default
    * 60 s). A drive that reaches it rejects with `sync.idle_timeout` and
    * aborts a socket round in flight; the round budget does not bound elapsed
    * time, and a transport that never answers must not hang the caller.
@@ -4712,7 +4595,7 @@ export class SyncClient {
       typeof options === 'number'
         ? SYNC_IDLE_TIMEOUT_MS
         : (options?.timeoutMs ?? SYNC_IDLE_TIMEOUT_MS);
-    // §7.7: an explicit budget is a strict positive round count. Zero,
+    // §7.8: an explicit budget is a strict positive round count. Zero,
     // fractional, and out-of-range values are caller errors.
     requireRoundBudget(maxRounds);
     if (
@@ -4808,10 +4691,7 @@ export class SyncClient {
         // The race already rejected; stop spending rounds on a dead drive.
         if (expired) throw expiredError();
         const before = JSON.stringify(
-          loadSubscriptions(this.#db).map((sub) => [
-            sub.id,
-            sub.bootstrapState,
-          ]),
+          loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
         );
         const last = await this.#sync(controller.signal);
         // Historical counters accumulate; current readiness (`bootstrapping`,
@@ -4838,10 +4718,7 @@ export class SyncClient {
           last.bootstrapping.length > 0 &&
           before !==
             JSON.stringify(
-              loadSubscriptions(this.#db).map((sub) => [
-                sub.id,
-                sub.bootstrapState,
-              ]),
+              loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
             )
         )
           round = -1;
@@ -5260,8 +5137,7 @@ export class SyncClient {
         return;
       }
       try {
-        const message = decodeMessage(bytes);
-        if (message.msgKind !== 'response') return;
+        const message = decodeResponse(bytes);
         // §8.2: deltas apply like pull responses; ack after apply.
         await this.#processResponse(message, [], undefined, 'delta');
       } catch {
@@ -5277,25 +5153,23 @@ export class SyncClient {
       this.#socket?.send(JSON.stringify({ type: 'ack', cursor }));
   }
 
-  /** Ack the highest cursor that is contiguously applied for every sub. */
+  /** §8.2: after a pull round, ack the replica cursor while it is `>= 0`. */
   #ackAfterPull(): void {
-    if (this.#socket === undefined) return;
-    const cursors = loadSubscriptions(this.#db)
-      .filter(
-        (sub) => sub.status === 'active' && sub.bootstrapState === undefined,
-      )
-      .map((sub) => sub.cursor)
-      .filter((cursor) => cursor >= 0);
-    if (cursors.length === 0) return;
-    this.#sendAck(Math.min(...cursors));
+    const cursor = replicaCursor(this.#db);
+    if (this.#socket !== undefined && cursor >= 0) this.#sendAck(cursor);
   }
 
   // -- response processing ------------------------------------------------------
 
+  /**
+   * Apply one response (§1.6) or realtime delta (§8.2). `sentDigest` is the
+   * hex registration digest of the pull this response answers; the server
+   * stores that list once the round completes (§4.1).
+   */
   async #processResponse(
     message: ResponseMessage,
     sentCommits: readonly OutboxCommit[],
-    sentSubs: readonly SubscriptionRecord[] | undefined,
+    sentDigest: string | undefined,
     mode: 'pull' | 'delta',
     resetEpoch: number = this.#localResetEpoch,
     signal?: AbortSignal,
@@ -5303,9 +5177,6 @@ export class SyncClient {
     const summary = emptySummary(sentCommits.length);
     const commitsById = new Map(
       sentCommits.map((commit) => [commit.clientCommitId, commit]),
-    );
-    const subsById = new Map(
-      (sentSubs ?? loadSubscriptions(this.#db)).map((sub) => [sub.id, sub]),
     );
     const rejectionDetailsByCommit = new Map<
       string,
@@ -5330,12 +5201,6 @@ export class SyncClient {
     const header = message.frames[0];
     if (header?.type !== 'RESP_HEADER') {
       throw invalidRequest('missing RESP_HEADER');
-    }
-    if (message.wireVersion < 2) {
-      throw new ClientSyncError(
-        'client.invalid_host_response',
-        'the server response does not carry wire version 2 log-epoch state',
-      );
     }
     if (header.requiredSchemaVersion !== undefined) {
       // §1.6 schema floor: nothing else was processed — stop syncing and
@@ -5379,20 +5244,13 @@ export class SyncClient {
 
     let section: OpenSection | undefined;
     let errorFrame: ClientSyncError | undefined;
+    let liveStart: LiveStartFrame | undefined;
+    let liveEnded = false;
     let deltaCursor = -1;
     let deltaDropped = false;
-    // §8.2: a delta section applies only to a locally active subscription
-    // that holds a cursor and no resume token. A subscription at cursor -1
-    // (never synced, reset, or rebootstrapped) bootstraps on its own pull.
-    const skipsSection = (sub: SubscriptionRecord | undefined) =>
-      sub === undefined ||
-      (mode === 'delta' &&
-        (sub.status !== 'active' ||
-          sub.cursor < 0 ||
-          sub.bootstrapState !== undefined));
-    const incompleteSubscriptions = new Set(
-      mode === 'pull' ? subsById.keys() : [],
-    );
+    // §4.5 client application: the units whose persisted echo a live-section
+    // change must match, fixed at LIVE_START after every SUB_END persisted.
+    let receivers: UnitRecord[] = [];
 
     // §5.4/§5.5: queue every segment download of this response, so a paged
     // bootstrap overlaps its page fetches instead of paying one blocking round
@@ -5401,18 +5259,18 @@ export class SyncClient {
     // holds at most four bodies, the one being applied and three ahead. The
     // loop takes each body out of the map before applying it and tops the
     // window up at the next descriptor. Eligibility mirrors the loop: a
-    // descriptor outside an applied section, inside a skipped delta section,
-    // or from an unconfigured downloader is never queued, and a failure is
-    // only observed where the loop awaits it. A promise left over because an
-    // earlier frame ended apply is handled at creation, never unhandled.
-    const queued: [SegmentRefFrame, SubscriptionRecord][] = [];
+    // descriptor outside an applied section or from an unconfigured
+    // downloader is never queued, and a failure is only observed where the
+    // loop awaits it. A promise left over because an earlier frame ended
+    // apply is handled at creation, never unhandled.
+    const queued: [SegmentRefFrame, UnitScopes][] = [];
     const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
     const prefetch = () => {
       for (let next; prefetched.size < 4 && (next = queued.shift());) {
-        const [frame, sub] = next;
+        const [frame, scopes] = next;
         const pending = this.#downloadSegment(
           frame,
-          sub,
+          scopes,
           (bytes) => {
             // Only the descriptor the loop is applying reports bytes; a
             // sibling still in flight would overwrite its progress.
@@ -5426,90 +5284,29 @@ export class SyncClient {
       }
     };
     let reporting: SegmentRefFrame | undefined;
-    const deleteKey = (commitSeq: number, table: string, rowId: string) =>
-      `${commitSeq}\u0000${table}\u0000${rowId}`;
-    {
-      let openSub: SubscriptionRecord | undefined;
+    if (mode === 'pull') {
+      let open: UnitRecord | undefined;
       for (const frame of message.frames) {
         if (frame.type === 'SUB_START') {
-          const sub = subsById.get(frame.id);
-          openSub = skipsSection(sub) ? undefined : sub;
-        } else if (frame.type === 'SUB_END') {
-          openSub = undefined;
+          const unit = getUnit(this.#db, frame.id);
+          open = unit?.status === 'active' ? unit : undefined;
+        } else if (frame.type === 'SUB_END' || frame.type === 'LIVE_START') {
+          open = undefined;
         } else if (frame.type === 'ERROR') {
           break; // the round fails at this frame: later refs are not fetched
         } else if (
           frame.type === 'SEGMENT_REF' &&
-          openSub !== undefined &&
+          open !== undefined &&
           this.#config.segments !== undefined &&
           !(
             frame.mediaType === 'sqlite' &&
             (this.#acceptMask() & ACCEPT_SQLITE) === 0
           )
         ) {
-          queued.push([frame, openSub]);
+          queued.push([frame, open.scopes]);
         }
       }
       prefetch();
-    }
-
-    // §2.2 scope migration: the server emits the delete tagged with the old
-    // scope and the upsert tagged with the new one in one commit. A reader
-    // that holds both scopes receives them in two subscription sections, so
-    // the section order would otherwise decide whether the row survives. One
-    // commit's delete and upsert of the same row are one change, and the
-    // upsert wins. A frame that carries both itself keeps its own operation
-    // order; only a pair split across sections is coalesced.
-    const coalescedDeletes = new Set<string>();
-    {
-      const ops = new Map<
-        string,
-        { readonly upserts: Set<number>; readonly deletes: Set<number> }
-      >();
-      const bothInFrame = new Set<string>();
-      let openSub: SubscriptionRecord | undefined;
-      let frameIndex = -1;
-      for (const frame of message.frames) {
-        if (frame.type === 'SUB_START') {
-          const sub = subsById.get(frame.id);
-          openSub = skipsSection(sub) ? undefined : sub;
-        } else if (frame.type === 'SUB_END') {
-          openSub = undefined;
-        } else if (frame.type === 'ERROR') {
-          break;
-        } else if (frame.type === 'COMMIT' && openSub !== undefined) {
-          frameIndex += 1;
-          const local = new Map<string, number>();
-          for (const change of frame.changes) {
-            const table = frame.tables[change.tableIndex];
-            if (table === undefined) continue;
-            const key = deleteKey(frame.commitSeq, table, change.rowId);
-            const entry = ops.get(key) ?? {
-              upserts: new Set<number>(),
-              deletes: new Set<number>(),
-            };
-            if (change.op === 'upsert') entry.upserts.add(frameIndex);
-            else entry.deletes.add(frameIndex);
-            ops.set(key, entry);
-            local.set(
-              key,
-              (local.get(key) ?? 0) | (change.op === 'upsert' ? 1 : 2),
-            );
-          }
-          for (const [key, seen] of local) {
-            if (seen === 3) bothInFrame.add(key);
-          }
-        }
-      }
-      for (const [key, entry] of ops) {
-        if (
-          !bothInFrame.has(key) &&
-          entry.upserts.size > 0 &&
-          entry.deletes.size > 0
-        ) {
-          coalescedDeletes.add(key);
-        }
-      }
     }
 
     // Each durable observer transaction emits its own revisioned batch.
@@ -5594,55 +5391,28 @@ export class SyncClient {
             // Pre-indexed above so companion ordering remains wire-additive.
             break;
           case 'SUB_START': {
-            const sub = subsById.get(frame.id);
-            const fresh =
-              sub !== undefined &&
-              sub.cursor < 0 &&
-              sub.bootstrapState === undefined &&
-              frame.bootstrap;
-            // §4.4: a section whose registration was removed mid-round
-            // (unsubscribe, eviction) is skipped; it never re-creates it.
-            const skip =
-              skipsSection(sub) ||
-              getSubscription(this.#db, frame.id) === undefined;
-            if (skip && mode === 'delta') deltaDropped = true;
-            section = { start: frame, sub, fresh, skip, cleared: false };
+            // §4.4: a section of a unit the app released while the round was
+            // in flight is skipped; it never re-creates the unit. A delta
+            // carries no unit section (§8.2).
+            const unit =
+              mode === 'pull' ? getUnit(this.#db, frame.id) : undefined;
+            section =
+              unit?.status === 'active'
+                ? {
+                    start: frame,
+                    unit,
+                    seeded: new Set(
+                      unit.bootstrapState === undefined ? [] : unit.seeded,
+                    ),
+                    skip: false,
+                  }
+                : undefined;
             break;
           }
-          case 'COMMIT':
-            if (
-              section !== undefined &&
-              !section.skip &&
-              section.sub !== undefined
-            ) {
-              const changes = frame.changes.filter((change) => {
-                if (change.op !== 'delete') return true;
-                const table = frame.tables[change.tableIndex];
-                return (
-                  table === undefined ||
-                  !coalescedDeletes.has(
-                    deleteKey(frame.commitSeq, table, change.rowId),
-                  )
-                );
-              });
-              if (changes.length > 0) {
-                await this.#applyCommit(
-                  { ...frame, changes },
-                  summary,
-                  section.sub.id,
-                  mode,
-                );
-              }
-            }
-            break;
           case 'SEGMENT_INLINE':
           case 'SEGMENT_REF': {
-            if (
-              section === undefined ||
-              section.skip ||
-              section.sub === undefined
-            )
-              break;
+            if (section === undefined || section.skip) break;
+            const unitId = section.unit.id;
             if (
               frame.type === 'SEGMENT_REF' &&
               frame.mediaType === 'sqlite' &&
@@ -5656,7 +5426,7 @@ export class SyncClient {
             if (frame.type === 'SEGMENT_REF') {
               this.#progress.update({
                 phase: 'download',
-                subscriptionId: section.sub.id,
+                unitId,
                 table: frame.table,
                 segmentId: frame.segmentId,
                 bytesReceived: 0,
@@ -5671,125 +5441,197 @@ export class SyncClient {
               bytes = await (pending ??
                 this.#downloadSegment(
                   frame,
-                  section.sub,
+                  section.unit.scopes,
                   (bytesReceived) => this.#progress.update({ bytesReceived }),
                   signal,
                 ));
+              this.#progress.update({ phase: 'import' });
             } else {
               bytes = frame.payload;
             }
-            if (frame.type === 'SEGMENT_REF')
-              this.#progress.update({ phase: 'import' });
-            if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
-              // Images are whole-table; paged image descriptors are invalid.
-              if (
-                frame.rowCursor !== undefined ||
-                frame.nextRowCursor !== undefined
-              ) {
-                throw invalidRequest(
-                  'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
+            const image =
+              frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite'
+                ? frame
+                : undefined;
+            // Images are whole-table; paged image descriptors are invalid.
+            if (
+              image !== undefined &&
+              (image.rowCursor !== undefined ||
+                image.nextRowCursor !== undefined)
+            )
+              throw invalidRequest(
+                'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
+              );
+            const segment =
+              image === undefined ? decodeRowsSegment(bytes) : undefined;
+            if (frame.type === 'SEGMENT_INLINE' && segment !== undefined)
+              this.#progress.update({
+                phase: 'import',
+                unitId,
+                table: segment.table,
+                segmentId: undefined,
+                bytesReceived: bytes.byteLength,
+                bytesTotal: bytes.byteLength,
+                rowsProcessed: 0,
+                rowsTotal: segment.blocks.reduce(
+                  (n, block) => n + block.length,
+                  0,
+                ),
+              });
+            await this.#applySegmentOrFail(
+              section,
+              summary,
+              image?.table ?? segment!.table,
+              (table, clearFirst, effective, owners) => {
+                const options = this.#segmentApplyOptions(
+                  table,
+                  clearFirst,
+                  effective,
+                  owners,
+                  image !== undefined
+                    ? image.rowCount > 0
+                    : segment!.blocks.some((block) => block.length > 0),
+                  resetEpoch,
                 );
-              }
-              await this.#applySegmentOrFail(
-                section,
-                summary,
-                (table, clearFirst, effective, owners) =>
-                  applySqliteSegment(
-                    this.#db,
-                    this.#schema,
-                    table,
-                    bytes,
-                    {
-                      table: frame.table,
-                      rowCount: frame.rowCount,
-                      asOfCommitSeq: frame.asOfCommitSeq,
-                      scopeDigest: frame.scopeDigest,
-                    },
-                    this.#segmentApplyOptions(
+                return image !== undefined
+                  ? applySqliteSegment(
+                      this.#db,
+                      this.#schema,
                       table,
-                      clearFirst,
-                      effective,
-                      owners,
-                      frame.rowCount > 0,
-                      resetEpoch,
-                    ),
-                  ),
-                section.fresh && !section.cleared,
-              );
-            } else {
-              const segment = decodeRowsSegment(bytes);
-              if (frame.type === 'SEGMENT_INLINE') {
-                this.#progress.update({
-                  phase: 'import',
-                  subscriptionId: section.sub.id,
-                  table: section.sub.table,
-                  segmentId: undefined,
-                  bytesReceived: bytes.byteLength,
-                  bytesTotal: bytes.byteLength,
-                  rowsProcessed: 0,
-                  rowsTotal: segment.blocks.reduce(
-                    (n, block) => n + block.length,
-                    0,
-                  ),
-                });
-              }
-              await this.#applySegmentOrFail(
-                section,
-                summary,
-                (table, clearFirst, effective, owners) =>
-                  applyRowsSegment(
-                    this.#db,
-                    this.#schema,
-                    table,
-                    segment,
-                    this.#segmentApplyOptions(
+                      bytes,
+                      image,
+                      options,
+                    )
+                  : applyRowsSegment(
+                      this.#db,
+                      this.#schema,
                       table,
-                      clearFirst,
-                      effective,
-                      owners,
-                      segment.blocks.some((block) => block.length > 0),
-                      resetEpoch,
-                    ),
-                    this.#encryption,
-                  ),
-                section.fresh &&
-                  !section.cleared &&
-                  (frame.type === 'SEGMENT_INLINE' ||
-                    frame.rowCursor === undefined),
-              );
-            }
+                      segment!,
+                      options,
+                      this.#encryption,
+                    );
+              },
+            );
             break;
           }
           case 'SUB_END': {
-            if (
-              section?.sub !== undefined &&
-              !section.skip &&
-              this.#localResetEpoch === resetEpoch
-            ) {
-              incompleteSubscriptions.delete(section.sub.id);
-            }
+            // Reset fence: a rebootstrap that landed mid-round already rewound
+            // this unit; the captured SUB_END predates the rewind and stays
+            // unpersisted so the next round runs the fresh bootstrap.
             if (
               section !== undefined &&
               !section.skip &&
-              section.sub !== undefined &&
-              // Reset fence: a rebootstrap that landed mid-round already
-              // rewound this subscription's cursor; the captured SUB_END
-              // state predates the rewind and must stay unpersisted so the
-              // next round runs the fresh bootstrap.
               this.#localResetEpoch === resetEpoch
-            ) {
-              const applied = this.#finishSection(
-                section.sub,
-                section.start,
-                frame.nextCursor,
-                frame.bootstrapState,
-                summary,
-              );
-              if (mode === 'delta' && applied) {
-                deltaCursor = Math.max(deltaCursor, frame.nextCursor);
-              }
-            }
+            )
+              this.#finishSection(section, frame, summary);
             section = undefined;
+            break;
+          }
+          case 'LIVE_START': {
+            liveStart = frame;
+            const cursor = replicaCursor(this.#db);
+            if (mode === 'delta') {
+              const end = message.frames.find(
+                (candidate) => candidate.type === 'LIVE_END',
+              );
+              // §8.2: a delta while no unit is live is a drop; one at or
+              // below the replica cursor is a duplicate and no drop.
+              if (frame.status !== 'active' || cursor < 0) {
+                deltaDropped = true;
+                liveStart = undefined;
+              } else if (end?.type === 'LIVE_END' && end.throughSeq <= cursor)
+                liveStart = undefined;
+            }
+            receivers =
+              liveStart?.status === 'active'
+                ? loadUnits(this.#db).filter(
+                    (unit) =>
+                      owning(unit) &&
+                      (mode === 'pull' || unit.cursor === undefined),
+                  )
+                : [];
+            break;
+          }
+          case 'COMMIT': {
+            if (liveStart?.status !== 'active') break;
+            const changes = frame.changes.filter((change) => {
+              const table = this.#schema.tables.get(
+                frame.tables[change.tableIndex] ?? '',
+              );
+              // An unknown table fails loud in the apply below.
+              return (
+                table === undefined ||
+                receivers.some((unit) => {
+                  const scopes = covers(table, unit.scopes)
+                    ? pairScopes(unit.scopes, table.name, unit.echo)
+                    : undefined;
+                  return (
+                    scopes !== undefined &&
+                    Object.entries(scopes).every(([variable, values]) =>
+                      values.includes(change.scopes[variable] ?? '\0'),
+                    )
+                  );
+                })
+              );
+            });
+            if (changes.length > 0)
+              await this.#applyCommit({ ...frame, changes }, summary, mode);
+            break;
+          }
+          case 'LIVE_END': {
+            if (mode === 'delta') {
+              if (liveStart !== undefined) {
+                setMeta(this.#db, REPLICA_CURSOR_KEY, String(frame.throughSeq));
+                deltaCursor = frame.throughSeq;
+              }
+              break;
+            }
+            if (liveStart === undefined || this.#localResetEpoch !== resetEpoch)
+              break;
+            liveEnded = true;
+            const status = liveStart.status;
+            const reasonCode = liveStart.reasonCode;
+            const before = replicaCursor(this.#db);
+            this.#applyBatch((batch) => {
+              let cursor = status === 'unregistered' ? before : -1;
+              const joined = Math.max(before, frame.throughSeq);
+              for (const unit of loadUnits(this.#db)) {
+                if (unit.status !== 'active' || bootstrapping(unit)) continue;
+                if (status === 'reset') {
+                  // §4.6 replica reset: every live unit bootstraps again;
+                  // post-bootstrap units keep their cursors.
+                  if (unit.cursor !== undefined) continue;
+                  saveUnit(this.#db, {
+                    ...unit,
+                    reasonCode,
+                    cursor: -1,
+                    seeded: [],
+                  });
+                  summary.resets.push(unit.id);
+                  for (const ref of windowRefs(this.#db, unit.id))
+                    batch.window(ref.baseKey, ref.value);
+                } else if (status === 'active') {
+                  // §4.5 join rule J.
+                  const next = Math.max(
+                    unit.cursor ?? joined,
+                    frame.throughSeq,
+                  );
+                  if (next >= joined) cursor = joined;
+                  if (unit.cursor !== undefined)
+                    saveUnit(this.#db, {
+                      ...unit,
+                      cursor: next >= joined ? undefined : next,
+                    });
+                }
+              }
+              setMeta(this.#db, REPLICA_CURSOR_KEY, String(cursor));
+              setMeta(this.#db, ECHO_DIGEST_KEY, bytesToHex(frame.echoDigest));
+              if (status === 'unregistered')
+                this.#db.exec(`DELETE FROM ${META_TABLE} WHERE key=?`, [
+                  REGISTERED_DIGEST_KEY,
+                ]);
+              else setMeta(this.#db, REGISTERED_DIGEST_KEY, sentDigest!);
+            });
             break;
           }
           case 'ERROR': {
@@ -5831,14 +5673,9 @@ export class SyncClient {
 
     if (errorFrame !== undefined) throw errorFrame;
 
-    if (incompleteSubscriptions.size > 0) {
-      this.#setSyncNeeded(true);
-      this.#emitSyncIntent({ kind: 'interactive' });
-    }
-
     if (mode === 'delta') {
       if (deltaCursor >= 0) this.#sendAck(deltaCursor);
-      // §8.2: a skipped delta section is a drop; a pull repairs it.
+      // §8.2: an unapplied delta is a drop; a pull repairs it.
       if (deltaDropped) {
         this.#setSyncNeeded(true);
         this.#emitSyncNeeded('catchup-required');
@@ -5847,19 +5684,28 @@ export class SyncClient {
       this.#ackAfterPull();
     }
 
-    const bootstrapping = loadSubscriptions(this.#db)
-      .filter(
-        (sub) => sub.status === 'active' && sub.bootstrapState !== undefined,
-      )
-      .map((sub) => sub.id);
+    const catchingUp = loadUnits(this.#db)
+      .filter((unit) => unit.status === 'active' && unit.cursor !== undefined)
+      .map((unit) => unit.id);
+    // §7.1: a response without LIVE_END, one answered `unregistered` or
+    // `reset`, or a unit still catching up leaves sync-needed raised; after
+    // `unregistered` the next round starts at once.
+    if (
+      mode === 'pull' &&
+      (!liveEnded || liveStart?.status !== 'active' || catchingUp.length > 0)
+    ) {
+      this.#setSyncNeeded(true);
+      if (liveStart?.status === 'unregistered')
+        this.#emitSyncIntent({ kind: 'interactive' });
+    }
     // §7.4.5: the reset is over once the first post-reset pull round leaves
-    // no subscription mid-bootstrap — the tables are rebuilt and current.
-    // The epoch check keeps a round that predates a mid-flight rebootstrap
-    // from declaring that reset finished before its bootstrap ran.
+    // no unit catching up: the tables are rebuilt and current. The epoch
+    // check keeps a round that predates a mid-flight rebootstrap from
+    // declaring that reset finished before its bootstrap ran.
     if (
       this.#upgrading &&
       mode === 'pull' &&
-      bootstrapping.length === 0 &&
+      catchingUp.length === 0 &&
       this.#localResetEpoch === resetEpoch
     ) {
       this.#setUpgrading(false);
@@ -5867,7 +5713,7 @@ export class SyncClient {
     // RFC 0005 D7: coverage completion, lease end, scope revocation and TTL are
     // evaluated once per round, after the apply.
     this.#previousVersionLifetimeCheck();
-    return { ...summary, bootstrapping };
+    return { ...summary, bootstrapping: catchingUp };
   }
 
   #handlePushResult(
@@ -6061,7 +5907,6 @@ export class SyncClient {
   async #applyCommit(
     frame: CommitFrame,
     summary: MutableSummary,
-    subscriptionId: string,
     source: 'delta' | 'pull',
   ): Promise<void> {
     await applyCommitFrame(
@@ -6079,7 +5924,6 @@ export class SyncClient {
           )) {
             if (table !== undefined)
               batch.appliedCommit({
-                subscriptionId,
                 table,
                 commitSeq: frame.commitSeq,
                 source,
@@ -6180,68 +6024,62 @@ export class SyncClient {
   }
 
   /**
-   * Apply a segment (rows or sqlite image); a §5.6/§3.3 fail-closed error
-   * (no local scope-column mapping) marks the subscription `failed` and
-   * stops syncing the table without failing the whole request.
+   * Apply a segment (rows or sqlite image) of `tableName` within a unit
+   * section: the first segment of the table in the bootstrap clears the
+   * pair's scope first (§5.6). A fail-closed error (no local scope-column
+   * mapping) marks the unit `failed` without failing the whole response.
    */
   async #applySegmentOrFail(
     section: OpenSection,
     summary: MutableSummary,
+    tableName: string,
     apply: (
       table: CompiledClientTable,
       clearFirst: boolean,
       effective: ScopeMap,
       owners: readonly ScopeMap[],
     ) => number | Promise<number>,
-    clearFirst: boolean,
   ): Promise<void> {
-    const sub = section.sub;
-    if (sub === undefined) return;
-    const table = this.#table(sub.table);
+    const { unit } = section;
+    const table = this.#table(tableName);
+    const effective = covers(table, unit.scopes)
+      ? pairScopes(unit.scopes, tableName, section.start.fenced)
+      : undefined;
+    if (effective === undefined)
+      throw invalidRequest('a segment names no active pair of its unit');
     try {
       summary.segmentRowsApplied += await apply(
         table,
-        clearFirst,
-        section.start.effectiveScopes,
-        this.#scopeOwners(sub.table, sub.id),
+        !section.seeded.has(tableName),
+        effective,
+        unitOwners(loadUnits(this.#db), table, unit.id),
       );
-      section.cleared = true;
+      section.seeded.add(tableName);
     } catch (error) {
       if (
-        error instanceof ClientSyncError &&
-        error.code === 'sync.scope_revoked'
-      ) {
-        section.skip = true;
-        if (getSubscription(this.#db, sub.id) === undefined) return;
-        const registered = getWindowUnitBySubId(this.#db, sub.id);
-        this.#applyBatch((batch) => {
-          saveSubscription(
-            this.#db,
-            definedObject({
-              id: sub.id,
-              table: sub.table,
-              scopes: sub.scopes,
-              params: sub.params,
-              cursor: sub.cursor,
-              effectiveScopes: sub.effectiveScopes,
-              status: 'failed',
-              reasonCode: 'sync.scope_revoked',
-            }),
-          );
-          if (registered !== undefined) {
-            batch.window(registered.baseKey, sub.table, registered.unit);
-          }
+        !(error instanceof ClientSyncError) ||
+        error.code !== 'sync.scope_revoked'
+      )
+        throw error;
+      section.skip = true;
+      const current = getUnit(this.#db, unit.id);
+      if (current === undefined) return;
+      this.#applyBatch((batch) => {
+        saveUnit(this.#db, {
+          ...current,
+          status: 'failed',
+          reasonCode: 'sync.scope_revoked',
         });
-        summary.failed.push(sub.id);
-        return;
-      }
-      throw error;
+        for (const ref of windowRefs(this.#db, unit.id))
+          batch.window(ref.baseKey, ref.value);
+      });
+      summary.failed.push(unit.id);
     }
   }
 
   async #downloadSegment(
     frame: SegmentRefFrame,
-    sub: SubscriptionRecord,
+    scopes: UnitScopes,
     onProgress: (bytesReceived: number) => void,
     signal: AbortSignal | undefined,
   ): Promise<Uint8Array> {
@@ -6282,7 +6120,15 @@ export class SyncClient {
       bytes = await downloader({
         segmentId: frame.segmentId,
         table: frame.table,
-        requestedScopesJson: canonicalScopeJson(sub.scopes),
+        // §5.5: the owning unit's scope map, each value a one-element list.
+        requestedScopesJson: canonicalScopeJson(
+          Object.fromEntries(
+            Object.entries(scopes).map(([variable, value]) => [
+              variable,
+              [value],
+            ]),
+          ),
+        ),
         byteLength: frame.byteLength,
         onProgress,
         ...(signal !== undefined ? { signal } : {}),
@@ -6307,205 +6153,207 @@ export class SyncClient {
   }
 
   /** Returns whether SUB_END state was persisted (section applied). */
+  /**
+   * Persist a unit section at its `SUB_END` (§4.4): the cursor, resume token,
+   * seeded tables and echo of an active section; the reset of a `reset`
+   * section (§4.6); the purge of every pair the response revokes (§3.3).
+   */
   #finishSection(
-    sub: SubscriptionRecord,
-    start: SubStartFrame,
-    nextCursor: number,
-    bootstrapState: string | undefined,
+    section: OpenSection,
+    end: SubEndFrame,
     summary: MutableSummary,
-  ): boolean {
-    // §4.4: SUB_END rewrites a live registration only. An unsubscribe or
-    // eviction during this round's awaits removed it; persisting now would
-    // re-create it. Everything below is synchronous with this check.
-    if (getSubscription(this.#db, sub.id) === undefined) return false;
-    if (start.status === 'active') {
-      // §1.4 rule 4: durable cursor/resume state persists only at SUB_END;
-      // §3.3: the effective-scope echo is persisted for the purge contract.
-      // An absent bootstrapState clears any previous resume token (§4.4:
-      // absent = bootstrap complete, or not bootstrapping).
-      const wasPending = sub.cursor < 0 || sub.bootstrapState !== undefined;
-      const completed =
-        wasPending && nextCursor >= 0 && bootstrapState === undefined;
-      const registered = getWindowUnitBySubId(this.#db, sub.id);
-      this.#applyBatch((batch) => {
-        saveSubscription(
-          this.#db,
-          definedObject({
-            id: sub.id,
-            table: sub.table,
-            scopes: sub.scopes,
-            params: sub.params,
-            cursor: nextCursor,
-            bootstrapState: bootstrapState,
-            effectiveScopes: start.effectiveScopes,
-            status: 'active',
-          }),
-        );
-        if (completed) {
-          const table = this.#table(sub.table);
-          const effective = start.effectiveScopes;
-          const covered = this.#db
-            .query(
-              `SELECT id,intent,base FROM ${RETAINED_ROWS} WHERE tbl=? AND commit_seq<=?`,
-              [sub.table, nextCursor],
-            )
-            .filter((row) =>
-              [row.intent, row.base].some((json) => {
-                if (json === null) return false;
-                const values: Record<string, JsonRowValue> = JSON.parse(
-                  String(json),
-                );
-                return matchesLocalScopes(table, effective, values);
-              }),
-            );
-          if (covered.length) {
-            const scope = covered.map((row) =>
-              JSON.stringify([sub.table, String(row.id)]),
-            );
-            restoreFailedBases(this.#db, this.#schema, scope);
-            for (const row of covered)
-              this.#db.exec(
-                `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
-                [sub.table, String(row.id), nextCursor],
-              );
-            batch.table(sub.table);
-            this.#replayOutbox(scope, false);
-          }
-        }
-        if (completed && registered !== undefined) {
-          // A zero-row bootstrap is a window-domain transition, not a fake
-          // row/table change (SPEC §4.8 / §7.5).
-          batch.window(registered.baseKey, sub.table, registered.unit);
-        }
-      });
-      return true;
-    }
-
-    if (start.status === 'reset') {
-      // §4.6: discard cursor + resume token, keep local rows, re-bootstrap
-      // with cursor = -1 on the next pull. Staleness, not a purge.
-      const registered = getWindowUnitBySubId(this.#db, sub.id);
-      this.#applyBatch((batch) => {
-        saveSubscription(
-          this.#db,
-          definedObject({
-            id: sub.id,
-            table: sub.table,
-            scopes: sub.scopes,
-            params: sub.params,
-            cursor: -1,
-            effectiveScopes: sub.effectiveScopes,
-            status: 'active',
-            reasonCode: start.reasonCode,
-          }),
-        );
-        if (registered !== undefined) {
-          batch.window(registered.baseKey, sub.table, registered.unit);
-        }
-      });
-      summary.resets.push(sub.id);
-      return false;
-    }
-
-    // revoked (§3.3): purge rows matching the LAST-echoed effective scopes
-    // (never the requested map), drop doomed outbox commits, stop pulling.
-    const table = this.#table(sub.table);
-    const lastEffective = sub.effectiveScopes;
-    const owners = this.#scopeOwners(sub.table, sub.id);
-    const registered = getWindowUnitBySubId(this.#db, sub.id);
-    let failed = false;
+  ): void {
+    const { start } = section;
+    // §4.4: SUB_END writes only into a unit that is still registered. An
+    // unsubscribe during this round's awaits removed it.
+    const unit = getUnit(this.#db, start.id);
+    if (unit?.status !== 'active') return;
+    const refs = windowRefs(this.#db, unit.id);
     this.#applyBatch((batch) => {
-      if (
-        lastEffective !== undefined &&
-        Object.keys(lastEffective).length > 0
-      ) {
-        try {
-          const scope = [
-            JSON.stringify([table.name]),
-            ...this.#dropRetainedRows(
-              batch,
-              (name, values) =>
-                name === table.name &&
-                ownsLocalRow(table, lastEffective, owners, values),
-            ),
-          ];
-          deleteScopedRows(this.#db, table, lastEffective, owners);
-          batch.scopeMap(table, lastEffective);
-          // §3.3: a whole pending commit leaves when one of its upserts
-          // provably lands in the revoked scopes and no other owner covers it.
-          const doomed = listOutbox(this.#db).filter((commit) =>
-            commit.operations.some(
-              (op) =>
-                op.table === table.name &&
-                op.values !== undefined &&
-                ownsLocalRow(table, lastEffective, owners, op.values),
+      for (const ref of refs) batch.window(ref.baseKey, ref.value);
+      if (start.status === 'reset') {
+        // §4.6: discard cursor and resume token; the rows stay until the
+        // bootstrap replaces them. Staleness, not a purge.
+        saveUnit(this.#db, {
+          ...unit,
+          reasonCode: start.reasonCode,
+          cursor: -1,
+          bootstrapState: undefined,
+          seeded: [],
+        });
+        summary.resets.push(unit.id);
+        return;
+      }
+      const revoked = start.status === 'revoked';
+      const units = loadUnits(this.#db);
+      let failed = false;
+      let rearmed = false;
+      for (const table of this.#schema.tables.values()) {
+        if (!covers(table, unit.scopes)) continue;
+        const last =
+          unit.echo === undefined
+            ? undefined
+            : pairScopes(unit.scopes, table.name, unit.echo);
+        const next = revoked
+          ? undefined
+          : pairScopes(unit.scopes, table.name, start.fenced);
+        // §3.3: a revoked fenced record that turns active again re-bootstraps.
+        if (unit.echo !== undefined && last === undefined && next !== undefined)
+          rearmed = true;
+        // §3.3: purge a pair the response revokes, keyed on the echo the
+        // client persisted while the pair was active.
+        if (last !== undefined && next === undefined)
+          failed ||= !this.#purgePair(
+            batch,
+            table,
+            last,
+            unitOwners(units, table, unit.id),
+          );
+      }
+      if (revoked || failed) {
+        saveUnit(this.#db, {
+          ...unit,
+          status: failed ? 'failed' : 'revoked',
+          reasonCode: failed ? 'sync.scope_revoked' : start.reasonCode,
+          cursor: -1,
+          bootstrapState: undefined,
+          seeded: [],
+          echo: undefined,
+        });
+        if (revoked) summary.revoked.push(unit.id);
+        if (failed) summary.failed.push(unit.id);
+        batch.status();
+        return;
+      }
+      const fresh = rearmed || start.bootstrap;
+      saveUnit(this.#db, {
+        ...unit,
+        reasonCode: undefined,
+        echo: start.fenced,
+        ...(rearmed
+          ? { cursor: -1, bootstrapState: undefined, seeded: [] }
+          : start.bootstrap
+            ? {
+                cursor: end.nextCursor,
+                bootstrapState: end.bootstrapState,
+                seeded:
+                  end.bootstrapState === undefined ? [] : [...section.seeded],
+              }
+            : {}),
+      });
+      if (!fresh || rearmed || end.bootstrapState !== undefined) return;
+      // §7.1: a completed bootstrap covers acknowledged intent of its pairs
+      // at or below its pin.
+      for (const table of this.#schema.tables.values()) {
+        const effective = covers(table, unit.scopes)
+          ? pairScopes(unit.scopes, table.name, start.fenced)
+          : undefined;
+        if (effective === undefined) continue;
+        const covered = this.#db
+          .query(
+            `SELECT id,intent,base FROM ${RETAINED_ROWS} WHERE tbl=? AND commit_seq<=?`,
+            [table.name, end.nextCursor],
+          )
+          .filter((row) =>
+            [row.intent, row.base].some(
+              (json) =>
+                json !== null &&
+                matchesLocalScopes(table, effective, JSON.parse(String(json))),
             ),
           );
-          if (doomed.length > 0) {
-            for (const commit of doomed) {
-              const { clientCommitId } = commit;
-              deleteOutboxCommit(this.#db, clientCommitId);
-              const results: CommitOperationOutcome[] = commit.operations.map(
-                (operation, opIndex) => {
-                  const rejection: RejectionRecord = {
-                    clientCommitId,
-                    opIndex,
-                    code: 'sync.scope_revoked',
-                    message:
-                      'the commit was dropped because its effective scope was revoked',
-                    retryable: false,
-                    operation,
-                  };
-                  this.#rejections.push(rejection);
-                  return { status: 'error', rejection };
-                },
-              );
-              recordCommitOutcome(this.#db, {
-                clientCommitId,
-                status: 'rejected',
-                recordedAtMs: this.#now(),
-                results,
-                operations: commit.operations,
-              });
-            }
-            pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-            batch.status();
-            batch.rejections();
-            batch.outcomes();
-          }
-          this.#replayOutbox(scope);
-          this.#deleteUnreferencedBlobs();
-        } catch (error) {
-          if (
-            error instanceof ClientSyncError &&
-            error.code === 'sync.scope_revoked'
-          ) {
-            failed = true;
-          } else {
-            throw error;
-          }
-        }
-      }
-      saveSubscription(
-        this.#db,
-        definedObject({
-          id: sub.id,
-          table: sub.table,
-          scopes: sub.scopes,
-          params: sub.params,
-          cursor: nextCursor,
-          effectiveScopes: lastEffective,
-          status: failed ? 'failed' : 'revoked',
-          reasonCode: start.reasonCode,
-        }),
-      );
-      if (registered !== undefined) {
-        batch.window(registered.baseKey, sub.table, registered.unit);
+        if (covered.length === 0) continue;
+        const scope = covered.map((row) =>
+          JSON.stringify([table.name, String(row.id)]),
+        );
+        restoreFailedBases(this.#db, this.#schema, scope);
+        for (const row of covered)
+          this.#db.exec(
+            `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
+            [table.name, String(row.id), end.nextCursor],
+          );
+        batch.table(table.name);
+        this.#replayOutbox(scope, false);
       }
     });
-    summary.revoked.push(sub.id);
-    if (failed) summary.failed.push(sub.id);
-    return false;
+  }
+
+  /**
+   * §3.3: purge one revoked pair: delete the rows matching its last effective
+   * scopes that no owner holds, drop every pending commit that provably
+   * writes into them, and rebuild the overlay. Returns false when the table
+   * has no local scope-column mapping (fail closed: nothing deleted).
+   */
+  #purgePair(
+    batch: ChangeAccumulator,
+    table: CompiledClientTable,
+    lastEffective: ScopeMap,
+    owners: readonly ScopeMap[],
+  ): boolean {
+    try {
+      const scope = [
+        JSON.stringify([table.name]),
+        ...this.#dropRetainedRows(
+          batch,
+          (name, values) =>
+            name === table.name &&
+            ownsLocalRow(table, lastEffective, owners, values),
+        ),
+      ];
+      deleteScopedRows(this.#db, table, lastEffective, owners);
+      batch.scopeMap(table, lastEffective);
+      // §3.3: a whole pending commit leaves when one of its upserts
+      // provably lands in the revoked scopes and no other owner covers it.
+      const doomed = listOutbox(this.#db).filter((commit) =>
+        commit.operations.some(
+          (op) =>
+            op.table === table.name &&
+            op.values !== undefined &&
+            ownsLocalRow(table, lastEffective, owners, op.values),
+        ),
+      );
+      for (const commit of doomed) {
+        const { clientCommitId } = commit;
+        deleteOutboxCommit(this.#db, clientCommitId);
+        const results: CommitOperationOutcome[] = commit.operations.map(
+          (operation, opIndex) => {
+            const rejection: RejectionRecord = {
+              clientCommitId,
+              opIndex,
+              code: 'sync.scope_revoked',
+              message:
+                'the commit was dropped because its effective scope was revoked',
+              retryable: false,
+              operation,
+            };
+            this.#rejections.push(rejection);
+            return { status: 'error', rejection };
+          },
+        );
+        recordCommitOutcome(this.#db, {
+          clientCommitId,
+          status: 'rejected',
+          recordedAtMs: this.#now(),
+          results,
+          operations: commit.operations,
+        });
+      }
+      if (doomed.length > 0) {
+        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+        batch.status();
+        batch.rejections();
+        batch.outcomes();
+      }
+      this.#replayOutbox(scope);
+      this.#deleteUnreferencedBlobs();
+      return true;
+    } catch (error) {
+      if (
+        error instanceof ClientSyncError &&
+        error.code === 'sync.scope_revoked'
+      )
+        return false;
+      throw error;
+    }
   }
 
   // -- optimistic state ----------------------------------------------------------

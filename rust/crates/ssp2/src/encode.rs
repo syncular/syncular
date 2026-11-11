@@ -2,14 +2,17 @@
 //! reproduces the input byte-for-byte: raw `json` strings, map entry order,
 //! and unknown frames are all preserved by the model.
 
-use crate::decode::{MINIMUM_WIRE_VERSION, SSP2_MAGIC, WIRE_VERSION};
+use crate::decode::{SSP2_MAGIC, WIRE_VERSION};
 use crate::model::frame_type as ft;
-use crate::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
+use crate::model::{
+    fenced_in_order, valid_outbox_id, valid_unit_id, EchoStatus, Frame, LiveStatus, MediaType,
+    Message, MsgKind, Op, OpResult, PushStatus, SubStatus,
+};
 use crate::primitives::Writer;
 
 pub fn encode_message(msg: &Message) -> Vec<u8> {
     assert!(
-        (MINIMUM_WIRE_VERSION..=WIRE_VERSION).contains(&msg.wire_version),
+        msg.wire_version == WIRE_VERSION,
         "unsupported wireVersion {}",
         msg.wire_version
     );
@@ -39,8 +42,8 @@ fn op_byte(op: Op) -> u8 {
     }
 }
 
-/// Every frame type with a defined layout in wire versions 1 and 2 (§1.2
-/// registry), `END` included.
+/// Every frame type with a defined layout in wire version 4 (§1.2 registry),
+/// `END` included.
 fn is_registered_frame_type(ty: u8) -> bool {
     ty == ft::END || ft::REQUEST_TYPES.contains(&ty) || ft::RESPONSE_TYPES.contains(&ty)
 }
@@ -52,6 +55,7 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             client_id,
             schema_version,
             log_epoch,
+            outbox_id,
         } => {
             w.str(client_id);
             w.i32(*schema_version);
@@ -60,13 +64,21 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
                 "REQ_HEADER.logEpoch must be non-empty"
             );
             w.opt(log_epoch, |w, value| w.str(value));
+            assert!(
+                outbox_id.as_deref().is_none_or(valid_outbox_id),
+                "REQ_HEADER.outboxId must be non-empty and at most 64 bytes"
+            );
+            w.opt(outbox_id, |w, value| w.str(value));
             ft::REQ_HEADER
         }
         Frame::PushCommit {
             client_commit_id,
+            client_seq,
             operations,
         } => {
+            assert!(*client_seq >= 0, "PUSH_COMMIT.clientSeq must be >= 0");
             w.str(client_commit_id);
+            w.i64(*client_seq);
             w.u32(operations.len() as u32);
             for op in operations {
                 w.str(&op.table);
@@ -82,11 +94,18 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             limit_snapshot_rows,
             max_snapshot_pages,
             accept,
+            cursor,
+            registration_digest,
+            echo_digest,
         } => {
+            assert!(*cursor >= -1, "PULL_HEADER.cursor must be >= -1");
             w.i32(*limit_commits);
             w.i32(*limit_snapshot_rows);
             w.i32(*max_snapshot_pages);
             w.u8(*accept);
+            w.i64(*cursor);
+            w.bytes(registration_digest);
+            w.bytes(echo_digest.as_ref().map_or(&[], |digest| digest));
             ft::PULL_HEADER
         }
         Frame::RoundFailure { code } => {
@@ -97,21 +116,24 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             w.str(code);
             ft::ROUND_FAILURE
         }
-        Frame::Subscription {
+        Frame::Unit { scopes } => {
+            w.str_map(scopes);
+            ft::UNIT
+        }
+        Frame::Progress {
             id,
-            table,
-            scopes,
-            params,
             cursor,
             bootstrap_state,
         } => {
+            assert!(
+                valid_unit_id(id),
+                "PROGRESS.id must be 32 lowercase hex characters"
+            );
+            assert!(*cursor >= -1, "PROGRESS.cursor must be >= -1");
             w.str(id);
-            w.str(table);
-            w.scope_map(scopes);
-            w.opt(params, |w, j| w.str(&j.0));
             w.i64(*cursor);
             w.opt(bootstrap_state, |w, j| w.str(&j.0));
-            ft::SUBSCRIPTION
+            ft::PROGRESS
         }
         Frame::RespHeader {
             required_schema_version,
@@ -205,9 +227,17 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             id,
             status,
             reason_code,
-            effective_scopes,
             bootstrap,
+            fenced,
         } => {
+            assert!(
+                valid_unit_id(id),
+                "SUB_START.id must be 32 lowercase hex characters"
+            );
+            assert!(
+                fenced_in_order(fenced),
+                "SUB_START.fenced tables must be unique and in ascending order"
+            );
             w.str(id);
             w.u8(match status {
                 SubStatus::Active => 1,
@@ -215,9 +245,37 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
                 SubStatus::Reset => 3,
             });
             w.str(reason_code);
-            w.scope_map(effective_scopes);
             w.bool(*bootstrap);
+            w.u32(fenced.len() as u32);
+            for record in fenced {
+                w.str(&record.table);
+                w.u8(match record.status {
+                    EchoStatus::Active => 1,
+                    EchoStatus::Revoked => 2,
+                });
+                w.scope_map(&record.scopes);
+            }
             ft::SUB_START
+        }
+        Frame::LiveStart {
+            status,
+            reason_code,
+        } => {
+            w.u8(match status {
+                LiveStatus::Active => 1,
+                LiveStatus::Reset => 3,
+                LiveStatus::Unregistered => 4,
+            });
+            w.str(reason_code);
+            ft::LIVE_START
+        }
+        Frame::LiveEnd {
+            through_seq,
+            echo_digest,
+        } => {
+            w.i64(*through_seq);
+            w.bytes(echo_digest.as_ref().map_or(&[], |digest| digest));
+            ft::LIVE_END
         }
         Frame::Commit {
             commit_seq,
@@ -238,7 +296,7 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
                 w.u16(change.table_index);
                 w.str(&change.row_id);
                 w.u8(op_byte(change.op));
-                w.opt(&change.row_version, |w, v| w.i64(*v));
+                w.i64(change.row_version);
                 w.str_map(&change.scopes);
                 w.opt(&change.row, |w, row| w.bytes(row));
             }

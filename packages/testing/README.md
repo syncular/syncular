@@ -37,9 +37,9 @@ test('two clients converge', async () => {
   const a = await sync.client('a');
   const b = await sync.client('b');
 
-  const sub = { id: 's', table: 'todos', scopes: { list_id: ['groceries'] } };
-  a.api.subscribe(sub);
-  b.api.subscribe(sub);
+  const list = { list_id: 'groceries' };
+  a.api.subscribe(list);
+  b.api.subscribe(list);
 
   a.api.mutate([
     { table: 'todos', op: 'upsert', values: { id: 't1', list_id: 'groceries', title: 'hi' } },
@@ -218,7 +218,7 @@ import { syncWrapper } from '@syncular/testkit/react';
 
 const sync = await createTestSync({ schema });
 const client = await sync.client('a');
-client.api.subscribe({ id: 's', table: 'todos', scopes: { list_id: ['x'] } });
+client.api.subscribe({ list_id: 'x' });
 await client.sync();
 
 const { result } = renderHook(

@@ -44,7 +44,6 @@ import type {
   SecurityLifecycle,
   SnapshotRead,
   SnapshotReadRequest,
-  SubscribeInput,
   SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
@@ -57,7 +56,6 @@ import type { DevtoolsRegistrar } from './devtools';
 import {
   ClientDiagnosticsEmitter,
   type ClientDiagnosticsListener,
-  type ClientDiagnosticsRequest,
   type ClientDiagnosticsSnapshot,
   type RealtimePolicy,
   withClientDiagnosticsHost,
@@ -110,7 +108,8 @@ import {
   type PreviousVersionSnapshot,
 } from './previous-version';
 import type { ClientSchema } from './schema';
-import type { SubscriptionRecord } from './state';
+import type { UnitScopes } from '@syncular/core';
+import type { UnitRecord } from './state';
 import type { WindowBase } from './window';
 import {
   type LocalAuthorityState,
@@ -398,7 +397,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
       clientId: () => this.#clientId,
       role: () => this.#role,
       outbox: async () => (await this.statusSnapshot()).outbox,
-      subscriptions: () => this.subscriptions(),
+      units: () => this.units(),
       conflicts: async () => (await this.conflicts()).length,
       rejections: async () => (await this.rejections()).length,
       syncNeeded: async () => (await this.statusSnapshot()).syncNeeded,
@@ -599,12 +598,12 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     >;
   }
 
-  subscribe(input: SubscribeInput): Promise<void> {
-    return this.#call('subscribe', [input]);
+  subscribe(scopes: UnitScopes): Promise<string> {
+    return this.#call('subscribe', [scopes]);
   }
 
-  subscribeMany(inputs: readonly SubscribeInput[]): Promise<void> {
-    return this.#call('subscribeMany', [inputs]);
+  subscribeMany(units: readonly UnitScopes[]): Promise<string[]> {
+    return this.#call('subscribeMany', [units]);
   }
 
   securityLifecycle(): Promise<SecurityLifecycle> {
@@ -742,10 +741,8 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('statusSnapshot', []);
   }
 
-  async diagnosticsSnapshot(
-    request: ClientDiagnosticsRequest = {},
-  ): Promise<ClientDiagnosticsSnapshot> {
-    const snapshot = await this.#call('diagnosticsSnapshot', [request]);
+  async diagnosticsSnapshot(): Promise<ClientDiagnosticsSnapshot> {
+    const snapshot = await this.#call('diagnosticsSnapshot', []);
     return withClientDiagnosticsHost(snapshot, {
       ...snapshot.host,
       kind: 'worker',
@@ -782,12 +779,12 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('pendingCommits', []);
   }
 
-  subscriptions(): Promise<SubscriptionRecord[]> {
-    return this.#call('subscriptions', []);
+  units(): Promise<UnitRecord[]> {
+    return this.#call('units', []);
   }
 
-  subscription(id: string): Promise<SubscriptionRecord | undefined> {
-    return this.#call('subscription', [id]);
+  unit(id: string): Promise<UnitRecord | undefined> {
+    return this.#call('unit', [id]);
   }
 
   connectRealtime(): Promise<void> {

@@ -45,6 +45,9 @@ export interface ReqHeaderFrame {
   schemaVersion: number;
   /** Partition log identity; absent requests epoch acquisition. */
   logEpoch?: string;
+  /** Identity of the sender's outbox sequence (§6.3.2, §7.1); absent for a
+   * sender without an outbox. Non-empty, at most 64 bytes. */
+  outboxId?: string;
 }
 
 export interface PushOperation {
@@ -60,6 +63,8 @@ export interface PushOperation {
 export interface PushCommitFrame {
   type: 'PUSH_COMMIT';
   clientCommitId: string;
+  /** Outbox sequence number (§6.3.2, §7.1); `0` without an outbox. */
+  clientSeq: number;
   operations: PushOperation[];
 }
 
@@ -70,15 +75,26 @@ export interface PullHeaderFrame {
   maxSnapshotPages: number;
   /** Bitmask (§4.2): bit 0 inline rows, 1 external rows, 2 sqlite, 3 signed URLs. */
   accept: number;
+  /** The replica cursor (§4.5); `-1` when no unit is live. */
+  cursor: number;
+  /** §4.1 registration digest: exactly 32 bytes. */
+  registrationDigest: Uint8Array;
+  /** The last processed `LIVE_END.echoDigest`: empty or 32 bytes (§4.2). */
+  echoDigest: Uint8Array;
 }
 
-export interface SubscriptionFrame {
-  type: 'SUBSCRIPTION';
+/** §4.3: one unit of a traveling registration list. */
+export interface UnitFrame {
+  type: 'UNIT';
+  scopes: Record<string, string>;
+}
+
+/** §4.3: the progress of one catching-up unit. */
+export interface ProgressFrame {
+  type: 'PROGRESS';
+  /** The unit id (§4.1): 32 lowercase hex characters. */
   id: string;
-  table: string;
-  scopes: ScopeMap;
-  /** Host-opaque JSON document, preserved verbatim. */
-  params?: string;
+  /** `-1`, the §4.7 pin while a resume token is held, or the unit cursor. */
   cursor: number;
   /** Opaque resume token JSON, round-tripped byte-for-byte (§4.7). */
   bootstrapState?: string;
@@ -104,7 +120,8 @@ export type RequestFrame =
   | RoundFailureFrame
   | PushCommitFrame
   | PullHeaderFrame
-  | SubscriptionFrame
+  | UnitFrame
+  | ProgressFrame
   | UnknownFrame;
 
 export interface RespHeaderFrame {
@@ -173,21 +190,47 @@ export interface PushResultDetailsFrame {
   entries: Array<{ opIndex: number; details: RejectionDetails }>;
 }
 
+/** §4.4: one (unit, table) pair the wildcard fence touched. */
+export interface FencedRecord {
+  table: string;
+  status: 'active' | 'revoked';
+  /** Effective lists of the variables the fence added; empty when revoked. */
+  scopes: ScopeMap;
+}
+
 export interface SubStartFrame {
   type: 'SUB_START';
+  /** The unit id (§4.1): 32 lowercase hex characters. */
   id: string;
   status: 'active' | 'revoked' | 'reset';
   reasonCode: string;
-  effectiveScopes: ScopeMap;
   bootstrap: boolean;
+  /** The unit's echo, in ascending table order (§4.4). */
+  fenced: FencedRecord[];
+}
+
+export interface LiveStartFrame {
+  type: 'LIVE_START';
+  status: 'active' | 'reset' | 'unregistered';
+  reasonCode: string;
+}
+
+export interface LiveEndFrame {
+  type: 'LIVE_END';
+  /** Highest commitSeq the live section is complete through; `-1` for
+   * `reset` and `unregistered` (§4.4). */
+  throughSeq: number;
+  /** Echo digest of the request: empty or 32 bytes (§4.4). */
+  echoDigest: Uint8Array;
 }
 
 export interface CommitChange {
   tableIndex: number;
   rowId: string;
   op: 'upsert' | 'delete';
-  /** Present iff `op` is `upsert` (§4.5). */
-  rowVersion?: number;
+  /** The row's `server_version` after the write, ≥ 1; a delete's is the
+   * version its tombstone records (§2.2, §4.5). */
+  rowVersion: number;
   scopes: Record<string, string>;
   /** Generated-row-codec bytes; present iff `op` is `upsert` (§4.5). */
   row?: Uint8Array;
@@ -227,7 +270,7 @@ export interface SegmentInlineFrame {
 export interface SubEndFrame {
   type: 'SUB_END';
   nextCursor: number;
-  /** Present iff the bootstrap is incomplete (§4.4). */
+  /** Present iff the unit's bootstrap is incomplete (§4.4). */
   bootstrapState?: string;
 }
 
@@ -251,6 +294,8 @@ export type ResponseFrame =
   | SegmentRefFrame
   | SegmentInlineFrame
   | SubEndFrame
+  | LiveStartFrame
+  | LiveEndFrame
   | ErrorFrame
   | UnknownFrame;
 
@@ -315,6 +360,62 @@ function validateRoundFailureCode(
   }
 }
 
+/** §1.5, §1.7: a present `outboxId` is non-empty and at most 64 bytes. */
+function checkOutboxId(outboxId: string, fail: (message: string) => never) {
+  if (outboxId.length === 0 || utf8Encode(outboxId).length > 64) {
+    fail('REQ_HEADER.outboxId must be non-empty and at most 64 bytes');
+  }
+}
+
+/** §4.3, §4.4: a unit id is 32 lowercase hex characters. */
+function checkUnitId(
+  id: string,
+  frame: 'PROGRESS' | 'SUB_START',
+  fail: (message: string) => never,
+) {
+  if (!/^[0-9a-f]{32}$/.test(id)) {
+    fail(`${frame}.id must be 32 lowercase hex characters`);
+  }
+}
+
+/** §4.2, §4.4: a digest is 32 bytes; an echo digest may also be empty. */
+function checkDigest(
+  digest: Uint8Array,
+  field:
+    | 'PULL_HEADER.registrationDigest'
+    | 'PULL_HEADER.echoDigest'
+    | 'LIVE_END.echoDigest',
+  fail: (message: string) => never,
+) {
+  const emptyAllowed = field !== 'PULL_HEADER.registrationDigest';
+  if (digest.length !== 32 && !(emptyAllowed && digest.length === 0)) {
+    fail(`${field} must be ${emptyAllowed ? '0 or ' : ''}32 bytes`);
+  }
+}
+
+/** §4.2, §4.3: a cursor is `-1` or a commitSeq. */
+function checkCursor(
+  cursor: number,
+  field: 'PULL_HEADER.cursor' | 'PROGRESS.cursor',
+  fail: (message: string) => never,
+) {
+  if (cursor < -1) fail(`${field} must be >= -1`);
+}
+
+/** §4.4: fenced records in strictly ascending code-unit order of `table`. */
+function checkFencedOrder(
+  fenced: readonly FencedRecord[],
+  fail: (message: string) => never,
+) {
+  for (let i = 1; i < fenced.length; i++) {
+    if (
+      (fenced[i - 1] as FencedRecord).table >= (fenced[i] as FencedRecord).table
+    ) {
+      fail('SUB_START.fenced tables must be unique and in ascending order');
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Frame payload decoders (each consumes exactly the frame payload)
 // ---------------------------------------------------------------------------
@@ -329,11 +430,14 @@ function decodeReqHeader(r: ByteReader): ReqHeaderFrame {
     if (value.length === 0) invalid('REQ_HEADER.logEpoch must be non-empty');
     return value;
   });
+  const outboxId = r.opt(() => r.str());
+  if (outboxId !== undefined) checkOutboxId(outboxId, invalid);
   return definedObject({
     type: 'REQ_HEADER',
     clientId,
     schemaVersion,
     logEpoch: logEpoch,
+    outboxId: outboxId,
   });
 }
 
@@ -348,6 +452,8 @@ function decodePushCommit(r: ByteReader): PushCommitFrame {
   if (clientCommitId.length === 0) {
     invalid('PUSH_COMMIT.clientCommitId must be non-empty');
   }
+  const clientSeq = r.i64();
+  if (clientSeq < 0) invalid('PUSH_COMMIT.clientSeq must be >= 0');
   const operationCount = r.u32();
   if (operationCount === 0) {
     throw new DecodeError(
@@ -382,7 +488,7 @@ function decodePushCommit(r: ByteReader): PushCommitFrame {
       }),
     );
   }
-  return { type: 'PUSH_COMMIT', clientCommitId, operations };
+  return { type: 'PUSH_COMMIT', clientCommitId, clientSeq, operations };
 }
 
 function decodePullHeader(r: ByteReader): PullHeaderFrame {
@@ -393,30 +499,33 @@ function decodePullHeader(r: ByteReader): PullHeaderFrame {
   if ((accept & 0xf0) !== 0) {
     invalid('PULL_HEADER.accept bits 4-7 must be zero');
   }
+  const cursor = r.i64();
+  checkCursor(cursor, 'PULL_HEADER.cursor', invalid);
+  const registrationDigest = r.bytes();
+  checkDigest(registrationDigest, 'PULL_HEADER.registrationDigest', invalid);
+  const echoDigest = r.bytes();
+  checkDigest(echoDigest, 'PULL_HEADER.echoDigest', invalid);
   return {
     type: 'PULL_HEADER',
     limitCommits,
     limitSnapshotRows,
     maxSnapshotPages,
     accept,
+    cursor,
+    registrationDigest,
+    echoDigest,
   };
 }
 
-function decodeSubscription(r: ByteReader): SubscriptionFrame {
+function decodeProgress(r: ByteReader): ProgressFrame {
   const id = r.str();
-  const table = r.str();
-  const scopes = readStringListMap(r);
-  const params = r.opt(() => readJson(r, 'SUBSCRIPTION.params'));
+  checkUnitId(id, 'PROGRESS', invalid);
   const cursor = r.i64();
-  const bootstrapState = r.opt(() =>
-    readJson(r, 'SUBSCRIPTION.bootstrapState'),
-  );
+  checkCursor(cursor, 'PROGRESS.cursor', invalid);
+  const bootstrapState = r.opt(() => readJson(r, 'PROGRESS.bootstrapState'));
   return definedObject({
-    type: 'SUBSCRIPTION',
+    type: 'PROGRESS',
     id,
-    table,
-    scopes,
-    params: params,
     cursor,
     bootstrapState: bootstrapState,
   });
@@ -532,6 +641,7 @@ function decodePushResultDetails(r: ByteReader): PushResultDetailsFrame {
 
 function decodeSubStart(r: ByteReader): SubStartFrame {
   const id = r.str();
+  checkUnitId(id, 'SUB_START', invalid);
   const statusByte = r.u8();
   let status: 'active' | 'revoked' | 'reset';
   if (statusByte === 1) status = 'active';
@@ -539,16 +649,40 @@ function decodeSubStart(r: ByteReader): SubStartFrame {
   else if (statusByte === 3) status = 'reset';
   else invalid(`invalid SUB_START status byte ${statusByte}`);
   const reasonCode = r.str();
-  const effectiveScopes = readStringListMap(r);
   const bootstrap = r.bool();
-  return {
-    type: 'SUB_START',
-    id,
-    status,
-    reasonCode,
-    effectiveScopes,
-    bootstrap,
-  };
+  const fencedCount = r.u32();
+  const fenced: FencedRecord[] = [];
+  for (let i = 0; i < fencedCount; i++) {
+    const table = r.str();
+    const fencedStatus = r.u8();
+    if (fencedStatus !== 1 && fencedStatus !== 2) {
+      invalid('invalid fenced record status byte');
+    }
+    fenced.push({
+      table,
+      status: fencedStatus === 1 ? 'active' : 'revoked',
+      scopes: readStringListMap(r),
+    });
+  }
+  checkFencedOrder(fenced, invalid);
+  return { type: 'SUB_START', id, status, reasonCode, bootstrap, fenced };
+}
+
+function decodeLiveStart(r: ByteReader): LiveStartFrame {
+  const statusByte = r.u8();
+  let status: LiveStartFrame['status'];
+  if (statusByte === 1) status = 'active';
+  else if (statusByte === 3) status = 'reset';
+  else if (statusByte === 4) status = 'unregistered';
+  else invalid('invalid LIVE_START status byte');
+  return { type: 'LIVE_START', status, reasonCode: r.str() };
+}
+
+function decodeLiveEnd(r: ByteReader): LiveEndFrame {
+  const throughSeq = r.i64();
+  const echoDigest = r.bytes();
+  checkDigest(echoDigest, 'LIVE_END.echoDigest', invalid);
+  return { type: 'LIVE_END', throughSeq, echoDigest };
 }
 
 function decodeCommit(r: ByteReader): CommitFrame {
@@ -573,24 +707,15 @@ function decodeCommit(r: ByteReader): CommitFrame {
     if (opByte === 1) op = 'upsert';
     else if (opByte === 2) op = 'delete';
     else invalid(`invalid change op byte ${opByte}`);
-    const rowVersion = r.opt(() => r.i64());
+    const rowVersion = r.i64();
+    if (rowVersion < 1) invalid('change rowVersion must be at least 1');
     const scopes = readStringMap(r);
     const row = r.opt(() => r.bytes());
-    if (op === 'upsert' && (rowVersion === undefined || row === undefined)) {
-      invalid('upsert change requires rowVersion and row');
-    }
-    if (op === 'delete' && (rowVersion !== undefined || row !== undefined)) {
-      invalid('delete change must not carry rowVersion or row');
+    if ((op === 'upsert') !== (row !== undefined)) {
+      invalid('change row must be present iff op is upsert');
     }
     changes.push(
-      definedObject({
-        tableIndex,
-        rowId,
-        op,
-        rowVersion: rowVersion,
-        scopes,
-        row: row,
-      }),
+      definedObject({ tableIndex, rowId, op, rowVersion, scopes, row }),
     );
   }
   return { type: 'COMMIT', commitSeq, createdAtMs, actorId, tables, changes };
@@ -686,8 +811,11 @@ function decodeRequestFrame(
     case FrameType.PULL_HEADER:
       frame = decodePullHeader(r);
       break;
-    case FrameType.SUBSCRIPTION:
-      frame = decodeSubscription(r);
+    case FrameType.UNIT:
+      frame = { type: 'UNIT', scopes: readStringMap(r) };
+      break;
+    case FrameType.PROGRESS:
+      frame = decodeProgress(r);
       break;
     default:
       if (RESPONSE_FRAME_TYPES.has(frameType)) {
@@ -735,6 +863,12 @@ function decodeResponseFrame(
     case FrameType.SUB_END:
       frame = decodeSubEnd(r);
       break;
+    case FrameType.LIVE_START:
+      frame = decodeLiveStart(r);
+      break;
+    case FrameType.LIVE_END:
+      frame = decodeLiveEnd(r);
+      break;
     case FrameType.ERROR:
       frame = decodeErrorFrame(r);
       break;
@@ -761,6 +895,7 @@ function validateRequestSequence(frames: readonly RequestFrame[]): void {
   }
   let pushCount = 0;
   let hasPull = false;
+  let hasProgress = false;
   let index = 1;
   let sawRoundFailure = false;
   for (const frame of frames.slice(1)) {
@@ -784,8 +919,13 @@ function validateRequestSequence(frames: readonly RequestFrame[]): void {
         if (hasPull) invalid('duplicate PULL_HEADER frame');
         hasPull = true;
         break;
-      case 'SUBSCRIPTION':
-        if (!hasPull) invalid('SUBSCRIPTION frame without a PULL_HEADER');
+      case 'UNIT':
+        if (!hasPull) invalid('UNIT frame without a PULL_HEADER');
+        if (hasProgress) invalid('UNIT frame after a PROGRESS frame');
+        break;
+      case 'PROGRESS':
+        if (!hasPull) invalid('PROGRESS frame without a PULL_HEADER');
+        hasProgress = true;
         break;
       case 'UNKNOWN':
         break;
@@ -802,12 +942,12 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
   if (first === undefined || first.type !== 'RESP_HEADER') {
     invalid('response must start with a RESP_HEADER frame');
   }
-  let inSubscription = false;
-  let sawSubscription = false;
+  // §1.6 sections: unit sections, then at most one live section.
+  let section: 'none' | 'unit' | 'live' = 'none';
+  let sawUnitSection = false;
+  let sawLive = false;
   let sawLease = false;
   let sawBody = false;
-  let subscriptionHasCommits = false;
-  let subscriptionHasSegments = false;
   let errorSeen = false;
   let lastPushResult: PushResultFrame | undefined;
   let lastPushResultHasDetails = false;
@@ -818,21 +958,22 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         invalid('duplicate RESP_HEADER frame');
         break;
       case 'LEASE':
-        // §7.3.2: at most one LEASE, immediately after RESP_HEADER (before
-        // any PUSH_RESULT / subscription section / ERROR).
+        // §7.3.2: at most one LEASE, immediately after RESP_HEADER.
         if (sawLease) invalid('duplicate LEASE frame');
         if (sawBody) invalid('LEASE frame must immediately follow RESP_HEADER');
         sawLease = true;
         break;
       case 'PUSH_RESULT':
-        if (sawSubscription) invalid('PUSH_RESULT frame after SUB_START');
+        if (sawUnitSection || sawLive) {
+          invalid('PUSH_RESULT frame after a unit or live section');
+        }
         lastPushResult = frame;
         lastPushResultHasDetails = false;
         sawBody = true;
         break;
       case 'PUSH_RESULT_DETAILS': {
-        if (sawSubscription) {
-          invalid('PUSH_RESULT_DETAILS frame after SUB_START');
+        if (sawUnitSection || sawLive) {
+          invalid('PUSH_RESULT_DETAILS frame after a unit or live section');
         }
         if (lastPushResult === undefined) {
           invalid('PUSH_RESULT_DETAILS without a preceding PUSH_RESULT');
@@ -861,36 +1002,40 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         break;
       }
       case 'SUB_START':
-        if (inSubscription) invalid('nested SUB_START frame');
-        inSubscription = true;
-        sawSubscription = true;
+        if (section === 'unit') invalid('nested SUB_START frame');
+        if (sawLive)
+          invalid('SUB_START frame inside or after the live section');
+        section = 'unit';
+        sawUnitSection = true;
         sawBody = true;
         lastPushResult = undefined;
-        subscriptionHasCommits = false;
-        subscriptionHasSegments = false;
-        break;
-      case 'COMMIT':
-        if (!inSubscription) invalid('COMMIT frame outside a subscription');
-        if (subscriptionHasSegments) {
-          invalid(
-            'COMMIT and segment frames must not both appear for one subscription',
-          );
-        }
-        subscriptionHasCommits = true;
         break;
       case 'SEGMENT_REF':
       case 'SEGMENT_INLINE':
-        if (!inSubscription) invalid('segment frame outside a subscription');
-        if (subscriptionHasCommits) {
-          invalid(
-            'COMMIT and segment frames must not both appear for one subscription',
-          );
-        }
-        subscriptionHasSegments = true;
+        if (section !== 'unit') invalid('segment frame outside a unit section');
         break;
       case 'SUB_END':
-        if (!inSubscription) invalid('SUB_END frame without an open SUB_START');
-        inSubscription = false;
+        if (section !== 'unit')
+          invalid('SUB_END frame without an open SUB_START');
+        section = 'none';
+        break;
+      case 'LIVE_START':
+        if (section === 'unit')
+          invalid('LIVE_START frame inside a unit section');
+        if (sawLive) invalid('second LIVE_START frame');
+        section = 'live';
+        sawLive = true;
+        sawBody = true;
+        lastPushResult = undefined;
+        break;
+      case 'COMMIT':
+        if (section !== 'live')
+          invalid('COMMIT frame outside the live section');
+        break;
+      case 'LIVE_END':
+        if (section !== 'live')
+          invalid('LIVE_END frame without an open LIVE_START');
+        section = 'none';
         break;
       case 'ERROR':
         errorSeen = true;
@@ -903,14 +1048,9 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         break;
     }
   }
-  if (inSubscription && !errorSeen) {
-    invalid('subscription not terminated by SUB_END');
+  if (section !== 'none' && !errorSeen) {
+    invalid('unit or live section not terminated');
   }
-}
-
-export function validateFrameSequence(message: SyncMessage): void {
-  if (message.msgKind === 'request') validateRequestSequence(message.frames);
-  else validateResponseSequence(message.frames);
 }
 
 // ---------------------------------------------------------------------------
@@ -920,17 +1060,30 @@ export function validateFrameSequence(message: SyncMessage): void {
 const OP_BYTES = { upsert: 1, delete: 2 } as const;
 const PUSH_STATUS_BYTES = { applied: 1, cached: 2, rejected: 3 } as const;
 const SUB_STATUS_BYTES = { active: 1, revoked: 2, reset: 3 } as const;
+const LIVE_STATUS_BYTES = { active: 1, reset: 3, unregistered: 4 } as const;
 const MEDIA_TYPE_BYTES = { rows: 1, sqlite: 2 } as const;
 
 function encodeInvalid(message: string): never {
   throw new Error(message);
 }
 
-function encodeFrame(frame: RequestFrame | ResponseFrame): {
-  frameType: number;
-  payload: Uint8Array;
-} {
-  const w = new ByteWriter();
+function encodeUnknown(frame: UnknownFrame, w: ByteWriter): number {
+  if (
+    !Number.isInteger(frame.frameType) ||
+    frame.frameType < 0 ||
+    frame.frameType > 0xff ||
+    KNOWN_FRAME_TYPES.has(frame.frameType)
+  ) {
+    encodeInvalid(
+      `UNKNOWN frame type ${frame.frameType} collides with a defined frame type`,
+    );
+  }
+  w.raw(frame.payload);
+  return frame.frameType;
+}
+
+/** Writes the payload; returns the frame type byte. */
+function encodeRequestFrame(frame: RequestFrame, w: ByteWriter): number {
   switch (frame.type) {
     case 'REQ_HEADER': {
       if (frame.clientId.length === 0) {
@@ -945,6 +1098,10 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
         encodeInvalid('REQ_HEADER.logEpoch must be non-empty');
       }
       w.opt(frame.logEpoch, (v) => w.str(v));
+      if (frame.outboxId !== undefined) {
+        checkOutboxId(frame.outboxId, encodeInvalid);
+      }
+      w.opt(frame.outboxId, (v) => w.str(v));
       break;
     }
     case 'ROUND_FAILURE': {
@@ -959,7 +1116,11 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       if (frame.operations.length === 0) {
         encodeInvalid('PUSH_COMMIT must carry at least one operation');
       }
+      if (frame.clientSeq < 0) {
+        encodeInvalid('PUSH_COMMIT.clientSeq must be >= 0');
+      }
       w.str(frame.clientCommitId);
+      w.i64(frame.clientSeq);
       w.u32(frame.operations.length);
       for (const operation of frame.operations) {
         if (operation.op === 'upsert' && operation.payload === undefined) {
@@ -983,18 +1144,40 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       w.i32(frame.limitCommits);
       w.i32(frame.limitSnapshotRows);
       w.i32(frame.maxSnapshotPages);
+      checkCursor(frame.cursor, 'PULL_HEADER.cursor', encodeInvalid);
+      checkDigest(
+        frame.registrationDigest,
+        'PULL_HEADER.registrationDigest',
+        encodeInvalid,
+      );
+      checkDigest(frame.echoDigest, 'PULL_HEADER.echoDigest', encodeInvalid);
       w.u8(frame.accept);
+      w.i64(frame.cursor);
+      w.bytes(frame.registrationDigest);
+      w.bytes(frame.echoDigest);
       break;
     }
-    case 'SUBSCRIPTION': {
+    case 'UNIT': {
+      writeStringMap(w, frame.scopes);
+      break;
+    }
+    case 'PROGRESS': {
+      checkUnitId(frame.id, 'PROGRESS', encodeInvalid);
+      checkCursor(frame.cursor, 'PROGRESS.cursor', encodeInvalid);
       w.str(frame.id);
-      w.str(frame.table);
-      writeStringListMap(w, frame.scopes);
-      w.opt(frame.params, (v) => w.str(v));
       w.i64(frame.cursor);
       w.opt(frame.bootstrapState, (v) => w.str(v));
       break;
     }
+    case 'UNKNOWN':
+      return encodeUnknown(frame, w);
+  }
+  return FrameType[frame.type];
+}
+
+/** Writes the payload; returns the frame type byte. */
+function encodeResponseFrame(frame: ResponseFrame, w: ByteWriter): number {
+  switch (frame.type) {
     case 'RESP_HEADER': {
       w.opt(frame.requiredSchemaVersion, (v) => w.i32(v));
       w.opt(frame.latestSchemaVersion, (v) => w.i32(v));
@@ -1068,11 +1251,29 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       break;
     }
     case 'SUB_START': {
+      checkUnitId(frame.id, 'SUB_START', encodeInvalid);
+      checkFencedOrder(frame.fenced, encodeInvalid);
       w.str(frame.id);
       w.u8(SUB_STATUS_BYTES[frame.status]);
       w.str(frame.reasonCode);
-      writeStringListMap(w, frame.effectiveScopes);
       w.bool(frame.bootstrap);
+      w.u32(frame.fenced.length);
+      for (const record of frame.fenced) {
+        w.str(record.table);
+        w.u8(SUB_STATUS_BYTES[record.status]);
+        writeStringListMap(w, record.scopes);
+      }
+      break;
+    }
+    case 'LIVE_START': {
+      w.u8(LIVE_STATUS_BYTES[frame.status]);
+      w.str(frame.reasonCode);
+      break;
+    }
+    case 'LIVE_END': {
+      checkDigest(frame.echoDigest, 'LIVE_END.echoDigest', encodeInvalid);
+      w.i64(frame.throughSeq);
+      w.bytes(frame.echoDigest);
       break;
     }
     case 'COMMIT': {
@@ -1086,22 +1287,16 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
         if (change.tableIndex >= frame.tables.length) {
           encodeInvalid(`change tableIndex ${change.tableIndex} out of range`);
         }
-        if (
-          change.op === 'upsert' &&
-          (change.rowVersion === undefined || change.row === undefined)
-        ) {
-          encodeInvalid('upsert change requires rowVersion and row');
+        if ((change.op === 'upsert') !== (change.row !== undefined)) {
+          encodeInvalid('change row must be present iff op is upsert');
         }
-        if (
-          change.op === 'delete' &&
-          (change.rowVersion !== undefined || change.row !== undefined)
-        ) {
-          encodeInvalid('delete change must not carry rowVersion or row');
+        if (change.rowVersion < 1) {
+          encodeInvalid('change rowVersion must be at least 1');
         }
         w.u16(change.tableIndex);
         w.str(change.rowId);
         w.u8(OP_BYTES[change.op]);
-        w.opt(change.rowVersion, (v) => w.i64(v));
+        w.i64(change.rowVersion);
         writeStringMap(w, change.scopes);
         w.opt(change.row, (v) => w.bytes(v));
       }
@@ -1125,7 +1320,8 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       break;
     }
     case 'SEGMENT_INLINE': {
-      return { frameType: FrameType.SEGMENT_INLINE, payload: frame.payload };
+      w.raw(frame.payload);
+      break;
     }
     case 'SUB_END': {
       w.i64(frame.nextCursor);
@@ -1141,39 +1337,37 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       w.opt(frame.details, (v) => w.str(v));
       break;
     }
-    case 'UNKNOWN': {
-      if (
-        !Number.isInteger(frame.frameType) ||
-        frame.frameType < 0 ||
-        frame.frameType > 0xff ||
-        KNOWN_FRAME_TYPES.has(frame.frameType)
-      ) {
-        encodeInvalid(
-          `UNKNOWN frame type ${frame.frameType} collides with a defined frame type`,
-        );
-      }
-      return { frameType: frame.frameType, payload: frame.payload };
-    }
+    case 'UNKNOWN':
+      return encodeUnknown(frame, w);
   }
-  return { frameType: FrameType[frame.type], payload: w.finish() };
+  return FrameType[frame.type];
 }
 
 // ---------------------------------------------------------------------------
-// Envelope
+// Envelope. The kind-specific codecs let a peer bundle only the direction it
+// speaks; `encodeMessage` and `decodeMessage` dispatch on the kind.
 // ---------------------------------------------------------------------------
 
-export function encodeMessage(message: SyncMessage): Uint8Array {
-  if (!isSupportedProtocolWireVersion(message.wireVersion)) {
-    encodeInvalid(`unsupported wireVersion ${message.wireVersion}`);
+function encodeEnvelope<F extends RequestFrame | ResponseFrame>(
+  wireVersion: number,
+  kindByte: number,
+  frames: readonly F[],
+  validate: (frames: readonly F[]) => void,
+  encode: (frame: F, w: ByteWriter) => number,
+): Uint8Array {
+  if (!isSupportedProtocolWireVersion(wireVersion)) {
+    encodeInvalid(`unsupported wireVersion ${wireVersion}`);
   }
-  validateFrameSequence(message);
+  validate(frames);
   const w = new ByteWriter();
   w.raw(MAGIC_BYTES);
-  w.u16(message.wireVersion);
-  w.u8(message.msgKind === 'request' ? 0x01 : 0x02);
+  w.u16(wireVersion);
+  w.u8(kindByte);
   w.u8(0x00);
-  for (const frame of message.frames) {
-    const { frameType, payload } = encodeFrame(frame);
+  for (const frame of frames) {
+    const p = new ByteWriter();
+    const frameType = encode(frame, p);
+    const payload = p.finish();
     w.u8(frameType);
     w.u32(payload.length);
     w.raw(payload);
@@ -1181,6 +1375,32 @@ export function encodeMessage(message: SyncMessage): Uint8Array {
   w.u8(FrameType.END);
   w.u32(0);
   return w.finish();
+}
+
+export function encodeRequest(message: RequestMessage): Uint8Array {
+  return encodeEnvelope(
+    message.wireVersion,
+    0x01,
+    message.frames,
+    validateRequestSequence,
+    encodeRequestFrame,
+  );
+}
+
+export function encodeResponse(message: ResponseMessage): Uint8Array {
+  return encodeEnvelope(
+    message.wireVersion,
+    0x02,
+    message.frames,
+    validateResponseSequence,
+    encodeResponseFrame,
+  );
+}
+
+export function encodeMessage(message: SyncMessage): Uint8Array {
+  return message.msgKind === 'request'
+    ? encodeRequest(message)
+    : encodeResponse(message);
 }
 
 function readFrames<T>(
@@ -1209,7 +1429,11 @@ function readFrames<T>(
   }
 }
 
-export function decodeMessage(bytes: Uint8Array): SyncMessage {
+function decodeEnvelope(bytes: Uint8Array): {
+  r: ByteReader;
+  wireVersion: number;
+  request: boolean;
+} {
   const r = new ByteReader(bytes);
   if (r.remaining < 8) invalid('truncated envelope header');
   const magic = r.raw(4);
@@ -1231,24 +1455,34 @@ export function decodeMessage(bytes: Uint8Array): SyncMessage {
   }
   const flags = r.u8();
   if (flags !== 0) invalid(`non-zero envelope flags 0x${flags.toString(16)}`);
-  if (kindByte === 0x01) {
-    const message: RequestMessage = {
-      wireVersion,
-      msgKind: 'request',
-      frames: readFrames(r, (frameType, payload) =>
-        decodeRequestFrame(frameType, payload),
-      ),
-    };
-    validateRequestSequence(message.frames);
-    return message;
-  }
-  const message: ResponseMessage = {
-    wireVersion,
-    msgKind: 'response',
-    frames: readFrames(r, (frameType, payload) =>
-      decodeResponseFrame(frameType, payload),
-    ),
-  };
-  validateResponseSequence(message.frames);
-  return message;
+  return { r, wireVersion, request: kindByte === 0x01 };
+}
+
+function requestBody(r: ByteReader, wireVersion: number): RequestMessage {
+  const frames = readFrames(r, decodeRequestFrame);
+  validateRequestSequence(frames);
+  return { wireVersion, msgKind: 'request', frames };
+}
+
+function responseBody(r: ByteReader, wireVersion: number): ResponseMessage {
+  const frames = readFrames(r, decodeResponseFrame);
+  validateResponseSequence(frames);
+  return { wireVersion, msgKind: 'response', frames };
+}
+
+export function decodeRequest(bytes: Uint8Array): RequestMessage {
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  if (!request) invalid('expected a request message');
+  return requestBody(r, wireVersion);
+}
+
+export function decodeResponse(bytes: Uint8Array): ResponseMessage {
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  if (request) invalid('expected a response message');
+  return responseBody(r, wireVersion);
+}
+
+export function decodeMessage(bytes: Uint8Array): SyncMessage {
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  return request ? requestBody(r, wireVersion) : responseBody(r, wireVersion);
 }

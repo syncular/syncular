@@ -12,6 +12,7 @@ import { ScenarioSkip, type Scenario, type ScenarioContext } from '../scenario';
 import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 async function connectedClient(
   ctx: ScenarioContext,
@@ -19,7 +20,7 @@ async function connectedClient(
   clientId: string,
 ) {
   const handle = await ctx.newClient({ actorId, clientId, allowed: P1 });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -85,62 +86,6 @@ export const realtimeScenarios: readonly Scenario[] = [
       await expectConverged(ctx, 'tasks', [a, b], {
         variable: 'project_id',
         values: ['p1'],
-      });
-    },
-  },
-
-  {
-    name: 'realtime/delta-skips-a-reset-subscription',
-    specRefs: ['§8.2', '§4.6', '§4.7'],
-    requires: ['realtime'],
-    async run(ctx) {
-      const b = await ctx.newClient({
-        actorId: 'actor-b',
-        clientId: 'client-b',
-        allowed: { project_id: ['p1', 'p2'] },
-      });
-      await seedTasks(ctx, [task('old', 'p2', 'before')]);
-      for (const project of ['p1', 'p2']) {
-        await b.api.subscribe({
-          id: project,
-          table: 'tasks',
-          scopes: { project_id: [project] },
-        });
-      }
-      await syncIdle(b);
-      await b.api.connectRealtime();
-      // p1 commits advance only p1's cursor; p2's falls behind the horizon.
-      for (let i = 0; i < 3; i++) {
-        await seedTasks(ctx, [task(`p1-${i}`, 'p1')]);
-        await b.realtime.waitForAck(await ctx.server.getMaxCommitSeq());
-      }
-      await ctx.server.prune({ minRetainedCommits: 1 });
-      const reset = await syncOk(b);
-      checkEqual(reset.resets, ['p2'], 'p2 fell behind the pruned horizon');
-      checkEqual(
-        (await b.api.subscriptionState('p2'))?.cursor,
-        -1,
-        'the reset discards the cursor (§4.6)',
-      );
-
-      // One commit in both scopes: p1's section applies and acks; p2's
-      // section would mark a fraction of p2 bootstrapped.
-      await seedTasks(ctx, [task('both-1', 'p1'), task('both-2', 'p2')]);
-      await b.realtime.waitForAck(await ctx.server.getMaxCommitSeq());
-      checkEqual(
-        (await b.api.subscriptionState('p2'))?.cursor,
-        -1,
-        'a delta never advances a subscription at cursor -1 (§8.2)',
-      );
-      check(await b.api.syncNeeded(), 'the skipped section asks for a pull');
-      await syncIdle(b);
-      check(
-        ((await b.api.subscriptionState('p2'))?.cursor ?? -1) >= 0,
-        'the pull bootstraps p2',
-      );
-      await expectConverged(ctx, 'tasks', [b], {
-        variable: 'project_id',
-        values: ['p1', 'p2'],
       });
     },
   },
@@ -257,7 +202,7 @@ export const realtimeScenarios: readonly Scenario[] = [
         clientId: 'client-required',
         realtimePolicy: 'required',
       });
-      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await handle.api.subscribe(U1);
       const denied = await handle.api.sync();
       check(!denied.ok, 'a required round without a socket cannot succeed');
       if (!denied.ok) {
@@ -308,7 +253,7 @@ export const realtimeScenarios: readonly Scenario[] = [
       if (handle.api.loseRealtime === undefined) {
         throw new ScenarioSkip('client driver has no realtime loss injection');
       }
-      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await handle.api.subscribe(U1);
       await handle.api.connectRealtime();
       await syncIdle(handle);
       checkEqual(
@@ -448,7 +393,7 @@ export const realtimeScenarios: readonly Scenario[] = [
         clientId: 'client-reconnect',
         realtimePolicy: 'required',
       });
-      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await handle.api.subscribe(U1);
       await handle.api.connectRealtime();
       await syncIdle(handle);
       checkEqual(

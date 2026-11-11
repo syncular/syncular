@@ -20,6 +20,7 @@ import {
   toPositionalSql,
   TypegenError,
 } from '../src';
+import { windowBases } from '../src/query';
 
 const IR: IrDocument = {
   irVersion: 1,
@@ -319,6 +320,43 @@ describe('reactive metadata is proof-based', () => {
     const grouped = analyze('q.sql', 'SELECT id FROM todos GROUP BY id');
     expect(joined.reactive.rowKey).toBeUndefined();
     expect(grouped.reactive.rowKey).toBeUndefined();
+  });
+
+  test('window bases name no table and hold one value per fixed scope', () => {
+    expect(
+      windowBases([
+        {
+          table: 'messages',
+          variable: 'thread_id',
+          units: ['thread'],
+          fixedScopes: [{ variable: 'room_id', params: ['a', 'b'] }],
+        },
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['list'],
+          fixedScopes: [],
+        },
+        {
+          table: 'todo_details',
+          variable: 'list_id',
+          units: ['list'],
+          fixedScopes: [],
+        },
+      ]),
+    ).toEqual([
+      { variable: 'list_id', units: ['list'], fixedScopes: [] },
+      {
+        variable: 'thread_id',
+        units: ['thread'],
+        fixedScopes: [{ variable: 'room_id', param: 'a' }],
+      },
+      {
+        variable: 'thread_id',
+        units: ['thread'],
+        fixedScopes: [{ variable: 'room_id', param: 'b' }],
+      },
+    ]);
   });
 });
 

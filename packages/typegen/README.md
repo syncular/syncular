@@ -67,11 +67,7 @@ schema guide and suggests `syncular init`.
     }
   ],
   "subscriptions": [
-    {
-      "name": "projectTasks",
-      "table": "tasks",
-      "scopes": { "project_id": ["{projectId}"] }
-    }
+    { "name": "projectTasks", "scopes": { "project_id": "{projectId}" } }
   ],
   "extensions": {}
 }
@@ -97,8 +93,8 @@ schema guide and suggests `syncular init`.
 | `tables[].name` | yes | Must be created by a migration. |
 | `tables[].scopes` | yes, ≥ 1 | §3.1 scope patterns: `'prefix:{variable}'` (column = variable) or `{ "pattern", "column" }`. The column must exist on the table; one variable must not map to two different columns. |
 | `tables[].extensions` | no (default `{}`) | Opaque passthrough into the IR table's `extensions` slot. |
-| `subscriptions` | no (default `[]`) | Requested-scope templates. `name` must be a valid JS identifier and unique; `table` must be a listed table; every scope key must be a scope variable of that table. |
-| `subscriptions[].scopes` | yes, non-empty | Map of variable → non-empty list of values. Each value is **either** a literal **or** exactly `"{param}"`. Partial templates (`"p-{x}"`) and `"*"` (§3.2 rejects requested wildcards) are hard errors. |
+| `subscriptions` | no (default `[]`) | Unit templates (SPEC §4.1). `name` must be a valid JS identifier and unique. A template names no table: its unit covers every table that declares all of its scope variables. A template whose variables no single table declares fails with `typegen.subscription_uncovered`. |
+| `subscriptions[].scopes` | yes, non-empty | Map of variable → one value. The value is **either** a literal **or** exactly `"{param}"`. Partial templates (`"p-{x}"`) and `"*"` (§3.2 rejects requested wildcards) fail with `typegen.subscription_invalid_value`. Several values of one variable are several templates. An entry with a `table` key or a value list (the wire version 3 shape) fails with `typegen.subscription_legacy_shape`, whose message names this shape. |
 | `extensions` | no (default `{}`) | Opaque passthrough into the IR document's `extensions` slot. |
 
 Unknown keys are hard errors at every level, except inside `extensions`
@@ -212,11 +208,10 @@ the six §2.4 names.
   "subscriptions": [
     {
       "name": "projectTasks",
-      "table": "tasks",
       "scopes": [
         {
           "variable": "project_id",
-          "values": [{ "kind": "parameter", "name": "projectId" }]
+          "value": { "kind": "parameter", "name": "projectId" }
         }
       ]
     }
@@ -238,7 +233,7 @@ the six §2.4 names.
   **only** when the table declares at least one index, so index-free tables
   (every pre-index manifest) keep byte-identical IR + generated output. It is a
   client-side/query-check concern; see §3's index note.
-- `subscriptions[].scopes` is sorted by `variable`; each value is
+- `subscriptions[].scopes` is sorted by `variable`; each `value` is
   `{ "kind": "literal", "value" }` or `{ "kind": "parameter", "name" }`.
 - **Determinism**: equal inputs produce byte-identical output — fixed key
   order (as shown above), 2-space indent, LF, trailing newline, extension
@@ -433,10 +428,10 @@ The emitted `*.generated.ts` module:
   - `TUpdate` — primary key required; every other column optional.
   - Insert/Update are **client-side input conveniences only** — the wire
     stays full-row upserts (§6.1); nothing partial is ever encoded.
-- Exports per subscription `s`: `sSubscription` with `name`, `table`, and
-  a `scopes(params)` builder returning `Record<string, string[]>`
-  (requested scopes), plus an `SParams` interface when the template has
-  `{param}` placeholders.
+- Exports per subscription `s`: `sSubscription` with `name` and a
+  `scopes(params)` builder returning the unit's scope map
+  `Record<string, string>`, which `client.subscribe(...)` takes, plus an
+  `SParams` interface when the template has `{param}` placeholders.
 
 **Lint/freshness split**: `*.generated.ts` is excluded from oxlint and oxfmt
 (see `.oxlintrc.json` / `.oxfmtrc.json`) — hand-format rules on machine
@@ -468,8 +463,10 @@ Each generated file exports, per language:
 - **one typed row type per table** with a `fromRow` factory that lifts a
   `query`/`readRows` row into the typed shape (returning null/nil when a
   non-nullable column is missing or mistyped);
-- **one requested-scope builder per subscription**, `{param}` placeholders
-  becoming typed function arguments.
+- **one unit-template builder per subscription**, `{param}` placeholders
+  becoming typed function arguments. It returns the unit's scope map
+  (`[String: String]`, `Map<String, String>`), which the binding's
+  `subscribe` takes.
 
 | | Swift | Kotlin | Dart |
 |---|---|---|---|
@@ -775,8 +772,11 @@ scope on every table instance. Select the unit with `by` for a multi-scope
 table. The descriptor includes all proven dimensions; unbound dimensions are
 omitted. A required scope bind can propagate across a qualified
 scope-column equality in an unconditional outer `WHERE` clause or a simple
-mandatory `ON` clause. The generated descriptor contains aggregate coverage for
-every table, and readiness requires all of it. A self-join claims coverage when
+mandatory `ON` clause. The analysis holds aggregate coverage for every table,
+and readiness requires all of it. The generated descriptor's `coverage(params)`
+returns window bases (SPEC §4.8), `{ base: { variable, fixedScopes? }, units }`:
+a base names no table, so tables proven by the same base share one entry, and
+a fixed scope holds one value. A self-join claims coverage when
 every instance of the table carries the same proof (the same scopes, operators,
 and parameters); the descriptor then holds one coverage entry and one
 dependency for that table. An unproven instance or differing proofs fail with

@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "response",
   "frames": [
     {
@@ -10,15 +10,11 @@
     },
     {
       "type": "SUB_START",
-      "id": "sub-notes",
+      "id": "98bfde90a5f820d3555be61bb46dbbe6",
       "status": "active",
       "reasonCode": "",
-      "effectiveScopes": {
-        "project": [
-          "p1"
-        ]
-      },
-      "bootstrap": false
+      "bootstrap": true,
+      "fenced": []
     },
     {
       "type": "ERROR",

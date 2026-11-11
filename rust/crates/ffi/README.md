@@ -2,8 +2,9 @@
 
 Incoming COMMIT frames and rows-segment blocks each commit their rows and local
 observation revision in a separate SQLite transaction. Pull and realtime delivery
-preserve earlier committed frames after a later apply failure. The subscription
-cursor advances at SUB_END; retry re-delivers the unadvanced window.
+preserve earlier committed frames after a later apply failure. A unit's cursor
+advances at SUB_END and the replica cursor at LIVE_END; retry re-delivers the
+unadvanced range.
 
 
 The POC client crate (`syncular-client`), packaged for shipping. This crate
@@ -29,9 +30,10 @@ void   syncular_free_string(char* ptr);
 
 - **`command`** takes `{"method": "...", "params": {...}}` and returns
   `{"result": ...}` or `{"error": {"code", "message"}}`. The method set is the
-  **entire conformance command surface** — `create`, `subscribe`, `mutate`,
-  `sync`, `syncUntilIdle`, `readRows`, `uploadBlob`/`fetchBlob`, `conflicts`,
-  `subscriptionState`, `statusSnapshot`, `setPresence`/`presence`,
+  **entire conformance command surface** — `create`, `subscribe`/`subscribeMany`,
+  `setWindow`/`windowState`, `mutate`, `sync`, `syncUntilIdle`, `readRows`,
+  `uploadBlob`/`fetchBlob`, `conflicts`, `units`/`unit`, `snapshotRead`,
+  `statusSnapshot`, `diagnosticsSnapshot`, `setPresence`/`presence`,
   `connectRealtime`, `recreateWithSchema`, … Bytes ride as
   `{"$bytes": "<hex>"}`, so a JSI/TurboModule bridge marshals plain JSON with
   zero custom serialization.
@@ -164,7 +166,7 @@ machinery — the core is a hand-written C ABI, so packaging is plain `cargo`
 ## C smoke test
 
 `rust/ffi-smoke/run.sh` builds the dylib, compiles `ffi-smoke/main.c` against
-it, and runs `new → command(create/subscribe/mutate/readRows/subscriptionState)
+it, and runs `new → command(create/subscribe/mutate/readRows/units)
 → poll_event → close`, freeing every returned string — proving the ABI
 end-to-end on this machine.
 

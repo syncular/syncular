@@ -16,8 +16,7 @@ use serde_json::{json, Map, Value};
 use syncular_authority::LocalAuthority;
 use syncular_client::native_transport::LocalAuthorityTransport;
 use syncular_client::{
-    ClientLimits, Mutation, SegmentRequest, SubscriptionRequest, SyncClient, SyncOutcome,
-    Transport, TransportError,
+    ClientLimits, Mutation, SegmentRequest, SyncClient, SyncOutcome, Transport, TransportError,
 };
 
 /// The remote server: a second authority serving the attach upload.
@@ -93,12 +92,7 @@ fn open_client(path: &Path) -> SyncClient {
     )
     .expect("open the replica");
     client
-        .subscribe_many(vec![SubscriptionRequest {
-            id: "entries".to_owned(),
-            table: "entries".to_owned(),
-            scopes: vec![("budget_id".to_owned(), vec!["b1".to_owned()])],
-            params: None,
-        }])
+        .subscribe([("budget_id".to_owned(), "b1".to_owned())].into())
         .expect("subscribe");
     client
 }

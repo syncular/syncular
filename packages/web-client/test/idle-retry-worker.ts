@@ -1,5 +1,5 @@
 /**
- * The real worker entry whose first drive ends on the §7.7 deadline, with
+ * The real worker entry whose first drive ends on the §7.8 deadline, with
  * the host loop's background deadline crossing to the test process. The test
  * observes the retry the loop schedules and fires it without a timer.
  */

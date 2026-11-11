@@ -28,6 +28,7 @@ import {
   MessageStreamScanner,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
+  unitId,
 } from '@syncular/core';
 import { BunSqliteDatabase, SyncError } from '@syncular/server';
 import type {
@@ -43,7 +44,7 @@ import type {
   ClientPresencePeer,
   ClientRejection,
   ClientRowState,
-  ClientSubscriptionState,
+  ClientUnitState,
   ClientSyncReport,
   ClientSyncResult,
   CodecDriver,
@@ -58,9 +59,9 @@ import type {
   DriverRow,
   DriverRowValue,
   DriverSchema,
-  DriverScopeMap,
   DriverSnapshotRead,
-  DriverSubscriptionCatchup,
+  DriverUnitCatchup,
+  DriverUnitScopes,
   DriverSyncIntent,
   DriverWindowBase,
   JsonValue,
@@ -849,30 +850,71 @@ function driverDeliveryFrom(raw: JsonValue): DriverCommitDelivery {
   return { status: 'unknown', clientCommitId };
 }
 
-/** §7.5: one subscription catch-up state from the shim's JSON. */
-function driverCatchupFrom(raw: JsonValue): DriverSubscriptionCatchup {
-  const catchup = asObject(raw, 'subscription catchup');
+/** §7.5: one unit catch-up state from the shim's JSON. */
+function driverCatchupFrom(raw: JsonValue): DriverUnitCatchup {
+  const catchup = asObject(raw, 'unit catchup');
   const id = String(catchup.id);
   if (catchup.state === 'unknown') return { state: 'unknown', id };
-  const status = catchup.status;
-  if (status !== 'active' && status !== 'revoked' && status !== 'failed') {
-    throw new Error('snapshotRead: malformed catch-up status');
-  }
+  const status = unitStatusOf(catchup.status);
   return {
     state: 'known',
     id,
-    table: String(catchup.table),
     status,
+    live: catchup.live === true,
     cursor: Number(catchup.cursor),
     hasResumeToken: catchup.hasResumeToken === true,
     bootstrapComplete: catchup.bootstrapComplete === true,
     knownPendingPages: catchup.knownPendingPages === true,
-    ...(catchup.effectiveScopes !== undefined &&
-    catchup.effectiveScopes !== null
-      ? { effectiveScopes: catchup.effectiveScopes as DriverScopeMap }
-      : {}),
     ...(typeof catchup.reasonCode === 'string'
       ? { reasonCode: catchup.reasonCode }
+      : {}),
+  };
+}
+
+function unitStatusOf(value: JsonValue | undefined): ClientUnitState['status'] {
+  if (value !== 'active' && value !== 'revoked' && value !== 'failed')
+    throw new Error('malformed unit status');
+  return value;
+}
+
+function stringMapOf(value: JsonValue | undefined, what: string) {
+  return Object.fromEntries(
+    Object.entries(asObject(value ?? null, what)).map(([key, entry]) => [
+      key,
+      String(entry),
+    ]),
+  );
+}
+
+/** §4.1: one `UnitRecord` of the shim (`unit`, `units`). */
+function driverUnitFrom(raw: JsonValue): ClientUnitState {
+  const unit = asObject(raw, 'unit');
+  return {
+    id: String(unit.id),
+    scopes: stringMapOf(unit.scopes, 'unit scopes'),
+    explicit: unit.explicit === true,
+    status: unitStatusOf(unit.status),
+    ...(typeof unit.cursor === 'number' ? { cursor: unit.cursor } : {}),
+    hasResumeToken:
+      unit.bootstrapState !== undefined && unit.bootstrapState !== null,
+    ...(Array.isArray(unit.echo)
+      ? {
+          echo: unit.echo.map((entry) => {
+            const record = asObject(entry, 'echo record');
+            return {
+              table: String(record.table),
+              status: record.status === 'revoked' ? 'revoked' : 'active',
+              scopes: Object.fromEntries(
+                Object.entries(
+                  asObject(record.scopes ?? null, 'echo scopes'),
+                ).map(([key, values]) => [key, stringListOf(values)]),
+              ),
+            } as const;
+          }),
+        }
+      : {}),
+    ...(typeof unit.reasonCode === 'string'
+      ? { reasonCode: unit.reasonCode }
       : {}),
   };
 }
@@ -1014,22 +1056,13 @@ function requireDriverRow(value: JsonValue, what: string): DriverRow {
   return driverRowOf(value);
 }
 
-/** §7.5: a window base as the shim's JSON (fixed scopes always lists). */
+/** §4.8: a window base as the shim's JSON. */
 function windowBaseJson(base: DriverWindowBase): JsonValue {
   return {
-    table: base.table,
     variable: base.variable,
     ...(base.fixedScopes !== undefined
-      ? {
-          fixedScopes: Object.fromEntries(
-            Object.entries(base.fixedScopes).map(([key, values]) => [
-              key,
-              [...values],
-            ]),
-          ),
-        }
+      ? { fixedScopes: { ...base.fixedScopes } }
       : {}),
-    ...(base.params !== undefined ? { params: base.params } : {}),
   };
 }
 
@@ -1100,18 +1133,22 @@ class RustClientInstance implements ClientInstance {
     this.#cleanup = cleanup;
   }
 
-  async subscribe(input: {
-    readonly id: string;
-    readonly table: string;
-    readonly scopes: Readonly<Record<string, readonly string[]>>;
-    readonly params?: string;
-  }): Promise<void> {
-    await this.#shim.call('subscribe', {
-      id: input.id,
-      table: input.table,
-      scopes: input.scopes as unknown as JsonValue,
-      ...(input.params !== undefined ? { params: input.params } : {}),
-    });
+  async subscribe(scopes: DriverUnitScopes): Promise<string> {
+    const result = asObject(
+      await this.#shim.call('subscribe', { scopes: { ...scopes } }),
+      'subscribe',
+    );
+    return String(result.id);
+  }
+
+  async subscribeMany(units: readonly DriverUnitScopes[]): Promise<string[]> {
+    const result = asObject(
+      await this.#shim.call('subscribeMany', {
+        units: units.map((scopes) => ({ ...scopes })),
+      }),
+      'subscribeMany',
+    );
+    return stringListOf(result.ids).slice();
   }
 
   async unsubscribe(id: string): Promise<void> {
@@ -1293,7 +1330,7 @@ class RustClientInstance implements ClientInstance {
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[];
-    readonly subscriptions?: readonly string[];
+    readonly units?: readonly string[];
     readonly commitIds?: readonly string[];
     readonly owner?: {
       readonly id: string;
@@ -1313,7 +1350,7 @@ class RustClientInstance implements ClientInstance {
     const params: Record<string, JsonValue> = {
       statements,
       coverage,
-      subscriptions: [...(request.subscriptions ?? [])],
+      units: [...(request.units ?? [])],
       commitIds: [...(request.commitIds ?? [])],
       ...(request.owner !== undefined
         ? {
@@ -1357,10 +1394,10 @@ class RustClientInstance implements ClientInstance {
         ),
       );
     });
-    if (!Array.isArray(result.subscriptions)) {
-      throw new Error('snapshotRead: response carries no subscriptions');
+    if (!Array.isArray(result.units)) {
+      throw new Error('snapshotRead: response carries no units');
     }
-    const subscriptions = result.subscriptions.map(driverCatchupFrom);
+    const units = result.units.map(driverCatchupFrom);
     if (!Array.isArray(result.deliveries)) {
       throw new Error('snapshotRead: response carries no deliveries');
     }
@@ -1369,13 +1406,23 @@ class RustClientInstance implements ClientInstance {
       revision: result.revision,
       queries,
       coverage: driverCoverageFrom(result.coverage),
-      subscriptions,
+      units,
       deliveries,
     };
   }
 
   async diagnosticsSnapshot() {
     return (await this.#shim.call('diagnosticsSnapshot', {})) as unknown as {
+      readonly replicaCursor: number;
+      readonly activeUnits: number;
+      readonly units: {
+        readonly bootstrapping: number;
+        readonly complete: number;
+        readonly reset: number;
+        readonly revoked: number;
+        readonly failed: number;
+        readonly reasonCodes: readonly string[];
+      };
       readonly queryFailures: readonly DriverQueryFailure[];
       readonly host: DriverRealtimeAvailability;
       readonly lastRound?: {
@@ -1605,15 +1652,25 @@ class RustClientInstance implements ClientInstance {
     return payloads.map((value) => bytesOf(value, 'pendingPayloads'));
   }
 
-  async subscriptionState(
-    id: string,
-  ): Promise<ClientSubscriptionState | undefined> {
+  async unitState(id: string): Promise<ClientUnitState | undefined> {
+    const result = asObject(await this.#shim.call('unit', { id }), 'unit');
+    return result.unit === null || result.unit === undefined
+      ? undefined
+      : driverUnitFrom(result.unit);
+  }
+
+  async units(): Promise<readonly ClientUnitState[]> {
+    const result = asObject(await this.#shim.call('units', {}), 'units');
+    if (!Array.isArray(result.units)) throw new Error('units: expected a list');
+    return result.units.map(driverUnitFrom);
+  }
+
+  async replicaCursor(): Promise<number> {
     const result = asObject(
-      await this.#shim.call('subscriptionState', { id }),
-      'subscriptionState',
+      await this.#shim.call('diagnosticsSnapshot', {}),
+      'diagnosticsSnapshot',
     );
-    if (result.state === null || result.state === undefined) return undefined;
-    return result.state as unknown as ClientSubscriptionState;
+    return Number(result.replicaCursor);
   }
 
   async schemaFloor(): Promise<ClientSyncReport['schemaFloor'] | undefined> {
@@ -2039,9 +2096,18 @@ class RustLocalAuthorityInstance
       };
     } catch (error) {
       if (!(error instanceof Error)) throw error;
+      const details = (error as { details?: JsonValue }).details;
       return {
         ok: false,
-        error: toDriverError(new SyncError(errorCodeOf(error), error.message)),
+        error: {
+          ...toDriverError(new SyncError(errorCodeOf(error), error.message)),
+          ...(details !== undefined
+            ? {
+                details:
+                  typeof details === 'string' ? JSON.parse(details) : details,
+              }
+            : {}),
+        },
       };
     }
   }
@@ -2121,6 +2187,44 @@ class RustLocalAuthorityInstance
     );
   }
 
+  /** §6.3.2 stored results and watermarks; the authority has one partition. */
+  async idempotencyState() {
+    return this.#read((database) => ({
+      results: database
+        .query<
+          {
+            client_id: string;
+            client_commit_id: string;
+            outbox_id: string | null;
+            client_seq: number | null;
+          },
+          []
+        >(
+          'SELECT client_id, client_commit_id, outbox_id, client_seq FROM sync_push_results ORDER BY client_id, client_commit_id',
+        )
+        .all()
+        .map((row) => ({
+          clientId: row.client_id,
+          clientCommitId: row.client_commit_id,
+          ...(row.outbox_id !== null ? { outboxId: row.outbox_id } : {}),
+          ...(row.client_seq !== null ? { clientSeq: row.client_seq } : {}),
+        })),
+      watermarks: database
+        .query<
+          { client_id: string; outbox_id: string; through_seq: number },
+          []
+        >(
+          'SELECT client_id, outbox_id, through_seq FROM sync_push_watermarks ORDER BY client_id, outbox_id',
+        )
+        .all()
+        .map((row) => ({
+          clientId: row.client_id,
+          outboxId: row.outbox_id,
+          throughSeq: row.through_seq,
+        })),
+    }));
+  }
+
   /** §4.5 client records; every request authenticates as actor `local`. */
   async listClients(): Promise<readonly DriverAdminClient[]> {
     return this.#read((database) =>
@@ -2132,16 +2236,33 @@ class RustLocalAuthorityInstance
             last_round_at_ms: number;
             last_error_code: string | null;
             consecutive_failures: number;
+            units: string | null;
+            catching_up: string;
           },
           []
         >(
-          'SELECT client_id, cursor, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients ORDER BY updated_at_ms DESC',
+          'SELECT client_id, cursor, last_round_at_ms, last_error_code, consecutive_failures, units, catching_up FROM sync_clients ORDER BY updated_at_ms DESC',
         )
         .all()
         .map((client) => ({
           clientId: client.client_id,
           actorId: 'local',
           cursor: client.cursor,
+          units: (
+            JSON.parse(client.units ?? '[]') as Record<string, string>[]
+          ).map((scopes) => {
+            const id = unitId(scopes);
+            const catching = (
+              JSON.parse(client.catching_up) as { id: string; cursor: number }[]
+            ).find((unit) => unit.id === id);
+            return {
+              id,
+              scopes,
+              ...(catching !== undefined
+                ? { catchingUpCursor: catching.cursor }
+                : {}),
+            };
+          }),
           lastRoundAtMs: client.last_round_at_ms,
           ...(client.last_error_code !== null
             ? { lastErrorCode: client.last_error_code }
@@ -2248,7 +2369,7 @@ export const rustAuthorityServerDriver: ServerDriver = {
  */
 export const rustAuthorityDriver: ServerDriver = {
   name: 'rust-authority',
-  capabilities: ['crdt'],
+  capabilities: ['crdt', 'idempotency-state'],
   async create(options) {
     const unsupported = (
       ['schemaWindow', 'limits', 'signedUrls', 'leases'] as const

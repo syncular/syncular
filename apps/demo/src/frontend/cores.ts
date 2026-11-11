@@ -29,10 +29,9 @@ import {
   type ResolveCommitOutcomeInput,
   type SqlRow,
   type SqlValue,
-  type SubscribeInput,
-  type SubscriptionRecord,
   SyncClient,
   type SyncSummary,
+  type UnitRecord,
   webSocketRealtimeConnector,
 } from '@syncular/client';
 import { openWasmDatabase } from '@syncular/client/wasm';
@@ -89,9 +88,8 @@ export interface DeviceCore {
   onRoleChange?(cb: (role: 'leader' | 'follower') => void): void;
   /** Local data, outbox, or outcomes changed. */
   onChange(listener: () => void): void;
-  subscribe(input: SubscribeInput): Promise<void>;
-  unsubscribe(id: string): Promise<void>;
-  subscriptions(): Promise<readonly SubscriptionRecord[]>;
+  subscribe(scopes: Readonly<Record<string, string>>): Promise<string>;
+  units(): Promise<readonly UnitRecord[]>;
   mutate(mutations: readonly MutationInput[]): Promise<string>;
   syncUntilIdle(): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]>;
@@ -101,7 +99,7 @@ export interface DeviceCore {
   setOffline(offline: boolean): Promise<void>;
   /** Best-effort; connect-then-sync is the reference boot order: the
    * first sync round rides the socket and registers this connection's
-   * subscriptions at round end (§8.7). */
+   * units at round end (§8.7). */
   connectRealtime(): Promise<void>;
   /** Install retry/resume policy after the explicit first catch-up. */
   startRealtimeSupervisor(): void;
@@ -153,9 +151,8 @@ async function makeWorkerCore(
         }
       : {}),
     onChange: (listener) => handle.onChange(listener),
-    subscribe: (input) => handle.subscribe(input),
-    unsubscribe: (id) => handle.unsubscribe(id),
-    subscriptions: () => handle.subscriptions(),
+    subscribe: (scopes) => handle.subscribe(scopes),
+    units: () => handle.units(),
     mutate: (mutations) => handle.mutate(mutations),
     syncUntilIdle: () => handle.syncUntilIdle(),
     query: (sql, params) => handle.query(sql, params),
@@ -465,9 +462,8 @@ async function makeMainThreadCore(
     onChange: (listener) => {
       client.onChange(listener);
     },
-    subscribe: async (input) => client.subscribe(input),
-    unsubscribe: async (id) => client.unsubscribe(id),
-    subscriptions: async () => client.subscriptions(),
+    subscribe: async (scopes) => client.subscribe(scopes),
+    units: async () => client.units(),
     mutate: async (mutations) => client.mutate(mutations),
     syncUntilIdle,
     query: async (sql, params) => client.query(sql, params),

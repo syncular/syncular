@@ -4,7 +4,9 @@
  * what the console will show. No HTTP, no sockets.
  */
 import { describe, expect, test } from 'bun:test';
+import { registrationDigest, unitId } from '@syncular/core';
 import {
+  compileSchema,
   createRealtimeHub,
   type LeaseStore,
   type MemoryBlobStore,
@@ -13,19 +15,19 @@ import {
   S3SegmentStore,
   type SegmentMetadata,
   SqliteBlobStore,
-  type SqliteServerStorage,
+  SqliteServerStorage,
   SyncularAdmin,
 } from '@syncular/server';
 import {
   del,
   makeContext,
-  pullHeader,
+  pullFrames,
   pushCommit,
   seedTask,
-  subFrame,
   sync,
-  type TestContext,
   taskRow,
+  TEST_SCHEMA,
+  type TestContext,
   upsert,
 } from './helpers';
 import { startS3Stub } from './s3-stub';
@@ -54,10 +56,7 @@ describe('listClients', () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
     // A pull with a subscription persists the client record (§8.1).
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     const { clients, total } = await admin.listClients('part-1');
     expect(total).toBe(1);
@@ -68,20 +67,64 @@ describe('listClients', () => {
     expect(client?.cursor).toBe(1);
     expect(client?.lag).toBe(0);
     expect(client?.active).toBe(true);
-    expect(client?.subscriptions[0]).toMatchObject({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
+    expect(client?.units).toEqual([
+      { id: unitId({ project_id: 'p1' }), scopes: { project_id: 'p1' } },
+    ]);
+  });
+
+  test('reports units with the cursors of those still catching up', async () => {
+    const storage = new SqliteServerStorage();
+    const units = [{ project_id: 'p1' }, { project_id: 'p2' }];
+    await storage.putClientRecord('part-1', {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 4,
+      cursor: 3,
+      updatedAtMs: 1_000,
+      schemaVersion: 2,
+      registration: { units, digest: registrationDigest(units) },
+      catchingUp: [{ id: unitId({ project_id: 'p2' }), cursor: 3 }],
     });
+    await storage.putClientRecord('part-1', {
+      clientId: 'client-2',
+      actorId: 'actor-1',
+      wireVersion: 3,
+      cursor: 1,
+      updatedAtMs: 1_000,
+      catchingUp: [],
+    });
+    const { clients } = await new SyncularAdmin({
+      storage,
+      clock: () => 1_000,
+    }).listClients('part-1');
+    expect(
+      clients.map(({ clientId, schemaVersion, units }) => ({
+        clientId,
+        schemaVersion,
+        units,
+      })),
+    ).toEqual([
+      {
+        clientId: 'client-1',
+        schemaVersion: 2,
+        units: [
+          { id: unitId({ project_id: 'p1' }), scopes: { project_id: 'p1' } },
+          {
+            id: unitId({ project_id: 'p2' }),
+            scopes: { project_id: 'p2' },
+            catchingUpCursor: 3,
+          },
+        ],
+      },
+      // §9: a record from before wire version 4 holds no list.
+      { clientId: 'client-2', schemaVersion: undefined, units: [] },
+    ]);
   });
 
   test('lag counts commits the client has not pulled', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     // Two more commits land after the client's last pull (cursor 1).
     await seedTask(t, 'c2', 't2', 'p1');
     await seedTask(t, 'c3', 't3', 'p1');
@@ -94,10 +137,7 @@ describe('listClients', () => {
   test('a stale client falls outside the active window', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     // Advance the clock past the default 14-day active window.
     t.now.ms += 15 * 24 * 60 * 60 * 1000;
     const admin = adminOf(t);
@@ -110,10 +150,7 @@ describe('clientDetail', () => {
     const ring = new RingBufferEvents({ capacity: 100 });
     const t = makeContext({ events: ring });
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     await seedTask(t, 'c2', 't2', 'p1'); // one commit of lag
     const leases = new MemoryLeaseStore({ leaseId: () => 'lease_test' });
     await leases.issue(
@@ -194,10 +231,7 @@ describe('partitions', () => {
   test('listPartitions + partitionsOverview across two partitions', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     // A second partition on the same storage, via a direct commit.
     const tx = await t.storage.begin('part-2');
@@ -368,10 +402,7 @@ describe('horizonStatus', () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
     // A pull leaves an active cursor at 1; default floors keep everything.
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     const status = await admin.horizonStatus('part-1');
     expect(status.activeCursorFloor).toBe(1);
@@ -385,10 +416,7 @@ describe('stats + event stream', () => {
     // bytes — inline segments never touch the store.
     const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
     await seedTask(t, 'c1', 't1', 'p1');
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     const admin = adminOf(t);
     const segStats = (await admin.stats('part-1')).segments;
     expect(segStats?.count).toBeGreaterThanOrEqual(1);
@@ -502,10 +530,7 @@ describe('traceRow', () => {
   }
 
   async function subscribed(t: TestContext): Promise<void> {
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
   }
 
   test('delivered, scope-mismatch, then pending-pull after a new change', async () => {
@@ -521,8 +546,8 @@ describe('traceRow', () => {
     expect((await trace('t1')).verdict).toBe('delivered');
     const mismatch = await trace('t2');
     expect(mismatch.verdict).toBe('scope-mismatch');
-    expect(mismatch.subscriptions[0]?.mismatches).toEqual([
-      { variable: 'project_id', rowValue: 'p2', requested: ['p1'] },
+    expect(mismatch.units[0]?.mismatches).toEqual([
+      { variable: 'project_id', rowValue: 'p2', requested: 'p1' },
     ]);
 
     await sync(
@@ -548,7 +573,7 @@ describe('traceRow', () => {
     });
     expect(trace.verdict).toBe('scope-denied');
     expect(trace.allowed).toEqual({ project_id: ['p2'] });
-    expect(trace.subscriptions[0]).toMatchObject({
+    expect(trace.units[0]).toMatchObject({
       requestedMatch: true,
       effectiveMatch: false,
     });
@@ -671,7 +696,7 @@ describe('errors + coverage', () => {
       errorCode: 'sync.invalid_request',
       pushCommits: 0,
       pulled: false,
-      subscriptions: 0,
+      units: 0,
     });
     const admin = adminOf(t, { ring });
     expect(admin.errors('part-1').byClient).toEqual([
@@ -755,15 +780,10 @@ describe('people, delivery, search', () => {
     await seedTask(t, 'c1', 't1', 'p1');
     await seedTask(t, 'c2', 't2', 'p2');
     // client-1 subscribes to p1 and holds a socket; client-2 to p2, offline.
-    await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    await sync(
-      t,
-      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p2'] }, -1)],
-      { clientId: 'client-2' },
-    );
+    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+    await sync(t, [...pullFrames([{ project_id: 'p2' }])], {
+      clientId: 'client-2',
+    });
     const hub = createRealtimeHub({
       schema: t.ctx.schema,
       storage: t.storage,
@@ -854,6 +874,43 @@ describe('people, delivery, search', () => {
     expect(scoped.rows.map((row) => row.rowId)).toEqual(['t2']);
     expect(scoped.nextAfterRowId).toBeUndefined();
     expect((await admin.tableCounts('part-1')).tasks).toBe(2);
+  });
+
+  test('findWrite reports the watermark of a write whose result it deleted', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+    for (const [clientCommitId, clientSeq] of [
+      ['k1', 1],
+      ['k2', 2],
+    ] as const) {
+      const tx = await storage.begin('part-1');
+      await tx.preparePushApply('client-1', clientCommitId, 1, [], {
+        outboxId: 'o1',
+        commits: [{ clientCommitId, clientSeq }],
+      });
+      const commitSeq = await tx.appendCommit({
+        clientId: 'client-1',
+        clientCommitId,
+        actorId: 'actor-1',
+        createdAtMs: 1,
+        changes: [],
+      });
+      await tx.putPushResult(
+        'client-1',
+        clientCommitId,
+        { status: 'applied', commitSeq, results: [] },
+        { outboxId: 'o1', clientSeq },
+      );
+      await tx.commit();
+    }
+    const admin = new SyncularAdmin({ storage, clock: () => 1 });
+    expect(await admin.findWrite('part-1', 'k1')).toEqual({
+      clientCommitId: 'k1',
+      outcomes: [],
+      watermarks: [{ clientId: 'client-1', outboxId: 'o1', throughSeq: 2 }],
+      events: [],
+    });
+    expect((await admin.findWrite('part-1', 'k2')).watermarks).toEqual([]);
   });
 
   test('findWrite returns a rejected outcome with its per-operation code', async () => {

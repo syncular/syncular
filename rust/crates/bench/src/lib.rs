@@ -315,6 +315,7 @@ impl BenchTransport {
                 if let ssp2::Frame::PushCommit {
                     client_commit_id,
                     operations,
+                    ..
                 } = frame
                 {
                     Some((client_commit_id, operations.len()))
@@ -466,16 +467,17 @@ impl Transport for BenchTransport {
 
     fn blob_put_url(
         &mut self,
+        blob_id: &str,
         url: &str,
         bytes: &[u8],
         media_type: Option<&str>,
     ) -> Result<(), TransportError> {
         if !self.blob_diagnostics {
-            return self.inner.blob_put_url(url, bytes, media_type);
+            return self.inner.blob_put_url(blob_id, url, bytes, media_type);
         }
         self.count_request(bytes.len() as u64);
         let started = Instant::now();
-        let result = self.inner.blob_put_url(url, bytes, media_type);
+        let result = self.inner.blob_put_url(blob_id, url, bytes, media_type);
         self.stats.blob_requests.push(json!({"method": "putUrl",
             "elapsedNs": started.elapsed().as_nanos() as u64,
             "bytes": bytes.len(), "failed": result.is_err()}));

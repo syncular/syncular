@@ -309,11 +309,7 @@ export async function createBenchClient(
   });
   try {
     await client.start();
-    client.subscribe({
-      id: 'bench',
-      table: TABLE,
-      scopes: { project_id: [PROJECT_ID] },
-    });
+    client.subscribe({ project_id: PROJECT_ID });
   } catch (error) {
     try {
       await client.close();

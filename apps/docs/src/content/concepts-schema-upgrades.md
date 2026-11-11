@@ -18,7 +18,7 @@ When your schema changes, you bump `schemaVersions` in the manifest and regenera
 <span class="d-arrow"></span>
 <div class="node bad"><span class="t">2 · Wipe</span>Synced tables, indexes, FTS, cursors</div>
 <span class="d-arrow"></span>
-<div class="node cool"><span class="t">3 · Bootstrap</span>Subscribed data at version N+1, from segments</div>
+<div class="node cool"><span class="t">3 · Bootstrap</span>The registered units at version N+1, from segments</div>
 <span class="d-arrow"></span>
 <div class="node ok"><span class="t">4 · Replay</span>Outbox commits re-encode with the N+1 codec</div>
 </div>
@@ -51,7 +51,7 @@ Every replica open and recreation reads the persisted marker before it changes b
 | The metadata table or marker is absent and no schema descriptor is retained | Accepted, for a fresh or legacy replica. |
 | Equal versions | Ordinary startup. |
 
-Schema validation refusals leave the replica's journal mode and contents untouched. A failed schema or log-epoch reset rolls back its SQLite writes and restores the client's in-memory readiness, active round, subscriptions, outbox, and overlay state. Discarding previous-version context does not permit a schema downgrade.
+Schema validation refusals leave the replica's journal mode and contents untouched. A failed schema or log-epoch reset rolls back its SQLite writes and restores the client's in-memory readiness, active round, units, outbox, and overlay state. Discarding previous-version context does not permit a schema downgrade.
 
 ## What the reset touches
 
@@ -60,12 +60,13 @@ The reset touches the whole local database except three things.
 | Kept | Wiped and rebuilt |
 |---|---|
 | The outbox (schema-independent by design, §0 and §7.1) | Every synced table, secondary index, and FTS projection |
-| The client identity (`clientId`) | Subscription cursors, resume tokens, effective-scope state |
-| The auth lease (`leaseState`) | Incompatible registrations and their window bookkeeping |
+| The client identity (`clientId`) | The replica cursor, unit cursors, resume tokens, echoes, unit status |
+| The auth lease (`leaseState`) | Incompatible units and their window bookkeeping |
+| Compatible units, each reset to cursor `-1` | |
 
-A subscription registration survives a bump when its table and requested scope variables still exist and each variable keeps its pattern prefix and mapped column. The client drops incompatible registrations and their window and eviction bookkeeping before its first sync. The app registers its current subscriptions again, and the client never translates stored scope values. Changing `calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}`, for example, removes the registrations that use the old variable.
+A unit survives a bump when every one of its variables keeps its pattern prefix and mapped column on every table it covered, and the unit still covers at least one table. The client drops incompatible units, their windows, and their pending evictions before its first sync. The app registers units for its current schema, and the client never translates stored scope values. Changing `calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}`, for example, removes the units that use the old variable.
 
-A compatible registration resets its cursor to `-1`, because the bump wipes the local rows and needs a fresh bootstrap. Reopening the same schema version keeps its cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
+A compatible unit resets to catching up with cursor `-1` and status `active`, because the bump wipes the local rows and needs a fresh bootstrap. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
 
 ## Pending writes across the bump
 
@@ -91,9 +92,9 @@ Both client cores follow this flow, and the `schema-bump/*` conformance scenario
 
 ## What a bump costs
 
-**Re-download volume.** The reset keeps each compatible subscription registration, including the per-unit subscriptions a [window](/concepts-windowing/) maintains, and clears only their sync state. The bootstrap covers the subscriptions and the currently windowed-in units and nothing more. A phone holding a 3-list window of a 500-list workspace downloads those 3 lists again. Data outside the window was never local.
+**Re-download volume.** The reset keeps each compatible unit, including the units a [window](/concepts-windowing/) maintains, and clears only their sync state. The bootstrap covers the registered units and nothing more. A phone holding a 3-list window of a 500-list workspace downloads those 3 lists again. Data outside the window was never local.
 
-**Apply cost.** On the wire, a bump costs one segment download of the subscribed data at the new version: the same bytes as a fresh install, with [segment compression](/concepts-bootstrap/) applied. Apply rates on the sqlite-image and rows lanes are on [Benchmarks](/benchmarks/). The server builds an image once per scope set and pin, so a fleet of clients that bump after a release deploy shares one build. For cellular-sensitive apps, size the window to the user's working set.
+**Apply cost.** On the wire, a bump costs one segment download of the registered units' data at the new version: the same bytes as a fresh install, with [segment compression](/concepts-bootstrap/) applied. Apply rates on the sqlite-image and rows lanes are on [Benchmarks](/benchmarks/). The server builds an image once per scope set and pin, so a fleet of clients that bump after a release deploy shares one build. For cellular-sensitive apps, size the window to the user's working set.
 
 ## Serving a compatibility window
 
@@ -160,7 +161,7 @@ Two more surfaces:
 
 The client removes the file and deletes both bookkeeping records as soon as any of these holds:
 
-- replacement coverage is complete: every active subscription has caught up;
+- replacement coverage is complete: every active unit has caught up;
 - the auth lease stops or expires, or a scope is revoked;
 - `purgeLocalData()` runs, unconditionally ([Authorized local purge](/concepts-local-data-purge/));
 - the TTL (`maxAgeMs`, default 24 hours) passes, checked at boot and at read;

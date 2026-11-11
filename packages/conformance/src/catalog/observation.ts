@@ -9,13 +9,22 @@ import {
   encodeRowsSegment,
   decodeRowsSegment,
   type ResponseFrame,
+  unitId,
 } from '@syncular/core';
 import type { ClientInstance, DriverSchema } from '../driver';
 import { doc, FIXTURE_SCHEMA, task } from '../fixture';
 import type { Scenario } from '../scenario';
-import { seedRows, seedTasks, syncFails, syncIdle, syncOk } from './util';
+import {
+  seedRows,
+  seedTasks,
+  syncFails,
+  syncIdle,
+  syncOk,
+  unitCursor,
+} from './util';
 
-const BASE = { table: 'tasks', variable: 'project_id' } as const;
+const BASE = { variable: 'project_id' } as const;
+const U1 = { project_id: 'p1' } as const;
 
 function requireObservation(client: ClientInstance) {
   check(client.localRevision !== undefined, 'localRevision is available');
@@ -74,11 +83,7 @@ export const observationScenarios: readonly Scenario[] = [
         clientId: 'reader',
         allowed: { project_id: ['p1'] },
       });
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
       const { querySnapshot } = requireObservation(handle.api);
       const snapshotRead = requireSnapshotRead(handle.api);
@@ -136,16 +141,8 @@ export const observationScenarios: readonly Scenario[] = [
         clientId: 'reader',
         allowed: { project_id: ['p1', 'p2'] },
       });
-      await handle.api.subscribe({
-        id: 'one',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
-      await handle.api.subscribe({
-        id: 'two',
-        table: 'tasks',
-        scopes: { project_id: ['p2'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
+      await handle.api.subscribe({ project_id: 'p2' });
       const observation = requireObservation(handle.api);
       await observation.drainChangeBatches();
       await syncIdle(handle);
@@ -165,19 +162,17 @@ export const observationScenarios: readonly Scenario[] = [
         commits.sort((a, b) => a.commitSeq - b.commitSeq),
         [
           {
-            subscriptionId: 'one',
             table: 'tasks',
             commitSeq: 2,
             source: 'pull',
           },
           {
-            subscriptionId: 'two',
             table: 'tasks',
             commitSeq: 3,
             source: 'pull',
           },
         ],
-        'the pull identifies each subscription and server commit',
+        'the pull identifies each server commit of either unit',
       );
     },
   },
@@ -324,11 +319,7 @@ export const observationScenarios: readonly Scenario[] = [
         schema: FTS_SCHEMA,
       });
       const observation = requireObservation(handle.api);
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
       const authored =
         "SELECT tasks_fts._syncular_source_id AS id, t.title FROM tasks_fts JOIN tasks t ON t.id = tasks_fts._syncular_source_id WHERE tasks_fts MATCH 'needle' ORDER BY bm25(tasks_fts), tasks_fts._syncular_source_id";
@@ -394,7 +385,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     name: 'observation/storage-full-import-recovery',
-    specRefs: ['§7.5', '§7.6'],
+    specRefs: ['§7.5', '§7.7'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',
@@ -411,11 +402,7 @@ export const observationScenarios: readonly Scenario[] = [
       await seedRows(ctx, 'tasks', [
         task('full-row', 'p1', 'full '.repeat(32768)),
       ]);
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await handle.api.executeStorageSql('PRAGMA max_page_count = 1');
       const failed = await handle.api.sync();
       check(!failed.ok, 'page-limited import fails');
@@ -466,11 +453,7 @@ export const observationScenarios: readonly Scenario[] = [
         limits: { accept: 1 },
       });
       await syncIdle(handle);
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       const observation = requireObservation(handle.api);
       await observation.drainChangeBatches();
       const original = ctx.server.handleSyncRequest.bind(ctx.server);
@@ -546,11 +529,7 @@ export const observationScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: { project_id: ['p1'] },
       });
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
       const original = ctx.server.connectRealtime.bind(ctx.server);
       let first: ReturnType<typeof decodeMessage> | undefined;
@@ -614,7 +593,6 @@ export const observationScenarios: readonly Scenario[] = [
           batches.map((batch) => batch.appliedCommits),
           [1, 2].map((commitSeq) => [
             {
-              subscriptionId: 'tasks',
               table: 'tasks',
               commitSeq,
               source: 'delta',
@@ -643,7 +621,7 @@ export const observationScenarios: readonly Scenario[] = [
           'both realtime frames are visible before acknowledgement',
         );
         checkEqual(
-          (await handle.api.subscriptionState('tasks'))?.cursor,
+          await unitCursor(handle, U1),
           2,
           'delta trailer persists the final cursor',
         );
@@ -661,15 +639,11 @@ export const observationScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: { project_id: ['p1'] },
       });
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
       let observation = requireObservation(handle.api);
       await observation.drainChangeBatches();
-      const before = await handle.api.subscriptionState('tasks');
+      const before = await unitCursor(handle, U1);
       await seedTasks(ctx, [task('remote-1', 'p1', 'first')]);
       await seedTasks(ctx, [task('remote-2', 'p1', 'second')]);
       const original = ctx.server.handleSyncRequest.bind(ctx.server);
@@ -721,7 +695,6 @@ export const observationScenarios: readonly Scenario[] = [
         batches[0]?.appliedCommits,
         [
           {
-            subscriptionId: 'tasks',
             table: 'tasks',
             commitSeq: 1,
             source: 'pull',
@@ -738,8 +711,8 @@ export const observationScenarios: readonly Scenario[] = [
         'later frame rolls back all its rows',
       );
       checkEqual(
-        (await handle.api.subscriptionState('tasks'))?.cursor,
-        before?.cursor,
+        await unitCursor(handle, U1),
+        before,
         'missing successful trailer preserves the old cursor',
       );
       await ctx.recreateClient(handle, FIXTURE_SCHEMA);
@@ -754,8 +727,8 @@ export const observationScenarios: readonly Scenario[] = [
         'committed prefix survives recreation',
       );
       checkEqual(
-        (await handle.api.subscriptionState('tasks'))?.cursor,
-        before?.cursor,
+        await unitCursor(handle, U1),
+        before,
         'old cursor survives recreation',
       );
       await syncIdle(handle);
@@ -772,7 +745,7 @@ export const observationScenarios: readonly Scenario[] = [
         'repull repairs the unadvanced window',
       );
       checkEqual(
-        (await handle.api.subscriptionState('tasks'))?.cursor,
+        await unitCursor(handle, U1),
         2,
         'successful trailer advances the cursor',
       );
@@ -852,11 +825,7 @@ export const observationScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: { project_id: ['p1'] },
       });
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
       let observation = requireObservation(handle.api);
       const first = await handle.api.mutate([
@@ -1364,7 +1333,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     // §7.5: one atomic read reports the persisted catch-up state of every
-    // requested subscription from the same transaction and revision as the
+    // requested unit from the same transaction and revision as the
     // rows. The owner cache is never consulted.
     name: 'observation/snapshot-read-catchup-states',
     specRefs: ['§4.6', '§4.7', '§7.5'],
@@ -1378,13 +1347,14 @@ export const observationScenarios: readonly Scenario[] = [
       });
       const read = requireSnapshotRead(handle.api);
       const shapeOf = (
-        catchup: Awaited<ReturnType<typeof read>>['subscriptions'][number],
+        catchup: Awaited<ReturnType<typeof read>>['units'][number],
       ) =>
         catchup.state === 'unknown'
           ? { state: 'unknown' }
           : {
               state: 'known',
               status: catchup.status,
+              live: catchup.live,
               bootstrapComplete: catchup.bootstrapComplete,
               knownPendingPages: catchup.knownPendingPages,
               ...(catchup.reasonCode !== undefined
@@ -1398,7 +1368,7 @@ export const observationScenarios: readonly Scenario[] = [
           { sql: 'SELECT 1 AS n' },
           { sql: 'SELECT 9223372036854775807 AS n' },
         ],
-        subscriptions: ['tasks', 'never-registered'],
+        units: [unitId(U1), unitId({ project_id: 'p9' })],
       });
       checkEqual(
         initial.queries,
@@ -1406,28 +1376,25 @@ export const observationScenarios: readonly Scenario[] = [
         'the statement rows resolve in the same read',
       );
       checkEqual(
-        initial.subscriptions,
+        initial.units,
         [
-          { state: 'unknown', id: 'tasks' },
-          { state: 'unknown', id: 'never-registered' },
+          { state: 'unknown', id: unitId(U1) },
+          { state: 'unknown', id: unitId({ project_id: 'p9' }) },
         ],
-        'an unheld id reads unknown with no fabricated table or cursor',
+        'an unheld id reads unknown with no fabricated cursor',
       );
 
       JSON.stringify(initial); // The conformance driver boundary is JSON-only.
 
       // pending: registered before its first bootstrap lands.
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
-      const pending = await read({ statements: [], subscriptions: ['tasks'] });
+      await handle.api.subscribe(U1);
+      const pending = await read({ statements: [], units: [unitId(U1)] });
       checkEqual(
-        shapeOf(pending.subscriptions[0]!),
+        shapeOf(pending.units[0]!),
         {
           state: 'known',
           status: 'active',
+          live: false,
           bootstrapComplete: false,
           knownPendingPages: true,
         },
@@ -1441,7 +1408,7 @@ export const observationScenarios: readonly Scenario[] = [
           { sql: 'SELECT id FROM tasks ORDER BY id' },
           { sql: 'SELECT count(*) AS n FROM tasks' },
         ],
-        subscriptions: ['tasks'],
+        units: [unitId(U1)],
       });
       checkEqual(
         complete.queries,
@@ -1449,14 +1416,15 @@ export const observationScenarios: readonly Scenario[] = [
         'two statements resolve under one revision',
       );
       checkEqual(
-        shapeOf(complete.subscriptions[0]!),
+        shapeOf(complete.units[0]!),
         {
           state: 'known',
           status: 'active',
+          live: true,
           bootstrapComplete: true,
           knownPendingPages: false,
         },
-        'bootstrap completes the subscription',
+        'bootstrap completes the unit and it joins the replica cursor',
       );
       checkEqual(
         complete.revision,
@@ -1468,16 +1436,14 @@ export const observationScenarios: readonly Scenario[] = [
       await seedTasks(ctx, [task('t2', 'p1', 'pruned')]);
       await ctx.server.pruneDuringNextCommitRead!();
       const resetReport = await syncOk(handle);
-      check(
-        resetReport.resets.includes('tasks'),
-        'the round resets the subscription',
-      );
-      const reset = await read({ statements: [], subscriptions: ['tasks'] });
+      checkEqual(resetReport.resets, [unitId(U1)], 'the round resets the unit');
+      const reset = await read({ statements: [], units: [unitId(U1)] });
       checkEqual(
-        shapeOf(reset.subscriptions[0]!),
+        shapeOf(reset.units[0]!),
         {
           state: 'known',
           status: 'active',
+          live: false,
           bootstrapComplete: false,
           knownPendingPages: true,
           reasonCode: 'sync.cursor_expired',
@@ -1485,23 +1451,25 @@ export const observationScenarios: readonly Scenario[] = [
         'a reset stays active and pending while it re-bootstraps',
       );
 
-      // revoked: an active subscription whose grant was withdrawn.
+      // revoked: an active unit whose grant was withdrawn.
       await ctx.server.setAllowedScopes('actor-a', { project_id: ['p2'] });
       await syncOk(handle);
-      const revoked = await read({ statements: [], subscriptions: ['tasks'] });
+      const revoked = await read({ statements: [], units: [unitId(U1)] });
       checkEqual(
-        shapeOf(revoked.subscriptions[0]!),
+        shapeOf(revoked.units[0]!),
         {
           state: 'known',
           status: 'revoked',
+          live: false,
           bootstrapComplete: false,
           knownPendingPages: false,
           reasonCode: 'sync.scope_revoked',
         },
-        'a revoked subscription is known, never complete and never pending',
+        'a revoked unit is known, never complete and never pending',
       );
 
-      // failed: a subscription that fails closed on a fatal local mapping.
+      // failed: a unit that fails closed on a fatal local mapping: the
+      // wildcard fence adds projectId to docs, which the broken schema lacks.
       const brokenSchema: DriverSchema = {
         version: FIXTURE_SCHEMA.version,
         tables: FIXTURE_SCHEMA.tables.map((table) =>
@@ -1514,33 +1482,31 @@ export const observationScenarios: readonly Scenario[] = [
         actorId: 'actor-b',
         clientId: 'client-b',
         schema: brokenSchema,
-        allowed: { projectId: ['p1'], org_id: ['o1'] },
+        allowed: { projectId: ['p1'], org_id: ['*'] },
       });
       await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
-      await broken.api.subscribe({
-        id: 'docs',
-        table: 'docs',
-        scopes: { projectId: ['p1'] },
-      });
+      const brokenUnit = await broken.api.subscribe({ org_id: 'o1' });
       const brokenReport = await syncOk(broken);
-      check(
-        brokenReport.failed.includes('docs'),
-        'the broken subscription fails closed',
+      checkEqual(
+        brokenReport.failed,
+        [brokenUnit],
+        'the broken unit fails closed',
       );
       const failed = await requireSnapshotRead(broken.api)({
         statements: [],
-        subscriptions: ['docs'],
+        units: [brokenUnit],
       });
       checkEqual(
-        shapeOf(failed.subscriptions[0]!),
+        shapeOf(failed.units[0]!),
         {
           state: 'known',
           status: 'failed',
+          live: false,
           bootstrapComplete: false,
           knownPendingPages: false,
           reasonCode: 'sync.scope_revoked',
         },
-        'a failed subscription is never complete and never pending',
+        'a failed unit is never complete and never pending',
       );
     },
   },
@@ -1559,11 +1525,7 @@ export const observationScenarios: readonly Scenario[] = [
         limits: { outcomeRetentionMaxEntries: 1 },
       });
       const read = requireSnapshotRead(handle.api);
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
 
       // pending (outbox precedence) and unknown (never held).
@@ -1731,11 +1693,7 @@ export const observationScenarios: readonly Scenario[] = [
       const read = requireSnapshotRead(handle.api);
       const localRevision = handle.api.localRevision.bind(handle.api);
       const diagnostics = handle.api.diagnosticsSnapshot?.bind(handle.api);
-      await handle.api.subscribe({
-        id: 'tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      await handle.api.subscribe({ project_id: 'p1' });
       await syncIdle(handle);
       const revision = await localRevision();
       const owner = { id: 'queries:revision', tables: ['tasks'] };
@@ -1819,103 +1777,47 @@ export const observationScenarios: readonly Scenario[] = [
         'storage fault injection exists',
       );
       const read = requireSnapshotRead(handle.api);
-      await handle.api.executeStorageSql('DROP TABLE _syncular_subscriptions');
-      await handle.api.executeStorageSql(
-        'CREATE TABLE _syncular_subscriptions(id,tbl,state_json,status,cursor,bootstrap_state,effective_scopes,reason_code)',
-      );
-      await handle.api.executeStorageSql(
-        "INSERT INTO _syncular_subscriptions VALUES('s','tasks','{}','active',0,NULL,NULL,NULL)",
-      );
+      const id = await handle.api.subscribe(U1);
+      const valid =
+        "scopes='{\"project_id\":\"p1\"}',status='active',cursor=-1,reason_code=NULL,bootstrap_state=NULL,seeded='[]',echo=NULL";
+      // Both cores persist units in `_syncular_units` (§4.1 client state).
       for (const assignment of [
-        "tbl=X'7461736b73'",
-        "state_json=X'7b7d',status=X'616374697665'",
-        "state_json=CAST(X'FF' AS TEXT),status=CAST(X'FF' AS TEXT)",
+        "status=X'616374697665'",
+        "status='paused'",
+        "scopes=CAST(X'FF' AS TEXT)",
+        "scopes='invalid'",
+        'scopes=\'{"project_id":["p1"]}\'',
+        'scopes=\'{"project_id":7}\'',
+        // INTEGER affinity stores '0' as 0; '0x' stays text.
+        "cursor='0x'",
+        'cursor=0.5',
+        'cursor=9007199254740992',
+        "seeded='{}'",
+        "echo='invalid'",
+        'echo=\'[{"table":"tasks","status":"active","scopes":{"org_id":[7]}}]\'',
+        'echo=\'[{"table":"tasks","status":"paused","scopes":{}}]\'',
       ]) {
         await handle.api.executeStorageSql(
-          `UPDATE _syncular_subscriptions SET ${assignment}`,
+          `UPDATE _syncular_units SET ${assignment}`,
         );
         let code: string | undefined;
         try {
-          await read({ statements: [], subscriptions: ['s'] });
+          await read({ statements: [], units: [id] });
         } catch (error) {
           code = (error as { code?: string }).code;
         }
         checkEqual(
           code,
           'sync.local_corrupt',
-          `invalid SQLite subscription type: ${assignment}`,
+          `invalid persisted unit state: ${assignment}`,
         );
         await handle.api.executeStorageSql(
-          `UPDATE _syncular_subscriptions SET tbl='tasks',status='active',state_json='{"status":"active","cursor":0}'`,
+          `UPDATE _syncular_units SET ${valid}`,
         );
         checkEqual(
-          (await read({ statements: [], subscriptions: ['s'] }))
-            .subscriptions[0]?.state,
+          (await read({ statements: [], units: [id] })).units[0]?.state,
           'known',
-          'valid SQL column types recover',
-        );
-      }
-      for (const scopes of [
-        'invalid',
-        [],
-        { project_id: 'p1' },
-        { project_id: [7] },
-      ]) {
-        const raw = JSON.stringify(scopes).replaceAll("'", "''");
-        const state = JSON.stringify({
-          status: 'active',
-          cursor: 0,
-          effectiveScopes: scopes,
-        }).replaceAll("'", "''");
-        await handle.api.executeStorageSql(
-          `UPDATE _syncular_subscriptions SET effective_scopes='${raw}',state_json='${state}'`,
-        );
-        let code: string | undefined;
-        try {
-          await read({ statements: [], subscriptions: ['s'] });
-        } catch (error) {
-          code = (error as { code?: string }).code;
-        }
-        checkEqual(
-          code,
-          'sync.local_corrupt',
-          `invalid effective scopes: ${raw}`,
-        );
-      }
-      await handle.api.executeStorageSql(
-        `UPDATE _syncular_subscriptions SET effective_scopes=NULL,cursor=9007199254740992,state_json='{"status":"active","cursor":9007199254740992}'`,
-      );
-      let code: string | undefined;
-      try {
-        await read({ statements: [], subscriptions: ['s'] });
-      } catch (error) {
-        code = (error as { code?: string }).code;
-      }
-      checkEqual(
-        code,
-        'sync.local_corrupt',
-        'unsafe cursor fails equally on both cores',
-      );
-      for (const scopes of [null, {}, { project_id: ['p1'] }]) {
-        const raw = JSON.stringify(scopes).replaceAll("'", "''");
-        const state = JSON.stringify({
-          status: 'active',
-          cursor: 0,
-          effectiveScopes: scopes,
-        }).replaceAll("'", "''");
-        await handle.api.executeStorageSql(
-          `UPDATE _syncular_subscriptions SET cursor=0,effective_scopes='${raw}',state_json='${state}'`,
-        );
-        const snapshot = await read({ statements: [], subscriptions: ['s'] });
-        const subscription = snapshot.subscriptions[0];
-        check(
-          subscription?.state === 'known',
-          'valid catch-up metadata recovers',
-        );
-        checkEqual(
-          subscription.effectiveScopes,
-          scopes ?? undefined,
-          'scope map preserves valid values and omits null',
+          'valid unit state recovers',
         );
       }
     },

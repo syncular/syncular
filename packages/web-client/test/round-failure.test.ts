@@ -133,11 +133,7 @@ test('a segment fetch that went silent is retryable and reported on the next rou
   await seeder.client.sync();
 
   const c = await makeClient(server, { clientId: 'client-rf' });
-  c.client.subscribe({
-    id: 's1',
-    table: 'tasks',
-    scopes: { project_id: ['p1'] },
-  });
+  c.client.subscribe({ project_id: 'p1' });
   c.intents.length = 0;
   c.faults.stallSegmentDownloadOnce = true;
   await expect(c.client.sync()).rejects.toMatchObject({

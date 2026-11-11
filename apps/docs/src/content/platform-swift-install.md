@@ -78,7 +78,7 @@ The initializer creates the core, sends `create` with your schema, and starts th
 
 :::::step{title="Write and sync" time="3 min"}
 ```swift title="Sync.swift"
-try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["groceries"]])
+try client.subscribe(scopes: ["list_id": "groceries"])
 try client.mutate([.object([
     "table": .string("todos"), "op": .string("upsert"),
     "values": .object(["id": .string("t1"), "list_id": .string("groceries"),

@@ -32,11 +32,7 @@ window.directRegistryProbe = async () => {
   };
   try {
     await client.start();
-    client.subscribe({
-      id: 'direct-scope',
-      table: 'catalogue',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     client.mutate([
       {
         table: 'catalogue',
@@ -47,7 +43,7 @@ window.directRegistryProbe = async () => {
     observed = {
       registryPresent: '__SYNCULAR__' in globalThis,
       rows: client.query('SELECT id, title FROM catalogue'),
-      scopes: client.subscriptions(),
+      scopes: client.units(),
     };
   } finally {
     await client.close();

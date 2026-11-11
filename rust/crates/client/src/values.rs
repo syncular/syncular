@@ -10,7 +10,6 @@ use ssp2::segment::{
     decode_row, encode_row, encode_sparse_row, Column, ColumnType, ColumnValue, Row, SparseRow,
     SparseSlot,
 };
-use ssp2::util::utf16_lt;
 
 use crate::schema::TableSchema;
 
@@ -727,59 +726,6 @@ pub fn render_row_id_json(value: Option<&Value>) -> Result<String, String> {
         Some(Value::Bool(b)) => Ok(b.to_string()),
         _ => Err("sync.invalid_request: primary key value is missing or not renderable".to_owned()),
     }
-}
-
-fn sort_utf16(values: &mut [String]) {
-    values.sort_by(|a, b| {
-        if utf16_lt(a, b) {
-            std::cmp::Ordering::Less
-        } else if utf16_lt(b, a) {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    });
-}
-
-/// Sort scope-map keys into ascending code-unit order (the canonical `map`
-/// encoding of the Conventions section).
-pub fn sort_scope_map(map: &mut [(String, Vec<String>)]) {
-    map.sort_by(|a, b| {
-        if utf16_lt(&a.0, &b.0) {
-            std::cmp::Ordering::Less
-        } else if utf16_lt(&b.0, &a.0) {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    });
-}
-
-/// §11.2 canonical JSON of a scope map: keys sorted by code-unit, value
-/// lists sorted and deduplicated, no insignificant whitespace.
-pub fn canonical_scope_json(scopes: &[(String, Vec<String>)]) -> String {
-    let mut entries: Vec<(String, Vec<String>)> = scopes.to_vec();
-    sort_scope_map(&mut entries);
-    let mut out = String::from("{");
-    for (i, (key, values)) in entries.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let mut sorted = values.clone();
-        sort_utf16(&mut sorted);
-        sorted.dedup();
-        out.push_str(&serde_json::to_string(key).expect("string serializes"));
-        out.push_str(":[");
-        for (j, value) in sorted.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            out.push_str(&serde_json::to_string(value).expect("string serializes"));
-        }
-        out.push(']');
-    }
-    out.push('}');
-    out
 }
 
 /// Scope map as a driver JSON object (`variable → list of values`, §3.2).

@@ -75,7 +75,7 @@ if (handle.role === 'follower') {
   // Another tab owns the core for this origin. The default multi-tab mode
   // transparently proxies this handle to that leader.
 }
-await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['l1'] } });
+await handle.subscribe({ list_id: 'l1' });
 await handle.syncUntilIdle();
 const rows = await handle.query('SELECT * FROM todos');
 ```
@@ -132,7 +132,7 @@ persists, on purpose, and that is the only main-thread mode.
 
 ## Supported realtime lifecycle
 
-Register subscriptions, then install the cross-host supervisor:
+Register units, then install the cross-host supervisor:
 
 ```ts
 import {
@@ -141,7 +141,7 @@ import {
   installRealtimeSupervisor,
 } from '@syncular/client';
 
-await handle.subscribe({ id: 'todos', table: 'todos', scopes });
+await handle.subscribe({ list_id: 'groceries' });
 installRealtimeSupervisor(handle, {
   connectivity: browserConnectivitySignal(),
   lifecycle: documentLifecycleSignal(),
@@ -387,20 +387,18 @@ loading state.
 Every direct and Worker/multi-tab client exposes the same versioned snapshot:
 
 ```ts
-const snapshot = await client.diagnosticsSnapshot({
-  expectedSubscriptions: [
-    { id: 'membership-security', table: 'facility_memberships' },
-    { id: 'scheduler-window', table: 'surgeries' },
-  ],
-});
+const snapshot = await client.diagnosticsSnapshot();
+// snapshot.version === 2; snapshot.units, snapshot.activeUnits, snapshot.replicaCursor
 
 const off = client.onDiagnostics(() => refreshSupportView());
 ```
 
-`expectedSubscriptions` contains application intent only—stable PHI-free ids
-and generated table names, never scopes. It lets a support screen distinguish
-an absent registration from a legitimate zero-row completed bootstrap. The
-snapshot also distinguishes reset, revocation, failure, schema floor, lease
+`units` counts the registered units per state (`bootstrapping`, `complete`,
+`reset`, `revoked`, `failed`) with their distinct reason codes; `activeUnits`
+is the number of units the next registration list carries, which the server's
+`maxSubscriptionsPerRequest` counts; `replicaCursor` is the replica cursor,
+`-1` while no unit is live. A unit id is a hash of scope values, so no unit id
+enters the snapshot. The snapshot also distinguishes schema floor, lease
 stop, pending outbox, offline transport, and storage pressure/unreadability.
 Failed progress and `lastRound` diagnostics expose an optional bounded
 `causeKind` and HTTP status. Worker leaders and followers receive the same
@@ -417,8 +415,8 @@ role.
 The contract intentionally excludes scope values, rows and clinical row
 counts, SQL, paths, client/actor/lease ids, auth, keys, mutation bodies, stack
 traces, and arbitrary prose. It is safe to copy the JSON snapshot into a
-redacted support ticket as long as the application also keeps subscription ids
-free of patient/user data. Do not attach database files, console dumps, query
+redacted support ticket as long as the application keeps query owner ids free
+of patient/user data. Do not attach database files, console dumps, query
 results, or app state alongside it. See SPEC §7.6.
 
 ## Durable commit outcomes
@@ -480,7 +478,8 @@ security purge erase the retained aggregate's protected journal payloads.
 - `maxPushOperationsPerRequest`: operations across those commits. Default:
   500.
 - `maxPushRequestBytes`: bytes of the complete encoded SSP2 request, including
-  the request header, pull header, subscriptions, framing, and E2EE ciphertext.
+  the request header, pull header, unit and progress frames, framing, and E2EE
+  ciphertext.
   Default: unbounded.
 
 The client sends whole commits in FIFO order and never splits one. A later
@@ -512,13 +511,13 @@ const result = await client.purgeLocalData({
 ```
 
 The host MUST first quarantine the affected feature and gate/remove any
-subscription that could download the protected rows again. This method does
+unit that could download the protected rows again. This method does
 not authenticate a directive, revoke server authority, delete app-owned files,
 or remove a key from the OS secure store.
 
 For a race-free bootstrap, construct the client/worker handle with
 `securityPreflight: true`. Before activation, protected reads, writes,
-subscriptions, sync/realtime, blobs, and the automatic host loop fail with
+unit registrations, sync/realtime, blobs, and the automatic host loop fail with
 `client.security_preflight_required`; status, local revision, lifecycle, and
 the exact local purge remain available.
 
@@ -552,10 +551,10 @@ counts only—never row ids or selector values.
 
 `rebootstrapLocalData({ rebootstrapId })` is the recovery primitive for a
 locally damaged or persistently inconsistent replicated projection. It drops
-and recreates only Syncular's server-derived tables, rewinds the existing
-subscription registrations, and requests a fresh bootstrap. It preserves the
-client id, lease state, pending outbox commits, commit outcomes, subscription
-intent, and protected bookkeeping.
+and recreates only Syncular's server-derived tables, rewinds every registered
+unit to cursor `-1`, and requests a fresh bootstrap. It preserves the client
+id, lease state, pending outbox commits, commit outcomes, the registration
+list, and protected bookkeeping.
 
 ```ts
 const result = await client.rebootstrapLocalData({
@@ -780,7 +779,7 @@ bun run test:browser
 
 Each case reloads the page using the same replica identity and requires successful
 startup in the same browser session. It checks SQLite and FTS integrity, search
-results, exact rows, persisted client identity, and subscription checkpoints.
+results, exact rows, persisted client identity, and unit checkpoints.
 Incomplete sections must download again; completed sections must not. A held
 synchronous test request after a physical page write keeps the mid-import crash
 boundary stable until worker termination. Two additional ownership cases verify
@@ -831,7 +830,7 @@ stop();
 ```
 
 Each snapshot identifies the round with `attempt`, and the current payload with
-`subscriptionId`, `table`, and optional `segmentId`. Counters reset for each
+`unitId`, `table`, and optional `segmentId`. Counters reset for each
 payload; `syncUntilIdle` starts a new attempt for each round. `phase` is `request`,
 `download`, or `import`; `state` is `running`, `complete`, or `failed`. Unknown
 totals remain absent. A new attempt clears prior errors and counters.
@@ -847,7 +846,7 @@ inside the current transaction; a failed import can roll those rows back. SQLite
 images commit in chunks of at most 1,024 rows and yield after each commit.
 Earlier committed chunks survive a later interruption. `complete` follows checkpoint persistence
 and optimistic-state reconciliation for the round. More bootstrap pages can
-remain; use subscription coverage to determine whether a query is complete.
+remain; use window coverage to determine whether a query is complete.
 Listener exceptions do not fail sync. Listeners should hand UI work off and avoid
 reentering database commands during an import.
 
@@ -917,7 +916,7 @@ creation to enable the zero-argument `authoritySnapshot()`. It reads approved
 plain authority columns and accepted bases with revision and persisted scope
 coverage from one SQLite snapshot, including during security preflight.
 Unaccepted local intent remains separate. The read changes no keys, transport,
-subscriptions or lifecycle. See the [authority contract](../../docs/SPEC.md)
+units or lifecycle. See the [authority contract](../../docs/SPEC.md)
 and [native configuration](../tauri/README.md#authority-evidence-before-activation).
 
 Workers must opt in in their entry script:

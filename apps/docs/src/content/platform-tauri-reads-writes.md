@@ -30,7 +30,7 @@ bridge calls read, which write, and how the webview learns about changes.
 :::::steps
 ::::step{title="Subscribe and query" time="2 min"}
 ```ts title="src/todos.ts"
-await client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await client.subscribe({ list_id: 'groceries' });
 await client.syncUntilIdle();
 
 const rows = await client.query('SELECT id, title FROM todos ORDER BY id');

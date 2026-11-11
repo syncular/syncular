@@ -28,7 +28,10 @@ import {
 
 export interface SegmentDownloadRequest {
   readonly segmentId: string;
-  /** The `X-Syncular-Scopes` header: canonical JSON of the requested map. */
+  /**
+   * The `X-Syncular-Scopes` header: canonical JSON of the owning unit's scope
+   * map, each value as a one-element list (§5.5).
+   */
   readonly scopesHeader: string;
 }
 
@@ -60,13 +63,15 @@ function parseScopesHeader(header: string): ScopeMap {
   }
   const scopes: ScopeMap = {};
   for (const [key, value] of Object.entries(parsed)) {
+    // §5.5: the owning unit's scope map, each value as a one-element list.
     if (
       !Array.isArray(value) ||
-      value.some((v: unknown) => typeof v !== 'string')
+      value.length !== 1 ||
+      typeof value[0] !== 'string'
     ) {
       throw syncError(
         'sync.invalid_request',
-        'X-Syncular-Scopes values must be string lists (§0)',
+        'X-Syncular-Scopes values must be one-element string lists (§5.5)',
       );
     }
     scopes[key] = value as string[];

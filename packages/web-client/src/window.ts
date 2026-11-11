@@ -1,20 +1,22 @@
-export const PENDING_EVICTIONS = '_syncular_window_pending_evict';
+export const PENDING_EVICTIONS = '_syncular_pending_evictions';
 export const WINDOWS_TABLE = '_syncular_windows';
 /**
- * Windowed subscriptions (SPEC.md §4.8).
+ * Windows (SPEC.md §4.8).
  *
  * A window is a partial local replica keyed by scope VALUES: the client
- * holds rows for a chosen set of units (one scope value each) of a window
- * BASE (a table + one scope variable + the fixed remainder of the scope
- * map). Windowing is a set-difference on §4 subscriptions — never a
- * mutation of one — so it needs zero wire or server changes.
+ * holds the units of a chosen set of values of a window BASE (one scope
+ * variable plus fixed values). Windowing is a set difference on §4.1 units,
+ * never a mutation of one, so it needs no wire or server change.
  *
- * This module owns the registry bookkeeping and the deterministic
- * per-unit subscription-id derivation (§4.1 guidance). The eviction that
- * fuses with a shrink (E1–E4) lives on the client, which holds the DB
- * transaction and the invalidation choke point.
+ * This module owns the registry bookkeeping. The eviction that fuses with a
+ * shrink (E1–E4) lives on the client, which holds the DB transaction and the
+ * invalidation choke point.
  */
-import { canonicalScopeJson, type ScopeMap } from '@syncular/core';
+import {
+  canonicalUnitJson,
+  type ScopeMap,
+  type UnitScopes,
+} from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { invalidRequest } from './errors';
 
@@ -80,173 +82,92 @@ export function last(
 }
 
 /**
- * A window base: one table, one variable whose values are the window
- * units, and any FIXED scopes every unit shares (other variables pinned
- * to a constant set). `params` is host-opaque, carried onto every unit's
- * subscription verbatim.
+ * A window base (§4.8): the selected scope variable plus the fixed scope
+ * values every unit of its family shares. A base names no table: each unit
+ * covers every table declaring its variables (§4.1).
  */
 export interface WindowBase {
-  readonly table: string;
   /** The scope variable whose values are the window units. */
   readonly variable: string;
-  /** Scopes shared by every unit (other variables), if any. */
-  readonly fixedScopes?: Readonly<Record<string, readonly string[]>>;
-  readonly params?: string;
+  /** One value per other variable, shared by every unit. */
+  readonly fixedScopes?: UnitScopes;
 }
 
-/** A live unit in the registry: its value and the subscription it drives. */
-export interface WindowUnit {
-  readonly unit: string;
-  readonly subId: string;
-}
-
-export interface RegisteredWindowUnit extends WindowUnit {
-  readonly baseKey: string;
-}
-
-/**
- * A stable, server-opaque key for a window base — table + variable +
- * canonical fixed scopes. Two `setWindow` calls with the same base
- * address the same registry rows.
- */
+/** A stable key for a window base: variable + canonical fixed scopes. */
 export function windowBaseKey(base: WindowBase): string {
-  const fixed = canonicalScopeJson(base.fixedScopes ?? {});
-  return `${base.table}\0${base.variable}\0${fixed}`;
+  return `${base.variable}\0${canonicalUnitJson(base.fixedScopes ?? {})}`;
 }
 
-/** The full requested scope map for one unit (fixed scopes + the unit). */
-export function unitScopes(base: WindowBase, unit: string): ScopeMap {
-  const scopes: ScopeMap = {};
-  for (const [variable, values] of Object.entries(base.fixedScopes ?? {})) {
-    scopes[variable] = [...values];
-  }
-  scopes[base.variable] = [unit];
-  return scopes;
+/** The unit of one window value: the fixed scopes plus the value. */
+export function windowUnitScopes(base: WindowBase, value: string): UnitScopes {
+  return { ...base.fixedScopes, [base.variable]: value };
 }
 
-/**
- * Deterministic per-unit subscription id (§4.1 guidance):
- * `w:<table>:<sha256(canonical scope map, §11.2)[0..16]>`. Ids are echoed
- * not interpreted by the server (§4.1), so the exact hash is pure client
- * convention; SHA-256 matches the SPEC's worked example.
- */
-export async function deriveSubId(
-  base: WindowBase,
-  unit: string,
-): Promise<string> {
-  const canonical = canonicalScopeJson(unitScopes(base, unit));
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(canonical),
-  );
-  let hex = '';
-  for (const byte of new Uint8Array(digest)) {
-    hex += byte.toString(16).padStart(2, '0');
-  }
-  return `w:${base.table}:${hex.slice(0, 16)}`;
-}
-
-/** Live units for a base, ordered by unit value. */
+/** Registry rows for a base, ordered by value: value → unit id. */
 export function loadWindowUnits(
   db: ClientDatabase,
   baseKey: string,
-): WindowUnit[] {
+): { readonly value: string; readonly unitId: string }[] {
   return db
     .query(
       `SELECT unit,sub_id FROM ${WINDOWS_TABLE} WHERE base=? ORDER BY unit`,
       [baseKey],
     )
-    .map((row) => ({ unit: row.unit as string, subId: row.sub_id as string }));
+    .map((row) => ({
+      value: row.unit as string,
+      unitId: row.sub_id as string,
+    }));
 }
 
-/** Registry lookup used to emit exact completion changes for a sub id. */
-export function getWindowUnitBySubId(
+/** Every window registry row that references a unit (§4.1 references). */
+export function windowRefs(
   db: ClientDatabase,
-  subId: string,
-): RegisteredWindowUnit | undefined {
-  const row = db.query(
-    `SELECT base, unit, sub_id FROM ${WINDOWS_TABLE}
-      WHERE sub_id = ? LIMIT 1`,
-    [subId],
-  )[0];
-  return row === undefined
-    ? undefined
-    : {
-        baseKey: row.base as string,
-        unit: row.unit as string,
-        subId: row.sub_id as string,
-      };
-}
-
-export function insertWindowUnit(
-  db: ClientDatabase,
-  baseKey: string,
-  unit: string,
-  subId: string,
-): void {
-  db.exec(
-    `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
-    [baseKey, unit, subId],
-  );
-}
-
-export function deleteWindowUnit(
-  db: ClientDatabase,
-  baseKey: string,
-  unit: string,
-): void {
-  db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE base=? AND unit=?`, [
-    baseKey,
-    unit,
-  ]);
-}
-
-/** Is a single scope value windowed-in for this base? (the oracle, I3) */
-export function isUnitLive(
-  db: ClientDatabase,
-  baseKey: string,
-  unit: string,
-): boolean {
-  return (
-    db.query(`SELECT 1 FROM ${WINDOWS_TABLE} WHERE base=? AND unit=? LIMIT 1`, [
-      baseKey,
-      unit,
-    ]).length > 0
-  );
+  unitId: string,
+): { readonly baseKey: string; readonly value: string }[] {
+  return db
+    .query(`SELECT base,unit FROM ${WINDOWS_TABLE} WHERE sub_id=?`, [unitId])
+    .map((row) => ({
+      baseKey: row.base as string,
+      value: row.unit as string,
+    }));
 }
 
 // ---------------------------------------------------------------------------
-// Deferred eviction (E1) — units that left the window with pinned rows
+// Deferred eviction (E1): per-table scopes of units that left with rows left
 // ---------------------------------------------------------------------------
 
 export interface PendingEviction {
-  readonly subId: string;
+  readonly unitId: string;
   readonly table: string;
   readonly effective: ScopeMap;
 }
 
 export function savePendingEviction(
   db: ClientDatabase,
-  subId: string,
-  table: string,
-  effective: ScopeMap,
+  entry: PendingEviction,
 ): void {
   db.exec(
-    `INSERT OR REPLACE INTO ${PENDING_EVICTIONS}(sub_id, tbl, effective_scopes)
-       VALUES (?, ?, ?)`,
-    [subId, table, JSON.stringify(effective)],
+    `INSERT OR REPLACE INTO ${PENDING_EVICTIONS}(unit_id,tbl,effective_scopes)VALUES(?,?,?)`,
+    [entry.unitId, entry.table, JSON.stringify(entry.effective)],
   );
 }
 
-export function deletePendingEviction(db: ClientDatabase, subId: string): void {
-  db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE sub_id = ?`, [subId]);
+export function deletePendingEviction(
+  db: ClientDatabase,
+  unitId: string,
+  table?: string,
+): void {
+  db.exec(
+    `DELETE FROM ${PENDING_EVICTIONS} WHERE unit_id=?${table === undefined ? '' : ' AND tbl=?'}`,
+    table === undefined ? [unitId] : [unitId, table],
+  );
 }
 
 export function loadPendingEvictions(db: ClientDatabase): PendingEviction[] {
   return db
-    .query(`SELECT sub_id, tbl, effective_scopes FROM ${PENDING_EVICTIONS}`)
+    .query(`SELECT unit_id,tbl,effective_scopes FROM ${PENDING_EVICTIONS}`)
     .map((row) => ({
-      subId: row.sub_id as string,
+      unitId: row.unit_id as string,
       table: row.tbl as string,
       effective: JSON.parse(row.effective_scopes as string) as ScopeMap,
     }));

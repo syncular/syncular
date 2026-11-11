@@ -2,7 +2,15 @@ import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 import { listOutbox, listOutboxBeforeImages } from './outbox';
 import { RETAINED_ROWS } from './failed-overlay';
-import { getLocalRevision, getMeta, loadSubscriptions } from './state';
+import {
+  bootstrapping,
+  covers,
+  getLocalRevision,
+  getMeta,
+  loadUnits,
+  pairScopes,
+  replicaCursor,
+} from './state';
 import { fromSqlValue, quoteIdent, SYNC_VERSION_COLUMN } from './schema';
 import type { CompiledClientSchema, JsonRowValue } from './schema';
 
@@ -127,7 +135,8 @@ function readAuthoritySnapshot(
         'authority revision is missing or invalid',
       );
     const revision = getLocalRevision(db);
-    const subscriptions = loadSubscriptions(db);
+    const units = loadUnits(db);
+    const cursor = replicaCursor(db);
     const tables = declarations.map((read) => {
       const table = schema.tables.get(read.table)!;
       const columns = [
@@ -259,23 +268,23 @@ function readAuthoritySnapshot(
             },
           ];
         });
-      const persisted = subscriptions
-        .filter((s) => s.table === read.table)
-        .map((s) => {
-          const effective = s.effectiveScopes;
-          const complete =
-            effective !== undefined &&
-            Object.keys(effective).length === Object.keys(read.scopes).length &&
-            s.status === 'active' &&
-            s.cursor >= 0 &&
-            s.bootstrapState === undefined &&
-            s.params === undefined;
+      // Every unit covering the table, as its (unit, table) pair (§4.4).
+      const persisted = units
+        .filter((unit) => covers(table, unit.scopes))
+        .map((unit) => {
+          const effective =
+            unit.echo === undefined
+              ? undefined
+              : pairScopes(unit.scopes, read.table, unit.echo);
           return {
             requestedScopes: Object.fromEntries(
-              Object.keys(read.scopes).map((v) => [v, s.scopes[v] ?? []]),
+              Object.keys(read.scopes).map((v) => [
+                v,
+                unit.scopes[v] === undefined ? [] : [unit.scopes[v]],
+              ]),
             ),
-            status: s.status,
-            cursor: s.cursor,
+            status: unit.status,
+            cursor: unit.cursor ?? cursor,
             effectiveScopes:
               effective === undefined
                 ? null
@@ -285,7 +294,12 @@ function readAuthoritySnapshot(
                       effective[v] ?? [],
                     ]),
                   ),
-            complete,
+            complete:
+              effective !== undefined &&
+              Object.keys(effective).length ===
+                Object.keys(read.scopes).length &&
+              unit.status === 'active' &&
+              !bootstrapping(unit),
           };
         });
       const selectors = Object.entries(read.scopes);

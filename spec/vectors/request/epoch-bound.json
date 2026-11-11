@@ -1,31 +1,24 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "request",
   "frames": [
     {
       "type": "REQ_HEADER",
       "clientId": "client-a",
       "schemaVersion": 2,
-      "logEpoch": "epoch-2026-07-02-a"
+      "logEpoch": "epoch-2026-07-02-a",
+      "outboxId": "outbox-7d1c"
     },
     {
       "type": "PULL_HEADER",
       "limitCommits": 500,
       "limitSnapshotRows": 2000,
       "maxSnapshotPages": 8,
-      "accept": 15
-    },
-    {
-      "type": "SUBSCRIPTION",
-      "id": "sub-notes",
-      "table": "notes",
-      "scopes": {
-        "project": [
-          "p1"
-        ]
-      },
-      "cursor": 42
+      "accept": 15,
+      "cursor": 42,
+      "registrationDigest": "0b82baefa2615ac28662263c22e429dc2667d9d85e0c69d4c90d2f6d34e50bcf",
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
     }
   ]
 }

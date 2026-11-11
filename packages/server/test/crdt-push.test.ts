@@ -10,6 +10,7 @@ import {
   decodeRow,
   encodeMessage,
   encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   type RequestFrame,
   type RowColumn,
@@ -97,6 +98,7 @@ async function push(
     {
       type: 'PUSH_COMMIT',
       clientCommitId,
+      clientSeq: 0,
       operations: [
         {
           table: 'notes',
@@ -111,7 +113,7 @@ async function push(
     },
   ];
   const bytes = encodeMessage({
-    wireVersion: 3,
+    wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
       {

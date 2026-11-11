@@ -83,9 +83,43 @@ export function deleteLocalRow(
 }
 
 /**
- * Apply one `COMMIT` frame in one local transaction (§1.4 rule 4).
- * Upserts land with `_sync_version = rowVersion`; deletes remove the row.
- * Re-application is idempotent (§1.4 rule 5).
+ * §4.5 version guard for one server row: whether a write at `version` lands.
+ * A skipped row keeps its overlay, so its key leaves the rebase scope unless a
+ * retained base was restored for it; `kept` and `skipped` collect the keys.
+ */
+function lands(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+  rowId: string,
+  version: number,
+  kept: Set<string>,
+  skipped: Set<string>,
+): boolean {
+  const key = JSON.stringify([table.name, rowId]);
+  const local = db.query(
+    `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v,EXISTS(SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=?) AS retained FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
+    [table.name, rowId, pkSqlValue(table, rowId)],
+  )[0];
+  const land = local === undefined || Number(local.v) < version;
+  if (land || local.retained) kept.add(key);
+  else skipped.add(key);
+  return land;
+}
+
+/** The scope a guarded write leaves for the overlay replay. */
+function rebaseScope(
+  scope: OverlayScope,
+  kept: Set<string>,
+  skipped: Set<string>,
+): OverlayScope {
+  return scope.filter((key) => kept.has(key) || !skipped.has(key));
+}
+
+/**
+ * Apply one `COMMIT` frame in one local transaction (§1.4 rule 4) under the
+ * §4.5 version guard: a change lands only when its `rowVersion` exceeds the
+ * local row's `_sync_version`. Upserts land with `_sync_version = rowVersion`;
+ * deletes remove the row. Re-application changes nothing.
  *
  * §5.11: encrypted columns are decrypted here — the apply seam. Because
  * WebCrypto is async and the local transaction is synchronous, every row is
@@ -102,13 +136,8 @@ export async function applyCommitFrame(
   transaction: (fn: () => OverlayScope) => unknown = (fn) => db.transaction(fn),
 ): Promise<void> {
   type Resolved =
-    | { op: 'delete'; table: CompiledClientTable; rowId: string }
-    | {
-        op: 'upsert';
-        table: CompiledClientTable;
-        values: readonly RowValue[];
-        rowVersion: number;
-      };
+    | { op: 'delete'; table: CompiledClientTable }
+    | { op: 'upsert'; table: CompiledClientTable; values: readonly RowValue[] };
   const resolved: Resolved[] = [];
   for (const change of frame.changes) {
     const tableName = frame.tables[change.tableIndex];
@@ -125,10 +154,10 @@ export async function applyCommitFrame(
       );
     }
     if (change.op === 'delete') {
-      resolved.push({ op: 'delete', table, rowId: change.rowId });
+      resolved.push({ op: 'delete', table });
       continue;
     }
-    if (change.row === undefined || change.rowVersion === undefined) {
+    if (change.row === undefined) {
       throw invalidRequest('upsert change without row payload');
     }
     let values = decodeRow(table.columns, change.row);
@@ -136,12 +165,7 @@ export async function applyCommitFrame(
       const { decryptRowValues } = await import('./encryption');
       values = await decryptRowValues(encryption, table, values);
     }
-    resolved.push({
-      op: 'upsert',
-      table,
-      values,
-      rowVersion: change.rowVersion,
-    });
+    resolved.push({ op: 'upsert', table, values });
   }
   transaction(() => {
     // Exact keys name the rows this frame rebases; unique-key peers widen the
@@ -153,8 +177,11 @@ export async function applyCommitFrame(
       JSON.stringify([change.table.name, frame.changes[index]!.rowId]),
     ]);
     restoreFailedBases(db, schema, scope);
+    const kept = new Set<string>();
+    const skipped = new Set<string>();
     for (const [index, change] of resolved.entries()) {
-      const rowId = frame.changes[index]!.rowId;
+      const { rowId, rowVersion } = frame.changes[index]!;
+      const land = lands(db, change.table, rowId, rowVersion, kept, skipped);
       db.exec(
         `UPDATE ${OUTBOX_IMAGES} SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE tbl=? AND row_id=?`,
         [frame.commitSeq, change.table.name, rowId],
@@ -163,13 +190,11 @@ export async function applyCommitFrame(
         `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
         [change.table.name, rowId, frame.commitSeq],
       );
-      if (change.op === 'delete') {
-        deleteLocalRow(db, change.table, change.rowId);
-      } else {
-        upsertLocalRow(db, change.table, change.values, change.rowVersion);
-      }
+      if (!land) continue;
+      if (change.op === 'delete') deleteLocalRow(db, change.table, rowId);
+      else upsertLocalRow(db, change.table, change.values, rowVersion);
     }
-    return scope;
+    return rebaseScope(scope, kept, skipped);
   });
 }
 
@@ -418,7 +443,7 @@ export async function applySqliteSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
-    /** Effective scopes of the other row-holding subscriptions (§5.6). */
+    /** Pair scopes of the units that own rows of the table (§3.3). */
     readonly owners: readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
@@ -503,6 +528,7 @@ export async function applySqliteSegment(
       .filter((name) => name !== primaryKey)
       .map((name) => `${name}=excluded.${name}`)
       .join(', ');
+    const version = quoteIdent(SYNC_VERSION_COLUMN);
     let after: SqlValue | undefined;
     let applied = 0;
     for (;;) {
@@ -548,13 +574,31 @@ export async function applySqliteSegment(
         const protectedRows = restoreFailedBases(db, schema, scope);
         if (after === undefined && options.clearFirst)
           deleteScopedRows(db, table, options.effective, options.owners);
+        const kept = new Set<string>();
+        const skipped = new Set<string>();
+        const landing = rows.filter((row) =>
+          lands(
+            db,
+            table,
+            String(row[table.primaryKey]),
+            Number(row._syncular_version),
+            kept,
+            skipped,
+          ),
+        );
+        const where = predicates.join(' AND ') || 'true';
         db.exec(
-          `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${predicates.join(' AND ') || 'true'} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates}`,
+          `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${where} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates} WHERE excluded.${version}>${quoteIdent(table.name)}.${version}`,
           params,
         );
-        applied += Number(db.query('SELECT changes()AS n')[0]?.n ?? 0);
+        applied += Number(
+          db.query(
+            `SELECT count(*)AS n FROM ${source} WHERE ${where}`,
+            params,
+          )[0]?.n,
+        );
         if (protectedRows)
-          for (const row of rows) {
+          for (const row of landing) {
             retainedBaseWrite(
               db,
               table,
@@ -568,7 +612,7 @@ export async function applySqliteSegment(
               Number(row._syncular_version),
             );
           }
-        return scope;
+        return rebaseScope(scope, kept, skipped);
       });
       options.onProgress?.(applied);
       await yieldToHost();
@@ -597,7 +641,7 @@ export async function applyRowsSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
-    /** Effective scopes of the other row-holding subscriptions (§5.6). */
+    /** Pair scopes of the units that own rows of the table (§3.3). */
     readonly owners: readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
@@ -646,12 +690,22 @@ export async function applyRowsSegment(
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective, options.owners);
       }
+      const kept = new Set<string>();
+      const skipped = new Set<string>();
       for (const row of rows) {
-        upsertLocalRow(db, table, row.values, row.serverVersion, protectedRows);
+        const rowId = String(row.values[table.primaryKeyIndex]);
+        if (lands(db, table, rowId, row.serverVersion, kept, skipped))
+          upsertLocalRow(
+            db,
+            table,
+            row.values,
+            row.serverVersion,
+            protectedRows,
+          );
         applied += 1;
         if (applied % 1024 === 0) options.onProgress?.(applied);
       }
-      return scope;
+      return rebaseScope(scope, kept, skipped);
     });
     options.onProgress?.(applied);
     await yieldToHost();

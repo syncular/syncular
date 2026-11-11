@@ -7,8 +7,8 @@
  * queues the ack's cursor write without awaiting it, so `drain()` is the
  * awaitable boundary a host uses before closing its storage or ending a
  * hibernatable event (§8.2). Initial
- * subscription registration comes from the client's most recent pull
- * (§8.1, loaded from the client record); a sync round completed on the
+ * registration comes from the live units of the client record (§8.1); a sync
+ * round completed on the
  * connection replaces it at round end (§8.7). Deltas are complete SSP2
  * response messages pushed as `0x00`-tagged binary (§8.2/§8.7); sync
  * rounds ride the same socket as `0x01`-tagged byte-stream chunks driven
@@ -17,10 +17,9 @@
  * the `sync` wake-up (§8.3).
  */
 import {
-  type CommitChange,
   DecodeError,
-  decodeMessage,
-  encodeMessage,
+  decodeRequest,
+  encodeResponse,
   encodePresenceError,
   encodePresenceFanout,
   isSupportedProtocolWireVersion,
@@ -29,8 +28,8 @@ import {
   type PresenceKind,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
-  type ResponseFrame,
   type ScopeMap,
+  unitId,
   type WakeReason,
 } from '@syncular/core';
 import type {
@@ -55,17 +54,14 @@ import {
 import { emitEvent, type SyncularServerEvents } from './events';
 import { composeEvents } from './events-ring';
 import { createSyncResponseStream } from './handler';
+import { commitFrame, coveredTables, planUnit } from './pull';
 import {
   type CompiledSchema,
   type CompiledTable,
   compileSchema,
 } from './schema';
-import { schemaWindowOf, projectRowPayload } from './schema-window';
-import {
-  computeEffective,
-  matchesEffective,
-  type ResolvedScopes,
-} from './scopes';
+import { schemaWindowOf } from './schema-window';
+import { matchesEffective, type ResolvedScopes } from './scopes';
 import type { ClientRecord, ServerStorage, StoredCommit } from './storage';
 
 /**
@@ -127,8 +123,11 @@ export interface RealtimeConnectOptions {
   readonly onPresence?: (presence: ReadonlyMap<string, string>) => void;
 }
 
+/** One active (unit, table) pair of a live unit (§8.1). */
 interface Registration {
-  readonly codec: CompiledTable;
+  /** The schema version of the client's latest round: the delta codec (§9). */
+  readonly schema: CompiledSchema;
+  /** The unit id (§4.1). */
   readonly id: string;
   readonly table: string;
   readonly schemaVersion: number;
@@ -676,9 +675,8 @@ export class RealtimeSession {
       try {
         // §8.7: the round's clientId must match the connection's —
         // registration identity would otherwise be ambiguous.
-        const decoded = decodeMessage(requestBytes);
-        const header = decoded.frames[0];
-        if (decoded.msgKind !== 'request' || header?.type !== 'REQ_HEADER') {
+        const header = decodeRequest(requestBytes).frames[0];
+        if (header?.type !== 'REQ_HEADER') {
           throw syncError('sync.invalid_request', 'expected a request message');
         }
         if (header.clientId !== this.clientId) {
@@ -813,8 +811,9 @@ export class RealtimeSession {
    * failed, because that round applied nothing.
    */
   /**
-   * A pull outside this connection changed the client's subscriptions. A
-   * round in flight on the connection reloads them at its end anyway.
+   * A pull outside this connection changed the client's registration list
+   * or live set. A round in flight on the connection reloads it at its end
+   * anyway.
    */
   async refreshAfterPull(): Promise<void> {
     if (this.#activeRound !== undefined) return;
@@ -937,33 +936,15 @@ export class RealtimeSession {
   deliverCommit(commit: StoredCommit): void {
     const contiguous = commit.commitSeq === this.lastKnownSeq + 1;
     this.lastKnownSeq = Math.max(this.lastKnownSeq, commit.commitSeq);
-    const sections: Array<{
-      registration: Registration;
-      changes: CommitChange[];
-    }> = [];
-    for (const registration of this.registrations) {
-      const changes = commit.changes
-        .filter(
-          (change) =>
-            change.table === registration.table &&
-            matchesEffective(change.scopes, registration.effective),
-        )
-        .map(
-          (change): CommitChange => ({
-            tableIndex: 0,
-            rowId: change.rowId,
-            op: change.op,
-            ...(change.rowVersion !== undefined
-              ? { rowVersion: change.rowVersion }
-              : {}),
-            scopes: change.scopes,
-            ...(change.payload !== undefined
-              ? { row: this.#hub.projectPayload(registration, change.payload) }
-              : {}),
-          }),
-        );
-      if (changes.length > 0) sections.push({ registration, changes });
-    }
+    // §8.2: one COMMIT holding every change that matches a registration of
+    // the connection, once each, in change order.
+    const changes = commit.changes.filter((change) =>
+      this.registrations.some(
+        (registration) =>
+          change.table === registration.table &&
+          matchesEffective(change.scopes, registration.effective),
+      ),
+    );
     if (!contiguous) {
       // Pushes allocate commitSeq under the partition lock but notify after
       // commit, so racing notifications may arrive out of order. A gap,
@@ -991,43 +972,30 @@ export class RealtimeSession {
       }
       this.#deferredRegistrations = registrations;
     }
-    if (sections.length === 0) return;
+    if (changes.length === 0) return;
     if (this.wakePending) {
       // §8.2: deltas must be cursor-contiguous; while the client is behind
       // we send (coalescible) wake-ups instead of a delta past its cursor.
       this.sendWake('catchup-required');
       return;
     }
-    const frames: ResponseFrame[] = [
-      {
-        type: 'RESP_HEADER',
-        logEpoch: this.logEpoch,
-        resetRequired: false,
-      },
-    ];
-    for (const section of sections) {
-      frames.push({
-        type: 'SUB_START',
-        id: section.registration.id,
-        status: 'active',
-        reasonCode: '',
-        effectiveScopes: section.registration.effective,
-        bootstrap: false,
-      });
-      frames.push({
-        type: 'COMMIT',
-        commitSeq: commit.commitSeq,
-        createdAtMs: commit.createdAtMs,
-        actorId: commit.actorId,
-        tables: [section.registration.table],
-        changes: section.changes,
-      });
-      frames.push({ type: 'SUB_END', nextCursor: commit.commitSeq });
-    }
-    const bytes = encodeMessage({
+    const bytes = encodeResponse({
       wireVersion: this.wireVersion,
       msgKind: 'response',
-      frames,
+      frames: [
+        { type: 'RESP_HEADER', logEpoch: this.logEpoch, resetRequired: false },
+        { type: 'LIVE_START', status: 'active', reasonCode: '' },
+        commitFrame(
+          { ...commit, changes },
+          this.#hub.schema,
+          this.registrations[0]!.schema,
+        ),
+        {
+          type: 'LIVE_END',
+          throughSeq: commit.commitSeq,
+          echoDigest: new Uint8Array(),
+        },
+      ],
     });
     if (bytes.length > this.#maxDeltaBytes) {
       this.sendWake('delta-too-large');
@@ -1037,7 +1005,7 @@ export class RealtimeSession {
     const tagged = new Uint8Array(bytes.length + 1);
     tagged[0] = REALTIME_TAG_DELTA;
     tagged.set(bytes, 1);
-    const changeCount = sections.reduce((n, s) => n + s.changes.length, 0);
+    const changeCount = changes.length;
     if (this.#roundsRefreshing > 0) {
       if (this.#deferredBytes + tagged.length > this.#maxDeltaBytes) {
         this.sendWake('catchup-required');
@@ -1117,12 +1085,9 @@ export class RealtimeHub {
     this.limits = limitsOf(config);
   }
 
-  projectPayload(registration: Registration, payload: Uint8Array): Uint8Array {
-    return projectRowPayload(
-      this.#schema.tables.get(registration.table)!,
-      registration.codec,
-      payload,
-    );
+  /** The current compiled schema: the storage codec of fanned-out changes. */
+  get schema(): CompiledSchema {
+    return this.#schema;
   }
 
   /**
@@ -1206,7 +1171,7 @@ export class RealtimeHub {
   }
 
   /**
-   * Resolve the client record's subscription list into per-connection
+   * Resolve the client record's live units into per-connection
    * registrations (§8.1 at upgrade; §8.7 at socket-round end).
    */
   async loadRegistrations(
@@ -1242,39 +1207,35 @@ export class RealtimeHub {
       }
       resolved = { ok: false };
     }
+    // §8.1: the stored list minus the catching-up units, each live unit's
+    // active pairs under the schema version of the client's latest round.
+    const schema = schemaWindowOf(
+      this.#config.schema,
+      this.#config.schemaWindow,
+    ).find((candidate) => candidate.version === record?.schemaVersion);
     const registrations: Registration[] = [];
-    for (const subscription of record?.subscriptions ?? []) {
-      const window = schemaWindowOf(
-        this.#config.schema,
-        this.#config.schemaWindow,
-      );
-      const selected =
-        subscription.schemaVersion === undefined &&
-        this.#config.schemaWindow === undefined
-          ? this.#schema
-          : window.find(
-              (schema) => schema.version === subscription.schemaVersion,
-            );
-      const table = selected?.tables.get(subscription.table);
-      if (table === undefined) continue;
-      const keysValid = Object.keys(subscription.scopes).every((key) =>
-        table.declaredVariables.has(key),
-      );
-      if (!keysValid) continue;
-      const outcome = computeEffective(
-        table.declaredVariables,
-        subscription.scopes,
-        resolved,
-      );
-      if (outcome.status !== 'active') continue;
-      registrations.push({
-        id: subscription.id,
-        codec: table,
-        table: subscription.table,
-        schemaVersion:
-          subscription.schemaVersion ?? this.#config.schema.version,
-        effective: outcome.effective,
-      });
+    if (schema === undefined) return registrations;
+    for (const scopes of record?.registration?.units ?? []) {
+      const id = unitId(scopes);
+      if (record?.catchingUp.some((unit) => unit.id === id)) continue;
+      let tables: CompiledTable[];
+      try {
+        tables = coveredTables(schema, scopes);
+      } catch {
+        // A unit the client's schema version no longer serves registers
+        // nothing; the client's next pull fails loud on it (§4.1).
+        continue;
+      }
+      const unit = planUnit(scopes, tables, resolved);
+      for (const [table, effective] of unit.pairs) {
+        registrations.push({
+          schema,
+          id: unit.id,
+          table,
+          schemaVersion: schema.version,
+          effective,
+        });
+      }
     }
     return registrations;
   }
@@ -1323,8 +1284,8 @@ export class RealtimeHub {
   }
 
   /**
-   * Register a connected socket (§8.1): load the client's last pull's
-   * subscription list, resolve + intersect scopes, send `hello`.
+   * Register a connected socket (§8.1): load the client record's live
+   * units, resolve their effective scopes, send `hello`.
    */
   connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
     return this.#open(options, undefined);
@@ -1460,18 +1421,12 @@ export class RealtimeHub {
             cursor,
             latestCursor: latestSeq,
             requiresSync:
-              record === undefined ||
+              record?.registration === undefined ||
               cursor < latestSeq ||
-              (this.#config.schemaWindow !== undefined &&
-                record.subscriptions.some(
-                  (subscription) =>
-                    !schemaWindowOf(
-                      this.#config.schema,
-                      this.#config.schemaWindow,
-                    ).some(
-                      (schema) => schema.version === subscription.schemaVersion,
-                    ),
-                )),
+              !schemaWindowOf(
+                this.#config.schema,
+                this.#config.schemaWindow,
+              ).some((schema) => schema.version === record.schemaVersion),
             timestamp: clock(),
           },
         }),
@@ -1528,7 +1483,8 @@ export class RealtimeHub {
   }
 
   /**
-   * RealtimeNotifier: a pull changed a client's subscription list (§8.7).
+   * RealtimeNotifier: a pull changed a client's registration list or live
+   * set (§8.1).
    * Its sockets reload their registrations with the round-end semantics, so
    * an unreadable record keeps the previous registrations.
    */
@@ -1610,7 +1566,7 @@ function errorResponseBytes(
   wireVersion: number,
   logEpoch: string,
 ): Uint8Array {
-  return encodeMessage({
+  return encodeResponse({
     wireVersion,
     msgKind: 'response',
     frames: [

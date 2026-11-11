@@ -15,11 +15,6 @@
     { "name": "comments", "scopes": ["board:{board_id}"] }
   ],
   "subscriptions": [
-    { "name": "boardBoards", "table": "boards", "scopes": { "board_id": ["{boardId}"] } },
-    { "name": "boardMembers", "table": "members", "scopes": { "board_id": ["{boardId}"] } },
-    { "name": "boardLabels", "table": "labels", "scopes": { "board_id": ["{boardId}"] } },
-    { "name": "boardCards", "table": "cards", "scopes": { "board_id": ["{boardId}"] } },
-    { "name": "boardCardLabels", "table": "card_labels", "scopes": { "board_id": ["{boardId}"] } },
-    { "name": "boardComments", "table": "comments", "scopes": { "board_id": ["{boardId}"] } }
+    { "name": "board", "scopes": { "board_id": "{boardId}" } }
   ]
 }

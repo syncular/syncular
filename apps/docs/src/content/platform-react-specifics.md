@@ -61,7 +61,7 @@ const status = await client.statusSnapshot();
 `conflicts()`, `rejections()`, and `securityLifecycle()` are methods on every
 client. `purgeLocalData({ purgeId, targets })` is an application-authorized
 security operation on every host that implements the shared surface; follow the
-subscription-gating workflow in
+unit-gating workflow in
 [Authorized local purge](/concepts-local-data-purge/).
 
 ## Security lifecycle

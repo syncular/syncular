@@ -103,6 +103,8 @@ export async function runAdapterContract(
     'SELECT 1;  -- done',
     'SELECT 1;;',
   ]) {
+    // The second run of a text proven read-only skips `query_only`.
+    db.queryReadOnly(sql);
     db.queryReadOnly(sql);
   }
   for (const sql of [
@@ -132,16 +134,19 @@ export async function runAdapterContract(
     'SELECT 1; SELECT 2',
     "SELECT 1; DELETE FROM t WHERE id = 'a'",
   ]) {
-    let refused: unknown;
-    try {
-      db.queryReadOnly(sql);
-    } catch (error) {
-      refused = error;
+    // A refused text is never proven: the repeated call is refused too.
+    for (const call of ['first', 'repeated']) {
+      let refused: unknown;
+      try {
+        db.queryReadOnly(sql);
+      } catch (error) {
+        refused = error;
+      }
+      assert(
+        refused instanceof Error && refused.name === 'RawSqlError',
+        `queryReadOnly refuses ${sql} (${call} call)`,
+      );
     }
-    assert(
-      refused instanceof Error && refused.name === 'RawSqlError',
-      `queryReadOnly refuses ${sql}`,
-    );
   }
   eq(
     db.query('SELECT count(*) AS n FROM t')[0]?.n,

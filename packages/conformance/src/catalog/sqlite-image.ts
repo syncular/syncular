@@ -9,14 +9,21 @@
  * server's §5.3 production is pinned no matter which client is paired.
  */
 import { Database } from 'bun:sqlite';
-import { canonicalScopeJson } from '@syncular/core';
+import { canonicalScopeJson, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import { rawPull, responseSection } from '../raw';
 import type { Scenario } from '../scenario';
-import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
+import {
+  expectConverged,
+  seedTasks,
+  syncIdle,
+  syncOk,
+  unitCursor,
+} from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** Rows lane pinned (§4.2 baseline). */
 const ROWS_ONLY = 0b0011;
@@ -55,7 +62,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
         allowed: P1,
         limits: { limitSnapshotRows: 2, accept: ROWS_ONLY },
       });
-      await control.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await control.api.subscribe(U1);
       await syncIdle(control);
 
       // Image lane: page limits that would take 3 pulls on the rows lane.
@@ -69,7 +76,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
           accept: WITH_SQLITE,
         },
       });
-      await image.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await image.api.subscribe(U1);
       const first = await syncOk(image);
       checkEqual(
         first.segmentRowsApplied,
@@ -83,7 +90,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       );
       const pin = await ctx.server.getMaxCommitSeq();
       checkEqual(
-        (await image.api.subscriptionState('tasks'))?.cursor,
+        await unitCursor(image, U1),
         pin,
         'SUB_END.nextCursor is the bootstrap pin (§4.7)',
       );
@@ -124,8 +131,10 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       await ctx.server.setAllowedScopes('raw-actor', P1);
       const pin = await ctx.server.getMaxCommitSeq();
       const pullFrames = (accept: number) => [
-        rawPullHeader({ accept, limitSnapshotRows: 2 }),
-        rawSubscription('s1', 'tasks', P1, -1),
+        ...rawPull([{ scopes: U1, cursor: -1 }], {
+          accept,
+          limitSnapshotRows: 2,
+        }),
       ];
 
       // Without bit 2 the same table bootstraps on the rows lane —
@@ -135,7 +144,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       });
       check(gated.ok, 'rows-lane pull succeeded');
       if (!gated.ok) return;
-      const gatedSection = responseSection(gated.message, 's1');
+      const gatedSection = responseSection(gated.message, U1);
       check(
         gatedSection.body.length > 0 &&
           gatedSection.body.every(
@@ -152,7 +161,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       });
       check(first.ok, 'image pull succeeded');
       if (!first.ok) return;
-      const section = responseSection(first.message, 's1');
+      const section = responseSection(first.message, U1);
       const ref = section.body[0];
       checkEqual(section.body.length, 1, 'one segment covers the table');
       check(
@@ -226,7 +235,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       });
       check(second.ok, 'second image pull succeeded');
       if (!second.ok) return;
-      const secondRef = responseSection(second.message, 's1').body[0];
+      const secondRef = responseSection(second.message, U1).body[0];
       check(secondRef?.type === 'SEGMENT_REF', 'second pull got a descriptor');
       if (secondRef?.type !== 'SEGMENT_REF') return;
       checkEqual(
@@ -252,7 +261,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
         allowed: P1,
         limits: { limitSnapshotRows: 2, accept: WITH_SQLITE },
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       a.faults.truncateNextSegmentDownload = true;
       const result = await a.api.sync();
@@ -264,7 +273,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
           'content-address failure surfaces the named error (§5.1)',
         );
       }
-      const state = await a.api.subscriptionState('tasks');
+      const state = await a.api.unitState(unitId(U1));
       checkEqual(state?.cursor, -1, 'the cursor did not advance (§1.4 rule 5)');
       checkEqual(state?.hasResumeToken, false, 'no resume token persisted');
       checkEqual((await a.api.readRows('tasks')).length, 0, 'nothing applied');
@@ -292,18 +301,17 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       const first = await ctx.rawSync(
         'raw-actor',
         [
-          rawPullHeader({
+          ...rawPull([{ scopes: U1, cursor: -1 }], {
             accept: ROWS_ONLY,
             limitSnapshotRows: 2,
             maxSnapshotPages: 1,
           }),
-          rawSubscription('s1', 'tasks', P1, -1),
         ],
         { clientId: 'raw-a' },
       );
       check(first.ok, 'first rows page succeeded');
       if (!first.ok) return;
-      const token = responseSection(first.message, 's1').end.bootstrapState;
+      const token = responseSection(first.message, U1).end.bootstrapState;
       check(token !== undefined, 'a mid-table resume token was issued');
       if (token === undefined) return;
 
@@ -311,14 +319,16 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       const resumed = await ctx.rawSync(
         'raw-actor',
         [
-          rawPullHeader({ accept: WITH_SQLITE, limitSnapshotRows: 2 }),
-          rawSubscription('s1', 'tasks', P1, pin, { bootstrapState: token }),
+          ...rawPull([{ scopes: U1, cursor: pin, bootstrapState: token }], {
+            accept: WITH_SQLITE,
+            limitSnapshotRows: 2,
+          }),
         ],
         { clientId: 'raw-a' },
       );
       check(resumed.ok, 'resumed pull succeeded');
       if (!resumed.ok) return;
-      const section = responseSection(resumed.message, 's1');
+      const section = responseSection(resumed.message, U1);
       check(
         section.body.length > 0 &&
           section.body.every(

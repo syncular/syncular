@@ -13,7 +13,7 @@ import {
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from './d1-double';
-import { BunSQL, bunSqlExecutor, PG_URL } from './pg-real';
+import { BunSQL, bunSqlExecutor, PG_URL, resetPublicSchema } from './pg-real';
 import { TEST_SCHEMA } from './helpers';
 
 interface StorageFixture {
@@ -239,10 +239,14 @@ describe('a commit above the PostgreSQL bind-parameter limit', () => {
       const maxSeq = await storage.getMaxCommitSeq(partition);
       const windows = [];
       for (const project of projects) {
-        const commits = await storage.readCommitWindow(partition, {
-          table: 'tasks',
-          scopeFilter: { project_id: [project] },
-          afterSeq: 1,
+        const { commits } = await storage.readLiveWindow(partition, {
+          units: [
+            {
+              scopes: { project_id: project },
+              afterSeq: 1,
+              tables: new Map([['tasks', { project_id: [project] }]]),
+            },
+          ],
           throughSeq: maxSeq,
           limitChanges: 1_000_000,
         });
@@ -278,10 +282,15 @@ describe('a commit above the PostgreSQL bind-parameter limit', () => {
       ? {
           name: 'PostgreSQL/SYNCULAR_PG_URL',
           open: async () => {
-            const executor = bunSqlExecutor(new Sql(url));
+            const sql = new Sql(url);
+            await resetPublicSchema(sql);
+            const executor = bunSqlExecutor(sql);
             return {
               storage: new PostgresServerStorage(executor),
-              close: () => executor.close(),
+              close: async () => {
+                await resetPublicSchema(sql);
+                await executor.close();
+              },
             };
           },
         }

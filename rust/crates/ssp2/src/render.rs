@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 
 use crate::model::{Frame, Message, MsgKind, OpResult};
 use crate::segment::{Column, ColumnValue, RowsSegment, SparseRow, SparseSlot};
-use crate::util::base64;
+use crate::util::{base64, hex};
 
 fn obj(entries: Vec<(&str, Value)>) -> Value {
     let mut map = Map::new();
@@ -25,6 +25,14 @@ fn scope_map_value(scopes: &[(String, Vec<String>)]) -> Value {
         );
     }
     Value::Object(map)
+}
+
+fn str_map_value(map: &[(String, String)]) -> Value {
+    Value::Object(
+        map.iter()
+            .map(|(k, v)| (k.clone(), Value::from(v.clone())))
+            .collect(),
+    )
 }
 
 /// Render a decoded message per §11.1 rule 1: one JSON document, frames in
@@ -57,6 +65,7 @@ fn render_frame(frame: &Frame) -> Value {
             client_id,
             schema_version,
             log_epoch,
+            outbox_id,
         } => {
             entries.push(("type", Value::from("REQ_HEADER")));
             entries.push(("clientId", Value::from(client_id.clone())));
@@ -64,13 +73,18 @@ fn render_frame(frame: &Frame) -> Value {
             if let Some(value) = log_epoch {
                 entries.push(("logEpoch", Value::from(value.clone())));
             }
+            if let Some(value) = outbox_id {
+                entries.push(("outboxId", Value::from(value.clone())));
+            }
         }
         Frame::PushCommit {
             client_commit_id,
+            client_seq,
             operations,
         } => {
             entries.push(("type", Value::from("PUSH_COMMIT")));
             entries.push(("clientCommitId", Value::from(client_commit_id.clone())));
+            entries.push(("clientSeq", Value::from(*client_seq)));
             let ops = operations
                 .iter()
                 .map(|op| {
@@ -95,6 +109,9 @@ fn render_frame(frame: &Frame) -> Value {
             limit_snapshot_rows,
             max_snapshot_pages,
             accept,
+            cursor,
+            registration_digest,
+            echo_digest,
         } => {
             entries.push(("type", Value::from("PULL_HEADER")));
             entries.push(("limitCommits", Value::from(*limit_commits)));
@@ -102,29 +119,33 @@ fn render_frame(frame: &Frame) -> Value {
             entries.push(("maxSnapshotPages", Value::from(*max_snapshot_pages)));
             // Rule 5: bitmask fields are not enums; render numerically.
             entries.push(("accept", Value::from(*accept)));
+            entries.push(("cursor", Value::from(*cursor)));
+            // Rule 4: digests are hashes and render as lowercase hex, an
+            // empty digest as "".
+            entries.push(("registrationDigest", Value::from(hex(registration_digest))));
+            entries.push((
+                "echoDigest",
+                Value::from(echo_digest.as_ref().map_or(String::new(), |d| hex(d))),
+            ));
         }
         Frame::RoundFailure { code } => {
             entries.push(("type", Value::from("ROUND_FAILURE")));
             entries.push(("code", Value::from(code.clone())));
         }
-        Frame::Subscription {
+        Frame::Unit { scopes } => {
+            entries.push(("type", Value::from("UNIT")));
+            entries.push(("scopes", str_map_value(scopes)));
+        }
+        Frame::Progress {
             id,
-            table,
-            scopes,
-            params,
             cursor,
             bootstrap_state,
         } => {
-            entries.push(("type", Value::from("SUBSCRIPTION")));
+            entries.push(("type", Value::from("PROGRESS")));
             entries.push(("id", Value::from(id.clone())));
-            entries.push(("table", Value::from(table.clone())));
-            entries.push(("scopes", scope_map_value(scopes)));
-            if let Some(p) = params {
-                // Rule 7: json-typed fields embed as parsed JSON.
-                entries.push(("params", p.parse()));
-            }
             entries.push(("cursor", Value::from(*cursor)));
             if let Some(b) = bootstrap_state {
+                // Rule 7: json-typed fields embed as parsed JSON.
                 entries.push(("bootstrapState", b.parse()));
             }
         }
@@ -194,15 +215,48 @@ fn render_frame(frame: &Frame) -> Value {
             id,
             status,
             reason_code,
-            effective_scopes,
             bootstrap,
+            fenced,
         } => {
             entries.push(("type", Value::from("SUB_START")));
             entries.push(("id", Value::from(id.clone())));
             entries.push(("status", Value::from(status.name())));
             entries.push(("reasonCode", Value::from(reason_code.clone())));
-            entries.push(("effectiveScopes", scope_map_value(effective_scopes)));
             entries.push(("bootstrap", Value::from(*bootstrap)));
+            entries.push((
+                "fenced",
+                Value::Array(
+                    fenced
+                        .iter()
+                        .map(|record| {
+                            obj(vec![
+                                ("table", Value::from(record.table.clone())),
+                                ("status", Value::from(record.status.name())),
+                                ("scopes", scope_map_value(&record.scopes)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+        Frame::LiveStart {
+            status,
+            reason_code,
+        } => {
+            entries.push(("type", Value::from("LIVE_START")));
+            entries.push(("status", Value::from(status.name())));
+            entries.push(("reasonCode", Value::from(reason_code.clone())));
+        }
+        Frame::LiveEnd {
+            through_seq,
+            echo_digest,
+        } => {
+            entries.push(("type", Value::from("LIVE_END")));
+            entries.push(("throughSeq", Value::from(*through_seq)));
+            entries.push((
+                "echoDigest",
+                Value::from(echo_digest.as_ref().map_or(String::new(), |d| hex(d))),
+            ));
         }
         Frame::Commit {
             commit_seq,
@@ -226,15 +280,9 @@ fn render_frame(frame: &Frame) -> Value {
                         ("tableIndex", Value::from(c.table_index)),
                         ("rowId", Value::from(c.row_id.clone())),
                         ("op", Value::from(c.op.name())),
+                        ("rowVersion", Value::from(c.row_version)),
                     ];
-                    if let Some(v) = c.row_version {
-                        e.push(("rowVersion", Value::from(v)));
-                    }
-                    let mut scopes = Map::new();
-                    for (k, v) in &c.scopes {
-                        scopes.insert(k.clone(), Value::from(v.clone()));
-                    }
-                    e.push(("scopes", Value::Object(scopes)));
+                    e.push(("scopes", str_map_value(&c.scopes)));
                     if let Some(row) = &c.row {
                         // Rule 4: binary fields render as base64.
                         e.push(("row", Value::from(base64(row))));

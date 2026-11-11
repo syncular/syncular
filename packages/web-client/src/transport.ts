@@ -7,7 +7,7 @@
 
 /**
  * One combined push+pull round trip: SSP2 request bytes → response bytes.
- * `signal` aborts when the `syncUntilIdle` deadline elapses (§7.7); a
+ * `signal` aborts when the `syncUntilIdle` deadline elapses (§7.8); a
  * transport that honors it releases the round instead of holding it open.
  */
 export type SyncTransport = (
@@ -45,7 +45,7 @@ export interface SegmentFetchRequest {
    */
   readonly byteLength?: number;
   readonly onProgress?: (bytesReceived: number) => void;
-  /** Aborts with the round when the `syncUntilIdle` deadline elapses (§7.7). */
+  /** Aborts with the round when the `syncUntilIdle` deadline elapses (§7.8). */
   readonly signal?: AbortSignal;
 }
 

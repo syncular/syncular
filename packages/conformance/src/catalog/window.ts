@@ -12,9 +12,15 @@
 import { check, checkEqual } from '../checks';
 import { task, FIXTURE_SCHEMA } from '../fixture';
 import type { ClientHandle, Scenario } from '../scenario';
-import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
+import {
+  expectConverged,
+  seedTasks,
+  syncIdle,
+  syncOk,
+  unitCursor,
+} from './util';
 
-const BASE = { table: 'tasks', variable: 'project_id' } as const;
+const BASE = { variable: 'project_id' } as const;
 
 async function readIds(handle: ClientHandle): Promise<string[]> {
   return (await handle.api.readRows('tasks')).map((row) => row.rowId).sort();
@@ -28,7 +34,7 @@ async function windowUnits(handle: ClientHandle): Promise<string[]> {
 export const windowScenarios: readonly Scenario[] = [
   {
     name: 'window/default-convergence-allows-advancing-bootstrap-pages',
-    specRefs: ['§4.8', '§7.7'],
+    specRefs: ['§4.8', '§7.8'],
     async run(ctx) {
       await seedTasks(
         ctx,
@@ -74,7 +80,7 @@ export const windowScenarios: readonly Scenario[] = [
 
   {
     name: 'window/chunked-fts-eviction-preserves-pins-and-reentry',
-    specRefs: ['§4.8', '§7.7'],
+    specRefs: ['§4.8', '§7.8'],
     async run(ctx) {
       const rows = Array.from({ length: 2050 }, (_, i) =>
         task(`code-${i}`, 'p1'),
@@ -295,11 +301,7 @@ export const windowScenarios: readonly Scenario[] = [
         allowed: { project_id: ['p1', 'p2', 'p3'] },
       });
       await seedTasks(ctx, [task('t1', 'p1'), task('t3', 'p3')]);
-      await a.api.subscribe({
-        id: 'all',
-        table: 'tasks',
-        scopes: { project_id: ['p1', 'p2'] },
-      });
+      await a.api.subscribeMany([{ project_id: 'p1' }, { project_id: 'p2' }]);
       await a.api.setWindow?.(BASE, ['p1', 'p3']);
       await syncIdle(a);
       checkEqual(await readIds(a), ['t1', 't3'], 'both sources synced');
@@ -311,8 +313,8 @@ export const windowScenarios: readonly Scenario[] = [
         'eviction keeps the p1 row the `all` subscription still covers',
       );
       check(
-        ((await a.api.subscriptionState('all'))?.cursor ?? -1) >= 0,
-        '`all` keeps its cursor and its completeness claim',
+        ((await unitCursor(a, { project_id: 'p1' })) ?? -1) >= 0,
+        'the explicit p1 unit keeps its cursor and its completeness claim',
       );
       await seedTasks(ctx, [task('t1', 'p1', 'edited')]);
       await syncIdle(a);

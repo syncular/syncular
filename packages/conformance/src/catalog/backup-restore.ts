@@ -1,9 +1,11 @@
+import { unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
 import type { Scenario } from '../scenario';
-import { seedTasks, syncIdle, syncOk } from './util';
+import { seedTasks, syncIdle, syncOk, unitProgress } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 export const backupRestoreScenarios: readonly Scenario[] = [
   {
@@ -15,7 +17,7 @@ export const backupRestoreScenarios: readonly Scenario[] = [
         clientId: 'client-a',
         allowed: P1,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       const id = await a.api.mutate([
         {
           op: 'upsert',
@@ -23,7 +25,7 @@ export const backupRestoreScenarios: readonly Scenario[] = [
           values: task('offline', 'p1', 'before epoch'),
         },
       ]);
-      const before = await a.api.subscriptionState('tasks');
+      const before = await unitProgress(a, U1);
       check(
         a.api.drainChangeBatches !== undefined &&
           a.api.executeStorageSql !== undefined &&
@@ -58,7 +60,7 @@ export const backupRestoreScenarios: readonly Scenario[] = [
         'every acquisition status avoids migrating',
       );
       checkEqual(
-        await a.api.subscriptionState('tasks'),
+        await unitProgress(a, U1),
         before,
         'acquisition preserves subscription progress',
       );
@@ -110,7 +112,7 @@ export const backupRestoreScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       await seedTasks(ctx, [task('before', 'p1', 'in backup')]);
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncIdle(a);
 
       await captureBackup.call(ctx.server);
@@ -126,7 +128,10 @@ export const backupRestoreScenarios: readonly Scenario[] = [
 
       await restoreBackup.call(ctx.server);
       const reset = await syncOk(a);
-      check(reset.resets.includes('tasks'), 'the epoch change reset the table');
+      check(
+        reset.resets.includes(unitId(U1)),
+        'the epoch change reset the unit',
+      );
       await syncIdle(a);
 
       checkEqual(

@@ -25,7 +25,7 @@ class SyncularClientTest {
                 JsonValue.obj(
                     "name" to JsonValue.of("todo"),
                     "primaryKey" to JsonValue.of("id"),
-                    "scopes" to JsonValue.arr(emptyList()),
+                    "scopes" to JsonValue.arr(listOf(JsonValue.obj("pattern" to JsonValue.of("todo:{id}")))),
                     "columns" to JsonValue.arr(
                         listOf(
                             JsonValue.obj(
@@ -57,8 +57,32 @@ class SyncularClientTest {
     @Test
     fun initCreatesClient() {
         makeClient().use { client ->
-            client.subscribe(id = "s1", table = "todo")
-            assertEquals("active", client.subscriptionState("s1"))
+            val id = client.subscribe(mapOf("id" to "t1"))
+            assertEquals("active", client.unit(id)?.get("status")?.string)
+            assertEquals(JsonValue.obj("id" to JsonValue.of("t1")), client.unit(id)?.get("scopes"))
+        }
+    }
+
+    @Test
+    fun unitsWindowsAndCatchupCrossTheCommandSurface() {
+        makeClient().use { client ->
+            val ids = client.subscribeMany(listOf(mapOf("id" to "a"), mapOf("id" to "b")))
+            assertEquals(2, ids.size)
+            assertEquals(ids[0], client.subscribe(mapOf("id" to "a")))
+            assertEquals(2, client.units().size)
+            val catchup = client.unitCatchup(ids[0])
+            assertEquals("known", catchup["state"]?.string)
+            assertEquals(false, catchup["bootstrapComplete"]?.bool)
+            assertEquals("unknown", client.unitCatchup("absent")["state"]?.string)
+            client.unsubscribe(ids[1])
+            assertEquals(null, client.unit(ids[1]))
+
+            client.setWindow("id", listOf("c", "d"))
+            assertEquals(WindowState(listOf("c", "d"), listOf("c", "d")), client.windowState("id"))
+            client.setWindow("id", emptyList())
+            assertEquals(emptyList<String>(), client.windowState("id").units)
+            val error = assertFailsWith<SyncularException> { client.subscribe(mapOf("id" to "*")) }
+            assertEquals("sync.invalid_subscription", error.code)
         }
     }
 
@@ -201,7 +225,7 @@ class SyncularClientTest {
                 config = SyncularConfig(localAuthorityPath = directory.resolve("authority.sqlite").toString()),
             ).use { client ->
                 assertEquals(SyncularClient.LocalAuthorityState.LOCAL, client.localAuthorityState())
-                client.subscribe(id = "s1", table = "todo", scopes = mapOf("list_id" to listOf("l1")))
+                client.subscribe(mapOf("list_id" to "l1"))
                 client.mutate(
                     listOf(
                         JsonValue.obj(
@@ -232,7 +256,7 @@ class SyncularClientTest {
     @Test
     fun mutateThenReadRowsShowsOptimisticRow() {
         makeClient().use { client ->
-            client.subscribe(id = "s1", table = "todo")
+            client.subscribe(mapOf("id" to "t1"))
             val commitId = client.mutate(listOf(upsert("t1", "hello")))
             assertTrue(commitId.isNotEmpty())
 
@@ -247,7 +271,7 @@ class SyncularClientTest {
     @Test
     fun queryFastPath() {
         makeClient().use { client ->
-            client.subscribe(id = "s1", table = "todo")
+            client.subscribe(mapOf("id" to "t1"))
             client.mutate(listOf(upsert("t1", "world")))
             val rows = client.query("SELECT title FROM todo WHERE id = ?", listOf(JsonValue.of("t1")))
             assertEquals(1, rows.size)
@@ -260,13 +284,9 @@ class SyncularClientTest {
         makeClient().use { client ->
             val result = client.command(
                 "subscribe",
-                JsonValue.obj(
-                    "id" to JsonValue.of("s2"),
-                    "table" to JsonValue.of("todo"),
-                    "scopes" to JsonValue.Obj(emptyMap()),
-                ),
+                JsonValue.obj("scopes" to JsonValue.obj("id" to JsonValue.of("t2"))),
             )
-            assertNotNull(result.obj)
+            assertNotNull(result["id"]?.string)
         }
     }
 
@@ -274,8 +294,8 @@ class SyncularClientTest {
     fun rotatesTransportHeadersWithoutRecreatingTheClient() {
         makeClient().use { client ->
             client.setHeaders(mapOf("authorization" to "Bearer fresh"))
-            client.subscribe(id = "after-rotation", table = "todo")
-            assertEquals("active", client.subscriptionState("after-rotation"))
+            val id = client.subscribe(mapOf("id" to "after-rotation"))
+            assertEquals("active", client.unit(id)?.get("status")?.string)
         }
     }
 
@@ -293,7 +313,7 @@ class SyncularClientTest {
             val adapter = SyncularConnectivityAdapter(client, signal)
             assertNotNull(listener)
             listener?.invoke(true)
-            client.subscribe(id = "after-connectivity", table = "todo")
+            client.subscribe(mapOf("id" to "after-connectivity"))
             adapter.close()
             assertEquals(null, listener)
         }
@@ -309,7 +329,7 @@ class SyncularClientTest {
     @Test
     fun snapshotsAndPendingOutcomesAfterOfflineMutate() {
         makeClient().use { client ->
-            client.subscribe(id = "s1", table = "todo")
+            client.subscribe(mapOf("id" to "t1"))
             val id = client.mutate(listOf(upsert("t1", "x")))
             assertEquals(listOf(id), client.pendingCommitIds())
             assertEquals(1.0, client.statusSnapshot()["outbox"]?.number)
@@ -352,8 +372,8 @@ class SyncularClientTest {
         makeClient().use { client ->
             client.pause()
             client.resume()
-            client.subscribe(id = "s1", table = "todo")
-            assertEquals("active", client.subscriptionState("s1"))
+            val id = client.subscribe(mapOf("id" to "t1"))
+            assertEquals("active", client.unit(id)?.get("status")?.string)
         }
     }
 }

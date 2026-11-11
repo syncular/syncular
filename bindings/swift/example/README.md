@@ -25,7 +25,7 @@ no schema fork).
 
 The whole syncular surface is [`TodoStore`](Sources/TodoKit/TodoStore.swift):
 `init` constructs a `SyncularClient` (schema + `baseUrl`) and `subscribe`s to the
-list; `todos()` is one `query` decoded through the generated typed `Notes` row;
+list's unit; `todos()` is one `query` decoded through the generated typed `Notes` row;
 `add`/`toggle` are `mutate`; `sync()` is `syncUntilIdle`. No protocol logic —
 the native core owns all of it.
 

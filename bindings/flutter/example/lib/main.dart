@@ -30,11 +30,7 @@ Future<void> main() async {
     schema: syncularSchema,
     config: SyncularConfig(baseUrl: base, dbPath: '${dir.path}/todos.db'),
   );
-  client.subscribe(
-    'todos',
-    SyncularTodoListSubscription.table,
-    scopes: SyncularTodoListSubscription.scopes(listId: _listId),
-  );
+  client.subscribe(SyncularTodoListSubscription.scopes(listId: _listId));
   runApp(TodoApp(client));
 }
 

@@ -1,26 +1,29 @@
 /**
- * Pull: incremental commit delivery, cursors, bootstrap segments
- * (SPEC.md §4, §5).
+ * Pull: units, the live section, bootstrap segments (SPEC.md §4, §5).
  */
 import {
   type CommitChange,
+  type CommitFrame,
   encodeRowsSegment,
+  type FencedRecord,
   type PullHeaderFrame,
   type ResponseFrame,
   type ScopeMap,
   type SegmentRefFrame,
   type SegmentRow,
-  type SubscriptionFrame,
+  type UnitScopes,
+  unitId,
 } from '@syncular/core';
 import type { SyncRequestContext, SyncServerConfig } from './context';
 import { clockOf, limitsOf } from './context';
+import { syncError } from './errors';
 import type { PullSegmentSummary } from './events';
 import {
   type CompiledSchema,
   type CompiledTable,
   compileSchema,
 } from './schema';
-import { scopeDigest } from './scopes';
+import { computeEffective, type ResolvedScopes, scopeDigest } from './scopes';
 import type { SegmentRecord, SegmentStore } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
 import type { ServerStorage, StoredCommit, StoredRow } from './storage';
@@ -50,7 +53,7 @@ function clamp(value: number, min: number, max: number, dflt: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/** §4.2 defaults and silent clamps (the v1 values). */
+/** §4.2 defaults and silent clamps. */
 export function clampPullLimits(header: PullHeaderFrame): PullLimits {
   return {
     limitCommits: clamp(header.limitCommits, 1, 1000, 1000),
@@ -60,16 +63,140 @@ export function clampPullLimits(header: PullHeaderFrame): PullLimits {
   };
 }
 
-export interface SubscriptionPlan {
-  readonly frame: SubscriptionFrame;
-  readonly table: CompiledTable;
+/** One unit of the effective list, resolved against the request (§3.2, §4.1). */
+export interface UnitPlan {
+  readonly id: string;
+  readonly scopes: UnitScopes;
+  /** Covered tables in bootstrap order (§4.1, §4.7). */
+  readonly tables: readonly CompiledTable[];
+  /** Active (unit, table) pairs: table → effective scopes (§3.2). */
+  readonly pairs: ReadonlyMap<string, ScopeMap>;
   readonly status: 'active' | 'revoked';
-  readonly effective: ScopeMap;
+  /** The echo (§4.4): ascending table order, empty when revoked. */
+  readonly fenced: readonly FencedRecord[];
 }
 
-export interface SubscriptionResult {
-  readonly nextCursor: number;
-  readonly active: boolean;
+/**
+ * §4.1 unit validation against one schema version: the covered tables, or
+ * `sync.invalid_subscription` for an empty scope map, a requested `'*'`, a
+ * variable no table declares, or no covered table.
+ */
+export function coveredTables(
+  schema: CompiledSchema,
+  scopes: UnitScopes,
+): CompiledTable[] {
+  const keys = Object.keys(scopes);
+  const reason =
+    keys.length === 0
+      ? 'empty_scope_map'
+      : keys.some((key) => scopes[key] === '*')
+        ? 'wildcard_value'
+        : keys.some((key) => !schema.declaredVariables.has(key))
+          ? 'undeclared_variable'
+          : undefined;
+  const tables =
+    reason === undefined
+      ? [...schema.tables.values()].filter((table) =>
+          keys.every((key) => table.declaredVariables.has(key)),
+        )
+      : [];
+  if (tables.length === 0) {
+    throw syncError(
+      'sync.invalid_subscription',
+      'the server cannot serve this unit (§4.1)',
+      JSON.stringify({ reason: reason ?? 'no_covered_table', scopes }),
+    );
+  }
+  return tables;
+}
+
+/** §3.2 per covered table: the unit's active pairs, status and echo. */
+export function planUnit(
+  scopes: UnitScopes,
+  tables: readonly CompiledTable[],
+  resolved: ResolvedScopes,
+): UnitPlan {
+  const requested: ScopeMap = {};
+  for (const [key, value] of Object.entries(scopes)) requested[key] = [value];
+  const pairs = new Map<string, ScopeMap>();
+  const fenced: FencedRecord[] = [];
+  for (const table of tables) {
+    const outcome = computeEffective(
+      table.declaredVariables,
+      requested,
+      resolved,
+    );
+    if (outcome.status === 'revoked') {
+      fenced.push({ table: table.name, status: 'revoked', scopes: {} });
+      continue;
+    }
+    pairs.set(table.name, outcome.effective);
+    const added = Object.entries(outcome.effective).filter(
+      ([key]) => !Object.hasOwn(scopes, key),
+    );
+    if (added.length > 0) {
+      fenced.push({
+        table: table.name,
+        status: 'active',
+        scopes: Object.fromEntries(added),
+      });
+    }
+  }
+  const active = pairs.size > 0;
+  return {
+    id: unitId(scopes),
+    scopes,
+    tables,
+    pairs,
+    status: active ? 'active' : 'revoked',
+    fenced: active ? fenced.sort((a, b) => (a.table < b.table ? -1 : 1)) : [],
+  };
+}
+
+/**
+ * The `COMMIT` frame of one live-section commit (§4.5): its frame-local
+ * table dictionary and every change, projected onto the client's codec.
+ */
+export function commitFrame(
+  commit: StoredCommit,
+  current: CompiledSchema,
+  target: CompiledSchema,
+): CommitFrame {
+  const tables: string[] = [];
+  const changes: CommitChange[] = commit.changes.map((change) => {
+    // §4.5: apply is version-guarded, so every change carries its version:
+    // an upsert the row's version after the write, a delete the version its
+    // tombstone records. A change without one cannot be served.
+    if (change.rowVersion === undefined) {
+      throw new Error('a change record carries no row version (§4.5)');
+    }
+    let tableIndex = tables.indexOf(change.table);
+    if (tableIndex === -1) tableIndex = tables.push(change.table) - 1;
+    return {
+      tableIndex,
+      rowId: change.rowId,
+      op: change.op,
+      rowVersion: change.rowVersion,
+      scopes: change.scopes,
+      ...(change.payload !== undefined
+        ? {
+            row: projectRowPayload(
+              current.tables.get(change.table)!,
+              target.tables.get(change.table)!,
+              change.payload,
+            ),
+          }
+        : {}),
+    };
+  });
+  return {
+    type: 'COMMIT',
+    commitSeq: commit.commitSeq,
+    createdAtMs: commit.createdAtMs,
+    actorId: commit.actorId,
+    tables,
+    changes,
+  };
 }
 
 /**
@@ -89,13 +216,14 @@ interface BootstrapToken {
 }
 
 /**
- * §4.7: a usable resume token for `table`, or `undefined`. A token whose pin
- * is not a commit sequence of this log (`0 ≤ asOfCommitSeq ≤ maxSeq`) or
- * whose position does not name one of its tables is unusable.
+ * §4.7: a usable resume token, or `undefined`. A token whose pin is not a
+ * commit sequence of this log (`0 ≤ asOfCommitSeq ≤ maxSeq`), whose tables
+ * differ from the unit's covered tables in bootstrap order, or whose position
+ * names none of them is unusable.
  */
 function parseBootstrapToken(
   raw: string | undefined,
-  table: string,
+  tables: readonly CompiledTable[],
   maxSeq: number,
 ): BootstrapToken | undefined {
   if (raw === undefined) return undefined;
@@ -107,11 +235,12 @@ function parseBootstrapToken(
       parsed.asOfCommitSeq < 0 ||
       parsed.asOfCommitSeq > maxSeq ||
       !Array.isArray(parsed.tables) ||
-      parsed.tables[0] !== table ||
+      parsed.tables.length !== tables.length ||
+      parsed.tables.some((name, i) => name !== tables[i]?.name) ||
       !Number.isSafeInteger(parsed.tableIndex) ||
       parsed.tableIndex === undefined ||
       parsed.tableIndex < 0 ||
-      parsed.tableIndex >= parsed.tables.length ||
+      parsed.tableIndex >= tables.length ||
       (parsed.rowCursor !== null && typeof parsed.rowCursor !== 'string')
     ) {
       return undefined;
@@ -125,34 +254,6 @@ function parseBootstrapToken(
   } catch {
     return undefined;
   }
-}
-
-function commitFrame(
-  table: string,
-  commit: StoredCommit,
-  current: CompiledTable,
-  target: CompiledTable,
-): ResponseFrame {
-  const changes: CommitChange[] = commit.changes.map((change) => ({
-    tableIndex: 0,
-    rowId: change.rowId,
-    op: change.op,
-    ...(change.rowVersion !== undefined
-      ? { rowVersion: change.rowVersion }
-      : {}),
-    scopes: change.scopes,
-    ...(change.payload !== undefined
-      ? { row: projectRowPayload(current, target, change.payload) }
-      : {}),
-  }));
-  return {
-    type: 'COMMIT',
-    commitSeq: commit.commitSeq,
-    createdAtMs: commit.createdAtMs,
-    actorId: commit.actorId,
-    tables: [table],
-    changes,
-  };
 }
 
 function chunkRows(rows: SegmentRow[], size: number): SegmentRow[][] {
@@ -194,10 +295,10 @@ function segmentRefFrame(
     byteLength: record.byteLength,
     rowCount: record.rowCount,
     asOfCommitSeq: record.asOfCommitSeq,
-    // The frame reports the digest THIS subscription is authorized under. A
-    // stored entry can carry several digests when identical content was
-    // published under different scopes (§5.1), and the record's primary
-    // digest is not necessarily the caller's (§5.5).
+    // The frame reports the digest THIS pair is authorized under. A stored
+    // entry can carry several digests when identical content was published
+    // under different scopes (§5.1), and the record's primary digest is not
+    // necessarily the caller's (§5.5).
     scopeDigest,
     ...(record.rowCursor !== null ? { rowCursor: record.rowCursor } : {}),
     ...(record.nextRowCursor !== null
@@ -210,6 +311,12 @@ function segmentRefFrame(
   };
 }
 
+/** One active (unit, table) pair of a bootstrap (§3.2). */
+interface BootstrapPair {
+  readonly table: CompiledTable;
+  readonly effective: ScopeMap;
+}
+
 /**
  * §5.3: the sqlite-image lane — whole-table, chosen only at the start of a
  * table (a mid-table resume stays on the rows lane, never switching lanes),
@@ -220,30 +327,96 @@ function segmentRefFrame(
  */
 function sqliteLaneEligible(
   limits: PullLimits,
-  plan: SubscriptionPlan,
+  table: CompiledTable,
   startRowCursor: string | null,
 ): boolean {
   return (
     (limits.accept & ACCEPT_SQLITE) !== 0 &&
     startRowCursor === null &&
-    plan.table.encryptedColumnIndices.length === 0
+    table.encryptedColumnIndices.length === 0
   );
 }
 
+/** The reads a table's bootstrap needs before its first frame (§4.7, §5.3). */
+interface TableStart {
+  /**
+   * `limitSnapshotRows + 1` rows from the start cursor: the first page and
+   * the §5.3 image eligibility probe.
+   */
+  readonly firstPage: StoredRow[];
+  /** On the sqlite lane: the §4.7 scope pin and a stored image under it. */
+  readonly image?: {
+    readonly scopePin: number;
+    readonly stored: SegmentRecord | undefined;
+  };
+}
+
+async function readTableStart(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  limits: PullLimits,
+  unit: UnitPlan,
+  pair: BootstrapPair,
+  startRowCursor: string | null,
+  maxSeq: number,
+  horizonSeq: number,
+  logEpoch: string,
+): Promise<TableStart> {
+  const scan = ctx.storage.scanRows(ctx.partition, {
+    table: pair.table.name,
+    scopeFilter: pair.effective,
+    afterRowId: startRowCursor,
+    limit: limits.limitSnapshotRows + 1,
+  });
+  if (!sqliteLaneEligible(limits, pair.table, startRowCursor)) {
+    return { firstPage: await scan };
+  }
+  // §4.7: a sqlite-lane table pins at the newest change carrying the unit's
+  // index key (never below the horizon, never above maxCommitSeq), so a
+  // stored image stays the reuse key's match until this scope changes
+  // (§5.3). The server computes the pin; a client token never supplies it.
+  const [firstPage, latest] = await Promise.all([
+    scan,
+    ctx.storage.latestScopedChangeSeq(ctx.partition, {
+      table: pair.table.name,
+      scopes: unit.scopes,
+    }),
+  ]);
+  const scopePin = Math.min(maxSeq, Math.max(latest, horizonSeq));
+  // §5.3 eligibility: a stored image only matches a snapshot larger than one
+  // rows page, so the probe decides before the reuse lookup; a remote `find`
+  // on a small table would be a wasted round trip.
+  const stored =
+    firstPage.length <= limits.limitSnapshotRows
+      ? undefined
+      : await ctx.segments.find(
+          {
+            partition: ctx.partition,
+            logEpoch,
+            table: pair.table.name,
+            schemaVersion: schema.version,
+            mediaType: 'sqlite',
+            scopeDigest: await scopeDigest(pair.effective),
+            asOfCommitSeq: scopePin,
+          },
+          clockOf(ctx)(),
+        );
+  return { firstPage, image: { scopePin, stored } };
+}
+
 /**
- * §5.3 sqlite-image lane: only at the start of a table, only when the
- * client advertised bit 2, and only when the snapshot exceeds one rows
- * page. Reuses an unexpired stored image for the same (partition, table,
- * schemaVersion, scope digest, pin) instead of rebuilding — the
- * bootstrap-storm rule. Returns false when the table is not eligible
- * (the rows lane takes over).
+ * §5.3 sqlite-image lane: only when the snapshot exceeds one rows page.
+ * Reuses an unexpired stored image for the same (partition, table,
+ * schemaVersion, scope digest, scope pin) instead of rebuilding — the
+ * bootstrap-storm rule. Returns false when no image is served (the rows lane
+ * takes over).
  */
 async function* sqliteImageSegment(
   ctx: SyncRequestContext,
   schema: CompiledSchema,
   limits: PullLimits,
-  plan: SubscriptionPlan,
-  asOf: number,
+  pair: BootstrapPair,
+  scopePin: number,
   digest: string,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
@@ -267,9 +440,6 @@ async function* sqliteImageSegment(
     );
     return true;
   }
-  // Eligibility probe (§5.3): image only when the snapshot exceeds one
-  // rows page — smaller tables stay on the (typically inline) rows lane.
-  // The probe is the rows lane's first page, read by `prepareSections`.
   if (probe.length <= limits.limitSnapshotRows) return false;
   // §5.3: hosts opt into image construction with a runtime-specific builder.
   // Without one, matching stored images remain usable and cold pulls use rows.
@@ -288,12 +458,13 @@ async function* sqliteImageSegment(
   const identity = {
     partition,
     logEpoch,
-    table: plan.table.name,
+    table: pair.table.name,
     schemaVersion: schema.version,
     mediaType: 'sqlite' as const,
     scopeDigest: digest,
-    asOfCommitSeq: asOf,
+    asOfCommitSeq: scopePin,
   };
+  const current = compileSchema(ctx.schema).tables.get(pair.table.name)!;
   const key = JSON.stringify(identity);
   let building = builds.get(key);
   let builtHere = false;
@@ -305,36 +476,28 @@ async function* sqliteImageSegment(
       builtHere = true;
       let rowCount = 0;
       const bytes = await buildImage({
-        table: plan.table,
+        table: pair.table,
         schemaVersion: schema.version,
-        asOfCommitSeq: asOf,
+        asOfCommitSeq: scopePin,
         scopeDigest: digest,
         rowBatches: (async function* () {
           rowCount += probe.length;
           yield probe.map((row) => ({
             ...row,
-            payload: projectRowPayload(
-              compileSchema(ctx.schema).tables.get(plan.table.name)!,
-              plan.table,
-              row.payload,
-            ),
+            payload: projectRowPayload(current, pair.table, row.payload),
           }));
           let afterRowId = probe[probe.length - 1]!.rowId;
           for (;;) {
             const rows = await storage.scanRows(partition, {
-              table: plan.table.name,
-              scopeFilter: plan.effective,
+              table: pair.table.name,
+              scopeFilter: pair.effective,
               afterRowId,
               limit: 5_000,
             });
             rowCount += rows.length;
             yield rows.map((row) => ({
               ...row,
-              payload: projectRowPayload(
-                compileSchema(ctx.schema).tables.get(plan.table.name)!,
-                plan.table,
-                row.payload,
-              ),
+              payload: projectRowPayload(current, pair.table, row.payload),
             }));
             const last = rows[rows.length - 1];
             if (rows.length < 5_000 || last === undefined) break;
@@ -377,48 +540,50 @@ async function* sqliteImageSegment(
   return true;
 }
 
-async function* bootstrapSegments(
+/**
+ * One table's segments within the page budget. Returns the pages it used
+ * and the row cursor to resume at, `null` once the table is exhausted.
+ */
+async function* tableSegments(
   ctx: SyncRequestContext,
   schema: CompiledSchema,
   limits: PullLimits,
-  plan: SubscriptionPlan,
-  asOf: number,
+  pair: BootstrapPair,
+  pin: number,
   startRowCursor: string | null,
+  start: TableStart,
+  pageBudget: number,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
-  firstPage: StoredRow[],
-  image: SegmentRecord | undefined,
-): AsyncGenerator<
-  ResponseFrame,
-  { complete: boolean; rowCursor: string | null }
-> {
+): AsyncGenerator<ResponseFrame, { pages: number; rowCursor: string | null }> {
   const { storage, segments, partition } = ctx;
   const serverLimits = limitsOf(ctx);
-  const digest = await scopeDigest(plan.effective);
+  const digest = await scopeDigest(pair.effective);
   const now = clockOf(ctx)();
-  if (sqliteLaneEligible(limits, plan, startRowCursor)) {
+  if (start.image !== undefined) {
     const imaged = yield* sqliteImageSegment(
       ctx,
       schema,
       limits,
-      plan,
-      asOf,
+      pair,
+      start.image.scopePin,
       digest,
       trace,
       logEpoch,
-      image,
-      firstPage,
+      start.image.stored,
+      start.firstPage,
     );
-    if (imaged) return { complete: true, rowCursor: null };
+    if (imaged) return { pages: 1, rowCursor: null };
   }
+  const current = compileSchema(ctx.schema).tables.get(pair.table.name)!;
   let rowCursor = startRowCursor;
-  for (let page = 0; page < limits.maxSnapshotPages; page++) {
+  for (let page = 0; page < pageBudget; page++) {
     const scanned =
       page === 0
-        ? firstPage
+        ? start.firstPage
         : await storage.scanRows(partition, {
-            table: plan.table.name,
-            scopeFilter: plan.effective,
+            table: pair.table.name,
+            scopeFilter: pair.effective,
             afterRowId: rowCursor,
             limit: limits.limitSnapshotRows + 1,
           });
@@ -427,16 +592,12 @@ async function* bootstrapSegments(
     // §5.2: every row record carries the row's current server_version.
     const decoded = pageRows.map((row: StoredRow) => ({
       serverVersion: row.serverVersion,
-      values: projectRowValues(
-        compileSchema(ctx.schema).tables.get(plan.table.name)!,
-        plan.table,
-        row.payload,
-      ),
+      values: projectRowValues(current, pair.table, row.payload),
     }));
     const bytes = encodeRowsSegment({
-      table: plan.table.name,
+      table: pair.table.name,
       schemaVersion: schema.version,
-      columns: plan.table.columns,
+      columns: pair.table.columns,
       blocks: chunkRows(decoded, 1000),
     });
     const lastRow = pageRows[pageRows.length - 1];
@@ -462,11 +623,11 @@ async function* bootstrapSegments(
         {
           partition,
           logEpoch,
-          table: plan.table.name,
+          table: pair.table.name,
           schemaVersion: schema.version,
           mediaType: 'rows',
           scopeDigest: digest,
-          asOfCommitSeq: asOf,
+          asOfCommitSeq: pin,
           rowCount: pageRows.length,
           rowCursor,
           nextRowCursor,
@@ -487,314 +648,134 @@ async function* bootstrapSegments(
         await signedUrlFields(ctx, limits, record.segmentId, digest, now),
       );
     }
-    if (!hasMore) return { complete: true, rowCursor: null };
+    if (!hasMore) return { pages: page + 1, rowCursor: null };
     rowCursor = nextRowCursor;
   }
-  return { complete: false, rowCursor };
+  return { pages: pageBudget, rowCursor };
+}
+
+/** A bootstrapping unit's position and its table starts, read ahead (§4.7). */
+export interface BootstrapPlan {
+  readonly unit: UnitPlan;
+  /** The unit's pin: a usable resume token's, or `maxCommitSeq`. */
+  readonly pin: number;
+  readonly tableIndex: number;
+  readonly rowCursor: string | null;
+  /** Table index → its start reads. */
+  readonly starts: ReadonlyMap<number, Promise<TableStart>>;
 }
 
 /**
- * One subscription's section decision (§4.5–§4.7) with the storage reads it
- * needs before its first frame.
+ * Plan one unit's bootstrap and start the reads of every table it can reach
+ * in this section: each visited table costs at least one page, so at most
+ * `maxSnapshotPages` tables. The reads of every planned unit start before any
+ * is awaited, so a storage that batches concurrent page reads (PostgreSQL,
+ * D1) answers them in one statement per table.
  */
-export type PreparedSection =
-  | { readonly kind: 'revoked' }
-  /** §4.6: the cursor is behind the horizon. */
-  | { readonly kind: 'reset' }
-  /** §4.5 window read for an in-range cursor. */
-  | { readonly kind: 'incremental'; readonly commits: StoredCommit[] }
-  | {
-      readonly kind: 'bootstrap';
-      /** §4.7 pin: a usable resume token's, the sqlite lane's scope pin, or `maxCommitSeq`. */
-      readonly asOf: number;
-      readonly startCursor: string | null;
-      /**
-       * The first snapshot page (`limitSnapshotRows + 1` rows from
-       * `startCursor`), which is also the §5.3 image eligibility probe.
-       */
-      readonly firstPage: StoredRow[];
-      /** §5.3 stored image under the reuse key, read only for an eligible probe. */
-      readonly image: SegmentRecord | undefined;
-    };
-
-/**
- * Decide the section of every plan and run its pre-frame storage reads. The
- * reads of all plans start before any is awaited, so a storage that batches
- * concurrent page reads (PostgreSQL, D1) answers the first pages of every
- * plan in one statement per table, and the horizon re-check runs once.
- */
-export async function prepareSections(
+export function planBootstrap(
   ctx: SyncRequestContext,
   schema: CompiledSchema,
   limits: PullLimits,
-  plans: readonly SubscriptionPlan[],
+  unit: UnitPlan,
+  bootstrapState: string | undefined,
   maxSeq: number,
   horizonSeq: number,
   logEpoch: string,
-): Promise<PreparedSection[]> {
-  const prepared = await Promise.all(
-    plans.map(async (plan): Promise<PreparedSection> => {
-      const sub = plan.frame;
-      if (plan.status === 'revoked') return { kind: 'revoked' };
-      // §4.7: a present resume token keeps the subscription bootstrapping,
-      // whether or not it is usable.
-      if (
-        sub.bootstrapState === undefined &&
-        sub.cursor >= 0 &&
-        sub.cursor <= maxSeq
-      ) {
-        if (sub.cursor < horizonSeq) return { kind: 'reset' };
-        return {
-          kind: 'incremental',
-          commits: await ctx.storage.readCommitWindow(ctx.partition, {
-            table: sub.table,
-            scopeFilter: plan.effective,
-            afterSeq: sub.cursor,
-            throughSeq: maxSeq,
-            limitChanges: limits.limitCommits + 1,
-          }),
-        };
-      }
-      // §4.7: resume at the token's pin unless the token is unusable or the
-      // pin fell behind the horizon; then restart from a fresh pin.
-      const token = parseBootstrapToken(sub.bootstrapState, sub.table, maxSeq);
-      const resume =
-        token !== undefined && token.asOfCommitSeq >= horizonSeq
-          ? token
-          : undefined;
-      const startCursor = resume?.rowCursor ?? null;
-      const scan = ctx.storage.scanRows(ctx.partition, {
-        table: plan.table.name,
-        scopeFilter: plan.effective,
-        afterRowId: startCursor,
-        limit: limits.limitSnapshotRows + 1,
-      });
-      if (!sqliteLaneEligible(limits, plan, startCursor)) {
-        return {
-          kind: 'bootstrap',
-          asOf: resume?.asOfCommitSeq ?? maxSeq,
-          startCursor,
-          firstPage: await scan,
-          image: undefined,
-        };
-      }
-      // §4.7: a sqlite-lane bootstrap starts at the table start and pins at
-      // the newest change in its scope (never below the horizon, never above
-      // maxCommitSeq), so a stored image stays the reuse key's match until
-      // this scope changes (§5.3). The server computes the pin; a client
-      // token never supplies the reuse key.
-      const [firstPage, latest] = await Promise.all([
-        scan,
-        ctx.storage.latestScopedChangeSeq(ctx.partition, {
-          table: plan.table.name,
-          scopeFilter: plan.effective,
-        }),
-      ]);
-      const asOf = Math.min(maxSeq, Math.max(latest, horizonSeq));
-      // §5.3 eligibility: a stored image only matches a snapshot larger than
-      // one rows page, so the probe decides before the reuse lookup; a remote
-      // `find` on a small table would be a wasted round trip.
-      const image =
-        firstPage.length <= limits.limitSnapshotRows
-          ? undefined
-          : await ctx.segments.find(
-              {
-                partition: ctx.partition,
-                logEpoch,
-                table: plan.table.name,
-                schemaVersion: schema.version,
-                mediaType: 'sqlite',
-                scopeDigest: await scopeDigest(plan.effective),
-                asOfCommitSeq: asOf,
-              },
-              clockOf(ctx)(),
-            );
-      return { kind: 'bootstrap', asOf, startCursor, firstPage, image };
-    }),
-  );
-  // Validate continuity before committing to an active section. A prune
-  // during a paged read can otherwise make an incomplete window look empty.
-  if (!prepared.some((section) => section.kind === 'incremental')) {
-    return prepared;
-  }
-  const windowHorizon = await ctx.storage.getHorizonSeq(ctx.partition);
-  return prepared.map((section, index) =>
-    section.kind === 'incremental' &&
-    (plans[index]?.frame.cursor ?? -1) < windowHorizon
-      ? { kind: 'reset' }
-      : section,
-  );
-}
-
-/**
- * Produce the `SUB_START … SUB_END` section for one subscription (§1.6),
- * returning the cursor recorded for the retention watermark (§4.5).
- */
-export async function* subscriptionSection(
-  ctx: SyncRequestContext,
-  schema: CompiledSchema,
-  limits: PullLimits,
-  plan: SubscriptionPlan,
-  maxSeq: number,
-  horizonSeq: number,
-  trace?: PullSectionTrace,
-  logEpoch?: string,
-): AsyncGenerator<ResponseFrame, SubscriptionResult> {
-  if (logEpoch === undefined || logEpoch.length === 0) {
-    throw new Error('subscriptionSection requires a non-empty log epoch');
-  }
-  const [prepared] = await prepareSections(
-    ctx,
-    schema,
-    limits,
-    [plan],
-    maxSeq,
-    horizonSeq,
-    logEpoch,
-  );
-  if (prepared === undefined) throw new Error('prepareSections lost a plan');
-  return yield* preparedSection(
-    ctx,
-    schema,
-    limits,
-    plan,
-    maxSeq,
-    prepared,
-    trace,
-    logEpoch,
-  );
-}
-
-/** The section of one subscription whose reads `prepareSections` ran. */
-export async function* preparedSection(
-  ctx: SyncRequestContext,
-  schema: CompiledSchema,
-  limits: PullLimits,
-  plan: SubscriptionPlan,
-  maxSeq: number,
-  prepared: PreparedSection,
-  trace?: PullSectionTrace,
-  logEpoch?: string,
-): AsyncGenerator<ResponseFrame, SubscriptionResult> {
-  const sub = plan.frame;
-  if (logEpoch === undefined || logEpoch.length === 0) {
-    throw new Error('subscriptionSection requires a non-empty log epoch');
-  }
-
-  if (prepared.kind === 'revoked') {
-    yield {
-      type: 'SUB_START',
-      id: sub.id,
-      status: 'revoked',
-      reasonCode: 'sync.scope_revoked',
-      effectiveScopes: {},
-      bootstrap: false,
-    };
-    yield { type: 'SUB_END', nextCursor: sub.cursor };
-    return { nextCursor: sub.cursor, active: false };
-  }
-
-  // §4.6: a cursor behind the horizon (and not resuming a bootstrap)
-  // cannot compute deltas — answer `reset` and echo the cursor.
-  if (prepared.kind === 'reset') {
-    yield {
-      type: 'SUB_START',
-      id: sub.id,
-      status: 'reset',
-      reasonCode: 'sync.cursor_expired',
-      effectiveScopes: {},
-      bootstrap: false,
-    };
-    yield { type: 'SUB_END', nextCursor: sub.cursor };
-    return { nextCursor: sub.cursor, active: false };
-  }
-
-  if (prepared.kind === 'bootstrap') {
-    const { asOf } = prepared;
-    yield {
-      type: 'SUB_START',
-      id: sub.id,
-      status: 'active',
-      reasonCode: '',
-      effectiveScopes: plan.effective,
-      bootstrap: true,
-    };
-    const outcome = yield* bootstrapSegments(
+): BootstrapPlan {
+  // §4.7: resume at the token's pin unless the token is unusable or the pin
+  // fell behind the horizon; then restart from a fresh pin.
+  const token = parseBootstrapToken(bootstrapState, unit.tables, maxSeq);
+  const resume =
+    token !== undefined && token.asOfCommitSeq >= horizonSeq
+      ? token
+      : undefined;
+  const tableIndex = resume?.tableIndex ?? 0;
+  const rowCursor = resume?.rowCursor ?? null;
+  const starts = new Map<number, Promise<TableStart>>();
+  for (
+    let index = tableIndex;
+    index < unit.tables.length && starts.size < limits.maxSnapshotPages;
+    index++
+  ) {
+    const table = unit.tables[index]!;
+    const effective = unit.pairs.get(table.name);
+    if (effective === undefined) continue;
+    const start = readTableStart(
       ctx,
       schema,
       limits,
-      plan,
-      asOf,
-      prepared.startCursor,
+      unit,
+      { table, effective },
+      index === tableIndex ? rowCursor : null,
+      maxSeq,
+      horizonSeq,
+      logEpoch,
+    );
+    // A section that stops early never awaits the later starts.
+    start.catch(() => undefined);
+    starts.set(index, start);
+  }
+  return {
+    unit,
+    pin: resume?.asOfCommitSeq ?? maxSeq,
+    tableIndex,
+    rowCursor,
+    starts,
+  };
+}
+
+/**
+ * The segments of one bootstrap section (§4.7): tables in bootstrap order,
+ * each active pair's rows or image, up to `maxSnapshotPages` pages. Returns
+ * the resume token, or `undefined` once every table is exhausted. A pair the
+ * wildcard fence revoked receives no segment (§3.3).
+ */
+export async function* bootstrapSegments(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  limits: PullLimits,
+  plan: BootstrapPlan,
+  trace: PullSectionTrace | undefined,
+  logEpoch: string,
+): AsyncGenerator<ResponseFrame, string | undefined> {
+  const { unit, pin } = plan;
+  let { tableIndex, rowCursor } = plan;
+  let pages = 0;
+  for (;;) {
+    while (
+      tableIndex < unit.tables.length &&
+      !unit.pairs.has(unit.tables[tableIndex]!.name)
+    ) {
+      tableIndex += 1;
+      rowCursor = null;
+    }
+    if (tableIndex === unit.tables.length) return undefined;
+    if (pages === limits.maxSnapshotPages) {
+      const token: BootstrapToken = {
+        asOfCommitSeq: pin,
+        tables: unit.tables.map((table) => table.name),
+        tableIndex,
+        rowCursor,
+      };
+      return JSON.stringify(token);
+    }
+    const table = unit.tables[tableIndex]!;
+    const outcome = yield* tableSegments(
+      ctx,
+      schema,
+      limits,
+      { table, effective: unit.pairs.get(table.name)! },
+      pin,
+      rowCursor,
+      await plan.starts.get(tableIndex)!,
+      limits.maxSnapshotPages - pages,
       trace,
       logEpoch,
-      prepared.firstPage,
-      prepared.image,
     );
-    if (outcome.complete) {
-      yield { type: 'SUB_END', nextCursor: asOf };
-    } else {
-      const nextToken: BootstrapToken = {
-        asOfCommitSeq: asOf,
-        tables: [sub.table],
-        tableIndex: 0,
-        rowCursor: outcome.rowCursor,
-      };
-      yield {
-        type: 'SUB_END',
-        nextCursor: asOf,
-        bootstrapState: JSON.stringify(nextToken),
-      };
-    }
-    return { nextCursor: asOf, active: true };
+    pages += outcome.pages;
+    rowCursor = outcome.rowCursor;
+    if (rowCursor === null) tableIndex += 1;
   }
-
-  // Incremental (§4.5): window cursor < commitSeq <= maxSeq, oldest first,
-  // cut off at limitCommits total changes, never splitting a commit.
-  yield {
-    type: 'SUB_START',
-    id: sub.id,
-    status: 'active',
-    reasonCode: '',
-    effectiveScopes: plan.effective,
-    bootstrap: false,
-  };
-  let delivered = 0;
-  let deliveredCommits = 0;
-  let lastDeliveredSeq = sub.cursor;
-  const { commits } = prepared;
-  for (const commit of commits) {
-    if (
-      delivered > 0 &&
-      delivered + commit.changes.length > limits.limitCommits
-    ) {
-      break;
-    }
-    yield commitFrame(
-      sub.table,
-      commit,
-      compileSchema(ctx.schema).tables.get(sub.table)!,
-      plan.table,
-    );
-    delivered += commit.changes.length;
-    deliveredCommits += 1;
-    lastDeliveredSeq = commit.commitSeq;
-    if (delivered >= limits.limitCommits) break;
-  }
-  const totalReturned = commits.reduce((n, c) => n + c.changes.length, 0);
-  // The window is proven exhausted only when the storage lookahead came
-  // back under budget (it scanned to `throughSeq`) and every returned
-  // commit was delivered.
-  const exhausted =
-    totalReturned <= limits.limitCommits && deliveredCommits === commits.length;
-  // §4.5: the cursor advances even when no matching changes exist; when
-  // the change limit truncated the window it stops at the last fully
-  // delivered commit.
-  const nextCursor = exhausted
-    ? Math.max(sub.cursor, maxSeq)
-    : Math.max(sub.cursor, lastDeliveredSeq);
-  yield { type: 'SUB_END', nextCursor };
-  return { nextCursor, active: true };
 }
 
 export interface PublishSqliteImageInput {
@@ -802,12 +783,15 @@ export interface PublishSqliteImageInput {
   readonly config: SyncServerConfig;
   readonly partition: string;
   readonly table: string;
+  /** The unit whose clients bootstrap the table (§4.1). */
+  readonly scopes: UnitScopes;
   /**
-   * The effective scopes the subscribing clients hold for `table` (§3.2):
-   * the reuse key carries their digest, so publish once per distinct scope
-   * set that clients subscribe with.
+   * The allowed scopes of the actors that register the unit (§3.2). The
+   * reuse key carries the digest of the pair's effective scopes, so a
+   * wildcard fence on the table changes the image. Default: `'*'` for every
+   * declared variable, which leaves the unit's own scope map.
    */
-  readonly scopes: ScopeMap;
+  readonly allowed?: ScopeMap;
 }
 
 export interface PublishedSqliteImage {
@@ -822,8 +806,8 @@ export interface PublishedSqliteImage {
 }
 
 /**
- * Publish the §5.3 sqlite image that a pull for (`table`, `scopes`) looks
- * up, from a host with a SQLite engine (a Bun process with the production
+ * Publish the §5.3 sqlite image that a pull of (`scopes`, `table`) looks up,
+ * from a host with a SQLite engine (a Bun process with the production
  * storage). It runs the pull's own bootstrap path (the §4.7 scope pin, the
  * reuse key, the build), so the stored identity is exactly the one a
  * serving host without a builder finds. The image stays current until a
@@ -838,9 +822,19 @@ export async function publishSqliteImage(
     throw new Error('publishSqliteImage requires config.sqliteImageBuilder');
   }
   const schema = compileSchema(config.schema);
-  const table = schema.tables.get(input.table);
+  const table = coveredTables(schema, input.scopes).find(
+    (candidate) => candidate.name === input.table,
+  );
   if (table === undefined) {
-    throw new Error('publishSqliteImage: the schema has no such table');
+    throw new Error('publishSqliteImage: the unit does not cover the table');
+  }
+  const allowed =
+    input.allowed ??
+    Object.fromEntries([...schema.declaredVariables].map((v) => [v, ['*']]));
+  const unit = planUnit(input.scopes, [table], { ok: true, allowed });
+  const effective = unit.pairs.get(table.name);
+  if (effective === undefined) {
+    throw new Error('publishSqliteImage: the allowed scopes revoke the pair');
   }
   await config.storage.ensureSchema(schema, config.checkpoints);
   const logEpoch = await config.storage.getPartitionLogEpoch(partition);
@@ -852,18 +846,6 @@ export async function publishSqliteImage(
     partition,
     actorId: 'syncular.image-publisher',
   };
-  const plan: SubscriptionPlan = {
-    frame: {
-      type: 'SUBSCRIPTION',
-      id: 'image',
-      table: input.table,
-      scopes: input.scopes,
-      cursor: -1,
-    },
-    table,
-    status: 'active',
-    effective: input.scopes,
-  };
   // One-row pages make every table above one row image-eligible (§5.3).
   const limits: PullLimits = {
     limitCommits: 1,
@@ -874,24 +856,22 @@ export async function publishSqliteImage(
   const maxSeq = await config.storage.getMaxCommitSeq(partition);
   const horizonSeq = await config.storage.getHorizonSeq(partition);
   const trace: PullSectionTrace = { segments: [] };
-  const [prepared] = await prepareSections(
+  const plan = planBootstrap(
     ctx,
     schema,
     limits,
-    [plan],
+    unit,
+    undefined,
     maxSeq,
     horizonSeq,
     logEpoch,
   );
-  if (prepared === undefined) throw new Error('prepareSections lost a plan');
   let ref: SegmentRefFrame | undefined;
-  for await (const frame of preparedSection(
+  for await (const frame of bootstrapSegments(
     ctx,
     schema,
     limits,
     plan,
-    maxSeq,
-    prepared,
     trace,
     logEpoch,
   )) {

@@ -28,7 +28,7 @@ that survives hot reloads.
 
 :::::steps
 ::::step{title="Install the supervisor" time="2 min"}
-Install it after you register subscription intent. Render local rows
+Install it after you register your units. Render local rows
 immediately instead of blocking startup on a network promise.
 
 ```ts title="src/sync.ts"
@@ -38,7 +38,7 @@ import {
   installRealtimeSupervisor,
 } from '@syncular/client';
 
-await handle.subscribe({ id: 'todos', table: 'todos', scopes });
+await handle.subscribe({ list_id: 'groceries' });
 installRealtimeSupervisor(handle, {
   connectivity: browserConnectivitySignal(),
   lifecycle: documentLifecycleSignal(),
@@ -163,13 +163,13 @@ const unsubscribe = handle.onProgress((progress) => {
 | `attempt` | Identifies one sync round. Counters reset when the payload changes or a new attempt starts. |
 | `phase` | `request`, `download`, or `import`. |
 | `state` | `running`, `complete`, or `failed`. |
-| `subscriptionId`, `table`, `segmentId` | The current payload; `segmentId` is optional. |
+| `unitId`, `table`, `segmentId` | The current payload; `segmentId` is optional. |
 | `bytesTotal`, `rowsTotal` | Absent when unknown. |
 | `rowsProcessed` | Work inside an import transaction, including rows a failure can roll back. |
 | `errorCode`, `retryDelayMs` | Set on `failed`. A scheduled background retry also sets `retryDelayMs`: 250 ms, doubling per consecutive failure up to 30,000 ms. |
 
 `complete` follows checkpoint persistence and optimistic read-model
-reconciliation for that round. It does not mean every subscription has
+reconciliation for that round. It does not mean every unit has
 finished bootstrap. A failure retains the last counters. React views read the
 same events with `useSyncProgress(client)` from `@syncular/react`; the Tauri and
 React Native handles expose the same listener and snapshot methods.
@@ -282,7 +282,7 @@ running:
 3. Restart Vite once with `--force` to rebuild its third-party dependency cache.
 4. Reload every open app tab so no old page keeps an obsolete worker graph.
 
-Keep OPFS and site data. The replica, device identity, subscription cursors,
+Keep OPFS and site data. The replica, device identity, unit and replica cursors,
 and unsynced outbox belong to the application origin and survive the worker
 replacement. If the browser still reports a retired dynamic module, Syncular
 raises `client.worker_restart_required` without exposing the chunk URL; repeat

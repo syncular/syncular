@@ -1,6 +1,6 @@
 # Reads & writes (Swift)
 
-Subscribe to data, write it optimistically, and read it back with `readRows`, `query`, or `querySnapshot`.
+Register units, write optimistically, and read it back with `readRows`, `query`, or `querySnapshot`.
 
 ::meta{for="Swift developers building screens on a synced table" time="6 minutes"}
 
@@ -16,15 +16,15 @@ Subscribe to data, write it optimistically, and read it back with `readRows`, `q
 
 ## Subscribe
 
-A subscription is an id, a table, and a scope map. It is local; the next sync round fills it. [Scopes & authorization](/concepts-scopes/) defines the scope vocabulary.
+A unit is a scope map with one value per scope variable; it covers every table that declares those variables. Registering it is local; the next sync round fills it. [Subscriptions & the outbox](/concepts-subscriptions/#a-unit) defines the unit, and [Scopes & authorization](/concepts-scopes/) the scope vocabulary.
 
 ```swift title="Subscribe.swift"
-try client.subscribe(id: "todos", table: "todos",
-                     scopes: ["list_id": ["groceries"]])
-try client.unsubscribe(id: "todos")
+let unitId = try client.subscribe(scopes: ["list_id": "groceries"])
+let ids = try client.subscribeMany(units: [["list_id": "work"], ["list_id": "home"]])
+try client.unsubscribe(id: unitId)
 ```
 
-`subscriptionState(id:)` returns the subscription's status string: `active`, `revoked`, or `failed`. Calling `subscribe` again with the same id and the same table, scopes, and params is a no-op; a different definition under an existing id throws. The generated `Syncular.generated.swift` also carries a typed helper per subscription declared in `syncular.json`.
+`subscribe` returns the unit id, a hash of the scope map. `units()` lists every registered unit, `unit(id:)` reads one with its `status` (`active`, `revoked`, or `failed`), and `unitCatchup(id:)` reports whether its bootstrap has completed. Registering an active unit again is a no-op. The generated `Syncular.generated.swift` carries a builder per unit template declared in `syncular.json`: `try client.subscribe(scopes: SyncularSchema.subscriptions.TodosInList.scopes(listId: id))`.
 
 ## Write
 

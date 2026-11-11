@@ -100,11 +100,11 @@ The server sends a `heartbeat` event on a host interval ([SPEC §8.5](https://gi
 
 ## Deltas and wake-ups
 
-When a commit lands that a connected client cares about, the server pushes it as a delta: an ordinary sync response over the socket. The client applies it and acknowledges.
+When a commit lands that matches a live unit of a connected client, the server pushes it as a delta: an ordinary sync response with one live section that holds one `COMMIT` frame. The frame carries every matching change of the commit, so a commit that touches three tables of one unit is one frame. The client applies it like a pull's live section, sets the replica cursor to the commit's sequence, and acknowledges the replica cursor. A unit that is still catching up receives no delta; it joins the live set through a pull.
 
 During a socket round the server queues matching deltas until the response ends and registrations refresh. The queue shares the `maxDeltaBytes` byte limit. A full queue, a notification gap, or a changed registration discards the queued deltas and sends a `catchup-required` wake. The client applies a delta received while the round is applying after that round finishes.
 
-Change batches for applied `COMMIT` frames carry `appliedCommits` entries with `subscriptionId`, `table`, `commitSeq`, and `source` (`delta` or `pull`). Snapshot imports, cursor advances, and wake-ups do not create these entries. An entry confirms a local transaction committed; a later frame can still fail the round. Inspect progress or the round result for the round outcome. Subscription IDs can contain application data, so apply your logging policy to them.
+Change batches for applied `COMMIT` frames carry `appliedCommits` entries with `table`, `commitSeq`, and `source` (`delta` or `pull`). Snapshot imports, cursor advances, and wake-ups do not create these entries. An entry confirms a local transaction committed; a later frame can still fail the round. Inspect progress or the round result for the round outcome.
 
 The protocol has one delta kind and one wake-up kind. The wake-up tells the client to run a pull soon and carries no data. It has three reason codes: `catchup-required`, `delta-too-large`, and `reset-required` ([SPEC §8.2 and §8.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime)). Realtime propagation latency is on [Benchmarks](/benchmarks/).
 

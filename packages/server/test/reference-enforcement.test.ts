@@ -224,15 +224,25 @@ describe('declared references (§6.11)', () => {
     expect(await t.storage.getRow('part-1', 'items', 'i1')).toBeUndefined();
     const seq = result?.commitSeq;
     if (seq === undefined) throw new Error('expected a commitSeq');
-    const window = await t.storage.readCommitWindow('part-1', {
-      table: 'items',
-      scopeFilter: { project_id: ['p1'] },
-      afterSeq: seq - 1,
+    const window = await t.storage.readLiveWindow('part-1', {
+      units: [
+        {
+          scopes: { project_id: 'p1' },
+          afterSeq: seq - 1,
+          tables: new Map([['items', { project_id: ['p1'] }]]),
+        },
+      ],
       throughSeq: seq,
       limitChanges: 10,
     });
-    expect(window.flatMap((commit) => commit.changes)).toEqual([
-      expect.objectContaining({ table: 'items', rowId: 'i1', op: 'delete' }),
+    // §2.2: the cascaded delete advances i1's version and carries it.
+    expect(window.commits.flatMap((commit) => commit.changes)).toEqual([
+      expect.objectContaining({
+        table: 'items',
+        rowId: 'i1',
+        op: 'delete',
+        rowVersion: 2,
+      }),
     ]);
   });
 

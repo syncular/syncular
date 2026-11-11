@@ -124,7 +124,7 @@ import {
   type SyncRequestContext,
 } from '@syncular/server';
 import { createSyncularAdminRoutes } from '@syncular/server-hono';
-import { decodeMessage } from '@syncular/core';
+import { decodeRequest } from '@syncular/core';
 
 // -- The Durable Object platform surface this class uses (structural) -------
 // Declared locally so the package takes no `@cloudflare/workers-types`
@@ -451,7 +451,7 @@ export class SyncularRealtimeHost<
       // fails in the handler.
       let pullOnly = false;
       try {
-        pullOnly = decodeMessage(bytes).frames.every(
+        pullOnly = decodeRequest(bytes).frames.every(
           (frame) => frame.type !== 'PUSH_COMMIT',
         );
       } catch {}

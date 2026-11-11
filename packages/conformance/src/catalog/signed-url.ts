@@ -1,3 +1,4 @@
+import { unitId } from '@syncular/core';
 /**
  * Signed-URL segment delivery (SPEC.md §5.4; Appendix B.12): the
  * issue→fetch→verify loop on the native HMAC scheme, expiry (no fetch
@@ -11,7 +12,7 @@
  */
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import { rawPull, responseSection } from '../raw';
 import { DEFAULT_NOW_MS, type Scenario } from '../scenario';
 import {
   expectConverged,
@@ -19,9 +20,11 @@ import {
   syncFails,
   syncIdle,
   syncOk,
+  unitCursor,
 } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** Rows baseline + external + signed URLs, no sqlite (§4.2). */
 const ROWS_WITH_URLS = 0b1011;
@@ -64,7 +67,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
         nowMs: DEFAULT_NOW_MS,
         limits: { limitSnapshotRows: 2, accept: ROWS_WITH_URLS },
       });
-      await rows.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await rows.api.subscribe(U1);
       await syncIdle(rows);
       check(rows.urlFetches.length >= 1, 'rows segments fetched via URL');
       checkEqual(
@@ -90,7 +93,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
         nowMs: DEFAULT_NOW_MS,
         limits: { limitSnapshotRows: 2, accept: ALL_BITS },
       });
-      await image.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await image.api.subscribe(U1);
       const report = await syncOk(image);
       checkEqual(report.segmentRowsApplied, 5, 'the image arrived whole');
       checkEqual(image.urlFetches.length, 1, 'one URL fetch for the image');
@@ -108,7 +111,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
         allowed: P1,
         limits: { limitSnapshotRows: 2, accept: NO_URLS },
       });
-      await control.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await control.api.subscribe(U1);
       await syncIdle(control);
       checkEqual(control.urlFetches, [], 'no URL host without bit 3');
       check(
@@ -143,7 +146,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
         nowMs: DEFAULT_NOW_MS,
         limits: { limitSnapshotRows: 2, accept: ROWS_WITH_URLS },
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // TTL 0: descriptors are born expired (urlExpiresAtMs == now).
       await ctx.server.setSignedUrlTtlSeconds?.(0);
@@ -154,7 +157,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
       );
       checkEqual(a.urlFetches, [], 'MUST NOT start a fetch past expiry');
       checkEqual(a.directDownloads, [], 'and MUST NOT fall through (§5.4)');
-      const state = await a.api.subscriptionState('tasks');
+      const state = await a.api.unitState(unitId(U1));
       checkEqual(state?.cursor, -1, 'cursor unpersisted (§1.4 rule 5)');
       checkEqual((await a.api.readRows('tasks')).length, 0, 'nothing applied');
 
@@ -192,7 +195,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
         nowMs: DEFAULT_NOW_MS,
         limits: { limitSnapshotRows: 2, accept: ROWS_WITH_URLS },
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
 
       // Tamper: corrupted bytes fail the content address (§5.1).
       a.faults.corruptNextUrlFetch = true;
@@ -203,7 +206,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
       );
       checkEqual(a.directDownloads, [], 'no fall-through on tamper (§5.4)');
       checkEqual(
-        (await a.api.subscriptionState('tasks'))?.cursor,
+        await unitCursor(a, U1),
         -1,
         'cursor unpersisted (§1.4 rule 5)',
       );
@@ -318,8 +321,10 @@ export const signedUrlScenarios: readonly Scenario[] = [
       await seedFive(ctx);
       await ctx.server.setAllowedScopes('raw-actor', P1);
       const pull = (accept: number) => [
-        rawPullHeader({ accept, limitSnapshotRows: 2 }),
-        rawSubscription('s1', 'tasks', P1, -1),
+        ...rawPull([{ scopes: U1, cursor: -1 }], {
+          accept,
+          limitSnapshotRows: 2,
+        }),
       ];
 
       const gated = await ctx.rawSync('raw-actor', pull(NO_URLS), {
@@ -327,7 +332,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
       });
       check(gated.ok, 'no-bit-3 pull succeeded');
       if (!gated.ok) return;
-      const gatedRefs = responseSection(gated.message, 's1').body.filter(
+      const gatedRefs = responseSection(gated.message, U1).body.filter(
         (frame) => frame.type === 'SEGMENT_REF',
       );
       check(gatedRefs.length >= 1, 'external descriptors were issued');
@@ -346,7 +351,7 @@ export const signedUrlScenarios: readonly Scenario[] = [
       });
       check(urled.ok, 'bit-3 pull succeeded');
       if (!urled.ok) return;
-      const urledRefs = responseSection(urled.message, 's1').body.filter(
+      const urledRefs = responseSection(urled.message, U1).body.filter(
         (frame) => frame.type === 'SEGMENT_REF',
       );
       check(urledRefs.length >= 1, 'external descriptors were issued');

@@ -44,13 +44,9 @@ public final class TodoStore {
                 dbPath: dbPath
             )
         )
-        // Subscribe to the demo list so sync fills it and pushes our writes.
-        // The scope map comes from the generated subscription helper.
-        try client.subscribe(
-            id: "todos",
-            table: SyncularSchema.subscriptions.ListNotes.table,
-            scopes: SyncularSchema.subscriptions.ListNotes.scopes(listId: demoListId)
-        )
+        // Register the demo list's unit so sync fills it and pushes our writes.
+        // The scope map comes from the generated unit-template helper.
+        try client.subscribe(scopes: SyncularSchema.subscriptions.ListNotes.scopes(listId: demoListId))
     }
 
     /// All todos in the list, id-ordered (the live-query fast path). This is a

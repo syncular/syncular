@@ -118,68 +118,37 @@ function wrapStorage(
   storage: SqliteServerStorage,
   faults: ServerFaults,
 ): ServerStorage {
-  return {
-    ensureSchema: (s, d) => storage.ensureSchema(s, d),
-    touchPartition: (p, at, epoch) => storage.touchPartition(p, at, epoch),
-    rotatePartitionLogEpoch: (p, epoch, at) =>
-      storage.rotatePartitionLogEpoch(p, epoch, at),
-    listPartitionRegistry: () => storage.listPartitionRegistry(),
-    listPartitions: () => storage.listPartitions(),
-    begin: async (p) => {
-      const tx = await storage.begin(p);
-      if (!faults.cacheMissOnce) return tx;
-      // The admission read is where the push path observes the persisted
-      // idempotency record, so that is where the fault injects.
-      return new Proxy(tx, {
-        get(target, property) {
-          if (property === 'preparePushApply') {
-            return async (...args: [string, string, number]) => {
-              if (faults.cacheMissOnce) {
-                faults.cacheMissOnce = false;
-                throw new SyncError(
-                  'sync.idempotency_cache_miss',
-                  'simulated unreadable idempotency record',
-                );
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property === 'begin')
+        return async (partition: string) => {
+          const tx = await target.begin(partition);
+          if (!faults.cacheMissOnce) return tx;
+          // The admission read is where the push path observes the persisted
+          // idempotency record, so that is where the fault injects.
+          return new Proxy(tx, {
+            get(inner, name) {
+              if (name === 'preparePushApply') {
+                return async (...args: [string, string, number]) => {
+                  if (faults.cacheMissOnce) {
+                    faults.cacheMissOnce = false;
+                    throw new SyncError(
+                      'sync.idempotency_cache_miss',
+                      'simulated unreadable idempotency record',
+                    );
+                  }
+                  return inner.preparePushApply(...args);
+                };
               }
-              return target.preparePushApply(...args);
-            };
-          }
-          const value = Reflect.get(target, property, target);
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      });
+              const value = Reflect.get(inner, name, inner);
+              return typeof value === 'function' ? value.bind(inner) : value;
+            },
+          });
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
     },
-    getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
-    getHorizonSeq: (p) => storage.getHorizonSeq(p),
-    readCheckpoints: (p) => storage.readCheckpoints(p),
-    declareCheckpoint: (p, n, v, at) => storage.declareCheckpoint(p, n, v, at),
-    activateCheckpoint: (p, n, e, w, s, at) =>
-      storage.activateCheckpoint(p, n, e, w, s, at),
-    claimCheckpoint: (p, n, v, at) => storage.claimCheckpoint(p, n, v, at),
-    advanceCheckpoint: (p, n, e, w, r, at) =>
-      storage.advanceCheckpoint(p, n, e, w, r, at),
-    sourceCoverageSeq: (p, t) => storage.sourceCoverageSeq(p, t),
-    hasSourceChangesAbove: (p, t, s) => storage.hasSourceChangesAbove(p, t, s),
-    getPartitionLogEpoch: (p) => storage.getPartitionLogEpoch(p),
-    setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
-    pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
-    getCommitSeqBefore: (p, t) => storage.getCommitSeqBefore(p, t),
-    getRow: (p, t, r) => storage.getRow(p, t, r),
-    getPushResult: (p, c, id) => storage.getPushResult(p, c, id),
-    readCommitWindow: (p, q) => storage.readCommitWindow(p, q),
-    latestScopedChangeSeq: (p, q) => storage.latestScopedChangeSeq(p, q),
-    scanRows: (p, q) => storage.scanRows(p, q),
-    getClientRecord: (p, c) => storage.getClientRecord(p, c),
-    putClientRecord: (p, r, o) => storage.putClientRecord(p, r, o),
-    recordClientRoundFailure: (...args) =>
-      storage.recordClientRoundFailure(...args),
-    advanceClientCursor: (...args) => storage.advanceClientCursor(...args),
-    updateClientCursor: (p, c, s, t) => storage.updateClientCursor(p, c, s, t),
-    getActiveClientCursorFloor: (p, cutoff) =>
-      storage.getActiveClientCursorFloor(p, cutoff),
-    listClientCursors: (p) => storage.listClientCursors(p),
-    readServeGate: (p, v) => storage.readServeGate(p, v),
-  };
+  });
 }
 
 export function makeServer(

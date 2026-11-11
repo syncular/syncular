@@ -30,7 +30,7 @@ import {
 import { pgliteExecutor } from '@syncular/server/pglite';
 import {
   docRow,
-  pullHeader,
+  pullFrames,
   pushCommit,
   pushResults,
   requestBytes,
@@ -263,10 +263,14 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       const stored = await storage.getRow('part-1', 'tasks', 'a-t1');
       expect(stored?.serverVersion).toBe(2);
       const seq = updated?.commitSeq ?? 0;
-      const commits = await storage.readCommitWindow('part-1', {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p1'] },
-        afterSeq: seq - 1,
+      const { commits } = await storage.readLiveWindow('part-1', {
+        units: [
+          {
+            scopes: { project_id: 'p1' },
+            afterSeq: seq - 1,
+            tables: new Map([['tasks', { project_id: ['p1'] }]]),
+          },
+        ],
         throughSeq: seq,
         limitChanges: 10,
       });
@@ -342,10 +346,14 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       expect(
         (await storage.getRow('part-1', 'tasks', 't2'))?.serverVersion,
       ).toBe(2);
-      const commits = await storage.readCommitWindow('part-1', {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p1'] },
-        afterSeq: (message?.commitSeq ?? 1) - 1,
+      const { commits } = await storage.readLiveWindow('part-1', {
+        units: [
+          {
+            scopes: { project_id: 'p1' },
+            afterSeq: (message?.commitSeq ?? 1) - 1,
+            tables: new Map([['tasks', { project_id: ['p1'] }]]),
+          },
+        ],
         throughSeq: message?.commitSeq ?? 1,
         limitChanges: 10,
       });
@@ -443,19 +451,16 @@ describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
         await handleSyncRequest(
           requestBytes([
             pushCommit(commitId, operations),
-            pullHeader({ limitCommits: 20 }),
             /**
-             * Three subscriptions, one per table, at the cursor the client
-             * held before the push: the reply carries this commit's changes
-             * for all of them.
+             * One live unit covering the three tables, at the replica cursor
+             * the client held before the push: the reply's live section
+             * carries this commit's changes for all of them.
              */
-            ...TABLES.map((table) => ({
-              type: 'SUBSCRIPTION' as const,
-              id: table,
-              table,
-              scopes: { project_id: ['p1'] },
+            ...pullFrames([{ project_id: 'p1' }], {
+              limitCommits: 20,
               cursor,
-            })),
+              progress: [],
+            }),
           ]),
           ctx,
         ),

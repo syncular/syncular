@@ -128,8 +128,10 @@ hook throws a `ClientSyncError` with code
 
 The core runs exactly one statement, and only one that SQLite reports read-only
 (`sqlite3_stmt_readonly`) and that returns columns. The Bun and Node adapters
-run the statement under `PRAGMA query_only`, so SQLite refuses a write before
-it changes anything. The core refuses `PRAGMA` before SQLite compiles it,
+run the first call of each distinct SQL text under `PRAGMA query_only`, so
+SQLite refuses a write before it changes anything, and run later calls of a
+text that completed without the pragma. Each connection remembers up to 512
+texts. The core refuses `PRAGMA` before SQLite compiles it,
 because SQLite applies a pragma such as `query_only` during compilation. Read a
 pragma through its table-valued function:
 `SELECT * FROM pragma_table_info('todos')`. Writes always go through

@@ -27,7 +27,7 @@ This page is for developers who want to watch Syncular sync a scoped data model,
 
 ## Try the hosted sync lab
 
-[Open the sync lab](/demo/). The commit log, the packets on the wires between the devices and the server, and the tour checkmarks come from the embedded server's events (`push.applied`, `push.conflicted`, `realtime.delta`, `pull.served`) and from each device's own rows, outbox, subscriptions, and conflict records.
+[Open the sync lab](/demo/). The commit log, the packets on the wires between the devices and the server, and the tour checkmarks come from the embedded server's events (`push.applied`, `push.conflicted`, `realtime.delta`, `pull.served`) and from each device's own rows, outbox, units, and conflict records.
 
 :::::steps
 ::::step{title="Move a card" time="1 min"}
@@ -55,9 +55,9 @@ Select "Simulate conflict". Both devices go offline and move the same Mobile car
 ::::
 
 ::::step{title="Change the phone's scope" time="3 min"}
-Select "Grant Web" under the phone. The laptop writes Ben's `members` row on the Web board, the phone subscribes to `board:web`, and its Local SQL lens runs the rows-per-board query. Select "Revoke Web" to delete the row again.
+Select "Grant Web" under the phone. The laptop writes Ben's `members` row on the Web board, the phone registers the unit for `board:web`, and its Local SQL lens runs the rows-per-board query. Select "Revoke Web" to delete the row again.
 
-::checkpoint[After the grant, the phone bootstraps the 12 Web cards with their labels and comments. After the revoke, the phone's next round returns its `board:web` subscriptions as revoked, the phone purges those rows, and the lens shows only `board:mobile` ([Scopes](/concepts-scopes/)).]
+::checkpoint[After the grant, the phone bootstraps the 12 Web cards with their labels and comments. After the revoke, the phone's next round returns its `board:web` unit as revoked, the phone purges those rows, and the lens shows only `board:mobile` ([Scopes](/concepts-scopes/)).]
 ::::
 :::::
 

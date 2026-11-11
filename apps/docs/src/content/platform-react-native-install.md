@@ -74,7 +74,7 @@ const client = await createNativeSyncClient({
   dbPath: `${appDataDir}/syncular.db`,
 });
 
-await client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await client.subscribe({ list_id: 'groceries' });
 await client.syncUntilIdle();
 ```
 

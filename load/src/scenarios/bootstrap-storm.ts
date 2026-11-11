@@ -48,7 +48,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
           baseUrl,
           clientId: `boot-${vu}-${totalBootstraps}`,
         });
-        client.subscribe('storm', 'tasks', { project_id: [STORM_PROJECT] });
+        client.subscribe({ project_id: STORM_PROJECT });
         // The §5.3 image lane (accept bit 2) is what the storm rule exercises:
         // the first client builds+stores the whole-table image, the rest
         // reuse it per (scope, pin). Keep the page limit below the dataset so

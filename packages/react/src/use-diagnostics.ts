@@ -1,18 +1,6 @@
-import type {
-  ClientDiagnosticsRequest,
-  ClientDiagnosticsSnapshot,
-  ExpectedDiagnosticSubscription,
-} from '@syncular/client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ClientDiagnosticsSnapshot } from '@syncular/client';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSyncClient } from './use-client';
-
-export interface UseDiagnosticsOptions {
-  /**
-   * Application-owned subscription intent. IDs must be stable and PHI-free;
-   * no scope values are accepted by the diagnostics contract.
-   */
-  readonly expectedSubscriptions?: readonly ExpectedDiagnosticSubscription[];
-}
 
 export interface UseDiagnosticsResult {
   readonly snapshot: ClientDiagnosticsSnapshot | undefined;
@@ -23,30 +11,18 @@ export interface UseDiagnosticsResult {
 
 /**
  * Observe the versioned, privacy-safe diagnostics snapshot. Native/Worker
- * events are treated as invalidation signals and followed by a fresh request,
- * so expected-but-unregistered subscriptions remain visible on every host.
+ * events are treated as invalidation signals and followed by a fresh read.
  */
-export function useDiagnostics(
-  options: UseDiagnosticsOptions = {},
-): UseDiagnosticsResult {
+export function useDiagnostics(): UseDiagnosticsResult {
   const client = useSyncClient();
-  const requestKey = JSON.stringify(options.expectedSubscriptions ?? []);
-  const request = useMemo<ClientDiagnosticsRequest>(() => {
-    const expectedSubscriptions = JSON.parse(
-      requestKey,
-    ) as ExpectedDiagnosticSubscription[];
-    return expectedSubscriptions.length === 0 ? {} : { expectedSubscriptions };
-  }, [requestKey]);
   const generation = useRef(0);
   const [state, setState] = useState<{
     readonly client: typeof client;
-    readonly requestKey: string;
     readonly snapshot: ClientDiagnosticsSnapshot | undefined;
     readonly error: Error | undefined;
     readonly settled: boolean;
   }>({
     client,
-    requestKey,
     snapshot: undefined,
     error: undefined,
     settled: false,
@@ -56,13 +32,12 @@ export function useDiagnostics(
     const current = ++generation.current;
     setState((prev) => (prev.settled ? { ...prev, settled: false } : prev));
     void Promise.resolve()
-      .then(() => client.diagnosticsSnapshot(request))
+      .then(() => client.diagnosticsSnapshot())
       .then(
         (next) => {
           if (generation.current !== current) return;
           setState({
             client,
-            requestKey,
             snapshot: next,
             error: undefined,
             settled: true,
@@ -72,17 +47,13 @@ export function useDiagnostics(
           if (generation.current !== current) return;
           setState((prev) => ({
             client,
-            requestKey,
-            snapshot:
-              prev.client === client && prev.requestKey === requestKey
-                ? prev.snapshot
-                : undefined,
+            snapshot: prev.client === client ? prev.snapshot : undefined,
             error: reason instanceof Error ? reason : new Error(String(reason)),
             settled: true,
           }));
         },
       );
-  }, [client, request, requestKey]);
+  }, [client]);
 
   useEffect(() => {
     const unsubscribe = client.onDiagnostics(refresh);
@@ -93,7 +64,7 @@ export function useDiagnostics(
     };
   }, [client, refresh]);
 
-  const current = state.client === client && state.requestKey === requestKey;
+  const current = state.client === client;
   return {
     snapshot: current ? state.snapshot : undefined,
     isLoading: !current || !state.settled,

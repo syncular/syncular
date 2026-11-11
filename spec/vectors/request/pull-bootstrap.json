@@ -1,47 +1,45 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "request",
   "frames": [
     {
       "type": "REQ_HEADER",
       "clientId": "client-a",
-      "schemaVersion": 2
+      "schemaVersion": 2,
+      "outboxId": "outbox-7d1c"
     },
     {
       "type": "PULL_HEADER",
       "limitCommits": 500,
       "limitSnapshotRows": 2000,
       "maxSnapshotPages": 8,
-      "accept": 15
+      "accept": 15,
+      "cursor": -1,
+      "registrationDigest": "0b82baefa2615ac28662263c22e429dc2667d9d85e0c69d4c90d2f6d34e50bcf",
+      "echoDigest": ""
     },
     {
-      "type": "SUBSCRIPTION",
-      "id": "sub-notes",
-      "table": "notes",
+      "type": "UNIT",
       "scopes": {
-        "project": [
-          "p1",
-          "p2"
-        ],
-        "team": [
-          "t9"
-        ]
-      },
-      "params": {
-        "includeArchived": false
-      },
+        "project": "p1"
+      }
+    },
+    {
+      "type": "UNIT",
+      "scopes": {
+        "project": "p1",
+        "team": "t9"
+      }
+    },
+    {
+      "type": "PROGRESS",
+      "id": "98bfde90a5f820d3555be61bb46dbbe6",
       "cursor": -1
     },
     {
-      "type": "SUBSCRIPTION",
-      "id": "sub-tasks",
-      "table": "tasks",
-      "scopes": {
-        "project": [
-          "p1"
-        ]
-      },
+      "type": "PROGRESS",
+      "id": "7229e751d6a9ec99dfbcb011ed895d52",
       "cursor": 100,
       "bootstrapState": {
         "asOfCommitSeq": 100,

@@ -1,5 +1,6 @@
-//! Small helpers: base64 (for §11 renderings) and UTF-16 code-unit ordering
-//! (Conventions: map keys are canonically sorted by code unit).
+//! Small helpers: base64 and hex (for §11 renderings and digests) and UTF-16
+//! code-unit ordering (Conventions: map keys are canonically sorted by code
+//! unit).
 
 /// Standard base64 with padding (RFC 4648), encode only — used solely by the
 /// §11 debug rendering.
@@ -25,6 +26,11 @@ pub fn base64(data: &[u8]) -> String {
         });
     }
     out
+}
+
+/// Lowercase hex (Conventions: hashes are hex).
+pub fn hex(data: &[u8]) -> String {
+    data.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Strict less-than by UTF-16 code units. The reference implementation is

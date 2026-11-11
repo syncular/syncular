@@ -71,7 +71,7 @@ async function settle(): Promise<void> {
 }
 
 const DIAGNOSTICS = {
-  version: 1,
+  version: 2,
   capturedAtMs: 10,
   host: {
     kind: 'direct',
@@ -83,10 +83,18 @@ const DIAGNOSTICS = {
   schema: { currentVersion: 1, upgrading: false },
   replica: { localRevision: '7', syncNeeded: false, pendingOutbox: 0 },
   lease: { state: 'none' },
-  subscriptions: [],
-  subscriptionsTruncated: false,
-  activeSubscriptions: 0,
+  units: {
+    bootstrapping: 0,
+    complete: 0,
+    reset: 0,
+    revoked: 0,
+    failed: 0,
+    reasonCodes: [],
+  },
+  activeUnits: 0,
+  replicaCursor: -1,
   storage: { status: 'healthy' },
+  queryFailures: [],
 } as const;
 
 /** A responder that answers create + the accessor commands with fixtures. */
@@ -192,8 +200,9 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       return OK({ ids: ['commit-1'] });
     case 'presence':
       return OK({ peers: [] });
-    case 'setPresence':
     case 'subscribe':
+      return OK({ id: 'unit-1' });
+    case 'setPresence':
     case 'unsubscribe':
       return OK({});
     default:
@@ -227,11 +236,7 @@ describe('createTauriSyncClient', () => {
           blob: new Uint8Array([222, 173, 190, 239]),
         },
       ]);
-      await client.subscribe({
-        id: 'tauri-scope',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      expect(await client.subscribe({ project_id: 'p1' })).toBe('unit-1');
       expect(
         calls.some(
           (call) =>
@@ -724,7 +729,7 @@ describe('createTauriSyncClient', () => {
       params: ['a'],
       coverage: [
         {
-          base: { table: 'tasks', variable: 'list_id' },
+          base: { variable: 'list_id' },
           units: ['a'],
         },
       ],
@@ -741,7 +746,7 @@ describe('createTauriSyncClient', () => {
       params: ['a'],
       coverage: [
         {
-          base: { table: 'tasks', variable: 'list_id' },
+          base: { variable: 'list_id' },
           units: ['a'],
         },
       ],
@@ -775,12 +780,12 @@ describe('createTauriSyncClient', () => {
             [{ id: 't2' }],
           ],
           coverage: { complete: true, pending: [], missing: [] },
-          subscriptions: [
+          units: [
             {
               state: 'known',
-              id: 'tasks',
-              table: 'tasks',
+              id: 'unit-1',
               status: 'active',
+              live: true,
               cursor: 1,
               hasResumeToken: false,
               bootstrapComplete: true,
@@ -798,7 +803,7 @@ describe('createTauriSyncClient', () => {
         { sql: 'SELECT id FROM tasks' },
         { sql: 'SELECT id FROM tasks WHERE id = ?', params: ['t1'] },
       ],
-      subscriptions: ['tasks'],
+      units: ['unit-1'],
       commitIds: ['c1'],
       owner: { id: 'queries:tasks', tables: ['tasks'] },
     });
@@ -806,7 +811,7 @@ describe('createTauriSyncClient', () => {
     expect(read.queries[0]?.[0]?.payload).toEqual(new Uint8Array([1, 2]));
     expect(read.queries[0]?.[0]?.big).toBe(9_007_199_254_740_993n);
     expect(read.queries[1]).toEqual([{ id: 't2' }]);
-    expect(read.subscriptions[0]?.state).toBe('known');
+    expect(read.units[0]?.state).toBe('known');
     expect(read.deliveries).toEqual([
       { status: 'pending', clientCommitId: 'c1' },
     ]);
@@ -817,6 +822,7 @@ describe('createTauriSyncClient', () => {
       id: 'queries:tasks',
       tables: ['tasks'],
     });
+    expect(params?.units).toEqual(['unit-1']);
     expect(params?.commitIds).toEqual(['c1']);
 
     mode = 'busy';
@@ -843,7 +849,7 @@ describe('createTauriSyncClient', () => {
           revision: '3',
           queries: [],
           coverage: { complete: true, pending: [], missing: [] },
-          subscriptions: [],
+          units: [],
           deliveries: [
             {
               status: 'known',
@@ -1483,7 +1489,6 @@ describe('createTauriSyncClient', () => {
         rejectionsChanged: false,
         appliedCommits: [
           {
-            subscriptionId: 'one',
             table: 'todo',
             commitSeq: 17,
             source: 'delta',
@@ -1495,7 +1500,6 @@ describe('createTauriSyncClient', () => {
     expect(applied).toEqual([
       [
         {
-          subscriptionId: 'one',
           table: 'todo',
           commitSeq: 17,
           source: 'delta',
@@ -1517,9 +1521,7 @@ describe('createTauriSyncClient', () => {
 
   test('diagnostics commands and events preserve evidence and mark the Tauri host', async () => {
     const { client, calls, emit } = await build();
-    const requested = await client.diagnosticsSnapshot({
-      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
-    });
+    const requested = await client.diagnosticsSnapshot();
     expect(requested.host).toMatchObject({ kind: 'tauri', role: 'single' });
     expect(
       (
@@ -1529,9 +1531,7 @@ describe('createTauriSyncClient', () => {
             'diagnosticsSnapshot',
         )?.args.command as { params: unknown }
       ).params,
-    ).toEqual({
-      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
-    });
+    ).toEqual({});
 
     const seen: string[] = [];
     client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
@@ -1840,7 +1840,7 @@ describe('SyncClientLike parity', () => {
       outbox: 0,
     });
     expect(await normalized.diagnosticsSnapshot()).toMatchObject({
-      version: 1,
+      version: 2,
       host: { kind: 'tauri' },
     });
     expect(await normalized.mutate([])).toBe('commit-1');
@@ -1976,7 +1976,7 @@ test('every command the bridge invokes is registered and permitted by the plugin
           revision: '1',
           queries: [],
           coverage: { complete: true, pending: [], missing: [] },
-          subscriptions: [],
+          units: [],
           deliveries: [],
         })
       : defaultResponder(cmd, args),

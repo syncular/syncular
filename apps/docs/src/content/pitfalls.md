@@ -28,7 +28,7 @@ See [Browser transport failures](/platform-web-troubleshooting/#transport-failur
 
 A transport that blocks its thread for the whole request freezes everything else on that thread. The Rust client's `Transport` is synchronous, and a host that answers it with a blocking request on the thread that also serves the UI handles no events while a round is on the wire. In one app (a Rust core in a browser worker), a reload with a fully populated replica showed its first screen after 0.97 to 1.69 s (4.2 s with `/sync` delayed by 3 s), against 0.2 s when no round was in the way. With a large replica and a slow link the wait grows to the length of a round.
 
-Hold the first round until the UI has been quiet for a short interval (200 ms, capped at 1.5 s, worked), and keep rounds short with few subscriptions (see [below](#dont-subscribe-every-table-of-every-scope-up-front)). A transport that yields between request and response removes the cause. **Open:** the `Transport` trait has no asynchronous form.
+Hold the first round until the UI has been quiet for a short interval (200 ms, capped at 1.5 s, worked). A transport that yields between request and response removes the cause. **Open:** the `Transport` trait has no asynchronous form.
 
 See [The Transport trait](/platform-rust-specifics/#the-transport-trait).
 
@@ -46,51 +46,43 @@ A wake-up carries no data and tells the client to pull, and `sync_until_idle` en
 
 See [Realtime & the WebSocket-native loop](/concepts-realtime/#deltas-and-wake-ups).
 
-## Subscriptions
+## Units
 
-### Don't subscribe every table of every scope up front
+### Do keep the unit count under the server limit
 
-SPEC §4.1 requires a steady-state pull to carry the client's complete subscription list, and a subscription covers one table. One scope unit (a campaign, a workspace, a project) therefore costs one subscription per table it has rows in, in every round, whether or not anything changed.
+The server accepts at most 500 units in a request that carries the registration list (`limits.maxSubscriptionsPerRequest`). Past 500, every pull that sends the list fails with `sync.limit_exceeded` (HTTP 413, `details.limit`, `details.max`, `details.actual`), the client does not retry it, and that client stops syncing while clients under the limit keep working. A new or reinstalled client sends its list in its first round.
 
-Measured in one app on a dev API: 223 subscriptions per round for an account with 6 campaigns and 7 rulesets, 33.8 KB in the request (3.0 KB gzipped) and 32 KB decoded in the answer, about 150 bytes each way per subscription. Server time grew about 0.4 ms per subscription. An app with 40 tables and 6 campaigns reached 160 to 300 subscriptions, and an earlier schema reached roughly 400 with 38 to 59 KB each way. A wake-up that brings one row costs the same as a confirming round.
+The limit counts units. A unit covers every table that declares its variables, so the number of tables does not count. A steady-state pull carries the replica cursor and a 32-byte digest of the list, and the server answers it with one live section, so a live unit whose rows did not change adds nothing to the round. A unit travels as one frame with its scope map only in a round whose list changed. The server's live scan reads one range of its scope index per unit ([SPEC §4.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#45-the-replica-cursor-and-the-live-section)).
 
-Subscribe lazily. Open a unit's subscriptions when its screen or campaign is open, close them when it is not, and leave out tables no screen reads. A [window](/concepts-windowing/) manages one subscription per unit and turns a change of the set into including or omitting ids. **Open:** the protocol has no multi-table subscription, no subset pull, and no registration by reference, so the list stays proportional to tables times open units.
+Before wire version 4 a subscription covered one table, and every pull carried the complete list with one cursor per entry. One measured account with 6 campaigns and 7 rulesets sent 223 subscriptions per round: 33.8 KB in the request, 32 KB in the answer and about 0.4 ms of server time per subscription, whether or not a row changed. The same account registers 13 units in version 4.
 
-The server accepts at most 500 subscriptions in one request (`maxSubscriptionsPerRequest`). Keep tables with rows times open units under 500. Past 500, every pull of that account fails with `sync.limit_exceeded` (HTTP 413, `details.limit`, `details.max`, `details.actual`), the client does not retry it, and the heaviest accounts stop syncing while lighter ones keep working. Raising the server limit is the last resort; [Request limits](/guide-server/#request-limits) lists what each extra subscription costs.
+Check the count before the limit does. `diagnosticsSnapshot().activeUnits` (`active_units` in the Rust snapshot) is the number of units the next list carries. Assert in the app's own tests that it stays under 500 with every unit of the heaviest fixture account open. A [window](/concepts-windowing/) bounds the number of values one variable contributes; it is the tool for data volume, when one account's rows do not fit on the device, and for a variable with an unbounded number of values, such as month buckets.
 
-Check the count before the limit does. `diagnosticsSnapshot().activeSubscriptions` (`active_subscriptions` in the Rust snapshot) is the number of registrations the next pull sends. Assert in the app's own tests that it stays under 500 with every unit of the heaviest fixture account open.
+See [SPEC §4.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#41-units-and-the-registration-list).
 
-See [SPEC §4.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#41-subscription-identity).
+### Do scope tables you want apart with their own variable
 
-### Do give each scope unit that can be lost its own subscription
+A unit covers every table that declares all of its variables, and it has no table list. An app that wants only some of those tables on a device gives them their own scope variable and registers units on that variable where it needs them.
 
-One subscription may request several values (`campaign_id: [c1, c2]`), and the server answers with the intersection of requested and allowed values. Three consequences make that form wrong for a set that grows and shrinks:
+See [Subscriptions & the outbox](/concepts-subscriptions/#a-unit).
 
-- The subscription has one cursor, so a value added later gets no bootstrap. Changing the list means a new id and a bootstrap of the whole table for every value.
-- A value the client loses is cut out of the answer and the subscription stays active, so its rows stay on the device.
-- Only a variable that loses every value revokes the subscription and purges rows.
+### Do register units in one call
 
-One subscription per unit gives each unit its own bootstrap, its own purge on loss, and a difference of ids as the window change.
-
-See [Scopes & authorization](/concepts-scopes/) and [Windowed sync](/concepts-windowing/).
-
-### Do register subscriptions in one call
-
-Each `subscribe` is a local transaction, and on OPFS a commit costs about 3 ms. Declaring 400 subscriptions one at a time costs about 1.2 s before the first round. `subscribeMany` (`subscribe_many` in Rust) writes them in one transaction and registers none of them when one entry is invalid. Available since 0.36.0.
+Each `subscribe` is a local transaction, and on OPFS a commit costs about 3 ms. Declaring 400 units one at a time costs about 1.2 s before the first round. `subscribeMany` (`subscribe_many` in Rust) writes them in one transaction and registers none of them when one entry is invalid.
 
 See [Subscriptions & the outbox](/concepts-subscriptions/).
 
-### Don't reuse a subscription id for a different query
+### Don't assume a new row starts at version 1
 
-The tuple of table, requested scopes, and params is immutable for a registered id. Declaring the same tuple again is idempotent and keeps the cursor. Declaring a different tuple fails with `client.subscription_intent_mismatch`. Derive ids from the tuple, or unsubscribe and apply the eviction policy before registering another.
+An insert starts the row's `server_version` one above the partition's delete floor: the highest version recorded by a delete whose row the commit left absent. A delete and a scope move advance the version like an upsert. Code that treats `server_version = 1` as "never edited" or compares versions across rows reads wrong values; compare a row's versions only with its own earlier versions.
 
-See [SPEC §4.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#41-subscription-identity).
+See [Commits, cursors, idempotency](/concepts-commits/) and [SPEC §2.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#22-changes-rows-versions).
 
 ## Scopes and hidden data
 
 ### Don't hide information with a client-side filter
 
-Everything a subscription's effective scopes allow arrives in the device's SQLite database, which the user can read. A query that hides gamemaster notes or a draft from the UI hides nothing. Put hidden information in a scope the viewer does not hold, so the server never sends the rows.
+Everything a unit's effective scopes allow arrives in the device's SQLite database, which the user can read. A query that hides gamemaster notes or a draft from the UI hides nothing. Put hidden information in a scope the viewer does not hold, so the server never sends the rows.
 
 See [Scopes & authorization](/concepts-scopes/).
 
@@ -110,7 +102,7 @@ See [Remote server operations](/guide-remote-operations/).
 
 ### Don't expect the client to ask which scope values it may request
 
-A client names concrete values, and a requested `'*'` fails. Nothing returns the list of values the account may request, so a device that has just signed in knows no campaign id. Give the account a row it already holds in a scope it has, which lists its memberships (the membership row can carry a second scope for the user), and derive subscriptions from that row. **Open:** a read of the effective allowed values per variable does not exist.
+A client names concrete values, and a requested `'*'` fails. Nothing returns the list of values the account may request, so a newly signed-in device knows no campaign id. Give the account a row it already holds in a scope it has, which lists its memberships (the membership row can carry a second scope for the user), and derive units from that row. **Open:** a read of the effective allowed values per variable does not exist.
 
 See [SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective).
 
@@ -244,7 +236,7 @@ See [Multi-instance fanout](/server-storage-reference/#multi-instance-fanout).
 
 ### Don't commit outside the hub context
 
-A commit made through `contextFor({ partition, actorId })` reaches the matching sockets as a delta. A commit made without it needs a wake-up, and a wake-up makes every socket of the partition pull. In one app with about 400 subscriptions per account, each server-written history commit woke every online client, and the app estimated the pull at about 15 statements and 50 KB each way per client. Run server-side commits, reaction drains, and imports through `host.serialized((contextFor) => ...)`. Available since 0.37.0.
+A commit made through `contextFor({ partition, actorId })` reaches the matching sockets as a delta. A commit made without it needs a wake-up, and a wake-up makes every socket of the partition pull. In one app with about 400 subscriptions per account on wire version 3, each server-written history commit woke every online client, and the app estimated the pull at about 15 statements and 50 KB each way per client. Run server-side commits, reaction drains, and imports through `host.serialized((contextFor) => ...)`. Available since 0.37.0.
 
 See [Add the Durable Object](/server-workers/#add-the-durable-object).
 

@@ -5,10 +5,16 @@
  * incremental at the pin, and cursor-expired re-bootstrap (§4.6).
  */
 import { describe, expect, test } from 'bun:test';
+import {
+  PROTOCOL_WIRE_VERSION,
+  unitId,
+  encodeMessage,
+  encodeRow,
+  encodeRowsSegment,
+} from '@syncular/core';
 import { compileSchema, type SqliteValue } from '@syncular/server';
 import { SyncClient, type SegmentFetchRequest } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { encodeMessage, encodeRow, encodeRowsSegment } from '@syncular/core';
 import { upsertSql, upsertValues } from '../../server/src/relational-rows';
 import {
   CLIENT_SCHEMA,
@@ -45,26 +51,20 @@ describe('fresh bootstrap', () => {
     const server = makeServer();
     await seedTasks(server, 5);
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     const summary = await b.client.sync();
     expect(summary.segmentRowsApplied).toBe(5);
     expect(summary.bootstrapping).toHaveLength(0);
     expect(tableRows(b.db, 'tasks')).toHaveLength(5);
-    const sub = b.client.subscription('s1');
-    expect(sub?.cursor).toBe(await server.storage.getMaxCommitSeq(PARTITION));
-    expect(sub?.bootstrapState).toBeUndefined();
+    expect(b.client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+      live: true,
+      cursor: await server.storage.getMaxCommitSeq(PARTITION),
+      hasResumeToken: false,
+    });
 
     // A later commit arrives incrementally, not via re-bootstrap.
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t999', 'p1', 'new') },
@@ -90,11 +90,7 @@ describe('fresh bootstrap', () => {
       `INSERT INTO "tasks" (id, project_id, title, done, priority, meta, _sync_version)
        VALUES ('other', 'p2', 'other-scope', 0, NULL, NULL, 0)`,
     );
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
     const ids = tableRows(b.db, 'tasks').map((r) => r.id);
     expect(ids).not.toContain('stale');
@@ -119,11 +115,7 @@ describe('fresh bootstrap', () => {
     ]);
     await seeder.client.sync();
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
     const rows = tableRows(b.db, 'tasks');
     expect(rows[0]).toMatchObject({
@@ -174,16 +166,16 @@ describe('external segments (SEGMENT_REF)', () => {
     return {
       pages,
       response: encodeMessage({
-        wireVersion: 3,
+        wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'response',
         frames: [
           { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
           {
             type: 'SUB_START',
-            id: 's1',
+            id: unitId({ project_id: 'p1' }),
             status: 'active',
             reasonCode: '',
-            effectiveScopes: { project_id: ['p1'] },
+            fenced: [],
             bootstrap: true,
           },
           ...pages.map((page) => ({
@@ -197,6 +189,8 @@ describe('external segments (SEGMENT_REF)', () => {
             scopeDigest: 'digest',
           })),
           { type: 'SUB_END', nextCursor: 1 },
+          { type: 'LIVE_START', status: 'active', reasonCode: '' },
+          { type: 'LIVE_END', throughSeq: 1, echoDigest: new Uint8Array(32) },
         ],
       }),
     };
@@ -248,11 +242,7 @@ describe('external segments (SEGMENT_REF)', () => {
     db.exec(
       "INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES ('logEpoch', 'epoch-1')",
     );
-    client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     return { client, pages, started, gates, issued };
   }
 
@@ -316,7 +306,7 @@ describe('external segments (SEGMENT_REF)', () => {
       await expect(round).rejects.toThrow('segment fetch failed');
       for (const page of pages.slice(1))
         gates.get(page.segmentId)!.reject(new Error('late failure'));
-      expect(client.subscription('s1')?.cursor).toBe(-1);
+      expect(client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     } finally {
       await client.close();
     }
@@ -327,11 +317,7 @@ describe('external segments (SEGMENT_REF)', () => {
     server.limits.inlineSegmentMaxBytes = 0; // force SEGMENT_REF
     await seedTasks(server, 5);
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     const summary = await b.client.sync();
     expect(summary.segmentRowsApplied).toBe(5);
     expect(tableRows(b.db, 'tasks')).toHaveLength(5);
@@ -347,15 +333,11 @@ describe('external segments (SEGMENT_REF)', () => {
       // sqlite lane is whole-table and would swallow the second page).
       limits: { limitSnapshotRows: 2, maxSnapshotPages: 2, accept: 0b0011 },
     });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     b.faults.corruptSegmentDownload = 2; // second page tampered
     await expect(b.client.sync()).rejects.toThrow('content-address');
     // SUB_END was never processed: no cursor, no resume token (§1.4).
-    const sub = b.client.subscription('s1');
+    const sub = b.client.unit(unitId({ project_id: 'p1' }));
     expect(sub?.cursor).toBe(-1);
     expect(sub?.bootstrapState).toBeUndefined();
 
@@ -370,16 +352,12 @@ describe('segment byteLength cap (§5.4)', () => {
     server.limits.inlineSegmentMaxBytes = 0;
     await seedTasks(server, 3);
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     b.faults.extendSegmentDownloadOnce = true;
     await expect(b.client.sync()).rejects.toThrow(
       'segment exceeds its byteLength',
     );
-    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    expect(b.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     await b.client.syncUntilIdle();
     expect(tableRows(b.db, 'tasks')).toHaveLength(3);
   });
@@ -395,16 +373,12 @@ describe('bootstrap resume (§4.7)', () => {
       // accept 0b0011 pins the rows lane — this test is about §4.7 paging.
       limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
     });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
 
     const first = await b.client.sync();
-    expect(first.bootstrapping).toEqual(['s1']);
+    expect(first.bootstrapping).toEqual([unitId({ project_id: 'p1' })]);
     expect(tableRows(b.db, 'tasks')).toHaveLength(2);
-    const mid = b.client.subscription('s1');
+    const mid = b.client.unit(unitId({ project_id: 'p1' }));
     // §4.7: every bootstrap response pins nextCursor = asOfCommitSeq; the
     // token, round-tripped opaquely, marks the subscription as resuming.
     expect(mid?.cursor).toBe(pin);
@@ -412,11 +386,7 @@ describe('bootstrap resume (§4.7)', () => {
 
     // A commit lands mid-bootstrap; the post-pin replay must deliver it.
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       {
@@ -431,7 +401,9 @@ describe('bootstrap resume (§4.7)', () => {
     const rows = tableRows(b.db, 'tasks');
     expect(rows).toHaveLength(5);
     expect(rows[0]?.title).toBe('edited-mid-bootstrap');
-    expect(b.client.subscription('s1')?.bootstrapState).toBeUndefined();
+    expect(
+      b.client.unit(unitId({ project_id: 'p1' }))?.bootstrapState,
+    ).toBeUndefined();
   });
 
   test('a subscription left mid-bootstrap keeps sync-needed raised', async () => {
@@ -441,16 +413,12 @@ describe('bootstrap resume (§4.7)', () => {
       clientId: 'client-b',
       limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
     });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
 
     // A drive that ends early (deadline, budget, a manual sync) leaves the
     // resume token; the status tells every host loop more rounds are owed.
     const first = await b.client.sync();
-    expect(first.bootstrapping).toEqual(['s1']);
+    expect(first.bootstrapping).toEqual([unitId({ project_id: 'p1' })]);
     expect(b.client.statusSnapshot().syncNeeded).toBe(true);
 
     await b.client.syncUntilIdle();
@@ -466,11 +434,7 @@ describe('bootstrap resume (§4.7)', () => {
       // accept 0b0011 pins the rows lane — resume needs a paged bootstrap.
       limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
     });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.sync(); // page 1 applied, token persisted
 
     b.faults.dropResponseOnce = true;
@@ -486,13 +450,9 @@ describe('cursor expiry (§4.6)', () => {
     const server = makeServer();
     await seedTasks(server, 3);
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
-    const oldCursor = b.client.subscription('s1')?.cursor ?? -1;
+    const oldCursor = b.client.diagnosticsSnapshot().replicaCursor;
 
     // The server advances and prunes past B's cursor while B is away.
     await seedTasks(server, 2, 100);
@@ -506,15 +466,13 @@ describe('cursor expiry (§4.6)', () => {
     });
 
     const summary = await b.client.sync();
-    expect(summary.resets).toEqual(['s1']);
-    const sub = b.client.subscription('s1');
+    expect(summary.resets).toEqual([unitId({ project_id: 'p1' })]);
+    const sub = b.client.unit(unitId({ project_id: 'p1' }));
     expect(sub?.cursor).toBe(-1);
     expect(sub?.status).toBe('active');
-    expect(b.client.diagnosticsSnapshot().subscriptions[0]).toMatchObject({
-      id: 's1',
-      state: 'reset',
-      complete: false,
-      reasonCode: 'sync.cursor_expired',
+    expect(b.client.diagnosticsSnapshot().units).toMatchObject({
+      reset: 1,
+      reasonCodes: ['sync.cursor_expired'],
     });
     // §4.6: reset is a staleness signal, not a purge — rows stay in place
     // until bootstrap application replaces them.
@@ -522,12 +480,10 @@ describe('cursor expiry (§4.6)', () => {
 
     await b.client.syncUntilIdle();
     expect(tableRows(b.db, 'tasks')).toHaveLength(5);
-    expect(b.client.subscription('s1')?.cursor).toBe(
-      await server.storage.getMaxCommitSeq(PARTITION),
-    );
-    expect(b.client.diagnosticsSnapshot().subscriptions[0]).toMatchObject({
-      state: 'complete',
-      complete: true,
+    expect(b.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBeUndefined();
+    expect(b.client.diagnosticsSnapshot()).toMatchObject({
+      replicaCursor: await server.storage.getMaxCommitSeq(PARTITION),
+      units: { complete: 1 },
     });
   });
 });
@@ -574,11 +530,7 @@ test('batched image construction converges cold and warm clients with all row ve
       limits: { accept: 7 },
     });
     try {
-      client.subscribe({
-        id: 's',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      client.subscribe({ project_id: 'p1' });
       const start = performance.now();
       await client.syncUntilIdle();
       const elapsedMs = performance.now() - start;
@@ -593,7 +545,10 @@ test('batched image construction converges cold and warm clients with all row ve
           'SELECT MIN(_sync_version) AS minimum, MAX(_sync_version) AS maximum FROM tasks',
         ),
       ).toEqual([{ minimum: 7, maximum: 7 }]);
-      expect(client.subscription('s')?.cursor).toBe(0);
+      expect(client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+        live: true,
+        cursor: 0,
+      });
       if (process.env.SYNCULAR_IMAGE_BENCH === '1')
         console.log(JSON.stringify({ phase, count, elapsedMs }));
     } finally {

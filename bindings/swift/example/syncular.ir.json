@@ -48,16 +48,13 @@
   "subscriptions": [
     {
       "name": "listNotes",
-      "table": "notes",
       "scopes": [
         {
           "variable": "list_id",
-          "values": [
-            {
-              "kind": "parameter",
-              "name": "listId"
-            }
-          ]
+          "value": {
+            "kind": "parameter",
+            "name": "listId"
+          }
         }
       ]
     }

@@ -20,8 +20,10 @@ text below where they differ.
    server reads version 4 only, so no sender keeps today's unbounded
    retention except database-less producers (§6.10) and the attach upload
    (§12.3), which have no outbox.
-2. **A watermark row lives as long as its client record.** It is one row per
-   outbox. The server deletes it when it deletes the client.
+2. **A watermark row lives as long as its partition.** It is one row per
+   outbox. The only code that deletes client records is a log-epoch
+   rotation, and a retry that arrives after a rotation still needs the
+   watermark, so no rule deletes the row.
 3. **Results stored before the upgrade are settled by the client's first
    version 4 request.** That request carries the replica's surviving outbox
    prefix. The server assigns the request's sequence numbers to the stored

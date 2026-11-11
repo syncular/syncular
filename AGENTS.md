@@ -19,8 +19,10 @@ parallel path without current evidence and a specification change.
 - **Spec-first**: wire-behavior changes start in SPEC.md; judgment calls get
   codified back into it.
 - **No fallback paths.** Loud, precise errors over silent degradation.
-- **No timers in tests.** Deterministic flush/readiness helpers only
-  (`flushQuerySchedulers`, chained microtasks); a wall-clock sleep is a bug.
+- **No timers in tests.** Deterministic flush/readiness helpers only:
+  chained-microtask helpers declared in the test file (`drainMicrotasks`,
+  `settle`, `flushEffects`) and the conformance driver's `syncIdle`; a
+  wall-clock sleep is a bug.
 - **Cross-core parity**: behavior observable on the wire or through the
   client surface must match TS and Rust. Semantics changes (e.g. window
   completeness, invalidation granularity) require BOTH cores plus a

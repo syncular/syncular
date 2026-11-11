@@ -291,11 +291,6 @@ export async function runBlobFile(options: {
     const readerPath = join(directory, 'reader.sqlite');
     const reader = await openClient('reader', readerPath);
     const visibilityStarted = performance.now();
-    await reader.invoke('subscribe', {
-      id: 'attachments',
-      table: 'attachments',
-      scopes: { project_id: [PROJECT_ID] },
-    });
     assertProcessSync(await reader.invoke('syncUntilIdle'));
     const readerVisibilityMs = performance.now() - visibilityStarted;
     const visible = await query(
@@ -553,11 +548,6 @@ export async function runBlobLane(options: {
           handle.client.query(SQLITE_CONFIGURATION_SQL),
           options.persistent,
         ),
-      });
-      handle.client.subscribe({
-        id: 'attachments',
-        table: 'attachments',
-        scopes: { project_id: [PROJECT_ID] },
       });
       await withinDeadline(handle.client.syncUntilIdle(), 'blob bootstrap');
     }
@@ -831,11 +821,6 @@ export async function runProcessBlobs(options: {
           ).rows,
           options.persistent,
         ),
-      });
-      await client.invoke('subscribe', {
-        id: 'attachments',
-        table: 'attachments',
-        scopes: { project_id: [PROJECT_ID] },
       });
       assertProcessSync(await client.invoke('syncUntilIdle'));
     }

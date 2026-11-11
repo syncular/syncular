@@ -28,7 +28,6 @@ import {
   type IrColumn,
   type IrDocument,
   type IrScope,
-  type IrScopeValue,
   type IrSubscription,
   type IrSubscriptionScope,
   type IrTable,
@@ -306,45 +305,38 @@ function buildSubscription(
   sub: Manifest['subscriptions'][number],
   tables: readonly IrTable[],
 ): IrSubscription {
-  const table = tables.find((t) => t.name === sub.table);
-  if (table === undefined) {
+  const variables = Object.keys(sub.scopes).sort();
+  if (
+    !tables.some((table) =>
+      variables.every((variable) =>
+        table.scopes.some((scope) => scope.variable === variable),
+      ),
+    )
+  ) {
     throw new TypegenError(
       MANIFEST_FILENAME,
-      `subscription ${sub.name}: unknown table ${JSON.stringify(sub.table)}`,
+      'a unit template covers no table: no table declares all of its scope variables (SPEC §4.1)',
+      'typegen.subscription_uncovered',
+      { subscription: sub.name, variables },
     );
   }
-  const declared = new Set(table.scopes.map((s) => s.variable));
-  const scopes: IrSubscriptionScope[] = Object.entries(sub.scopes)
-    .map(([variable, values]): IrSubscriptionScope => {
-      if (!declared.has(variable)) {
-        throw new TypegenError(
-          MANIFEST_FILENAME,
-          `subscription ${sub.name}: ${JSON.stringify(variable)} is not a scope variable of table ${sub.table} (declared: ${[...declared].join(', ')})`,
-        );
-      }
-      const irValues: IrScopeValue[] = values.map((value) => {
-        const param = PARAM_RE.exec(value);
-        if (param?.[1] !== undefined) {
-          return { kind: 'parameter', name: param[1] };
-        }
-        if (value.includes('{') || value.includes('}')) {
-          throw new TypegenError(
-            MANIFEST_FILENAME,
-            `subscription ${sub.name}: scope value ${JSON.stringify(value)} mixes literals and placeholders — a value is either a literal or exactly '{param}'`,
-          );
-        }
-        if (value === '*') {
-          throw new TypegenError(
-            MANIFEST_FILENAME,
-            `subscription ${sub.name}: '*' is rejected in requested scopes (§3.2)`,
-          );
-        }
-        return { kind: 'literal', value };
-      });
-      return { variable, values: irValues };
-    })
-    .sort((a, b) => (a.variable < b.variable ? -1 : 1));
-  return { name: sub.name, table: sub.table, scopes };
+  const scopes = variables.map((variable): IrSubscriptionScope => {
+    const value = sub.scopes[variable] as string;
+    const param = PARAM_RE.exec(value);
+    if (param?.[1] !== undefined) {
+      return { variable, value: { kind: 'parameter', name: param[1] } };
+    }
+    if (value.includes('{') || value.includes('}') || value === '*') {
+      throw new TypegenError(
+        MANIFEST_FILENAME,
+        "a unit template value is a literal other than '*' (§3.2) or exactly '{param}'",
+        'typegen.subscription_invalid_value',
+        { subscription: sub.name, variable, value },
+      );
+    }
+    return { variable, value: { kind: 'literal', value } };
+  });
+  return { name: sub.name, scopes };
 }
 
 /** Pure IR construction — the testable heart of the generator. Migrations

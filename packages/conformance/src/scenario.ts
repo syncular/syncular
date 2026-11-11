@@ -131,6 +131,8 @@ export class RealtimeObservations {
   readonly ackCursors: number[] = [];
   /** Completed §8.7 socket sync rounds (response END observed). */
   roundsCompleted = 0;
+  /** The decoded response of every completed socket round, in order. */
+  readonly roundResponses: ResponseMessage[] = [];
   /** True once the server closed the connection (§8.7 violations). */
   closedByServer = false;
   /** Any 0x00 delta message delivered while a round response stream
@@ -138,6 +140,7 @@ export class RealtimeObservations {
   deltaInterleavedDuringRound = false;
 
   #responseScanner: MessageStreamScanner | undefined;
+  #responseChunks: Uint8Array[] = [];
 
   readonly #ackWaiters: Waiter[] = [];
   readonly #wakeWaiters: Waiter[] = [];
@@ -250,9 +253,14 @@ export class RealtimeObservations {
     const tag = bytes[0];
     if (tag === REALTIME_TAG_ROUND) {
       this.#responseScanner ??= new MessageStreamScanner();
+      this.#responseChunks.push(bytes.slice(1));
       const done = this.#responseScanner.push(bytes.subarray(1));
       if (done !== undefined) {
         this.#responseScanner = undefined;
+        this.roundResponses.push(
+          decodeResponse(new Uint8Array(Buffer.concat(this.#responseChunks))),
+        );
+        this.#responseChunks = [];
         this.roundsCompleted += 1;
         drain(this.#roundWaiters, this.roundsCompleted);
       }
@@ -735,7 +743,7 @@ export class ScenarioContext {
   async rawSync(
     actorId: string,
     frames: readonly RequestFrame[],
-    options?: { clientId?: string; schemaVersion?: number },
+    options?: { clientId?: string; schemaVersion?: number; outboxId?: string },
   ): Promise<RawSyncResult> {
     const clientId = options?.clientId ?? 'raw-client';
     let logEpoch = this.#rawLogEpochs.get(clientId);

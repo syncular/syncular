@@ -4,6 +4,7 @@
  * with post-apply acks, and wake-up → coalesced catch-up pull.
  */
 import { describe, expect, test } from 'bun:test';
+import { unitId } from '@syncular/core';
 import {
   ClientSyncError,
   SyncClient,
@@ -177,11 +178,7 @@ describe('handshake (§8.1)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
     }
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
@@ -207,11 +204,7 @@ describe('deltas (§8.2)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
       await c.client.syncUntilIdle();
     }
     await b.client.connectRealtime();
@@ -238,7 +231,10 @@ describe('deltas (§8.2)', () => {
     // The cursor advanced through SUB_END, and the post-apply ack reached
     // the server's client record (§8.2: acks update it without a pull).
     const seq = await server.storage.getMaxCommitSeq(PARTITION);
-    expect(b.client.subscription('s1')?.cursor).toBe(seq);
+    expect(b.client.unitCatchup(unitId({ project_id: 'p1' }))).toMatchObject({
+      live: true,
+      cursor: seq,
+    });
     await waitFor(
       async () => {
         const record = await server.storage.getClientRecord(
@@ -266,11 +262,7 @@ describe('deltas (§8.2)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
       await c.client.syncUntilIdle();
     }
     await b.client.connectRealtime();
@@ -292,16 +284,8 @@ describe('deltas (§8.2)', () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1', 'p2'] },
-    });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribeMany([{ project_id: 'p1' }, { project_id: 'p2' }]);
+    b.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
@@ -325,11 +309,7 @@ describe('deltas (§8.2)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
     }
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
@@ -338,7 +318,7 @@ describe('deltas (§8.2)', () => {
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
     b.client.rebootstrapLocalData({ rebootstrapId: 'delta-gap-1' });
-    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    expect(b.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     b.wakes.length = 0;
 
     a.client.mutate([
@@ -348,7 +328,7 @@ describe('deltas (§8.2)', () => {
     await waitFor(
       () =>
         b.wakes.includes('catchup-required') ||
-        (b.client.subscription('s1')?.cursor ?? -1) >= 0,
+        (b.client.unit(unitId({ project_id: 'p1' }))?.cursor ?? -1) >= 0,
       (notify) => {
         const offChange = b.client.onChange(notify);
         const offNeeded = b.client.onSyncNeeded(notify);
@@ -361,7 +341,7 @@ describe('deltas (§8.2)', () => {
     );
     // The delta carried t2 only; applying it would have completed the
     // bootstrap without t1.
-    expect(b.client.subscription('s1')?.cursor).toBe(-1);
+    expect(b.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     expect(tableRows(b.db, 'tasks')).toEqual([]);
     expect(b.client.statusSnapshot().syncNeeded).toBe(true);
 
@@ -376,11 +356,7 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
       await c.client.syncUntilIdle();
     }
     // B connects while already behind → wakePending on the session.
@@ -428,11 +404,7 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
   test('a broadcast reset-required wake-up flags a pull (§8.3)', async () => {
     const server = makeServer();
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
     server.hub.wake(PARTITION, 'reset-required');
@@ -465,11 +437,7 @@ describe('realtime policy (§8.8)', () => {
       clientId: 'required-never-connected',
       realtimePolicy: 'required',
     });
-    local.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await expect(local.client.sync()).rejects.toMatchObject({
       name: 'RealtimeUnavailableError',
       code: 'sync.realtime_unavailable',
@@ -520,11 +488,7 @@ describe('realtime policy (§8.8)', () => {
         };
       },
     });
-    local.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.connectRealtime();
     expect(local.client.diagnosticsSnapshot().host.realtime).toBe('connected');
     await local.client.syncUntilIdle();
@@ -577,11 +541,7 @@ describe('realtime policy (§8.8)', () => {
           },
         }),
       });
-      local.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      local.client.subscribe({ project_id: 'p1' });
       await local.client.connectRealtime();
       await expect(local.client.sync()).rejects.toThrow();
       expect(closes).toBe(1);
@@ -667,11 +627,7 @@ describe('realtime policy (§8.8)', () => {
     await expect(local.client.connectRealtime()).rejects.toMatchObject({
       code: 'sync.invalid_request',
     });
-    local.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.syncUntilIdle();
     expect(local.httpRounds.count).toBeGreaterThan(0);
     expect(local.client.diagnosticsSnapshot().host).toMatchObject({
@@ -686,11 +642,7 @@ describe('realtime policy (§8.8)', () => {
   test('optional keeps the HTTP round and reports the explicit state', async () => {
     const server = makeServer();
     const local = await makeClient(server, { clientId: 'policy-optional' });
-    local.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.syncUntilIdle();
     expect(local.httpRounds.count).toBeGreaterThan(0);
     expect(local.client.diagnosticsSnapshot().host).toMatchObject({

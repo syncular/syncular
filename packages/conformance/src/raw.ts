@@ -7,10 +7,13 @@
  * implementation is paired.
  */
 import {
+  type CommitFrame,
   decodeMessage,
   encodeMessage,
   encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
+  type LiveEndFrame,
+  type LiveStartFrame,
   type PushOperation,
   type PushResultFrame,
   type RequestFrame,
@@ -18,16 +21,17 @@ import {
   type ResponseMessage,
   type RowColumn,
   type RowValue,
-  type ScopeMap,
+  registrationDigest,
   type SubEndFrame,
   type SubStartFrame,
+  unitId,
 } from '@syncular/core';
 import type {
   DriverRow,
   DriverRowValue,
   DriverSchema,
-  DriverScopeMap,
   DriverTable,
+  DriverUnitScopes,
 } from './driver';
 
 // ---------------------------------------------------------------------------
@@ -64,7 +68,7 @@ export function findTable(schema: DriverSchema, name: string): DriverTable {
   return table;
 }
 
-/** Encode a driver row as a sparse push payload (§2.4, wire version 3):
+/** Encode a driver row as a sparse push payload (§2.4):
  * every column present, byte-identical to a full sparse row. */
 export function encodeDriverRow(
   table: DriverTable,
@@ -115,18 +119,30 @@ export function rawDelete(
   };
 }
 
+/** `clientSeq` 0 is a commit without an outbox sequence (§6.3.2). */
 export function rawPushCommit(
   clientCommitId: string,
   operations: readonly PushOperation[],
+  clientSeq = 0,
 ): RequestFrame {
-  return { type: 'PUSH_COMMIT', clientCommitId, operations: [...operations] };
+  return {
+    type: 'PUSH_COMMIT',
+    clientCommitId,
+    clientSeq,
+    operations: [...operations],
+  };
 }
 
+/** The `PULL_HEADER` of a request that registers the empty list unless
+ * `registrationDigest` says otherwise (§4.1, §4.2). */
 export function rawPullHeader(overrides?: {
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
   accept?: number;
+  cursor?: number;
+  registrationDigest?: Uint8Array;
+  echoDigest?: Uint8Array;
 }): RequestFrame {
   return {
     type: 'PULL_HEADER',
@@ -134,27 +150,59 @@ export function rawPullHeader(overrides?: {
     limitSnapshotRows: overrides?.limitSnapshotRows ?? 0,
     maxSnapshotPages: overrides?.maxSnapshotPages ?? 0,
     accept: overrides?.accept ?? 0b0011,
+    cursor: overrides?.cursor ?? -1,
+    registrationDigest: overrides?.registrationDigest ?? registrationDigest([]),
+    echoDigest: overrides?.echoDigest ?? new Uint8Array(0),
   };
 }
 
-export function rawSubscription(
-  id: string,
-  table: string,
-  scopes: DriverScopeMap,
-  cursor: number,
-  extra?: { bootstrapState?: string; params?: string },
-): RequestFrame {
-  return {
-    type: 'SUBSCRIPTION',
-    id,
-    table,
-    scopes: scopes as ScopeMap,
-    cursor,
-    ...(extra?.bootstrapState !== undefined
-      ? { bootstrapState: extra.bootstrapState }
-      : {}),
-    ...(extra?.params !== undefined ? { params: extra.params } : {}),
-  };
+/** A unit of a raw pull: `cursor` present makes it catching up (one
+ * `PROGRESS` frame, §4.3); absent makes it live under the replica cursor. */
+export interface RawUnit {
+  readonly scopes: DriverUnitScopes;
+  readonly cursor?: number;
+  readonly bootstrapState?: string;
+}
+
+/**
+ * A pull whose registration list travels (§4.1): the header with the list's
+ * digest, one `UNIT` frame per unit, then one `PROGRESS` frame per catching-up
+ * unit, all in registration order. `travel: false` sends the digest alone.
+ */
+export function rawPull(
+  units: readonly RawUnit[],
+  overrides?: Parameters<typeof rawPullHeader>[0] & { travel?: boolean },
+): RequestFrame[] {
+  return [
+    rawPullHeader({
+      ...overrides,
+      registrationDigest:
+        overrides?.registrationDigest ??
+        registrationDigest(units.map((unit) => unit.scopes)),
+    }),
+    ...(overrides?.travel === false
+      ? []
+      : units.map(
+          (unit): RequestFrame => ({
+            type: 'UNIT',
+            scopes: { ...unit.scopes },
+          }),
+        )),
+    ...units.flatMap((unit): RequestFrame[] =>
+      unit.cursor === undefined
+        ? []
+        : [
+            {
+              type: 'PROGRESS',
+              id: unitId(unit.scopes),
+              cursor: unit.cursor,
+              ...(unit.bootstrapState !== undefined
+                ? { bootstrapState: unit.bootstrapState }
+                : {}),
+            },
+          ],
+    ),
+  ];
 }
 
 export function rawRequestBytes(
@@ -163,6 +211,7 @@ export function rawRequestBytes(
     clientId?: string;
     schemaVersion?: number;
     logEpoch?: string;
+    outboxId?: string;
   },
 ): Uint8Array {
   return encodeMessage({
@@ -175,6 +224,9 @@ export function rawRequestBytes(
         schemaVersion: options?.schemaVersion ?? 1,
         ...(options?.logEpoch !== undefined
           ? { logEpoch: options.logEpoch }
+          : {}),
+        ...(options?.outboxId !== undefined
+          ? { outboxId: options.outboxId }
           : {}),
       },
       ...frames,
@@ -222,16 +274,25 @@ export function rawInvalidRequestBytes(
     0x53,
     0x50,
     0x32, // "SSP2"
-    ...u16le(3), // wireVersion
+    ...u16le(PROTOCOL_WIRE_VERSION),
     0x01, // msgKind: request
     0x00, // flags
   ];
   // REQ_HEADER (0x01): clientId str + schemaVersion i32 (always ≥ 1) +
-  // logEpoch option byte (absent — an epoch acquisition round, §2.1).
-  bytes.push(...frame(0x01, [...strField(clientId), ...u32le(1), 0x00]));
+  // logEpoch and outboxId option bytes (absent: an epoch acquisition round
+  // of a sender without an outbox, §2.1, §6.3.2).
+  bytes.push(...frame(0x01, [...strField(clientId), ...u32le(1), 0x00, 0x00]));
   if (kind === 'empty-commit') {
-    // PUSH_COMMIT (0x02) with zero operations (§6.1 sync.empty_commit).
-    bytes.push(...frame(0x02, [...strField('empty'), ...u32le(0)]));
+    // PUSH_COMMIT (0x02): clientCommitId, clientSeq i64 0, zero operations
+    // (§6.1 sync.empty_commit).
+    bytes.push(
+      ...frame(0x02, [
+        ...strField('empty'),
+        ...u32le(0),
+        ...u32le(0),
+        ...u32le(0),
+      ]),
+    );
   }
   // END
   bytes.push(...frame(0x00, []));
@@ -288,11 +349,36 @@ export function responseSections(
 
 export function responseSection(
   message: ResponseMessage,
-  id: string,
+  unit: DriverUnitScopes,
 ): ResponseSection {
-  const section = responseSections(message).get(id);
+  const section = responseSections(message).get(unitId(unit));
   if (section === undefined) {
-    throw new Error(`response has no subscription section ${id}`);
+    throw new Error('response has no section for the unit');
   }
   return section;
+}
+
+/** The live section (§4.4): its `COMMIT` frames between `LIVE_START` and
+ * `LIVE_END`. */
+export function responseLive(message: ResponseMessage): {
+  readonly start: LiveStartFrame;
+  readonly commits: readonly CommitFrame[];
+  readonly end: LiveEndFrame;
+} {
+  const start = message.frames.find(
+    (f): f is LiveStartFrame => f.type === 'LIVE_START',
+  );
+  const end = message.frames.find(
+    (f): f is LiveEndFrame => f.type === 'LIVE_END',
+  );
+  if (start === undefined || end === undefined) {
+    throw new Error('response has no live section');
+  }
+  return {
+    start,
+    commits: message.frames.filter(
+      (f): f is CommitFrame => f.type === 'COMMIT',
+    ),
+    end,
+  };
 }

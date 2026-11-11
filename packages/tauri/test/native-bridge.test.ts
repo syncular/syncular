@@ -226,11 +226,7 @@ if (!available) {
           tauri: host.api,
         });
         try {
-          await client.subscribe({
-            id: 'todos',
-            table: 'todos',
-            scopes: { list_id: ['one'] },
-          });
+          const unit = await client.subscribe({ list_id: 'one' });
           const id = await client.mutate([
             {
               op: 'upsert',
@@ -245,7 +241,7 @@ if (!available) {
             await host.exec(
               "INSERT INTO _syncular_meta(key,value) VALUES('logEpoch','old-epoch')",
             );
-          const before = (await client.diagnosticsSnapshot()).subscriptions;
+          const before = (await client.diagnosticsSnapshot()).units;
           const statuses: boolean[] = [];
           client.onChange((batch) => {
             if (batch.status) statuses.push(batch.status.upgrading);
@@ -253,7 +249,7 @@ if (!available) {
           await client.setTransportEnabled(true);
           expect(await client.sync()).toMatchObject({
             ok: true,
-            report: { resets: stored === undefined ? [] : ['todos'] },
+            report: { resets: stored === undefined ? [] : [unit] },
           });
           expect((await client.statusSnapshot()).upgrading).toBe(
             stored !== undefined,
@@ -271,9 +267,7 @@ if (!available) {
           ).toBe(stored === undefined ? 1 : 0);
           if (stored === undefined) {
             expect(statuses.every((upgrading) => !upgrading)).toBe(true);
-            expect((await client.diagnosticsSnapshot()).subscriptions).toEqual(
-              before,
-            );
+            expect((await client.diagnosticsSnapshot()).units).toEqual(before);
           } else expect(statuses).toContain(true);
           await client.syncUntilIdle();
           expect((await client.statusSnapshot()).upgrading).toBe(false);
@@ -290,10 +284,21 @@ if (!available) {
     test('native ACK protection survives unrelated bootstraps without task rewrites', async () => {
       const nativeSchema = {
         ...schema,
-        tables: [...schema.tables, { ...schema.tables[0], name: 'other' }],
+        tables: [
+          ...schema.tables,
+          {
+            ...schema.tables[0],
+            name: 'other',
+            scopes: [{ pattern: 'other:{other_id}', column: 'list_id' }],
+          },
+        ],
       };
+      const counts = [2, 6, 12];
+      const others = counts.flatMap((count) =>
+        Array.from({ length: count }, (_, index) => `${count}-${index}`),
+      );
       const source = makeServer(nativeSchema);
-      source.allowed['actor-1'] = { list_id: ['one'] };
+      source.allowed['actor-1'] = { list_id: ['one'], other_id: others };
       const server = Bun.serve({
         hostname: '127.0.0.1',
         port: 0,
@@ -332,13 +337,12 @@ if (!available) {
         await host.exec(
           "CREATE TABLE ack_replay_writes(kind TEXT); CREATE TRIGGER count_ack_restore AFTER DELETE ON todos BEGIN INSERT INTO ack_replay_writes VALUES('restore'); END; CREATE TRIGGER count_ack_replay AFTER INSERT ON todos BEGIN INSERT INTO ack_replay_writes VALUES('replay'); END;",
         );
-        for (const subscriptions of [2, 6, 12]) {
-          for (let index = 0; index < subscriptions; index += 1)
-            await client.subscribe({
-              id: `other-${subscriptions}-${index}`,
-              table: 'other',
-              scopes: { list_id: ['one'] },
-            });
+        for (const count of counts) {
+          await client.subscribeMany(
+            others
+              .filter((other) => other.startsWith(`${count}-`))
+              .map((other) => ({ other_id: other })),
+          );
           await client.sync();
           expect(
             (
@@ -347,11 +351,7 @@ if (!available) {
           ).toBe(0);
           expect(await client.query('SELECT id FROM todos')).toHaveLength(32);
         }
-        await client.subscribe({
-          id: 'todos',
-          table: 'todos',
-          scopes: { list_id: ['one'] },
-        });
+        await client.subscribe({ list_id: 'one' });
         await client.syncUntilIdle();
         expect(await client.query('SELECT id FROM todos')).toHaveLength(32);
       } finally {
@@ -403,11 +403,7 @@ if (!available) {
       });
       try {
         await client.activateSecurity();
-        await client.subscribe({
-          id: 'todos',
-          table: 'todos',
-          scopes: { list_id: ['one'] },
-        });
+        await client.subscribe({ list_id: 'one' });
         const first = await client.mutate([
           {
             op: 'upsert',
@@ -508,11 +504,7 @@ if (!available) {
           clientId: 'native-own-ack',
           tauri: host.api,
         });
-        await client.subscribe({
-          id: 'todos',
-          table: 'todos',
-          scopes: { list_id: ['one'] },
-        });
+        await client.subscribe({ list_id: 'one' });
         await client.mutate([
           {
             op: 'upsert',
@@ -574,11 +566,14 @@ if (!available) {
 
     test('native persisted scope registrations migrate 89→90 and survive compatible 91', async () => {
       const host = nativeTauri();
-      const state = (id: string) =>
-        host.api.invoke<{ result: { state: { cursor: number } | null } }>(
-          'syncular_command',
-          { command: { method: 'subscriptionState', params: { id } } },
-        );
+      const unit = async (id: string) =>
+        (
+          await host.api.invoke<{
+            result: { unit: { cursor?: number } | null };
+          }>('syncular_command', {
+            command: { method: 'unit', params: { id } },
+          })
+        ).result.unit;
       const pendingIds = () =>
         host.api.invoke<{ result: { ids: string[] } }>('syncular_command', {
           command: { method: 'pendingCommitIds', params: {} },
@@ -605,15 +600,8 @@ if (!available) {
           clientId: 'native-scope',
           tauri: host.api,
         });
-        await client.subscribe({
-          id: 'old',
-          table: 'todos',
-          scopes: { theatre_calendar_id: ['one'] },
-        });
-        await client.setWindow(
-          { table: 'todos', variable: 'theatre_calendar_id' },
-          ['one'],
-        );
+        const old = await client.subscribe({ theatre_calendar_id: 'one' });
+        await client.setWindow({ variable: 'theatre_calendar_id' }, ['one']);
         const pending = await client.mutate([
           {
             table: 'todos',
@@ -627,21 +615,14 @@ if (!available) {
           clientId: 'native-scope',
           tauri: host.api,
         });
-        expect((await state('old')).result.state).toBeNull();
+        expect(await unit(old)).toBeNull();
         expect(
-          await client.windowState({
-            table: 'todos',
-            variable: 'theatre_calendar_id',
-          }),
+          await client.windowState({ variable: 'theatre_calendar_id' }),
         ).toEqual({ units: [], pending: [] });
         expect((await pendingIds()).result.ids).toEqual([pending]);
-        await client.subscribe({
-          id: 'current',
-          table: 'todos',
-          scopes: { calendar_theatre_id: ['one'] },
-        });
+        const current = await client.subscribe({ calendar_theatre_id: 'one' });
         await host.exec(
-          `UPDATE _syncular_subscriptions SET state_json=json_set(state_json,'$.cursor',123)`,
+          `UPDATE _syncular_units SET cursor=123 WHERE id='${current}'`,
         );
         await client.close();
         client = await createTauriSyncClient({
@@ -649,14 +630,14 @@ if (!available) {
           clientId: 'native-scope',
           tauri: host.api,
         });
-        expect((await state('current')).result.state?.cursor).toBe(123);
+        expect((await unit(current))?.cursor).toBe(123);
         await client.close();
         client = await createTauriSyncClient({
           schema: schemas[2]!,
           clientId: 'native-scope',
           tauri: host.api,
         });
-        expect((await state('current')).result.state?.cursor).toBe(-1);
+        expect((await unit(current))?.cursor).toBe(-1);
         expect((await pendingIds()).result.ids).toEqual([pending]);
         await client.close();
       } finally {
@@ -743,11 +724,7 @@ if (!available) {
           tauri: host.api,
           retainFailedCommits: true,
         });
-        await client.subscribe({
-          id: 'single',
-          table: 'todos',
-          scopes: { list_id: ['one'] },
-        });
+        await client.subscribe({ list_id: 'one' });
         await client.syncUntilIdle();
         seed.client.patch('todos', 'row', { title: 'winner' });
         await seed.client.syncUntilIdle();
@@ -875,11 +852,7 @@ if (!available) {
           },
         ]);
         await seed.client.syncUntilIdle();
-        reader.client.subscribe({
-          id: 'exact',
-          table: 'todos',
-          scopes: { row_id: ['old'] },
-        });
+        reader.client.subscribe({ row_id: 'old' });
         await reader.client.syncUntilIdle();
         expect(reader.client.query('SELECT id FROM todos')).toEqual([
           { id: 'old' },
@@ -890,7 +863,7 @@ if (!available) {
           tauri: host.api,
           retainFailedCommits: true,
         });
-        const base = { table: 'todos', variable: 'list_id' };
+        const base = { variable: 'list_id' };
         await client.setWindow(base, ['one']);
         expect(
           (
@@ -1028,11 +1001,7 @@ if (!available) {
           retainFailedCommits: true,
           tauri: host.api,
         });
-        await client.subscribe({
-          id: 'todos',
-          table: 'todos',
-          scopes: { list_id: ['one'] },
-        });
+        await client.subscribe({ list_id: 'one' });
         await client.syncUntilIdle();
         for (const resolution of [
           'server',
@@ -1335,20 +1304,16 @@ if (!available) {
       }
     });
 
-    test('real native rebootstrap retains optimistic work and rewinds subscriptions', async () => {
+    test('real native rebootstrap retains optimistic work and rewinds units', async () => {
       const host = nativeTauri();
       try {
         const client = await createTauriSyncClient({ schema, tauri: host.api });
-        await client.subscribe({
-          id: 'native-repair-todos',
-          table: 'todos',
-          scopes: { listId: ['held'] },
-        });
+        await client.subscribe({ list_id: 'held' });
         const pending = await client.mutate([
           {
             op: 'upsert',
             table: 'todos',
-            values: { id: 'offline', listId: 'held', title: 'keep me' },
+            values: { id: 'offline', list_id: 'held', title: 'keep me' },
           },
         ]);
         expect(
@@ -1511,7 +1476,7 @@ test.skipIf(!available)(
         ]),
       });
       await harness.exec(
-        `INSERT INTO _syncular_base_todos VALUES('one','l1','accepted',7); INSERT INTO todos VALUES('one','l1','unaccepted',7); INSERT INTO _syncular_subscriptions VALUES('s','todos','{"requested":{"list_id":["l1"]},"effectiveScopes":{"list_id":["l1"]},"status":"active","cursor":7}');`,
+        `INSERT INTO _syncular_base_todos VALUES('one','l1','accepted',7); INSERT INTO todos VALUES('one','l1','unaccepted',7); INSERT INTO _syncular_units(id,scopes,explicit,cursor,echo) VALUES('s','{"list_id":"l1"}',1,NULL,'[{"table":"todos","status":"active","scopes":{"list_id":["l1"]}}]');`,
       );
       const before = await client.localRevision();
       const snapshot = await client.authoritySnapshot();

@@ -7,12 +7,15 @@ import { describe, expect, test } from 'bun:test';
 import {
   canonicalScopeJson,
   decodeMessage,
+  decodeRemoteOperationResponse,
   encodeMessage,
   encodeRemoteOperationRequest,
-  decodeRemoteOperationResponse,
   encodeRow,
   encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
+  registrationDigest,
   type RowColumn,
+  unitId,
 } from '@syncular/core';
 import {
   blobIdFor,
@@ -93,7 +96,7 @@ async function makeApp(
 
 function requestBytes(title = 'hello'): Uint8Array {
   return encodeMessage({
-    wireVersion: 3,
+    wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
       {
@@ -105,6 +108,7 @@ function requestBytes(title = 'hello'): Uint8Array {
       {
         type: 'PUSH_COMMIT',
         clientCommitId: 'c1',
+        clientSeq: 0,
         operations: [
           {
             table: 'tasks',
@@ -120,14 +124,12 @@ function requestBytes(title = 'hello'): Uint8Array {
         limitSnapshotRows: 0,
         maxSnapshotPages: 0,
         accept: 0b0011,
-      },
-      {
-        type: 'SUBSCRIPTION',
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
         cursor: -1,
+        registrationDigest: registrationDigest([{ project_id: 'p1' }]),
+        echoDigest: new Uint8Array(),
       },
+      { type: 'UNIT', scopes: { project_id: 'p1' } },
+      { type: 'PROGRESS', id: unitId({ project_id: 'p1' }), cursor: -1 },
     ],
   });
 }
@@ -416,7 +418,7 @@ describe('transport compression (§1.3)', () => {
    * request must decode to the same SSP2 response. */
   function pullBytes(): Uint8Array {
     return encodeMessage({
-      wireVersion: 3,
+      wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
       frames: [
         {
@@ -431,14 +433,12 @@ describe('transport compression (§1.3)', () => {
           limitSnapshotRows: 0,
           maxSnapshotPages: 0,
           accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
           cursor: -1,
+          registrationDigest: registrationDigest([{ project_id: 'p1' }]),
+          echoDigest: new Uint8Array(),
         },
+        { type: 'UNIT', scopes: { project_id: 'p1' } },
+        { type: 'PROGRESS', id: unitId({ project_id: 'p1' }), cursor: -1 },
       ],
     });
   }

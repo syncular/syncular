@@ -71,11 +71,7 @@ const remoteTasks = (): string[] =>
 test('the worker syncs against its local authority, then attaches to the remote server', async () => {
   const handle = await handleFor('./local-authority-worker.ts', 'local-worker');
   expect(await handle.localAuthorityState()).toBe('local');
-  await handle.subscribe({
-    id: 'tasks',
-    table: 'tasks',
-    scopes: { project_id: ['p1'] },
-  });
+  await handle.subscribe({ project_id: 'p1' });
   await handle.mutate([
     {
       table: 'tasks',

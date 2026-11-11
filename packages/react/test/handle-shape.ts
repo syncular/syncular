@@ -29,8 +29,7 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
     snapshotRead: (spec) => Promise.resolve(client.snapshotRead(spec)),
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
-    diagnosticsSnapshot: (request) =>
-      Promise.resolve(client.diagnosticsSnapshot(request)),
+    diagnosticsSnapshot: () => Promise.resolve(client.diagnosticsSnapshot()),
     conflicts: () => Promise.resolve(client.conflicts()),
     rejections: () => Promise.resolve(client.rejections()),
     commitOutcome: (clientCommitId) =>

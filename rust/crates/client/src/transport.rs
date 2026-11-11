@@ -89,8 +89,8 @@ pub trait Transport {
     /// The client calls this instead of `sync` whenever realtime is
     /// connected (the socket IS the sync-round
     /// transport, not a fallback pair); the server registers the round's
-    /// subscriptions on the connection at round end, so no reconnect is
-    /// needed after subscription changes.
+    /// live units on the connection at round end, so no reconnect is
+    /// needed after registration changes (§8.7).
     fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>;
     /// Segment download via the direct endpoint (§5.5).
     fn download_segment(
@@ -220,11 +220,12 @@ pub trait Transport {
     /// called when `blob_upload_grant` returned a `Url` arm.
     fn blob_put_url(
         &mut self,
+        blob_id: &str,
         url: &str,
         bytes: &[u8],
         media_type: Option<&str>,
     ) -> Result<(), TransportError> {
-        let _ = (url, bytes, media_type);
+        let _ = (blob_id, url, bytes, media_type);
         Err(TransportError::new(
             "sync.invalid_request",
             "this transport has no blob put url (§5.9.3)",

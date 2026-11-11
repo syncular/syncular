@@ -10,6 +10,10 @@ import {
   type SqlValue,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import {
+  ensureFailedOverlaySchema,
+  failedOverlayCommits,
+} from '../src/failed-overlay';
 import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
 
 class ReplayDatabase extends BunClientDatabase {
@@ -427,4 +431,28 @@ test('a retained rejection for a removed table does not wedge the boot reset', a
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a scoped read of retained intent searches the row index', () => {
+  const db = new BunClientDatabase();
+  ensureFailedOverlaySchema(db);
+  const reads: string[] = [];
+  const query = db.query.bind(db);
+  db.query = (sql, params) => {
+    if (sql.includes('json_each(?1)')) reads.push(sql);
+    return query(sql, params);
+  };
+  failedOverlayCommits(db, true, ['["tasks","t1"]', '["notes"]']);
+  db.query = query;
+  expect(reads).toHaveLength(1);
+  const plan = db
+    .query(`EXPLAIN QUERY PLAN ${reads[0]}`, ['[]'])
+    .map((row) => String(row.detail));
+  expect(plan).toContain(
+    'SEARCH r USING COVERING INDEX _syncular_failed_rows_row (tbl=? AND id=?)',
+  );
+  expect(plan).toContain(
+    'SEARCH r USING COVERING INDEX _syncular_failed_rows_row (tbl=?)',
+  );
+  db.close();
 });

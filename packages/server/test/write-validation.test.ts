@@ -752,7 +752,9 @@ describe('whole-commit validation (§6.8)', () => {
     ]);
     expect(seen).toEqual({
       keys: ['t-stored', 't-staged'],
-      versions: { 't-stored': 1, 't-staged': 1 },
+      // §2.2: the staged insert starts above the floor its commit's delete
+      // raised to 2.
+      versions: { 't-stored': 1, 't-staged': 3 },
       mismatched: [],
       absentSingles: ['t-absent', 't-delete'],
     });

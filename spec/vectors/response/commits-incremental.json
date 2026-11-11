@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "response",
   "frames": [
     {
@@ -9,16 +9,9 @@
       "resetRequired": false
     },
     {
-      "type": "SUB_START",
-      "id": "sub-notes",
+      "type": "LIVE_START",
       "status": "active",
-      "reasonCode": "",
-      "effectiveScopes": {
-        "project": [
-          "p1"
-        ]
-      },
-      "bootstrap": false
+      "reasonCode": ""
     },
     {
       "type": "COMMIT",
@@ -65,15 +58,18 @@
           "tableIndex": 1,
           "rowId": "task-9",
           "op": "delete",
+          "rowVersion": 3,
           "scopes": {
+            "assignee": "u1",
             "project": "p1"
           }
         }
       ]
     },
     {
-      "type": "SUB_END",
-      "nextCursor": 44
+      "type": "LIVE_END",
+      "throughSeq": 44,
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
     }
   ]
 }

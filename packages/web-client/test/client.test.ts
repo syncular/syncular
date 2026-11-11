@@ -5,6 +5,13 @@
  * rejection handling (§6.3), and the schema-floor stop state (§1.6).
  */
 import { describe, expect, test } from 'bun:test';
+import {
+  PROTOCOL_WIRE_VERSION,
+  unitId,
+  encodeMessage,
+  encodeRow,
+  encodeRowsSegment,
+} from '@syncular/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +23,6 @@ import {
   type SqlRow,
   type SqlValue,
 } from '@syncular/client';
-import { encodeMessage, encodeRow } from '@syncular/core';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { ValidationRejection } from '@syncular/server';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
@@ -170,11 +176,7 @@ describe('two clients, one server (tripwire)', () => {
         databasePath,
       });
       try {
-        reopened.client.subscribe({
-          id: 'tasks',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
-        });
+        reopened.client.subscribe({ project_id: 'p1' });
         expect((await reopened.client.sync()).applied).toEqual(ids.slice(0, 1));
         expect((await reopened.client.sync()).applied).toEqual(ids.slice(1));
         await reopened.client.syncUntilIdle();
@@ -198,16 +200,8 @@ describe('two clients, one server (tripwire)', () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
+    b.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     await b.client.syncUntilIdle();
 
@@ -236,11 +230,7 @@ describe('two clients, one server (tripwire)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
       await c.client.syncUntilIdle();
     }
     a.client.mutate([
@@ -277,11 +267,7 @@ describe('two clients, one server (tripwire)', () => {
   test('a pushing client gets its own changes back in the same round', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
@@ -301,11 +287,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
     }
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'v1') },
@@ -365,11 +347,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
       await c.client.syncUntilIdle();
     }
     a.client.mutate([
@@ -403,11 +381,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
     }
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'v1') },
@@ -457,12 +431,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
           clientId: 'client-b',
           limits: { maxPushCommitsPerRequest: 1 },
         });
-        for (const c of [a, b])
-          c.client.subscribe({
-            id: 's1',
-            table: 'tasks',
-            scopes: { project_id: ['p1'] },
-          });
+        for (const c of [a, b]) c.client.subscribe({ project_id: 'p1' });
         a.client.mutate([
           {
             table: 'tasks',
@@ -539,12 +508,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
       const a = await makeClient(server, { clientId: 'writer' });
       const database = new StatementLog();
       const b = await makeClient(server, { clientId: 'reader', database });
-      for (const c of [a, b])
-        c.client.subscribe({
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
-        });
+      for (const c of [a, b]) c.client.subscribe({ project_id: 'p1' });
       await b.client.syncUntilIdle();
       a.client.mutate([
         { table: 'tasks', op: 'upsert', values: taskValues('in', 'p1') },
@@ -595,11 +559,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
     try {
-      a.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      a.client.subscribe({ project_id: 'p1' });
       a.client.mutate([
         {
           table: 'tasks',
@@ -614,11 +574,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
       });
       let edit: string;
       try {
-        first.client.subscribe({
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
-        });
+        first.client.subscribe({ project_id: 'p1' });
         await first.client.syncUntilIdle();
         first.client.mutate([
           {
@@ -671,11 +627,7 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
           { tbl: 'tasks', row_id: 't1' },
           { tbl: 'tasks', row_id: 't2' },
         ]);
-        reopened.client.subscribe({
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['p1'] },
-        });
+        reopened.client.subscribe({ project_id: 'p1' });
         // Round 1 drains the unrelated commit and pulls A's write; the
         // pending edit replays over it.
         expect((await reopened.client.sync()).applied).toHaveLength(1);
@@ -761,11 +713,7 @@ describe('durable commit outcomes', () => {
         clientId: 'durable-client',
         databasePath,
       });
-      first.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['durable'] },
-      });
+      first.client.subscribe({ project_id: 'durable' });
       const clientCommitId = first.client.mutate([
         {
           table: 'tasks',
@@ -811,11 +759,7 @@ describe('durable commit outcomes', () => {
         databasePath,
       });
       for (const entry of [winner, loser]) {
-        entry.client.subscribe({
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['conflict'] },
-        });
+        entry.client.subscribe({ project_id: 'conflict' });
       }
       winner.client.mutate([
         {
@@ -928,11 +872,7 @@ describe('durable commit outcomes', () => {
       limits: { outcomeRetentionMaxEntries: 1 },
     });
     for (const entry of [winner, loser]) {
-      entry.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['retention'] },
-      });
+      entry.client.subscribe({ project_id: 'retention' });
     }
     winner.client.mutate([
       {
@@ -1001,11 +941,7 @@ describe('durable commit outcomes', () => {
         databasePath,
       });
       for (const entry of [winner, loser]) {
-        entry.client.subscribe({
-          id: 's1',
-          table: 'tasks',
-          scopes: { project_id: ['aggregate'] },
-        });
+        entry.client.subscribe({ project_id: 'aggregate' });
       }
       winner.client.mutate([
         {
@@ -1099,11 +1035,7 @@ describe('durable commit outcomes', () => {
         clientId: 'rejection-details',
         databasePath,
       });
-      first.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['details'] },
-      });
+      first.client.subscribe({ project_id: 'details' });
       first.client.mutate([
         {
           table: 'tasks',
@@ -1175,11 +1107,7 @@ describe('durable commit outcomes', () => {
       },
     });
     const client = await makeClient(server, { clientId: 'rollback-client' });
-    client.client.subscribe({
-      id: 'rollback-tasks',
-      table: 'tasks',
-      scopes: { project_id: ['rollback'] },
-    });
+    client.client.subscribe({ project_id: 'rollback' });
     client.client.mutate([
       {
         table: 'tasks',
@@ -1279,11 +1207,7 @@ describe('durable commit outcomes', () => {
         clientId: 'restart-rollback-client',
         databasePath,
       });
-      first.client.subscribe({
-        id: 'restart-rollback-tasks',
-        table: 'tasks',
-        scopes: { project_id: ['restart-rollback'] },
-      });
+      first.client.subscribe({ project_id: 'restart-rollback' });
       first.client.mutate([
         {
           table: 'tasks',
@@ -1337,11 +1261,7 @@ describe('offline outbox (§7)', () => {
   test('accumulated commits drain FIFO in one combined request', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
 
     a.client.mutate([
@@ -1364,11 +1284,7 @@ describe('offline outbox (§7)', () => {
     expect(a.client.pendingCommits()).toHaveLength(0);
 
     const b = await makeClient(server, { clientId: 'client-b' });
-    b.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
     const rows = tableRows(b.db, 'tasks');
     expect(rows.map((r) => r.id)).toEqual(['t2']);
@@ -1378,11 +1294,7 @@ describe('offline outbox (§7)', () => {
   test('idempotent replay after a lost response: cached drain, no double apply', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
 
     a.client.mutate([
@@ -1404,11 +1316,7 @@ describe('offline outbox (§7)', () => {
   test('idempotency_cache_miss keeps the commit queued for retry (§6.3)', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
@@ -1432,11 +1340,7 @@ describe('offline outbox (§7)', () => {
       org_id: ['o1'],
     };
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('tx', 'p9', 'nope') },
@@ -1459,9 +1363,8 @@ describe('schema floor (§1.6)', () => {
         databasePath,
       });
       first.client.subscribe({
-        id: 'removed-table-registration',
-        table: 'docs',
-        scopes: { org_id: ['legacy-org'], projectId: ['legacy-project'] },
+        org_id: 'legacy-org',
+        projectId: 'legacy-project',
       });
       await first.client.close();
       first.db.close();
@@ -1511,8 +1414,8 @@ describe('schema floor (§1.6)', () => {
       ).toEqual([{ name: 'tasks_by_membership' }]);
       expect(
         reopened.client
-          .subscriptions()
-          .some((subscription) => subscription.table === 'docs'),
+          .units()
+          .some((unit) => unit.scopes.org_id !== undefined),
       ).toBe(false);
       await reopened.client.close();
       reopened.db.close();
@@ -1528,11 +1431,7 @@ describe('schema floor (§1.6)', () => {
       clientId: 'client-a',
       schema: futureSchema,
     });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
     ]);
@@ -1562,11 +1461,7 @@ describe('schema floor (§1.6)', () => {
   test('a client mid-conversation keeps working at the served version', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     expect(a.client.stopped).toBe(false);
     expect(a.client.statusSnapshot().schemaFloor).toBeUndefined();
@@ -1577,30 +1472,22 @@ describe('sync loop discipline', () => {
   test('unsubscribe during an in-flight round is not undone by its SUB_END', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    const id = a.client.subscribe({ project_id: 'p1' });
     const gate = responseGate();
     a.faults.holdResponseOnce = gate.fault;
     const round = a.client.sync();
     await gate.held;
-    a.client.unsubscribe('s1');
+    a.client.unsubscribe(id);
     gate.release();
     await round;
-    expect(a.client.subscription('s1')).toBeUndefined();
-    expect(a.db.query('SELECT id FROM _syncular_subscriptions')).toEqual([]);
+    expect(a.client.unit(unitId({ project_id: 'p1' }))).toBeUndefined();
+    expect(a.db.query('SELECT id FROM _syncular_units')).toEqual([]);
   });
 
   test('concurrent sync() calls are rejected — one loop owns the database', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     const first = a.client.sync();
     await expect(a.client.sync()).rejects.toBeInstanceOf(ClientSyncError);
     await first;
@@ -1662,11 +1549,7 @@ describe('the SELECT * → mutate round trip', () => {
   test('query() strips _sync_* columns; explicit aliases pass through', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
     ]);
@@ -1700,11 +1583,7 @@ describe('the SELECT * → mutate round trip', () => {
   test('a SELECT * row round-trips into mutate() unchanged', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
     ]);
@@ -1722,11 +1601,7 @@ describe('the SELECT * → mutate round trip', () => {
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, { clientId: 'client-b' });
     for (const c of [a, b]) {
-      c.client.subscribe({
-        id: 's1',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      c.client.subscribe({ project_id: 'p1' });
     }
     a.client.mutate([
       {
@@ -1949,18 +1824,29 @@ test('syncUntilIdle keeps earlier work when a later round fails', async () => {
       calls += 1;
       if (calls === 1) {
         return encodeMessage({
-          wireVersion: 3,
+          wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'response',
           frames: [
             { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
             {
               type: 'SUB_START',
-              id: 'tasks',
+              id: unitId({ project_id: 'p1' }),
               status: 'active',
               reasonCode: '',
-              effectiveScopes: { project_id: ['p1'] },
-              bootstrap: false,
+              fenced: [],
+              bootstrap: true,
             },
+            {
+              type: 'SEGMENT_INLINE',
+              payload: encodeRowsSegment({
+                table: 'tasks',
+                schemaVersion: 1,
+                columns: TASK_COLUMNS,
+                blocks: [],
+              }),
+            },
+            { type: 'SUB_END', nextCursor: 0 },
+            { type: 'LIVE_START', status: 'active', reasonCode: '' },
             {
               type: 'COMMIT',
               commitSeq: 1,
@@ -1985,12 +1871,12 @@ test('syncUntilIdle keeps earlier work when a later round fails', async () => {
                 },
               ],
             },
-            { type: 'SUB_END', nextCursor: 1 },
+            { type: 'LIVE_END', throughSeq: 1, echoDigest: new Uint8Array(32) },
           ],
         });
       }
       return encodeMessage({
-        wireVersion: 3,
+        wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'response',
         frames: [
           { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
@@ -2011,11 +1897,7 @@ test('syncUntilIdle keeps earlier work when a later round fails', async () => {
     db.exec(
       "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','epoch-1')",
     );
-    client.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     // One work-bearing round applies `kept`; the second round fails.
     await expect(client.syncUntilIdle(2)).rejects.toMatchObject({
       code: 'sync.internal_error',
@@ -2037,11 +1919,7 @@ test('retained failed intent survives pulls and explicit take-server restores th
     retainFailedCommits: true,
   });
   for (const client of [a.client, b.client])
-    client.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
   a.client.mutate([
     {
       table: 'tasks',
@@ -2096,11 +1974,7 @@ test('retained validator rejection survives a real reopen and can take server', 
     retainFailedCommits: true,
   });
   try {
-    first.client.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    first.client.subscribe({ project_id: 'p1' });
     first.client.mutate([
       {
         table: 'tasks',
@@ -2174,15 +2048,8 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
     schema: schemas[0]!,
   });
   try {
-    entry.client.subscribe({
-      id: 'old',
-      table: 'tasks',
-      scopes: { theatre_calendar_id: ['p1'] },
-    });
-    await entry.client.setWindow(
-      { table: 'tasks', variable: 'theatre_calendar_id' },
-      ['p1'],
-    );
+    entry.client.subscribe({ theatre_calendar_id: 'p1' });
+    await entry.client.setWindow({ variable: 'theatre_calendar_id' }, ['p1']);
     const pending = entry.client.mutate([
       {
         table: 'tasks',
@@ -2197,30 +2064,13 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
         },
       },
     ]);
-    await entry.client.close();
-    entry.db.close();
-    entry = await makeClient(source, {
-      clientId: 'scope-file',
-      databasePath: path,
-      schema: schemas[1]!,
-    });
-    expect(entry.client.subscription('old')).toBeUndefined();
-    expect(
-      entry.client.windowState({
-        table: 'tasks',
-        variable: 'theatre_calendar_id',
-      }),
-    ).toEqual({ units: [], pending: [] });
-    expect(
-      entry.client.pendingCommits().map((commit) => commit.clientCommitId),
-    ).toEqual([pending]);
-    entry.client.subscribe({
-      id: 'current',
-      table: 'tasks',
-      scopes: { calendar_theatre_id: ['p1'] },
-    });
+    // §7.4.3: a pending eviction keyed by a renamed variable dies at the bump.
+    const evictions = () =>
+      entry.db
+        .query('SELECT unit_id FROM _syncular_pending_evictions')
+        .map((row) => row.unit_id);
     entry.db.exec(
-      "UPDATE _syncular_subscriptions SET cursor=123 WHERE id='current'",
+      `INSERT INTO _syncular_pending_evictions(unit_id,tbl,effective_scopes) VALUES ('gone-89','tasks','{"theatre_calendar_id":["p1"]}')`,
     );
     await entry.client.close();
     entry.db.close();
@@ -2229,7 +2079,33 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
       databasePath: path,
       schema: schemas[1]!,
     });
-    expect(entry.client.subscription('current')?.cursor).toBe(123);
+    expect(evictions()).toEqual([]);
+    entry.db.exec(
+      `INSERT INTO _syncular_pending_evictions(unit_id,tbl,effective_scopes) VALUES ('gone-90','tasks','{"calendar_theatre_id":["p1"]}')`,
+    );
+    expect(
+      entry.client.unit(unitId({ theatre_calendar_id: 'p1' })),
+    ).toBeUndefined();
+    expect(
+      entry.client.windowState({ variable: 'theatre_calendar_id' }),
+    ).toEqual({ units: [], pending: [] });
+    expect(
+      entry.client.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([pending]);
+    const current = entry.client.subscribe({ calendar_theatre_id: 'p1' });
+    entry.db.exec('UPDATE _syncular_units SET cursor=123 WHERE id=?', [
+      current,
+    ]);
+    await entry.client.close();
+    entry.db.close();
+    entry = await makeClient(source, {
+      clientId: 'scope-file',
+      databasePath: path,
+      schema: schemas[1]!,
+    });
+    expect(
+      entry.client.unit(unitId({ calendar_theatre_id: 'p1' }))?.cursor,
+    ).toBe(123);
     await entry.client.close();
     entry.db.close();
     entry = await makeClient(source, {
@@ -2237,7 +2113,10 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
       databasePath: path,
       schema: schemas[2]!,
     });
-    expect(entry.client.subscription('current')?.cursor).toBe(-1);
+    expect(
+      entry.client.unit(unitId({ calendar_theatre_id: 'p1' }))?.cursor,
+    ).toBe(-1);
+    expect(evictions()).toEqual(['gone-90']);
     expect(
       entry.client.pendingCommits().map((commit) => commit.clientCommitId),
     ).toEqual([pending]);
@@ -2283,7 +2162,8 @@ describe('push capacity limits (§7.1)', () => {
     const source = makeServer();
     const { client, db } = await makeClient(source, {
       clientId: 'byte-cap',
-      limits: { maxPushRequestBytes: 200 },
+      // Version 4 fixed frames: outboxId, replica cursor and both digests.
+      limits: { maxPushRequestBytes: 320 },
     });
     try {
       const small = client.mutate([
@@ -2306,9 +2186,9 @@ describe('push capacity limits (§7.1)', () => {
       const failure = await client.sync().catch((error: unknown) => error);
       expect(failure).toMatchObject({
         code: 'client.push_request_too_large',
-        details: { kind: 'bytes', limit: 200, clientCommitId: huge },
+        details: { kind: 'bytes', limit: 320, clientCommitId: huge },
       });
-      expect(((failure as ClientSyncError).details?.size as number) > 200).toBe(
+      expect(((failure as ClientSyncError).details?.size as number) > 320).toBe(
         true,
       );
       expect(

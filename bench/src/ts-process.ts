@@ -173,37 +173,21 @@ if (import.meta.main) {
     if (!handle) throw new Error('Client not created');
     const client = handle.client;
     if (method === 'subscribe') {
-      const scopes = processObject(params.scopes);
-      const projects = scopes.project_id;
-      if (
-        typeof params.id !== 'string' ||
-        params.id.length === 0 ||
-        (params.table !== 'tasks' &&
-          !(blobFixture && params.table === 'attachments')) ||
-        Object.keys(scopes).length !== 1 ||
-        !Array.isArray(projects) ||
-        projects.length === 0 ||
-        !projects.every((project) => typeof project === 'string')
-      )
-        throw new Error('Invalid benchmark subscription');
-      if (
-        params.id === 'bench' &&
-        (projects.length !== 1 || projects[0] !== PROJECT_ID)
-      )
-        throw new Error('Default fixture subscription cannot change scopes');
-      // createBenchClient has already installed the default fixture subscription.
-      if (params.id !== 'bench')
-        client.subscribe({
-          id: params.id,
-          table: params.table,
-          scopes: { project_id: projects },
-        });
-      return { subscribed: true };
+      const scopes = Object.fromEntries(
+        Object.entries(processObject(params.scopes)).map(
+          ([variable, value]) => {
+            if (typeof value !== 'string')
+              throw new Error('Invalid benchmark unit');
+            return [variable, value];
+          },
+        ),
+      );
+      return { id: client.subscribe(scopes) };
     }
-    if (method === 'subscriptionState') {
+    if (method === 'unit') {
       if (typeof params.id !== 'string')
-        throw new Error('Missing subscription identity');
-      return { state: client.subscription(params.id) ?? null };
+        throw new Error('Missing unit identity');
+      return { unit: client.unit(params.id) ?? null };
     }
     if (method === 'query') {
       if (typeof params.sql !== 'string') throw new Error('Missing SQL');

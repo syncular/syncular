@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "response",
   "frames": [
     {

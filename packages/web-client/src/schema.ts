@@ -3,7 +3,7 @@ import { PENDING_EVICTIONS } from './window';
 import { WINDOWS_TABLE } from './window';
 import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
 import { OUTCOMES_TABLE } from './outcomes';
-import { SUBSCRIPTIONS_TABLE, META_TABLE } from './state';
+import { META_TABLE, resetUnits, UNITS_TABLE } from './state';
 import { ensureFailedOverlaySchema } from './failed-overlay';
 /**
  * Client schema IR (SPEC.md §2.4, §3.1) — the same shape the server
@@ -13,7 +13,7 @@ import { ensureFailedOverlaySchema } from './failed-overlay';
  */
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { invalidRequest } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import { snakeToCamel } from './naming';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
@@ -592,9 +592,19 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
     db.exec(
       `INSERT OR IGNORE INTO ${META_TABLE}(key,value)VALUES('localRevision','0')`,
     );
+    const outboxExisted =
+      db.query(
+        `SELECT 1 FROM sqlite_master WHERE type='table' AND name='${OUTBOX_TABLE}'`,
+      ).length > 0;
     createTable(
       OUTBOX_TABLE,
       'seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,created_at_ms INTEGER NOT NULL,operations TEXT NOT NULL',
+    );
+    // §7.1: `outboxId` names the outbox sequence. A new outbox table starts
+    // a new sequence, so it replaces the id in the same transaction.
+    db.exec(
+      `INSERT OR ${outboxExisted ? 'IGNORE' : 'REPLACE'} INTO ${META_TABLE}(key,value)VALUES('outboxId',?)`,
+      [crypto.randomUUID()],
     );
     createTable(
       OUTBOX_IMAGES,
@@ -627,22 +637,47 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       `CREATE INDEX IF NOT EXISTS ${OUTCOMES_TABLE}_resolution_seq ON ${OUTCOMES_TABLE}(resolution,seq)`,
     );
     createTable(
-      SUBSCRIPTIONS_TABLE,
-      "id TEXT PRIMARY KEY,tbl TEXT NOT NULL,requested_scopes TEXT NOT NULL,params TEXT,cursor INTEGER NOT NULL DEFAULT -1,bootstrap_state TEXT,effective_scopes TEXT,status TEXT NOT NULL DEFAULT 'active',reason_code TEXT",
+      UNITS_TABLE,
+      "id TEXT PRIMARY KEY,scopes TEXT NOT NULL,explicit INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',reason_code TEXT,cursor INTEGER DEFAULT -1,bootstrap_state TEXT,seeded TEXT NOT NULL DEFAULT '[]',echo TEXT",
     );
-    // §4.8 window registry: which units (scope values) of a window base are
-    // live locally — the completeness oracle (I3) and the shrink driver
-    // (a unit's omission from the next pull unregisters it, §4.1).
+    // §4.8 window registry: base + value → the unit it holds, the
+    // completeness oracle and one of a unit's references (§4.1).
     createTable(
       WINDOWS_TABLE,
       'base TEXT NOT NULL,unit TEXT NOT NULL,sub_id TEXT NOT NULL,PRIMARY KEY(base,unit)',
     );
-    // §4.8 E1: units that left the window but still had outbox-pinned rows.
-    // Retried when the outbox drains; cancelled if the unit re-enters.
+    // §4.8 E1: per-table scopes of units that left with pinned or unevicted
+    // rows. Retried when the outbox drains; cancelled when the unit re-enters.
     createTable(
       PENDING_EVICTIONS,
-      'sub_id TEXT PRIMARY KEY,tbl TEXT NOT NULL,effective_scopes TEXT NOT NULL',
+      'unit_id TEXT NOT NULL,tbl TEXT NOT NULL,effective_scopes TEXT NOT NULL,PRIMARY KEY(unit_id,tbl)',
     );
+    // §9: a replica written under wire version 3 keeps its outbox, journal,
+    // rows and pending evictions and registers its units fresh. Its
+    // subscriptions, cursors, echoes, resume tokens and window entries go.
+    const legacyEvictions = '_syncular_window_pending_evict';
+    if (
+      db.query(
+        `SELECT 1 FROM sqlite_master WHERE type='table' AND name='${legacyEvictions}'`,
+      ).length > 0
+    ) {
+      if (
+        db.query(
+          `SELECT 1 FROM ${legacyEvictions} WHERE NOT json_valid(effective_scopes) OR json_type(effective_scopes)<>'object' OR EXISTS(SELECT 1 FROM json_each(effective_scopes) WHERE json_type(value)<>'array' OR EXISTS(SELECT 1 FROM json_each(value) v WHERE v.type<>'text'))`,
+        ).length > 0
+      )
+        throw new ClientSyncError(
+          'sync.local_corrupt',
+          'a version 3 pending eviction cannot be upgraded',
+        );
+      db.exec(
+        `INSERT OR REPLACE INTO ${PENDING_EVICTIONS} SELECT sub_id,tbl,effective_scopes FROM ${legacyEvictions}`,
+      );
+      db.exec(`DROP TABLE ${legacyEvictions}`);
+      db.exec('DROP TABLE IF EXISTS _syncular_subscriptions');
+      db.exec(`DELETE FROM ${WINDOWS_TABLE}`);
+      resetUnits(db);
+    }
   });
 }
 
@@ -663,10 +698,10 @@ const RESERVED_TABLE_PREFIX = '_syncular_';
  * generated schema created — discovered from `sqlite_master`, since a
  * bump may add/remove tables) and recreate the synced tables from the
  * NEW schema. Bookkeeping tables (`_syncular_*`: outbox, meta,
- * subscriptions, blob cache) are preserved. RFC 0005's container is not
+ * units, blob cache) are preserved. RFC 0005's container is not
  * reachable from here: it lives in its own database file, so this reset cannot
  * see or destroy it. Caller owns the surrounding transaction and the
- * subscription-state reset (state.ts).
+ * unit-state reset (state.ts).
  */
 export function dropAndRecreateSyncedTables(
   db: ClientDatabase,
@@ -821,7 +856,7 @@ export type JsonRowValue =
   | null
   | { readonly $bytes: string };
 
-function bytesToHex(bytes: Uint8Array): string {
+export function bytesToHex(bytes: Uint8Array): string {
   let out = '';
   for (const byte of bytes) out += byte.toString(16).padStart(2, '0');
   return out;

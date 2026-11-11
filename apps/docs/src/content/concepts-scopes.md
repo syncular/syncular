@@ -7,22 +7,22 @@ Scopes decide, per user, which rows sync. You write them yourself: the decision 
 :::terms
 - **Scope pattern**: A declaration such as `list:{list_id}`: a prefix plus a column variable.
 - **Scope key**: A pattern filled with a row's value, such as `list:groceries`.
-- **Requested scopes**: The values a client's subscription asks for.
+- **Requested scopes**: The values a client's [unit](/concepts-subscriptions/#a-unit) asks for: one per variable.
 - **Allowed scopes**: The values `resolveScopes(actor)` grants to the actor.
 - **Effective scopes**: Requested intersected with allowed; what actually syncs.
-- **Revocation**: The server ending a subscription and the client purging its rows.
+- **Revocation**: The server ending a unit, or one covered table of a unit, and the client purging its rows.
 :::
 
-:::figure{title="Three sets meet on every pull" note="Per subscription" ticks}
+:::figure{title="Three sets meet on every pull" note="Per unit and covered table" ticks}
 <div class="d-row">
-<div class="node hot"><span class="t">Requested · client</span>list_id = groceries, work, travel</div>
+<div class="node hot"><span class="t">Requested · three units</span>list_id = groceries<br>list_id = work<br>list_id = travel</div>
 <span class="d-arrow"></span>
 <div class="node cool"><span class="t">Allowed · your resolveScopes</span>list_id = groceries, work</div>
 <span class="d-arrow"></span>
-<div class="node ok"><span class="t">Effective · intersection</span>list_id = groceries, work</div>
+<div class="node ok"><span class="t">Effective</span>groceries, work: active<br>travel: revoked</div>
 </div>
 
-::caption[`travel` is requested and not allowed, so it drops out. The server filters pulls, deltas, and segments to the effective scopes.]
+::caption[`travel` is requested and not allowed, so its unit is revoked. The server filters pulls, deltas, and segments to the effective scopes of the active units.]
 :::
 
 ## Scope patterns
@@ -33,11 +33,11 @@ Every synced table needs a scope. Model shared data with an explicit scope colum
 
 ## The three scope sets
 
-On every pull, per subscription, the requested, allowed, and effective maps meet ([SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective)).
+On every pull, per unit and covered table, the requested, allowed, and effective maps meet ([SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective)).
 
 | Set | Comes from | Meaning |
 |---|---|---|
-| Requested | the client's subscription | "I want these list ids." |
+| Requested | the client's unit | "I want this list id." |
 | Allowed | your `resolveScopes(actor)` | "This actor may see these list ids." `*` allows any value. |
 | Effective | requested ∩ allowed | What syncs. |
 
@@ -45,11 +45,11 @@ Syncular intersects each requested variable on its own.
 
 :::figure{title="What happens when access changes"}
 <div class="d-cols-2">
-<div class="node ok"><span class="t">Some values lost</span>The subscription stays active on the surviving values. Rows for lost values stop updating and stay readable locally.<br><span class="chip ok">Narrowed</span></div>
-<div class="node bad"><span class="t">A variable loses every value</span>The server revokes the subscription. The client purges the now-unauthorized rows.<br><span class="chip bad">Revoked · rows purged</span></div>
+<div class="node bad"><span class="t">A unit's value leaves the allowed scopes</span>The server revokes the unit. The client purges its rows in every covered table, except rows another unit still owns.<br><span class="chip bad">Revoked · rows purged</span></div>
+<div class="node"><span class="t">The wildcard fence empties one table</span>The unit stays active. The server revokes its pair for that table, and the client purges that table's rows of the unit.<br><span class="chip">Active · one table purged</span></div>
 </div>
 
-::caption[Rows for lost values stay readable until revocation or until a fresh [bootstrap](/concepts-bootstrap/) applies the §5.6 first-page rule. To make the loss of one value purge its rows, give that value its own subscription with one exact scope value. [SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract) defines the purge contract.]
+::caption[A revoked unit stays in the local registry with status `revoked` until the app subscribes to its scope map again or releases it. [SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract) defines the purge contract.]
 :::
 
 ## resolveScopes
@@ -78,9 +78,9 @@ The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncul
 The server authorizes a write against the row as currently stored, or against the pushed row for an insert, so a client cannot grant itself access by claiming a scope in the payload. Scope columns are immutable on update: a pushed change to `list_id` fails, and scope migration is server-emitted only.
 :::
 
-A client does not have to hold every row it may read. [Windowed sync](/concepts-windowing/) keeps a partial local copy by subscribing to a subset of the allowed values.
+A client does not have to hold every row it may read. [Windowed sync](/concepts-windowing/) keeps a partial local copy by registering units for a subset of the allowed values.
 
-A scope move is one commit with a delete under the old scopes and an upsert under the new ones. A registered command requests one with the `rescope` mutation, passing the complete row with its new scope values; the server keeps the row's `server_version` and writes no tombstone, so the row can move again. A reader that holds both scopes receives the pair in two subscription sections. Each client applies it as one change, so the row survives whichever section arrives first and the upsert's values win ([guide](/guide-remote-operations/#move-a-row-between-scopes)).
+A scope move is one commit with a delete under the old scopes and an upsert under the new ones. A registered command requests one with the `rescope` mutation, passing the complete row with its new scope values; the server advances the row's `server_version` by 1 and writes no tombstone, so the row can move again. A reader that holds both scopes receives both halves in one `COMMIT` frame. The client's version guard keeps the upsert's values in either change order ([guide](/guide-remote-operations/#move-a-row-between-scopes)).
 
 ### Independent read and write scopes
 
@@ -97,13 +97,13 @@ const serverSchema = {
 };
 ```
 
-Declare both the `facility_id` and `calendar_id` scope patterns in the manifest. Return the authorized facility IDs and exact calendar IDs from `resolveScopes`. A facility grant authorizes writes to rows in that facility, including offline inserts with new calendar IDs. An exact calendar grant authorizes a subscription to that calendar; it does not authorize writes under this policy. The server still extracts every declared scope value and prevents updates from changing scope columns.
+Declare both the `facility_id` and `calendar_id` scope patterns in the manifest. Return the authorized facility IDs and exact calendar IDs from `resolveScopes`. A facility grant authorizes writes to rows in that facility, including offline inserts with new calendar IDs. An exact calendar grant authorizes a unit on that calendar; it does not authorize writes under this policy. The server still extracts every declared scope value and prevents updates from changing scope columns.
 
-`writeScopeVariables` must contain one or more distinct scope variables declared by the table. Every listed variable must match. Omitting the property preserves the default intersection of all variables. The typegen manifest does not accept `writeScopeVariables`; decorate the generated server schema as shown. Generated client schemas and subscription requests do not need the policy. Review each table and grant before changing it. A registered command's row reads and blob downloads also use the table's write scope check; an exact-only reader needs an independently authorized route for blobs.
+`writeScopeVariables` must contain one or more distinct scope variables declared by the table. Every listed variable must match. Omitting the property preserves the default intersection of all variables. The typegen manifest does not accept `writeScopeVariables`; decorate the generated server schema as shown. Generated client schemas and units do not need the policy. Review each table and grant before changing it. A registered command's row reads and blob downloads also use the table's write scope check; an exact-only reader needs an independently authorized route for blobs.
 
 A [SYNC query](/syql/#query-and-sync-query) can select the facility as its
 window unit with `by calendars.facility_id` and bind only the facility
-predicate. Typegen emits a facility-only subscription. A query that also binds
+predicate. Typegen emits a facility-only unit. A query that also binds
 the calendar ID requests both dimensions and keeps their intersection. The
 server authorizes each requested scope value independently of the write
 policy.
@@ -125,7 +125,7 @@ return {
 
 This permits all four combinations of clinic and appointment. It does not mean only `(clinic-a, appt-1)` and `(clinic-b, appt-2)`. Syncular cannot infer a parent and child relation from the values or their order. For a child such as an appointment, choose one design:
 
-1. Put both `clinic_id` and `appointment_id` patterns on every appointment-owned table and request both variables in every subscription. Keep the parent reference valid with a server-side validator.
+1. Put both `clinic_id` and `appointment_id` patterns on every appointment-owned table and request both variables in every unit. Keep the parent reference valid with a server-side validator.
 2. Enumerate the exact appointment IDs the actor may access instead of granting a wildcard.
 3. Resolve the relationship inside a server-authoritative command when it does not suit client synchronization.
 
@@ -138,7 +138,7 @@ return {
 };
 ```
 
-A row for `(clinic-a, appt-1)` passes. A row for `(clinic-b, appt-1)` fails because the table carries the clinic fence. The fence holds for a subscription that requests only `appointment_id`: when a requested variable passes through `'*'`, the server adds every other variable the table declares and the actor holds a non-wildcard list for, here `clinic_id: ['clinic-a']`, and `SUB_START` echoes the widened effective scopes. An empty list for such a variable revokes the subscription. Without a wildcard the server adds nothing: an actor allowed `clinic_id: ['clinic-a']` and `appointment_id: ['appt-1']` who subscribes by `clinic_id` alone receives every appointment row in `clinic-a`. Writes are checked against the table's write scope variables, independent of the subscription. A later `patient_notes` table scoped only by `appointment_id` would make the same wildcard authorize notes for every appointment, so adding or changing a table's scope patterns is an authorization review.
+A row for `(clinic-a, appt-1)` passes. A row for `(clinic-b, appt-1)` fails because the table carries the clinic fence. The fence holds for a unit that requests only `appointment_id`: when a requested variable passes through `'*'`, the server adds every other variable the table declares and the actor holds a non-wildcard list for, here `clinic_id: ['clinic-a']`, and `SUB_START` echoes the widened effective scopes. An empty list for such a variable revokes the unit's pair for that table. Without a wildcard the server adds nothing: an actor allowed `clinic_id: ['clinic-a']` and `appointment_id: ['appt-1']` who registers the unit `{ clinic_id: 'clinic-a' }` receives every appointment row in `clinic-a`. Writes are checked against the table's write scope variables, independent of the unit. A later `patient_notes` table scoped only by `appointment_id` would make the same wildcard authorize notes for every appointment, so adding or changing a table's scope patterns is an authorization review.
 
 Test isolation with at least two parents and representative child IDs. Prove that an in-parent row is readable and writable, that an out-of-parent row with an otherwise allowed child value is neither readable nor writable, and that revocation, realtime, segments, and future child-only projections keep that boundary.
 
@@ -151,4 +151,4 @@ A new scope pattern changes the client authorization and named-query coverage co
 - an exact lookup over declared app columns: the trusted server-only relational-index scan;
 - ordered, ranged, or derived work: an explicit server-only reverse projection, maintained atomically with the domain row.
 
-The guide also shows a user-scoped key-grant table revoked by workspace without widening any client subscription.
+The guide also shows a user-scoped key-grant table revoked by workspace without widening any client unit.

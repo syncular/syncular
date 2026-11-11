@@ -785,3 +785,92 @@ express a subscription.
 (`guide-server.md`). At the measured slope, 1,000 subscriptions cost about
 400 ms of server time and 150 KB each way per round, wake-ups included. No
 code; it is the right answer for the weeks before stage 1 ships.
+
+## 12. Implementation lanes
+
+The normative text is `docs/SPEC.md` at wire version 4: units and the
+registration list §4.1, frames §4.2 to §4.4, the replica cursor, live section
+and join rule §4.5, bootstrap §4.7, windows §4.8, the watermark §6.3.2, the
+outbox sequence §7.1, realtime §8.1, §8.2 and §8.7, the migration note §9,
+codes §10.2, golden vectors Appendix A, scenarios Appendix B 25 to 27. Where
+the spec and §1 to §11 of this RFC differ, the spec wins.
+
+Lanes that share a phase own disjoint paths and run in parallel in one
+checkout. A lane edits only the paths it owns; it changes another lane's
+paths only through the coordinator. Every lane adds or rewrites the `bun:test`
+or `cargo test` files next to its change.
+
+| Lane | Owns | Depends on | Acceptance | Conformance it must make pass |
+| --- | --- | --- | --- | --- |
+| A1 TS codec and vectors | `packages/core/src/**` (frames, message, stream, render, constants, canonical JSON, the unit id and registration digest helpers), `packages/core/scripts/generate-vectors.ts`, `spec/vectors/**` | SPEC | `bun test packages/core` | `vectors/request-roundtrip`, `vectors/response-roundtrip` against the TS codec |
+| A2 Rust codec | `rust/crates/ssp2/**` | SPEC; A1's vectors for its acceptance | `bun run rust test -p syncular-ssp2` | the same vectors, Rust side |
+| A3 Server storages | `packages/server/src/{storage,storage-query,sqlite-dialect,sqlite-storage,d1-storage,postgres-storage,relational-rows,prune,admin,restore}.ts` and their tests: `sync_change_scopes_by_key (partition, var, value, commit_seq)` in SQLite, D1 and Postgres; `readLiveWindow`; the client record (list, digest, catching-up ids, record cursor, schema version); `outbox_id` and `client_seq` on results, `sync_push_watermarks`, the §6.3.2 upsert and delete, the §9 settlement of sequence-less results; `admin.findWrite` reporting the watermark | SPEC | `bun test packages/server/test` (storage files) | storage half of 27(e) |
+| B1 Server pull, push and realtime | `packages/server/src/{handler,pull,push,realtime,scopes,context,validate,segment-download,local-authority,postgres-fanout,erase,events}.ts`, `packages/server-hono/**`, `packages/server-workers/**` | A1, A3 | `bun test packages/server packages/server-hono packages/server-workers` | 25(a, c, f), 26(a, b, c, e), 27(a, b, c, d) against the TS server with the reference codec driver |
+| B2 TS client | `packages/web-client/src/**` and `packages/web-client/test/**`: unit store, registration list and digest, `PROGRESS`, replica cursor, live-section apply with the local unit filter, join rule, first-page tracking per table, window bases without tables and unit reference counts, `outboxId` and `clientSeq`, `sync.commit_expired`, diagnostics without unit ids, catch-up state, the §9 replica upgrade, `worker-local-authority.ts` | A1 | `bun test packages/web-client`, `bun run test:isolated`, `bun run test:browser` | every TS×TS scenario once C4 lands |
+| B3 Rust client | `rust/crates/client/**` (same scope as B2) | A2 | `bun run rust test -p syncular-client`; `bun run rust clippy --all-targets -- -D warnings` | every Rust×TS scenario once C4 lands |
+| B4 Rust local authority | `rust/crates/authority/**`: unit sections, one scan of `sync_changes` from `R`, the client record with list and digest, the watermark tables | A2 | `bun run rust test -p syncular-authority` | `local-authority/*` in the Rust pairing, 27(e) on the authority |
+| B5 Typegen | `packages/typegen/**` with its golden fixtures: manifest `subscriptions` entries lose `table` and multi-value scopes and become unit templates (one value per variable); TS, Swift, Kotlin, Dart and Rust emitters | the B2 `subscribe` signature (B2 publishes it before other work) | `bun test packages/typegen` | none |
+| C1 Native surface | `rust/crates/command/**`, `rust/crates/ffi/**`, `rust/crates/conformance-shim/**`, `packages/tauri/**`, `bindings/**` | B3, B5 | `bun run rust test`; `bindings/tauri/check.sh`, `bindings/kotlin/check.sh`, `bindings/swift/check.sh` (macOS), `bindings/flutter/check.sh`, `bindings/react-native/check.sh` | Rust×TS pairing through the shim |
+| C2 React and testkit | `packages/react/**`, `packages/testing/**` | B2 | `bun test packages/react packages/testing` | none |
+| C3 Conformance catalog | `packages/conformance/src/**` (driver API with units, the reference-codec, TS and Rust drivers, catalog) | A1; driver API first, scenarios pass after B1 to B4 and C1 | `bun test packages/conformance` | all |
+| C4 Docs | `apps/docs/src/content/**` (`concepts-subscriptions`, `concepts-windowing`, `concepts-realtime`, `pitfalls`, `guide-server`, `reference`, the client and binding guides), `apps/docs/src/changelog.mjs`, `apps/docs/src/pages/index.astro`, `apps/docs/src/content/blog/syncular-write-path.md` (scenario count only) | B2's API, C3's final count | `bun test apps/docs`; `bun run lint` | none |
+| C5 Examples, templates, demos | `examples/quickstart/**`, `packages/create-app/**`, `apps/demo/**`, `apps/demo-react/**`, including their regenerated `syncular.generated.ts` | B5, B2, C2 | `bun test examples/quickstart packages/create-app apps/demo apps/demo-react` | none |
+| C6 Bench | new `bench/src/server-units-lane.ts`, `bench/README.md`, `bench/RESULTS.md` | B1, A3 | `bun test bench`; one recorded run | none |
+
+**Order.** Phase A: A1, A2 and A3 in parallel (A2 finishes against A1's
+vectors). Phase B: B1, B2, B3, B4 and B5 in parallel once their phase A
+inputs land; C3 starts its driver API in phase B. Phase C: C1, C2, C3's
+scenarios, then C4, C5 and C6. The release ships when every lane's
+acceptance passes and `bun run check` is green.
+
+**Expected red between lanes.** Until A1 and A2 both land, `vectors/*` fails
+in the pairing that lacks the new codec. Between A1 and B1 the server and
+web-client suites fail wherever they decode a version 3 message. Between B1
+and B2, every TS×TS conformance scenario fails (the server reads version 4
+only); between B1 and B3 every Rust×TS scenario fails, and the Rust pairing
+stays red until C1 updates the shim. Between B2 and C2, C5 the React,
+testkit, example and template tests fail on the subscribe signature. The docs
+count test stays green until C3 changes the catalog size, and C4 restores it.
+
+**Conformance catalog.** The catalog holds 293 scenarios
+(`CATALOG.length`, pinned by `apps/docs/test/conformance-count.test.ts`). A
+count of literal names finds 255: 255 `name: '…'` properties, plus 2 names
+passed to a helper as plain strings
+(`conflict/rollback-restores-pulled-server-base`,
+`conflict/rollback-replays-later-edit-over-pulled-base`), plus 36 generated by
+7 template-literal sites (outbox budgets, schema-bump marker and
+scope-compatibility families, blob fault matrices, the bootstrap progress
+lanes). Lane C3 changes it as follows:
+
+- Delete 2: `subscription/identity-is-immutable-and-idempotent` (ids are
+  derived; the intent-mismatch error is gone) and
+  `realtime/delta-skips-a-reset-subscription` (a catching-up unit receives no
+  delta; covered by the new 25(a)).
+- Rewrite the assertions of about 70 that read per-table subscriptions,
+  per-subscription cursors, echoes or the late-duplicate outcome: `scopes/*`
+  (16), `window/*` (11), the 9 remaining `realtime/*`, `ws-round/*` (5),
+  `bootstrap/*` (9), `sqlite-image/*` (4),
+  `schema-bump/subscription-scope-*` (4), `convergence/quiet-subscription-cursor-advances`,
+  `cursor/horizon-reset-rebootstrap-and-boundary`,
+  `lifecycle/pruning-during-pull-resets-and-rebootstraps`,
+  `observation/applied-commits-distinguish-subscriptions-and-snapshots`,
+  `observation/snapshot-read-catchup-states`,
+  `observation/snapshot-read-corrupt-subscription-classification`,
+  `observation/zero-row-window-completion`,
+  `offline/duplicate-request-delivery`, `offline/stale-retransmit-is-harmless`
+  (a late duplicate now answers `sync.commit_expired`),
+  `errors/request-level-catalog`, `security/authority-snapshot-*` (2). Every
+  other scenario changes only through the driver's subscribe call.
+- Add 16: Appendix B 25(a) to (f), 26(a) to (e), 27(a) to (e).
+
+The catalog then holds 307 scenarios; C4 sets the landing-page constant and
+the blog sentence to `CATALOG.length`. The rewrite count is read off scenario
+names and categories; C3 confirms it scenario by scenario.
+
+**Bench lane.** C6 pulls 10, 100 and 500 registered units with no change
+against `SqliteServerStorage` and Postgres (PGlite in CI, a real server for
+the recorded run), steady state by reference and one round with the list
+traveling, and records server time per pull, statements per pull, and request
+and response bytes. It records the same figures for one unit with a backlog of
+10,000 changes beside 99 quiet units, which measures the accepted head-of-line
+delay in rounds.

@@ -1,0 +1,61 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-a",
+      "resetRequired": false
+    },
+    {
+      "type": "SUB_START",
+      "id": "98bfde90a5f820d3555be61bb46dbbe6",
+      "status": "revoked",
+      "reasonCode": "sync.scope_revoked",
+      "bootstrap": false,
+      "fenced": []
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 42
+    },
+    {
+      "type": "SUB_START",
+      "id": "7229e751d6a9ec99dfbcb011ed895d52",
+      "status": "active",
+      "reasonCode": "",
+      "bootstrap": false,
+      "fenced": [
+        {
+          "table": "notes",
+          "status": "revoked",
+          "scopes": {}
+        },
+        {
+          "table": "tasks",
+          "status": "active",
+          "scopes": {
+            "assignee": [
+              "u1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 42
+    },
+    {
+      "type": "LIVE_START",
+      "status": "active",
+      "reasonCode": ""
+    },
+    {
+      "type": "LIVE_END",
+      "throughSeq": 57,
+      "echoDigest": "39694d535b8c1920ec8da4f451dba586875ab95c3ef72c59fe694730f9d6d817"
+    }
+  ]
+}

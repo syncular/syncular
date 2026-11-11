@@ -6,7 +6,7 @@
  *
  *     __SYNCULAR__.clients            // the live entries
  *     await __SYNCULAR__.snapshot()   // one plain object per client:
- *                                     // outbox depth, subscriptions,
+ *                                     // outbox depth, units,
  *                                     // conflicts, syncNeeded, upgrading,
  *                                     // last invalidation
  *     __SYNCULAR__.clients[0].ref     // the client itself — full API
@@ -26,7 +26,7 @@ export interface DevtoolsRegistration {
   readonly clientId: () => string;
   readonly role: () => string;
   readonly outbox: () => Promise<number>;
-  readonly subscriptions: () => Promise<readonly unknown[]>;
+  readonly units: () => Promise<readonly unknown[]>;
   readonly conflicts: () => Promise<number>;
   readonly rejections: () => Promise<number>;
   readonly syncNeeded: () => Promise<boolean>;
@@ -87,9 +87,9 @@ function registryOn(host: Record<string, unknown>): DevtoolsRegistry {
           clientId: entry.clientId(),
           role: entry.role(),
           outbox: await entry.outbox().catch(() => 'unavailable'),
-          subscriptions: await entry
-            .subscriptions()
-            .then((subs) => subs.length)
+          units: await entry
+            .units()
+            .then((units) => units.length)
             .catch(() => 'unavailable'),
           conflicts: await entry.conflicts().catch(() => 'unavailable'),
           rejections: await entry.rejections().catch(() => 'unavailable'),

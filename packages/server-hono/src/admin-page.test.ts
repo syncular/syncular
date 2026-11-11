@@ -18,6 +18,8 @@ const NOW = Date.now();
 const HEAD = 120;
 const LONG_ID = 'c-old-tablet-0f3c9a7e-2b11-4c55-9a8d-61f0e2b7c4d1';
 
+const UNIT_ID = 'a'.repeat(32);
+
 function clientRow(
   clientId: string,
   actorId: string,
@@ -28,13 +30,14 @@ function clientRow(
   return {
     clientId,
     actorId,
-    wireVersion: 3,
+    wireVersion: 4,
     schemaVersion,
     cursor: HEAD - lag,
     lag,
     updatedAtMs: NOW - (connected ? 4_000 : 25_200_000),
-    subscriptions: [
-      { id: 's1', table: 'cards', scopes: { board_id: ['web', 'mobile'] } },
+    units: [
+      { id: UNIT_ID, scopes: { board_id: 'mobile' } },
+      { id: 'b'.repeat(32), scopes: { board_id: 'web' }, catchingUpCursor: 12 },
     ],
     active: true,
     connected,
@@ -64,21 +67,26 @@ function requestEvents(
       clientId: 'c-ada',
       acceptedThrough: HEAD,
       storageMaxCommitSeq: HEAD,
-      subscriptions: [
+      registrationTraveled: false,
+      units: [
         {
-          id: 's1',
-          table: 'cards',
+          id: UNIT_ID,
+          scopes: { board_id: 'mobile' },
           status: 'active',
-          mode: 'incremental',
-          requestedScopes: {},
-          effectiveScopes: {},
+          mode: 'live',
+          section: false,
+          fenced: [],
           fromCursor: HEAD - 1,
-          nextCursor: HEAD,
-          commits: pulled,
-          changes: pulled,
           segments: [],
         },
       ],
+      live: {
+        status: 'active',
+        fromCursor: HEAD - 1,
+        throughSeq: HEAD,
+        commits: pulled,
+        changes: pulled,
+      },
     },
     {
       type: 'request.handled',
@@ -94,7 +102,7 @@ function requestEvents(
       outcome: 'ok',
       pushCommits: pushed,
       pulled: true,
-      subscriptions: 1,
+      units: 1,
     },
   ];
 }
@@ -240,13 +248,13 @@ const TRACE = {
   horizonSeq: 20,
   client: CLIENTS[1],
   allowed: { board_id: ['web', 'mobile'] },
-  subscriptions: [
+  units: [
     {
-      id: 's1',
-      scopes: { board_id: ['mobile'] },
+      id: UNIT_ID,
+      scopes: { board_id: 'mobile' },
       requestedMatch: false,
       mismatches: [
-        { variable: 'board_id', rowValue: 'web', requested: ['mobile'] },
+        { variable: 'board_id', rowValue: 'web', requested: 'mobile' },
       ],
       effectiveMatch: false,
     },
@@ -498,6 +506,7 @@ const ROUTES: Record<string, Route> = {
             ],
           },
         ],
+        watermarks: [],
         events: [CONFLICT],
       },
     },
@@ -916,7 +925,7 @@ describe('people and clients', () => {
     expect(page.text('#m-events')).toContain('push.conflicted');
   });
 
-  test('the client page shows presence, lease, subscriptions, events, and traces a row', async () => {
+  test('the client page shows presence, lease, units, events, and traces a row', async () => {
     const c = openConsole({ hash: '#/client/c-ben' });
     await flush();
     expect(c.requests).toContain('/admin/clients/c-ben?eventLimit=50');
@@ -925,9 +934,9 @@ describe('people and clients', () => {
     expect(c.text('#client-body')).toContain('no open socket');
     expect(c.text('#client-body')).toContain('lease-1');
     expect(c.document.querySelector('[data-act="revoke"]')).toBeNull();
-    expect(
-      c.$('#client-subs a[href="#/table/cards/board_id%3Amobile"]').textContent,
-    ).toBe('board_id: mobile');
+    expect(c.rows('#client-units')[0]).toContain('board_id: mobile');
+    expect(c.rows('#client-units')[0]).toContain('live');
+    expect(c.rows('#client-units')[1]).toContain('catching up at 12');
     expect(c.rows('#client-events')[0]).toContain('push.conflicted');
     c.input('#client-trace [name=r]').value = 'r1';
     c.submit('#client-trace');
@@ -950,7 +959,7 @@ describe('data browser and row page', () => {
     expect(c.window.location.hash).toBe('#/table/cards');
     expect(c.requests).toContain('/admin/rows/cards?limit=50');
     expect(c.rows('#table-rows')[0]).toContain('bytes · 6 B');
-    // Scope chips come from the client subscriptions and the rows.
+    // Scope chips come from the client units and the rows.
     expect(c.text('#table-scopes')).toContain('board_id: mobile');
     c.click('[data-act="rows-next"]');
     await flush();
@@ -995,7 +1004,7 @@ describe('data browser and row page', () => {
     expect(c.requests).toContain(
       '/admin/trace?table=cards&rowId=r1&clientId=c-ben',
     );
-    expect(c.rows('#m-subs')[0]).toContain(
+    expect(c.rows('#m-units')[0]).toContain(
       'board_id: row web, requested mobile',
     );
     expect(c.text('#m-sum')).toContain('board_id: web, mobile');
@@ -1054,6 +1063,32 @@ describe('commits, writes, search', () => {
     expect(result).toContain('conflict');
     expect(result).toContain('sync.version_conflict');
     expect(c.rows('#m-events')[0]).toContain('push.conflicted');
+  });
+
+  test('a write whose result the outbox watermark deleted reads as expired (§6.3.2)', async () => {
+    const c = openConsole({
+      hash: '#/commits',
+      routes: {
+        '/writes/*': {
+          body: {
+            write: {
+              clientCommitId: 'cc-1',
+              outcomes: [],
+              watermarks: [
+                { clientId: 'c-ben', outboxId: 'outbox-1', throughSeq: 41 },
+              ],
+              events: [],
+            },
+          },
+        },
+      },
+    });
+    await flush();
+    c.input('#write-id').value = 'cc-1';
+    c.submit('#write-form');
+    await flush();
+    expect(c.text('#m-sum')).toContain('expired below sequence 41');
+    expect(c.text('#m-sum')).toContain('outbox-1');
   });
 
   test('search groups results, and a single hit opens it', async () => {

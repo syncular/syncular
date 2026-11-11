@@ -82,16 +82,8 @@ describe('§5.11 encrypted round-trip', () => {
       schema: CLIENT_SCHEMA,
       encryption: { keyProvider: goodProvider },
     });
-    a.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
-    b.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
+    b.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     await b.client.syncUntilIdle();
 
@@ -135,11 +127,7 @@ describe('§5.11 encrypted round-trip', () => {
       schema: CLIENT_SCHEMA,
       encryption: { keyProvider: goodProvider },
     });
-    a.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       {
@@ -154,11 +142,7 @@ describe('§5.11 encrypted round-trip', () => {
       schema: CLIENT_SCHEMA,
       encryption: { keyProvider: goodProvider },
     });
-    b.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
     const row = tableRows(b.db, 'secrets')[0];
     expect(row?.note).toBe('x');
@@ -173,11 +157,7 @@ describe('§5.11 encrypted round-trip', () => {
       schema: CLIENT_SCHEMA,
       encryption: { keyProvider: goodProvider },
     });
-    a.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
     a.client.mutate([
       {
@@ -198,11 +178,7 @@ describe('§5.11 encrypted round-trip', () => {
       schema: CLIENT_SCHEMA,
       encryption: { keyProvider: wrongProvider },
     });
-    bad.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    bad.client.subscribe({ project_id: 'p1' });
     let caught: unknown;
     try {
       await bad.client.syncUntilIdle();
@@ -250,11 +226,7 @@ describe('§5.11 encrypted round-trip', () => {
       },
     ]);
     await writer.client.sync();
-    plain.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    plain.client.subscribe({ project_id: 'p1' });
     await expect(plain.client.syncUntilIdle()).rejects.toMatchObject({
       code: 'client.decrypt_failed',
     });
@@ -381,11 +353,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       schema: CLIENT_SCHEMA,
       encryption,
     });
-    handle.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    handle.client.subscribe({ project_id: 'p1' });
     await handle.client.syncUntilIdle();
     return { server, handle };
   }
@@ -444,11 +412,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
         keyIdColumns: { secrets: 'encryption_key_id' },
       },
     });
-    handle.client.subscribe({
-      id: 's1',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    handle.client.subscribe({ project_id: 'p1' });
     await handle.client.syncUntilIdle();
     // A NULL encrypted column is never encrypted, so even this full-row
     // write needs no key.
@@ -568,11 +532,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       limits: { maxPushOperationsPerRequest: 1 },
     });
     try {
-      handle.client.subscribe({
-        id: 's1',
-        table: 'secrets',
-        scopes: { project_id: ['p1'] },
-      });
+      handle.client.subscribe({ project_id: 'p1' });
       await handle.client.syncUntilIdle();
       handle.client.mutate([
         {
@@ -631,11 +591,7 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
     },
   });
   try {
-    a.client.subscribe({
-      id: 'secrets',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    const unit = a.client.subscribe({ project_id: 'p1' });
     a.client.mutate(
       ['s1', 's2'].map((id) => ({
         op: 'upsert' as const,
@@ -650,7 +606,7 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
       })),
     );
     await a.client.syncUntilIdle();
-    a.client.unsubscribe('secrets');
+    a.client.unsubscribe(unit);
     locked = true;
     const id = a.client.mutate(
       ['s1', 's2'].map((id, index) => ({

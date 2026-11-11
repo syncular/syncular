@@ -5,15 +5,17 @@
 use crate::error::{DecodeError, Result};
 use crate::model::frame_type as ft;
 use crate::model::{
-    valid_round_failure_code, Change, Frame, MediaType, Message, MsgKind, Op, OpResult, Operation,
+    fenced_in_order, valid_outbox_id, valid_round_failure_code, valid_unit_id, Change, EchoStatus,
+    FencedRecord, Frame, LiveStatus, MediaType, Message, MsgKind, Op, OpResult, Operation,
     PushStatus, SubStatus,
 };
 use crate::primitives::Reader;
 use crate::segment::decode_rows_segment;
 
 pub const SSP2_MAGIC: &[u8; 4] = b"SSP2";
-pub const MINIMUM_WIRE_VERSION: u16 = 3;
-pub const WIRE_VERSION: u16 = 3;
+/// The one wire version this codec speaks; every other version is rejected
+/// as unknown (§1.2, §9).
+pub const WIRE_VERSION: u16 = 4;
 
 /// Decode a complete SSP2 message, enforcing envelope rules and the per-kind
 /// frame grammar. Unknown frame types are preserved byte-for-byte (§1.2
@@ -25,7 +27,7 @@ pub fn decode_message(bytes: &[u8]) -> Result<Message> {
         return Err(DecodeError::invalid("bad envelope magic (expected SSP2)"));
     }
     let wire_version = r.u16("wireVersion")?;
-    if !(MINIMUM_WIRE_VERSION..=WIRE_VERSION).contains(&wire_version) {
+    if wire_version != WIRE_VERSION {
         return Err(DecodeError::invalid(format!(
             "unsupported wireVersion {wire_version}"
         )));
@@ -107,8 +109,9 @@ fn classify(ty: u8, kind: MsgKind) -> Result<bool> {
 }
 
 /// §1.5 grammar: REQ_HEADER, ROUND_FAILURE 0|1 immediately after it,
-/// PUSH_COMMIT × N, PULL_HEADER 0|1, SUBSCRIPTION × M (only if PULL_HEADER
-/// present), END. A request with neither push nor pull frames is invalid.
+/// PUSH_COMMIT × N, PULL_HEADER 0|1, UNIT × M then PROGRESS × K (only if
+/// PULL_HEADER present), END. A request with neither push nor pull frames is
+/// invalid.
 fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
@@ -116,6 +119,7 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut seen_failure = false;
     let mut seen_pull = false;
     let mut seen_push = false;
+    let mut seen_progress = false;
 
     while let Some((ty, payload)) = next_frame(r)? {
         let known = classify(ty, MsgKind::Request)?;
@@ -177,14 +181,31 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 seen_body = true;
                 seen_pull = true;
             }
-            ft::SUBSCRIPTION => {
+            ft::UNIT => {
                 if !seen_pull {
                     return Err(DecodeError::invalid(
-                        "SUBSCRIPTION frame without a preceding PULL_HEADER",
+                        "UNIT frame without a preceding PULL_HEADER",
                     ));
                 }
-                frames.push(decode_subscription(payload)?);
+                if seen_progress {
+                    return Err(DecodeError::invalid("UNIT frame after a PROGRESS frame"));
+                }
+                frames.push(frame_payload(payload, "UNIT", |r| {
+                    Ok(Frame::Unit {
+                        scopes: r.str_map("scopes")?,
+                    })
+                })?);
                 seen_body = true;
+            }
+            ft::PROGRESS => {
+                if !seen_pull {
+                    return Err(DecodeError::invalid(
+                        "PROGRESS frame without a preceding PULL_HEADER",
+                    ));
+                }
+                frames.push(decode_progress(payload)?);
+                seen_body = true;
+                seen_progress = true;
             }
             _ => unreachable!("classified as known request type"),
         }
@@ -200,19 +221,27 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     Ok(frames)
 }
 
-/// §1.6 grammar: RESP_HEADER, PUSH_RESULT × N, then per subscription
-/// SUB_START (COMMIT × k | segment frames × m) SUB_END; ERROR 0|1 anywhere
-/// after RESP_HEADER, and if present the next frame MUST be END (no frame of
-/// any type, unknown included, may follow it).
+/// The open section of a response (§1.4 rule 3).
+#[derive(PartialEq)]
+enum Section {
+    None,
+    Unit,
+    Live,
+}
+
+/// §1.6 grammar: RESP_HEADER, LEASE 0|1, PUSH_RESULT × N, then per unit
+/// SUB_START segment frames × m SUB_END, then at most one live section
+/// LIVE_START COMMIT × k LIVE_END; ERROR 0|1 anywhere after RESP_HEADER, and
+/// if present the next frame MUST be END (no frame of any type, unknown
+/// included, may follow it). §4.5 "Section order" lists the order errors.
 fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
     let mut seen_lease = false; // §7.3.2: at most one LEASE, before the body
     let mut seen_body = false; // any non-RESP_HEADER/non-LEASE frame
-    let mut past_results = false; // a SUB_START has been seen
-    let mut sub_open = false;
-    let mut sub_seen_commit = false;
-    let mut sub_seen_segment = false;
+    let mut section = Section::None;
+    let mut seen_section = false; // a unit or live section has started
+    let mut seen_live = false;
     let mut error_seen = false;
     let mut last_push_result: Option<(String, bool, Vec<i32>)> = None;
     let mut last_push_result_has_details = false;
@@ -266,9 +295,9 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 seen_lease = true;
             }
             ft::PUSH_RESULT => {
-                if past_results {
+                if seen_section {
                     return Err(DecodeError::invalid(
-                        "PUSH_RESULT after a SUB_START (out of grammar order)",
+                        "PUSH_RESULT after a unit or live section (out of grammar order)",
                     ));
                 }
                 let frame = decode_push_result(payload)?;
@@ -297,9 +326,9 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 seen_body = true;
             }
             ft::PUSH_RESULT_DETAILS => {
-                if past_results {
+                if seen_section {
                     return Err(DecodeError::invalid(
-                        "PUSH_RESULT_DETAILS after a SUB_START (out of grammar order)",
+                        "PUSH_RESULT_DETAILS after a unit or live section (out of grammar order)",
                     ));
                 }
                 let frame = decode_push_result_details(payload)?;
@@ -338,43 +367,25 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 seen_body = true;
             }
             ft::SUB_START => {
-                if sub_open {
+                if section == Section::Unit {
                     return Err(DecodeError::invalid(
-                        "SUB_START while a subscription context is already open",
+                        "SUB_START while a unit section is already open",
+                    ));
+                }
+                if seen_live {
+                    return Err(DecodeError::invalid(
+                        "SUB_START inside or after the live section",
                     ));
                 }
                 frames.push(decode_sub_start(payload)?);
-                past_results = true;
+                section = Section::Unit;
+                seen_section = true;
                 seen_body = true;
-                sub_open = true;
-                sub_seen_commit = false;
-                sub_seen_segment = false;
-            }
-            ft::COMMIT => {
-                if !sub_open {
-                    return Err(DecodeError::invalid(
-                        "COMMIT frame outside an open subscription context",
-                    ));
-                }
-                if sub_seen_segment {
-                    return Err(DecodeError::invalid(
-                        "COMMIT and segment frames must not both appear for one subscription",
-                    ));
-                }
-                frames.push(decode_commit(payload)?);
-                sub_seen_commit = true;
-                seen_body = true;
+                last_push_result = None;
             }
             ft::SEGMENT_REF | ft::SEGMENT_INLINE => {
-                if !sub_open {
-                    return Err(DecodeError::invalid(
-                        "segment frame outside an open subscription context",
-                    ));
-                }
-                if sub_seen_commit {
-                    return Err(DecodeError::invalid(
-                        "COMMIT and segment frames must not both appear for one subscription",
-                    ));
+                if section != Section::Unit {
+                    return Err(DecodeError::invalid("segment frame outside a unit section"));
                 }
                 if ty == ft::SEGMENT_REF {
                     frames.push(decode_segment_ref(payload)?);
@@ -386,17 +397,45 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                         payload: payload.to_vec(),
                     });
                 }
-                sub_seen_segment = true;
                 seen_body = true;
             }
             ft::SUB_END => {
-                if !sub_open {
-                    return Err(DecodeError::invalid(
-                        "SUB_END without an open subscription context",
-                    ));
+                if section != Section::Unit {
+                    return Err(DecodeError::invalid("SUB_END without an open unit section"));
                 }
                 frames.push(decode_sub_end(payload)?);
-                sub_open = false;
+                section = Section::None;
+                seen_body = true;
+            }
+            ft::LIVE_START => {
+                if section == Section::Unit {
+                    return Err(DecodeError::invalid("LIVE_START inside a unit section"));
+                }
+                if seen_live {
+                    return Err(DecodeError::invalid("second LIVE_START frame"));
+                }
+                frames.push(decode_live_start(payload)?);
+                section = Section::Live;
+                seen_section = true;
+                seen_live = true;
+                seen_body = true;
+                last_push_result = None;
+            }
+            ft::COMMIT => {
+                if section != Section::Live {
+                    return Err(DecodeError::invalid(
+                        "COMMIT frame outside the live section",
+                    ));
+                }
+                frames.push(decode_commit(payload)?);
+                seen_body = true;
+            }
+            ft::LIVE_END => {
+                if section != Section::Live {
+                    return Err(DecodeError::invalid("LIVE_END without an open LIVE_START"));
+                }
+                frames.push(decode_live_end(payload)?);
+                section = Section::None;
                 seen_body = true;
             }
             ft::ERROR => {
@@ -410,9 +449,9 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     if !seen_header {
         return Err(DecodeError::invalid("response has no RESP_HEADER frame"));
     }
-    if sub_open && !error_seen {
+    if section != Section::None && !error_seen {
         return Err(DecodeError::invalid(
-            "message ended with an open subscription context (missing SUB_END)",
+            "message ended with an open unit or live section",
         ));
     }
     Ok(frames)
@@ -459,10 +498,22 @@ fn decode_req_header(payload: &[u8]) -> Result<Frame> {
         } else {
             None
         };
+        let outbox_id = if r.presence("outboxId")? {
+            let value = r.str("outboxId")?;
+            if !valid_outbox_id(&value) {
+                return Err(DecodeError::invalid(
+                    "REQ_HEADER.outboxId must be non-empty and at most 64 bytes",
+                ));
+            }
+            Some(value)
+        } else {
+            None
+        };
         Ok(Frame::ReqHeader {
             client_id,
             schema_version,
             log_epoch,
+            outbox_id,
         })
     })
 }
@@ -492,6 +543,10 @@ fn decode_push_commit(payload: &[u8]) -> Result<Frame> {
         let client_commit_id = r.str("clientCommitId")?;
         if client_commit_id.is_empty() {
             return Err(DecodeError::invalid("clientCommitId must be non-empty"));
+        }
+        let client_seq = r.i64("clientSeq")?;
+        if client_seq < 0 {
+            return Err(DecodeError::invalid("PUSH_COMMIT.clientSeq must be >= 0"));
         }
         let count = r.u32("operations count")? as usize;
         if count == 0 {
@@ -538,6 +593,7 @@ fn decode_push_commit(payload: &[u8]) -> Result<Frame> {
         }
         Ok(Frame::PushCommit {
             client_commit_id,
+            client_seq,
             operations,
         })
     })
@@ -554,36 +610,58 @@ fn decode_pull_header(payload: &[u8]) -> Result<Frame> {
                 "accept bits 4–7 must be zero, got 0b{accept:08b}"
             )));
         }
+        let cursor = r.i64("cursor")?;
+        if cursor < -1 {
+            return Err(DecodeError::invalid("PULL_HEADER.cursor must be >= -1"));
+        }
+        let registration_digest = r
+            .bytes("registrationDigest")?
+            .try_into()
+            .map_err(|_| DecodeError::invalid("PULL_HEADER.registrationDigest must be 32 bytes"))?;
+        let echo_digest = read_echo_digest(r, "PULL_HEADER.echoDigest")?;
         Ok(Frame::PullHeader {
             limit_commits,
             limit_snapshot_rows,
             max_snapshot_pages,
             accept,
+            cursor,
+            registration_digest,
+            echo_digest,
         })
     })
 }
 
-fn decode_subscription(payload: &[u8]) -> Result<Frame> {
-    frame_payload(payload, "SUBSCRIPTION", |r| {
+/// §4.2, §4.4: an echo digest is empty or 32 bytes.
+fn read_echo_digest(r: &mut Reader<'_>, field: &str) -> Result<Option<[u8; 32]>> {
+    let bytes = r.bytes(field)?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    bytes
+        .try_into()
+        .map(Some)
+        .map_err(|_| DecodeError::invalid(format!("{field} must be 0 or 32 bytes")))
+}
+
+fn decode_progress(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "PROGRESS", |r| {
         let id = r.str("id")?;
-        let table = r.str("table")?;
-        let scopes = r.scope_map("scopes")?;
-        let params = if r.presence("params")? {
-            Some(r.json("params")?)
-        } else {
-            None
-        };
+        if !valid_unit_id(&id) {
+            return Err(DecodeError::invalid(
+                "PROGRESS.id must be 32 lowercase hex characters",
+            ));
+        }
         let cursor = r.i64("cursor")?;
+        if cursor < -1 {
+            return Err(DecodeError::invalid("PROGRESS.cursor must be >= -1"));
+        }
         let bootstrap_state = if r.presence("bootstrapState")? {
             Some(r.json("bootstrapState")?)
         } else {
             None
         };
-        Ok(Frame::Subscription {
+        Ok(Frame::Progress {
             id,
-            table,
-            scopes,
-            params,
             cursor,
             bootstrap_state,
         })
@@ -848,6 +926,11 @@ fn decode_push_result_details(payload: &[u8]) -> Result<Frame> {
 fn decode_sub_start(payload: &[u8]) -> Result<Frame> {
     frame_payload(payload, "SUB_START", |r| {
         let id = r.str("id")?;
+        if !valid_unit_id(&id) {
+            return Err(DecodeError::invalid(
+                "SUB_START.id must be 32 lowercase hex characters",
+            ));
+        }
         let status = match r.u8("status")? {
             1 => SubStatus::Active,
             2 => SubStatus::Revoked,
@@ -859,14 +942,63 @@ fn decode_sub_start(payload: &[u8]) -> Result<Frame> {
             }
         };
         let reason_code = r.str("reasonCode")?;
-        let effective_scopes = r.scope_map("effectiveScopes")?;
         let bootstrap = r.bool("bootstrap")?;
+        let count = r.u32("fenced count")? as usize;
+        let mut fenced = Vec::with_capacity(count.min(4096));
+        for _ in 0..count {
+            fenced.push(FencedRecord {
+                table: r.str("fenced table")?,
+                status: match r.u8("fenced status")? {
+                    1 => EchoStatus::Active,
+                    2 => EchoStatus::Revoked,
+                    other => {
+                        return Err(DecodeError::invalid(format!(
+                            "unknown fenced record status byte {other}"
+                        )))
+                    }
+                },
+                scopes: r.scope_map("fenced scopes")?,
+            });
+        }
+        if !fenced_in_order(&fenced) {
+            return Err(DecodeError::invalid(
+                "SUB_START.fenced tables must be unique and in ascending order",
+            ));
+        }
         Ok(Frame::SubStart {
             id,
             status,
             reason_code,
-            effective_scopes,
             bootstrap,
+            fenced,
+        })
+    })
+}
+
+fn decode_live_start(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "LIVE_START", |r| {
+        let status = match r.u8("status")? {
+            1 => LiveStatus::Active,
+            3 => LiveStatus::Reset,
+            4 => LiveStatus::Unregistered,
+            other => {
+                return Err(DecodeError::invalid(format!(
+                    "unknown LIVE_START status byte {other}"
+                )))
+            }
+        };
+        Ok(Frame::LiveStart {
+            status,
+            reason_code: r.str("reasonCode")?,
+        })
+    })
+}
+
+fn decode_live_end(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "LIVE_END", |r| {
+        Ok(Frame::LiveEnd {
+            through_seq: r.i64("throughSeq")?,
+            echo_digest: read_echo_digest(r, "LIVE_END.echoDigest")?,
         })
     })
 }
@@ -893,25 +1025,20 @@ fn decode_commit(payload: &[u8]) -> Result<Frame> {
             }
             let row_id = r.str("rowId")?;
             let op = decode_op(r)?;
-            let row_version = if r.presence("rowVersion")? {
-                Some(r.i64("rowVersion")?)
-            } else {
-                None
-            };
+            let row_version = r.i64("rowVersion")?;
+            if row_version < 1 {
+                return Err(DecodeError::invalid("change rowVersion must be at least 1"));
+            }
             let scopes = r.str_map("change scopes")?;
             let row = if r.presence("row")? {
                 Some(r.bytes("row")?)
             } else {
                 None
             };
-            // §4.5 presence ties: rowVersion and row present iff upsert.
-            let ok = match op {
-                Op::Upsert => row_version.is_some() && row.is_some(),
-                Op::Delete => row_version.is_none() && row.is_none(),
-            };
-            if !ok {
+            // §4.5 presence tie: row present iff upsert.
+            if row.is_some() != (op == Op::Upsert) {
                 return Err(DecodeError::invalid(
-                    "change rowVersion/row presence does not match op (presence invariant)",
+                    "change row presence does not match op (presence invariant)",
                 ));
             }
             changes.push(Change {

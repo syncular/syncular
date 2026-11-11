@@ -716,62 +716,6 @@ export function scanRowPageSql(
 }
 
 /**
- * One-round-trip page read for `readCommitWindow` (sync_* tables only; it
- * lives here beside `scanRowPageSql` because it is the same join-the-index
- * posture, dialect-parameterized the same way): candidates from the inverted
- * change-scope index (ordered + LIMITed at the covering `sync_change_scopes`
- * PK — exactly the old candidate query, so the index-first invariant of
- * `CommitWindowQuery` is unchanged) LEFT JOINed to the commit metadata and
- * to the commit's changes for the table, so a whole window page arrives in
- * ONE statement instead of 1 + 2×candidates round trips. This is the
- * incremental-pull hot path — it runs on every sync round; before the join a
- * 500-candidate catch-up window on Postgres paid ~1000 network round trips.
- *
- * LEFT JOIN (not INNER): a candidate whose commit vanished (scope-index
- * entry without a commit/changes row) must still reach the caller — its
- * `commit_seq` advances the window cursor — so it comes back with NULL
- * meta/change columns rather than disappearing from the page.
- *
- * Rows arrive ordered (commit_seq, idx): oldest-first commits, each commit's
- * change rows consecutive in `idx` order — the caller groups consecutive
- * rows and verifies the full multi-variable scope match in JS.
- *
- * Bind order:
- *   - postgres: [partition, tbl, var, ...values, afterSeq, throughSeq,
- *     limit] (the joins reuse `$1`/`$2`);
- *   - sqlite:   [partition, tbl, var, values as JSON array text, afterSeq,
- *     throughSeq, limit, partition, partition, tbl] (positional `?`;
- *     partition/tbl bind again for the joins). The values expand through
- *     `json_each` like `scanRowPageSql`.
- */
-export function commitWindowPageSql(
-  valueCount: number,
-  dialect: RelationalDialect,
-): string {
-  const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
-  const values =
-    dialect === 'sqlite'
-      ? 'SELECT value FROM json_each(?)'
-      : Array.from({ length: valueCount }, (_, i) => p(4 + i)).join(',');
-  const after = p(4 + valueCount);
-  const through = p(5 + valueCount);
-  const limit = p(6 + valueCount);
-  const joinPartition = dialect === 'sqlite' ? '?' : '$1';
-  const joinTbl = dialect === 'sqlite' ? '?' : '$2';
-  return `SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
-       ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-     FROM (SELECT DISTINCT commit_seq FROM sync_change_scopes
-       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values})
-         AND commit_seq>${after} AND commit_seq<=${through}
-       ORDER BY commit_seq LIMIT ${limit}) c
-     LEFT JOIN sync_commits m
-       ON m.partition=${joinPartition} AND m.commit_seq=c.commit_seq
-     LEFT JOIN sync_changes ch
-       ON ch.partition=${joinPartition} AND ch.commit_seq=c.commit_seq AND ch.tbl=${joinTbl}
-     ORDER BY c.commit_seq, ch.idx`;
-}
-
-/**
  * PostgreSQL set-based form of `scanRowPageSql`: one statement answers the
  * page of every subscription scanning any table in a pull. `$2` is a JSON
  * array of `{i, tbl, var, vals, after, lim}` records; each record runs the
@@ -810,29 +754,6 @@ export function scanRowBatchSql(tables: readonly CompiledTable[]): string {
 }
 
 /**
- * PostgreSQL set-based form of `commitWindowPageSql`: one statement answers
- * the window page of every subscription in a pull, across all tables. `$2`
- * is a JSON array of `{i, tbl, var, vals, after, through, lim}` records, each
- * running the same index-first candidate subquery through a LATERAL join.
- * Rows arrive ordered by (i, commit_seq, idx).
- *
- * Params: [partition, specs (JSON text)], the specs bound as text like
- * `scanRowBatchSql`.
- */
-export const COMMIT_WINDOW_BATCH_SQL = `SELECT s.i AS sub, c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
-       ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], after bigint, through bigint, lim int)
-     CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
-       WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=ANY(s.vals)
-         AND commit_seq>s.after AND commit_seq<=s.through
-       ORDER BY commit_seq LIMIT s.lim) c
-     LEFT JOIN sync_commits m
-       ON m.partition=$1 AND m.commit_seq=c.commit_seq
-     LEFT JOIN sync_changes ch
-       ON ch.partition=$1 AND ch.commit_seq=c.commit_seq AND ch.tbl=s.tbl
-     ORDER BY s.i, c.commit_seq, ch.idx`;
-
-/**
  * PostgreSQL push read-ahead across every table a commit targets, in one
  * statement: each requested row id with its stored row (NULL columns when
  * absent, `selectRowSql` shape) and its §5 delete tombstone. Params:
@@ -866,32 +787,6 @@ export function prefetchRowsBatchSql(
      )
      ${projection}`;
 }
-
-/**
- * SQLite/D1: the newest `commit_seq` in the inverted change-scope index for
- * one variable's values, as one index-only max per value (a `(partition,
- * tbl, var, value)` prefix), so the cost is independent of the table's
- * history. The values arrive as one JSON array, so the statement has no
- * compound SELECT and four bound parameters for any value count (D1 caps a
- * compound SELECT at 5 terms and a statement at 100 parameters).
- * Params: [partition, tbl, var, values as JSON array text].
- */
-export const LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL = `SELECT max((SELECT max(commit_seq) FROM sync_change_scopes
-           WHERE partition=? AND tbl=? AND var=? AND value=v.value)) AS seq
-     FROM json_each(?) AS v`;
-
-/**
- * PostgreSQL set-based form of `LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL` for the
- * subscriptions of a pull, across all tables. `$2` is a JSON array of
- * `{i, tbl, var, vals}` records. Params: [partition, specs (JSON text)].
- */
-export const LATEST_SCOPED_CHANGE_BATCH_SQL = `SELECT s.i AS sub,
-       (SELECT max(latest.seq) FROM (
-          SELECT (SELECT max(commit_seq) FROM sync_change_scopes
-                   WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=v.value) AS seq
-            FROM jsonb_array_elements_text(s.vals) AS v(value)) AS latest) AS seq
-     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals jsonb)
-    ORDER BY s.i`;
 
 /**
  * SELECT the rows that reference one blob with their stored scope maps, in

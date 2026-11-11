@@ -155,10 +155,14 @@ describe('push apply (§6.2)', () => {
     const row = await t.storage.getRow('part-1', 'tasks', 't1');
     expect(row?.serverVersion).toBe(2);
     expect(row?.payload).toEqual(first?.payload);
-    const commits = await t.storage.readCommitWindow('part-1', {
-      table: 'tasks',
-      scopeFilter: { project_id: ['p1'] },
-      afterSeq: firstSeq,
+    const { commits } = await t.storage.readLiveWindow('part-1', {
+      units: [
+        {
+          scopes: { project_id: 'p1' },
+          afterSeq: firstSeq,
+          tables: new Map([['tasks', { project_id: ['p1'] }]]),
+        },
+      ],
       throughSeq: firstSeq + 1,
       limitChanges: 10,
     });
@@ -242,16 +246,22 @@ describe('push apply (§6.2)', () => {
     const seq = await seedTask(t, 'c1', 't1', 'p1');
     await sync(t, [pushCommit('c2', [del('tasks', 't1')])]);
     expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
-    const commits = await t.storage.readCommitWindow('part-1', {
-      table: 'tasks',
-      scopeFilter: { project_id: ['p1'] },
-      afterSeq: seq,
+    const { commits } = await t.storage.readLiveWindow('part-1', {
+      units: [
+        {
+          scopes: { project_id: 'p1' },
+          afterSeq: seq,
+          tables: new Map([['tasks', { project_id: ['p1'] }]]),
+        },
+      ],
       throughSeq: seq + 1,
       limitChanges: 10,
     });
     expect(commits).toHaveLength(1);
     expect(commits[0]?.changes[0]?.op).toBe('delete');
     expect(commits[0]?.changes[0]?.scopes).toEqual({ project_id: 'p1' });
+    // §2.2: the delete advances the version, and its tombstone records it.
+    expect(commits[0]?.changes[0]?.rowVersion).toBe(2);
   });
 });
 
@@ -805,11 +815,11 @@ describe('tombstone disclosure (§6.2)', () => {
   });
 });
 
-describe('recreate over a tombstone (§6.2)', () => {
+describe('versions across deletes and incarnations (§2.2, §6.2)', () => {
   const version = async (t: ReturnType<typeof makeContext>, rowId: string) =>
     (await t.storage.getRow('part-1', 'tasks', rowId))?.serverVersion;
 
-  test('starts above the deleted version, so a stale baseVersion conflicts', async () => {
+  test('a recreate starts above the delete floor, so a stale baseVersion conflicts', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
     for (const title of ['v2', 'v3']) {
@@ -817,14 +827,18 @@ describe('recreate over a tombstone (§6.2)', () => {
         pushCommit(title, [upsert('tasks', 't1', taskRow('t1', 'p1', title))]),
       ]);
     }
+    // The delete advances 3 to 4; the tombstone and the floor record 4.
     await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
+    expect(
+      t.storage.db.query('SELECT server_version FROM sync_tombstones').get(),
+    ).toEqual({ server_version: 4 });
     const recreated = await sync(t, [
       pushCommit('recreate', [
         upsert('tasks', 't1', taskRow('t1', 'p1', 'new'), 0),
       ]),
     ]);
     expect(pushResults(recreated)[0]?.status).toBe('applied');
-    expect(await version(t, 't1')).toBe(4);
+    expect(await version(t, 't1')).toBe(5);
     const stale = await sync(t, [
       pushCommit('stale', [
         upsert('tasks', 't1', taskRow('t1', 'p1', 'stale'), 3),
@@ -832,16 +846,71 @@ describe('recreate over a tombstone (§6.2)', () => {
     ]);
     const record = pushResults(stale)[0]?.results[0];
     if (record?.status !== 'conflict') throw new Error('expected conflict');
-    expect(record.serverVersion).toBe(4);
+    expect(record.serverVersion).toBe(5);
     expect(decodeRow(TASK_COLUMNS, record.serverRow)[2]).toBe('new');
   });
 
-  test('a tombstone without a stored version recreates at 1', async () => {
+  test('an insert starts above a delete earlier in its commit (§2.2)', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
+    // The delete writes t1 at 2, so the insert of t3 starts at 3.
     await sync(t, [
-      pushCommit('v2', [upsert('tasks', 't1', taskRow('t1', 'p1', 'v2'))]),
+      pushCommit('both', [
+        del('tasks', 't1'),
+        upsert('tasks', 't3', taskRow('t3', 'p1')),
+      ]),
     ]);
+    expect(await version(t, 't3')).toBe(3);
+  });
+
+  test('every insert starts above the floor; a pruned tombstone leaves the floor', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 'fresh', 'p1');
+    expect(await version(t, 'fresh')).toBe(1);
+    await seedTask(t, 'c2', 'gone', 'p2');
+    await sync(t, [pushCommit('c3', [del('tasks', 'gone')])]);
+    // Another row id, an actor without the tombstone's scope: both start at 3.
+    await seedTask(t, 'c4', 'other', 'p1');
+    expect(await version(t, 'other')).toBe(3);
+    t.scopes.value = { project_id: ['p1'] };
+    const inserted = await sync(t, [
+      pushCommit('c5', [upsert('tasks', 'gone', taskRow('gone', 'p1'))]),
+    ]);
+    expect(pushResults(inserted)[0]?.status).toBe('applied');
+    expect(await version(t, 'gone')).toBe(3);
+    expect(
+      t.storage.db.query('SELECT count(*) AS n FROM sync_tombstones').get(),
+    ).toEqual({ n: 0 });
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await sync(t, [pushCommit('c6', [del('tasks', 'gone')])]);
+    const logEpoch = await t.storage.getPartitionLogEpoch('part-1');
+    await t.storage.pruneCommitsThrough('part-1', {
+      logEpoch: logEpoch!,
+      throughSeq: 6,
+    });
+    await sync(t, [
+      pushCommit('c7', [upsert('tasks', 'gone', taskRow('gone', 'p1'))]),
+    ]);
+    expect(await version(t, 'gone')).toBe(5);
+  });
+
+  test('a delete and a recreate in one commit advance past each other', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    const message = await sync(t, [
+      pushCommit('c2', [
+        del('tasks', 't1'),
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'again'), 0),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    expect(await version(t, 't1')).toBe(3);
+  });
+
+  test('a tombstone without a stored version still recreates above the floor', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
     await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
     t.storage.db.exec(
       'UPDATE sync_tombstones SET server_version = NULL, scopes = NULL',
@@ -849,26 +918,7 @@ describe('recreate over a tombstone (§6.2)', () => {
     await sync(t, [
       pushCommit('recreate', [upsert('tasks', 't1', taskRow('t1', 'p1'), 0)]),
     ]);
-    expect(await version(t, 't1')).toBe(1);
-  });
-
-  test('an actor outside the tombstone scope inserts at 1 and clears the tombstone', async () => {
-    const t = makeContext();
-    t.scopes.value = { project_id: ['p1', 'p2'] };
-    await seedTask(t, 'c1', 't1', 'p2');
-    await sync(t, [
-      pushCommit('v2', [upsert('tasks', 't1', taskRow('t1', 'p2', 'v2'))]),
-    ]);
-    await sync(t, [pushCommit('delete', [del('tasks', 't1')])]);
-    t.scopes.value = { project_id: ['p1'] };
-    const inserted = await sync(t, [
-      pushCommit('insert', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-    ]);
-    expect(pushResults(inserted)[0]?.status).toBe('applied');
-    expect(await version(t, 't1')).toBe(1);
-    expect(
-      t.storage.db.query('SELECT count(*) AS n FROM sync_tombstones').get(),
-    ).toEqual({ n: 0 });
+    expect(await version(t, 't1')).toBe(3);
   });
 });
 
@@ -988,5 +1038,160 @@ describe('blob existence check (§6.6)', () => {
       status: 'error',
       code: 'blob.not_found',
     });
+  });
+});
+
+describe('per-outbox watermark (§6.3.2)', () => {
+  const task = (id: string) => [upsert('tasks', id, taskRow(id, 'p1'))];
+  const push = (
+    t: ReturnType<typeof makeContext>,
+    commits: ReturnType<typeof pushCommit>[],
+    outboxId: string | null = 'outbox-1',
+  ) => sync(t, commits, outboxId === null ? {} : { outboxId });
+
+  test('the clientSeq rules fail the request before any commit (§6.1)', async () => {
+    const t = makeContext();
+    const cases: [string | undefined, number[]][] = [
+      ['outbox-1', [0]],
+      ['outbox-1', [2, 2]],
+      ['outbox-1', [3, 1]],
+      [undefined, [1]],
+    ];
+    for (const [outboxId, seqs] of cases) {
+      const error = await expectSyncError(
+        handleSyncRequest(
+          requestBytes(
+            seqs.map((seq, i) => pushCommit(`c${i}`, task(`t${i}`), seq)),
+            'client-1',
+            1,
+            undefined,
+            outboxId,
+          ),
+          t.ctx,
+        ),
+        'sync.invalid_request',
+      );
+      expect(JSON.parse(error.details ?? '{}')).toEqual({
+        outbox: outboxId !== undefined,
+        clientSeqs: seqs,
+      });
+    }
+    expect(await t.storage.getRow('part-1', 'tasks', 't0')).toBeUndefined();
+  });
+
+  test('a request raises the watermark to its first clientSeq and deletes the results below it', async () => {
+    const t = makeContext();
+    await push(t, [pushCommit('c1', task('t1'), 1)]);
+    await push(t, [pushCommit('c2', task('t2'), 2)]);
+    // A lost-ack retry of a commit still in the outbox replays its result.
+    expect(
+      pushResults(await push(t, [pushCommit('c2', task('t2'), 2)])),
+    ).toEqual([expect.objectContaining({ status: 'cached', commitSeq: 2 })]);
+    await push(t, [pushCommit('c3', task('t3'), 3)]);
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c1'),
+    ).toBeUndefined();
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c2'),
+    ).toBeUndefined();
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c3'),
+    ).toBeDefined();
+    expect(await t.storage.listPushWatermarks?.('part-1', 'c3')).toEqual([
+      { clientId: 'client-1', outboxId: 'outbox-1', throughSeq: 3 },
+    ]);
+  });
+
+  test('a commit below the watermark without a result answers sync.commit_expired, unpersisted', async () => {
+    const t = makeContext();
+    await push(t, [pushCommit('c1', task('t1'), 1)]);
+    await push(t, [pushCommit('c3', task('t3'), 3)]);
+    // A delayed copy of an abandoned request: c1 was deleted, c2 never applied.
+    const delayed = await push(t, [
+      pushCommit('c1', task('t1'), 1),
+      pushCommit('c2', task('t2'), 2),
+      pushCommit('c4', task('t4'), 4),
+    ]);
+    const expired = {
+      type: 'PUSH_RESULT',
+      status: 'rejected',
+      results: [
+        {
+          opIndex: 0,
+          status: 'error',
+          code: 'sync.commit_expired',
+          message: 'the commit lies below its outbox watermark (§6.3.2)',
+          retryable: false,
+        },
+      ],
+    };
+    expect(pushResults(delayed)).toEqual([
+      { ...expired, clientCommitId: 'c1' },
+      { ...expired, clientCommitId: 'c2' },
+      expect.objectContaining({ clientCommitId: 'c4', status: 'applied' }),
+    ] as never);
+    expect(await t.storage.getRow('part-1', 'tasks', 't2')).toBeUndefined();
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c2'),
+    ).toBeUndefined();
+    expect(
+      (await t.storage.getRow('part-1', 'tasks', 't1'))?.serverVersion,
+    ).toBe(1);
+    // The lower first sequence did not lower W: c3 keeps its result.
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c3'),
+    ).toBeDefined();
+  });
+
+  test('a first commit that rejects still settles the watermark', async () => {
+    const t = makeContext();
+    await push(t, [pushCommit('c1', task('t1'), 1)]);
+    const rejected = await push(t, [
+      pushCommit('c2', [upsert('nope', 'x', taskRow('x', 'p1'))], 2),
+    ]);
+    expect(pushResults(rejected)[0]?.status).toBe('rejected');
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c1'),
+    ).toBeUndefined();
+    expect(
+      pushResults(await push(t, [pushCommit('c1', task('t1'), 1)]))[0],
+    ).toMatchObject({
+      results: [{ code: 'sync.commit_expired' }],
+    });
+  });
+
+  test('results without an outbox stay, and a replica settles its pre-upgrade results (§9)', async () => {
+    const t = makeContext();
+    await push(t, [pushCommit('old-1', task('t1'))], null);
+    await push(t, [pushCommit('old-2', task('t2'))], null);
+    await push(t, [pushCommit('service', task('t9'))], null);
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'old-1'),
+    ).toBeDefined();
+    // The first version 4 request carries the surviving prefix [old-2].
+    const upgraded = await push(t, [
+      pushCommit('old-2', task('t2'), 5),
+      pushCommit('new-1', task('t3'), 6),
+    ]);
+    expect(pushResults(upgraded).map((r) => r.status)).toEqual([
+      'cached',
+      'applied',
+    ]);
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'old-1'),
+    ).toBeUndefined();
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'service'),
+    ).toBeUndefined();
+    await push(t, [pushCommit('new-2', task('t4'), 7)]);
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'old-2'),
+    ).toBeUndefined();
+    // Another client's results are never touched.
+    await sync(t, [pushCommit('other', task('t5'))], { clientId: 'client-2' });
+    await push(t, [pushCommit('new-3', task('t6'), 8)]);
+    expect(
+      await t.storage.getPushResult('part-1', 'client-2', 'other'),
+    ).toBeDefined();
   });
 });

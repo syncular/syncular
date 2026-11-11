@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { unitId, MessageStreamScanner } from '@syncular/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MessageStreamScanner } from '@syncular/core';
 import {
   ClientSyncError,
   createSyncClientHandle,
@@ -157,11 +157,7 @@ describe('application-authorized local projection rebootstrap', () => {
     const local = await makeClient(server, {
       clientId: 'repair-client',
     });
-    local.client.subscribe({
-      id: 'repair-tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.syncUntilIdle();
 
     const accepted = local.client.mutate([
@@ -206,12 +202,12 @@ describe('application-authorized local projection rebootstrap', () => {
     expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
       'offline-row',
     ]);
-    expect(local.client.subscription('repair-tasks')).toMatchObject({
+    expect(local.client.unit(unitId({ project_id: 'p1' }))).toMatchObject({
       cursor: -1,
       status: 'active',
     });
     expect(
-      local.client.subscription('repair-tasks')?.bootstrapState,
+      local.client.unit(unitId({ project_id: 'p1' }))?.bootstrapState,
     ).toBeUndefined();
     expect(local.client.statusSnapshot().upgrading).toBe(true);
     expect(local.client.statusSnapshot().syncNeeded).toBe(true);
@@ -243,11 +239,7 @@ describe('application-authorized local projection rebootstrap', () => {
   test('a rebootstrap landing mid-round keeps the rewound cursors and runs the fresh bootstrap', async () => {
     const server = makeServer();
     const local = await makeClient(server, { clientId: 'repair-race-client' });
-    local.client.subscribe({
-      id: 'race-tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     local.client.mutate([
       {
         table: 'tasks',
@@ -257,8 +249,8 @@ describe('application-authorized local projection rebootstrap', () => {
     ]);
     await local.client.syncUntilIdle();
     expect(
-      local.client.subscription('race-tasks')?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+      local.client.unitCatchup(unitId({ project_id: 'p1' })),
+    ).toMatchObject({ bootstrapComplete: true });
 
     // Park a round between request send and response apply, then reset the
     // projection inside that window.
@@ -269,14 +261,14 @@ describe('application-authorized local projection rebootstrap', () => {
     expect(
       local.client.rebootstrapLocalData({ rebootstrapId: 'race-001' }),
     ).toMatchObject({ alreadyApplied: false, resetSubscriptions: 1 });
-    expect(local.client.subscription('race-tasks')?.cursor).toBe(-1);
+    expect(local.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     expect(tableRows(local.db, 'tasks')).toEqual([]);
     gate.release();
     await round;
 
     // The stale round's SUB_END state stays unpersisted: the rewound cursor
     // and the upgrading marker survive.
-    expect(local.client.subscription('race-tasks')?.cursor).toBe(-1);
+    expect(local.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     expect(local.client.statusSnapshot().upgrading).toBe(true);
     expect(local.client.statusSnapshot().syncNeeded).toBe(true);
 
@@ -285,8 +277,8 @@ describe('application-authorized local projection rebootstrap', () => {
       'server-row',
     ]);
     expect(
-      local.client.subscription('race-tasks')?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+      local.client.unitCatchup(unitId({ project_id: 'p1' })),
+    ).toMatchObject({ bootstrapComplete: true });
     expect(local.client.statusSnapshot().upgrading).toBe(false);
     await local.client.close();
     local.db.close();
@@ -327,11 +319,7 @@ describe('application-authorized local projection rebootstrap', () => {
         };
       },
     });
-    local.client.subscribe({
-      id: 'tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.syncUntilIdle();
     await local.client.connectRealtime();
     hold = true;
@@ -356,7 +344,7 @@ describe('application-authorized local projection rebootstrap', () => {
     await dropped.promise;
     off();
     expect(tableRows(local.db, 'tasks')).toEqual([]);
-    expect(local.client.subscription('tasks')?.cursor).toBe(-1);
+    expect(local.client.unit(unitId({ project_id: 'p1' }))?.cursor).toBe(-1);
     await local.client.syncUntilIdle();
     expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
       'remote',
@@ -376,11 +364,7 @@ describe('application-authorized local projection rebootstrap', () => {
         clientId: 'repair-restart-client',
         databasePath,
       });
-      first.client.subscribe({
-        id: 'repair-restart-tasks',
-        table: 'tasks',
-        scopes: { project_id: ['p1'] },
-      });
+      first.client.subscribe({ project_id: 'p1' });
       await first.client.syncUntilIdle();
       first.client.mutate([
         {
@@ -420,11 +404,7 @@ describe('application-authorized local projection rebootstrap', () => {
     const local = await makeClient(server, {
       clientId: 'repair-corrupt-receipt-client',
     });
-    local.client.subscribe({
-      id: 'repair-corrupt-receipt-tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     local.client.mutate([
       {
         table: 'tasks',
@@ -447,8 +427,8 @@ describe('application-authorized local projection rebootstrap', () => {
       'server-row',
     ]);
     expect(
-      local.client.subscription('repair-corrupt-receipt-tasks')?.cursor,
-    ).toBeGreaterThanOrEqual(0);
+      local.client.unitCatchup(unitId({ project_id: 'p1' })),
+    ).toMatchObject({ bootstrapComplete: true });
 
     await local.client.close();
     local.db.close();

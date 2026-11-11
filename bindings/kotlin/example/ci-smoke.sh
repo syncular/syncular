@@ -83,7 +83,7 @@ VERIFY="$(cd "${QUICKSTART_DIR}" && SMOKE_TITLE="${TITLE}" SMOKE_URL="http://loc
 import { makeClient } from './src/make-client';
 const b = makeClient(process.env.SMOKE_URL!, 'kotlin-smoke-verify-' + Date.now());
 await b.start();
-b.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+b.subscribe({ list_id: 'groceries' });
 await b.syncUntilIdle();
 const rows = b.query('SELECT title FROM todos');
 const hit = rows.some((r: any) => String(r.title).includes(process.env.SMOKE_TITLE!));

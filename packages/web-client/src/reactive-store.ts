@@ -545,7 +545,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.reset();
   }
 
-  /** SPEC §7.7: a rejected claim is claimed again; its stored error would
+  /** SPEC §7.8: a rejected claim is claimed again; its stored error would
    * fail every read until the last subscriber leaves. */
   reclaim(): void {
     if (this.#delegate !== undefined || this.#claimError === undefined) return;
@@ -1231,7 +1231,7 @@ export class ReactiveClientStore {
     >;
     let claimedAttempt: number | undefined;
     this.#offProgress = this.client.onProgress((progress) => {
-      // A new sync attempt is the client's retry schedule (§7.6): window
+      // A new sync attempt is the client's retry schedule (§7.7): window
       // claims that failed are claimed again once per attempt.
       if (progress.state === 'running' && progress.attempt !== claimedAttempt) {
         claimedAttempt = progress.attempt;

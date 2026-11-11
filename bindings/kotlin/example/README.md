@@ -15,7 +15,7 @@ canonical `todos` table, which the quickstart's TypeScript clients also use.
 
 The whole syncular surface is [`TodoStore`](src/main/kotlin/dev/syncular/example/TodoStore.kt):
 the constructor builds a `SyncularClient` (schema + `baseUrl`) and `subscribe`s
-to the list; `todos()` is one `query` decoded through the generated typed
+to the list's unit; `todos()` is one `query` decoded through the generated typed
 `Notes` row; `add`/`toggle` are `mutate`; `sync()` is `syncUntilIdle`. No
 protocol logic — the native core owns all of it.
 

@@ -54,7 +54,7 @@ startSyncWorker();
 For a worker that only connects to a remote authority, import
 `startSyncWorker` from `@syncular/client/worker/remote`. This entry excludes the
 optional local-authority lifecycle from the worker bundle. It retains the same
-subscription, retained-outcome, proof, diagnostics, and multi-tab behavior.
+unit, retained-outcome, proof, diagnostics, and multi-tab behavior.
 An initialization that requests `localAuthority: true` fails before opening
 storage with `client.local_authority_unconfigured`. The shared handle still
 declares the local-authority methods; calling one against a remote-only worker
@@ -134,7 +134,7 @@ export const handle = await createSyncClientHandle({
   autoSync: true,
 });
 
-await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await handle.subscribe({ list_id: 'groceries' });
 await handle.syncUntilIdle();
 console.log(await handle.query('SELECT id, title FROM todos ORDER BY id'));
 ```

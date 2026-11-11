@@ -74,7 +74,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
             baseUrl,
             clientId: `soak-rt-${vu}`,
           });
-          rt.subscribe('storm', 'tasks', { project_id: [STORM_PROJECT] });
+          rt.subscribe({ project_id: STORM_PROJECT });
           await rt.connect();
           await rt.bootstrap();
           while (!signal.aborted) {
@@ -89,7 +89,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
         const project = role === 3 ? clientProject(vu % 8) : STORM_PROJECT;
         const client = new HttpVClient({ baseUrl, clientId: `soak-${vu}` });
         const subScope = role === 3 ? project : STORM_PROJECT;
-        client.subscribe('sub', 'tasks', { project_id: [subScope] });
+        client.subscribe({ project_id: subScope });
         await client.pull();
         let seq = 0;
         while (!signal.aborted) {

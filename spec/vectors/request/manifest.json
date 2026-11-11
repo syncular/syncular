@@ -6,43 +6,55 @@
       "name": "pull-minimal",
       "bin": "pull-minimal.bin",
       "json": "pull-minimal.json",
-      "covers": "Smallest legal request: header + pull + one caught-up subscription"
+      "covers": "Smallest legal pull: PULL_HEADER refers to the list by digest, with a replica cursor and an echo digest; no UNIT frame (§4.1, §4.2)"
     },
     {
       "name": "pull-bootstrap",
       "bin": "pull-bootstrap.bin",
       "json": "pull-bootstrap.json",
-      "covers": "cursor = -1, accept bits incl. sqlite + signed URLs, params, resumed bootstrapState round-trip"
+      "covers": "A traveling list of two units + two PROGRESS frames: a fresh bootstrap (cursor = -1) and a resumed bootstrap (cursor at the §4.7 pin, bootstrapState round-trip); accept bits incl. sqlite + signed URLs; empty echoDigest"
     },
     {
       "name": "push-multi-commit",
       "bin": "push-multi-commit.bin",
       "json": "push-multi-commit.json",
-      "covers": "Two commits: upsert with baseVersion, delete, row-codec payload edge cases (NULL bitmap, empty string, non-BMP unicode, json-typed column raw-string round-trip)"
+      "covers": "outboxId + two commits with increasing clientSeq: upsert with baseVersion, delete, sparse-row payload edge cases (presence and NULL bitmaps, empty string, non-BMP unicode, json-typed column raw-string round-trip)"
     },
     {
       "name": "combined",
       "bin": "combined.bin",
       "json": "combined.json",
-      "covers": "Push + pull in one envelope (SPEC.md §1.5 ordering)"
+      "covers": "Push + pull in one envelope (§1.5 ordering): a referenced list with one post-bootstrap unit in PROGRESS"
     },
     {
       "name": "epoch-bound",
       "bin": "epoch-bound.bin",
       "json": "epoch-bound.json",
-      "covers": "Request carrying the client partition log epoch (§2.1)"
+      "covers": "Request header with the stored partition logEpoch (§2.1) and outboxId (§6.3.2)"
     },
     {
       "name": "json-boundaries",
       "bin": "json-boundaries.bin",
       "json": "json-boundaries.json",
-      "covers": "JSON validity rule (Conventions) at its accepting edge: params nested exactly 64 containers deep, bootstrapState with whitespace, a duplicate key, the largest finite binary64 and escapes"
+      "covers": "JSON validity rule (Conventions) at its accepting edge: one PROGRESS.bootstrapState nested exactly 64 containers deep, a second with whitespace, a duplicate key, the largest finite binary64 and escapes"
     },
     {
       "name": "round-failure-report",
       "bin": "round-failure-report.bin",
       "json": "round-failure-report.json",
       "covers": "ROUND_FAILURE (§1.5) immediately after REQ_HEADER: the client reports the code of its last round that failed where the server could not see it"
+    },
+    {
+      "name": "empty-registration",
+      "bin": "empty-registration.bin",
+      "json": "empty-registration.json",
+      "covers": "A pull whose registrationDigest is the empty list's digest and which carries no UNIT frame: the empty list travels (§4.1)"
+    },
+    {
+      "name": "producer-push",
+      "bin": "producer-push.bin",
+      "json": "producer-push.json",
+      "covers": "A database-less producer push: no outboxId, clientSeq = 0 (§6.10)"
     }
   ],
   "invalid": [
@@ -59,10 +71,10 @@
       "covers": "Envelope magic is SSP1, not SSP2"
     },
     {
-      "name": "unsupported-wire-version",
-      "bin": "invalid/unsupported-wire-version.bin",
+      "name": "wire-version-3",
+      "bin": "invalid/wire-version-3.bin",
       "error": "sync.invalid_request",
-      "covers": "wireVersion 999 is rejected before reading frames"
+      "covers": "wireVersion 3 is rejected as unknown before reading frames (§9)"
     },
     {
       "name": "nonzero-flags",
@@ -107,16 +119,64 @@
       "covers": "ROUND_FAILURE code outside the §1.5 grammar (hyphen instead of a dotted segment)"
     },
     {
-      "name": "params-json-number-overflow",
-      "bin": "invalid/params-json-number-overflow.bin",
+      "name": "bootstrap-state-json-number-overflow",
+      "bin": "invalid/bootstrap-state-json-number-overflow.bin",
       "error": "sync.invalid_request",
-      "covers": "SUBSCRIPTION.params holds 1e999, outside finite binary64 (Conventions JSON validity rule)"
+      "covers": "PROGRESS.bootstrapState holds 1e999, outside finite binary64 (Conventions JSON validity rule)"
     },
     {
       "name": "bootstrap-state-json-depth-65",
       "bin": "invalid/bootstrap-state-json-depth-65.bin",
       "error": "sync.invalid_request",
-      "covers": "SUBSCRIPTION.bootstrapState nests 65 containers (Conventions JSON validity rule)"
+      "covers": "PROGRESS.bootstrapState nests 65 containers (Conventions JSON validity rule)"
+    },
+    {
+      "name": "registration-digest-31-bytes",
+      "bin": "invalid/registration-digest-31-bytes.bin",
+      "error": "sync.invalid_request",
+      "covers": "PULL_HEADER.registrationDigest of 31 bytes (§4.2: exactly 32)"
+    },
+    {
+      "name": "echo-digest-16-bytes",
+      "bin": "invalid/echo-digest-16-bytes.bin",
+      "error": "sync.invalid_request",
+      "covers": "PULL_HEADER.echoDigest of 16 bytes (§4.2: 0 or 32)"
+    },
+    {
+      "name": "pull-cursor-below-minus-one",
+      "bin": "invalid/pull-cursor-below-minus-one.bin",
+      "error": "sync.invalid_request",
+      "covers": "PULL_HEADER.cursor = -2 (§4.2: -1 or above)"
+    },
+    {
+      "name": "progress-id-uppercase",
+      "bin": "invalid/progress-id-uppercase.bin",
+      "error": "sync.invalid_request",
+      "covers": "PROGRESS.id in uppercase hex (§4.3: 32 lowercase hex characters)"
+    },
+    {
+      "name": "unit-after-progress",
+      "bin": "invalid/unit-after-progress.bin",
+      "error": "sync.invalid_request",
+      "covers": "UNIT after a PROGRESS frame (§1.5: PROGRESS follows every UNIT)"
+    },
+    {
+      "name": "unit-without-pull-header",
+      "bin": "invalid/unit-without-pull-header.bin",
+      "error": "sync.invalid_request",
+      "covers": "UNIT without a PULL_HEADER (§1.5)"
+    },
+    {
+      "name": "outbox-id-empty",
+      "bin": "invalid/outbox-id-empty.bin",
+      "error": "sync.invalid_request",
+      "covers": "REQ_HEADER.outboxId present but empty (§1.5)"
+    },
+    {
+      "name": "client-seq-negative",
+      "bin": "invalid/client-seq-negative.bin",
+      "error": "sync.invalid_request",
+      "covers": "PUSH_COMMIT.clientSeq = -1 (§6.1: non-negative)"
     }
   ]
 }

@@ -4,6 +4,7 @@ import type { CommitPruneQuery, CommitPruneResult } from './storage';
 import {
   clientRoundState,
   PARTITION_TOUCH_INTERVAL_MS,
+  commitDeleteFloor,
   rowsLiveAfterDelete,
   serveGateRefusal,
 } from './storage';
@@ -18,13 +19,13 @@ import { serveNotReadyError } from './readiness';
  *
  *   - both the commit log and the current-row table carry a (table, var,
  *     value) inverted scope index;
- *   - `readCommitWindow`/`scanRows` select candidates through that index
- *     (`sync_change_scopes` / `sync_row_scopes`), ordered + LIMITed at the
- *     index, then verify the full multi-variable match against the stored
- *     scope map — never a log or table scan;
+ *   - `readLiveWindow`/`scanRows` select candidates through an index
+ *     (`sync_change_scopes_by_key` / `sync_row_scopes`), ordered + LIMITed
+ *     at the index, then verify the full multi-variable match against the
+ *     stored scope map — never a log or table scan;
  *   - the candidate indexes are *covering* for their selection: the ordered
- *     column (`commit_seq` / `row_id`) sits in the index key after
- *     (tbl, var, value), so the planner does an index range scan and returns
+ *     column (`commit_seq` / `row_id`) sits in the index key after the scope
+ *     key, so the planner does an index range scan and returns
  *     already-ordered candidates without a heap sort. `test/postgres-explain
  *     .test.ts` asserts an `Index` node (never `Seq Scan`) so the regression
  *     cannot silently return.
@@ -45,7 +46,7 @@ import { serveNotReadyError } from './readiness';
  * would leave gaps on rollback, which the pull-window arithmetic in §4.5
  * does not tolerate). Cross-partition pushes never contend.
  */
-import type { PushOperationResult, ScopeMap } from '@syncular/core';
+import type { PushOperationResult, UnitScopes } from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -63,8 +64,6 @@ import {
 import {
   assertPhysicalColumns,
   assertStoredLayouts,
-  COMMIT_WINDOW_BATCH_SQL,
-  LATEST_SCOPED_CHANGE_BATCH_SQL,
   deleteRowSql,
   dropTableDdl,
   indexRowPageStatement,
@@ -108,20 +107,23 @@ import type {
   ClientPushResult,
   ClientRecord,
   ClientRecordWriteOptions,
-  ClientSubscription,
   CommitChangeSummary,
   CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
-  CommitWindowQuery,
   DurableJsonValue,
   IndexRowScanQuery,
+  LiveWindow,
+  LiveWindowQuery,
   NewChange,
   NewCommit,
   NewReaction,
+  OutboxSequence,
+  OutboxSettlement,
   PartitionRegistryEntry,
   PreparedPushApply,
   PrunedReactionCounts,
+  PushWatermark,
   ReactionClaimQuery,
   ReactionFailure,
   ReactionFailureUpdate,
@@ -140,7 +142,6 @@ import type {
   StorageTransaction,
   StoredChange,
   StoredCheckpoint,
-  StoredCommit,
   StoredPushResult,
   StoredReaction,
   StoredRow,
@@ -150,19 +151,28 @@ import {
   isPostgresConstraintError,
   StorageConstraintError,
 } from './storage-errors';
-import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
+import {
+  assertScopeIndexedScan,
+  readLiveWindowPages,
+  resolveIndexRowScan,
+} from './storage-query';
 
 /**
  * Schema DDL. Applied by `PostgresServerStorage.migrate()` (idempotent).
  *
  * Covering index design (the reason this file exists):
- *   - `sync_change_scopes_pk (partition, tbl, var, value, commit_seq)` — the
- *     candidate scan for `readCommitWindow` ranges on the (partition, tbl,
- *     var, value IN …) prefix and returns `commit_seq` already ascending;
- *   - `sync_row_scopes_pk (partition, tbl, var, value, row_id)` — same shape
- *     for `scanRows`, ordered by `row_id`.
- * Both are the PRIMARY KEY, so they are the clustering/covering index for
- * their table.
+ *   - `sync_change_scopes_by_key (partition, var, value, commit_seq)`: the
+ *     §4.5 live scan ranges once per unit key on the (partition, var, value)
+ *     prefix across tables and returns `commit_seq` already ascending;
+ *   - `sync_change_scopes_pk (partition, tbl, var, value, commit_seq)`:
+ *     the §4.7 scope pin, erasure and pruning name the table;
+ *   - `sync_row_scopes_pk (partition, tbl, var, value, row_id)`: the same
+ *     shape for `scanRows`, ordered by `row_id`.
+ *
+ * The §6.3.2 watermark delete and the §9 settlement of results stored
+ * before wire version 4 (NULL `outbox_id`) range over the `(partition,
+ * client_id)` prefix of `sync_push_results`' PRIMARY KEY, which the
+ * watermark keeps to one request's results per outbox.
  *
  * `sync_row_scopes_by_row (partition, tbl, row_id)` is the one secondary
  * scope index: `writeRowsOn` and `deleteRow` replace a row's scope entries
@@ -185,7 +195,8 @@ export const POSTGRES_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
   partition TEXT PRIMARY KEY,
   max_commit_seq BIGINT NOT NULL DEFAULT 0,
-  horizon_seq BIGINT NOT NULL DEFAULT 0
+  horizon_seq BIGINT NOT NULL DEFAULT 0,
+  delete_floor BIGINT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sync_partition_registry(
   partition TEXT PRIMARY KEY,
@@ -222,10 +233,20 @@ CREATE TABLE IF NOT EXISTS sync_change_scopes(
   var TEXT NOT NULL, value TEXT NOT NULL, commit_seq BIGINT NOT NULL,
   PRIMARY KEY(partition, tbl, var, value, commit_seq)
 );
+CREATE INDEX IF NOT EXISTS sync_change_scopes_by_key
+  ON sync_change_scopes(partition, var, value, commit_seq);
 CREATE TABLE IF NOT EXISTS sync_push_results(
   partition TEXT NOT NULL, client_id TEXT NOT NULL,
   client_commit_id TEXT NOT NULL, result JSONB NOT NULL,
+  outbox_id TEXT, client_seq BIGINT,
   PRIMARY KEY(partition, client_id, client_commit_id)
+);
+ALTER TABLE sync_push_results ADD COLUMN IF NOT EXISTS outbox_id TEXT;
+ALTER TABLE sync_push_results ADD COLUMN IF NOT EXISTS client_seq BIGINT;
+CREATE TABLE IF NOT EXISTS sync_push_watermarks(
+  partition TEXT NOT NULL, client_id TEXT NOT NULL, outbox_id TEXT NOT NULL,
+  through_seq BIGINT NOT NULL,
+  PRIMARY KEY(partition, client_id, outbox_id)
 );
 CREATE TABLE IF NOT EXISTS sync_reactions(
   partition TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -250,10 +271,12 @@ CREATE INDEX IF NOT EXISTS sync_reactions_dead_letter
 CREATE TABLE IF NOT EXISTS sync_clients(
   partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
   wire_version INTEGER NOT NULL DEFAULT 1,
-  cursor BIGINT NOT NULL, subscriptions JSONB NOT NULL,
+  cursor BIGINT NOT NULL,
   updated_at_ms BIGINT NOT NULL,
   last_round_at_ms BIGINT, last_error_code TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  schema_version INTEGER, units JSONB, registration_digest BYTEA,
+  catching_up JSONB NOT NULL DEFAULT '[]',
   PRIMARY KEY(partition, client_id)
 );
 ALTER TABLE sync_clients
@@ -262,6 +285,19 @@ ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS last_round_at_ms BIGINT;
 ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS last_error_code TEXT;
 ALTER TABLE sync_clients
   ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS schema_version INTEGER;
+ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS units JSONB;
+ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS registration_digest BYTEA;
+ALTER TABLE sync_clients
+  ADD COLUMN IF NOT EXISTS catching_up JSONB NOT NULL DEFAULT '[]';
+-- §9: a database from before wire version 4 (its client records still hold
+-- subscriptions) starts the horizon at its last commit.
+UPDATE sync_partitions SET horizon_seq = max_commit_seq
+ WHERE EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'sync_clients'
+                  AND column_name = 'subscriptions');
+ALTER TABLE sync_clients DROP COLUMN IF EXISTS subscriptions;
 CREATE TABLE IF NOT EXISTS sync_blob_refs(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
   blob_id TEXT NOT NULL,
@@ -276,6 +312,13 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
 );
 ALTER TABLE sync_tombstones ADD COLUMN IF NOT EXISTS server_version BIGINT;
 ALTER TABLE sync_tombstones ADD COLUMN IF NOT EXISTS scopes JSONB;
+ALTER TABLE sync_partitions
+  ADD COLUMN IF NOT EXISTS delete_floor BIGINT NOT NULL DEFAULT 0;
+UPDATE sync_partitions SET delete_floor = t.version
+  FROM (SELECT partition, max(server_version) AS version
+          FROM sync_tombstones GROUP BY partition) t
+ WHERE t.partition = sync_partitions.partition
+   AND t.version > sync_partitions.delete_floor;
 CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
   partition TEXT NOT NULL, name TEXT NOT NULL,
   schema_version INTEGER NOT NULL,
@@ -433,6 +476,7 @@ interface ServeGateRow {
   log_epoch: string | null;
   pending: unknown;
   result?: unknown;
+  delete_floor?: unknown;
 }
 
 /**
@@ -515,6 +559,7 @@ async function readAdmissionOn(
 ): Promise<{
   gate: ServeGate;
   persisted: StoredPushResult | undefined;
+  deleteFloor: number;
   prefetched: readonly PrefetchRow[];
 }> {
   const params: unknown[] = [
@@ -525,7 +570,8 @@ async function readAdmissionOn(
   ];
   let statement = `SELECT ${SERVE_GATE_PROJECTION},
             (SELECT result FROM sync_push_results
-              WHERE partition=$1 AND client_id=$3 AND client_commit_id=$4) AS result`;
+              WHERE partition=$1 AND client_id=$3 AND client_commit_id=$4) AS result,
+            (SELECT delete_floor FROM sync_partitions WHERE partition=$1) AS delete_floor`;
   if (prefetch !== undefined && prefetch.specs.length > 0) {
     params.push(JSON.stringify(prefetch.specs));
     // The gate row pads the read-ahead columns with typed NULLs so both
@@ -537,7 +583,7 @@ async function readAdmissionOn(
             NULL::bigint AS tombstone_seq, NULL::bigint AS tombstone_version,
             NULL::jsonb AS tombstone_scopes
        UNION ALL
-       SELECT NULL::bigint, NULL::text, NULL::json, NULL::jsonb,
+       SELECT NULL::bigint, NULL::text, NULL::json, NULL::jsonb, NULL::bigint,
               p.tbl, p.lookup_id, p.row_id, p.server_version, p.scopes,
               p.payload, p.column_versions, p.tombstone_seq,
               p.tombstone_version, p.tombstone_scopes
@@ -551,6 +597,8 @@ async function readAdmissionOn(
   return {
     gate: toServeGate(gateRow),
     persisted: toPersistedPushResult(gateRow?.result),
+    // asNumber maps the NULL of a partition without a commit to 0.
+    deleteFloor: asNumber(gateRow?.delete_floor),
     prefetched: rows.filter(
       (row): row is AdmissionRow & PrefetchRow =>
         row.tbl !== null && row.tbl !== undefined,
@@ -790,23 +838,6 @@ interface ChangeRecord {
   payload: unknown;
 }
 
-/**
- * One result row of `COMMIT_WINDOW_BATCH_SQL` (candidate LEFT JOIN commit meta
- * LEFT JOIN changes): meta/change columns are NULL when the joined row
- * vanished (LEFT JOIN contract).
- */
-interface CommitWindowRecord {
-  commit_seq: unknown;
-  actor_id: string | null;
-  created_at_ms: unknown;
-  tbl: string | null;
-  row_id: string | null;
-  op: unknown;
-  row_version: unknown;
-  scopes: unknown;
-  payload: unknown;
-}
-
 function toStoredRow(record: RowRecord): StoredRow {
   return {
     rowId: record.row_id,
@@ -833,6 +864,51 @@ function toTombstone(
     ...(scopes === null || scopes === undefined
       ? {}
       : { scopes: asJson<Record<string, string>>(scopes) }),
+  };
+}
+
+const CLIENT_RECORD_COLUMNS =
+  'client_id, actor_id, wire_version, cursor, updated_at_ms, schema_version, units, registration_digest, catching_up, last_round_at_ms, last_error_code, consecutive_failures';
+
+function toClientRecord(record: {
+  client_id: string;
+  actor_id: string;
+  wire_version: unknown;
+  cursor: unknown;
+  updated_at_ms: unknown;
+  schema_version: unknown;
+  units: unknown;
+  registration_digest: unknown;
+  catching_up: unknown;
+  last_round_at_ms: unknown;
+  last_error_code: string | null;
+  consecutive_failures: unknown;
+}): ClientRecord {
+  return {
+    clientId: record.client_id,
+    actorId: record.actor_id,
+    wireVersion: asNumber(record.wire_version),
+    cursor: asNumber(record.cursor),
+    updatedAtMs: asNumber(record.updated_at_ms),
+    ...(record.schema_version === null
+      ? {}
+      : { schemaVersion: asNumber(record.schema_version) }),
+    ...(record.units === null || record.registration_digest === null
+      ? {}
+      : {
+          registration: {
+            units: asJson<UnitScopes[]>(record.units),
+            digest: asBytes(record.registration_digest),
+          },
+        }),
+    catchingUp: asJson<ClientRecord['catchingUp']>(record.catching_up),
+    ...clientRoundState(
+      record.last_round_at_ms === null
+        ? null
+        : asNumber(record.last_round_at_ms),
+      record.last_error_code,
+      asNumber(record.consecutive_failures),
+    ),
   };
 }
 
@@ -1514,6 +1590,7 @@ class PostgresTransaction implements StorageTransaction {
       readonly table: string;
       readonly rowIds: readonly string[];
     }[] = [],
+    outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply> {
     this.#assertOpen();
     // The lock is its own statement: a READ COMMITTED statement's snapshot is
@@ -1522,6 +1599,10 @@ class PostgresTransaction implements StorageTransaction {
     // and the read into one statement would miss a duplicate that committed
     // while this transaction waited.
     await this.lockPartition();
+    const watermark =
+      outbox === undefined
+        ? undefined
+        : await this.#settleOutbox(clientId, clientCommitId, outbox);
     const tables: CompiledTable[] = [];
     const specs: { tbl: string; ids: string[] }[] = [];
     for (const target of targets) {
@@ -1543,7 +1624,77 @@ class PostgresTransaction implements StorageTransaction {
       specs.length === 0 ? undefined : { tables, specs },
     );
     this.#recordPrefetched(admission.prefetched);
-    return { gate: admission.gate, persisted: admission.persisted };
+    return {
+      gate: admission.gate,
+      persisted: admission.persisted,
+      deleteFloor: admission.deleteFloor,
+      ...(watermark === undefined ? {} : { watermark }),
+    };
+  }
+
+  /**
+   * The §9 settlement and §6.3.2 steps 1 and 2 under the partition lock,
+   * before the candidate savepoint, so a rejection keeps them. Two
+   * statements: the settlement touches disjoint rows (outside and inside the
+   * request), and the watermark delete must see its sequences.
+   */
+  async #settleOutbox(
+    clientId: string,
+    clientCommitId: string,
+    outbox: OutboxSettlement,
+  ): Promise<number> {
+    const first = outbox.commits[0];
+    const last = outbox.commits.at(-1);
+    if (
+      first === undefined ||
+      last === undefined ||
+      first.clientCommitId !== clientCommitId
+    ) {
+      throw new Error("outbox settlement rides the request's first commit");
+    }
+    const commits = JSON.stringify(
+      outbox.commits.map((commit) => ({
+        id: commit.clientCommitId,
+        seq: commit.clientSeq,
+      })),
+    );
+    // §9 (b): with no pre-upgrade result on the request's last commit, every
+    // remaining one outside the request left the outbox; (a) assigns the
+    // request's sequences to its pre-upgrade results.
+    await this.#client.query(
+      `WITH c AS (SELECT * FROM jsonb_to_recordset($4::text::jsonb) AS c(id text, seq bigint)),
+       b AS (DELETE FROM sync_push_results
+              WHERE partition=$1 AND client_id=$2 AND outbox_id IS NULL
+                AND client_commit_id NOT IN (SELECT id FROM c)
+                AND NOT EXISTS (SELECT 1 FROM sync_push_results
+                  WHERE partition=$1 AND client_id=$2 AND client_commit_id=$5
+                    AND outbox_id IS NULL)),
+       a AS (UPDATE sync_push_results r SET outbox_id=$3, client_seq=c.seq FROM c
+              WHERE r.partition=$1 AND r.client_id=$2 AND r.outbox_id IS NULL
+                AND r.client_commit_id=c.id)
+       SELECT 1`,
+      [
+        this.#partition,
+        clientId,
+        outbox.outboxId,
+        commits,
+        last.clientCommitId,
+      ],
+    );
+    const { rows } = await this.#client.query<{ through_seq: unknown }>(
+      `WITH w AS (
+         INSERT INTO sync_push_watermarks(partition, client_id, outbox_id, through_seq)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (partition, client_id, outbox_id) DO UPDATE
+           SET through_seq=GREATEST(sync_push_watermarks.through_seq, EXCLUDED.through_seq)
+         RETURNING through_seq),
+       d AS (DELETE FROM sync_push_results
+              WHERE partition=$1 AND client_id=$2 AND outbox_id=$3
+                AND client_seq<(SELECT through_seq FROM w))
+       SELECT through_seq FROM w`,
+      [this.#partition, clientId, outbox.outboxId, first.clientSeq],
+    );
+    return asNumber(rows[0]?.through_seq);
   }
 
   async lockPartition(): Promise<void> {
@@ -1583,6 +1734,7 @@ class PostgresTransaction implements StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<StoredPushResult> {
     this.#assertOpen();
     // Candidate rows that never reached the database are discarded with the
@@ -1598,6 +1750,7 @@ class PostgresTransaction implements StorageTransaction {
       clientId,
       clientCommitId,
       result,
+      sequence,
     );
     await this.commit();
     return canonical;
@@ -1608,10 +1761,11 @@ class PostgresTransaction implements StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence: OutboxSequence | undefined,
   ): Promise<StoredPushResult> {
     const { rows } = await this.#client.query<{ result: unknown }>(
-      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result, outbox_id, client_seq)
+       VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING
        RETURNING result`,
       [
@@ -1619,6 +1773,8 @@ class PostgresTransaction implements StorageTransaction {
         clientId,
         clientCommitId,
         JSON.stringify(serializePushResult(result)),
+        sequence?.outboxId ?? null,
+        sequence?.clientSeq ?? null,
       ],
     );
     if (rows[0] !== undefined) {
@@ -1734,9 +1890,11 @@ class PostgresTransaction implements StorageTransaction {
     // Allocate the next dense commitSeq under a per-partition row lock: the
     // UPDATE … RETURNING serializes concurrent pushes to this partition and
     // never leaves a gap on rollback (see the file header).
-    const allocate = `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 1)
+    // §2.2: the allocation also raises the delete floor to the commit's.
+    const allocate = `INSERT INTO sync_partitions(partition, max_commit_seq, delete_floor) VALUES ($1, 1, $7)
          ON CONFLICT (partition) DO UPDATE
-           SET max_commit_seq = sync_partitions.max_commit_seq + 1
+           SET max_commit_seq = sync_partitions.max_commit_seq + 1,
+               delete_floor = GREATEST(sync_partitions.delete_floor, EXCLUDED.delete_floor)
          RETURNING max_commit_seq`;
     const commitRow = `INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version)
          SELECT $1, allocated.max_commit_seq, $2, $3, $4, $5, $6 FROM allocated
@@ -1748,6 +1906,7 @@ class PostgresTransaction implements StorageTransaction {
       commit.actorId,
       commit.createdAtMs,
       this.#writerVersion,
+      commitDeleteFloor(commit.changes),
     ];
     if (commit.changes.length === 0) {
       const { rows } = await q.query<{ commit_seq: unknown }>(
@@ -1774,8 +1933,7 @@ class PostgresTransaction implements StorageTransaction {
     // parameters would otherwise store the string as a scalar. A commit can
     // delete one row twice, so a chunk's tombstone insert keeps the latest
     // delete per key and a later chunk overwrites it with its own. `version`
-    // is an upsert's row version or a delete's deleted version (§2.2); only
-    // the tombstone keeps the latter.
+    // is the change's row version (§2.2), which a delete's tombstone keeps.
     const valuesOf = (
       params: unknown[],
       slice: readonly NewChange[],
@@ -1788,7 +1946,7 @@ class PostgresTransaction implements StorageTransaction {
           change.table,
           change.rowId,
           change.op === 'upsert' ? 1 : 2,
-          change.rowVersion ?? change.deletedVersion ?? null,
+          change.rowVersion,
           JSON.stringify(change.scopes),
           change.payload ?? null,
         );
@@ -1830,7 +1988,7 @@ class PostgresTransaction implements StorageTransaction {
        ),
        inserted AS (
          INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, CASE WHEN v.op = 1 THEN v.version END, v.scopes, v.payload
+         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, v.version, v.scopes, v.payload
            FROM allocated CROSS JOIN v
          RETURNING partition, idx, tbl, row_id, op, commit_seq, scopes
        ),
@@ -1859,7 +2017,7 @@ class PostgresTransaction implements StorageTransaction {
          ),
          inserted AS (
            INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, CASE WHEN v.op = 1 THEN v.version END, v.scopes, v.payload
+           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, v.version, v.scopes, v.payload
              FROM v
            RETURNING partition, idx, tbl, row_id, op, commit_seq, scopes
          ),
@@ -1876,17 +2034,20 @@ class PostgresTransaction implements StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
+    sequence?: OutboxSequence,
   ): Promise<void> {
     this.#assertOpen();
     await this.#client.query(
-      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result, outbox_id, client_seq)
+       VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING`,
       [
         this.#partition,
         clientId,
         clientCommitId,
         JSON.stringify(serializePushResult(result)),
+        sequence?.outboxId ?? null,
+        sequence?.clientSeq ?? null,
       ],
     );
   }
@@ -3068,107 +3229,76 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
 
   async latestScopedChangeSeq(
     partition: string,
-    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+    query: { readonly table: string; readonly scopes: UnitScopes },
   ): Promise<number> {
-    const firstVariable = Object.keys(query.scopeFilter).sort()[0];
-    const values =
-      firstVariable === undefined
-        ? []
-        : (query.scopeFilter[firstVariable] ?? []);
-    if (firstVariable === undefined || values.length === 0) return 0;
-    // Concurrent reads of a pull share one statement across tables.
+    const variable = Object.keys(query.scopes).sort()[0];
+    const value = variable === undefined ? undefined : query.scopes[variable];
+    if (variable === undefined || value === undefined) return 0;
+    // Concurrent reads of a pull share one statement across tables: one
+    // index-only max over the (partition, tbl, var, value) prefix per spec.
     const [row] = await this.#batchedPage<{ seq: unknown }>(
       'latestScopedChange',
-      LATEST_SCOPED_CHANGE_BATCH_SQL,
+      `SELECT s.i AS sub,
+         (SELECT max(commit_seq) FROM sync_change_scopes
+           WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=s.value) AS seq
+       FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, value text)
+       ORDER BY s.i`,
       partition,
-      { tbl: query.table, var: firstVariable, vals: values },
+      { tbl: query.table, var: variable, value },
     );
-    return row === undefined ? 0 : asNumber(row.seq);
+    return row === undefined || row.seq === null ? 0 : asNumber(row.seq);
   }
 
-  async readCommitWindow(
+  readLiveWindow(
     partition: string,
-    query: CommitWindowQuery,
-  ): Promise<StoredCommit[]> {
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
-    // Candidates via the inverted index (one variable): the (partition, tbl,
-    // var, value, commit_seq) PK makes the candidate subquery an index range
-    // scan returning commit_seq already ascending (see postgres-explain
-    // .test.ts), LEFT JOINed to the commit meta + the table's changes. Pages
-    // of concurrent window reads share one statement across tables (see
-    // `COMMIT_WINDOW_BATCH_SQL`). Exact multi-variable verification against
-    // the stored scope map happens below.
-    const commits: StoredCommit[] = [];
-    let deliveredChanges = 0;
-    let afterSeq = query.afterSeq;
-    const batchSize = Math.max(64, query.limitChanges);
-    while (deliveredChanges < query.limitChanges) {
-      const records = await this.#batchedPage<CommitWindowRecord>(
-        'commitWindow',
-        COMMIT_WINDOW_BATCH_SQL,
-        partition,
-        {
-          tbl: query.table,
-          var: firstVariable,
-          vals: firstValues,
-          after: afterSeq,
-          through: query.throughSeq,
-          lim: batchSize,
-        },
+    query: LiveWindowQuery,
+  ): Promise<LiveWindow> {
+    // One statement per page: one LATERAL range of
+    // `sync_change_scopes_by_key` per unit key, each DISTINCT and LIMITed at
+    // the index, merged in commit order and LIMITed again, then LEFT JOINed
+    // to the commit meta and every change of the commit. A candidate whose
+    // commit vanished comes back with NULL meta and still advances the scan.
+    return readLiveWindowPages(query, async (keys, limit) => {
+      const { rows } = await this.#exec.query<{
+        commit_seq: unknown;
+        actor_id: string | null;
+        created_at_ms: unknown;
+        tbl: string | null;
+        row_id: string;
+        op: unknown;
+        row_version: unknown;
+        scopes: unknown;
+        payload: unknown;
+      }>(
+        `SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
+           ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
+         FROM (SELECT DISTINCT s.commit_seq
+             FROM jsonb_to_recordset($2::text::jsonb) AS k(var text, value text, after bigint)
+             CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
+               WHERE partition=$1 AND var=k.var AND value=k.value
+                 AND commit_seq>k.after AND commit_seq<=$3
+               ORDER BY commit_seq LIMIT $4) s
+             ORDER BY s.commit_seq LIMIT $4) c
+         LEFT JOIN sync_commits m ON m.partition=$1 AND m.commit_seq=c.commit_seq
+         LEFT JOIN sync_changes ch ON ch.partition=$1 AND ch.commit_seq=c.commit_seq
+         ORDER BY c.commit_seq, ch.idx`,
+        [partition, JSON.stringify(keys), query.throughSeq, limit],
       );
-      if (records.length === 0) break;
-      // Fold the page: rows arrive ordered (commit_seq, idx); consecutive
-      // rows with the same commit_seq are one candidate. Every candidate
-      // advances the cursor — including vanished commits (NULL meta, LEFT
-      // JOIN contract) and commits whose changes all fail the exact
-      // multi-variable match.
-      let candidateCount = 0;
-      let i = 0;
-      while (i < records.length) {
-        const head = records[i];
-        if (head === undefined) break;
-        const commitSeq = asNumber(head.commit_seq);
-        candidateCount += 1;
-        afterSeq = commitSeq;
-        const changes: StoredChange[] = [];
-        for (; i < records.length; i++) {
-          const record = records[i];
-          if (record === undefined || asNumber(record.commit_seq) !== commitSeq)
-            break;
-          // NULL tbl: a candidate with no change rows for the table.
-          if (record.tbl === null || record.row_id === null) continue;
-          const change = toStoredChange({
-            tbl: record.tbl,
-            row_id: record.row_id,
-            op: record.op,
-            row_version: record.row_version,
-            scopes: record.scopes,
-            payload: record.payload,
-          });
-          if (matchesEffective(change.scopes, query.scopeFilter)) {
-            changes.push(change);
-          }
-        }
-        // NULL meta: the commit vanished — cursor advanced, nothing emitted.
-        if (head.actor_id === null) continue;
-        if (changes.length === 0) continue;
-        commits.push({
-          commitSeq,
-          createdAtMs: asNumber(head.created_at_ms),
-          actorId: head.actor_id,
-          changes,
-        });
-        deliveredChanges += changes.length;
-        if (deliveredChanges >= query.limitChanges) break;
-      }
-      if (deliveredChanges >= query.limitChanges) break;
-      if (candidateCount < batchSize) break;
-    }
-    return commits;
+      return rows.map((record) => ({
+        commitSeq: asNumber(record.commit_seq),
+        ...(record.actor_id === null
+          ? {}
+          : {
+              meta: {
+                actorId: record.actor_id,
+                createdAtMs: asNumber(record.created_at_ms),
+              },
+            }),
+        ...(record.tbl === null
+          ? {}
+          : { change: toStoredChange({ ...record, tbl: record.tbl }) }),
+      }));
+    });
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
@@ -3233,37 +3363,13 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     clientId: string,
   ): Promise<ClientRecord | undefined> {
-    const { rows } = await this.#exec.query<{
-      client_id: string;
-      actor_id: string;
-      wire_version: unknown;
-      cursor: unknown;
-      subscriptions: unknown;
-      updated_at_ms: unknown;
-      last_round_at_ms: unknown;
-      last_error_code: string | null;
-      consecutive_failures: unknown;
-    }>(
-      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=$1 AND client_id=$2',
+    const { rows } = await this.#exec.query<
+      Parameters<typeof toClientRecord>[0]
+    >(
+      `SELECT ${CLIENT_RECORD_COLUMNS} FROM sync_clients WHERE partition=$1 AND client_id=$2`,
       [partition, clientId],
     );
-    const record = rows[0];
-    if (record === undefined) return undefined;
-    return {
-      clientId: record.client_id,
-      actorId: record.actor_id,
-      wireVersion: asNumber(record.wire_version),
-      cursor: asNumber(record.cursor),
-      updatedAtMs: asNumber(record.updated_at_ms),
-      subscriptions: asJson<ClientSubscription[]>(record.subscriptions),
-      ...clientRoundState(
-        record.last_round_at_ms === null
-          ? null
-          : asNumber(record.last_round_at_ms),
-        record.last_error_code,
-        asNumber(record.consecutive_failures),
-      ),
-    };
+    return rows[0] === undefined ? undefined : toClientRecord(rows[0]);
   }
 
   async putClientRecord(
@@ -3271,15 +3377,23 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     record: ClientRecord,
     options?: ClientRecordWriteOptions,
   ): Promise<void> {
+    // Every non-key field comes from the new record, except the registration
+    // list and digest, which only a traveling list replaces (§4.5).
+    const registration = record.registration;
     await this.#exec.query(
-      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, updated_at_ms, last_round_at_ms, schema_version, units, registration_digest, catching_up)
+       VALUES ($1,$2,$3,$4,$5,$6,$11,$7,$8::text::jsonb,$9,$10::text::jsonb)
        ON CONFLICT (partition, client_id) DO UPDATE
          SET actor_id=EXCLUDED.actor_id, wire_version=EXCLUDED.wire_version,
              cursor=EXCLUDED.cursor,
-             subscriptions=EXCLUDED.subscriptions,
              updated_at_ms=EXCLUDED.updated_at_ms,
-             last_round_at_ms=EXCLUDED.last_round_at_ms${
+             last_round_at_ms=EXCLUDED.last_round_at_ms,
+             schema_version=EXCLUDED.schema_version,${
+               registration === undefined
+                 ? ''
+                 : '\n             units=EXCLUDED.units, registration_digest=EXCLUDED.registration_digest,'
+             }
+             catching_up=EXCLUDED.catching_up${
                options?.keepRoundOutcome === true
                  ? ''
                  : ',\n             last_error_code=NULL, consecutive_failures=0'
@@ -3290,8 +3404,12 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         record.actorId,
         record.wireVersion,
         record.cursor,
-        JSON.stringify(record.subscriptions),
         record.updatedAtMs,
+        record.schemaVersion ?? null,
+        registration === undefined ? null : JSON.stringify(registration.units),
+        registration?.digest ?? null,
+        JSON.stringify(record.catchingUp),
+        record.lastRoundAtMs ?? record.updatedAtMs,
       ],
     );
   }
@@ -3320,27 +3438,19 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     cursor: number,
     updatedAtMs: number,
   ): Promise<void> {
+    // §8.2: the ack never raises the record cursor above a catching-up
+    // unit's cursor, so pruning keeps that unit's history (§4.6).
     await this.#exec.query(
       `UPDATE sync_clients
-         SET cursor=GREATEST(cursor, $1), updated_at_ms=GREATEST(updated_at_ms, $2)
+         SET cursor=GREATEST(cursor, LEAST($1::bigint, COALESCE((
+               SELECT min((u->>'cursor')::bigint)
+                 FROM jsonb_array_elements(sync_clients.catching_up) AS u
+                WHERE (u->>'cursor')::bigint>=0), $1::bigint))),
+             updated_at_ms=GREATEST(updated_at_ms, $2)
          WHERE partition=$3 AND client_id=$4 AND actor_id=$5
            AND EXISTS (SELECT 1 FROM sync_partition_registry
                        WHERE partition=sync_clients.partition AND log_epoch=$6)`,
       [cursor, updatedAtMs, partition, clientId, actorId, logEpoch],
-    );
-  }
-
-  async updateClientCursor(
-    partition: string,
-    clientId: string,
-    cursor: number,
-    updatedAtMs: number,
-  ): Promise<void> {
-    await this.#exec.query(
-      `UPDATE sync_clients
-       SET cursor=GREATEST(cursor, $3), updated_at_ms=GREATEST(updated_at_ms, $4)
-       WHERE partition=$1 AND client_id=$2`,
-      [partition, clientId, cursor, updatedAtMs],
     );
   }
 
@@ -3494,35 +3604,13 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
   // -- admin/console read surface --------------------------------------------
 
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
-    const { rows } = await this.#exec.query<{
-      client_id: string;
-      actor_id: string;
-      wire_version: unknown;
-      cursor: unknown;
-      subscriptions: unknown;
-      updated_at_ms: unknown;
-      last_round_at_ms: unknown;
-      last_error_code: string | null;
-      consecutive_failures: unknown;
-    }>(
-      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=$1 ORDER BY updated_at_ms DESC',
+    const { rows } = await this.#exec.query<
+      Parameters<typeof toClientRecord>[0]
+    >(
+      `SELECT ${CLIENT_RECORD_COLUMNS} FROM sync_clients WHERE partition=$1 ORDER BY updated_at_ms DESC`,
       [partition],
     );
-    return rows.map((r) => ({
-      clientId: r.client_id,
-      actorId: r.actor_id,
-      wireVersion: asNumber(r.wire_version),
-      cursor: asNumber(r.cursor),
-      updatedAtMs: asNumber(r.updated_at_ms),
-      subscriptions: (typeof r.subscriptions === 'string'
-        ? JSON.parse(r.subscriptions)
-        : r.subscriptions) as ClientSubscription[],
-      ...clientRoundState(
-        r.last_round_at_ms === null ? null : asNumber(r.last_round_at_ms),
-        r.last_error_code,
-        asNumber(r.consecutive_failures),
-      ),
-    }));
+    return rows.map(toClientRecord);
   }
 
   async listCommitMetadata(
@@ -3750,16 +3838,38 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     });
   }
 
+  async listPushWatermarks(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<PushWatermark[]> {
+    // The clients come from the retained commit log, which has no index on
+    // `client_commit_id`; the read is bounded by retention (§4.6).
+    const { rows } = await this.#exec.query<{
+      client_id: string;
+      outbox_id: string;
+      through_seq: unknown;
+    }>(
+      `SELECT client_id, outbox_id, through_seq FROM sync_push_watermarks
+        WHERE partition=$1 AND client_id IN (
+          SELECT client_id FROM sync_commits WHERE partition=$1 AND client_commit_id=$2)
+        ORDER BY client_id, outbox_id`,
+      [partition, clientCommitId],
+    );
+    return rows.map((row) => ({
+      clientId: row.client_id,
+      outboxId: row.outbox_id,
+      throughSeq: asNumber(row.through_seq),
+    }));
+  }
+
   async scopeActivity(
     partition: string,
     query: ScopeActivityQuery,
   ): Promise<ScopeCommitActivity[]> {
     // One statement for the page: candidate (commit, table) pairs from the
-    // change-scope index, joined to the commit metadata with the table's
-    // change count. `tbl` sits between `partition` and `var` in the index key,
-    // so the `var`/`value` filter ranges over the partition's change-scope
-    // entries; only the LIMIT bounds the output. A candidate whose commit was
-    // pruned has no metadata and is skipped.
+    // `sync_change_scopes_by_key` range of the key, newest first, joined to
+    // the commit metadata with the table's change count. A candidate whose
+    // commit was pruned has no metadata and is skipped.
     const { rows } = await this.#exec.query<{
       commit_seq: unknown;
       tbl: string;

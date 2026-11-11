@@ -69,11 +69,7 @@ test('worker keyring encrypts by a row key-id column and decrypts locally', asyn
       },
     });
     handles.push(handle);
-    await handle.subscribe({
-      id: 'secrets',
-      table: 'secrets',
-      scopes: { project_id: ['p1'] },
-    });
+    await handle.subscribe({ project_id: 'p1' });
     await handle.syncUntilIdle();
     return handle;
   };

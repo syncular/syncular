@@ -13,7 +13,8 @@ import {
   type RequestFrame,
   type ResponseMessage,
   type RowColumn,
-  type SubscriptionFrame,
+  type UnitScopes,
+  registrationDigest,
 } from '@syncular/core';
 import {
   compileSchema,
@@ -36,14 +37,16 @@ import { D1DatabaseDouble } from './d1-double';
 import {
   del,
   docRow,
+  live,
+  progressFrame,
+  pullFrames,
   pullHeader,
   pushCommit,
   pushResults,
   requestBytes,
-  subFrame,
+  taskRow,
   TEST_LOG_EPOCH,
   TEST_SCHEMA,
-  taskRow,
   upsert,
 } from './helpers';
 
@@ -180,53 +183,59 @@ async function seed(ctx: SyncRequestContext, round: string): Promise<void> {
   }
 }
 
-/** One tasks and one docs subscription per project, plus a revoked one. */
-function subscriptions(
-  count: number,
-  cursors?: ReadonlyMap<string, number>,
-): SubscriptionFrame[] {
-  const frames: SubscriptionFrame[] = [];
-  for (let i = 0; frames.length < count - 1; i++) {
+/** One tasks unit and one docs unit per project, plus a revoked one. */
+function units(count: number): UnitScopes[] {
+  const list: UnitScopes[] = [];
+  for (let i = 0; list.length < count - 1; i++) {
     const project = `p${Math.floor(i / 2) % PROJECTS}`;
-    const table = i % 2 === 0 ? 'tasks' : 'docs';
-    const id = `s${i}`;
-    frames.push(
-      subFrame(
-        id,
-        table,
-        table === 'tasks'
-          ? { project_id: [project] }
-          : { projectId: [project] },
-        cursors?.get(id) ?? -1,
-      ),
-    );
+    list.push(i % 2 === 0 ? { project_id: project } : { projectId: project });
   }
-  frames.push(subFrame('revoked', 'tasks', { project_id: ['nope'] }, -1));
-  return frames;
+  list.push({ project_id: 'nope' });
+  return list;
 }
 
-function cursorsOf(message: ResponseMessage): Map<string, number> {
-  const cursors = new Map<string, number>();
-  let current: string | undefined;
-  for (const frame of message.frames) {
-    if (frame.type === 'SUB_START') current = frame.id;
-    if (frame.type === 'SUB_END' && current !== undefined) {
-      cursors.set(current, frame.nextCursor);
-    }
-  }
-  return cursors;
+/** A bootstrap of every unit, then an incremental pull of the live list. */
+async function rounds(
+  ctx: SyncRequestContext,
+  count: number,
+  between: () => Promise<void>,
+  measure: (round: () => Promise<ResponseMessage>) => Promise<number> = async (
+    round,
+  ) => {
+    await round();
+    return 0;
+  },
+) {
+  const list = units(count);
+  let bootstrap: ResponseMessage | undefined;
+  const bootstrapStatements = await measure(async () => {
+    bootstrap = await sync(ctx, pullFrames(list));
+    return bootstrap;
+  });
+  await between();
+  // The revoked unit left the list; every other unit joined at the response's
+  // throughSeq (§4.5).
+  const cursor = live(bootstrap!).end.throughSeq;
+  let incremental: ResponseMessage | undefined;
+  const incrementalStatements = await measure(async () => {
+    incremental = await sync(
+      ctx,
+      pullFrames(list.slice(0, -1), { cursor, progress: [] }),
+    );
+    return incremental;
+  });
+  return {
+    bootstrap: bootstrap!,
+    incremental: incremental!,
+    bootstrapStatements,
+    incrementalStatements,
+  };
 }
 
 async function scenario(storage: ServerStorage, count: number) {
   const ctx = await context(storage);
   await seed(ctx, 'a');
-  const bootstrap = await sync(ctx, [pullHeader(), ...subscriptions(count)]);
-  await seed(ctx, 'b');
-  const incremental = await sync(ctx, [
-    pullHeader(),
-    ...subscriptions(count, cursorsOf(bootstrap)),
-  ]);
-  return { bootstrap, incremental };
+  return rounds(ctx, count, () => seed(ctx, 'b'));
 }
 
 async function counted(
@@ -238,21 +247,20 @@ async function counted(
   }>,
 ) {
   const { storage, counter, close } = await open();
-  const counting = { count: counter };
   const ctx = await context(storage);
   await seed(ctx, 'a');
-  counting.count.statements = 0;
-  const bootstrap = await sync(ctx, [pullHeader(), ...subscriptions(count)]);
-  const bootstrapStatements = counting.count.statements;
-  await seed(ctx, 'b');
-  counting.count.statements = 0;
-  await sync(ctx, [
-    pullHeader(),
-    ...subscriptions(count, cursorsOf(bootstrap)),
-  ]);
-  const incrementalStatements = counting.count.statements;
+  const result = await rounds(
+    ctx,
+    count,
+    () => seed(ctx, 'b'),
+    async (round) => {
+      counter.statements = 0;
+      await round();
+      return counter.statements;
+    },
+  );
   await close();
-  return { bootstrapStatements, incrementalStatements };
+  return result;
 }
 
 // Each test seeds about 200 pushes per storage; CI runners need more than
@@ -283,25 +291,25 @@ describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     };
   };
 
-  test('D1: round trips grow with tables, not subscriptions', async () => {
+  test('D1: round trips grow with tables, not units', async () => {
     const small = await counted(8, d1);
     const large = await counted(68, d1);
     expect(large.bootstrapStatements).toBe(small.bootstrapStatements);
     expect(large.incrementalStatements).toBe(small.incrementalStatements);
   }, 60_000);
 
-  test('PostgreSQL: statements grow with tables, not subscriptions', async () => {
+  test('PostgreSQL: statements grow with tables, not units', async () => {
     const small = await counted(8, postgres);
     const large = await counted(68, postgres);
     expect(large.bootstrapStatements).toBe(small.bootstrapStatements);
     // The hot p0 window pages a second time in both runs.
     expect(large.incrementalStatements).toBe(small.incrementalStatements);
-    // 5 ms per round trip keeps a 68-subscription pull far under 500 ms.
+    // 5 ms per round trip keeps a 68-unit pull far under 500 ms.
     expect(large.incrementalStatements * 5).toBeLessThan(500);
     expect(large.bootstrapStatements * 5).toBeLessThan(500);
   }, 60_000);
 
-  test('PostgreSQL serves the frames of the per-subscription SQLite path', async () => {
+  test('PostgreSQL serves the frames of the SQLite path', async () => {
     const db = await PGlite.create();
     const postgres = await scenario(
       new PostgresServerStorage(pgliteExecutor(db)),
@@ -313,9 +321,12 @@ describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     const commits = postgres.incremental.frames.filter(
       (frame) => frame.type === 'COMMIT',
     );
-    // 34 tasks and 33 docs subscriptions each deliver their project's
-    // round-b commit; the p0 tasks subscription also delivers 70 hot commits.
-    expect(commits.length).toBe(PROJECTS + (PROJECTS - 1) + 70);
+    // One live section: every round-b project commit (its task and, but for
+    // p33, its doc) and the 70 hot p0 commits, one COMMIT each (§4.5).
+    expect(commits.length).toBe(PROJECTS + 70);
+    expect(commits.flatMap((commit) => commit.changes)).toHaveLength(
+      PROJECTS + (PROJECTS - 1) + 70,
+    );
     await db.close();
   }, 60_000);
 });
@@ -360,7 +371,7 @@ async function firstSocketRound(
       ]),
     );
   }
-  frames.push(pullHeader(), ...subscriptions(subscriptionCount));
+  frames.push(...pullFrames(units(subscriptionCount)));
   const request = requestBytes(frames);
   const tagged = new Uint8Array(request.length + 1);
   tagged[0] = REALTIME_TAG_ROUND;
@@ -407,9 +418,10 @@ describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // Per commit: 7 fixed statements (partition lock, the admission read
     // carrying the serve gate, the idempotency record, and the read-ahead
     // of both tables, savepoint, one write per table, the combined
-    // allocation + change log, push result); the pull half adds 10 for the
-    // round (the snapshot pages of both tables share one statement).
-    expect(large.counts.statements).toBe(10 * 7 + 10);
+    // allocation + change log, push result); the pull half adds 11 for the
+    // round (the snapshot pages of both tables share one statement, and the
+    // completed bootstraps join the live section's read, §4.5).
+    expect(large.counts.statements).toBe(10 * 7 + 11);
   }, 60_000);
 });
 
@@ -435,8 +447,9 @@ describe('push read-ahead (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
         ]),
         // The tombstone rejects an unversioned upsert.
         pushCommit('after-delete', [upsert('tasks', 'r1', t('e'))]),
-        pullHeader(),
-        subFrame('s', 'tasks', { project_id: ['p1'] }, 0),
+        ...pullFrames([{ project_id: 'p1' }], {
+          progress: [progressFrame({ project_id: 'p1' }, 0)],
+        }),
       ]);
     };
     const db = await PGlite.create();
@@ -492,18 +505,20 @@ async function manyTables(tables: number) {
       upsert(table.name, 'r', encodeSparseRow(columns, 0, ['r', 'x'])),
     ),
   );
-  const subs = (cursors?: ReadonlyMap<string, number>) =>
-    schema.tables.map((table, i) =>
-      subFrame(
-        `s${i}`,
-        table.name,
-        { project_id: ['x'] },
-        cursors?.get(`s${i}`) ?? -1,
-      ),
-    );
-  const bootstrap = await sync(ctx, [pullHeader(), ...subs()]);
+  // One unit covers every table (§4.1); one section bootstraps them all.
+  const unit = { project_id: 'x' };
+  const bootstrap = await sync(
+    ctx,
+    pullFrames([unit], { maxSnapshotPages: 50 }),
+  );
   counting.count.statements = 0;
-  const quiet = await sync(ctx, [pullHeader(), ...subs(cursorsOf(bootstrap))]);
+  const quiet = await sync(ctx, [
+    pullHeader({
+      cursor: live(bootstrap).end.throughSeq,
+      registrationDigest: registrationDigest([unit]),
+      echoDigest: live(bootstrap).end.echoDigest,
+    }),
+  ]);
   const quietPull = counting.count.statements;
   // A second storage instance on the migrated database: a new Worker
   // isolate or a Durable Object wake.
@@ -522,7 +537,8 @@ describe('statements per table (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     const large = await manyTables(40);
     expect(
       large.quiet.frames.filter((frame) => frame.type === 'SUB_END'),
-    ).toHaveLength(40);
+    ).toHaveLength(0);
+    expect(live(large.quiet).start.status).toBe('active');
     expect(large.quiet.frames.some((frame) => frame.type === 'ERROR')).toBe(
       false,
     );
@@ -542,10 +558,10 @@ describe('statements per table (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     const sqlite = await context(new SqliteServerStorage());
     await seed(sqlite, 'a');
     const frames: RequestFrame[] = [
-      pullHeader({ limitSnapshotRows: 64, maxSnapshotPages: 2 }),
-      subFrame('tasks-p1', 'tasks', { project_id: ['p1'] }, -1),
-      subFrame('tasks-p2', 'tasks', { project_id: ['p2'] }, -1),
-      subFrame('docs-p1', 'docs', { projectId: ['p1'] }, -1),
+      ...pullFrames(
+        [{ project_id: 'p1' }, { project_id: 'p2' }, { projectId: 'p1' }],
+        { limitSnapshotRows: 64, maxSnapshotPages: 2 },
+      ),
     ];
     counting.count.statements = 0;
     counting.texts.length = 0;

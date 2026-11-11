@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   decodeRowsSegment,
   encodeRow,
+  encodeSparseRow,
   type SegmentInlineFrame,
   type SegmentRefFrame,
 } from '@syncular/core';
@@ -21,20 +22,22 @@ import {
 } from '@syncular/server';
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import { Database } from 'bun:sqlite';
-import { subscriptionSection } from '../src/pull';
+import { bootstrapSegments, planBootstrap, planUnit } from '../src/pull';
 import { upsertSql, upsertValues } from '../src/relational-rows';
 import {
   docRow,
   makeContext,
   pushCommit,
   TASK_COLUMNS,
-  pullHeader,
+  live,
+  progressFrame,
+  pullFrames,
   section,
   sections,
   seedTask,
-  subFrame,
   sync,
   TEST_LOG_EPOCH,
+  TestReplica,
   upsert,
 } from './helpers';
 
@@ -56,13 +59,14 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
     const { sqliteImageBuilder, ...withoutBuilder } = t.ctx;
     expect(sqliteImageBuilder).toBe(buildSqliteImage);
     const frames = [
-      pullHeader({ accept: 0b1111, limitSnapshotRows: 1 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], {
+        accept: 0b1111,
+        limitSnapshotRows: 1,
+      }),
     ];
-    const rows = section(
-      await sync({ ...t, ctx: withoutBuilder }, frames),
-      's1',
-    );
+    const rows = section(await sync({ ...t, ctx: withoutBuilder }, frames), {
+      project_id: 'p1',
+    });
     expect(
       inlineSegments(rows.body).length + refSegments(rows.body).length,
     ).toBeGreaterThan(0);
@@ -78,7 +82,7 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
         },
         frames,
       ),
-      's1',
+      { project_id: 'p1' },
     );
     expect(inlineSegments(external.body)).toHaveLength(0);
     expect(refSegments(external.body).length).toBeGreaterThan(0);
@@ -86,14 +90,13 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
       refSegments(external.body).every((frame) => frame.mediaType === 'rows'),
     ).toBe(true);
 
-    const image = section(await sync(t, frames), 's1');
+    const image = section(await sync(t, frames), { project_id: 'p1' });
     const imageRefs = refSegments(image.body);
     expect(imageRefs).toHaveLength(1);
     expect(imageRefs[0]?.mediaType).toBe('sqlite');
-    const reused = section(
-      await sync({ ...t, ctx: withoutBuilder }, frames),
-      's1',
-    );
+    const reused = section(await sync({ ...t, ctx: withoutBuilder }, frames), {
+      project_id: 'p1',
+    });
     expect(refSegments(reused.body)).toEqual(imageRefs);
   });
 
@@ -104,11 +107,8 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
     await seedTask(t, 'c2', 't2', 'p1', 'two');
     await seedTask(t, 'c3', 'tx', 'p2', 'other-scope');
     const maxSeq = 3;
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    const s = section(message, 's1');
+    const message = await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+    const s = section(message, { project_id: 'p1' });
     expect(s.start.status).toBe('active');
     expect(s.start.bootstrap).toBe(true);
     const inline = inlineSegments(s.body);
@@ -134,11 +134,8 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
 
   test('an empty table still delivers a first-page segment (§5.6 delete rule)', async () => {
     const t = makeContext();
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    const s = section(message, 's1');
+    const message = await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+    const s = section(message, { project_id: 'p1' });
     expect(s.start.bootstrap).toBe(true);
     const inline = inlineSegments(s.body);
     expect(inline).toHaveLength(1);
@@ -151,10 +148,11 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
     const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 999),
+      ...pullFrames([{ project_id: 'p1' }], {
+        progress: [progressFrame({ project_id: 'p1' }, 999)],
+      }),
     ]);
-    expect(section(message, 's1').start.bootstrap).toBe(true);
+    expect(section(message, { project_id: 'p1' }).start.bootstrap).toBe(true);
   });
 });
 
@@ -165,14 +163,15 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
       await seedTask(t, `c${i}`, `t${i}`, 'p1', `row ${i}`);
     }
     const pinnedSeq = 5;
-    const page = () =>
-      pullHeader({ limitSnapshotRows: 2, maxSnapshotPages: 1 });
+    const page = (cursor: number, token?: string) =>
+      pullFrames([{ project_id: 'p1' }], {
+        limitSnapshotRows: 2,
+        maxSnapshotPages: 1,
+        progress: [progressFrame({ project_id: 'p1' }, cursor, token)],
+      });
 
-    const first = await sync(t, [
-      page(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    const s1 = section(first, 's1');
+    const first = await sync(t, page(-1));
+    const s1 = section(first, { project_id: 'p1' });
     const seg1 = decodeRowsSegment(
       inlineSegments(s1.body)[0]?.payload ?? new Uint8Array(),
     );
@@ -190,13 +189,8 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
     // New commits land while the bootstrap is in flight — the pin holds.
     await seedTask(t, 'c6', 't6', 'p1', 'late');
 
-    const second = await sync(t, [
-      page(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, pinnedSeq, {
-        bootstrapState: token1,
-      }),
-    ]);
-    const s2 = section(second, 's1');
+    const second = await sync(t, page(pinnedSeq, token1));
+    const s2 = section(second, { project_id: 'p1' });
     const seg2 = decodeRowsSegment(
       inlineSegments(s2.body)[0]?.payload ?? new Uint8Array(),
     );
@@ -208,26 +202,15 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
     const token2 = s2.end.bootstrapState;
     if (token2 === undefined) throw new Error('expected bootstrapState');
 
-    const third = await sync(t, [
-      page(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, pinnedSeq, {
-        bootstrapState: token2,
-      }),
-    ]);
-    const s3 = section(third, 's1');
+    const third = await sync(t, page(pinnedSeq, token2));
+    const s3 = section(third, { project_id: 'p1' });
     expect(s3.end.bootstrapState).toBeUndefined(); // complete
     expect(s3.end.nextCursor).toBe(pinnedSeq);
 
-    // Completion hands off to incremental pulls at the pin: the late
-    // commit replays through the log window.
-    const incremental = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, pinnedSeq),
-    ]);
-    const commits = section(incremental, 's1').body.filter(
-      (f) => f.type === 'COMMIT',
-    );
-    expect(commits).toHaveLength(1);
+    // Completion enters the scan set at the pin (§4.5): the late commit
+    // replays in the same response's live section.
+    expect(live(third).commits.map((commit) => commit.commitSeq)).toEqual([6]);
+    expect(live(third).end.throughSeq).toBe(6);
   });
 
   test('a resumed pin behind the horizon restarts from a fresh pin (§4.7)', async () => {
@@ -243,12 +226,13 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
     });
     await t.storage.setHorizonSeq('part-1', 2);
     const message = await sync(t, [
-      pullHeader({ limitSnapshotRows: 2, maxSnapshotPages: 1 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, 1, {
-        bootstrapState: staleToken,
+      ...pullFrames([{ project_id: 'p1' }], {
+        limitSnapshotRows: 2,
+        maxSnapshotPages: 1,
+        progress: [progressFrame({ project_id: 'p1' }, 1, staleToken)],
       }),
     ]);
-    const s = section(message, 's1');
+    const s = section(message, { project_id: 'p1' });
     expect(s.start.status).toBe('active');
     expect(s.start.bootstrap).toBe(true);
     const segment = decodeRowsSegment(
@@ -263,15 +247,100 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
   });
 });
 
+test('a unit pages across its covered tables in bootstrap order (§4.7)', async () => {
+  const noteColumns = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'project_id', type: 'string', nullable: false },
+  ] as const;
+  const t = makeContext({
+    schema: {
+      version: 1,
+      tables: [
+        {
+          name: 'tasks',
+          columns: TASK_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+        {
+          name: 'notes',
+          columns: noteColumns,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    },
+  });
+  t.scopes.value = { project_id: ['p1'] };
+  const unit = { project_id: 'p1' };
+  const replica = new TestReplica().register(unit);
+  // Every covered table delivers a segment, an empty one included.
+  const empty = section(await sync(t, pullFrames([unit])), unit);
+  expect(
+    inlineSegments(empty.body).map((f) => decodeRowsSegment(f.payload).table),
+  ).toEqual(['tasks', 'notes']);
+
+  for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
+  await sync(t, [
+    pushCommit('n', [
+      upsert('notes', 'n1', encodeSparseRow(noteColumns, 0, ['n1', 'p1'])),
+    ]),
+  ]);
+  const page = { limitSnapshotRows: 2, maxSnapshotPages: 2 };
+  const first = section(await replica.pull(t, page), unit);
+  expect(
+    inlineSegments(first.body).map((f) =>
+      decodeRowsSegment(f.payload)
+        .blocks.flat()
+        .map((row) => row.values[0]),
+    ),
+  ).toEqual([['t1', 't2'], ['t3']]);
+  expect(JSON.parse(first.end.bootstrapState ?? '')).toEqual({
+    asOfCommitSeq: 4,
+    tables: ['tasks', 'notes'],
+    tableIndex: 1,
+    rowCursor: null,
+  });
+  const second = section(await replica.pull(t, page), unit);
+  expect(
+    inlineSegments(second.body).map((f) => decodeRowsSegment(f.payload).table),
+  ).toEqual(['notes']);
+  expect(second.end).toEqual({ type: 'SUB_END', nextCursor: 4 });
+  expect(replica.idle).toBe(true);
+  // A token whose tables differ from the covered tables restarts (§4.7).
+  const restarted = section(
+    await sync(
+      t,
+      pullFrames([unit], {
+        progress: [
+          progressFrame(
+            unit,
+            4,
+            JSON.stringify({
+              asOfCommitSeq: 4,
+              tables: ['tasks'],
+              tableIndex: 0,
+              rowCursor: null,
+            }),
+          ),
+        ],
+      }),
+    ),
+    unit,
+  );
+  expect(
+    inlineSegments(restarted.body).map(
+      (f) => decodeRowsSegment(f.payload).table,
+    ),
+  ).toEqual(['tasks', 'notes']);
+});
+
 describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
   test('segments above the inline threshold become SEGMENT_REFs', async () => {
     const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
     await seedTask(t, 'c1', 't1', 'p1');
-    const message = await sync(t, [
-      pullHeader(),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-    ]);
-    const s = section(message, 's1');
+    const message = await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+    const s = section(message, { project_id: 'p1' });
     const refs = refSegments(s.body);
     expect(refs).toHaveLength(1);
     const ref = refs[0];
@@ -291,10 +360,9 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
     const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
     await seedTask(t, 'c1', 't1', 'p1');
     const message = await sync(t, [
-      pullHeader({ accept: 0b0001 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], { accept: 0b0001 }),
     ]);
-    const s = section(message, 's1');
+    const s = section(message, { project_id: 'p1' });
     expect(inlineSegments(s.body)).toHaveLength(1);
     expect(refSegments(s.body)).toHaveLength(0);
   });
@@ -312,10 +380,9 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
     });
     await seedTask(t, 'c1', 't1', 'p1');
     const message = await sync(t, [
-      pullHeader({ accept: 0b1011 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], { accept: 0b1011 }),
     ]);
-    const ref = refSegments(section(message, 's1').body)[0];
+    const ref = refSegments(section(message, { project_id: 'p1' }).body)[0];
     if (ref?.url === undefined) throw new Error('expected a signed url');
     expect(ref.url.startsWith('https://cdn.example/segments/sha256:')).toBe(
       true,
@@ -462,10 +529,12 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
     expect(record.scopeDigests).toEqual(['other-digest', callerDigest]);
 
     const message = await sync(t, [
-      pullHeader({ accept: 0b1101, limitSnapshotRows: 1 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], {
+        accept: 0b1101,
+        limitSnapshotRows: 1,
+      }),
     ]);
-    const ref = refSegments(section(message, 's1').body)[0];
+    const ref = refSegments(section(message, { project_id: 'p1' }).body)[0];
     if (ref === undefined) throw new Error('expected SEGMENT_REF');
     expect(ref.segmentId).toBe(record.segmentId);
     // The frame and its signed URL carry the caller's digest.
@@ -638,8 +707,10 @@ describe('coalesced SQLite image builds', () => {
       },
     };
     const frames = () => [
-      pullHeader({ accept: 0b1111, limitSnapshotRows: 1000 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], {
+        accept: 0b1111,
+        limitSnapshotRows: 1000,
+      }),
     ];
     const start = performance.now();
     const requests = Array.from({ length: requestCount }, (_, index) =>
@@ -660,7 +731,8 @@ describe('coalesced SQLite image builds', () => {
     );
     expect(authorizations).toBe(requestCount);
     const refs = responses.map(
-      (response) => refSegments(section(response, 's1').body)[0]!,
+      (response) =>
+        refSegments(section(response, { project_id: 'p1' }).body)[0]!,
     );
     expect(new Set(refs.map((ref) => ref.segmentId)).size).toBe(1);
     expect(new Set(refs.map((ref) => ref.url)).size).toBe(requestCount);
@@ -718,12 +790,16 @@ describe('coalesced SQLite image builds', () => {
     await seedTask(t, 'one', 'r1', 'p1');
     await seedTask(t, 'two', 'r2', 'p1');
     const frames = () => [
-      pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ...pullFrames([{ project_id: 'p1' }], {
+        accept: 0b0111,
+        limitSnapshotRows: 1,
+      }),
     ];
     await expect(sync(t, frames())).rejects.toThrow('injected build failure');
     const retried = await sync(t, frames());
-    expect(refSegments(section(retried, 's1').body)).toHaveLength(1);
+    expect(
+      refSegments(section(retried, { project_id: 'p1' }).body),
+    ).toHaveLength(1);
     expect(attempts).toBe(2);
     t.storage.db.close();
   });
@@ -824,24 +900,36 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
         ...t.ctx.schema,
         version: variant.version,
       });
-      const plan = {
-        frame: subFrame('s', 'tasks', { project_id: [variant.project] }, -1),
-        table: schema.tables.get('tasks')!,
-        status: 'active' as const,
-        effective: { project_id: [variant.project] },
+      const ctx = {
+        ...t.ctx,
+        partition: variant.partition,
+        segments: variant.segments,
       };
-      const stream = subscriptionSection(
-        { ...t.ctx, partition: variant.partition, segments: variant.segments },
+      const limits = {
+        accept: 7,
+        limitSnapshotRows: 1,
+        maxSnapshotPages: 1,
+        limitCommits: 1000,
+      };
+      const unit = planUnit(
+        { project_id: variant.project },
+        [schema.tables.get('tasks')!],
+        { ok: true, allowed: { project_id: ['*'] } },
+      );
+      const stream = bootstrapSegments(
+        ctx,
         schema,
-        {
-          accept: 7,
-          limitSnapshotRows: 1,
-          maxSnapshotPages: 1,
-          limitCommits: 1000,
-        },
-        plan,
-        variant.pin,
-        0,
+        limits,
+        planBootstrap(
+          ctx,
+          schema,
+          limits,
+          unit,
+          undefined,
+          variant.pin,
+          0,
+          variant.epoch,
+        ),
         undefined,
         variant.epoch,
       );
@@ -862,7 +950,7 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
   t.storage.db.close();
 });
 
-test('returning one subscription stream does not cancel a build awaited by another', async () => {
+test('returning one bootstrap stream does not cancel a build awaited by another', async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -883,34 +971,30 @@ test('returning one subscription stream does not cancel a build awaited by anoth
   await seedTask(t, 'one', 'r1', 'p1');
   await seedTask(t, 'two', 'r2', 'p1');
   const schema = compileSchema(t.ctx.schema);
+  const limits = {
+    accept: 7,
+    limitSnapshotRows: 1,
+    maxSnapshotPages: 1,
+    limitCommits: 1000,
+  };
+  const unit = planUnit({ project_id: 'p1' }, [schema.tables.get('tasks')!], {
+    ok: true,
+    allowed: { project_id: ['p1'] },
+  });
   const streams = [0, 1].map(() =>
-    subscriptionSection(
+    bootstrapSegments(
       t.ctx,
       schema,
-      {
-        accept: 7,
-        limitSnapshotRows: 1,
-        maxSnapshotPages: 1,
-        limitCommits: 1000,
-      },
-      {
-        frame: subFrame('s', 'tasks', { project_id: ['p1'] }, -1),
-        table: schema.tables.get('tasks')!,
-        status: 'active',
-        effective: { project_id: ['p1'] },
-      },
-      2,
-      0,
+      limits,
+      planBootstrap(t.ctx, schema, limits, unit, undefined, 2, 0, 'epoch'),
       undefined,
       'epoch',
     ),
   );
-  for (const stream of streams)
-    expect((await stream.next()).value).toMatchObject({ type: 'SUB_START' });
   const first = streams[0]!.next();
   const second = streams[1]!.next();
   await building;
-  const cancelled = streams[0]!.return({ nextCursor: -1, active: false });
+  const cancelled = streams[0]!.return(undefined);
   release();
   await first;
   await cancelled;
@@ -920,7 +1004,7 @@ test('returning one subscription stream does not cancel a build awaited by anoth
     rowCount: 2,
   });
   expect(builds).toBe(1);
-  await streams[1]!.return({ nextCursor: 2, active: true });
+  await streams[1]!.return(undefined);
   t.storage.db.close();
 });
 
@@ -945,20 +1029,22 @@ test('a stored image survives commits outside its scope (§4.7 scope pin)', asyn
     sync(
       t,
       [
-        pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+        ...pullFrames([{ project_id: 'p1' }], {
+          accept: 0b0111,
+          limitSnapshotRows: 1,
+        }),
       ],
       { clientId },
     );
   const origins = () =>
     served.flatMap((event) =>
       event.type === 'pull.served'
-        ? event.subscriptions.flatMap((sub) =>
-            sub.segments.map((segment) => segment.origin),
+        ? event.units.flatMap((unit) =>
+            unit.segments.map((segment) => segment.origin),
           )
         : [],
     );
-  const first = section(await bootstrap('client-a'), 's1');
+  const first = section(await bootstrap('client-a'), { project_id: 'p1' });
   const firstRef = refSegments(first.body)[0];
   expect(firstRef?.asOfCommitSeq).toBe(pin);
   expect(first.end.nextCursor).toBe(pin);
@@ -973,31 +1059,21 @@ test('a stored image survives commits outside its scope (§4.7 scope pin)', asyn
   expect(other).toBeGreaterThan(pin);
 
   served.length = 0;
-  const second = section(await bootstrap('client-b'), 's1');
+  const reply = await bootstrap('client-b');
+  const second = section(reply, { project_id: 'p1' });
   expect(refSegments(second.body)[0]?.segmentId).toBe(firstRef?.segmentId);
-  expect(second.end.nextCursor).toBe(pin);
+  expect(refSegments(second.body)[0]?.asOfCommitSeq).toBe(pin);
+  // The unit pins at maxCommitSeq; the image keeps its scope pin (§4.7).
+  expect(second.end.nextCursor).toBe(other);
   expect(origins()).toEqual(['reused']);
   expect(builds).toBe(1);
-
-  // The client continues from the pin: the window (pin, maxCommitSeq] holds
-  // no change for its scope, and the cursor advances to maxCommitSeq.
-  const caughtUp = section(
-    await sync(
-      t,
-      [
-        pullHeader({ accept: 0b0111 }),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, pin),
-      ],
-      { clientId: 'client-b' },
-    ),
-    's1',
-  );
-  expect(caughtUp.body.filter((frame) => frame.type === 'COMMIT')).toEqual([]);
-  expect(caughtUp.end.nextCursor).toBe(other);
+  // The window (scope pin, maxCommitSeq] holds no change for the scope.
+  expect(live(reply).commits).toEqual([]);
+  expect(live(reply).end.throughSeq).toBe(other);
 
   // A change inside the scope moves the pin, so the next bootstrap builds.
   const moved = await seedTask(t, 'four', 'r4', 'p1');
-  const third = section(await bootstrap('client-c'), 's1');
+  const third = section(await bootstrap('client-c'), { project_id: 'p1' });
   expect(refSegments(third.body)[0]?.asOfCommitSeq).toBe(moved);
   expect(builds).toBe(2);
   t.storage.db.close();
@@ -1039,12 +1115,11 @@ describe('the bootstrap decision (§4.7)', () => {
     ]) {
       const s = section(
         await sync(t, [
-          pullHeader(),
-          subFrame('s1', 'tasks', { project_id: ['p1'] }, 2, {
-            bootstrapState: forged,
+          ...pullFrames([{ project_id: 'p1' }], {
+            progress: [progressFrame({ project_id: 'p1' }, 2, forged)],
           }),
         ]),
-        's1',
+        { project_id: 'p1' },
       );
       expect(s.start.bootstrap).toBe(true);
       expect(s.end.nextCursor).toBe(3);
@@ -1053,12 +1128,11 @@ describe('the bootstrap decision (§4.7)', () => {
     // A usable token still resumes after its row cursor at its pin.
     const resumed = section(
       await sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, 2, {
-          bootstrapState: token({}),
+        ...pullFrames([{ project_id: 'p1' }], {
+          progress: [progressFrame({ project_id: 'p1' }, 2, token({}))],
         }),
       ]),
-      's1',
+      { project_id: 'p1' },
     );
     expect(resumed.end.nextCursor).toBe(2);
     expect(inlineRowIds(resumed.body)).toEqual(['t2']);
@@ -1068,35 +1142,48 @@ describe('the bootstrap decision (§4.7)', () => {
     const t = await seeded();
     const s = section(
       await sync(t, [
-        pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1, {
-          bootstrapState: JSON.stringify({
-            asOfCommitSeq: 1,
-            tables: ['tasks'],
-            tableIndex: 0,
-            rowCursor: null,
-          }),
+        ...pullFrames([{ project_id: 'p1' }], {
+          accept: 0b0111,
+          limitSnapshotRows: 1,
+          progress: [
+            progressFrame(
+              { project_id: 'p1' },
+              1,
+              JSON.stringify({
+                asOfCommitSeq: 1,
+                tables: ['tasks'],
+                tableIndex: 0,
+                rowCursor: null,
+              }),
+            ),
+          ],
         }),
       ]),
-      's1',
+      { project_id: 'p1' },
     );
-    // The scope pin of p1 is its newest change, seq 2.
+    // The image is served at p1's scope pin, its newest change at seq 2;
+    // the unit keeps the token's pin (§4.7).
     const image = refSegments(s.body)[0];
     expect(image?.mediaType).toBe('sqlite');
     expect(image?.asOfCommitSeq).toBe(2);
-    expect(s.end.nextCursor).toBe(2);
+    expect(s.end.nextCursor).toBe(1);
   });
 
   test('a present token of the wrong shape bootstraps even with an in-range cursor', async () => {
     const t = await seeded();
     const s = section(
       await sync(t, [
-        pullHeader(),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1, {
-          bootstrapState: JSON.stringify({ resume: 'elsewhere' }),
+        ...pullFrames([{ project_id: 'p1' }], {
+          progress: [
+            progressFrame(
+              { project_id: 'p1' },
+              1,
+              JSON.stringify({ resume: 'elsewhere' }),
+            ),
+          ],
         }),
       ]),
-      's1',
+      { project_id: 'p1' },
     );
     expect(s.start.bootstrap).toBe(true);
     expect(inlineRowIds(s.body)).toEqual(['t1', 't2']);
@@ -1119,14 +1206,15 @@ describe('the bootstrap decision (§4.7)', () => {
     Object.assign(t.ctx, { storage: failing });
     await expect(
       sync(t, [
-        pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
-        subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
-        subFrame('s2', 'tasks', { project_id: ['p2'] }, -1),
+        ...pullFrames([{ project_id: 'p1' }, { project_id: 'p2' }], {
+          accept: 0b0111,
+          limitSnapshotRows: 1,
+        }),
       ]),
     ).rejects.toThrow('scan failed');
   });
 
-  test('first pages are read in windows bounded by rows, not by subscription count', async () => {
+  test('first pages are read in windows bounded by rows, not by unit count', async () => {
     const t = await seeded();
     let inFlight = 0;
     let peak = 0;
@@ -1150,18 +1238,19 @@ describe('the bootstrap decision (§4.7)', () => {
       },
     });
     Object.assign(t.ctx, { storage: counting });
-    const subs = Array.from({ length: 6 }, (_, i) =>
-      subFrame(`s${i}`, 'tasks', { project_id: ['p1'] }, -1),
-    );
+    t.scopes.value = { project_id: ['*'] };
+    const units = Array.from({ length: 6 }, (_, i) => ({
+      project_id: `p${i}`,
+    }));
     // Default 1,000-row pages: all six first pages share one window.
-    await sync(t, [pullHeader(), ...subs]);
+    await sync(t, pullFrames(units));
     expect(peak).toBe(6);
     // Maximal 50,000-row pages: one first page at a time.
     peak = 0;
-    const message = await sync(t, [
-      pullHeader({ limitSnapshotRows: 50_000 }),
-      ...subs,
-    ]);
+    const message = await sync(
+      t,
+      pullFrames(units, { limitSnapshotRows: 50_000 }),
+    );
     expect(peak).toBe(1);
     expect(sections(message).size).toBe(6);
   });

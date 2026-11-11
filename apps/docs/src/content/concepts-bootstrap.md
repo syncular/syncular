@@ -1,29 +1,29 @@
 # Bootstrap & segments
 
-A client that subscribes with no cursor **bootstraps**: it downloads a snapshot of the current state of its scoped rows, which costs far less than replaying the commit log. The snapshot travels as **segments**. This page is for developers who want to know what a new client downloads, how the download resumes and stays readable, and what the server must provide.
+A new [unit](/concepts-subscriptions/#a-unit) **bootstraps**: the client downloads a snapshot of the current rows of every table the unit covers, which costs far less than replaying the commit log. The snapshot travels as **segments**. This page is for developers who want to know what a new client downloads, how the download resumes and stays readable, and what the server must provide.
 
 ::meta{for="App developers and server operators" time="8 minutes" first="concepts-subscriptions" spec="4.7 5"}
 
 :::terms
-- **Bootstrap**: The first sync of a subscription: a snapshot at one `commitSeq`, then ordinary pulls.
+- **Bootstrap**: The first sync of a unit: a snapshot of its covered tables pinned at one `commitSeq`, then the unit joins the live set.
 - **Segment**: A content-addressed, scope-bound snapshot artifact. Its id is the SHA-256 of its bytes.
 - **`rows` segment**: A columnar block of encoded rows. The mandatory-to-implement fallback.
 - **`sqlite` segment**: A prebuilt SQLite database image. The preferred lane.
 - **Signed URL**: A short-lived URL in a segment descriptor, fetched without host credentials.
 :::
 
-:::figure{title="How a new subscription bootstraps" note="Pinned to one commitSeq" ticks}
+:::figure{title="How a new unit bootstraps" note="Pinned to one commitSeq" ticks}
 <div class="d-row">
-<div class="node"><span class="t">1 · Pull</span>Cursor -1 and the subscription's effective scopes</div>
+<div class="node"><span class="t">1 · Pull</span>The unit with cursor -1; the server resolves its effective scopes</div>
 <span class="d-arrow"></span>
 <div class="node cool"><span class="t">2 · Descriptors</span>Server answers with segment descriptors, in pages</div>
 <span class="d-arrow"></span>
 <div class="node hot"><span class="t">3 · Download</span>Inline, direct, or signed URL; client verifies the hash</div>
 <span class="d-arrow"></span>
-<div class="node ok"><span class="t">4 · Apply</span>One transaction per rows block or image chunk; cursor set at the end</div>
+<div class="node ok"><span class="t">4 · Apply</span>One transaction per rows block or image chunk; the unit's cursor set at the end</div>
 </div>
 
-::caption[After the last page, the subscription is caught up and receives ordinary commits above its cursor.]
+::caption[After the last page, the unit catches up from its pin and joins the live set: from then on the replica cursor covers it.]
 :::
 
 ## The segment
@@ -57,9 +57,9 @@ Segment transfer errors omit request URLs, including signed paths, and raw excep
 
 ## Reading during import
 
-The import yields after each committed rows block or image chunk, so local queries can read the committed prefix while later chunks import. The client restores pending optimistic edits before it publishes each revision. Window coverage stays pending until the subscription checkpoint commits, so render partial results with the query's coverage state.
+The import yields after each committed rows block or image chunk, so local queries can read the committed prefix while later chunks import. The client restores pending optimistic edits before it publishes each revision. Window coverage stays pending until the unit's checkpoint commits, so render partial results with the query's coverage state.
 
-- **Interruption.** An interrupted import keeps earlier committed chunks and leaves the subscription checkpoint incomplete. The retry clears the fresh snapshot's scope in its first transaction and applies the snapshot again.
+- **Interruption.** An interrupted import keeps earlier committed chunks and leaves the unit's checkpoint incomplete. The retry clears the fresh snapshot's scope in its first transaction and applies the snapshot again.
 - **Failure.** A failing chunk rolls back its rows, search index changes, and revision together. Malformed image primary keys and mismatched applied row counts fail the import without advancing its checkpoint.
 - **Rust.** The Rust core reconciles imported rows and pending row identities under secondary unique constraints without rebuilding unrelated tables. Each chunk restores the imported rows and the rows touched by pending operations, then replays those operations.
 - **Transaction time.** Chunk size bounds imported rows. A first-page scope clear, large rows, constraints, and storage latency can extend a transaction's duration. A native host that serializes reads behind sync commands needs a separate read connection to serve reads during sync.
@@ -74,11 +74,11 @@ The round budget does not bound elapsed time, so one drive also has a total dead
 
 A transport failure that reports a refused or unreachable connection (`causeKind` `connect` from the native transport, `network` from a browser `fetch`) stops the round without scheduling a background retry and leaves `syncNeeded` raised. Re-arm the drive from your own connectivity signal. In the browser, the [realtime supervisor](/platform-web-realtime/) does this: each `online` report from its connectivity signal runs `syncUntilIdle()`, with or without realtime.
 
-The direct-client scheduler and the worker auto-sync loop retry a drive that rejected with a retryable error and left no background intent, which is the case for `sync.idle_timeout`: after 250 ms, doubling per further rejection up to 30,000 ms, and back to 250 ms after a drive succeeds. An unreachable endpoint is not retried this way. A round after which a subscription still holds a bootstrap resume token keeps `syncNeeded` raised, so a host that stopped mid-bootstrap sees that more rounds are owed.
+The direct-client scheduler and the worker auto-sync loop retry a drive that rejected with a retryable error and left no background intent, which is the case for `sync.idle_timeout`: after 250 ms, doubling per further rejection up to 30,000 ms, and back to 250 ms after a drive succeeds. An unreachable endpoint is not retried this way. A round after which a unit still holds a bootstrap resume token keeps `syncNeeded` raised, so a host that stopped mid-bootstrap sees that more rounds are owed.
 
 The aggregate accumulates counters and outcomes, while readiness state (`bootstrapping`, `deferredCommits`, `schemaFloor`) describes the latest round, so an empty `bootstrapping` list alone does not establish readiness. The direct-client scheduler and the worker auto-sync loop schedule another batch when the budget runs out, without waiting for a new write or realtime notification.
 
-A round that applied commits or segment rows is followed by another round, because the protocol carries no "more" flag: a window cut at `limitCommits` is visible only to the next pull, and the cut can fall below the limit when the next commit would exceed it (SPEC §4.5). The last round of a run therefore usually confirms that nothing is left. A host that renders between rounds drives `syncUntilIdle(1)` (Rust: `sync_until_idle(Some(1))`) in a loop: after the round whose report has an empty `bootstrapping` list and no `resets`, every subscription holds its snapshot, so the host renders and runs the confirming round afterwards.
+A round that applied commits or segment rows is followed by another round, because the protocol carries no "more" flag: a window cut at `limitCommits` is visible only to the next pull, and the cut can fall below the limit when the next commit would exceed it (SPEC §4.5). The last round of a run therefore usually confirms that nothing is left. A host that renders between rounds drives `syncUntilIdle(1)` (Rust: `sync_until_idle(Some(1))`) in a loop: after the round whose report has an empty `bootstrapping` list and no `resets`, every unit holds its snapshot, so the host renders and runs the confirming round afterwards.
 
 ## Advanced: server image construction and publishing
 
@@ -107,12 +107,12 @@ const image = await publishSqliteImage({
   config: { ...syncConfig, segments, sqliteImageBuilder: buildSqliteImage },
   partition: 'main',
   table: 'catalogue_codes',
-  scopes: { catalogue_set_id: [catalogueSetId] },
+  scopes: { catalogue_set_id: catalogueSetId },
 });
 // { segmentId, asOfCommitSeq, scopeDigest, rowCount, byteLength, origin }
 ```
 
-`publishSqliteImage` runs the pull's own bootstrap path, so the stored identity is the one a serving pull finds. `origin` is `reused` when the current image already exists. `scopes` are the effective scopes the subscribing clients hold: publish once per distinct scope set. The image lives for the segment store's `ttlMs` at publication, so publish again after every change to the scope and before the TTL runs out. A change to the scope moves the pin, and until the next publication the serving host answers on the rows lane.
+`publishSqliteImage` runs the pull's own bootstrap path, so the stored identity is the one a serving pull finds. `origin` is `reused` when the current image already exists. `scopes` is the unit whose clients bootstrap the table, and the unit must cover `table`. `allowed` is the allowed scopes of the actors that register the unit; it defaults to `'*'` for every declared variable, which leaves the unit's own scope map. Pass it when a wildcard fence adds variables on the table, because the fenced scopes change the image. Publish once per table, unit and distinct `allowed` map. The image lives for the segment store's `ttlMs` at publication, so publish again after every change to the scope and before the TTL runs out. A change to the scope moves the pin, and until the next publication the serving host answers on the rows lane.
 
 ### Streaming large segments
 

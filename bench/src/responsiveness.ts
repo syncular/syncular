@@ -5,8 +5,10 @@ import { SyncClient } from '../../packages/web-client/src/client';
 import { ReactiveClientStore } from '../../packages/web-client/src/reactive-store';
 import { BunClientDatabase } from '../../packages/web-client/src/bun-database';
 import {
+  echoDigest,
   encodeMessage,
   encodeRowsSegment,
+  PROTOCOL_WIRE_VERSION,
   type RowColumn,
   type ResponseFrame,
 } from '../../packages/core/src/index';
@@ -21,7 +23,7 @@ export async function runResponsiveness(
     { name: 'project_id', type: 'string', nullable: false },
     { name: 'title', type: 'string', nullable: false },
   ];
-  const base = { table: 'catalogue', variable: 'project_id' };
+  const base = { variable: 'project_id' };
   const database = new BunClientDatabase();
   let subId = '';
   let delivered = false;
@@ -107,7 +109,7 @@ export async function runResponsiveness(
       const bootstrap = !delivered;
       delivered = true;
       return encodeMessage({
-        wireVersion: 3,
+        wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'response',
         frames: [
           { type: 'RESP_HEADER', logEpoch: 'benchmark', resetRequired: false },
@@ -118,13 +120,21 @@ export async function runResponsiveness(
                   id: subId,
                   status: 'active' as const,
                   reasonCode: '',
-                  effectiveScopes: { project_id: ['p1'] },
                   bootstrap: true,
+                  fenced: [],
                 },
                 segment,
                 { type: 'SUB_END' as const, nextCursor: 1 },
               ]
             : []),
+          { type: 'LIVE_START', status: 'active', reasonCode: '' },
+          {
+            type: 'LIVE_END',
+            throughSeq: 1,
+            echoDigest: echoDigest([
+              { id: subId, status: 'active', fenced: [] },
+            ]),
+          },
         ],
       });
     },
@@ -139,7 +149,7 @@ export async function runResponsiveness(
       "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','benchmark')",
     );
     await client.setWindow(base, ['p1']);
-    subId = client.subscriptions()[0]!.id;
+    subId = client.units()[0]!.id;
     const measurements: {
       operation: string;
       elapsedMs: number;

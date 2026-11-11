@@ -307,6 +307,7 @@ export async function encodeOutboxCommit(
   return {
     type: 'PUSH_COMMIT',
     clientCommitId: commit.clientCommitId,
+    clientSeq: commit.seq,
     operations,
   };
 }

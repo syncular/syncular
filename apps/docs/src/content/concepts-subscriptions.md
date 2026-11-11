@@ -1,14 +1,16 @@
 # Subscriptions & the outbox
 
-Every client keeps two durable lists. **Subscriptions** declare which rows the
-client receives. The **outbox** holds the writes it sends. One sync round
-carries both, and every other Core model page builds on these two terms.
+Every client keeps two durable lists. The **registration list** declares which
+rows the client receives, as a list of units. The **outbox** holds the writes
+it sends. One sync round carries both, and every other Core model page builds
+on these two terms.
 
 ::meta{for="App developers on any SDK" time="8 minutes" first="quickstart" spec="4 7"}
 
 :::terms
-- **Subscription**: A table plus the scope values a client receives.
-- **Cursor**: The last commit a subscription has applied.
+- **Unit**: A subscription to one value per scope variable, such as `{ list_id: 'groceries' }`. It covers every table that declares all of its variables.
+- **Registration list**: The client's units in registration order.
+- **Replica cursor**: The last commit the replica has applied for every live unit.
 - **Effective scopes**: The requested scopes your backend allows.
 - **Outbox**: The local queue of commits waiting to be sent.
 - **Round**: One request and its response: push, then pull.
@@ -17,154 +19,165 @@ carries both, and every other Core model page builds on these two terms.
 :::figure{title="Two lists on every client" note="One round carries both" ticks}
 <div class="node hot"><span class="t">Your server</span>Commit log <span class="chip">c45</span> <span class="chip">c46</span> <span class="chip">c47</span> <span class="chip amber">c48</span></div>
 <div class="d-cols-2">
-<div class="d-down ok">▼ Receives<small>rows in its scopes</small></div>
+<div class="d-down ok">▼ Receives<small>rows in its units</small></div>
 <div class="d-down up">▲ Sends<small>commits, in order</small></div>
 </div>
 <div class="d-box">
 <p class="d-label">Client · local SQLite</p>
 <div class="d-cols-2">
-<div class="node ok"><span class="t">Subscriptions</span>todos<br>list_id = groceries<br>cursor c47</div>
+<div class="node ok"><span class="t">Registration list</span>list_id = groceries<br>list_id = work<br>replica cursor c47</div>
 <div class="node hot"><span class="t">Outbox</span>upsert "oat milk"<br>upsert "rye bread"<br>2 pending</div>
 </div>
 <div class="d-cols-2"><div class="d-down ok"><small>server rows</small></div><div class="d-down"><small>pending writes</small></div></div>
 <div class="node"><span class="t">Local tables</span>What your queries read: server rows with pending writes applied on top</div>
 </div>
 
-::caption[The subscription pulls rows down; the outbox pushes writes up. Your app reads and writes only the local tables, so neither waits for the network.]
+::caption[The registration list pulls rows down; the outbox pushes writes up. Your app reads and writes only the local tables, so neither waits for the network.]
 :::
 
-## A subscription
+## A unit
 
-A subscription names a table and the scope values the client asks for. The
-client declares it locally; the next sync round registers it with the server
-and starts filling the table.
+A unit maps each scope variable it names to exactly one value. It names no
+table: it covers every table whose scope patterns declare all of its
+variables. With `todos` and `todo_comments` both scoped by `list_id`, the unit
+`{ list_id: 'groceries' }` fills both tables. The client declares the unit
+locally; the next sync round registers it with the server and starts filling
+the tables.
 
 :::tabs
 ```ts sdk=web title="src/sync.ts"
-client.subscribe({
-  id: 'todos',
-  table: 'todos',
-  scopes: { list_id: ['groceries'] },
-});
+const unitId = client.subscribe({ list_id: 'groceries' });
 ```
 ```swift sdk=swift title="Sync.swift"
-try client.subscribe(id: "todos", table: "todos",
-                     scopes: ["list_id": ["groceries"]])
+let unitId = try client.subscribe(scopes: ["list_id": "groceries"])
 ```
 ```kotlin sdk=kotlin title="Sync.kt"
-client.subscribe(
-    id = "todos",
-    table = "todos",
-    scopes = mapOf("list_id" to listOf("groceries")),
-)
+val unitId = client.subscribe(mapOf("list_id" to "groceries"))
 ```
 ```dart sdk=flutter title="lib/sync.dart"
-client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
+final unitId = client.subscribe({'list_id': 'groceries'});
 ```
 ```ts sdk=react-native title="src/sync.ts"
-await client.subscribe({
-  id: 'todos',
-  table: 'todos',
-  scopes: { list_id: ['groceries'] },
-});
+const unitId = await client.subscribe({ list_id: 'groceries' });
 ```
 ```ts sdk=tauri title="src/sync.ts"
-await client.subscribe({
-  id: 'todos',
-  table: 'todos',
-  scopes: { list_id: ['groceries'] },
-});
+const unitId = await client.subscribe({ list_id: 'groceries' });
 ```
 ```rust sdk=rust title="src/sync.rs"
-client.subscribe(
-    "todos".into(), "todos".into(),
-    vec![("list_id".into(), vec!["groceries".into()])], None)?;
+use std::collections::BTreeMap;
+
+let unit_id = client.subscribe(BTreeMap::from([
+    ("list_id".into(), "groceries".into()),
+]))?;
 ```
 :::
 
-Register many subscriptions at once with `subscribeMany` (web, React Native,
-Tauri) or `subscribe_many` (Rust). The client writes them in one local
-transaction, so a cold start that declares hundreds of subscriptions commits
-once; on OPFS a commit costs a few milliseconds. The call applies the
-`subscribe` rules to each entry, and an error in any entry registers none.
+`subscribe` returns the unit id: the first 16 bytes of SHA-256 over the
+canonical JSON of the scope map, as 32 hex characters. The client and the
+server derive the same id from the same scope map, so the app chooses no id
+and one scope map always names one unit. Several values of one variable are
+several units. To hold only some of the tables that declare a variable on a
+device, give those tables their own scope variable.
+
+Register many units at once with `subscribeMany` (`subscribe_many` in Rust).
+The client writes them in one local transaction, so a cold start that
+declares hundreds of units commits once; on OPFS a commit costs a few
+milliseconds. The call applies the `subscribe` rules to each entry, returns
+the ids in order, and registers none of them when one entry is invalid.
 
 ```ts title="src/sync.ts"
-client.subscribeMany([
-  { id: 'todos:groceries', table: 'todos', scopes: { list_id: ['groceries'] } },
-  { id: 'todos:work', table: 'todos', scopes: { list_id: ['work'] } },
+const [groceries, work] = client.subscribeMany([
+  { list_id: 'groceries' },
+  { list_id: 'work' },
 ]);
 ```
 
-### What a subscription holds
+A scope map with no variable, a `'*'` value, or a variable that no table
+declares fails with `sync.invalid_subscription`.
+
+### What a unit holds
 
 | Field | Set by | Meaning |
 |---|---|---|
-| `id` | you | Any name you choose. The server echoes it and never interprets it. |
-| `table` | you | The synced table this subscription fills. |
-| `scopes` | you | The **requested scopes**: which groups of rows you ask for, such as one list. |
-| cursor | sync | The last commit this subscription has applied. Empty until the first sync. |
+| `id` | derived | The hash of `scopes`. Use it with `unsubscribe`, `unit` and `unitCatchup`. |
+| `scopes` | you | The **requested scopes**: one value per variable. |
+| `status` | sync | `active`, `revoked` (access lost) or `failed` (the schema has no local scope column). |
+| live or catching up | sync | A live unit advances with the replica cursor. A new unit catches up through its bootstrap and then joins the live set. |
 
-A subscription and its cursor survive an app restart.
+The registration list, each unit's state, and the replica cursor survive an
+app restart. `units()` lists every unit in registration order, `unit(id)`
+reads one, and `unitCatchup(id)` reports whether its bootstrap has completed.
 
 `subscribe`, `subscribeMany` and `unsubscribe` raise `syncNeeded` and queue one
-interactive sync intent when they change the registry, in the web and the Rust
-clients alike. Declaring an identical active registration again and
+interactive sync intent when they change the registration list, in the web
+and the Rust clients alike. Registering an active unit again and
 unsubscribing an unknown id change nothing.
 
-:::rule{title="Omission unsubscribes"}
-Each pull sends the client's complete subscription list, and that list
-replaces the stored one. A subscription missing from the list stops receiving
-changes and its cursor is forgotten. [Windowed sync](/concepts-windowing/)
-builds on this rule: it keeps one subscription per window unit and turns a
-window change into including or omitting subscriptions. The server accepts
-500 subscriptions per request, so keep tables with rows times open units under
-that budget ([Pitfalls](/pitfalls/#dont-subscribe-every-table-of-every-scope-up-front)).
+:::rule{title="Registration order is bootstrap order"}
+The server answers new units in registration order. Register the units your
+first screen needs first.
 :::
 
-:::warning{title="An id is bound to its query"}
-Within one client, the table, requested scopes, and params of a registered id
-cannot change. Declaring the same id again with the same values keeps the
-cursor and bootstrap state, unless the registration was revoked (next rule).
-The same id with different values fails with
-`client.subscription_intent_mismatch`; use a new id, or unsubscribe first.
+:::rule{title="Unsubscribe releases a reference"}
+An explicit `subscribe` holds a unit, and a [window](/concepts-windowing/)
+holds each unit of its family. `unsubscribe(id)` releases the explicit
+reference; the unit leaves the registration list when no window holds it
+either. Its rows stay on the device. The next round sends the changed list,
+and the server stops delivering the unit's changes.
 :::
 
-:::rule{title="Re-subscribing re-arms a revoked subscription"}
-Declaring the same id with the same table, scopes, and params again starts a
-`revoked` registration over: cursor back to `-1`, no bootstrap state, no
-persisted effective scopes, no reason code, and the client asks for a sync.
-The next round resolves its scopes again. That is how an app whose grant
-arrived after the first subscribe picks up its rows. A registration the client
+:::rule{title="Re-subscribing re-arms a revoked unit"}
+Registering the scope map of a `revoked` unit again starts it over: cursor
+back to `-1`, no bootstrap state, no reason code, and the client asks for a
+sync. The next round resolves its scopes again. That is how an app whose
+grant arrived after the first subscribe picks up its rows. A unit the client
 marked `failed` because the schema has no local scope column stays `failed`;
 fix the schema and subscribe again.
 :::
 
-## What a subscription receives
+## What a round sends for the list
 
-The server filters everything a subscription receives to its **effective
-scopes**: the requested scopes intersected with the scopes your backend allows
-for this user ([Scopes](/concepts-scopes/)). What arrives depends on where the
-subscription stands.
+The client sends its registration list only when the list changed since the
+last round, after a reset of the server log, and when the server reports that
+it stores no list for the client. Every other pull carries one replica cursor
+and a 32-byte digest of the list. The server compares the digest with the list
+it stored, scans its commit log once from the replica cursor for the changes
+of every live unit, and answers with one live section. When every unit is
+live and nothing changed, the request carries no unit and the answer carries
+no commit, however many units and tables the client holds.
 
-:::figure{title="Life of a subscription"}
+The server accepts at most 500 units in a request that carries the list
+(`maxSubscriptionsPerRequest`). The limit counts units; the number of tables
+a unit covers does not count. `diagnosticsSnapshot().activeUnits`
+(`active_units` in the Rust snapshot) is the number of units the next list
+carries ([Pitfalls](/pitfalls/#do-keep-the-unit-count-under-the-server-limit)).
+
+## What a unit receives
+
+The server filters everything a unit receives to its **effective scopes**:
+the requested scopes intersected with the scopes your backend allows for this
+user ([Scopes](/concepts-scopes/)). What arrives depends on where the unit
+stands.
+
+:::figure{title="Life of a unit"}
 <div class="d-row">
-<div class="node"><span class="t">01 · New</span>No cursor yet</div>
+<div class="node"><span class="t">01 · New</span>Catching up, cursor -1</div>
 <span class="d-arrow"></span>
-<div class="node cool"><span class="t">02 · Bootstrap</span>Downloads a snapshot of the current rows as segments</div>
+<div class="node cool"><span class="t">02 · Bootstrap</span>Downloads a snapshot of the current rows of every covered table as segments</div>
 <span class="d-arrow"></span>
-<div class="node ok"><span class="t">03 · Caught up</span>Receives each new commit above its cursor, oldest first, deletes included</div>
+<div class="node ok"><span class="t">03 · Live</span>Receives each new commit above the replica cursor, oldest first, deletes included</div>
 </div>
-<p class="d-label">While caught up, one of these can happen</p>
+<p class="d-label">While live, one of these can happen</p>
 <div class="d-cols-3">
-<div class="node"><span class="t">Access narrows</span>Stays active on the remaining values. Rows for lost values stop updating and stay readable.<br><span class="chip">Still active</span></div>
-<div class="node bad"><span class="t">Access lost entirely</span>A requested variable keeps none of its values.<br><span class="chip bad">Revoked · rows purged</span></div>
-<div class="node cool"><span class="t">Fell behind pruning</span>The cursor is older than the server's pruning horizon.<br><span class="chip cool">Reset · bootstrap again</span></div>
+<div class="node bad"><span class="t">Access lost</span>The unit's value leaves the allowed scopes.<br><span class="chip bad">Revoked · rows purged</span></div>
+<div class="node"><span class="t">One table fenced</span>A wildcard fence revokes the unit on one covered table.<br><span class="chip">Active · that table purged</span></div>
+<div class="node cool"><span class="t">Fell behind pruning</span>The replica cursor is older than the server's pruning horizon.<br><span class="chip cool">Reset · bootstrap again</span></div>
 </div>
 
-::caption[Rows for lost values stay readable until the subscription is revoked or a fresh bootstrap applies the §5.6 first-page rule. To make the loss of one value purge its rows, give that value its own subscription.]
+::caption[A reset keeps the local rows until the new bootstrap replaces them. Only a revocation purges.]
 :::
 
-The full rules for narrowing, revocation, and purging are on
+The full rules for revocation and purging are on
 [Scopes](/concepts-scopes/); the pruning horizon is on
 [Commits](/concepts-commits/).
 
@@ -252,6 +265,23 @@ and once a push containing a commit may have reached the server, the client
 never reorders or merges that commit, because its idempotency key pins its
 content.
 
+Each outbox has a random **outbox id**, and each commit carries a sequence
+number that grows in creation order. A request names the outbox id and the
+sequence of every commit it pushes. The first sequence of a request proves to
+the server that every older commit has left the outbox for good, so the
+server raises its **watermark** for that outbox to that sequence and deletes
+the stored results below it. A commit below the watermark that has no stored
+result receives `sync.commit_expired`, and the client records it as a
+rejection.
+
+:::warning{title="Reset a copied or restored replica"}
+A replica copied to a second device, or restored from a backup, shares its
+client id, outbox id and sequence with the original. Its commits below the
+original's watermark receive `sync.commit_expired`. Give a restored or copied
+replica a fresh local database: a new client id, a new outbox id and an empty
+outbox.
+:::
+
 ### Replay on top
 
 Whenever server data arrives (a pull, a realtime delta, a bootstrap), the
@@ -292,21 +322,21 @@ A round is one request and one response, over `POST /sync` or the
 <div class="d-box">
 <p class="d-label">Client → server · request</p>
 <div class="d-stack">
-<div class="node">① Header: client id, schema version</div>
-<div class="node hot">② Outbox commits, oldest first</div>
-<div class="node ok">③ Pull header and the complete subscription list</div>
+<div class="node">① Header: client id, outbox id, schema version</div>
+<div class="node hot">② Outbox commits, oldest first, each with its sequence</div>
+<div class="node ok">③ Pull header: replica cursor and list digest; the units only when the list changed</div>
 </div>
 </div>
 <div class="d-box">
 <p class="d-label">Server → client · response</p>
 <div class="d-stack">
 <div class="node">① One result per pushed commit</div>
-<div class="node cool">② New subscriptions: bootstrap segments</div>
-<div class="node ok">③ Caught-up subscriptions: commits above the cursor</div>
+<div class="node cool">② Unit sections: bootstrap segments for new units, revocations, resets</div>
+<div class="node ok">③ One live section: commits above the replica cursor for every live unit</div>
 </div>
 </div>
 </div>
-<div class="node"><span class="t">Then, on the client</span>Apply each block in its own transaction → advance cursors → store commit outcomes → replay the remaining outbox on top</div>
+<div class="node"><span class="t">Then, on the client</span>Apply each block in its own transaction → advance the replica cursor → store commit outcomes → replay the remaining outbox on top</div>
 
 ::caption[A response serves commits oldest first, bounded per response, and never splits one commit across two responses.]
 :::
@@ -314,7 +344,7 @@ A round is one request and one response, over `POST /sync` or the
 | Call | Runs |
 |---|---|
 | `sync()` | One round. |
-| `syncUntilIdle()` | Rounds until the outbox is empty and every subscription has caught up. |
+| `syncUntilIdle()` | Rounds until the outbox is empty and every unit is live. |
 | Realtime | A connected client receives new commits as deltas without asking. |
 
 On a headless client the [host scheduler](/guide-server-clients/) decides when
@@ -324,9 +354,11 @@ rounds run; the browser worker runs them itself with `autoSync`.
 
 - [Commits, cursors, idempotency](/concepts-commits/): the server side of the
   same story.
-- [Bootstrap & segments](/concepts-bootstrap/): what a new subscription
+- [Bootstrap & segments](/concepts-bootstrap/): what a new unit
   downloads.
 - [Conflicts & optimistic writes](/concepts-conflicts/): what happens when a
   pushed commit finds a newer row.
-- [Windowed sync](/concepts-windowing/): families of subscriptions as a
-  partial local copy.
+- [Windowed sync](/concepts-windowing/): families of units as a partial
+  local copy.
+- [Upgrade to wire version 4](/upgrade-wire-4/): the move from per-table
+  subscriptions to units.

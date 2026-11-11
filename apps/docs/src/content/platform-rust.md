@@ -31,6 +31,7 @@
 The code below needs `syncular-client` with the `native-transport` feature, which provides `HostTransport`.
 
 ```rust
+use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 use syncular_client::native_transport::HostTransport;
 use syncular_client::{ClientLimits, Mutation, SyncClient};
@@ -39,8 +40,7 @@ let mut client = SyncClient::open_path(
     "device-1".to_owned(), &schema, ClientLimits::default(), "syncular.db")?;
 let mut transport = HostTransport::from_config(&json!({"baseUrl": "http://localhost:8787"}))?;
 
-client.subscribe("todos".to_owned(), "todos".to_owned(),
-    vec![("list_id".to_owned(), vec!["groceries".to_owned()])], None)?;
+client.subscribe(BTreeMap::from([("list_id".to_owned(), "groceries".to_owned())]))?;
 let mut values = Map::new();
 values.insert("id".to_owned(), Value::from("t1"));
 values.insert("list_id".to_owned(), Value::from("groceries"));
@@ -55,7 +55,7 @@ println!("{:?}", client.query("SELECT id, title FROM todos", &[])?);
 ## The pages
 
 - **[Install & first sync](/platform-rust-install/)**: the crate, its features, constructors, and a first round.
-- **[Reads & writes](/platform-rust-reads-writes/)**: subscribe, mutate, read, outcomes, generated queries, and blob bytes.
+- **[Reads & writes](/platform-rust-reads-writes/)**: units, mutate, read, outcomes, generated queries, and blob bytes.
 - **[Realtime & lifecycle](/platform-rust-realtime/)**: `sync`, `sync_until_idle`, realtime frames, the realtime policy, and the transport gate.
 - **[Platform specifics](/platform-rust-specifics/)** (advanced): the `Transport` trait, native transport policy, live progress, authoring failures, storage failures, and the snapshot sidecar.
 - **[Troubleshooting](/platform-rust-troubleshooting/)**: failed outcomes, `sync.offline`, and storage codes.

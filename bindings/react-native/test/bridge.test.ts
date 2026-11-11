@@ -90,7 +90,7 @@ async function settle(): Promise<void> {
 }
 
 const DIAGNOSTICS = {
-  version: 1,
+  version: 2,
   capturedAtMs: 10,
   host: {
     kind: 'direct',
@@ -102,10 +102,18 @@ const DIAGNOSTICS = {
   schema: { currentVersion: 1, upgrading: false },
   replica: { localRevision: '7', syncNeeded: false, pendingOutbox: 0 },
   lease: { state: 'none' },
-  subscriptions: [],
-  subscriptionsTruncated: false,
-  activeSubscriptions: 0,
+  units: {
+    bootstrapping: 0,
+    complete: 0,
+    reset: 0,
+    revoked: 0,
+    failed: 0,
+    reasonCodes: [],
+  },
+  activeUnits: 0,
+  replicaCursor: -1,
   storage: { status: 'healthy' },
+  queryFailures: [],
 } as const;
 
 /** A responder answering create + the accessor commands with fixtures. */
@@ -630,7 +638,7 @@ describe('createNativeSyncClient', () => {
               [{ n: { $bigint: '9007199254740993' } }],
             ],
             coverage: { complete: true, pending: [], missing: [] },
-            subscriptions: [{ state: 'unknown', id: 'todo' }],
+            units: [{ state: 'unknown', id: 'unit-1' }],
             deliveries: [{ status: 'known', clientCommitId: 'c1', outcome }],
           });
         }
@@ -650,7 +658,7 @@ describe('createNativeSyncClient', () => {
         { sql: 'SELECT ?', params: [new Uint8Array([1, 2])] },
         { sql: 'SELECT n FROM todo' },
       ],
-      subscriptions: ['todo'],
+      units: ['unit-1'],
       commitIds: ['c1'],
       owner: { id: 'queries:todo', tables: ['todo'] },
     };
@@ -660,7 +668,7 @@ describe('createNativeSyncClient', () => {
       [{ blob: new Uint8Array([1, 2]) }],
       [{ n: 9007199254740993n }],
     ]);
-    expect(result.subscriptions).toEqual([{ state: 'unknown', id: 'todo' }]);
+    expect(result.units).toEqual([{ state: 'unknown', id: 'unit-1' }]);
     expect(
       calls.filter((call) => call.fn === 'command').map((call) => call.arg),
     ).toContainEqual({
@@ -1165,7 +1173,6 @@ describe('createNativeSyncClient', () => {
         rejectionsChanged: false,
         appliedCommits: [
           {
-            subscriptionId: 'one',
             table: 'todo',
             commitSeq: 17,
             source: 'delta',
@@ -1177,7 +1184,6 @@ describe('createNativeSyncClient', () => {
     expect(applied).toEqual([
       [
         {
-          subscriptionId: 'one',
           table: 'todo',
           commitSeq: 17,
           source: 'delta',
@@ -1215,9 +1221,7 @@ describe('createNativeSyncClient', () => {
 
   test('diagnostics commands and events preserve evidence and mark the React Native host', async () => {
     const { client, calls, emit } = await build();
-    const requested = await client.diagnosticsSnapshot({
-      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
-    });
+    const requested = await client.diagnosticsSnapshot();
     expect(requested.host).toMatchObject({
       kind: 'react-native',
       role: 'single',
@@ -1230,9 +1234,7 @@ describe('createNativeSyncClient', () => {
             (call.arg as { method?: string }).method === 'diagnosticsSnapshot',
         )?.arg as { params: unknown }
       ).params,
-    ).toEqual({
-      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
-    });
+    ).toEqual({});
 
     const seen: string[] = [];
     client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
@@ -1488,7 +1490,7 @@ describe('SyncClientLike parity', () => {
       outbox: 1,
     });
     expect(await normalized.diagnosticsSnapshot()).toMatchObject({
-      version: 1,
+      version: 2,
       host: { kind: 'react-native' },
     });
     expect(await normalized.conflicts()).toEqual([]);

@@ -10,10 +10,11 @@
  * the seed replays the cached push result and writes nothing twice.
  */
 import {
-  decodeMessage,
-  encodeMessage,
+  decodeResponse,
+  encodeRequest,
   encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
+  registrationDigest,
   type PushOperation,
   type PushResultFrame,
   type RequestFrame,
@@ -192,9 +193,9 @@ export async function seedMutations(
     partition: target.partition,
     actorId: target.actorId,
   };
-  const acquisition = decodeMessage(
+  const acquisition = decodeResponse(
     await handleSyncRequest(
-      encodeMessage({
+      encodeRequest({
         wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'request',
         frames: [
@@ -209,6 +210,9 @@ export async function seedMutations(
             limitSnapshotRows: 0,
             maxSnapshotPages: 0,
             accept: 0b0011,
+            cursor: -1,
+            registrationDigest: registrationDigest([]),
+            echoDigest: new Uint8Array(),
           },
         ],
       }),
@@ -216,10 +220,7 @@ export async function seedMutations(
     ),
   );
   const acquisitionHeader = acquisition.frames[0];
-  if (
-    acquisition.msgKind !== 'response' ||
-    acquisitionHeader?.type !== 'RESP_HEADER'
-  ) {
+  if (acquisitionHeader?.type !== 'RESP_HEADER') {
     throw new SyncError(
       'sync.invalid_request',
       'seedMutations: epoch acquisition returned an invalid response',
@@ -232,15 +233,8 @@ export async function seedMutations(
       schemaVersion: config.schema.version,
       logEpoch: acquisitionHeader.logEpoch,
     },
-    { type: 'PUSH_COMMIT', clientCommitId, operations },
-    // A pull that asks for nothing: the round exists for its push half.
-    {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0011,
-    },
+    // §6.10: a database-less producer sends no outboxId and clientSeq 0.
+    { type: 'PUSH_COMMIT', clientCommitId, clientSeq: 0, operations },
   ];
   type SeedTerminalEvent = Extract<
     SyncularServerEvent,
@@ -259,7 +253,7 @@ export async function seedMutations(
     },
   };
   const response = await handleSyncRequest(
-    encodeMessage({
+    encodeRequest({
       wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
       frames,
@@ -274,7 +268,7 @@ export async function seedMutations(
   );
 
   // Fail loud: surface the first rejected/failed operation.
-  const message = decodeMessage(response);
+  const message = decodeResponse(response);
   const result = message.frames.find(
     (frame): frame is PushResultFrame =>
       frame.type === 'PUSH_RESULT' && frame.clientCommitId === clientCommitId,

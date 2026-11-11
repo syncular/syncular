@@ -23,8 +23,11 @@ import {
   canonicalScopeJson,
   encodeMessage,
   encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
+  registrationDigest,
   type RequestFrame,
   type RowColumn,
+  unitId,
 } from '@syncular/core';
 import { SSP2_CONTENT_TYPE } from '@syncular/server';
 import { Miniflare } from 'miniflare';
@@ -163,7 +166,7 @@ test('a forwarded /sync round arrives gzip-encoded once, and takes a gzip body',
   );
   const requestBytes = (frames: RequestFrame[]) =>
     encodeMessage({
-      wireVersion: 3,
+      wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
       frames: [
         {
@@ -198,6 +201,7 @@ test('a forwarded /sync round arrives gzip-encoded once, and takes a gzip body',
       {
         type: 'PUSH_COMMIT',
         clientCommitId: 'c1',
+        clientSeq: 0,
         operations: Array.from({ length: 300 }, (_, i) => {
           const rowId = `task-${String(i).padStart(4, '0')}-${'.'.repeat(48)}`;
           return {
@@ -220,14 +224,12 @@ test('a forwarded /sync round arrives gzip-encoded once, and takes a gzip body',
       limitSnapshotRows: 0,
       maxSnapshotPages: 0,
       accept: 0b0011,
-    },
-    {
-      type: 'SUBSCRIPTION',
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
       cursor: -1,
+      registrationDigest: registrationDigest([{ project_id: 'p1' }]),
+      echoDigest: new Uint8Array(),
     },
+    { type: 'UNIT', scopes: { project_id: 'p1' } },
+    { type: 'PROGRESS', id: unitId({ project_id: 'p1' }), cursor: -1 },
   ];
   const identity = await sync(requestBytes(pull), 'identity');
   expect(identity.status).toBe(200);

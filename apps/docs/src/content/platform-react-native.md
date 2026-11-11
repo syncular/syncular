@@ -24,7 +24,7 @@ of a first sync. The hooks are the same as on the web; this SDK links to
 <p class="d-label">Native module</p>
 <div class="d-stack">
 <div class="node"><span class="t">Shim</span>ObjC++ on iOS, Kotlin on Android; forwards <code>{method, params}</code></div>
-<div class="node hot"><span class="t">Rust core · libsyncular</span>Outbox, subscriptions, sync rounds</div>
+<div class="node hot"><span class="t">Rust core · libsyncular</span>Outbox, units, sync rounds</div>
 <div class="node ok"><span class="t">SQLite file</span>Rows, cursors, outbox, client id</div>
 </div>
 </div>
@@ -52,7 +52,7 @@ export const client = await createNativeSyncClient({
 });
 
 // 2. Subscribe: which rows this device receives.
-await client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
+await client.subscribe({ list_id: 'groceries' });
 
 // 3. Write: visible to local reads at once, queued in the outbox.
 await client.mutate([

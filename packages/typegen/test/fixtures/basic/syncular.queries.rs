@@ -5,7 +5,8 @@
 use std::error::Error;
 use std::fmt;
 use syncular_client::{
-    CoverageSnapshot, QueryOwner, QueryRow, QueryValue, SyncClient, WindowBase, WindowCoverage,
+    CoverageSnapshot, QueryOwner, QueryRow, QueryValue, SyncClient, UnitScopes, WindowBase,
+    WindowCoverage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -730,10 +731,10 @@ pub mod docs_in_project {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "docs".to_owned(),
                     variable: "org_id".to_owned(),
-                    fixed_scopes: vec![("projectId".to_owned(), vec![params.project_id.clone()])],
-                    params: None,
+                    fixed_scopes: UnitScopes::from([
+                        ("projectId".to_owned(), params.project_id.clone()),
+                    ]),
                 },
                 units: vec![params.org_id.clone()],
             },
@@ -839,10 +840,8 @@ pub mod host_boolean {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.project_id.clone()],
             },
@@ -963,10 +962,8 @@ pub mod list_project_tasks {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.project_id.clone()],
             },
@@ -1385,10 +1382,8 @@ pub mod report_open_tasks {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.project_id.clone()],
             },
@@ -1819,10 +1814,8 @@ pub mod tasks_in_projects {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.first.clone(), params.second.clone()],
             },
@@ -2042,10 +2035,8 @@ pub mod facility_docs {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "docs".to_owned(),
                     variable: "org_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.org_id.clone()],
             },
@@ -2168,19 +2159,15 @@ pub mod joined_sync_coverage {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "docs".to_owned(),
                     variable: "projectId".to_owned(),
-                    fixed_scopes: vec![("org_id".to_owned(), vec![params.org_id.clone()])],
-                    params: None,
+                    fixed_scopes: UnitScopes::from([("org_id".to_owned(), params.org_id.clone())]),
                 },
                 units: vec![params.project_id.clone()],
             },
             WindowCoverage {
                 base: WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.project_id.clone()],
             },
@@ -2297,10 +2284,8 @@ pub mod task_priority_peers {
         vec![
             WindowCoverage {
                 base: WindowBase {
-                    table: "tasks".to_owned(),
                     variable: "project_id".to_owned(),
-                    fixed_scopes: vec![],
-                    params: None,
+                    fixed_scopes: UnitScopes::new(),
                 },
                 units: vec![params.project_id.clone()],
             },

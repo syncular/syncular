@@ -28,13 +28,13 @@ The Swift, Kotlin, and Flutter packages are thin wrappers over one Rust core. Th
 ::caption[Every behavior lives in the Rust core. The wrapper marshals JSON and owns the lifecycle. [Embedding via C FFI](/platform-ffi/) documents the C side.]
 :::
 
-Each wrapper encodes a call as `{"method", "params"}`, passes it to `syncular_client_command`, and decodes `{"result"}` or `{"error": {"code", "message"}}`. A typed method such as `mutate` or `readRows` wraps one command. The raw `command(method, params)` method reaches everything else, including `setWindow`, `windowState`, `patch`, and `purgeLocalData`.
+Each wrapper encodes a call as `{"method", "params"}`, passes it to `syncular_client_command`, and decodes `{"result"}` or `{"error": {"code", "message"}}`. A typed method such as `mutate`, `subscribe` or `setWindow` wraps one command. The raw `command(method, params)` method reaches everything else, including `patch` and `purgeLocalData`.
 
 All three wrappers share these properties:
 
 - **One owner thread for the core.** The wrapper serializes every command (Swift: a serial dispatch queue; Kotlin: a lock; Flutter: the creating isolate). Call a `SyncularClient` from any Swift or Kotlin thread; call a Flutter client from the isolate that created it.
 - **Failed commands throw.** Swift throws `SyncularError`, Kotlin throws `SyncularException`, Dart throws `SyncularError`. Each carries a stable `code` and a message, for example `client.closed` after `close()`.
-- **The generated schema is the constructor input.** `syncular generate` emits a `swift`, `kotlin`, or `dart` output with a ready-made schema value, typed rows, and subscription helpers. See [Schema & typegen](/guide-schema/).
+- **The generated schema is the constructor input.** `syncular generate` emits a `swift`, `kotlin`, or `dart` output with a ready-made schema value, typed rows, and unit-template builders. See [Schema & typegen](/guide-schema/).
 
 ## Configuration
 
@@ -100,6 +100,16 @@ A connectivity adapter calls `resume()` when its signal reports online and `paus
 The signal reports network availability only. If app foreground state also controls the client, feed the adapter one combined foreground-and-online signal, or stop the adapter while the app is backgrounded. Two independent owners can resume the client while the other still requires a pause.
 :::
 
+## Units
+
+Every wrapper has the same unit surface: `subscribe(scopes)` returns the unit id, `subscribeMany(units)` registers several units in one local transaction, `unsubscribe(id)` releases one, `units()` lists every registered unit, `unit(id)` reads one, and `unitCatchup(id)` reports its catch-up state. A scope map holds one value per scope variable ([Subscriptions & the outbox](/concepts-subscriptions/#a-unit)).
+
+| | Swift | Kotlin | Dart |
+|---|---|---|---|
+| Register | `subscribe(scopes: ["list_id": "l1"])` | `subscribe(mapOf("list_id" to "l1"))` | `subscribe({'list_id': 'l1'})` |
+| Window | `setWindow(variable:fixedScopes:units:)` | `setWindow(variable, units, fixedScopes)` | `setWindow(variable, units, fixedScopes:)` |
+| Window state | `windowState(variable:fixedScopes:)` | `windowState(variable, fixedScopes)` | `windowState(variable, fixedScopes:)` |
+
 ## Sync results
 
 `sync()` runs one round and `syncUntilIdle(maxRounds, timeoutMs)` repeats rounds until nothing is pending. Both return the outcome as a JSON value and never throw for transport failure. Offline, or on the lean core, the result is `{ok: false, errorCode: "transport.unavailable"}`. The commit stays in the outbox and `pendingCommitIds()` stays non-empty until a later round drains it. `maxRounds` is optional and must be positive when given; the core default is 20 rounds. `timeoutMs` bounds the whole drive (default 60,000 ms) and an expired deadline fails with `sync.idle_timeout`; both must be positive integers when given.
@@ -112,7 +122,7 @@ An HTTP error body adds `recommendedAction` and its `details` to a failed outcom
 |---|---|
 | `querySnapshot(sql, params, coverage)` | Rows, window coverage, and the local revision from one read transaction. |
 | `statusSnapshot()` | `currentSchemaVersion`, `outbox` count, `upgrading`, `leaseState`, `schemaFloor`, `syncNeeded`, and `previousVersionContext`. |
-| `diagnosticsSnapshot(request)` | Bounded support evidence: subscriptions, `activeSubscriptions` (the count the next pull sends), last round, last change, query failures. |
+| `diagnosticsSnapshot()` | Bounded support evidence, version 2: `units` (counts per state), `activeUnits` (the units the next registration list carries), `replicaCursor`, last round, last change, query failures. |
 | `commitOutcome(clientCommitId)` | The terminal outcome of one commit, or null while the commit is pending. |
 | `commitOutcomes(query)` | The durable outcome journal. |
 | `resolveCommitOutcome(input)` | Records `resolved_keep_server`, `superseded`, or `dismissed` for a commit and returns the outcome. |

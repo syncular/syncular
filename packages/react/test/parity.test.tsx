@@ -26,11 +26,7 @@ describe('hooks against the handle (all-async) surface', () => {
     const server = makeServer();
     const client = await makeClient(server, 'handle-a');
     clients.push(client);
-    client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     await client.syncUntilIdle();
 
     const handle = handleShapeOf(client);
@@ -62,11 +58,7 @@ describe('hooks against the handle (all-async) surface', () => {
     const server = makeServer();
     const client = await makeClient(server, 'strict-a');
     clients.push(client);
-    client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     await client.syncUntilIdle();
 
     const handle = handleShapeOf(client);
@@ -106,11 +98,7 @@ describe('hooks against the handle (all-async) surface', () => {
     expect(result.current.upgrading).toBe(false);
 
     // An offline mutate raises the outbox; status re-reads on the batch.
-    client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     await act(async () => {
       client.mutate([
         { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },

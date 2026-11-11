@@ -40,8 +40,8 @@ export type { BytesEnvelope } from '@syncular/client/native-bridge';
 /** §7.5: one read-only statement in an atomic sidecar snapshot read. */
 export type { SnapshotStatement } from '@syncular/client';
 
-/** §7.5: the catch-up state of one subscription from the sidecar. */
-export type { SubscriptionCatchup } from '@syncular/client';
+/** §7.5: the catch-up state of one unit from the sidecar. */
+export type { UnitCatchup } from '@syncular/client';
 
 /** §7.5: delivery status for one client commit id. */
 export type { CommitDelivery } from '@syncular/client';

@@ -420,7 +420,11 @@ describe('transfer error privacy', () => {
                 : operation === 'signed_blob'
                   ? blobs.fetchUrl!(capability)
                   : operation === 'signed_put'
-                    ? blobs.uploadToUrl!(capability, new Uint8Array())
+                    ? blobs.uploadToUrl!(
+                        `sha256:${'0'.repeat(64)}`,
+                        capability,
+                        new Uint8Array(),
+                      )
                     : blobs.uploadGrant!('sha256:test', 0);
         let caught: unknown;
         try {
@@ -738,16 +742,30 @@ test('a blob body stops being read past the declared byteLength', async () => {
   expect(signed.counter.pulls).toBe(2);
 });
 
-test('a presigned blob PUT sends the body checksum the grant signs (§5.9.3)', async () => {
+test('a presigned blob PUT sends the blob id digest without hashing the body (§5.9.3)', async () => {
   const { seen, doFetch } = fakeFetch();
   const blobs = httpBlobTransport('/blobs', { fetch: doFetch });
+  const url = 'https://store/put?X-Amz-Signature=x';
   const bytes = new Uint8Array([1, 2, 3, 4]);
-  await blobs.uploadToUrl!('https://store/put?X-Amz-Signature=x', bytes);
-  const digest = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', bytes.slice()),
-  );
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  let hashes = 0;
+  crypto.subtle.digest = (algorithm, data) => {
+    hashes += 1;
+    return digest(algorithm, data);
+  };
+  try {
+    await expect(blobs.uploadToUrl!('sha256:AB', url, bytes)).rejects.toThrow(
+      'the blob id is not a sha256 blob id',
+    );
+    // The blob id's digest differs from SHA-256 of the body.
+    await blobs.uploadToUrl!(`sha256:${'ab'.repeat(32)}`, url, bytes);
+  } finally {
+    crypto.subtle.digest = digest;
+  }
+  expect(hashes).toBe(0);
+  expect(seen).toHaveLength(1);
   expect(seen[0]?.headers['x-amz-checksum-sha256']).toBe(
-    btoa(String.fromCharCode(...digest)),
+    'q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s=',
   );
   expect(seen[0]?.headers.authorization).toBeUndefined();
 });

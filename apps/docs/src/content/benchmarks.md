@@ -578,7 +578,7 @@ scope resolver, and grant removal completes before timing. The measured explicit
 sync round includes authorization and local purge; discovery of a grant change
 is outside the workload.
 
-Each attempt verifies the revoked subscription and reason code, exact retained
+Each attempt verifies the revoked unit and reason code, exact retained
 row values, an unchanged authoritative commit sequence, and an empty outbox. It
 closes the client, reopens the same SQLite file with the same identity in a
 fresh process, and verifies that the purged rows stay absent before and after

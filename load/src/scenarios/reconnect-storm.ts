@@ -33,7 +33,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
       baseUrl: server.baseUrl,
       clientId: 'rc-writer',
     });
-    client.subscribe('storm', 'tasks', { project_id: [STORM_PROJECT] });
+    client.subscribe({ project_id: STORM_PROJECT });
     let seq = 0;
     while (!writerStop.done) {
       try {
@@ -62,7 +62,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
       async ({ vu, baseUrl, signal }) => {
         // First connection + full catch-up (the "already connected" fleet).
         let client = new RealtimeVClient({ baseUrl, clientId: `rc-${vu}` });
-        client.subscribe('storm', 'tasks', { project_id: [STORM_PROJECT] });
+        client.subscribe({ project_id: STORM_PROJECT });
         await client.connect();
         await client.bootstrap();
         // Repeated drop/reconnect cycles for the window: measure the
@@ -70,7 +70,7 @@ async function run(ctx: ScenarioContext): Promise<ScenarioResult> {
         while (!signal.aborted) {
           client.close();
           client = new RealtimeVClient({ baseUrl, clientId: `rc-${vu}` });
-          client.subscribe('storm', 'tasks', { project_id: [STORM_PROJECT] });
+          client.subscribe({ project_id: STORM_PROJECT });
           const t0 = performance.now();
           await client.connect();
           const connectMs = performance.now() - t0;

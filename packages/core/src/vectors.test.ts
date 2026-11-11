@@ -8,20 +8,26 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  canonicalUnitJson,
   DecodeError,
   decodeMessage,
   decodeRowsSegment,
   decodeSparseRow,
+  echoDigest,
   encodeMessage,
   encodeRowsSegment,
   encodeSparseRow,
   type JsonValue,
   parseRealtimeServerEvent,
+  registrationDigest,
   renderMessageValue,
   renderRowsSegmentValue,
   renderSparseRowValue,
   type ColumnType,
   type RowColumn,
+  type UnitEcho,
+  type UnitScopes,
+  unitId,
 } from './index';
 
 const vectorsDir = join(import.meta.dir, '../../../spec/vectors');
@@ -192,4 +198,44 @@ describe('vectors/realtime', () => {
       expectNamedDecodeError(() => parseRealtimeServerEvent(text), c.error);
     });
   }
+});
+
+describe('vectors/registration', () => {
+  const digests = JSON.parse(
+    readFileSync(join(vectorsDir, 'registration', 'digests.json'), 'utf8'),
+  ) as {
+    units: Array<{ scopes: UnitScopes; canonicalJson: string; id: string }>;
+    registrations: Array<{
+      units: UnitScopes[];
+      canonicalJson: string;
+      digest: string;
+    }>;
+    echoes: Array<{ units: UnitEcho[]; canonicalJson: string; digest: string }>;
+  };
+  const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+
+  it('unit ids (§4.1)', () => {
+    expect(digests.units.length).toBeGreaterThan(0);
+    for (const unit of digests.units) {
+      expect(canonicalUnitJson(unit.scopes)).toBe(unit.canonicalJson);
+      expect(unitId(unit.scopes)).toBe(unit.id);
+    }
+  });
+
+  it('registration digests (§4.1)', () => {
+    for (const registration of digests.registrations) {
+      expect(`[${registration.units.map(canonicalUnitJson).join(',')}]`).toBe(
+        registration.canonicalJson,
+      );
+      expect(hex(registrationDigest(registration.units))).toBe(
+        registration.digest,
+      );
+    }
+  });
+
+  it('echo digests (§4.4)', () => {
+    for (const echo of digests.echoes) {
+      expect(hex(echoDigest(echo.units))).toBe(echo.digest);
+    }
+  });
 });

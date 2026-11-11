@@ -29,6 +29,7 @@ import {
 import { seedTasks, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 
 /** The feature flag under test; budgets left at the core defaults. */
 const PREVIOUS_VERSION = { enabled: true } as const;
@@ -63,7 +64,7 @@ async function flooredClientWithOfflineRow(
       : {}),
   });
   requirePreviousVersion(handle.api);
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   const floored = await syncOk(handle);
   checkEqual(
     floored.schemaFloor?.requiredSchemaVersion,
@@ -141,7 +142,7 @@ export const previousVersionScenarios: readonly Scenario[] = [
         allowed: P1,
       });
       requirePreviousVersion(a.api);
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       await syncOk(a);
 
       // App update with no opt-in: the reset runs, the feature stays off.

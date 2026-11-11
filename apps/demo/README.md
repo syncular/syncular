@@ -79,15 +79,16 @@ ordinary write to `members`.
   pusher's `push.applied` is emitted). Each device records the intent of
   its writes under the `clientCommitId` that `mutate` returns, which names
   the write and its board scope in the log.
-- **Board** (`src/frontend/device.ts`): each device subscribes every table
-  per board (`cards:mobile`, `members:web`, …), so a revocation revokes
-  whole subscriptions and triggers the §3.3 purge. Cards move by mouse
-  drag, or through the card sheet's column buttons on touch and keyboard.
+- **Board** (`src/frontend/device.ts`): each device subscribes to one unit
+  per board (`{ board_id: 'web' }`), which covers every table scoped by
+  `board_id`; a revocation revokes the unit and triggers the §3.3 purge.
+  Cards move by mouse drag, or through the card sheet's column buttons on
+  touch and keyboard.
   A move is a sparse `patch` of `column_id` and `position` (`planMove` in
   `lab.ts`); edits patch only the changed columns.
 - **Scopes**: "Grant Web" makes the laptop upsert `m-web-ben`; the phone
   subscribes to `board:web` and bootstraps it. "Revoke Web" deletes the
-  row; the phone's next round returns its Web subscriptions as revoked and
+  row; the phone's next round returns its Web unit as revoked and
   the phone purges the rows.
 - **Local SQL**: a read-only console per device over `client.query()`,
   with example joins, aggregates, and a window function.
@@ -125,7 +126,7 @@ ordinary write to `members`.
   still hold; use `SYNCULAR_DEMO_DB` for a symmetric persistence story.
 - **Connect-then-sync boot order** (§8.7): devices connect the socket
   first, then run their first sync round over it; the round registers
-  this connection's subscriptions at round end. All sync rounds ride the
+  this connection's units at round end. All sync rounds ride the
   WebSocket once it is connected; `POST /sync` stays server-side for
   producers and tooling, and segment downloads stay on HTTP.
 - The lab has no dependencies beyond the workspace packages; the frontend

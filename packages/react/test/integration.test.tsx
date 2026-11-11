@@ -27,11 +27,7 @@ describe('useRawSql against a real SyncClient', () => {
     const server = makeServer();
     const client = await makeClient(server, 'client-a');
     clients.push(client);
-    client.subscribe({
-      id: 's1',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    client.subscribe({ project_id: 'p1' });
     await client.syncUntilIdle();
 
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -66,7 +62,7 @@ describe('useRawSql against a real SyncClient', () => {
     const b = await makeClient(server, 'client-b');
     clients.push(a, b);
     for (const c of [a, b]) {
-      c.subscribe({ id: 's1', table: 'tasks', scopes: { project_id: ['p1'] } });
+      c.subscribe({ project_id: 'p1' });
       await c.syncUntilIdle();
     }
 

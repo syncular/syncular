@@ -15,9 +15,12 @@ import {
   syncFails,
   syncIdle,
   syncOk,
+  pushOutcome,
+  unitProgress,
 } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const U1 = { project_id: 'p1' } as const;
 const UNIQUE_SCHEMA: DriverSchema = {
   version: 1,
   tables: [
@@ -54,7 +57,7 @@ async function bootstrapped(
     allowed: P1,
     ...(limits !== undefined ? { limits } : {}),
   });
-  await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+  await handle.api.subscribe(U1);
   await syncIdle(handle);
   return handle;
 }
@@ -217,7 +220,7 @@ export const offlineScenarios: readonly Scenario[] = [
         },
       ]);
       const rows = await a.api.readRows('tasks');
-      const subscription = await a.api.subscriptionState('tasks');
+      const subscription = await unitProgress(a, U1);
       await a.api.drainChangeBatches();
       // The first ACK leaves two pending commits. Only the rejection's replay
       // reaches this fault, after its provisional outbox removal.
@@ -240,7 +243,7 @@ export const offlineScenarios: readonly Scenario[] = [
         'failing rejection restores visible state',
       );
       checkEqual(
-        await a.api.subscriptionState('tasks'),
+        await unitProgress(a, U1),
         subscription,
         'later pull never advances',
       );
@@ -378,7 +381,7 @@ export const offlineScenarios: readonly Scenario[] = [
         },
       ]);
       const rows = await a.api.readRows('tasks');
-      const subscription = await a.api.subscriptionState('tasks');
+      const subscription = await unitProgress(a, U1);
       await a.api.drainChangeBatches();
       // The rejection's necessary replay of the later commit is the only
       // write that reaches this fault, after its provisional outbox removal.
@@ -401,7 +404,7 @@ export const offlineScenarios: readonly Scenario[] = [
         'failed reconciliation restores visible state',
       );
       checkEqual(
-        await a.api.subscriptionState('tasks'),
+        await unitProgress(a, U1),
         subscription,
         'failed reconciliation advances no pull cursor',
       );
@@ -446,7 +449,7 @@ export const offlineScenarios: readonly Scenario[] = [
         allowed: P1,
         transportEnabled: false,
       });
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe(U1);
       const first = await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'first') },
       ]);
@@ -1035,16 +1038,16 @@ export const offlineScenarios: readonly Scenario[] = [
       const maxSeq = await ctx.server.getMaxCommitSeq();
 
       // Reordering where the protocol permits: an old request arrives
-      // after newer ones (network-level retransmit). The idempotency key
-      // pins it — the persisted result replays, the log does not move.
+      // after newer ones (network-level retransmit). The newer request
+      // raised the outbox watermark past the old commit and deleted its
+      // result, so the old commit is refused, unpersisted (§6.3.2).
       const replay = await ctx.rawSyncBytes(a.actorId, staleRequest);
-      check(replay.ok, 'the stale retransmit is not an error');
+      check(replay.ok, 'the stale retransmit is not a request error');
       if (replay.ok) {
-        const push = responsePushResults(replay.message)[0];
         checkEqual(
-          push?.status,
-          'cached',
-          'replayed push answers cached (§6.3)',
+          pushOutcome(responsePushResults(replay.message)[0]),
+          { status: 'rejected', results: ['0:sync.commit_expired:final'] },
+          'the late duplicate answers sync.commit_expired (§6.3)',
         );
       }
       checkEqual(
@@ -1097,11 +1100,11 @@ export const offlineScenarios: readonly Scenario[] = [
   },
 
   {
-    // §7.7: the aggregate spans every round. Round 1 defers the second commit,
+    // §7.8: the aggregate spans every round. Round 1 defers the second commit,
     // so the run is not idle after two rounds even though `bootstrapping` is
     // empty; the delivered commits keep it going.
     name: 'offline/sync-budget-aggregates-across-rounds',
-    specRefs: ['§7.7', '§6.1'],
+    specRefs: ['§7.8', '§6.1'],
     async run(ctx) {
       const a = await bootstrapped(ctx, 'actor-a', 'client-a');
       const commits = await Promise.all([

@@ -12,9 +12,12 @@ import {
   decodeRow,
   encodeMessage,
   encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   type RequestFrame,
   type ResponseMessage,
+  registrationDigest,
+  unitId,
 } from '@syncular/core';
 import {
   handleSyncRequest,
@@ -48,7 +51,7 @@ async function sync(
   frames: RequestFrame[],
 ): Promise<ResponseMessage> {
   const bytes = encodeMessage({
-    wireVersion: 3,
+    wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
       {
@@ -95,6 +98,7 @@ describe('generated schema against the server', () => {
       {
         type: 'PUSH_COMMIT',
         clientCommitId: 'c1',
+        clientSeq: 0,
         operations: [
           { table: tasks.name, rowId: row.id, op: 'upsert', payload },
         ],
@@ -105,6 +109,8 @@ describe('generated schema against the server', () => {
     );
     expect(result?.status).toBe('applied');
 
+    // The unit catches up from cursor 0, so its section replays the commit.
+    const unit = projectTasksSubscription.scopes({ projectId: 'p1' });
     const pulled = await sync(ctx, [
       {
         type: 'PULL_HEADER',
@@ -112,14 +118,12 @@ describe('generated schema against the server', () => {
         limitSnapshotRows: 0,
         maxSnapshotPages: 0,
         accept: 0b0011,
+        cursor: -1,
+        registrationDigest: registrationDigest([unit]),
+        echoDigest: new Uint8Array(),
       },
-      {
-        type: 'SUBSCRIPTION',
-        id: 's1',
-        table: projectTasksSubscription.table,
-        scopes: projectTasksSubscription.scopes({ projectId: 'p1' }),
-        cursor: 0,
-      },
+      { type: 'UNIT', scopes: unit },
+      { type: 'PROGRESS', id: unitId(unit), cursor: 0 },
     ]);
     const commit = pulled.frames.find(
       (f): f is CommitFrame => f.type === 'COMMIT',

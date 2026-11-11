@@ -254,13 +254,10 @@ fn the_image_temp_file_sits_beside_the_replica_owner_only_and_is_removed() {
         replica.to_str().unwrap(),
     )
     .unwrap();
-    client
-        .subscribe("tasks".into(), "tasks".into(), scopes(), None)
-        .unwrap();
-    client.subs[0].effective = Some(scopes());
+    let table = client.schema.table("tasks").unwrap().clone();
     let seen = watch_image_files(&mut client, directory.clone());
     let applied = client
-        .apply_sqlite_segment(0, &image_bytes(), true, 2, 7, "digest")
+        .apply_sqlite_segment(&table, &image_bytes(), true, &scopes(), &[], 2, 7, "digest")
         .unwrap_or_else(|_| panic!("image applies"));
     assert_eq!(applied, 2);
     let seen = seen.lock().unwrap();
@@ -271,7 +268,16 @@ fn the_image_temp_file_sits_beside_the_replica_owner_only_and_is_removed() {
     drop(seen);
     // Every exit path removes it, including a rejected image.
     assert!(client
-        .apply_sqlite_segment(0, b"not a database", true, 2, 7, "digest")
+        .apply_sqlite_segment(
+            &table,
+            b"not a database",
+            true,
+            &scopes(),
+            &[],
+            2,
+            7,
+            "digest"
+        )
         .is_err());
     let leftovers = std::fs::read_dir(&directory)
         .unwrap()
@@ -299,12 +305,9 @@ fn an_image_for_a_table_with_encrypted_columns_is_rejected() {
         "scopes":[{"pattern":"project:{project_id}"}]}]});
     let mut client =
         SyncClient::new("robust".into(), &schema, ClientLimits::default()).expect("client");
-    client
-        .subscribe("tasks".into(), "tasks".into(), scopes(), None)
-        .unwrap();
-    client.subs[0].effective = Some(scopes());
+    let table = client.schema.table("tasks").unwrap().clone();
     let Err(SectionError::Abort(code, message)) =
-        client.apply_sqlite_segment(0, &image_bytes(), true, 2, 7, "digest")
+        client.apply_sqlite_segment(&table, &image_bytes(), true, &scopes(), &[], 2, 7, "digest")
     else {
         panic!("an encrypted table refuses the image");
     };
@@ -318,13 +321,10 @@ fn an_image_for_a_table_with_encrypted_columns_is_rejected() {
 #[test]
 fn an_in_memory_replica_stages_the_image_owner_only_in_the_system_temp_dir() {
     let mut client = client();
-    client
-        .subscribe("tasks".into(), "tasks".into(), scopes(), None)
-        .unwrap();
-    client.subs[0].effective = Some(scopes());
+    let table = client.schema.table("tasks").unwrap().clone();
     let seen = watch_image_files(&mut client, std::env::temp_dir());
     let applied = client
-        .apply_sqlite_segment(0, &image_bytes(), true, 2, 7, "digest")
+        .apply_sqlite_segment(&table, &image_bytes(), true, &scopes(), &[], 2, 7, "digest")
         .unwrap_or_else(|_| panic!("image applies"));
     assert_eq!(applied, 2);
     let seen = seen.lock().unwrap();
@@ -336,24 +336,21 @@ fn an_in_memory_replica_stages_the_image_owner_only_in_the_system_temp_dir() {
 #[test]
 fn subscribe_and_unsubscribe_raise_sync_needed() {
     let mut client = client();
-    client
-        .subscribe("sub".into(), "tasks".into(), scopes(), None)
-        .unwrap();
+    let unit = UnitScopes::from([("project_id".to_owned(), "p1".to_owned())]);
+    let id = client.subscribe(unit.clone()).unwrap();
     assert!(client.sync_needed);
     assert!(matches!(
         client.drain_sync_intents().as_slice(),
         [SyncIntent::Interactive]
     ));
 
-    // Registering the same intent again changes nothing.
+    // Registering the same unit again changes nothing.
     client.sync_needed = false;
-    client
-        .subscribe("sub".into(), "tasks".into(), scopes(), None)
-        .unwrap();
+    client.subscribe(unit).unwrap();
     assert!(!client.sync_needed);
     assert!(client.sync_intent_queue.is_empty());
 
-    client.unsubscribe("sub").unwrap();
+    client.unsubscribe(&id).unwrap();
     assert!(client.sync_needed);
     assert!(matches!(
         client.drain_sync_intents().as_slice(),
@@ -362,11 +359,12 @@ fn subscribe_and_unsubscribe_raise_sync_needed() {
 
     // An unknown id is a no-op.
     client.sync_needed = false;
-    client.unsubscribe("sub").unwrap();
+    client.unsubscribe(&id).unwrap();
     assert!(!client.sync_needed);
     assert!(client.sync_intent_queue.is_empty());
 }
 
+#[cfg(feature = "e2ee")]
 fn encrypted_client() -> SyncClient {
     let schema = json!({
         "version": 1,
@@ -431,7 +429,7 @@ fn a_commit_frame_decrypt_failure_keeps_its_identity() {
         table_index: 0,
         row_id: "5".into(),
         op: Op::Upsert,
-        row_version: Some(1),
+        row_version: 1,
         scopes: Vec::new(),
         row: Some(payload),
     };
@@ -460,9 +458,6 @@ fn acknowledged_row_lookups_by_table_and_id_use_an_index() {
 #[test]
 fn commit_frames_record_deliveries_only_for_rows_pinned_by_the_outbox() {
     let mut client = client();
-    client
-        .subscribe("sub".into(), "tasks".into(), scopes(), None)
-        .unwrap();
     client.outbox.push(Arc::new(OutboxCommit {
         client_commit_id: "pending".into(),
         ops: vec![operation("tasks")],
@@ -474,7 +469,7 @@ fn commit_frames_record_deliveries_only_for_rows_pinned_by_the_outbox() {
             table_index: 0,
             row_id: id.into(),
             op: Op::Upsert,
-            row_version: Some(1),
+            row_version: 1,
             scopes: Vec::new(),
             row: Some(
                 crate::values::encode_row_json(table, id, &values, &client.encryption).unwrap(),
@@ -483,7 +478,7 @@ fn commit_frames_record_deliveries_only_for_rows_pinned_by_the_outbox() {
     };
     let changes = vec![change("t1"), change("other")];
     client
-        .apply_commit_frame(&["tasks".to_owned()], &changes, Some(9))
+        .apply_commit_frame(&["tasks".to_owned()], &changes, 9)
         .unwrap();
     let delivered: Vec<(String, i64)> = client
         .conn

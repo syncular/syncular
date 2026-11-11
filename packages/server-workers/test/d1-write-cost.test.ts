@@ -33,6 +33,8 @@ import {
   type RequestFrame,
   type ResponseFrame,
   type ResponseMessage,
+  registrationDigest,
+  unitId,
 } from '@syncular/core';
 
 const SCHEMA: ServerSchema = {
@@ -160,15 +162,16 @@ const PULL_HEADER: RequestFrame = {
   limitSnapshotRows: 0,
   maxSnapshotPages: 0,
   accept: 3,
+  cursor: -1,
+  registrationDigest: registrationDigest([{ project_id: 'p1' }]),
+  echoDigest: new Uint8Array(),
 };
 
-const SUBSCRIPTION: RequestFrame = {
-  type: 'SUBSCRIPTION',
-  id: 'tasks/p1',
-  table: 'tasks',
-  scopes: { project_id: ['p1'] },
-  cursor: 0,
-};
+/** The unit list travels, its one unit post-bootstrap at cursor 0. */
+const UNIT: RequestFrame[] = [
+  { type: 'UNIT', scopes: { project_id: 'p1' } },
+  { type: 'PROGRESS', id: unitId({ project_id: 'p1' }), cursor: 0 },
+];
 
 function request(frames: readonly RequestFrame[]): Uint8Array {
   return encodeMessage({
@@ -194,6 +197,7 @@ function pushRequest(
     {
       type: 'PUSH_COMMIT',
       clientCommitId,
+      clientSeq: 0,
       operations: [
         {
           table: 'tasks',
@@ -272,7 +276,7 @@ const PARTITION = 'part-1';
 
 test('an established idle round stops paying for a client replace', async () => {
   await withMiniflare(async ({ measure, storage, ctx, advance, now }) => {
-    const bytes = request([PULL_HEADER, SUBSCRIPTION]);
+    const bytes = request([PULL_HEADER, ...UNIT]);
     const totals: number[] = [];
     const cursors: number[] = [];
     const authenticated: number[] = [];
@@ -325,7 +329,7 @@ test('a same-value commit leaves the scope index untouched and still advances', 
   await withMiniflare(async ({ measure, storage, ctx }) => {
     // Warm the client record so the measured rounds use the established
     // update-in-place shape instead of a first-time insert.
-    await handleSyncRequest(request([PULL_HEADER, SUBSCRIPTION]), ctx);
+    await handleSyncRequest(request([PULL_HEADER, ...UNIT]), ctx);
 
     measure.reset();
     const first = decodeResponse(
@@ -333,9 +337,10 @@ test('a same-value commit leaves the scope index untouched and still advances', 
     );
     expect(pushResult(first.frames)?.status).toBe('applied');
     // Pinned for this explicit schema and warmed client. D1 counts index
-    // rows, so the totals include the scope-index work. The dropped
-    // `sync_row_scopes_by_row` index is one index row fewer than before.
-    expect(measure.rowsWritten).toBe(17);
+    // rows, so the totals include the scope-index work: the dropped
+    // `sync_row_scopes_by_row` index is one index row fewer, and the §4.5
+    // `sync_change_scopes_by_key` index one more per change scope.
+    expect(measure.rowsWritten).toBe(18);
     expect(
       measure.writes.some((write) => write.sql.includes('sync_row_scopes')),
     ).toBe(true);
@@ -356,13 +361,13 @@ test('a same-value commit leaves the scope index untouched and still advances', 
     expect(
       measure.writes.some((write) => write.sql.includes('sync_row_scopes')),
     ).toBe(false);
-    expect(measure.rowsWritten).toBe(13);
+    expect(measure.rowsWritten).toBe(14);
   });
 });
 
-test('a bootstrap over more scope values than a D1 compound SELECT holds pins its sqlite image', async () => {
+test('a pull over more units than a D1 compound SELECT holds reads one live section', async () => {
   await withMiniflare(async ({ storage, ctx }) => {
-    // D1 caps a compound SELECT at 5 terms; 9 values exceed it.
+    // D1 caps a compound SELECT at 5 terms; 9 unit keys exceed it.
     const projects = Array.from({ length: 9 }, (_, i) => `p${i + 1}`);
     const scoped: SyncRequestContext = {
       ...ctx,
@@ -375,6 +380,7 @@ test('a bootstrap over more scope values than a D1 compound SELECT holds pins it
             {
               type: 'PUSH_COMMIT',
               clientCommitId: `write-${project}`,
+              clientSeq: 0,
               operations: [
                 {
                   table: 'tasks',
@@ -393,44 +399,47 @@ test('a bootstrap over more scope values than a D1 compound SELECT holds pins it
       );
       expect(pushResult(pushed.frames)?.commitSeq).toBe(index + 1);
     }
+    // §4.7 scope pin: one index lookup per unit.
+    for (const [index, project] of projects.entries()) {
+      expect(
+        await storage.latestScopedChangeSeq(PARTITION, {
+          table: 'tasks',
+          scopes: { project_id: project },
+        }),
+      ).toBe(index + 1);
+    }
     expect(
       await storage.latestScopedChangeSeq(PARTITION, {
         table: 'tasks',
-        scopeFilter: { project_id: projects },
-      }),
-    ).toBe(9);
-    expect(
-      await storage.latestScopedChangeSeq(PARTITION, {
-        table: 'tasks',
-        scopeFilter: { project_id: ['p2', 'p4', 'missing'] },
-      }),
-    ).toBe(4);
-    expect(
-      await storage.latestScopedChangeSeq(PARTITION, {
-        table: 'tasks',
-        scopeFilter: { project_id: ['missing'] },
+        scopes: { project_id: 'missing' },
       }),
     ).toBe(0);
 
+    // Nine units: their live scan holds more key ranges than one compound
+    // SELECT does.
+    const units = projects.map((project) => ({ project_id: project }));
     const pulled = decodeResponse(
       await handleSyncRequest(
         request([
-          PULL_HEADER,
-          {
-            type: 'SUBSCRIPTION',
-            id: 'tasks/all',
-            table: 'tasks',
-            scopes: { project_id: projects },
-            cursor: -1,
-          },
+          { ...PULL_HEADER, registrationDigest: registrationDigest(units) },
+          ...units.map((scopes): RequestFrame => ({ type: 'UNIT', scopes })),
+          ...units.map(
+            (scopes): RequestFrame => ({
+              type: 'PROGRESS',
+              id: unitId(scopes),
+              cursor: 0,
+            }),
+          ),
         ]),
         scoped,
       ),
     );
     expect(pulled.frames.some((frame) => frame.type === 'ERROR')).toBe(false);
     expect(
-      pulled.frames.find((frame) => frame.type === 'SUB_START'),
-    ).toMatchObject({ id: 'tasks/all', status: 'active', bootstrap: true });
-    expect(pulled.frames.some((frame) => frame.type === 'SUB_END')).toBe(true);
+      pulled.frames.filter((frame) => frame.type === 'COMMIT'),
+    ).toHaveLength(9);
+    expect(
+      pulled.frames.filter((frame) => frame.type === 'SUB_END'),
+    ).toHaveLength(9);
   });
 });

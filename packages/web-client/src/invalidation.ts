@@ -19,7 +19,7 @@ export interface TableChange {
 
 export interface WindowChange {
   readonly baseKey: string;
-  readonly table: string;
+  /** Changed values of the base. */
   readonly units: ReadonlySet<string>;
 }
 
@@ -51,7 +51,6 @@ export interface ClientChangeBatch {
   readonly outcomesChanged: boolean;
   /** Server COMMIT frames applied by this transaction, when present. */
   readonly appliedCommits?: readonly {
-    readonly subscriptionId: string;
     readonly table: string;
     readonly commitSeq: number;
     readonly source: 'delta' | 'pull';
@@ -84,18 +83,13 @@ interface MutableTableChange {
   scopeKeys: Set<string> | undefined;
 }
 
-interface MutableWindowChange {
-  table: string;
-  units: Set<string>;
-}
-
 /**
  * Per-observer-transaction accumulator. It contains no revision itself: the
  * transaction wrapper assigns the revision only after all writes succeeded.
  */
 export class ChangeAccumulator {
   readonly #tables = new Map<string, MutableTableChange>();
-  readonly #windows = new Map<string, MutableWindowChange>();
+  readonly #windows = new Map<string, Set<string>>();
   #status = false;
   #conflicts = false;
   #rejections = false;
@@ -129,17 +123,11 @@ export class ChangeAccumulator {
     current.scopeKeys?.add(key);
   }
 
-  /** Record registration/completeness change for one window unit. */
-  window(baseKey: string, table: string, unit: string): void {
+  /** Record registration/completeness change for one window value. */
+  window(baseKey: string, value: string): void {
     const current = this.#windows.get(baseKey);
-    if (current === undefined) {
-      this.#windows.set(baseKey, { table, units: new Set([unit]) });
-      return;
-    }
-    if (current.table !== table) {
-      throw new Error(`window base ${JSON.stringify(baseKey)} changed tables`);
-    }
-    current.units.add(unit);
+    if (current === undefined) this.#windows.set(baseKey, new Set([value]));
+    else current.add(value);
   }
 
   status(): void {
@@ -222,13 +210,8 @@ export class ChangeAccumulator {
       );
     }
     const windows: WindowChange[] = [];
-    for (const [baseKey, change] of this.#windows) {
-      windows.push({
-        baseKey,
-        table: change.table,
-        units: change.units,
-      });
-    }
+    for (const [baseKey, units] of this.#windows)
+      windows.push({ baseKey, units });
     return {
       revision,
       tables,
@@ -289,16 +272,13 @@ export type InvalidationListener = (event: InvalidationEvent) => void;
 export function invalidationFromChange(
   batch: ClientChangeBatch,
 ): InvalidationEvent | undefined {
-  if (batch.tables.length === 0 && batch.windows.length === 0) return undefined;
+  if (batch.tables.length === 0) return undefined;
   const tables = new Set<string>();
   const scopeKeys = new Set<string>();
   for (const change of batch.tables) {
     tables.add(change.table);
     for (const key of change.scopeKeys ?? []) scopeKeys.add(key);
   }
-  // Window-only changes project the table for old completeness consumers.
-  // The exact API still keeps this distinct, so new table-only reads do not run.
-  for (const change of batch.windows) tables.add(change.table);
   return { tables, scopeKeys };
 }
 

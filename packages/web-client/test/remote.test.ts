@@ -5,6 +5,7 @@ import {
   encodeRemoteOperationRealtimeMessage,
   encodeRemoteOperationResponse,
   type RemoteOperationResponse,
+  PROTOCOL_WIRE_VERSION,
 } from '@syncular/core';
 import {
   composeRealtimeNotifiers,
@@ -51,7 +52,7 @@ describe('SyncRemoteClient', () => {
     });
 
     const message = decodeMessage(prepared.bytes);
-    expect(message.wireVersion).toBe(3);
+    expect(message.wireVersion).toBe(PROTOCOL_WIRE_VERSION);
     expect(message.frames[0]).toMatchObject({
       type: 'REQ_HEADER',
       logEpoch: 'epoch-2',
@@ -207,7 +208,7 @@ describe('SyncRemoteClient', () => {
       dependencies: () => [{ table: 'tasks' }],
       coverage: (params: { projectId: string }) => [
         {
-          base: { table: 'tasks', variable: 'project_id' },
+          base: { variable: 'project_id' },
           units: [params.projectId],
         },
       ],
@@ -309,7 +310,7 @@ describe('SyncRemoteClient', () => {
       dependencies: () => [{ table: 'docs' }],
       coverage: (params: { orgId: string }) => [
         {
-          base: { table: 'docs', variable: 'org_id' },
+          base: { variable: 'org_id' },
           units: [params.orgId],
         },
       ],
@@ -919,7 +920,7 @@ describe('SyncRemoteClient', () => {
       dependencies: () => [{ table: 'tasks' }],
       coverage: (params: { projectId: string }) => [
         {
-          base: { table: 'tasks', variable: 'project_id' },
+          base: { variable: 'project_id' },
           units: [params.projectId],
         },
       ],

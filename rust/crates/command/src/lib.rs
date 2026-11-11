@@ -21,10 +21,10 @@ use ssp2::{
 };
 use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
 use syncular_client::{
-    ClientDiagnosticsRequest, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
-    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure,
-    RealtimePolicy, ResolveCommitOutcomeInput, SubscriptionRequest, SyncClient, Transport,
-    TransportError, WindowBase, WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+    ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery, LocalDataPurgeInput,
+    LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure, RealtimePolicy,
+    ResolveCommitOutcomeInput, SyncClient, Transport, TransportError, UnitScopes, WindowBase,
+    WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -475,69 +475,42 @@ fn decode_bigint_members(values: &mut serde_json::Map<String, Value>) -> Result<
     Ok(())
 }
 
-fn scopes_from_params(value: Option<&Value>) -> Result<Vec<(String, Vec<String>)>, String> {
-    match value {
-        Some(v) => syncular_client::values::json_to_scope_map(v),
-        None => Ok(Vec::new()),
-    }
-}
-
-/// Parse one `{ id, table, scopes?, params? }` registration.
-fn subscription_from_params(value: &Value) -> Result<SubscriptionRequest, String> {
-    let id = value
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "subscribe missing id".to_owned())?
-        .to_owned();
-    let table = value
-        .get("table")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "subscribe missing table".to_owned())?
-        .to_owned();
-    Ok(SubscriptionRequest {
-        id,
-        table,
-        scopes: scopes_from_params(value.get("scopes"))?,
-        params: optional(value.get("params"), "subscription params", Value::as_str)?
-            .map(str::to_owned),
+/// §4.1: parse a unit scope map `{variable: value}`; absent fails.
+fn unit_scopes(value: Option<&Value>) -> Result<UnitScopes, String> {
+    serde_json::from_value(value.cloned().unwrap_or(Value::Null)).map_err(|_| {
+        "sync.invalid_request: a unit scope map is an object of string values".to_owned()
     })
 }
 
-/// §4.8: parse a window base descriptor `{ table, variable, fixedScopes?,
-/// params? }` from a command's `base` param.
+/// §4.8: parse a window base descriptor `{ variable, fixedScopes? }` from a
+/// command's `base` param.
 fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> {
     let object = value
         .and_then(Value::as_object)
-        .ok_or_else(|| "setWindow/windowState missing base object".to_owned())?;
-    let table = object
-        .get("table")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "window base missing table".to_owned())?
-        .to_owned();
+        .ok_or_else(|| "sync.invalid_request: window base must be an object".to_owned())?;
     let variable = object
         .get("variable")
         .and_then(Value::as_str)
-        .ok_or_else(|| "window base missing variable".to_owned())?
+        .ok_or_else(|| "sync.invalid_request: window base missing variable".to_owned())?
         .to_owned();
-    let fixed_scopes = scopes_from_params(object.get("fixedScopes"))?;
-    let params =
-        optional(object.get("params"), "window base params", Value::as_str)?.map(str::to_owned);
     Ok(WindowBase {
-        table,
         variable,
-        fixed_scopes,
-        params,
+        fixed_scopes: match object.get("fixedScopes") {
+            None | Some(Value::Null) => UnitScopes::new(),
+            scopes => unit_scopes(scopes)?,
+        },
     })
 }
 
 /// §7.5: parse a `coverage` array of `{base, units}` entries. Absent or null is
 /// empty; a non-array, a malformed base, or non-string units are rejected
-/// explicitly instead of silently defaulting.
-fn parse_window_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage>, String> {
+/// explicitly instead of silently defaulting. Shared with the Tauri plugin's
+/// read sidecar.
+pub fn parse_window_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage>, String> {
     let entries = match value {
         None | Some(Value::Null) => return Ok(Vec::new()),
         Some(Value::Array(entries)) => entries,
-        Some(_) => return Err("coverage must be a list".to_owned()),
+        Some(_) => return Err("sync.invalid_request: coverage must be a list".to_owned()),
     };
     let mut coverage = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -547,8 +520,14 @@ fn parse_window_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage>, S
                 .iter()
                 .map(|value| value.as_str().map(str::to_owned))
                 .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| "coverage units must be a list of strings".to_owned())?,
-            Some(_) => return Err("coverage units must be a list of strings".to_owned()),
+                .ok_or_else(|| {
+                    "sync.invalid_request: coverage units must be a list of strings".to_owned()
+                })?,
+            Some(_) => {
+                return Err(
+                    "sync.invalid_request: coverage units must be a list of strings".to_owned(),
+                )
+            }
         };
         coverage.push(WindowCoverage {
             base: window_base_from_params(entry.get("base"))?,
@@ -589,7 +568,7 @@ fn parse_query_owner<'a>(
     }
 }
 
-/// §7.5: parse a `subscriptions`/`commitIds` list. Absent or null is empty; a
+/// §7.5: parse a `units`/`commitIds` list. Absent or null is empty; a
 /// non-array or a non-string entry is rejected explicitly.
 fn snapshot_string_list(value: Option<&Value>) -> Result<Vec<String>, CommandError> {
     match value {
@@ -896,24 +875,27 @@ pub fn dispatch<T: Transport>(
             Ok(json!({}))
         }
         "subscribe" => {
-            need_client(client)?
-                .subscribe_many(vec![subscription_from_params(params).map_err(client_err)?])
-                .map_err(client_err)?;
-            Ok(json!({}))
+            let scopes = unit_scopes(params.get("scopes")).map_err(client_err)?;
+            let id = need_client(client)?.subscribe(scopes).map_err(client_err)?;
+            Ok(json!({ "id": id }))
         }
         "subscribeMany" => {
-            let requests = params
-                .get("subscriptions")
+            let units = params
+                .get("units")
                 .and_then(Value::as_array)
-                .ok_or_else(|| client_err("subscribeMany missing subscriptions".to_owned()))?
+                .ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: subscribeMany units must be a list".to_owned(),
+                    )
+                })?
                 .iter()
-                .map(subscription_from_params)
+                .map(|scopes| unit_scopes(Some(scopes)))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(client_err)?;
-            need_client(client)?
-                .subscribe_many(requests)
+            let ids = need_client(client)?
+                .subscribe_many(units)
                 .map_err(client_err)?;
-            Ok(json!({}))
+            Ok(json!({ "ids": ids }))
         }
         "unsubscribe" => {
             let id = params
@@ -940,7 +922,9 @@ pub fn dispatch<T: Transport>(
         }
         "windowState" => {
             let base = window_base_from_params(params.get("base")).map_err(client_err)?;
-            let state = need_client(client)?.window_state(&base);
+            let state = need_client(client)?
+                .window_state(&base)
+                .map_err(client_err)?;
             Ok(json!({ "units": state.units, "pending": state.pending }))
         }
         "timeWindowSugar" => {
@@ -1216,7 +1200,7 @@ pub fn dispatch<T: Transport>(
                     ))
                 }
             }
-            let subscription_ids = snapshot_string_list(params.get("subscriptions"))?;
+            let units = snapshot_string_list(params.get("units"))?;
             let commit_ids = snapshot_string_list(params.get("commitIds"))?;
             let coverage = parse_window_coverage(params.get("coverage")).map_err(client_err)?;
             let owner = parse_query_owner(params, "snapshotRead")?;
@@ -1230,7 +1214,7 @@ pub fn dispatch<T: Transport>(
                     &syncular_client::SnapshotReadRequest {
                         statements,
                         coverage: &coverage,
-                        subscriptions: subscription_ids,
+                        units,
                         commit_ids,
                     },
                     owner.as_ref().map(|(id, tables)| QueryOwner { id, tables }),
@@ -1268,14 +1252,8 @@ pub fn dispatch<T: Transport>(
         "statusSnapshot" => Ok(serde_json::to_value(need_client(client)?.status_snapshot())
             .expect("status serializes")),
         "diagnosticsSnapshot" => {
-            let request = serde_json::from_value::<ClientDiagnosticsRequest>(params.clone())
-                .map_err(|error| {
-                    client_err(format!(
-                        "sync.invalid_request: invalid diagnostics request: {error}"
-                    ))
-                })?;
             let snapshot = need_client(client)?
-                .diagnostics_snapshot(&request)
+                .diagnostics_snapshot()
                 .map_err(client_err)?;
             Ok(serde_json::to_value(snapshot).expect("diagnostics serialize"))
         }
@@ -1469,13 +1447,13 @@ pub fn dispatch<T: Transport>(
                 "payloads": payloads.iter().map(|p| bytes_value(p)).collect::<Vec<_>>()
             }))
         }
-        "subscriptionState" => {
+        "units" => Ok(json!({ "units": need_client(client)?.units().map_err(client_err)? })),
+        "unit" => {
             let id = params
                 .get("id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| client_err("subscriptionState missing id".to_owned()))?;
-            let state = need_client(client)?.subscription_state(id);
-            Ok(json!({ "state": state }))
+                .ok_or_else(|| client_err("unit missing id".to_owned()))?;
+            Ok(json!({ "unit": need_client(client)?.unit(id).map_err(client_err)? }))
         }
         "recreateWithSchema" => {
             // §7.4.2 "app ships new code": swap to the new schema on the SAME
@@ -1614,7 +1592,7 @@ mod tests {
 
     use super::{
         client_err, dispatch, parse_encryption, parse_headers, parse_previous_version_context,
-        CreateEffects,
+        parse_window_coverage, CreateEffects, UnitScopes,
     };
 
     #[derive(Default)]
@@ -2049,39 +2027,61 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_many_registers_every_subscription() {
+    fn subscribe_many_registers_every_unit() {
         let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
         let mut effects = CreateEffects::default();
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "create",
-            &json!({ "schema": schema() }),
-        )
-        .expect("create client");
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
+        let mut run = |command: &str, params: Value| {
+            dispatch(&mut transport, &mut client, &mut effects, command, &params)
+        };
+        run("create", json!({ "schema": schema() })).expect("create client");
+        let ids = run(
             "subscribeMany",
-            &json!({ "subscriptions": [
-                { "id": "a", "table": "todos", "scopes": { "list_id": ["list-1"] } },
-                { "id": "b", "table": "todos", "scopes": { "list_id": ["list-2"] } }
-            ] }),
+            json!({ "units": [{ "list_id": "list-1" }, { "list_id": "list-2" }] }),
         )
-        .expect("register subscriptions");
-        for id in ["a", "b"] {
-            let state = dispatch(
-                &mut transport,
-                &mut client,
-                &mut effects,
-                "subscriptionState",
-                &json!({ "id": id }),
-            )
-            .expect("subscription state");
-            assert_eq!(state["state"]["table"], "todos");
+        .expect("register units")["ids"]
+            .clone();
+        let single = run("subscribe", json!({ "scopes": { "list_id": "list-1" } }))
+            .expect("re-register a unit");
+        assert_eq!(single["id"], ids[0], "a unit id derives from its scope map");
+        let units = run("units", json!({})).expect("units");
+        assert_eq!(units["units"].as_array().map(Vec::len), Some(2));
+        for (index, list) in ["list-1", "list-2"].into_iter().enumerate() {
+            let unit = run("unit", json!({ "id": ids[index] })).expect("unit");
+            assert_eq!(unit["unit"]["scopes"], json!({ "list_id": list }));
+            assert_eq!(unit["unit"]["cursor"], -1);
+        }
+        assert_eq!(
+            run("unit", json!({ "id": "absent" })).expect("unit")["unit"],
+            Value::Null
+        );
+        for scopes in [json!({ "list_id": "*" }), json!({ "other": "x" })] {
+            let error = run("subscribe", json!({ "scopes": scopes }))
+                .expect_err("a unit names a non-wildcard value per covered variable");
+            assert_eq!(error.code, "sync.invalid_subscription", "{scopes}");
+        }
+    }
+
+    #[test]
+    fn window_coverage_parser_reads_the_generated_descriptor_and_rejects_malformed_units() {
+        let parsed = parse_window_coverage(Some(&json!([{
+            "base": { "variable": "project_id", "fixedScopes": { "tenant_id": "one" } },
+            "units": ["a", "b"]
+        }])))
+        .expect("parse coverage");
+        assert_eq!(parsed[0].base.variable, "project_id");
+        assert_eq!(
+            parsed[0].base.fixed_scopes,
+            UnitScopes::from([("tenant_id".to_owned(), "one".to_owned())])
+        );
+        assert_eq!(parsed[0].units, ["a", "b"]);
+        for coverage in [
+            json!({}),
+            json!([{ "base": { "variable": "project_id" }, "units": ["a", 1] }]),
+            json!([{ "base": { "fixedScopes": {} }, "units": [] }]),
+        ] {
+            let error = parse_window_coverage(Some(&coverage)).expect_err("malformed coverage");
+            assert!(error.starts_with("sync.invalid_request: "), "{error}");
         }
     }
 
@@ -2096,89 +2096,12 @@ mod tests {
         };
         run("create", json!({ "schema": schema() }));
         run("drainSyncIntents", json!({}));
-        for command in ["subscribe", "unsubscribe"] {
-            let params = if command == "subscribe" {
-                json!({ "id": "a", "table": "todos", "scopes": { "list_id": ["list-1"] } })
-            } else {
-                json!({ "id": "a" })
-            };
-            run(command, params);
-            let intents = run("drainSyncIntents", json!({}));
-            assert_eq!(
-                intents["intents"],
-                json!([{ "kind": "interactive" }]),
-                "{command}"
-            );
-        }
-    }
-
-    #[test]
-    fn native_command_hosts_reject_subscription_identity_rebinds() {
-        let mut transport = NoNetwork::default();
-        let mut client: Option<SyncClient> = None;
-        let mut effects = CreateEffects::default();
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "create",
-            &json!({ "schema": schema() }),
-        )
-        .expect("create client");
-
-        let original = json!({
-            "id": "stable-subscription",
-            "table": "todos",
-            "scopes": { "list_id": ["list-2", "list-1"] },
-            "params": "{\"view\":\"v1\"}"
-        });
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "subscribe",
-            &original,
-        )
-        .expect("register subscription");
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "subscribe",
-            &json!({
-                "id": "stable-subscription",
-                "table": "todos",
-                "scopes": { "list_id": ["list-1", "list-2", "list-1"] },
-                "params": "{\"view\":\"v1\"}"
-            }),
-        )
-        .expect("canonical re-declaration is idempotent");
-
-        let error = dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "subscribe",
-            &json!({
-                "id": "stable-subscription",
-                "table": "todos",
-                "scopes": { "list_id": ["list-2"] },
-                "params": "{\"view\":\"v1\"}"
-            }),
-        )
-        .expect_err("changed native query identity must fail");
-        assert_eq!(error.code, "client.subscription_intent_mismatch");
-
-        let state = dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "subscriptionState",
-            &json!({ "id": "stable-subscription" }),
-        )
-        .expect("subscription state");
-        assert_eq!(state["state"]["cursor"], -1);
-        assert_eq!(state["state"]["table"], "todos");
+        let id = run("subscribe", json!({ "scopes": { "list_id": "list-1" } }))["id"].clone();
+        let intents = run("drainSyncIntents", json!({}));
+        assert_eq!(intents["intents"], json!([{ "kind": "interactive" }]));
+        run("unsubscribe", json!({ "id": id }));
+        let intents = run("drainSyncIntents", json!({}));
+        assert_eq!(intents["intents"], json!([{ "kind": "interactive" }]));
     }
 
     #[test]
@@ -2221,7 +2144,7 @@ mod tests {
             "diagnosticsSnapshot",
             &json!({}),
         )
-        .expect_err("diagnostics table/subscription evidence remains protected");
+        .expect_err("diagnostics unit evidence remains protected");
         assert_eq!(diagnostics_error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         dispatch(
@@ -2598,14 +2521,15 @@ mod tests {
                 .expect_err("wrong-typed create field");
             assert_eq!(error.code, "sync.invalid_request", "{params}");
         }
-        let base = json!({ "table": "todos", "variable": "list_id" });
+        let base = json!({ "variable": "list_id" });
         for (method, params) in [
             ("setWindow", json!({ "base": base, "units": [1] })),
             ("setWindow", json!({ "base": base, "units": "l1" })),
             (
                 "setWindow",
-                json!({ "base": { "table": "todos", "variable": "list_id", "params": 1 }, "units": [] }),
+                json!({ "base": { "variable": "list_id", "fixedScopes": ["x"] }, "units": [] }),
             ),
+            ("windowState", json!({ "base": {} })),
             (
                 "mutate",
                 json!({ "mutations": [{ "op": "delete", "table": "todos", "rowId": "t1", "baseVersion": "7" }] }),
@@ -2614,9 +2538,10 @@ mod tests {
                 "patch",
                 json!({ "table": "todos", "rowId": "t1", "partial": { "title": "x" }, "baseVersion": "7" }),
             ),
+            ("subscribe", json!({ "scopes": { "list_id": ["l1"] } })),
             (
-                "subscribe",
-                json!({ "id": "s", "table": "todos", "params": {} }),
+                "subscribeMany",
+                json!({ "units": [{ "list_id": "l1" }, 7] }),
             ),
             (
                 "uploadBlob",

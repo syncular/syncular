@@ -15,7 +15,7 @@ import {
   type SqlRow,
   type SqlValue,
 } from './database';
-import { prepareReadOnly, refuseRawSql } from './query-guard';
+import { prepareReadOnly, runReadOnly } from './query-guard';
 
 declare module 'bun:sqlite' {
   interface Database {
@@ -35,6 +35,7 @@ function coerceParams(params: readonly SqlValue[]): BunParam[] {
 export class BunClientDatabase implements ClientDatabase {
   readonly db: Database;
   readonly #path: string;
+  readonly #proven = new Set<string>();
   #tx = { depth: 0 };
 
   constructor(path = ':memory:') {
@@ -78,19 +79,13 @@ export class BunClientDatabase implements ClientDatabase {
         prepared.columnNames.length > 0,
       ] as const;
     });
-    // bun:sqlite exposes `sqlite3_stmt_readonly` only from Bun 1.4.4, so
-    // SQLite refuses a write when the statement runs: under `query_only` a
-    // write transaction fails before it changes anything.
-    this.db.run('PRAGMA query_only = ON');
-    try {
-      return statement.all(...coerceParams(params)) as SqlRow[];
-    } catch (error) {
-      if ((error as { code?: unknown }).code === 'SQLITE_READONLY')
-        refuseRawSql();
-      throw error;
-    } finally {
-      this.db.run('PRAGMA query_only = OFF');
-    }
+    return runReadOnly(
+      this.#proven,
+      sql,
+      (pragma) => this.db.run(pragma),
+      (error) => (error as { code?: unknown }).code === 'SQLITE_READONLY',
+      () => statement.all(...coerceParams(params)) as SqlRow[],
+    );
   }
 
   /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */

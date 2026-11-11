@@ -83,13 +83,16 @@ describe('golden fixtures', () => {
       column: 'project_id',
     });
     // Subscription templates are structured, not TS-flavored strings.
-    expect(ir.subscriptions[1].scopes).toEqual([
-      { variable: 'org_id', values: [{ kind: 'literal', value: 'acme' }] },
-      {
-        variable: 'projectId',
-        values: [{ kind: 'parameter', name: 'projectId' }],
-      },
-    ]);
+    expect(ir.subscriptions[1]).toEqual({
+      name: 'acmeDocs',
+      scopes: [
+        { variable: 'org_id', value: { kind: 'literal', value: 'acme' } },
+        {
+          variable: 'projectId',
+          value: { kind: 'parameter', name: 'projectId' },
+        },
+      ],
+    });
     // §6.11: a declared reference rides the table IR with the non-unique
     // index over its child column that reference enforcement probes.
     expect(ir.tables[2].references).toEqual([

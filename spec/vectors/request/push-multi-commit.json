@@ -1,16 +1,19 @@
 {
   "magic": "SSP2",
-  "wireVersion": 3,
+  "wireVersion": 4,
   "msgKind": "request",
   "frames": [
     {
       "type": "REQ_HEADER",
       "clientId": "client-a",
-      "schemaVersion": 1
+      "schemaVersion": 1,
+      "logEpoch": "epoch-2026-07-02-a",
+      "outboxId": "outbox-7d1c"
     },
     {
       "type": "PUSH_COMMIT",
       "clientCommitId": "c-0001",
+      "clientSeq": 7,
       "operations": [
         {
           "table": "notes",
@@ -30,6 +33,7 @@
     {
       "type": "PUSH_COMMIT",
       "clientCommitId": "c-0002",
+      "clientSeq": 8,
       "operations": [
         {
           "table": "notes",

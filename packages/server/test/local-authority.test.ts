@@ -4,10 +4,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  decodeMessage,
+  decodeRequest,
+  decodeResponse,
   decodeRow,
-  encodeMessage,
+  encodeRequest,
   encodeSparseRow,
+  registrationDigest,
   PROTOCOL_WIRE_VERSION,
   type PushCommitFrame,
   type RequestFrame,
@@ -24,11 +26,12 @@ import {
   SyncError,
 } from '@syncular/server';
 import {
+  live,
   makeContext,
+  pullFrames,
   pullHeader,
   pushResults,
   section,
-  subFrame,
 } from './helpers';
 
 const NODE_COLUMNS: readonly RowColumn[] = [
@@ -68,8 +71,12 @@ function node(id: string, parentId: string | null, projectId = 'p1') {
   };
 }
 
-function request(frames: RequestFrame[], logEpoch?: string): Uint8Array {
-  return encodeMessage({
+function request(
+  frames: RequestFrame[],
+  logEpoch?: string,
+  outboxId?: string,
+): Uint8Array {
+  return encodeRequest({
     wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
@@ -78,29 +85,29 @@ function request(frames: RequestFrame[], logEpoch?: string): Uint8Array {
         clientId: 'app',
         schemaVersion: 1,
         ...(logEpoch !== undefined ? { logEpoch } : {}),
+        ...(outboxId !== undefined ? { outboxId } : {}),
       },
       ...frames,
     ],
   });
 }
 
-function response(bytes: Uint8Array): ResponseMessage {
-  const message = decodeMessage(bytes);
-  if (message.msgKind !== 'response') throw new Error('expected a response');
-  return message;
-}
+const response = decodeResponse;
 
 /** Acquire the authority's epoch, then run one round under it. */
 async function round(
   authority: LocalAuthority,
   frames: RequestFrame[],
+  outboxId?: string,
 ): Promise<ResponseMessage> {
   const header = response(await authority.sync(request([pullHeader()])))
     .frames[0];
   if (header?.type !== 'RESP_HEADER' || header.logEpoch === undefined) {
     throw new Error('epoch acquisition returned no log epoch');
   }
-  return response(await authority.sync(request(frames, header.logEpoch)));
+  return response(
+    await authority.sync(request(frames, header.logEpoch, outboxId)),
+  );
 }
 
 let writes = 0;
@@ -114,6 +121,7 @@ async function writeNodes(
     commits.map((operations, index) => ({
       type: 'PUSH_COMMIT',
       clientCommitId: `write-${(writes += 1)}-${index}`,
+      clientSeq: 0,
       operations,
     })),
   );
@@ -133,7 +141,7 @@ function remote(options?: { readonly allowed?: readonly string[] }) {
   const statuses: string[] = [];
   const faults = { dropResponseOfCommit: -1 };
   const transport = async (bytes: Uint8Array): Promise<Uint8Array> => {
-    const sent = decodeMessage(bytes);
+    const sent = decodeRequest(bytes);
     const out = await handleSyncRequest(bytes, cloud.ctx);
     const commit = sent.frames.find((frame) => frame.type === 'PUSH_COMMIT');
     if (commit === undefined) return out;
@@ -169,13 +177,64 @@ describe('local authority (§12)', () => {
       [node('a', null, 'p1'), node('b', null, 'p9')],
     ]);
 
-    const pulled = await round(authority, [
-      pullHeader({ limitSnapshotRows: 100, maxSnapshotPages: 1 }),
-      subFrame('nodes', 'nodes', { project_id: ['p1', 'p9'] }, -1),
+    const units = [{ project_id: 'p1' }, { project_id: 'p9' }];
+    const pulled = await round(
+      authority,
+      pullFrames(units, { limitSnapshotRows: 100, maxSnapshotPages: 1 }),
+    );
+    for (const unit of units) {
+      expect(section(pulled, unit).start).toMatchObject({
+        status: 'active',
+        bootstrap: true,
+        fenced: [],
+      });
+    }
+    // §12.2: one live section, and the record the round stores.
+    expect(live(pulled).end.throughSeq).toBe(1);
+    const quiet = await round(authority, [
+      pullHeader({
+        cursor: 1,
+        registrationDigest: registrationDigest(units),
+        echoDigest: live(pulled).end.echoDigest,
+      }),
     ]);
-    expect(section(pulled, 'nodes').start.status).toBe('active');
-    expect(section(pulled, 'nodes').start.effectiveScopes).toEqual({
-      project_id: ['p1', 'p9'],
+    expect(live(quiet).start.status).toBe('active');
+    expect(quiet.frames.filter((frame) => frame.type === 'SUB_START')).toEqual(
+      [],
+    );
+  });
+
+  test('keeps the per-outbox watermark: one request of results at most (§12.2)', async () => {
+    const database = new BunSqliteDatabase(':memory:');
+    const authority = await openLocalAuthority({
+      database,
+      schema: NODE_SCHEMA,
+    });
+    const push = (id: string, seq: number) =>
+      round(
+        authority,
+        [
+          {
+            type: 'PUSH_COMMIT',
+            clientCommitId: id,
+            clientSeq: seq,
+            operations: [node(id, null)],
+          },
+        ],
+        'outbox-a',
+      );
+    await push('w1', 1);
+    await push('w2', 2);
+    const results = () =>
+      database
+        .query<{ id: string }, []>(
+          'SELECT client_commit_id AS id FROM sync_push_results ORDER BY id',
+        )
+        .all()
+        .map((row) => row.id);
+    expect(results()).toEqual(['w2']);
+    expect(pushResults(await push('w1', 1))[0]?.results[0]).toMatchObject({
+      code: 'sync.commit_expired',
     });
   });
 
@@ -397,8 +456,9 @@ describe('local authority (§12)', () => {
       fresh,
     ]);
     expect(fresh.startsWith(attachId)).toBe(false);
-    // The fresh attach recreates the row above the undo's tombstone (§6.2).
-    expect(target.rows()).toEqual([{ values: ['a', 'p1', null], version: 2 }]);
+    // The undo delete wrote version 2; the fresh attach recreates the row
+    // above the delete floor (§2.2).
+    expect(target.rows()).toEqual([{ values: ['a', 'p1', null], version: 3 }]);
   });
 
   test('a rejected undo applies on a retried abandon once the blocker is gone', async () => {

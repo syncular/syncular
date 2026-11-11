@@ -45,7 +45,7 @@ export type BlobUploadGrant =
 /**
  * The transport seam for blob upload/download (§5.9.3/§5.9.5). The upload
  * calls receive the round's `signal`, which aborts when the `syncUntilIdle`
- * deadline elapses (§7.7).
+ * deadline elapses (§7.8).
  */
 export interface BlobTransport {
   /** `PUT <mount>/blobs/{blobId}` — host-authenticated direct upload (§5.9.3). */
@@ -84,11 +84,12 @@ export interface BlobTransport {
   /**
    * §5.9.3 direct-to-storage PUT of the granted `url`. MUST attach NO host
    * authentication — the presigned URL is the entire grant (§5.4) — and MUST
-   * send `x-amz-checksum-sha256` (base64 of the body's SHA-256), which the
-   * grant signs beside `content-length`. Only called when `uploadGrant`
+   * send `x-amz-checksum-sha256` (base64 of the digest `blobId` names), which
+   * the grant signs beside `content-length`. Only called when `uploadGrant`
    * returned a `url` arm.
    */
   uploadToUrl?(
+    blobId: string,
     url: string,
     bytes: Uint8Array,
     mediaType?: string,

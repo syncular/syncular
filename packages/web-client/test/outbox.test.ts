@@ -376,11 +376,7 @@ describe('push-result frame handling', () => {
   test('a duplicated PUSH_RESULT frame drains the commit once', async () => {
     const server = makeServer();
     const local = await makeClient(server, { clientId: 'dup-push-client' });
-    local.client.subscribe({
-      id: 'dup-tasks',
-      table: 'tasks',
-      scopes: { project_id: ['p1'] },
-    });
+    local.client.subscribe({ project_id: 'p1' });
     await local.client.syncUntilIdle();
     const commit = local.client.mutate([
       {

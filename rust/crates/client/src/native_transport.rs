@@ -654,6 +654,7 @@ impl Transport for HostTransport {
 
     fn blob_put_url(
         &mut self,
+        blob_id: &str,
         url: &str,
         bytes: &[u8],
         media_type: Option<&str>,
@@ -661,9 +662,9 @@ impl Transport for HostTransport {
         match self {
             HostTransport::Null { .. } => Err(unavailable("blobPutUrl")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.blob_put_url(url, bytes, media_type),
+            HostTransport::Native(t) => t.blob_put_url(blob_id, url, bytes, media_type),
             #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.blob_put_url(url, bytes, media_type),
+            HostTransport::Local(t) => t.blob_put_url(blob_id, url, bytes, media_type),
         }
     }
 
@@ -973,11 +974,12 @@ mod local {
 
         fn blob_put_url(
             &mut self,
+            blob_id: &str,
             url: &str,
             bytes: &[u8],
             media_type: Option<&str>,
         ) -> Result<(), TransportError> {
-            self.remote.blob_put_url(url, bytes, media_type)
+            self.remote.blob_put_url(blob_id, url, bytes, media_type)
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
@@ -2586,14 +2588,35 @@ mod native {
 
         fn blob_put_url(
             &mut self,
+            blob_id: &str,
             url: &str,
             bytes: &[u8],
             media_type: Option<&str>,
         ) -> Result<(), TransportError> {
             // §5.9.3: the presigned URL is the entire grant — no host auth.
             // The grant signs content-length (ureq sets it from the body) and
-            // this checksum, so the object store rejects any other bytes.
-            use sha2::Digest;
+            // the checksum, the blob id's digest, so the object store rejects
+            // any other bytes without the client hashing the body again.
+            let digest = blob_id
+                .strip_prefix("sha256:")
+                .filter(|hex| {
+                    hex.len() == 64
+                        && hex
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+                .map(|hex| {
+                    (0..64)
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex digits"))
+                        .collect::<Vec<u8>>()
+                })
+                .ok_or_else(|| {
+                    TransportError::new(
+                        "sync.invalid_request",
+                        "the blob id is not a sha256 blob id (§5.9.1)",
+                    )
+                })?;
             self.check_request_bytes(bytes.len() as u64)?;
             let req = self.finish_request(
                 self.agent
@@ -2602,10 +2625,7 @@ mod native {
                         "content-type",
                         media_type.unwrap_or("application/octet-stream"),
                     )
-                    .header(
-                        "x-amz-checksum-sha256",
-                        ssp2::util::base64(&sha2::Sha256::digest(bytes)),
-                    ),
+                    .header("x-amz-checksum-sha256", ssp2::util::base64(&digest)),
                 true,
             )?;
             let resp = req
@@ -2951,7 +2971,7 @@ mod native {
                         "signed_blob" => transport.fetch_blob_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", None).map(|_| ()),
                         "upload" => transport.blob_upload("sha256:test", &[], None),
                         "grant" => transport.blob_upload_grant("sha256:test", 0, None).map(|_| ()),
-                        _ => transport.blob_put_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", &[], None),
+                        _ => transport.blob_put_url(&format!("sha256:{}", "0".repeat(64)), "http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", &[], None),
                     };
                     let error = result.unwrap_err();
                     let expected_code = match (operation, kind) {
@@ -3772,12 +3792,16 @@ mod tests {
                             client_id: "detached-round".into(),
                             schema_version: 1,
                             log_epoch: None,
+                            outbox_id: None,
                         },
                         Frame::PullHeader {
                             limit_commits: 0,
                             limit_snapshot_rows: 0,
                             max_snapshot_pages: 0,
                             accept: 3,
+                            cursor: -1,
+                            registration_digest: ssp2::registration::registration_digest([]),
+                            echo_digest: None,
                         },
                     ],
                 });
@@ -3819,7 +3843,7 @@ mod tests {
     }
 
     #[test]
-    fn a_presigned_blob_put_sends_the_checksum_the_grant_signs() {
+    fn a_presigned_blob_put_sends_the_blob_id_digest_without_hashing_the_body() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -3842,17 +3866,20 @@ mod tests {
         });
         let mut transport =
             HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        let url = format!("{base}/bucket/key?X-Amz-Signature=x");
+        // A blob id that is not a sha256 id is refused before any request.
+        let error = transport
+            .blob_put_url("sha256:AB", &url, b"body", None)
+            .unwrap_err();
+        assert_eq!(error.code, "sync.invalid_request");
+        // The digest of the blob id differs from SHA-256("body"): the header
+        // carries the given digest, so no body hash ran.
         transport
-            .blob_put_url(
-                &format!("{base}/bucket/key?X-Amz-Signature=x"),
-                b"body",
-                None,
-            )
+            .blob_put_url(&format!("sha256:{}", "ab".repeat(32)), &url, b"body", None)
             .unwrap();
         let head = server.join().unwrap();
-        // base64 of SHA-256("body"); content-length comes from the body.
         assert!(head.contains(
-            &"x-amz-checksum-sha256: Iw2DWNyOiJC0xY3utikS7i8gNXrpKlzIYbmOaP4xrLU=".to_owned()
+            &"x-amz-checksum-sha256: q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s=".to_owned()
         ));
         assert!(head.contains(&"content-length: 4".to_owned()));
     }
@@ -4528,8 +4555,8 @@ mod local_authority_tests {
 
         use super::super::{HostTransport, LocalAuthorityTransport};
         use crate::{
-            ClientLimits, Mutation, SegmentFetch, SegmentRequest, SubscriptionRequest, SyncClient,
-            SyncOutcome, Transport, TransportError,
+            ClientLimits, Mutation, SegmentFetch, SegmentRequest, SyncClient, SyncOutcome,
+            Transport, TransportError, UnitScopes,
         };
 
         fn schema() -> Value {
@@ -4653,12 +4680,7 @@ mod local_authority_tests {
             )
             .expect("client");
             client
-                .subscribe_many(vec![SubscriptionRequest {
-                    id: "notes".to_owned(),
-                    table: "notes".to_owned(),
-                    scopes: vec![("list_id".to_owned(), vec!["l1".to_owned()])],
-                    params: None,
-                }])
+                .subscribe(UnitScopes::from([("list_id".to_owned(), "l1".to_owned())]))
                 .expect("subscribe");
             client
                 .mutate(vec![Mutation::Upsert {
@@ -4725,12 +4747,7 @@ mod local_authority_tests {
             )
             .expect("client");
             client
-                .subscribe_many(vec![SubscriptionRequest {
-                    id: "todos".to_owned(),
-                    table: "todos".to_owned(),
-                    scopes: vec![("list_id".to_owned(), vec!["l1".to_owned()])],
-                    params: None,
-                }])
+                .subscribe(UnitScopes::from([("list_id".to_owned(), "l1".to_owned())]))
                 .expect("subscribe");
             client
                 .mutate(vec![Mutation::Upsert {

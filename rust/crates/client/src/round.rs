@@ -38,6 +38,7 @@ pub enum RoundOperation<'a> {
     /// `PUT` the presigned upload url the grant returned. A failure falls back
     /// to [`RoundOperation::Upload`] with the same body.
     UploadPut {
+        blob_id: &'a str,
         url: &'a str,
         bytes: &'a [u8],
         media_type: Option<&'a str>,
@@ -218,10 +219,13 @@ impl PreparedSyncRound {
                         media_type,
                     )),
                     RoundOperation::UploadPut {
+                        blob_id,
                         url,
                         bytes,
                         media_type,
-                    } => RoundReply::Upload(transport.blob_put_url(url, bytes, media_type)),
+                    } => {
+                        RoundReply::Upload(transport.blob_put_url(blob_id, url, bytes, media_type))
+                    }
                     RoundOperation::Upload {
                         blob_id,
                         bytes,
@@ -421,7 +425,7 @@ impl PreparedSyncRound {
                                 };
                                 planned.push(PlannedFetch {
                                     key,
-                                    subscription_id: id.to_owned(),
+                                    unit_id: id.to_owned(),
                                     table: table.clone(),
                                     segment_id: segment_id.clone(),
                                     bytes_total: u64::try_from(*byte_length).ok(),
@@ -443,7 +447,7 @@ impl PreparedSyncRound {
                             };
                             progress.update(|p| {
                                 p.phase = ProgressPhase::Download;
-                                p.subscription_id = Some(planned_fetch.subscription_id.clone());
+                                p.unit_id = Some(planned_fetch.unit_id.clone());
                                 p.table = Some(planned_fetch.table.clone());
                                 p.segment_id = Some(planned_fetch.segment_id.clone());
                                 p.bytes_received = bytes;
@@ -501,7 +505,7 @@ impl PreparedSyncRound {
                     if let Ok(bytes) = &result {
                         progress.update(|p| {
                             p.phase = ProgressPhase::Download;
-                            p.subscription_id = Some(planned_fetch.subscription_id.clone());
+                            p.unit_id = Some(planned_fetch.unit_id.clone());
                             p.table = Some(planned_fetch.table.clone());
                             p.segment_id = Some(planned_fetch.segment_id.clone());
                             p.bytes_received = bytes.len() as u64;
@@ -675,6 +679,7 @@ impl PreparedSyncRound {
                     .as_ref()
                     .expect("a staged body that failed to read has no operation");
                 Some(RoundOperation::UploadPut {
+                    blob_id: &upload.id,
                     url,
                     bytes,
                     media_type: upload.media_type.as_deref(),
@@ -714,7 +719,7 @@ enum DownloadKey {
 /// fetch so `download_segments` sees the whole page list at once.
 pub(crate) struct PlannedFetch {
     key: DownloadKey,
-    subscription_id: String,
+    unit_id: String,
     table: String,
     segment_id: String,
     bytes_total: Option<u64>,
@@ -821,10 +826,11 @@ pub(crate) mod test_support {
                     media_type,
                 )),
                 RoundOperation::UploadPut {
+                    blob_id,
                     url,
                     bytes,
                     media_type,
-                } => RoundReply::Upload(transport.blob_put_url(url, bytes, media_type)),
+                } => RoundReply::Upload(transport.blob_put_url(blob_id, url, bytes, media_type)),
                 RoundOperation::Upload {
                     blob_id,
                     bytes,
@@ -884,6 +890,7 @@ mod tests {
         }
         fn blob_put_url(
             &mut self,
+            _: &str,
             _: &str,
             _: &[u8],
             _: Option<&str>,
@@ -946,12 +953,13 @@ mod tests {
                     ))
                 }
                 RoundOperation::UploadPut {
+                    blob_id,
                     url,
                     bytes,
                     media_type,
                 } => {
                     steps.push("put");
-                    RoundReply::Upload(transport.blob_put_url(url, bytes, media_type))
+                    RoundReply::Upload(transport.blob_put_url(blob_id, url, bytes, media_type))
                 }
                 RoundOperation::Upload {
                     blob_id,
@@ -981,6 +989,7 @@ mod tests {
     /// Answers one response that references one segment and serves a body
     /// longer than the descriptor declares.
     struct OversizedSegment {
+        unit_id: String,
         segment_id: String,
         body: Vec<u8>,
     }
@@ -998,11 +1007,11 @@ mod tests {
                         reset_required: false,
                     },
                     Frame::SubStart {
-                        id: "tasks".into(),
+                        id: self.unit_id.clone(),
                         status: SubStatus::Active,
                         reason_code: String::new(),
-                        effective_scopes: Vec::new(),
                         bootstrap: true,
+                        fenced: Vec::new(),
                     },
                     Frame::SegmentRef {
                         segment_id: self.segment_id.clone(),
@@ -1049,13 +1058,18 @@ mod tests {
     fn a_segment_body_longer_than_its_byte_length_fails_before_the_content_check() {
         use sha2::Digest;
         let schema = serde_json::json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
-            {"name":"id","type":"string","nullable":false}],"scopes":[]}]});
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
         let mut client = SyncClient::new("oversized".into(), &schema, Default::default()).unwrap();
         client
             .set_meta(crate::client::LOG_EPOCH_KEY, "epoch")
             .unwrap();
-        client
-            .subscribe("tasks".into(), "tasks".into(), Vec::new(), None)
+        let unit_id = client
+            .subscribe(crate::UnitScopes::from([(
+                "project_id".into(),
+                "p1".into(),
+            )]))
             .unwrap();
         // The body hashes to its content address, so only the §5.4 cap can
         // refuse it.
@@ -1067,7 +1081,11 @@ mod tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         );
-        let mut transport = OversizedSegment { segment_id, body };
+        let mut transport = OversizedSegment {
+            unit_id,
+            segment_id,
+            body,
+        };
         match client.sync(&mut transport) {
             SyncOutcome::Failed {
                 error_code,

@@ -96,7 +96,7 @@ export async function runWindowShardLane(
   });
   await client.start();
 
-  const base = { table: TABLE, variable: 'project_id' } as const;
+  const base = { variable: 'project_id' } as const;
 
   // Window {A,B}: bootstraps A and B.
   await client.setWindow(base, ['A', 'B']);
