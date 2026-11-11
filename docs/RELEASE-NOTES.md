@@ -4,7 +4,8 @@
 
 0.60.1 fixes the reconcile of server-only indexes on Postgres
 ([#125](https://github.com/syncular/syncular/issues/125)) and a JS client
-memory regression. At an unchanged
+memory regression, and a worker handle that could not start under security
+preflight. At an unchanged
 schema version, `PostgresServerStorage` created a newly declared
 `serverIndexes` entry only on a table that already had another index: its
 index introspection lists no row for a table whose only index is its primary
@@ -17,7 +18,13 @@ The JS client reads a segment, blob or response body into one allocation of
 the body's size again. Since 0.59.0 it assembled the chunks through a `Blob`
 and its `arrayBuffer()`, which kept one more full copy of every body resident
 until garbage collection: a 100k-row bootstrap held 151 to 153 MB during the
-segment download, against 138 to 140 MB on 0.58.0. SSP2, the storage layout,
+segment download, against 138 to 140 MB on 0.58.0.
+
+Since 0.60.0, `createSyncClientHandle({ securityPreflight: true, onDiagnostics })`
+pulled a diagnostics snapshot during start, which security preflight refuses,
+so the handle failed to start with `client.security_preflight_required`. The
+start now accepts that refusal, and the callback receives its first snapshot
+when `activateSecurity()` completes. SSP2, the storage layout,
 and the wire version are unchanged.
 
 **Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A
