@@ -236,11 +236,15 @@ jobs:
         run: |
           bun scripts/version.ts assert-tag "$RELEASE_TAG"
           bun scripts/version.ts release-notes > notes.md
+          # A resumed run for an older tag must not take "Latest" from a newer
+          # release (the v0.60.1 to v0.63.0 resumes did on 2026-11-11).
+          newest=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' | sort -V | tail -1)
+          latest=$([ "$RELEASE_TAG" = "$newest" ] && echo true || echo false)
           # Re-runs after a partial failure update the existing release.
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "Syncular ${RELEASE_TAG#v}" --notes-file notes.md --latest
+            gh release edit "$RELEASE_TAG" --title "Syncular ${RELEASE_TAG#v}" --notes-file notes.md --latest="$latest"
           else
-            gh release create "$RELEASE_TAG" --verify-tag --title "Syncular ${RELEASE_TAG#v}" --notes-file notes.md --latest
+            gh release create "$RELEASE_TAG" --verify-tag --title "Syncular ${RELEASE_TAG#v}" --notes-file notes.md --latest="$latest"
           fi
 
   docs:
@@ -254,16 +258,33 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
+      # Only the newest tag deploys: a resumed run for an older tag would put
+      # its docs over the current ones (syncular.dev served 0.61.0 after the
+      # v0.60.1 to v0.63.0 resumes on 2026-11-11).
+      - name: deploy only the newest tag
+        id: newest
+        run: |
+          newest=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' | sort -V | tail -1)
+          if [ "$RELEASE_TAG" = "$newest" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$RELEASE_TAG is older than $newest; the docs stay on $newest"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.newest.outputs.deploy == 'true'
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+        if: steps.newest.outputs.deploy == 'true'
       - name: validate tag and build versioned docs
+        if: steps.newest.outputs.deploy == 'true'
         run: |
           bun run version:check
           bun scripts/version.ts assert-tag "$RELEASE_TAG"
           bun run --cwd apps/docs build
       - name: deploy docs to Cloudflare Workers
+        if: steps.newest.outputs.deploy == 'true'
         working-directory: apps/docs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

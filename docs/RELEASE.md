@@ -134,7 +134,18 @@ The crates.io publish order is:
 7. `tauri-plugin-syncular`
 
 The workflow skips an artifact already published at the release version, so a
-partially completed trusted-publishing run is safe to re-run.
+partially completed trusted-publishing run is safe to re-run. The GitHub release
+and the docs deploy wait for both registries: a run whose crates job failed
+leaves the tag without a GitHub release. Resume it from `main`, so the current
+workflow runs against the tag:
+
+```sh
+gh workflow run release.yml --ref main -f release_tag=v<version>
+```
+
+Dispatch one run per tag. A resumed run for a tag older than the newest one
+publishes its GitHub release without marking it latest and does not deploy the
+docs.
 
 ## Trusted publishers
 
@@ -143,5 +154,7 @@ Every public npm package and crate must trust GitHub repository
 `id-token: write`; no registry token is stored in the repository.
 
 After publication, verify the workflow, the npm package set, the crates.io
-package set, and one clean external consumer install before announcing the
-release.
+package set, the GitHub release (`gh release view v<version>`, marked latest for
+the newest version), the version banner on syncular.dev, and one clean external
+consumer install before announcing the release. A release is not done until all
+of them show the version.
