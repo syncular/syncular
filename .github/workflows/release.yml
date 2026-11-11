@@ -141,11 +141,28 @@ jobs:
       # gobject-sys build scripts fail and the publish dies at the last step
       # (observed on the v0.3.1 run).
       - name: install Tauri Linux system deps (plugin verify build)
+        timeout-minutes: 30
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
+          # apt-get update stalls 15+ minutes when the runner's Azure Ubuntu
+          # mirror fails over (actions/runner-images #15040, #14823); the
+          # v0.60.1 release hung 45 minutes in it twice. Bound each attempt and
+          # drop the Azure mirror before a retry. Inline because the release
+          # job checks out tags older than any helper script.
+          apt=(sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+          for attempt in 1 2 3; do
+            if timeout 180 "${apt[@]}" update &&
+              timeout 600 "${apt[@]}" install -y --no-install-recommends \
+                libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+                librsvg2-dev patchelf; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; retrying without the Azure mirror" >&2
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt || true
+            sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
+              /etc/apt/sources.list.d/ubuntu.sources || true
+          done
+          exit 1
       - name: native release gates
         run: |
           cargo test --manifest-path rust/Cargo.toml --workspace
