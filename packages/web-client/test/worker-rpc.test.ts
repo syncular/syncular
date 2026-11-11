@@ -36,6 +36,7 @@ import {
   taskValues,
   waitFor,
 } from './helpers';
+import { createSyncProfiler } from '../src/dev-profiler';
 import { type HttpTestServer, serveOverHttp } from './http-server';
 
 const WORKER_URL = new URL('./rpc-worker.ts', import.meta.url).href;
@@ -1671,4 +1672,46 @@ test('the worker core forwards the heartbeat interval and runs the §8.5 watchdo
     { t: 'timer', delayMs: 2_000 },
     { t: 'socket-closed' },
   ]);
+});
+
+test('a profiled development worker keeps auth headers current and reports to the page', async () => {
+  const channel = new BroadcastChannel('rpc-test-profile');
+  const page = createSyncProfiler({ channel });
+  const merge = channel.onmessage!;
+  const reported = new Promise<void>((resolve) => {
+    channel.onmessage = (event) => {
+      merge.call(channel, event);
+      const report = page.report();
+      if (
+        report.rounds.length === 1 &&
+        report.statements.some((entry) => entry.sql === 'SELECT 1 AS one')
+      )
+        resolve();
+    };
+  });
+  const { handle } = await makeHandle({
+    clientId: 'rpc-profiled',
+    autoSync: false,
+    headers: { Authorization: 'Bearer expired' },
+    worker: () =>
+      new Worker(new URL('./profiler-worker.ts', import.meta.url).href),
+  });
+  const client = page.client(handle);
+  const seenBefore = http.syncAuthorizations.length;
+  await expectRejectsWithCode(client.sync(), 'sync.auth_required');
+  await client.setHeaders({ Authorization: 'Bearer fresh' });
+  await client.sync();
+  expect(http.syncAuthorizations.slice(seenBefore)).toEqual([
+    'Bearer expired',
+    'Bearer fresh',
+  ]);
+  await client.querySnapshot({
+    sql: 'SELECT 1 AS one',
+    owner: { id: 'one', tables: [] },
+  });
+  await reported;
+  expect(page.report().queries).toMatchObject([
+    { id: 'one', runs: 1, rows: 1 },
+  ]);
+  channel.close();
 });

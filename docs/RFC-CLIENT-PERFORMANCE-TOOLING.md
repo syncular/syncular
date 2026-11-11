@@ -37,6 +37,12 @@ On 2026-11-11 the lead settled the remaining stages:
 
 7. **Stage 1 shipped in 0.60.0**, and `allow plan` followed in 0.62.0.
 8. **Stage 2 is built**: `createSyncProfiler()` at `@syncular/client/dev`.
+   It differs from §4 where a cheaper source exists: progress events give
+   bootstrap bytes per unit, so there is no segment wrapper; diagnostics
+   events give active units; the comparison of identical runs is always on;
+   the option is `unitLimit`. It leaves out the approximate apply time, the
+   scope-key hook of §4.7 and the bench lane of §4.5. `createTransport`
+   receives `http`; a shorter error message in the worker pays its 2 bytes.
 9. **Stage 3's budget assertions are part of stage 2's report**:
    `assertBudgets(report, budgets)` ships beside the profiler.
 10. **Stage 3's strict-mode perturbations are cancelled.** They exercise

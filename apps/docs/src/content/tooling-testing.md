@@ -226,7 +226,7 @@ The re-render comes from the client's real invalidation path, the same one produ
 | `validators`, `commitValidator` | Server write validators and the whole-commit validator. |
 | `startMs` | Where the virtual clock starts. |
 
-The returned `TestSync` exposes `clock`, `server`, `clients`, `client()`, `syncAll()`, and `dispose()`. The [testkit README](https://github.com/syncular/syncular/blob/main/packages/testing/README.md) lists the full `TestSync` and `TestClient` surface.
+The returned `TestSync` exposes `clock`, `server`, `clients`, `client()`, `syncAll()`, and `dispose()`. `client(id, { profiler })` records the client's queries, rounds, units and writes for budget assertions ([Profiling your app](/tooling-profiler/#lock-the-numbers-in-tests)). The [testkit README](https://github.com/syncular/syncular/blob/main/packages/testing/README.md) lists the full `TestSync` and `TestClient` surface.
 
 - The transport is an in-process loopback. To test your Hono or Workers adapter or real fetch and WebSocket wiring, boot the server yourself as in the [quickstart](/quickstart/).
 - The driver and pairing machinery and the scenario catalog live in `@syncular/conformance` ([Protocol & conformance](/reference/#protocol--conformance)).

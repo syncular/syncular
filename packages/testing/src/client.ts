@@ -22,6 +22,7 @@ import {
   transportFailed,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import type { SyncProfiler } from '@syncular/client/dev';
 import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import type { VirtualClock } from './clock';
 import {
@@ -82,6 +83,8 @@ export interface TestClientOptions {
    * `onConflict`, `limits`. `database`, `schema`, `clientId`, `now`,
    * `transport`, `segments`, and `realtime` are owned by the kit.
    */
+  /** Wraps the client's database, transport, realtime connector and `api`. */
+  readonly profiler?: SyncProfiler | undefined;
   readonly clientConfig?: Partial<
     Omit<
       SyncClientConfig,
@@ -177,16 +180,18 @@ export function buildTestClient(options: TestClientOptions): {
     };
   };
 
-  const api = new SyncClient({
-    database: db,
+  const { profiler } = options;
+  const unprofiled = new SyncClient({
+    database: profiler?.database(db) ?? db,
     schema,
     clientId: id,
     now: () => clock.now(),
-    transport,
+    transport: profiler?.transport(transport) ?? transport,
     segments,
-    realtime,
+    realtime: profiler?.realtime(realtime) ?? realtime,
     ...options.clientConfig,
   });
+  const api = profiler?.client(unprofiled) ?? unprofiled;
 
   const client: TestClient = {
     id,

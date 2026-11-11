@@ -65,6 +65,8 @@ export interface TestClientOverrides {
   readonly actorId?: string;
   /** Extra `SyncClient` config (e.g. `onConflict`, `limits`). */
   readonly clientConfig?: TestClientOptions['clientConfig'];
+  /** A `createSyncProfiler()` from `@syncular/client/dev` for this client. */
+  readonly profiler?: TestClientOptions['profiler'];
 }
 
 export interface TestSync {
@@ -123,6 +125,7 @@ export async function createTestSync(
         clock,
         id: clientId,
         actorId: overrides?.actorId ?? defaultActor,
+        profiler: overrides?.profiler,
         ...(overrides?.clientConfig !== undefined
           ? { clientConfig: overrides.clientConfig }
           : {}),

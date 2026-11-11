@@ -16,6 +16,7 @@ import {
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type UnitRecord,
 } from '@syncular/client';
+import { createSyncProfiler } from '@syncular/client/dev';
 import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
@@ -919,6 +920,30 @@ describe('createTauriSyncClient', () => {
       .filter((command) => command?.method === 'syncUntilIdle')
       .map((command) => command.params);
     expect(params).toEqual([{ maxRounds: 3, timeoutMs: 5000 }, {}]);
+  });
+
+  test('the development profiler wraps a Tauri client: queries and write bursts, no statements', async () => {
+    const { client } = await build();
+    const profiler = createSyncProfiler({ now: () => 0 });
+    const profiled = profiler.client(client);
+    const spec = { sql: 'SELECT 1', owner: { id: 'one', tables: ['todo'] } };
+    await profiled.querySnapshot(spec);
+    await profiled.querySnapshot(spec);
+    const todo = { id: 't1', title: 'x' };
+    await profiled.mutate([{ op: 'upsert', table: 'todo', values: todo }]);
+    await profiled.mutate([{ op: 'upsert', table: 'todo', values: todo }]);
+    const report = profiler.report();
+    expect(report.queries).toMatchObject([
+      {
+        id: 'one',
+        runs: 2,
+        identicalRuns: 1,
+        triggers: { mount: 1, refresh: 1 },
+      },
+    ]);
+    expect(report.writes.bursts).toEqual([{ commits: 2, tables: ['todo'] }]);
+    expect(report.statements).toEqual([]);
+    expect(report.rounds).toEqual([]);
   });
 
   test('mutate returns the clientCommitId', async () => {

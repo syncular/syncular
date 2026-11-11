@@ -755,6 +755,7 @@ they own their buffer.
 | `./sqlite` | Runtime-selected SQLite: `openSqliteDatabase` on Node or Bun |
 | `./bun` | Explicit `bun:sqlite` binding: `openBunDatabase` |
 | `./node` | Explicit built-in `node:sqlite` binding: `openNodeDatabase` |
+| `./dev` | Development profiler: `createSyncProfiler`, `assertBudgets` |
 
 Tests drive the real worker entry in a bun `Worker` with bun:sqlite
 injected through the bootstrap's database-factory override

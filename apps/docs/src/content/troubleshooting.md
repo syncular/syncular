@@ -229,6 +229,8 @@ await __SYNCULAR__.clients[0].ref.query('SELECT * FROM todos');
 
 `lastInvalidation` carries the tables and scope keys of the most recent apply batch. It is the fastest way to confirm that data arrives and that your live queries should have re-run.
 
+For runs per live query, statement times, bytes per round and write bursts, wrap the client with the [development profiler](/tooling-profiler/).
+
 ## Wiping OPFS for a clean test
 
 The persistent worker database lives in the origin's OPFS. To reset a dev client to factory state, close the app's tabs so the pool is not held open, then run this in the console:

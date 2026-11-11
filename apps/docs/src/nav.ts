@@ -342,6 +342,7 @@ export const nav: readonly NavGroup[] = [
         kind: 'reference',
       },
       { slug: 'tooling-queries', title: 'Named queries', kind: 'how-to' },
+      { slug: 'tooling-profiler', title: 'Profiling your app', kind: 'how-to' },
       {
         slug: 'guide-concurrency-correction',
         title: 'Handling conflicts',

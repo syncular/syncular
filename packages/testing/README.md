@@ -78,8 +78,10 @@ adds the test-only controls below.
 - `syncAll()` — `syncUntilIdle()` on every online client until quiescent.
 - `dispose()` — close every client and the server (idempotent).
 
-`overrides` lets a client use a different `actorId` or extra `SyncClient`
-config (e.g. `{ clientConfig: { onConflict: fn } }`).
+`overrides` lets a client use a different `actorId`, extra `SyncClient`
+config (e.g. `{ clientConfig: { onConflict: fn } }`), or a `profiler` from
+`@syncular/client/dev` that wraps its database, transport, realtime
+connector and `api` ([Profiling your app](https://syncular.dev/tooling-profiler/)).
 
 ### `TestClient`
 

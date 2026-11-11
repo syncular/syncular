@@ -56,23 +56,26 @@ interface DevtoolsRegistry {
 
 const KEY = '__SYNCULAR__';
 
+/**
+ * @internal True when the build carries a development or test signal and no
+ * production one. The registry and `@syncular/client/dev` read it.
+ */
+export function developmentBuild(): boolean {
+  if (typeof process !== 'undefined' && process.env.NODE_ENV === 'production')
+    return false;
+  return (
+    (typeof import.meta.env !== 'undefined' &&
+      (import.meta.env.DEV as boolean | string | undefined) === true) ||
+    (typeof process !== 'undefined' &&
+      (process.env.NODE_ENV === 'development' ||
+        process.env.NODE_ENV === 'test'))
+  );
+}
+
 /** The page global to install on, or undefined when gated off. */
 function registryHost(): Record<string, unknown> | undefined {
   const g = globalThis as Record<string, unknown> & { window?: unknown };
-  if (g.window === undefined) return undefined;
-  if (typeof process !== 'undefined' && process.env.NODE_ENV === 'production')
-    return undefined;
-  if (
-    !(
-      (typeof import.meta.env !== 'undefined' &&
-        (import.meta.env.DEV as boolean | string | undefined) === true) ||
-      (typeof process !== 'undefined' &&
-        (process.env.NODE_ENV === 'development' ||
-          process.env.NODE_ENV === 'test'))
-    )
-  )
-    return undefined;
-  return g;
+  return g.window !== undefined && developmentBuild() ? g : undefined;
 }
 
 function registryOn(host: Record<string, unknown>): DevtoolsRegistry {

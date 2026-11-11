@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { build as viteBuild } from 'vite';
 
 // Minified browser graphs with SQLite external. On Bun 1.4.4 the client
-// measures 163928 bytes and the worker 184893 bytes. The ceilings are the
+// measures 164804 bytes and the worker 185930 bytes. The ceilings are the
 // values at the start of the core review program; a change that grows a lane
 // removes code to stay under them. Independently assert that ordinary imports
 // exclude authority modules.
@@ -113,6 +113,8 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         expect(authorityModules.length > 0).toBe(optIn);
       }
       const code = new TextDecoder().decode(bytes);
+      // No production entry imports `@syncular/client/dev`.
+      expect(code).not.toContain('client.profiler_in_production');
       for (const method of [
         'localAuthorityState',
         'attachLocalAuthority',
@@ -198,6 +200,7 @@ test('Vite production excludes optional local authority from remote entries', as
         expect(code.includes(method)).toBe(includesAuthority);
       }
       expect(code).not.toContain('__SYNCULAR__');
+      expect(code).not.toContain('client.profiler_in_production');
     }
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;

@@ -10,6 +10,7 @@ import {
   CommitValidationRejection,
   ValidationRejection,
 } from '@syncular/server';
+import { assertBudgets, createSyncProfiler } from '@syncular/client/dev';
 import { createTestSync, TransportFault } from '../src/index';
 
 /** A minimal one-table app schema: notes scoped by list. */
@@ -429,6 +430,60 @@ describe('createTestSync — scopes', () => {
         { id: 'n1' },
       ]);
       expect(b.api.unit(secret)?.status).toBe('revoked');
+    } finally {
+      await sync.dispose();
+    }
+  });
+});
+
+describe('createTestSync — profiler', () => {
+  test('a profiled client reports its rounds, statements, units, queries and writes', async () => {
+    const sync = await createTestSync({ schema: SCHEMA });
+    try {
+      const profiler = createSyncProfiler({ now: () => sync.clock.now() });
+      const a = await sync.client('a');
+      const b = await sync.client('b', { profiler });
+      a.api.subscribe(SUB);
+      for (const id of ['n1', 'n2', 'n3'])
+        a.api.mutate([
+          { table: 'notes', op: 'upsert', values: note(id, 'welcome', id) },
+        ]);
+      await a.sync();
+
+      b.api.subscribe(SUB);
+      await b.sync();
+      for (const id of ['n4', 'n5'])
+        b.api.mutate([
+          { table: 'notes', op: 'upsert', values: note(id, 'welcome', id) },
+        ]);
+      const read = () =>
+        b.api.querySnapshot({
+          sql: 'SELECT id FROM notes ORDER BY id',
+          owner: { id: 'notes', tables: ['notes'] },
+        });
+      read();
+      read();
+      await b.sync();
+
+      const report = profiler.report();
+      expect(report.rounds.length).toBeGreaterThan(0);
+      expect(report.rounds.every((round) => round.via === 'http')).toBe(true);
+      expect(
+        report.statements.some((entry) =>
+          entry.sql.startsWith('SELECT id FROM notes'),
+        ),
+      ).toBe(true);
+      expect(report.units.peak).toBe(1);
+      expect(report.units.bootstraps).toHaveLength(1);
+      expect(report.units.bootstraps[0]!.rows).toBe(3);
+      expect(report.queries).toMatchObject([
+        { id: 'notes', runs: 2, identicalRuns: 1, rows: 5 },
+      ]);
+      expect(report.writes.bursts).toEqual([{ commits: 2, tables: ['notes'] }]);
+      assertBudgets(report, { maxActiveUnits: 1, maxWriteBurst: 2 });
+      expect(() => assertBudgets(report, { maxWriteBurst: 1 })).toThrow(
+        'the profile report exceeds its budgets',
+      );
     } finally {
       await sync.dispose();
     }

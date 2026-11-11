@@ -72,7 +72,11 @@ export interface SyncWorkerOverrides {
     callback: () => void,
     delayMs: number,
   ) => () => void;
-  readonly createTransport?: (config: WorkerInitConfig) => SyncTransport;
+  /** `http` reads the current host auth set, as the default transport does. */
+  readonly createTransport?: (
+    config: WorkerInitConfig,
+    http: { readonly headers: () => Readonly<Record<string, string>> },
+  ) => SyncTransport;
   readonly createSegments?: (
     config: WorkerInitConfig,
   ) => SegmentDownloader | undefined;
@@ -398,7 +402,7 @@ export function startSyncWorkerCore(
     }
     const remote =
       overrides.createTransport !== undefined
-        ? overrides.createTransport(config)
+        ? overrides.createTransport(config, http)
         : httpSyncTransport(config.endpoints.syncUrl, http);
     const remoteSegments =
       overrides.createSegments !== undefined
@@ -702,8 +706,7 @@ async function defaultOpenDatabase(
   if (config.database.mode !== 'persistent') {
     throw new ClientSyncError(
       WORKER_FAILED_CODE,
-      "database mode 'custom' requires an openDatabase override in the " +
-        'worker bootstrap (startSyncWorker({ openDatabase }))',
+      "database mode 'custom' requires startSyncWorker({ openDatabase })",
     );
   }
   return openPersistentWasmDatabase(config.database.name, {

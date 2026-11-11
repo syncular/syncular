@@ -97,6 +97,14 @@
         "types": "./dist/native-bridge.d.ts",
         "default": "./dist/native-bridge.js"
       }
+    },
+    "./dev": {
+      "bun": "./src/dev-profiler.ts",
+      "browser": "./dist/dev-profiler.js",
+      "import": {
+        "types": "./dist/dev-profiler.d.ts",
+        "default": "./dist/dev-profiler.js"
+      }
     }
   },
   "files": [

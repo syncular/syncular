@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'A development profiler at `@syncular/client/dev`',
+    body: '`createSyncProfiler()` wraps the database, transport, realtime connector and client an app already constructs. Its report holds runs, identical runs and triggering tables per live query, statements with their time, bytes per round, active units against the server limit, bootstrap bytes per unit, and single-operation write bursts. A worker entry posts its statements and rounds to the page profiler on a `BroadcastChannel`; `startSyncWorker({ createTransport })` now receives the current-headers reader for it. Tauri and React Native clients get the query, unit and write numbers. `@syncular/testkit` takes a profiler per client, and `assertBudgets(report, budgets)` fails a test with `client.profile_budget_exceeded`. `createSyncProfiler` refuses a build without a development or test signal with `client.profiler_in_production`, and no production entry bundles it.',
+    links: [
+      {
+        href: '/tooling-profiler/',
+        label: 'Profiling your app',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title: 'A schema bump re-keys a table whose scope patterns changed',
     body: "A scope pattern change no longer needs a successor table or an app data step. A schema-version bump that changes a table's patterns recomputes every stored row's scopes from its own column values, rebuilds the row scope index, and raises the pruning horizon so no change logged under the old patterns reaches a unit of the new ones, on SQLite, Postgres, D1 and the Rust local authority. The re-key of 100,000 rows takes 685 ms on SQLite and 2.5 s on PGlite under the migration lock. A row without a value for a new pattern refuses the bump with `sync.storage.scope_value_missing`; a change at the same schema version is still refused with `sync.storage.scope_patterns_changed`.",
     links: [
