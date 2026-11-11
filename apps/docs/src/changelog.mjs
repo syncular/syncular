@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-11',
+    title: 'The JS client holds one copy of each downloaded body',
+    body: "Since 0.59.0 the JS client assembled every segment, blob and response body through a `Blob` and its `arrayBuffer()`, which kept one more full copy resident until garbage collection. It copies the chunks into one allocation of the body's size again; a 100k-row bootstrap held 151 to 153 MB during the segment download on 0.59.0, against 138 to 140 MB on 0.58.0.",
+    links: [
+      {
+        href: '/concepts-bootstrap/',
+        label: 'Bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-11-11',
     title:
       'Server indexes reach a Postgres table that has only its primary key',
     body: 'At an unchanged schema version, `PostgresServerStorage` created a newly declared `serverIndexes` entry only on a table that already had another index; on a table with only its primary key the index was never created on an existing database. The reconcile now treats a table without indexes as having none. SQLite and D1 were not affected.',

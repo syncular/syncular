@@ -54,6 +54,32 @@ describe('httpSegmentDownloader', () => {
     expect(seen[0]?.headers.authorization).toBe('Bearer host-token');
   });
 
+  test('a body streamed in chunks arrives as one buffer of its length', async () => {
+    const chunks = [
+      new Uint8Array([1, 2]),
+      new Uint8Array([3]),
+      new Uint8Array([4, 5, 6]),
+    ];
+    const downloader = httpSegmentDownloader('https://host/segments', {
+      fetch: (async (_input: URL | RequestInfo, _init?: RequestInit) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(chunk);
+              controller.close();
+            },
+          }),
+        )) as typeof fetch,
+    });
+    const bytes = await downloader({
+      segmentId: 'sha256:ab',
+      table: 'tasks',
+      requestedScopesJson: '{}',
+    });
+    expect([...bytes]).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(bytes.buffer.byteLength).toBe(6);
+  });
+
   test('a headers function is read on every request', async () => {
     const { seen, doFetch } = fakeFetch();
     let token = 'first';

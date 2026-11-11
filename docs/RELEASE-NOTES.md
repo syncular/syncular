@@ -1,5 +1,30 @@
 # Syncular release notes
 
+## 0.60.1 release notes
+
+0.60.1 fixes the reconcile of server-only indexes on Postgres
+([#125](https://github.com/syncular/syncular/issues/125)) and a JS client
+memory regression. At an unchanged
+schema version, `PostgresServerStorage` created a newly declared
+`serverIndexes` entry only on a table that already had another index: its
+index introspection lists no row for a table whose only index is its primary
+key, and `serverIndexDdl` skipped every table missing from that list. A
+missing table now counts as having no indexes, so the next open of an existing
+database creates the index. `SqliteServerStorage` and `D1ServerStorage` were
+not affected.
+
+The JS client reads a segment, blob or response body into one allocation of
+the body's size again. Since 0.59.0 it assembled the chunks through a `Blob`
+and its `arrayBuffer()`, which kept one more full copy of every body resident
+until garbage collection: a 100k-row bootstrap held 151 to 153 MB during the
+segment download, against 138 to 140 MB on 0.58.0. SSP2, the storage layout,
+and the wire version are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A
+Postgres deployment that declared a server index on such a table creates it
+on the first open after the upgrade, under the migration lock, so writes wait
+for the index build.
+
 ## 0.60.0 release notes
 
 0.60.0 moves SSP2 to wire version 4 (`docs/RFC-REPLICA-SUBSCRIPTIONS.md`,

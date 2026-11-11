@@ -273,7 +273,15 @@ async function readBody(
     }
   }
   if (received !== reported) onProgress?.(received);
-  return new Uint8Array(await new Blob(chunks).arrayBuffer());
+  // One allocation of the body's size. A Blob of the chunks and its
+  // arrayBuffer() kept one more full copy resident until garbage collection.
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export function httpSegmentDownloader(
