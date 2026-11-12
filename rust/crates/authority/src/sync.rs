@@ -394,6 +394,7 @@ pub(crate) fn handle(
     schema: &Schema,
     now: i64,
     max_units: usize,
+    cascade_cap: usize,
     request: &[u8],
 ) -> Result<Vec<u8>, AuthorityError> {
     let message = decode_message(request).map_err(|e| {
@@ -403,7 +404,7 @@ pub(crate) fn handle(
             json!({ "detail": e.detail }),
         )
     })?;
-    let result = respond(conn, schema, now, max_units, &message);
+    let result = respond(conn, schema, now, max_units, cascade_cap, &message);
     if let (Err(error), MsgKind::Request, Some(Frame::ReqHeader { client_id, .. })) =
         (&result, message.msg_kind, message.frames.first())
     {
@@ -422,6 +423,7 @@ fn respond(
     schema: &Schema,
     now: i64,
     max_units: usize,
+    cascade_cap: usize,
     message: &Message,
 ) -> Result<Vec<u8>, AuthorityError> {
     if message.msg_kind != MsgKind::Request {
@@ -660,6 +662,7 @@ fn respond(
             (index == 0).then_some(commits.as_slice()),
             &mut watermark,
             now,
+            cascade_cap,
         )?);
     }
     let keep_outcome = round_failure.is_some();

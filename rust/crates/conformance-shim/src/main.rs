@@ -536,11 +536,32 @@ fn main() {
                                     schema,
                                     Box::new(move || clock.load(Ordering::SeqCst)),
                                 )
-                                .map(|opened| {
-                                    authority = Some(opened);
-                                    json!({})
-                                })
                                 .map_err(command_error)
+                                .and_then(|mut opened| {
+                                    // A limit the authority cannot honor fails the open.
+                                    let limits = params.get("limits").and_then(Value::as_object);
+                                    for (name, value) in limits.into_iter().flatten() {
+                                        let max = value.as_u64().map(|max| max as usize);
+                                        match (name.as_str(), max) {
+                                            ("maxSubscriptionsPerRequest", Some(max)) => {
+                                                opened.set_max_subscriptions_per_request(max)
+                                            }
+                                            ("maxCascadeOperationsPerCommit", Some(max)) => {
+                                                opened.set_max_cascade_operations_per_commit(max)
+                                            }
+                                            _ => {
+                                                return Err(CommandError {
+                                                    code: "harness.unsupported_limit".to_owned(),
+                                                    message: "the local authority cannot honor this limit".to_owned(),
+                                                    details: Some(json!({ "limit": name, "value": value })),
+                                                    retryable: false,
+                                                })
+                                            }
+                                        }
+                                    }
+                                    authority = Some(opened);
+                                    Ok(json!({}))
+                                })
                             }
                             _ => Err(CommandError::new(
                                 "harness.invalid_request",

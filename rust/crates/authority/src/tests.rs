@@ -1011,6 +1011,10 @@ fn the_cascade_cap_rejects_the_originating_delete() {
         json!({ "reason": "cascade_limit" })
     );
     assert_eq!(count(&authority, "tasks"), 1001);
+    authority.set_max_cascade_operations_per_commit(1001);
+    let (status, _, _) = client.push(&mut authority, "d2", vec![delete("projects", "p1")]);
+    assert_eq!(status, PushStatus::Applied);
+    assert_eq!(count(&authority, "tasks"), 0);
 }
 
 #[test]

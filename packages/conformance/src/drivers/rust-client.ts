@@ -70,6 +70,7 @@ import type {
   RetentionOptions,
   ServerDriver,
   ServerInstance,
+  ServerLimitsOptions,
   ServerRowState,
 } from '../driver';
 import { TransportFault } from '../faults';
@@ -2040,13 +2041,19 @@ class RustLocalAuthorityInstance
   readonly #path = join(this.#dir, 'authority.db');
   #schema: DriverSchema;
   #nowMs: number;
+  readonly #limits: ServerLimitsOptions | undefined;
   #shim: ShimProcess | undefined;
   /** The remote of the attach or abandon in flight. */
   #remote: ((request: Uint8Array) => Promise<Uint8Array>) | undefined;
 
-  constructor(schema: DriverSchema, nowMs: number) {
+  constructor(
+    schema: DriverSchema,
+    nowMs: number,
+    limits?: ServerLimitsOptions,
+  ) {
     this.#schema = schema;
     this.#nowMs = nowMs;
+    this.#limits = limits;
   }
 
   get #open(): ShimProcess {
@@ -2074,6 +2081,7 @@ class RustLocalAuthorityInstance
       path: this.#path,
       schema: JSON.parse(JSON.stringify(withReferenceIndexes(schema))),
       nowMs: this.#nowMs,
+      limits: JSON.parse(JSON.stringify(this.#limits ?? {})),
     });
   }
 
@@ -2371,14 +2379,15 @@ export const rustAuthorityServerDriver: ServerDriver = {
  * The Rust authority as the scenario's server under the §12.2 profile: one
  * partition, every scope value granted, inline rows segments only, and no
  * realtime, blobs, validators or leases. A scenario that configures a server
- * option the authority lacks fails here instead of running unconfigured.
+ * option the authority lacks fails here instead of running unconfigured, and
+ * the shim refuses a limit the authority cannot honor.
  */
 export const rustAuthorityDriver: ServerDriver = {
   name: 'rust-authority',
-  capabilities: ['crdt', 'idempotency-state'],
+  capabilities: ['crdt', 'idempotency-state', 'server-limits'],
   async create(options) {
     const unsupported = (
-      ['schemaWindow', 'limits', 'signedUrls', 'leases'] as const
+      ['schemaWindow', 'signedUrls', 'leases'] as const
     ).filter((option) => options[option] !== undefined);
     if (unsupported.length > 0) {
       throw new Error(
@@ -2388,6 +2397,7 @@ export const rustAuthorityDriver: ServerDriver = {
     const instance = new RustLocalAuthorityInstance(
       options.schema,
       options.nowMs,
+      options.limits,
     );
     await instance.restart(options.schema);
     return instance;

@@ -530,8 +530,8 @@ fn enforce_references(
     schema: &Schema,
     staged: &[Staged],
     client_ops: usize,
+    cascade_cap: usize,
 ) -> Result<Vec<NewChange>, Fail> {
-    const CASCADE_CAP: usize = 1000;
     // Per row: the first and last staged write, and the columns any staged
     // upsert of the row presents (§6.11 present reference column).
     let mut order: Vec<(usize, usize, Vec<bool>)> = Vec::new();
@@ -630,7 +630,7 @@ fn enforce_references(
             // pagination by row id is unaffected by the rows already applied.
             let mut after: Option<String> = None;
             loop {
-                let limit = (CASCADE_CAP - appended + 1).min(1000);
+                let limit = (cascade_cap - appended + 1).min(1000);
                 let rows = store::children(
                     conn,
                     child,
@@ -658,8 +658,8 @@ fn enforce_references(
                     } else if scheduled.contains(&key) {
                         continue;
                     }
-                    // §6.11 cascade cap per commit (the reference default).
-                    if appended >= CASCADE_CAP {
+                    // §6.11 cascade cap per commit.
+                    if appended >= cascade_cap {
                         return Err(reference_error(
                         origin,
                         "declared-reference cascade exceeded the per-commit operation cap (§6.11)",
@@ -736,6 +736,7 @@ fn apply_commit(
     conn: &Connection,
     schema: &Schema,
     operations: &[Operation],
+    cascade_cap: usize,
 ) -> Result<Vec<NewChange>, Fail> {
     let mut changes = Vec::new();
     let mut staged = Vec::with_capacity(operations.len());
@@ -750,7 +751,13 @@ fn apply_commit(
         changes.extend(op_changes);
         staged.push(write);
     }
-    changes.extend(enforce_references(conn, schema, &staged, operations.len())?);
+    changes.extend(enforce_references(
+        conn,
+        schema,
+        &staged,
+        operations.len(),
+        cascade_cap,
+    )?);
     Ok(changes)
 }
 
@@ -771,6 +778,7 @@ pub(crate) fn process_commit(
     settlement: Option<&[(&str, i64)]>,
     watermark: &mut i64,
     created_at_ms: i64,
+    cascade_cap: usize,
 ) -> Result<Vec<Frame>, AuthorityError> {
     store::transaction(conn, || {
         if let (Some((outbox_id, _)), Some(commits)) = (outbox, settlement) {
@@ -843,7 +851,7 @@ pub(crate) fn process_commit(
         }
         conn.execute_batch("SAVEPOINT syncular_push_candidate")
             .db()?;
-        let result = match apply_commit(conn, schema, operations) {
+        let result = match apply_commit(conn, schema, operations, cascade_cap) {
             Ok(changes) => {
                 conn.execute_batch("RELEASE syncular_push_candidate").db()?;
                 let commit_seq = store::append_commit(

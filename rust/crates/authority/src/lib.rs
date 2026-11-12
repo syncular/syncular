@@ -123,6 +123,7 @@ pub struct LocalAuthority {
     state: AuthorityState,
     clock: Clock,
     max_subscriptions_per_request: usize,
+    max_cascade_operations_per_commit: usize,
 }
 
 impl LocalAuthority {
@@ -151,6 +152,7 @@ impl LocalAuthority {
             state: AuthorityState::Local,
             clock,
             max_subscriptions_per_request: 500,
+            max_cascade_operations_per_commit: 1000,
         };
         authority.state = match authority.read_meta("state")?.as_deref() {
             None | Some("local") => AuthorityState::Local,
@@ -189,6 +191,13 @@ impl LocalAuthority {
         self.max_subscriptions_per_request = max;
     }
 
+    /// §6.11: the most operations a declared-reference cascade may append to
+    /// one commit (the reference `maxCascadeOperationsPerCommit`, default
+    /// 1,000); more reject the originating delete with `cascade_limit`.
+    pub fn set_max_cascade_operations_per_commit(&mut self, max: usize) {
+        self.max_cascade_operations_per_commit = max;
+    }
+
     pub fn state(&self) -> AuthorityState {
         self.state
     }
@@ -206,6 +215,7 @@ impl LocalAuthority {
             &self.schema,
             (self.clock)(),
             self.max_subscriptions_per_request,
+            self.max_cascade_operations_per_commit,
             request,
         )
     }
