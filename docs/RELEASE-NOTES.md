@@ -1,5 +1,57 @@
 # Syncular release notes
 
+## 0.66.0 release notes
+
+0.66.0 imports SQLite images in growing transactions in both cores
+(SYNCULAR-IMAGE-IMPORT-COST-001). SSP2 and the wire version are unchanged.
+
+Each image chunk used to commit 1,024 rows, and every commit rewrote the pages
+of the table's secondary indexes. An OPFS replica that imported 67,302 + 87,267
+catalogue rows (351 MB of images, two secondary indexes per table) wrote 1.16 GB
+through the VFS in 152 transactions. The client now commits the first chunk at
+1,024 rows and doubles the chunk after each commit, up to 65,536 rows. While
+local writes to the table await replay, every chunk stays at 1,024 rows. Row
+statements inside a chunk still copy at most 1,024 rows, progress still updates
+after each statement, and each chunk commits before the client yields. A WAL
+replica runs `PRAGMA wal_checkpoint(TRUNCATE)` after the last chunk, so the
+`-wal` file no longer keeps the largest chunk's pages. Journaling,
+`synchronous=FULL` and the sync protocol are unchanged.
+
+The `bench:image-import` lane measured this import through the reference
+TypeScript client on an Apple M5 Pro:
+
+- OPFS SAH-pool replica in Chromium: 4,287 ms before, 1,645 ms after; 152
+  transactions before, 14 after; 1.16 GB written before, 317 MB after.
+- Bun file replica (WAL, `synchronous=FULL`): 6,003 ms before, 3,609 ms after;
+  the WAL ends at 24 KB instead of 2.25 MB.
+
+An image payload's `import` progress now carries `importWriteMs` and
+`importCommitMs` once its first chunk has committed: the milliseconds the
+payload's chunks spent before `COMMIT` and in committing and publishing. Both
+cores report them, and rows payloads omit them. The conformance catalog now
+expects 2 revisions for 2,049 image rows (1,024 + 1,025).
+
+Four web-client error messages are now static, and their dynamic values live in
+`details`. A rows segment whose columns differ from the generated schema
+(`sync.schema_mismatch`, SPEC §5.2) carries `table` and `column`, the index of
+the first mismatching column or `"count"` when the column counts differ. A
+SQLite image whose columns differ (`sync.schema_mismatch`, SPEC §5.3) carries
+`table`, and the Rust core produces the same message and details for both. The
+OPFS storage-busy error carries `directory` and `cause`. The invalid-image
+error no longer names which `_syncular_segment` field disagreed with the
+descriptor. A host that parsed the table, column list or directory out of the
+message text reads `details` instead.
+
+SPEC §5.3 records the chunk sequence and the measurements behind it, §7.7 the
+new progress fields, and §7.8 the rollback of the current chunk on failure. See
+[SQLite image import](https://syncular.dev/concepts-bootstrap/#the-segment).
+`bench/README.md` describes the lane.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. No API is
+removed. A host that reads `SyncProgress` sees two new optional fields on image
+payloads. A host that counted one revision per 1,024 image rows now sees fewer,
+larger revisions.
+
 ## 0.65.2 release notes
 
 0.65.2 rewrites `RealtimeSupervisor` as one state machine and fixes six
