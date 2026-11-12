@@ -1,5 +1,34 @@
 # Syncular release notes
 
+## 0.67.1 release notes
+
+0.67.1 records how a window change applies when it fails part-way, runs the
+server-limits conformance scenarios against the Rust local authority, and
+drops a stale scope-column index in it. SSP2 and the wire version are
+unchanged.
+
+Both clients apply a `setWindow` call value by value: the entering values in
+the order the caller lists them, then the leaving values, each in its own
+transaction. SPEC §4.8 now states the consequence: a failure at one value
+returns the error and keeps the values applied before it, and the same call
+repeated converges on the requested set with one registration per unit. A
+test in each core fails a widen at the third of four values and repeats the
+call.
+
+The Rust local authority takes the §6.11 cascade cap through
+`set_max_cascade_operations_per_commit` (default 1,000). The conformance shim
+forwards `maxSubscriptionsPerRequest` and `maxCascadeOperationsPerCommit` to
+the authority and refuses any other server limit with
+`harness.unsupported_limit`. The rust-authority driver declares
+`server-limits`, so `units/progress-and-list-validation`,
+`references/cascade-limit-rejects` and
+`window/shrink-beside-many-one-row-units` run with both client cores against
+it.
+
+A schema bump that changed a table's scope patterns kept the `sync_sx_` index
+of a column no pattern maps any more. The authority now drops it when it
+rebuilds the table's indexes on the bump.
+
 ## 0.67.0 release notes
 
 0.67.0 makes thousands of one-row units sync in linear time in both cores
