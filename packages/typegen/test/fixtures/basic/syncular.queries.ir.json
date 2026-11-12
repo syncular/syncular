@@ -1676,6 +1676,10 @@
             ],
             "fixedScopes": []
           }
+        ],
+        "rowKey": [
+          "taskId",
+          "peerId"
         ]
       },
       "syql": {
@@ -1723,7 +1727,11 @@
               ]
             }
           ]
-        }
+        },
+        "identity": [
+          "taskId",
+          "peerId"
+        ]
       }
     },
     {

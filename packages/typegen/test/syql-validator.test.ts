@@ -672,7 +672,8 @@ describe('SYQL schema/SQL validation', () => {
       { table: 'todos', scopes: [] },
     ]);
     expect(query?.reactive.coverage).toEqual([]);
-    expect(query?.identity).toBeUndefined();
+    // Each instance's key is projected under its own alias.
+    expect(query?.identity).toEqual(['leftId', 'rightId']);
   });
 
   test('a self-join with differing proofs falls back table-wide', () => {
@@ -1295,6 +1296,29 @@ describe('ranked materialized CTE top-N', () => {
       ),
     );
     expect(undetermined.code).toBe('SYQL6006_INVALID_SORT');
+
+    // A join on one column of the CTE's two-column identity leaves the CTE
+    // contributing both columns, and this projection lacks fts_source_id.
+    const partialKey = frontendError(() =>
+      validate(
+        ranked(
+          OUTER.replace(
+            'ranked.fts_source_id, ranked.todo_id as id',
+            't.id, ranked.todo_id',
+          )
+            .replace(
+              'from ranked\n    cross join todos t on t.id = ranked.todo_id',
+              'from todos t\n    join ranked on ranked.todo_id = t.id',
+            )
+            .replace(
+              'ranked.fts_source_id asc,\n      ranked.todo_id asc',
+              't.id asc, ranked.todo_id asc',
+            ),
+        ),
+      ),
+    );
+    expect(partialKey.code).toBe('SYQL6006_INVALID_SORT');
+    expect(partialKey.message).toContain('proven identity');
   });
 
   test('a bounded narrow stage returns the rows and order of the plain form', () => {
@@ -1401,6 +1425,116 @@ describe('ranked materialized CTE top-N', () => {
       }`),
     );
     expect(sharedAlias.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+  });
+});
+
+describe('bounded queries with a key-bound join', () => {
+  // A parent row read through its primary key, as in a catalogue search that
+  // shows each hit's parent title.
+  const search = (join: string, select = 'p.title as parent_title') =>
+    `sync query searchTodos(listId, searchQuery, titleQuery: string) by t.list_id {
+      select todos_fts._syncular_source_id as fts_source_id, t.id, t.title,
+        ${select}
+      from todos_fts
+      join todos t on t.id = todos_fts._syncular_source_id
+      ${join}
+      where todos_fts match :searchQuery and t.list_id = :listId
+      order by case when t.title = :titleQuery collate nocase then 0 else 1 end,
+        bm25(todos_fts), todos_fts._syncular_source_id asc, t.id asc
+      limit 20;
+    }`;
+  const LEFT_PARENT =
+    'left join todos p on p.id = t.assignee_id and p.list_id = t.list_id';
+
+  test('a left join on the joined primary key keeps the outer identity', () => {
+    const query = validate(search(LEFT_PARENT)).queries[0];
+    expect(query?.identity).toEqual(['ftsSourceId', 'id']);
+    expect(query?.analysis.columns.at(-1)).toMatchObject({
+      name: 'parent_title',
+      type: 'string',
+      nullable: true,
+    });
+
+    const sqlite = new Database(':memory:');
+    sqlite.run(synthesizeDdl(IR));
+    for (const [id, title, parent] of [
+      ['todo-1', 'patella', null],
+      ['todo-2', 'patella exploration', 'todo-1'],
+      ['todo-3', 'patella orphan', 'todo-9'],
+    ] as const) {
+      sqlite.run(
+        'insert into todos (id, list_id, title, position, created_at, assignee_id) values (?, ?, ?, 0, 0, ?)',
+        [id, 'list-1', title, parent],
+      );
+      sqlite.run('insert into _syncular_fts_todos_fts (source_id) values (?)', [
+        id,
+      ]);
+      sqlite.run(
+        'insert into todos_fts (rowid, _syncular_source_id, title) values ((select id from _syncular_fts_todos_fts where source_id = ?), ?, ?)',
+        [id, id, title],
+      );
+    }
+    const rows = sqlite
+      .query(query?.analysis.sql ?? '')
+      .all({
+        ':listId': 'list-1',
+        ':searchQuery': 'patella',
+        ':titleQuery': 'patella',
+      })
+      .map((row) => {
+        const { id, parentTitle } = row as Record<string, unknown>;
+        return [id, parentTitle];
+      });
+    sqlite.close();
+    expect(rows).toEqual([
+      ['todo-1', null],
+      ['todo-2', 'patella'],
+      ['todo-3', null],
+    ]);
+  });
+
+  test('extra conjuncts, parameters, and inner joins keep the proof', () => {
+    for (const join of [
+      'left join todos p on p.list_id = t.list_id and t.assignee_id = p.id',
+      'left join todos p on p.id = :titleQuery and p.list_id = t.list_id',
+      // An inner join on the key drops rows and never duplicates one.
+      'join todos p on p.id = t.assignee_id and p.list_id = t.list_id',
+      'inner join todos p on p.id == t.assignee_id and p.list_id = t.list_id',
+    ]) {
+      expect(validate(search(join)).queries[0]?.identity).toEqual([
+        'ftsSourceId',
+        'id',
+      ]);
+    }
+  });
+
+  test('a join that does not bind the joined primary key stays refused', () => {
+    for (const [join, select] of [
+      ['left join todos p on p.title = t.title', undefined],
+      [
+        'left join todos p on p.id = t.assignee_id or p.id = t.status',
+        undefined,
+      ],
+      ['left join todos p on p.id > t.assignee_id', undefined],
+      // The ON clause of another left join does not bind p.
+      [
+        'left join todos p on p.list_id = t.list_id left join notes n on n.id = t.id and p.id = t.assignee_id',
+        'p.title as parent_title, n.text',
+      ],
+      // A projected key of a null-extended relation is no identity term.
+      ['left join todos p on p.title = t.title', 'p.id as parent_id'],
+    ] as const) {
+      // A plain query, so sync coverage does not refuse first.
+      const error = frontendError(() =>
+        validate(
+          search(join, select)
+            .replace('sync query', 'query')
+            .replace(' by t.list_id', ''),
+        ),
+      );
+      expect(error.code).toBe('SYQL6006_INVALID_SORT');
+      expect(error.message).toContain('proven identity');
+    }
   });
 });
 

@@ -136,7 +136,8 @@ fn generated_self_join_sync_query_runs_with_one_coalesced_coverage_entry() {
     assert_eq!(coverage.len(), 1);
     assert_eq!(coverage[0].base.variable, "project_id");
     assert_eq!(coverage[0].units, ["p1"]);
-    assert!(generated::task_priority_peers::DESCRIPTOR.row_key.is_none());
+    // Each instance projects its key under its own alias.
+    assert!(generated::task_priority_peers::DESCRIPTOR.row_key.is_some());
 
     let snapshot =
         generated::task_priority_peers::snapshot(&mut client, &params).expect("typed snapshot");
@@ -146,6 +147,13 @@ fn generated_self_join_sync_query_runs_with_one_coalesced_coverage_entry() {
         .map(|row| (row.task_id.as_str(), row.peer_id.as_str()))
         .collect();
     assert_eq!(pairs, [("a1", "a2"), ("a2", "a1")]);
+    assert_eq!(
+        generated::task_priority_peers::row_key(&snapshot.rows[0]),
+        [
+            syncular_client::QueryValue::String("a1".to_owned()),
+            syncular_client::QueryValue::String("a2".to_owned()),
+        ]
+    );
     assert!(!snapshot.coverage.complete);
     assert_eq!(snapshot.coverage.missing.len(), 1);
 }

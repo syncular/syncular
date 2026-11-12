@@ -10,7 +10,7 @@ import {
   type QueryNamingOptions,
   type QueryReactiveMetadata,
   type QueryScopeBinding,
-  type CteScope,
+  type CteRef,
   PLAIN_REF_RE,
   type SelectItem,
   type ScopeColumn,
@@ -1737,10 +1737,10 @@ class Validator {
   }
 
   /**
-   * Proves the result identity per SELECT scope. Each physical relation of a
-   * scope contributes its primary key and each CTE relation the identity of
-   * its body, except that a physical relation joined by a required inner
-   * `ON rel.pk = cte.key` equality to a CTE is determined by that CTE row.
+   * Proves the result identity per SELECT scope (SYQL §14.2). Each CTE
+   * relation contributes the identity of its body and each physical relation
+   * its primary key, except that a relation bound by an ON equality on its
+   * primary key contributes it only when the scope projects it.
    */
   #proveIdentity(
     query: SyqlQueryDeclaration,
@@ -1776,44 +1776,14 @@ class Validator {
 
     const cleaned = stripCommentsAndStrings(sql);
     const simple = (text: string): boolean =>
-      !/\b(?:DISTINCT|GROUP\s+BY|UNION|INTERSECT|EXCEPT|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN)\b/i.test(
+      !/\b(?:DISTINCT|GROUP\s+BY|UNION|INTERSECT|EXCEPT|(?:RIGHT|FULL)(?:\s+OUTER)?\s+JOIN)\b/i.test(
         text,
       ) &&
       !/\b(?:count|sum|total|avg|min|max|group_concat)\s*\(/i.test(text) &&
       (text.match(/\bSELECT\b/gi)?.length ?? 0) === 1;
     const refs = relations.tables;
-    if (relations.cteScopes.length === 0) {
-      if (
-        !simple(cleaned) ||
-        refs.length === 0 ||
-        new Set(refs.map((ref) => ref.table)).size !== refs.length
-      ) {
-        return undefined;
-      }
-      const inferred: IdentityTerm[] = [];
-      for (const ref of refs) {
-        const primaryKey = this.#primaryKey(ref.table);
-        const column = analysis.columns.find(
-          (candidate) =>
-            primaryKey !== undefined &&
-            candidate.origin?.table === ref.table &&
-            candidate.origin.column === primaryKey &&
-            !candidate.nullable,
-        );
-        if (column === undefined || primaryKey === undefined) return undefined;
-        inferred.push({
-          field: column.langName,
-          qualifier: ref.alias,
-          column: primaryKey,
-          relation: ref.table,
-        });
-      }
-      return inferred;
-    }
-
-    // A statement with CTEs: every SELECT is a scope, and each scope proves
-    // its keys syntactically from its own projection.
-    const lastCte = relations.cteScopes.at(-1) as CteScope;
+    // Every SELECT is a scope, and each scope proves its keys syntactically
+    // from its own projection.
     if (
       relations.recursive ||
       (cleaned.match(/\bSELECT\b/gi)?.length ?? 0) !==
@@ -1825,10 +1795,12 @@ class Validator {
     const cteKeys = new Map<string, readonly string[]>();
     const scopeKeys = (
       scope: string,
-      text: string,
+      start: number,
+      end: number,
     ):
       | { readonly index: number; readonly term: Omit<IdentityTerm, 'field'> }[]
       | undefined => {
+      const text = cleaned.slice(start, end);
       if (!simple(text)) return undefined;
       const tables = refs.filter(
         (ref) => relations.scopeAt(ref.start) === scope,
@@ -1836,20 +1808,23 @@ class Validator {
       const ctes = relations.cteRefs.filter(
         (ref) => relations.scopeAt(ref.start) === scope,
       );
-      const aliases = [...tables, ...ctes].map((ref) =>
-        ref.alias.toLowerCase(),
-      );
-      if (
-        tables.length + ctes.length === 0 ||
-        new Set(tables.map((ref) => ref.table)).size !== tables.length ||
-        new Set(aliases).size !== aliases.length
-      ) {
+      const joined = [...tables, ...ctes].sort((a, b) => a.start - b.start);
+      const aliases = joined.map((ref) => ref.alias.toLowerCase());
+      if (joined.length === 0 || new Set(aliases).size !== aliases.length) {
         return undefined;
       }
-      const items = splitSelectList(text);
-      if (items === null) return undefined;
-      const projected = (qualifier: string, column: string): number =>
-        items.findIndex((item) => {
+      const selected = splitSelectList(text);
+      if (selected === null) return undefined;
+      // A star item shifts result positions, so no item locates a key.
+      const items = selected.some((item) => item.expr.endsWith('*'))
+        ? []
+        : selected;
+      const projected = (
+        qualifier: string,
+        column: string,
+        relation: string,
+      ): number => {
+        const index = items.findIndex((item) => {
           const plain = PLAIN_REF_RE.exec(item.expr);
           return (
             plain !== null &&
@@ -1859,24 +1834,46 @@ class Validator {
               : plain[1].toLowerCase() === qualifier.toLowerCase())
           );
         });
-      // Required inner-join equalities: depth-0 AND conjuncts of ON clauses.
-      const conjuncts: string[] = [];
-      const tokens = significant(lexSyqlSqlSource('query SQL', text));
-      let depth = 0;
-      let on: string[][] | undefined;
+        // Without CTEs, the schema origin of a result column also locates
+        // the key of a table the statement reads once.
+        return index >= 0 ||
+          relations.cteScopes.length > 0 ||
+          refs.filter((ref) => ref.table === relation).length !== 1
+          ? index
+          : analysis.columns.findIndex(
+              (candidate) =>
+                candidate.origin?.table === relation &&
+                candidate.origin.column === column,
+            );
+      };
+      // Depth-0 ON clauses, split into AND conjuncts and kept with the
+      // relation each one joins. An ON clause with OR, NOT, CASE, BETWEEN,
+      // COLLATE, or a subquery binds nothing.
+      type On = {
+        readonly owner: TableRef | CteRef | undefined;
+        readonly conjuncts: SyqlToken[][];
+      };
+      const ons: On[] = [];
+      let on: On | undefined;
       const flush = (): void => {
-        if (on === undefined) return;
-        const parts = on.map((part) => part.join('').toLowerCase());
         if (
-          !parts.some((part) =>
-            /\b(?:or|not|select|case|between|collate)\b/.test(part),
+          on !== undefined &&
+          !on.conjuncts.some((conjunct) =>
+            conjunct.some((token) =>
+              ['or', 'not', 'select', 'case', 'between', 'collate'].includes(
+                tokenLower(token) ?? '',
+              ),
+            ),
           )
         ) {
-          conjuncts.push(...parts.map((part) => part.replace(/\s+/g, '')));
+          ons.push(on);
         }
         on = undefined;
       };
-      for (const token of tokens) {
+      let depth = 0;
+      for (const token of significant(
+        lexSyqlSqlSource('query SQL', sql.slice(start, end)),
+      )) {
         if (token.text === ')') depth -= 1;
         const lower = tokenLower(token);
         if (
@@ -1892,39 +1889,81 @@ class Validator {
             'window',
             'inner',
             'cross',
+            'left',
           ].includes(lower ?? '')
         ) {
           flush();
-          if (lower === 'on') on = [[]];
+          if (lower === 'on') {
+            const at = start + token.span.start.offset;
+            on = {
+              owner: joined.findLast((ref) => ref.start < at),
+              conjuncts: [[]],
+            };
+          }
         } else if (on !== undefined) {
-          if (depth === 0 && lower === 'and') on.push([]);
-          else
-            on.at(-1)?.push(
-              token.kind === 'identifier' ? `${token.text} ` : token.text,
-            );
+          if (depth === 0 && lower === 'and') on.conjuncts.push([]);
+          else on.conjuncts.at(-1)?.push(token);
         }
         if (token.text === '(') depth += 1;
       }
       flush();
+      const column = (
+        side: readonly SyqlToken[],
+      ): readonly [string, string] | undefined =>
+        side.length === 3 &&
+        side[0]?.kind === 'identifier' &&
+        side[1]?.text === '.' &&
+        side[2]?.kind === 'identifier'
+          ? [side[0].text.toLowerCase(), side[2].text.toLowerCase()]
+          : undefined;
+      // A relation is bound when an ON conjunct equates its primary key with
+      // a parameter, a literal, a column of an earlier relation, or a column
+      // of a CTE. The conjunct stands in the relation's own ON clause or in
+      // the required ON clause of an inner join.
+      const bound = (ref: TableRef, primaryKey: string): boolean =>
+        ons.some(
+          ({ owner, conjuncts }) =>
+            (owner === ref || owner?.nullable === false) &&
+            conjuncts.some((conjunct) => {
+              const at = conjunct.findIndex(
+                (token) => token.text === '=' || token.text === '==',
+              );
+              const sides = [conjunct.slice(0, at), conjunct.slice(at + 1)];
+              return (
+                at > 0 &&
+                sides.some((side, index) => {
+                  const key = column(side);
+                  const other = sides[1 - index] as SyqlToken[];
+                  const source = column(other);
+                  return (
+                    key?.[0] === ref.alias.toLowerCase() &&
+                    key[1] === primaryKey.toLowerCase() &&
+                    ((other.length === 1 &&
+                      ['bind', 'number', 'string'].includes(
+                        other[0]?.kind ?? '',
+                      )) ||
+                      joined.some(
+                        (relation) =>
+                          relation.alias.toLowerCase() === source?.[0] &&
+                          (!('table' in relation) ||
+                            relation.start < ref.start),
+                      ))
+                  );
+                })
+              );
+            }),
+        );
       const keys: { index: number; term: Omit<IdentityTerm, 'field'> }[] = [];
       for (const ref of tables) {
         const primaryKey = this.#primaryKey(ref.table);
         if (primaryKey === undefined) return undefined;
-        const left = `${ref.alias}.${primaryKey}`.toLowerCase();
-        const determined = ctes.some((cte) =>
-          (cteKeys.get(cte.name) ?? []).some((key) => {
-            const right = `${cte.alias}.${key}`.toLowerCase();
-            return (
-              conjuncts.includes(`${left}=${right}`) ||
-              conjuncts.includes(`${left}==${right}`) ||
-              conjuncts.includes(`${right}=${left}`) ||
-              conjuncts.includes(`${right}==${left}`)
-            );
-          }),
-        );
-        if (determined) continue;
-        const index = projected(ref.alias, primaryKey);
-        if (index < 0) return undefined;
+        const index = projected(ref.alias, primaryKey, ref.table);
+        // A bound relation adds its key only when the scope projects it
+        // from a relation that cannot be null-extended.
+        if (index < 0 || ref.nullable) {
+          if (bound(ref, primaryKey)) continue;
+          return undefined;
+        }
         keys.push({
           index,
           term: {
@@ -1936,9 +1975,9 @@ class Validator {
       }
       for (const cte of ctes) {
         const bodyKeys = cteKeys.get(cte.name);
-        if (bodyKeys === undefined) return undefined;
+        if (bodyKeys === undefined || cte.nullable) return undefined;
         for (const key of bodyKeys) {
-          const index = projected(cte.alias, key);
+          const index = projected(cte.alias, key, cte.name);
           if (index < 0) return undefined;
           keys.push({
             index,
@@ -1955,7 +1994,7 @@ class Validator {
         continue;
       }
       const text = cleaned.slice(cte.start, cte.end);
-      const keys = scopeKeys(`cte:${cte.name}`, text);
+      const keys = scopeKeys(`cte:${cte.name}`, cte.start, cte.end);
       const items = splitSelectList(text);
       if (keys === undefined || items === null) {
         if (bounded !== undefined) unproven();
@@ -1996,7 +2035,11 @@ class Validator {
         }),
       );
     }
-    const main = scopeKeys('main', cleaned.slice(lastCte.end + 1));
+    const main = scopeKeys(
+      'main',
+      (relations.cteScopes.at(-1)?.end ?? -1) + 1,
+      sql.length,
+    );
     if (main === undefined || main.length === 0) return undefined;
     const inferred: IdentityTerm[] = [];
     for (const { index, term } of main) {

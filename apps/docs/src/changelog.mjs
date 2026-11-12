@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'A bounded query can join a table by its primary key',
+    body: "`typegen` now proves the identity of a query that joins a table by an `ON` equality on that table's primary key, such as `left join codes p on p.id = c.parent_id`. The equality matches at most one row, so the joined table adds no identity column and the query neither projects nor orders its key. Before, any `LEFT JOIN` and any table read twice left the query without identity, and a bounded query failed with `SYQL6006_INVALID_SORT`. Inner joins on the key, extra `AND` conditions and parameters or literals as the key value pass as well; a `LEFT JOIN` on a non-key column or through `OR` still fails. A self-join that projects each instance's key under its own alias now gets that pair as its row key.",
+    links: [
+      {
+        href: '/syql/#result-identity',
+        label: 'Result identity',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'SQLite images import in growing transactions',
     body: "Both cores import a SQLite image in transactions of 1,024 rows, then twice as many per transaction up to 65,536, instead of a commit every 1,024 rows. Each commit rewrote the pages of the table's secondary indexes, so 67,302 + 87,267 catalogue rows (351 MB of images) wrote 1.16 GB to an OPFS replica in 152 transactions. They now write 317 MB in 14 transactions and import in 1,645 ms instead of 4,287 ms on an Apple M5 Pro. The first transaction still holds 1,024 rows, a table with local writes awaiting replay keeps 1,024-row transactions, and journaling and `synchronous=FULL` are unchanged. Progress still updates every 1,024 rows, and an image payload's `import` progress now carries `importWriteMs` and `importCommitMs`. A WAL replica truncates its `-wal` file after the import.",
     links: [

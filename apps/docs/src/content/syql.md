@@ -229,9 +229,10 @@ Both `catalogue_codes` instances select the same window base and unit, so the
 generated descriptor holds one coverage entry and one dependency for that
 table. If one instance is unconstrained, or the instances differ in a
 parameter, operator, unit dimension, or fixed scope, generation fails with
-`SYQL6005_INVALID_SYNC_QUERY`; split the query instead. A self-join within
-one SELECT has no inferred row identity, so the result reconciles unkeyed and
-cannot use a bounded `limit`.
+`SYQL6005_INVALID_SYNC_QUERY`; split the query instead. Each instance of a
+self-join needs its key projected under its own alias, or an `ON` equality
+on its key ([Result identity](#result-identity)), before the result has a row
+identity and can use a bounded `limit`.
 
 For a table with multiple scopes, choose the unit dimension:
 
@@ -307,7 +308,36 @@ every generated runtime.
 
 The compiler infers result identity from schema primary keys, SQL lineage, and
 projection aliases. When proof is not possible, the generated query uses
-unkeyed reconciliation.
+unkeyed reconciliation, and a bounded query (`limit` or `LIMIT`) fails with
+`SYQL6006_INVALID_SORT`.
+
+The projection carries the primary key of every table the SELECT reads, and a
+bounded query's `ORDER BY` ends with those keys. A table joined by an `ON` equality on its own
+primary key is exempt: the equality matches at most one of its rows per row
+before it, so neither a `LEFT JOIN` nor an inner join of that table
+duplicates a result row. This search shows each hit's parent title:
+
+```syql
+sync query searchCodes(setId, searchQuery: string) by c.set_id {
+  select codes_fts._syncular_source_id as fts_source_id, c.id, c.title,
+    p.title as parent_title
+  from codes_fts
+  join codes c on c.id = codes_fts._syncular_source_id
+  left join codes p on p.id = c.parent_id and p.set_id = c.set_id
+  where codes_fts match :searchQuery and c.set_id = :setId
+  order by bm25(codes_fts), codes_fts._syncular_source_id asc, c.id asc
+  limit 20;
+}
+```
+
+`p.id = c.parent_id` binds `p` by its key, so the query neither projects nor
+orders `p.id`. `c` is bound as well, but it projects `c.id`, which stays in the
+identity `(ftsSourceId, id)`. The equality stands in
+the table's own `ON` clause or in an inner join's `ON` clause, compares the key
+with a parameter, a literal, or a column of an earlier table, and its `ON`
+clause holds no `OR`. Further `AND` conditions are allowed. A `LEFT JOIN` on a
+non-key column, or one that binds the key only through `OR`, leaves a nullable
+key and fails a bounded query.
 
 ## Ranked top-N
 
@@ -347,7 +377,7 @@ The rules that make this compile:
   projected column. Any other nested `LIMIT` fails with
   `SYQL6003_NONDETERMINISTIC_SQL`.
 - The outer query projects the CTE identity columns and joins the wide table
-  with `ON c.id = ranked.code_id`. That equality determines `c`, so the result
+  with `ON c.id = ranked.code_id`. That equality binds `c` by its key, so the result
   identity is `(ftsSourceId, id)` and the wide table adds no key.
 - The outer `ORDER BY` repeats the CTE order and ends with the CTE identity
   terms. The CTE's `ORDER BY` alone does not order the result.

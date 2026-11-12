@@ -811,7 +811,14 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     expect(taskPriorityPeersQuery.dependencies(params)).toEqual([
       { table: 'tasks', scopeKeys: ['project:p1'] },
     ]);
-    expect(taskPriorityPeersQuery.rowKey).toBeUndefined();
+    // Each instance projects its key under its own alias.
+    expect(
+      taskPriorityPeersQuery.rowKey?.({
+        taskId: 'a1',
+        peerId: 'a2',
+        title: 'a2',
+      }),
+    ).toEqual(['a1', 'a2']);
     const spec = {
       sql:
         taskPriorityPeersQuery.sqlFor?.(params) ?? taskPriorityPeersQuery.sql,

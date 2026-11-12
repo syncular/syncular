@@ -114,6 +114,8 @@ const PLANS: Record<
   'assignee-join': {
     backend: 'variants',
     statements: 1,
+    // members is bound by its primary key and adds no identity column.
+    identity: ['id'],
     coverage: [],
     tableWide: ['members'],
     rows: 12,
@@ -128,6 +130,8 @@ const PLANS: Record<
   'comment-thread': {
     backend: 'variants',
     statements: 1,
+    // members is bound by its primary key and adds no identity column.
+    identity: ['id'],
     coverage: [],
     tableWide: ['members'],
     rows: 2,

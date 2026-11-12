@@ -546,37 +546,65 @@ an arbitrary single-table origin.
 ### 14.2 Result identity
 
 The compiler infers result identity conservatively from schema primary keys,
-table references, joins, aliases, and projected result names. A simple
-projection containing a base table's primary key commonly produces that
-projected column as the row key.
+table references, joins, aliases, and projected result names. When identity
+cannot be proved, it is omitted and consumers use unkeyed reconciliation. A
+stable identity is required when another feature, such as a bounded dynamic
+sort, depends on it.
 
-When identity cannot be proved, it is omitted and consumers use unkeyed
-reconciliation. A SELECT scope that reads one table through several instances
-has no inferred identity, because one instance's primary key does not identify
-a joined result row. A stable identity is required when another feature, such
-as a bounded dynamic sort, depends on it.
+The compiler proves identity per SELECT scope (§8); a statement without CTEs
+is one scope. Every scope MUST be one `SELECT` without `DISTINCT`, `GROUP BY`,
+aggregates, compound operators, `RIGHT` or `FULL` joins, or subqueries;
+`WITH RECURSIVE`, a CTE column list, or any other nested statement leaves the
+query without inferred identity. Within a scope:
 
-A statement with top-level CTEs proves identity per SELECT scope (§8). Every
-scope MUST be one `SELECT` without `DISTINCT`, `GROUP BY`, aggregates,
-compound operators, outer joins, or subqueries, and MUST read each table at
-most once; `WITH RECURSIVE`, a CTE column list, or any other nested statement
-leaves the query without inferred identity. Within a scope:
-
-- a physical relation contributes its primary key, and an FTS projection its
-  `_syncular_source_id`;
+- a physical relation is bound when an `ON` conjunct equates its primary key
+  with a parameter, a literal, a column of a relation that precedes it in the
+  scope's `FROM` clause, or a column of a CTE reference. The conjunct MUST
+  stand in the relation's own `ON` clause or in the `ON` clause of an inner
+  join, MUST be a plain `=` or `==` whose key side is a qualified column, and
+  its `ON` clause MUST NOT contain `OR`, `NOT`, `CASE`, `BETWEEN`, `COLLATE`,
+  or a subquery. A schema primary key is one column, so one conjunct binds
+  it. Further `AND` conjuncts only remove matches;
+- a bound relation contributes its primary key when the scope projects it and
+  no outer join null-extends the relation (§14.1), and nothing otherwise;
+- every other physical relation contributes its primary key, and an FTS table
+  its `_syncular_source_id`;
 - a reference to a CTE contributes the identity proven for the CTE body, under
-  the body's result names;
-- a physical relation joined by a required inner `ON` conjunct
-  `rel.pk = cte.key`, where `cte.key` is part of that CTE's identity,
-  contributes nothing, because each CTE row matches at most one of its rows.
-  The conjunct MUST be a plain equality of two qualified columns in an `ON`
-  clause without `OR`, `NOT`, `CASE`, `BETWEEN`, `COLLATE`, or a subquery.
+  the body's result names. A CTE reference is never bound, so a join on one
+  column of a two-column CTE identity leaves both columns contributed.
+
+Each row of the preceding relations matches at most one row of a bound
+relation. A `LEFT JOIN` of a bound relation therefore keeps the rows, identity,
+and total order of the relations before it, and an inner join of a bound
+relation removes rows without duplicating one, so the order of the remaining
+rows stays total. A contributing relation that an outer join null-extends
+leaves the scope without identity: a bounded query with a `LEFT JOIN` on a
+non-key column, or one that binds the key only through `OR`, fails with
+`SYQL6006_INVALID_SORT`.
+
+```syql
+sync query searchCodes(setId, searchQuery: string) by c.set_id {
+  select codes_fts._syncular_source_id as fts_source_id, c.id, c.title,
+    p.title as parent_title
+  from codes_fts
+  join codes c on c.id = codes_fts._syncular_source_id
+  left join codes p on p.id = c.parent_id and p.set_id = c.set_id
+  where codes_fts match :searchQuery and c.set_id = :setId
+  order by bm25(codes_fts), codes_fts._syncular_source_id asc, c.id asc
+  limit 20;
+}
+```
+
+`c` is bound by `codes_fts` and projects `c.id`, so it contributes `id`. `p`
+is bound by `c.parent_id` and its key is not projected, so it contributes
+nothing. The identity is `(ftsSourceId, id)`.
 
 Each contributed column MUST appear in the scope's projection as a plain column
 reference, qualified unless the scope reads one relation, and every outer
-identity field MUST be non-null. A bounded
-order ends with the identity terms, qualified by the relation that contributes
-them.
+identity field MUST be non-null. In a statement without CTEs, the compiler also
+locates the primary key of a table read once through the schema origin of a
+result column, which covers unqualified and star projections. A bounded order
+ends with the identity terms, qualified by the relation that contributes them.
 
 ### 14.3 Ranked top-N
 
@@ -608,7 +636,7 @@ sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
 }
 ```
 
-The CTE identity is `(fts_source_id, code_id)`. `c` is determined by
+The CTE identity is `(fts_source_id, code_id)`. `c` is bound by
 `c.id = ranked.code_id`, so the result identity is `(ftsSourceId, id)` and the
 order ends with the two CTE identity terms. Each `codes` instance carries the
 same `set_id` proof in its own scope, so the query has one coverage entry.
