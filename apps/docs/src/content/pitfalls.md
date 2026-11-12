@@ -158,6 +158,20 @@ The server resolves scopes once per request, on every socket connect, and on eve
 
 See [Scopes & authorization](/concepts-scopes/) and [SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective).
 
+## Security lifecycle
+
+### Don't treat an empty keyring as a purge
+
+The local replica holds plaintext: the client decrypts each row when it applies it. `activateSecurity` with an empty keyring installs no keys and deletes nothing, so a replica that read a protected row keeps the decrypted value readable after the activation. Only a fresh replica that never held the key fails to apply that row. Before a device treats a replica as keyless, remove the protected rows with `purgeLocalData()`, or open a separate replica that never receives the key. To read the plain columns of a table without its key, move the protected value to a sidecar table with its own scope variable.
+
+See [Authorized local purge](/concepts-local-data-purge/) and [Client-side encryption](/concepts-encryption/#a-protected-value-shares-a-row-with-shared-data).
+
+### Do audit units with the transport gate closed
+
+Security preflight refuses `units()`, `subscribe` and `unsubscribe`, so a host cannot audit its registrations there. Audit after activation with the transport gate closed: create the client with `transportEnabled: false` (Rust: `set_transport_enabled(false)` before the first round), call `activateSecurity`, read `units()`, which lists every registration with its scope map, including revoked and failed ones, and `unsubscribe` every unit the verified actor no longer holds. A closed gate keeps local reads and unit edits available and sends nothing. `unsubscribe` keeps the unit's rows; remove the rows of a scope the actor lost with `purgeLocalData()` before the gate opens. Then open the gate (`setOffline(false)` on a browser handle, `setTransportEnabled(true)` on the direct, Tauri and React Native clients); the next round sends the reconciled registration list.
+
+See [SPEC §8.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#88-realtime-policy-and-connectivity-state) and [Authorized local purge](/concepts-local-data-purge/#race-free-security-bootstrap).
+
 ## Writes and the outbox
 
 ### Don't write unchanged values
@@ -183,6 +197,12 @@ See [Delete precedence](/concepts-conflicts/#delete-precedence).
 A rejected commit is an outcome of a successful round. `sync()` and `syncUntilIdle()` (Rust: `sync_until_idle`) resolve with a report, and `report.rejected` lists the client commit ids the server refused. The round has already rolled the commit back. A host that reads only the outcome kind keeps showing the rows from memory until a restart reads the replica. Look up each id with `commitOutcome(id)` (Rust: `commit_outcome(&id)`) for the code and the operations, and surface it.
 
 See [Outbox & commit outcomes](/reference-outbox-outcomes/).
+
+### Don't present retained failed intent as the server's row
+
+With `retainFailedCommits: true`, a rejected or conflicted commit leaves the outbox and its intended values stay in the local row. Reads return the intended values, and an outbox-based pending flag reads false, because nothing is queued. A history view that attributes such a row to the server's last writer shows the local intent under another actor's name. Mark an affected row from `commitOutcomes({ activeOnly: true })`, take the server's values and version from each retained row's `serverRow` and `serverVersion`, and refresh them with `proveCurrentBase(outcome)` before a reviewed replacement.
+
+See [Outbox & commit outcomes](/reference-outbox-outcomes/#retain-failed-local-intent).
 
 ### Don't push a value you do not want stored
 
