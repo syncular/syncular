@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: "A multi-variable unit's stored image follows all of its values",
+    body: "The sqlite-lane scope pin of a unit with several scope variables followed only the first variable in key order. A unit `{ catalogue_availability: 'offered', catalogue_content_set_id: 's1' }` took a new pin whenever any set published offered codes, so its stored image no longer matched and the server served the table row by row until the image was rebuilt. The pin is now the newest commit whose changes to the table carry every value of the unit. A scope move out of the unit through either variable still moves it, because both halves of a move carry the row's whole scope map. The SQLite, D1 and Postgres storages find it by leapfrogging between the keys' index ranges: 9 µs on SQLite with 100,000 newer commits under the first value, where the first-variable range alone would scan 64 ms.",
+    links: [
+      {
+        href: '/concepts-bootstrap/#the-segment',
+        label: 'Scope pins and stored images',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
+    title: 'Thousands of one-row units sync in linear time',
+    body: "A window over a variable mapped to a table's primary key keeps an explicit set of rows, such as the catalogue codes a device's own data references, one unit per row. Both clients excluded the rows of other units from a bootstrap clear or an eviction with one SQL term per unit and read every unit for each segment, so a first sync grew with the square of the unit count and SQLite refused the statement past about 1,000 units. The exclusion now binds one JSON parameter per variable set and skips units holding another value of the cleared variable, and a pair with no local row reads no units. 2,000 one-row units bootstrap in 277 ms instead of 4,938 ms, and one changed id costs the TypeScript client 35 ms instead of 1,850 ms. The TypeScript server computes each unit id once per pull, and the Rust local authority takes `maxSubscriptionsPerRequest` from its host.",
+    links: [
+      {
+        href: '/pitfalls/#do-keep-the-reference-rows-your-data-names-with-a-window-on-the-primary-key',
+        label: 'Keep referenced rows with a window on the primary key',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'A bounded query can join a table by its primary key',
     body: "`typegen` now proves the identity of a query that joins a table by an `ON` equality on that table's primary key, such as `left join codes p on p.id = c.parent_id`. The equality matches at most one row, so the joined table adds no identity column and the query neither projects nor orders its key. Before, any `LEFT JOIN` and any table read twice left the query without identity, and a bounded query failed with `SYQL6006_INVALID_SORT`. Inner joins on the key, extra `AND` conditions and parameters or literals as the key value pass as well; a `LEFT JOIN` on a non-key column or through `OR` still fails. A self-join that projects each instance's key under its own alias now gets that pair as its row key.",
     links: [

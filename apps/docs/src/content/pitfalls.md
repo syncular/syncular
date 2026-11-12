@@ -60,6 +60,34 @@ Check the count before the limit does. `diagnosticsSnapshot().activeUnits` (`act
 
 See [SPEC §4.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#41-units-and-the-registration-list).
 
+### Do keep the reference rows your data names with a window on the primary key
+
+Shared reference data, such as a catalogue of codes, is usually scoped by a coarse value like its release, so a device can drop a superseded release. A device that must also keep every row its own data references, in whatever release, needs those rows by primary key. Declare a second scope pattern that maps a variable to the primary key, and keep a [window](/concepts-windowing/) over that variable with the ids the local rows reference:
+
+```ts title="src/schema.ts"
+scopes: ['release:{release_id}', { pattern: 'code:{code_id}', column: 'id' }],
+```
+
+```ts title="src/references.ts"
+await client.setWindow({ variable: 'code_id' }, referencedCodeIds);
+```
+
+Each id is a one-row unit: it bootstraps once, leaves the device when the id leaves the set, and reports its own completeness. Pass the whole current set after every change of the referencing rows; `setWindow` registers only the ids that entered and evicts only the rows of ids that left. A row that another unit still covers, such as the current release, stays.
+
+Every id counts against `maxSubscriptionsPerRequest`, so raise the server limit to the largest set the heaviest device holds plus its other units. The costs grow linearly with the number of units. Measured with `bench/src/pk-unit-lane.ts` (TypeScript server and client on `bun:sqlite`, Apple M5 Pro, 20,000 seeded rows):
+
+| Units | First sync | Pull with an unchanged list (server / client) | One id changed: request / response | One id changed (server / client) | Client unit state |
+|---|---|---|---|---|---|
+| 500 | 105 ms | 2.4 ms / 1.2 ms | 18 KB / 33 KB | 7 ms / 10 ms | 61 KB |
+| 2,000 | 277 ms | 8.8 ms / 4.6 ms | 71 KB / 130 KB | 26 ms / 35 ms | 243 KB |
+| 10,000 | 1,489 ms | 40 ms / 23 ms | 351 KB / 650 KB | 128 ms / 168 ms | 1.2 MB |
+
+The Rust client against the Rust local authority (`unit-bench`, same machine) measured, at 500, 2,000 and 10,000 units: a first sync of 58, 141 and 666 ms with `subscribe_many`; a pull with an unchanged list of 1.4 / 2.5, 2.9 / 6.6 and 11.5 / 31.7 ms (authority / client); one changed id of 3.0 / 10.4, 6.4 / 29.1 and 36.8 / 191 ms. `set_window` writes one savepoint per value and takes 757 ms for 10,000 values.
+
+A pull whose list did not change carries a 32-byte digest, and its live scan reads one range of the scope index per unit (6 ms of the 40 ms at 10,000 units). A changed list travels whole, about 35 bytes per unit, and the answer carries one unit section per unit, about 65 bytes each. Clients before 0.66.2 cleared and evicted with one SQL term per other unit: a first sync grew with the square of the unit count, and SQLite refused the statement past about 1,000 units (`Expression tree is too large`). The TypeScript client threw; the Rust client marked every further unit `failed` with `sync.scope_revoked` and reported the round as successful. Upgrade both cores before you raise the limit past 500.
+
+See [SPEC §4.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#48-windowed-subscriptions).
+
 ### Do scope tables you want apart with their own variable
 
 A unit covers every table that declares all of its variables, and it has no table list. An app that wants only some of those tables on a device gives them their own scope variable and registers units on that variable where it needs them.

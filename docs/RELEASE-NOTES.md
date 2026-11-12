@@ -1,5 +1,40 @@
 # Syncular release notes
 
+## 0.66.2 release notes
+
+0.66.2 makes thousands of one-row units sync in linear time in both cores
+(SYNCULAR-EXACT-ROW-RETENTION-001) and pins a multi-variable unit's stored
+image on all of its values (SYNCULAR-UNIT-PIN-FIRST-VARIABLE-001). SSP2 and
+the wire version are unchanged.
+
+A window over a variable mapped to a table's primary key keeps an explicit
+set of rows, one unit per row, such as the catalogue codes a device's own
+data references. Both clients excluded other units' rows from a bootstrap
+clear, a purge or an eviction with one SQL term per owning unit and read
+every unit for each section and segment. A first sync grew with the square
+of the unit count, and past about 1,000 units SQLite refused the statement
+(`Expression tree is too large`). The TypeScript client threw; the Rust
+client marked every further unit `failed` with `sync.scope_revoked` while
+`sync_until_idle` returned `Ok`. Owners now bind one JSON parameter per
+variable set, owners holding another value of a cleared variable drop out, a
+pair with no matching local row reads no units, and SQLite failures in a Rust
+clear are storage errors. The Rust local authority bootstraps through an index
+per scope column instead of reading every row, and takes the unit cap through
+`set_max_subscriptions_per_request`. At 10,000 units a first sync takes
+1.5 s in TypeScript and 0.7 s in Rust (159 s in Rust before, with 9,003 units
+failed). SPEC §4.8 records the decision against a set-valued unit; the
+pitfalls page has the measured cost per unit. Raise
+`maxSubscriptionsPerRequest` past 500 only after both cores run 0.66.2.
+
+The §4.7 scope pin followed only a unit's first scope variable in key order,
+so a write under that value in any other scope moved the pin and made the
+stored image unreachable. It is now the newest commit whose changes to the
+table carry every value of the unit. Each half of a scope move carries the
+row's whole scope map, so a move out of the unit through any variable still
+moves the pin. The SQLite, D1 and Postgres storages leapfrog between the keys'
+index ranges: one seek per key and per jump, 9 µs on SQLite with 100,000
+newer commits under the first value.
+
 ## 0.66.1 release notes
 
 0.66.1 lets a bounded SYQL query join a table by its primary key

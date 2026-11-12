@@ -52,7 +52,7 @@ A window change is a set difference on the family's unit ids. A registered unit 
 - **Widen**: the new unit [bootstraps](/concepts-bootstrap/) through the image lane.
 - **Shrink**: the window releases its reference to the unit. When no explicit `subscribe` holds the unit either, it leaves the registration list and the client evicts its rows in chunks of at most 1,024 unpinned rows. The first chunk and the unregistration commit together, and coverage becomes missing immediately.
 
-Each selected value is one unit, and each unit counts against the server's 500 units per request ([Pitfalls](/pitfalls/#do-keep-the-unit-count-under-the-server-limit)). A unit that stays live costs nothing in a round where none of its rows changed. Choose the scope variable by the unit of eviction and re-entry: a month bucket evicts and re-downloads one month, a list one list. When the selected values of a window approach the limit, scope the rows by a coarser value.
+Each selected value is one unit, and each unit counts against the server's 500 units per request ([Pitfalls](/pitfalls/#do-keep-the-unit-count-under-the-server-limit)). A unit that stays live costs nothing in a round where none of its rows changed. Choose the scope variable by the unit of eviction and re-entry: a month bucket evicts and re-downloads one month, a list one list. When the selected values of a window approach the limit, scope the rows by a coarser value or raise the limit: a window over a variable mapped to the primary key keeps an explicit set of rows, one unit per row, and [Pitfalls](/pitfalls/#do-keep-the-reference-rows-your-data-names-with-a-window-on-the-primary-key) lists its measured cost per unit.
 
 ## Eviction is a local storage decision
 

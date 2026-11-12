@@ -681,7 +681,9 @@ request past a cap fails request-level with `sync.limit_exceeded`;
 server reads a compressed body only up to the cap, so a small gzip body
 never inflates past it. A socket round assembled past the byte cap has no
 acceptable end, so the server drops the connection (§8.7). The reference
-server's defaults are 16 MiB and 500 units.
+server's defaults are 16 MiB and 500 units. Both caps are host configuration:
+the TS server reads `limits`, and the Rust local authority (§12) takes the
+unit cap through `set_max_subscriptions_per_request`.
 
 Response-side semantic expectations that are not `opt()` ties (e.g.
 `reasonCode` emptiness for `active`, `fenced` emptiness when not
@@ -2161,13 +2163,21 @@ Bootstrap is **resumable, pinned, and paged**:
 - A table eligible for the sqlite lane (§5.3: the client advertised
   `accept` bit 2 and the table has no encrypted column) is served at its
   **scope pin** when the bootstrap reaches the table's start: the newest
-  commit whose change to the table carries the unit's value of its first
-  scope variable (keys sorted) in the inverted change-scope index, raised to
-  `horizonSeq` and capped at `maxCommitSeq`. That index is the candidate set
-  of the live scan, so no change the unit would receive for the table lies
-  in `(scope pin, maxCommitSeq]`: the snapshot at the scope pin is the
-  table's snapshot at `maxCommitSeq`. The scope pin keeps a stored image's
-  reuse key (§5.3) stable across commits outside the scope. The server
+  commit whose changes to the table carry every value of the unit's scope
+  map in the inverted change-scope index, raised to `horizonSeq` and capped
+  at `maxCommitSeq`. A change the unit receives for the table carries all of
+  the unit's values in its stored scopes (§3.1), and so does each half of a
+  scope move that takes a row into or out of the unit, whichever variable
+  moves (§2.2: the delete under the old scopes, the upsert under the new). No
+  such change lies in `(scope pin, maxCommitSeq]`, so the snapshot at the
+  scope pin is the table's snapshot at `maxCommitSeq`. The index records
+  values per commit and table, so a commit whose changes carry the values
+  only jointly also moves the pin; that costs a stored image's reuse and
+  never a row. The scope pin keeps a stored image's reuse key (§5.3) stable
+  across commits outside the scope, including commits that share one of a
+  multi-variable unit's values. A storage reads it with one index seek per
+  key and per jump between the keys' ranges, never a scan of the commits
+  above it. The server
   computes the scope pin at every sqlite-lane table start; a resume token's
   `asOfCommitSeq` never becomes an image reuse key.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
@@ -2244,6 +2254,24 @@ mutation of a registered unit:
 - **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
   re-bootstrapped nor evicted.
 
+**Primary-key windows.** A window whose variable a table maps to its primary
+key (`{ pattern: 'code:{code_id}', column: 'id' }`) keeps an explicit,
+changing set of that table's rows: one unit per key, each a one-row unit with
+its own bootstrap, eviction and completeness verdict. Every unit counts
+against `maxSubscriptionsPerRequest` (§1.7). The costs grow linearly with the
+unit count: per registered unit, a pull that refers to the list costs both
+cores a few microseconds, and a pull whose list travels carries the unit's
+`UNIT` frame and its unit section. The cap is the host's bound on that cost.
+DECISION (recorded): no set-valued unit. Measured at 500, 2,000 and
+10,000 one-row units, every cost stayed linear once both clients stopped doing
+per-owner work and the Rust local authority stopped reading every row per
+unit (`bench/src/pk-unit-lane.ts`, `unit-bench`). A set-valued unit would
+still read one scope-index range per key in the live scan. Following §6.11 declared
+references does not fit either: the generator refuses a reference between
+tables whose scope patterns differ, and a parent row's stored scopes do not
+change when a child starts or stops referencing it, so no logged change
+would carry the parent into or out of a unit.
+
 A window base contains its selected variable and any fixed scope variables
 requested by the query. It need not contain every variable declared by a
 table. The server authorizes all requested variables, and a unit naming
@@ -2288,6 +2316,14 @@ unregistration in **one atomic local transaction** (E3):
 - discard any sync round prepared before the shrink, as an unsubscribe
   does: its `SUB_END` would otherwise mark a re-added unit complete
   without the rows this eviction removed.
+
+**Owner exclusion stays bounded.** A scoped delete (eviction, the §3.3
+purge, the §5.6 first-page clear) excludes the rows another unit owns. A
+client MUST NOT grow the delete statement by one term per owning unit, and
+MUST NOT read every unit to clear a pair that matches no local or retained
+row: a replica holds thousands of units, and SQLite refuses an expression
+deeper than 1,000 terms. An owner that holds a different value of a
+variable the deleted pair names owns none of its rows.
 
 A unit without a persisted echo (no `SUB_END` processed since it was
 registered) evicts nothing: the client never recorded which rows it holds.
