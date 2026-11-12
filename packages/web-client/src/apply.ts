@@ -208,20 +208,25 @@ export function validateSegmentColumns(
   table: CompiledClientTable,
   segment: RowsSegment,
 ): void {
+  const column =
+    segment.columns.length !== table.columns.length
+      ? 'count'
+      : table.columns.findIndex(
+          (expected, i) =>
+            expected.name !== segment.columns[i]?.name ||
+            expected.type !== segment.columns[i]?.type ||
+            expected.nullable !== segment.columns[i]?.nullable,
+        );
   if (
     segment.table !== table.name ||
     segment.schemaVersion !== schema.version ||
-    segment.columns.length !== table.columns.length ||
-    table.columns.some(
-      (expected, i) =>
-        expected.name !== segment.columns[i]?.name ||
-        expected.type !== segment.columns[i]?.type ||
-        expected.nullable !== segment.columns[i]?.nullable,
-    )
+    column !== -1
   )
     throw new ClientSyncError(
       'sync.schema_mismatch',
       'rows segment columns do not match the generated schema (§5.2)',
+      false,
+      column === -1 ? { table: table.name } : { table: table.name, column },
     );
 }
 
@@ -492,6 +497,8 @@ export async function applySqliteSegment(
       throw new ClientSyncError(
         'sync.schema_mismatch',
         'sqlite segment columns do not match the generated schema (§5.3)',
+        false,
+        { table: table.name },
       );
     }
 

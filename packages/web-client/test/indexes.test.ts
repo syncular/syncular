@@ -23,10 +23,16 @@ import {
   encodeMessage,
   encodeRowsSegment,
   PROTOCOL_WIRE_VERSION,
+  type RowColumn,
 } from '@syncular/core';
 import { createHash } from 'node:crypto';
-import { applySqliteSegment, upsertLocalRow } from '../src/apply';
+import {
+  applySqliteSegment,
+  upsertLocalRow,
+  validateSegmentColumns,
+} from '../src/apply';
 import { SyncClient } from '../src/client';
+import { ClientSyncError } from '../src/errors';
 import type { SyncProgress } from '../src/progress';
 
 const SCHEMA: ClientSchema = {
@@ -409,6 +415,85 @@ describe('CREATE INDEX subset — client local DDL', () => {
           { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
         ),
       ).rejects.toThrow();
+    } finally {
+      image.close();
+      db.close();
+    }
+  });
+
+  test('segment column mismatches carry the table and column in details', async () => {
+    const compiled = compileClientSchema(SCHEMA);
+    const table = compiled.tables.get('tasks');
+    if (!table) throw new Error('missing tasks');
+    const columns: RowColumn[] = table.columns.map(
+      ({ name, type, nullable }) => ({ name, type, nullable }),
+    );
+    const validate = (segmentColumns: RowColumn[]): unknown => {
+      try {
+        validateSegmentColumns(compiled, table, {
+          table: 'tasks',
+          schemaVersion: 1,
+          columns: segmentColumns,
+          blocks: [],
+        });
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+    const renamed = validate(
+      columns.map((column, i) =>
+        i === 1 ? { ...column, name: 'other' } : column,
+      ),
+    );
+    expect(renamed).toBeInstanceOf(ClientSyncError);
+    if (!(renamed instanceof ClientSyncError)) return;
+    expect(renamed.code).toBe('sync.schema_mismatch');
+    expect(renamed.message).toBe(
+      'rows segment columns do not match the generated schema (§5.2)',
+    );
+    expect(renamed.details).toEqual({ table: 'tasks', column: 1 });
+    const short = validate(columns.slice(1));
+    expect(short).toBeInstanceOf(ClientSyncError);
+    if (!(short instanceof ClientSyncError)) return;
+    expect(short.details).toEqual({ table: 'tasks', column: 'count' });
+
+    const db = new BunClientDatabase();
+    const image = new BunClientDatabase();
+    try {
+      ensureLocalSchema(db, compiled);
+      image.exec(
+        'CREATE TABLE tasks(id TEXT PRIMARY KEY, other TEXT, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL)',
+      );
+      image.exec(
+        'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+      );
+      image.exec(
+        "INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',0)",
+      );
+      const failure = await applySqliteSegment(
+        db,
+        compiled,
+        table,
+        image.db.serialize(),
+        {
+          table: 'tasks',
+          rowCount: 0,
+          asOfCommitSeq: 7,
+          scopeDigest: 'digest',
+        },
+        { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(ClientSyncError);
+      if (!(failure instanceof ClientSyncError)) return;
+      expect(failure.code).toBe('sync.schema_mismatch');
+      expect(failure.message).toBe(
+        'sqlite segment columns do not match the generated schema (§5.3)',
+      );
+      expect(failure.details).toEqual({ table: 'tasks' });
     } finally {
       image.close();
       db.close();

@@ -7995,6 +7995,62 @@ fn image_chunks_reject_null_primary_keys() {
 }
 
 #[test]
+fn segment_column_mismatches_carry_the_table_and_column() {
+    let mut client = client();
+    let table = client.schema.table("tasks").unwrap().clone();
+    let scopes = vec![("project_id".into(), vec!["p1".into()])];
+    let mut renamed = table.wire_columns.clone();
+    renamed[1].name = "other".into();
+    let mut short = table.wire_columns.clone();
+    short.pop();
+    for (columns, column) in [
+        (renamed, serde_json::json!(1)),
+        (short, serde_json::json!("count")),
+    ] {
+        let segment = RowsSegment {
+            table: "tasks".into(),
+            schema_version: 1,
+            columns,
+            blocks: Vec::new(),
+        };
+        match client.apply_segment(&table, &segment, true, &scopes, &[]) {
+            Err(SectionError::Transport(error)) => {
+                assert_eq!(error.code, "sync.schema_mismatch");
+                assert_eq!(
+                    error.message,
+                    "rows segment columns do not match the generated schema (§5.2)"
+                );
+                assert_eq!(
+                    error.details,
+                    Some(serde_json::json!({ "table": "tasks", "column": column }))
+                );
+            }
+            _ => panic!("expected sync.schema_mismatch"),
+        }
+    }
+
+    let image = Connection::open_in_memory().unwrap();
+    image
+        .execute_batch(
+            "CREATE TABLE tasks(id TEXT PRIMARY KEY, other TEXT, _syncular_version INTEGER NOT NULL);
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',0);",
+        )
+        .unwrap();
+    match client.apply_sqlite_image(&image, &table, true, &scopes, &[], 0, 7, "digest") {
+        Err(SectionError::Transport(error)) => {
+            assert_eq!(error.code, "sync.schema_mismatch");
+            assert_eq!(
+                error.message,
+                "sqlite segment columns do not match the generated schema (§5.3)"
+            );
+            assert_eq!(error.details, Some(serde_json::json!({ "table": "tasks" })));
+        }
+        _ => panic!("expected sync.schema_mismatch"),
+    }
+}
+
+#[test]
 fn import_chunks_with_unique_constraints_match_full_pending_replay() {
     for images in [false, true] {
         let schema = json!({"version":1,"tables": (["tasks", "notes"].map(|name| json!({

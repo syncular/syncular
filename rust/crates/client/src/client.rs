@@ -9615,19 +9615,30 @@ impl SyncClient {
         // order, names, types, nullability; mismatch is fatal. §5.11: the
         // server sends the WIRE types (bytes for an encrypted column), so
         // validate against wire_columns.
-        let matches = segment.table == table.name
-            && segment.schema_version == self.schema.version
-            && segment.columns.len() == table.wire_columns.len()
-            && segment
+        let column = if segment.columns.len() != table.wire_columns.len() {
+            Some(Value::from("count"))
+        } else {
+            segment
                 .columns
                 .iter()
                 .zip(table.wire_columns.iter())
-                .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.nullable == b.nullable);
-        if !matches {
-            return Err(SectionError::Abort(
-                "sync.schema_mismatch".to_owned(),
-                "segment column table does not match the generated schema (§5.2)".to_owned(),
-            ));
+                .position(|(a, b)| a.name != b.name || a.ty != b.ty || a.nullable != b.nullable)
+                .map(Value::from)
+        };
+        if segment.table != table.name
+            || segment.schema_version != self.schema.version
+            || column.is_some()
+        {
+            let mut details = Map::new();
+            details.insert("table".to_owned(), Value::from(table.name.as_str()));
+            if let Some(column) = column {
+                details.insert("column".to_owned(), column);
+            }
+            return Err(SectionError::Transport(TransportError {
+                code: "sync.schema_mismatch".to_owned(),
+                message: "rows segment columns do not match the generated schema (§5.2)".to_owned(),
+                details: Some(Value::Object(details)),
+            }));
         }
         let mut applied = 0u32;
         let empty = Vec::new();
@@ -9895,10 +9906,12 @@ impl SyncClient {
         let mut expected: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
         expected.push("_syncular_version");
         if names.len() != expected.len() || names.iter().zip(expected.iter()).any(|(a, b)| a != b) {
-            return Err(SectionError::Abort(
-                "sync.schema_mismatch".to_owned(),
-                "sqlite segment columns do not match the generated schema (§5.3)".to_owned(),
-            ));
+            return Err(SectionError::Transport(TransportError {
+                code: "sync.schema_mismatch".to_owned(),
+                message: "sqlite segment columns do not match the generated schema (§5.3)"
+                    .to_owned(),
+                details: Some(serde_json::json!({ "table": table.name })),
+            }));
         }
 
         if primary_keys != vec![table.primary_key.clone()] {

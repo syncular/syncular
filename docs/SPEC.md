@@ -2483,7 +2483,11 @@ exactly `byteLength`, a row `serverVersion` < 1, row-codec violations
 end marker, or trailing bytes after it — are `sync.invalid_request`.
 `sync.schema_mismatch` is reserved for the column-table-vs-generated-
 schema comparison above, which only the receiver can perform: a
-standalone segment decode (tooling, vectors) never produces it.
+standalone segment decode (tooling, vectors) never produces it. Its message
+is static, `rows segment columns do not match the generated schema (§5.2)`;
+`details.table` names the local table, and `details.column` holds the index of
+the first mismatching column, or `"count"` when the column counts differ (it
+is absent when only the table name or `schemaVersion` differs).
 
 ### 5.3 SQLite segments (`mediaType = sqlite`) — premier path
 
@@ -2559,7 +2563,8 @@ semantics plus version seeding. Before applying, the client MUST:
 3. validate the data table's column names **and order** against the
    generated schema for (`table`, `schemaVersion`) plus the trailing
    `_syncular_version` — a mismatch is fatal (`sync.schema_mismatch`),
-   exactly the §5.2 column-table rule (validate, never infer). Declared
+   exactly the §5.2 column-table rule (validate, never infer); the message is
+   static and `details.table` names the table. Declared
    affinities and NOT NULL constraints are producer conformance rules;
    receivers MAY additionally check them.
 
