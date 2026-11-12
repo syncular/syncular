@@ -16,6 +16,22 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-12',
+    title:
+      'The realtime supervisor keeps one socket owner through flaps and close',
+    body: 'The realtime supervisor now runs one attempt at a time. After an offline, background or protected phase, the next attempt waits until the interrupted attempt and its disconnect have settled, and a socket that attempt opens late is disconnected first. Before, the supervisor could start a successor while the old connect was outstanding and did not wait for an asynchronous `disconnectRealtime()`. A socket lost during the catch-up round now schedules a retry, a host signal during the first diagnostics read no longer leaves the supervisor idle, and offline/online flaps keep the retry count and delay instead of reconnecting at zero delay. `stop()` returns a promise that settles after the attempt, its disconnect and any driven round, and the installed `close()` waits for it. A failed disconnect, an unreadable first diagnostics read or a throwing timer cancel latches phase `unsupported` with `failureCode` `realtime.disconnect_failed`, `realtime.diagnostics_unavailable` or `realtime.cleanup_failed`, and `close()` rejects with a `RealtimeSupervisorError` of that code. HTTP rounds now run on each `online` report and each foreground return whenever no socket is connected, one round at a time.',
+    links: [
+      {
+        href: '/platform-web-realtime/#install-the-supervisor',
+        label: 'Install the supervisor',
+      },
+      {
+        href: '/platform-web-realtime/#close-and-handle-teardown-failures',
+        label: 'Close and handle teardown failures',
+      },
+    ],
+  },
+  {
     date: '2026-11-11',
     title: 'The realtime supervisor syncs over HTTP when the socket is refused',
     body: 'A fetch refused with `causeKind` `network` or `connect` schedules no retry, and the realtime supervisor ran the next round only on an `online` report or after a socket connected. Behind a proxy that refuses WebSockets the browser stays online, so after one refused `/sync` request no round followed until reload. The supervisor now also runs `syncUntilIdle()` once on each failed connect attempt of its retry schedule and on each return to the foreground while a retry is pending or realtime is unsupported. The Tauri and React Native hosts install the same supervisor. Only phase `connected` means a socket carries the rounds, and an `attempt` of 1 or more tells a host that the last socket attempt failed.',

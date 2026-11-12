@@ -81,8 +81,7 @@ function scheduler() {
 }
 
 async function settle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 30; index += 1) await Promise.resolve();
 }
 
 describe('realtime supervisor through the supplied React client', () => {

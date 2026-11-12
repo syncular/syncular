@@ -49,7 +49,12 @@ installRealtimeSupervisor(handle, {
 The supervisor owns the initial connect, reconnect after a socket close,
 bounded retry with jitter, suspension while the browser is offline,
 cancellation on close, and an explicit catch-up before it publishes
-`connected`. `browserConnectivitySignal()` observes online and offline;
+`connected`. It runs one attempt at a time: after a suspension, the next
+attempt waits until the interrupted one and its disconnect have settled, so two
+sockets never overlap. A socket lost during the catch-up round schedules a
+retry. The retry count and its delay survive offline, background, and
+protected phases, so a flapping network resumes on the same backoff.
+`browserConnectivitySignal()` observes online and offline;
 `documentLifecycleSignal()` observes visibility and page lifecycle. Every tab
 of a multi-tab handle shares the leader's socket, so `sharedTransport: true`
 keeps that socket open while this tab is hidden; without it, a hidden tab
@@ -58,10 +63,11 @@ browser connectivity stays connectable. Only host evidence suspends the
 supervisor: the connectivity signal, a closed
 [transport gate](#transport-gate), the protection signal, and a hidden page
 without `sharedTransport`. A sync round that failed because the server was
-unreachable leaves it running. While nothing suspends the supervisor, it runs
-`syncUntilIdle()` over HTTP on each `online` report, on each failed connect
-attempt of its retry schedule, and on each return to the foreground while a
-retry is pending or realtime is unsupported or disabled. A commit written while
+unreachable leaves it running. While nothing suspends the supervisor and no
+socket is connected, it runs `syncUntilIdle()` over HTTP on each `online`
+report, on each failed connect attempt of its retry schedule, and on each
+return to the foreground. It runs one such round at a time; reports that arrive
+during a round add one round after it. A commit written while
 the network was down pushes when it returns, and a network that refuses
 WebSockets (a proxy without upgrade support) still syncs on the retry schedule.
 
@@ -93,6 +99,45 @@ they go over HTTP. An `attempt` of 1 or more means the last socket attempt
 failed, so a status line can say that sync runs without realtime.
 
 ::checkpoint[`renderConnectionState` fires on each change of the phase, the attempt count, or the retry delay; `realtimeSupervisorSnapshot(handle)` reads the current state.]
+::::
+
+::::step{title="Close and handle teardown failures" time="2 min"}
+`handle.close()` stops the supervisor first. It resolves after the attempt in
+flight, its disconnect, and any HTTP round the supervisor started have
+settled, and only then closes the client, so a socket that opens late is
+released before the close finishes. Repeated and concurrent `close()` calls
+return the same promise.
+
+A failure the supervisor cannot recover from latches phase `unsupported` with
+a `failureCode`, stops further connect attempts, and makes `close()` reject
+with a `RealtimeSupervisorError` carrying that code:
+
+| `failureCode` | Cause |
+|---|---|
+| `realtime.disconnect_failed` | `disconnectRealtime()` rejected; `disconnectCauseCode` holds its Syncular code or `unknown` |
+| `realtime.diagnostics_unavailable` | The first `diagnosticsSnapshot()` read failed |
+| `realtime.cleanup_failed` | A timer cancel or signal unsubscribe threw |
+
+```ts title="src/session.ts"
+import { RealtimeSupervisorError } from '@syncular/client';
+
+try {
+  await handle.close();
+} catch (error) {
+  if (error instanceof RealtimeSupervisorError) {
+    reportSyncFailure(error.code, error.disconnectCauseCode);
+  }
+  throw error;
+}
+```
+
+The error never carries a transport message or the original error. When the
+client close fails as well, the rejection keeps the supervisor's `code` and
+adds `stopFailureCode` and `closeFailureCode`. A host that drives a
+`RealtimeSupervisor` itself awaits `supervisor.stop()`, which settles and
+rejects the same way.
+
+::checkpoint[`await handle.close()` resolves, and `realtimeSupervisorSnapshot(handle).phase` reads `stopped`.]
 ::::
 
 ::::step{title="Authenticate and rotate" time="2 min"}

@@ -150,17 +150,21 @@ installRealtimeSupervisor(handle, {
 });
 ```
 
-It owns one connection attempt, retries initial failure and later socket loss
-with bounded exponential jitter, suspends while offline/background/protected,
-runs `syncUntilIdle()` before reporting `connected`, and cancels before
-`close()`.
+It owns one connection attempt at a time, retries initial failure and later
+socket loss with bounded exponential jitter, suspends while
+offline/background/protected without resetting that backoff, runs
+`syncUntilIdle()` before reporting `connected`, and settles its attempt and
+disconnect before `close()` closes the client. A failed disconnect, an
+unreadable first diagnostics read, or a throwing timer cancel latches phase
+`unsupported` with a `failureCode`, and `close()` rejects with a
+`RealtimeSupervisorError` of that code.
 
 Multi-tab handles share ONE leader socket across every tab, so pass
 `sharedTransport: true` (the templates do): backgrounding this tab then
 leaves the shared socket alone — a sibling tab may still be visible — while
 offline and protection continue to suspend. Each client accepts exactly one
 supervisor for its lifetime; a second `installRealtimeSupervisor` call
-throws. `realtimeSupervisorSnapshot()` and
+throws `realtime.supervisor_already_installed`. `realtimeSupervisorSnapshot()` and
 `subscribeRealtimeSupervisor()` expose only `phase`, `attempt`, and the bounded
 library delay for UI/diagnostics—never raw transport prose or identities.
 

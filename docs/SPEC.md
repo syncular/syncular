@@ -803,13 +803,15 @@ work. A failed round is not connectivity evidence for a host loop: the
 TypeScript realtime supervisor takes its `offline` state from the host's
 connectivity signal alone. A network can refuse the socket while the host
 stays online (a proxy without WebSockets), so the supervisor re-arms the drive
-on three events, with or without realtime: each `online` report from the
-connectivity signal, each failed attempt of its realtime backoff schedule, and
-each return to the foreground while no attempt starts at once (phase
-`retrying` or `unsupported`). Each event drives `syncUntilIdle` once over
-HTTP while nothing suspends the supervisor. Only phase `connected` means a
-socket carries the rounds; in every other phase the rounds go over HTTP, and
-`attempt` 1 or more means the last socket attempt failed.
+on three events while no socket is connected, with or without realtime: each
+`online` report from the connectivity signal, each failed connect attempt of
+its realtime backoff schedule, and each return to the foreground. Each event
+drives `syncUntilIdle` once over HTTP while nothing suspends the supervisor.
+Driven rounds are single-flight: the events that arrive during a round add one
+round after it. A connected socket carries the rounds, so these events drive
+none while it is connected. Only phase `connected` means a socket carries the
+rounds; in every other phase the rounds go over HTTP, and `attempt` 1 or more
+means the last socket attempt failed.
 `transport.redirect`, `transport.request_too_large`, and
 `transport.response_too_large` describe a configuration the client cannot
 repair by repeating the request, so they schedule no intent. A silence timeout of a segment fetch is retryable like any
@@ -6586,6 +6588,36 @@ pinned, never interpreted.
   round and triggers another pull. Aggregate drive-to-idle helpers
   (e.g. a conformance driver's `syncUntilIdle`) are part of the
   driver/host contract, not the protocol.
+- **The TypeScript realtime supervisor** (`installRealtimeSupervisor`, used
+  by the browser, Tauri and React Native hosts) owns one attempt at a time.
+  An attempt connects, then runs `syncUntilIdle`; only a socket still open
+  after that catch-up round publishes phase `connected`, and a socket lost
+  during the catch-up retries. A suspension (offline, background without
+  `sharedTransport`, protected) disconnects and voids the attempt in flight.
+  No successor attempt starts until that attempt and its disconnect have
+  settled, and a socket the voided attempt opens late is disconnected first.
+  A failed, lost or interrupted attempt counts one retry. The retry count and
+  its pending delay survive a suspension, so connectivity flaps resume on the
+  same backoff, and loss reports beside a pending retry do not count again; a
+  completed catch-up resets both. Initialization reads the client diagnostics
+  once and survives host signals that arrive meanwhile. `stop()` returns a
+  promise that settles after the attempt, its disconnect and any driven round
+  have settled; repeated and reentrant calls share it, and so do calls of the
+  installed `close()`.
+- **Supervisor failures latch.** A rejected `disconnectRealtime`, an
+  unreadable diagnostics snapshot, or a host timer cancel that throws latches
+  phase `unsupported` with `failureCode` `realtime.disconnect_failed`,
+  `realtime.diagnostics_unavailable` or `realtime.cleanup_failed` (§10.3).
+  The supervisor then makes no further attempt and releases any open socket;
+  `online` and foreground reports still drive HTTP rounds. `stop()` rejects
+  with the latest latched code, or with `realtime.cleanup_failed` when only a
+  subscription or cancel threw during stop. The rejection also names every
+  failure of the lifetime in its own field (`cleanupFailureCode`,
+  `diagnosticsFailureCode`, `disconnectCauseCode`) and keeps a cause only as
+  a Syncular code, `unknown` otherwise, never its message. A host recovers by
+  closing the client and creating a new one. The installed `close()` closes
+  the client after a failed stop too; when both fail it rejects with the stop
+  code plus `stopFailureCode` and `closeFailureCode`.
 - **Catch-up replays the log.** A recovery pull whose replica cursor lies
   at or above `horizonSeq` is answered from the log in live sections of at
   most `limitCommits` changes, one round after another; only a replica
@@ -7335,7 +7367,13 @@ durable local-recovery receipt is malformed or unreadable; non-retryable and
 sanitized before application code], `client.invalid_host_response` [a Worker or native
 command bridge returned a malformed value for a strictly decoded public
 result; non-retryable and sanitized before application code],
-`client.realtime_cancelled` [§8.4 — disconnect or close invalidated an
+`realtime.disconnect_failed`, `realtime.diagnostics_unavailable`,
+`realtime.cleanup_failed` [§8.4: the TypeScript realtime supervisor latched a
+failed disconnect, an unreadable diagnostics snapshot, or a host timer or
+subscription cancel that threw; client-local, non-retryable, raised by
+`stop()` and published as the snapshot's `failureCode`],
+`realtime.supervisor_already_installed` [§8.4: a second supervisor was
+installed on one client], `client.realtime_cancelled` [§8.4 — disconnect or close invalidated an
 in-flight TypeScript realtime connector before its socket could become active;
 client-local, non-wire, and sanitized], `client.realtime_lost` [§8.8 — a
 connected socket ended without a deliberate disconnect and the close path
