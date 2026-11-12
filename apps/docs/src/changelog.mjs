@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'A requested drive reaches every tab',
+    body: "`handle.onSynced` heard only automatic drives. A drive a tab requested through `handle.syncUntilIdle()` resolved in that tab alone, so after a failed endpoint recovered through one tab's drive, the leader and the other tabs stayed unconfirmed until the next automatic drive. The worker now reports the end of every drive to idle, automatic or requested, to every handle's `onSynced` and to the leader tab's configuration `onSynced`.",
+    links: [
+      {
+        href: '/platform-web-realtime/#realtime-policy',
+        label: 'Handle events',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'Every tab sees the end of each automatic drive',
     body: "The worker posts the summary or error of each automatic `syncUntilIdle` drive, and the leader relays it to every follower, but only the leader tab's configuration `onSynced` received it. `handle.onSynced(listener)` now delivers it in the leader and every follower tab and returns an unsubscribe function. A follower drops the result of a previous leader by its epoch, and a listener stays registered across a promotion.",
     links: [

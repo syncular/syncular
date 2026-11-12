@@ -180,14 +180,18 @@ events it needs for rendering. They fire in the tab whose worker raised the
 event, which is the leader tab.
 
 `handle.onSynced(listener)` fires in every tab, leader and follower, at the
-end of each automatic drive with `{ summary }` or `{ error }`, and returns an
-unsubscribe function. A follower receives the drives of the leader it is bound
+end of each drive to idle in the leader worker with `{ summary }` or
+`{ error }`, and returns an unsubscribe function. Automatic drives and drives a
+tab requests through `handle.syncUntilIdle()` both count, so one tab's drive
+confirms the state in every tab; the requesting tab also receives the outcome
+from its call. A follower receives the drives of the leader it is bound
 to: the leader stamps every relayed event with its epoch, and the follower
 drops an event of a previous leader. A drive that ended before the tab bound is
 not replayed, and an idle leader runs no drive, so a tab that joins may hear
 nothing for minutes. A follower that needs evidence when it joins calls
-`handle.syncUntilIdle()` once: the leader runs the round and the call resolves
-with its summary or rejects with its error. That outcome is current; a
+`handle.syncUntilIdle()` once: the leader runs the drive, the call resolves
+with its summary or rejects with its error, and every tab's `onSynced` hears
+it. That outcome is current; a
 replayed one could predate a lost connection. A listener stays
 registered when its tab promotes and then receives the drives of the tab's own
 worker. The Tauri and React Native hosts do not expose `onSynced`.

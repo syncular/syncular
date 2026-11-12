@@ -147,7 +147,7 @@ afterAll(async () => {
 interface HandleEvents {
   wakes: string[];
   conflicts: number;
-  synced: Array<{ error?: WorkerErrorShape }>;
+  synced: Array<{ summary?: unknown; error?: WorkerErrorShape }>;
 }
 
 async function makeHandle(
@@ -1714,4 +1714,34 @@ test('a profiled development worker keeps auth headers current and reports to th
     { id: 'one', runs: 1, rows: 1 },
   ]);
   channel.close();
+});
+
+test('a requested drive reaches onSynced like an automatic one', async () => {
+  const { handle, events } = await makeHandle({
+    clientId: 'requested-drive',
+    autoSync: false,
+  });
+  const heard: Array<{ summary?: unknown; error?: WorkerErrorShape }> = [];
+  handle.onSynced((result) => heard.push(result));
+  const summary = await handle.syncUntilIdle();
+  expect(heard).toEqual([{ summary }]);
+  expect(events.synced).toEqual([{ summary }]);
+
+  const refused = await makeHandle({
+    clientId: 'requested-drive-refused',
+    autoSync: false,
+    endpoints: { syncUrl: 'http://127.0.0.1:1/sync' },
+  });
+  const refusals: Array<{ error?: WorkerErrorShape }> = [];
+  refused.handle.onSynced((result) => refusals.push(result));
+  let caught: unknown;
+  try {
+    await refused.handle.syncUntilIdle();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(ClientSyncError);
+  expect(refusals).toHaveLength(1);
+  expect(refusals[0]?.error?.code).toBe((caught as ClientSyncError).code);
+  expect(refused.events.synced).toEqual(refusals);
 });

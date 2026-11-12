@@ -260,7 +260,7 @@ export interface SyncClientHandleConfig {
   readonly onLeadershipChange?: (state: LeadershipState) => void;
   readonly onSyncNeeded?: (reason: 'startup' | 'hello' | WakeReason) => void;
   readonly onConflict?: (conflict: ConflictRecord) => void;
-  /** The leader worker's automatic drive ended (leader tab only). */
+  /** A drive to idle in the leader worker ended (leader tab only). */
   readonly onSynced?: SyncedListener;
   /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
   readonly onUpgrading?: (upgrading: boolean) => void;
@@ -272,8 +272,8 @@ export interface SyncClientHandleConfig {
 }
 
 /**
- * The end of one automatic `syncUntilIdle` drive in the leader worker: its
- * summary, or the error it failed with.
+ * The end of one `syncUntilIdle` drive in the leader worker, automatic or
+ * requested by any tab: its summary, or the error it failed with.
  */
 export type SyncedListener = (result: {
   readonly summary?: SyncSummary;
@@ -532,8 +532,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   /**
-   * Subscribe to the end of every automatic drive of the current leader's
-   * worker, in leader and follower tabs alike. A follower receives only the
+   * Subscribe to the end of every drive to idle (automatic or requested by
+   * any tab) in the current leader's worker, in leader and follower tabs
+   * alike. A follower receives only the
    * drives of the leader it is bound to; a drive that ended before this tab
    * bound is not replayed. Returns an unsubscribe function.
    */

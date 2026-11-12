@@ -290,7 +290,7 @@ export type SyncWorkerEvent =
     }
   | { readonly kind: 'conflict'; readonly conflict: ConflictRecord }
   | {
-      /** An autoSync round finished (or failed) inside the worker. */
+      /** A drive to idle (automatic or requested) finished or failed inside the worker. */
       readonly kind: 'synced';
       readonly summary?: SyncSummary;
       readonly error?: WorkerErrorShape;

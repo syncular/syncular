@@ -1,5 +1,19 @@
 # Syncular release notes
 
+## 0.67.3 release notes
+
+0.67.3 reports a requested drive to every tab. SSP2 and the wire version are
+unchanged.
+
+`handle.onSynced` (0.67.2) heard only automatic drives. A drive a tab
+requested through `handle.syncUntilIdle()` resolved in that tab alone, so after
+a refused endpoint recovered through a follower's drive, the leader tab stayed
+unconfirmed: the leader schedules no automatic drive after a network refusal
+until connectivity resumes. The worker now posts the end of every drive to
+idle, automatic or requested, as a `synced` event. Every handle's
+`onSynced` and the leader tab's configuration `onSynced` receive it; the
+requesting tab also receives the outcome from its call.
+
 ## 0.67.2 release notes
 
 0.67.2 makes the end of each automatic drive observable in every browser tab.

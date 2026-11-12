@@ -48,6 +48,7 @@ import {
   WORKER_FAILED_CODE,
   WORKER_METHOD_UNAVAILABLE_CODE,
   type WorkerApi,
+  type SyncWorkerEvent,
   type WorkerCallMessage,
   type WorkerInitConfig,
   type WorkerInitResult,
@@ -196,6 +197,10 @@ export function startSyncWorkerCore(
   let offline = false;
   let headers: Readonly<Record<string, string>> = {};
   let closed = false;
+  // Every worker event goes through here; a closed worker posts none.
+  const emit = (event: SyncWorkerEvent): void => {
+    if (!closed) post({ t: 'event', event });
+  };
   let pushingDiagnostics = false;
 
   // -- one sync loop: RPC-driven and auto-driven rounds serialize ----------
@@ -207,6 +212,25 @@ export function startSyncWorkerCore(
       () => undefined,
     );
     return next;
+  }
+
+  /**
+   * One drive to idle, automatic or requested: its end reaches every tab.
+   * The event is posted inside the serialized step, so the drive settles
+   * before the next queued drive starts, as without it.
+   */
+  function drive(
+    run: () => ReturnType<SyncClient['syncUntilIdle']>,
+  ): ReturnType<SyncClient['syncUntilIdle']> {
+    return serializedSync(() =>
+      run().then(
+        (summary) => (emit({ kind: 'synced', summary }), summary),
+        (error: unknown) => {
+          emit({ kind: 'synced', error: toErrorShape(error) });
+          throw error;
+        },
+      ),
+    );
   }
 
   // -- SPEC §7.5 host loop: event-driven intents, no interactive polling --
@@ -230,14 +254,8 @@ export function startSyncWorkerCore(
       connectivity: offline ? 'offline' : snapshot.host.connectivity,
       realtime: snapshot.host.realtime,
     });
-  const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void => {
-    if (!closed) {
-      post({
-        t: 'event',
-        event: { kind: 'diagnostics', snapshot: workerDiagnostics(snapshot) },
-      });
-    }
-  };
+  const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void =>
+    emit({ kind: 'diagnostics', snapshot: workerDiagnostics(snapshot) });
 
   function runAutoSync(): void {
     if (
@@ -250,7 +268,7 @@ export function startSyncWorkerCore(
       return;
     }
     const running = client;
-    void serializedSync(() => {
+    void drive(() => {
       // The queued round owns the flag from here. Clearing it at entry would
       // let every wake-up that arrives while this round waits behind the
       // running one queue its own full drive (§8.4 coalescing).
@@ -259,15 +277,10 @@ export function startSyncWorkerCore(
     })
       .then((summary) => {
         retryDelayMs = 250;
-        if (!closed) post({ t: 'event', event: { kind: 'synced', summary } });
         if (summary.budgetExhausted) consumeSyncIntent({ kind: 'interactive' });
       })
       .catch((error: unknown) => {
         if (closed) return;
-        post({
-          t: 'event',
-          event: { kind: 'synced', error: toErrorShape(error) },
-        });
         // §7.8: a retryable drive rejection owes another drive. A retryable
         // round failure already handed this loop its background intent; the
         // drive deadline did not. An unreachable endpoint waits for the
@@ -470,27 +483,27 @@ export function startSyncWorkerCore(
         ? { previousVersionContext: config.previousVersionContext }
         : {}),
       onSyncNeeded: (reason) => {
-        post({ t: 'event', event: { kind: 'sync-needed', reason } });
+        emit({ kind: 'sync-needed', reason });
         consumeSyncIntent({ kind: 'interactive' });
       },
       onSyncIntent: consumeSyncIntent,
       onConflict: (conflict) => {
-        post({ t: 'event', event: { kind: 'conflict', conflict } });
+        emit({ kind: 'conflict', conflict });
       },
       onUpgrading: (upgrading) => {
         // §7.4.5: surface the schema-bump reset + completion to the UI thread.
-        post({ t: 'event', event: { kind: 'upgrading', upgrading } });
+        emit({ kind: 'upgrading', upgrading });
       },
       onPresence: (scopeKey, error) => {
         // §8.6: surface a presence change or rejection to the UI thread.
-        post({ t: 'event', event: { kind: 'presence', scopeKey, error } });
+        emit({ kind: 'presence', scopeKey, error });
       },
     });
     started.onProgress((progress) => {
-      if (!closed) post({ t: 'event', event: { kind: 'progress', progress } });
+      emit({ kind: 'progress', progress });
     });
     started.onChange((batch) => {
-      if (!closed) post({ t: 'event', event: { kind: 'change', batch } });
+      emit({ kind: 'change', batch });
     });
     await started.start();
     realtimeConnector =
@@ -585,7 +598,7 @@ export function startSyncWorkerCore(
     },
     syncUntilIdle: (options) => {
       const running = requireClient();
-      return serializedSync(() => running.syncUntilIdle(options));
+      return drive(() => running.syncUntilIdle(options));
     },
     proveCurrentBase: (outcome, options) => {
       const running = requireClient();
