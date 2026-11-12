@@ -1435,6 +1435,12 @@ if (!available) {
           }),
         ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
 
+        // A second create while this page holds the client is refused in
+        // the bridge before it reaches the native core.
+        await expect(
+          createTauriSyncClient({ schema, tauri: host.api }),
+        ).rejects.toMatchObject({ code: 'client.native_client_exists' });
+        await client.close();
         // The escape the gate exists to prevent: re-issuing create WITHOUT
         // the securityPreflight flag must be refused by the real router.
         await expect(
