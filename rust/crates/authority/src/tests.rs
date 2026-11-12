@@ -1708,6 +1708,36 @@ fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
 }
 
 #[test]
+fn an_open_at_the_same_version_builds_missing_scope_indexes() {
+    let path = temp_path();
+    let scope_indexes = |authority: &LocalAuthority| -> Vec<String> {
+        authority
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'sync_sx_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let authority = LocalAuthority::open(&path, &schema_json(1)).unwrap();
+    let built = scope_indexes(&authority);
+    assert!(built.contains(&r#"sync_sx_["nodes","org"]"#.to_owned()));
+    // A store from before 0.67.0 has none.
+    for name in &built {
+        authority
+            .conn
+            .execute_batch(&format!("DROP INDEX {}", store::quote(name)))
+            .unwrap();
+    }
+    drop(authority);
+    let authority = LocalAuthority::open(&path, &schema_json(1)).unwrap();
+    assert_eq!(scope_indexes(&authority), built);
+    drop(authority);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn a_rekey_refuses_a_row_without_a_value_for_the_new_pattern() {
     let path = temp_path();
     {

@@ -4,8 +4,8 @@
 
 0.67.1 records how a window change applies when it fails part-way, runs the
 server-limits conformance scenarios against the Rust local authority, and
-drops a stale scope-column index in it. SSP2 and the wire version are
-unchanged.
+makes that authority build and prune its scope-column indexes at every open.
+SSP2 and the wire version are unchanged.
 
 Both clients apply a `setWindow` call value by value: the entering values in
 the order the caller lists them, then the leaving values, each in its own
@@ -26,8 +26,11 @@ the authority and refuses any other server limit with
 it.
 
 A schema bump that changed a table's scope patterns kept the `sync_sx_` index
-of a column no pattern maps any more. The authority now drops it when it
-rebuilds the table's indexes on the bump.
+of a column no pattern maps any more, and an authority created before 0.67.0
+never built its scope indexes without a bump, so its bootstraps read every
+row. The authority now ensures the scope indexes of every table at each open:
+it drops the index of an unmapped column, and an existing local-authority
+database builds its scope indexes once at the first open.
 
 ## 0.67.0 release notes
 
