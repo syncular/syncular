@@ -239,6 +239,18 @@ function causeCode(error: unknown): string {
   }
 }
 
+/** SPEC §8.4: a stable-coded error the client marked `retryable`, read without getters. */
+function retryable(error: unknown): boolean {
+  try {
+    return (
+      causeCode(error) !== 'unknown' &&
+      Object.getOwnPropertyDescriptor(error, 'retryable')?.value === true
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * SPEC §8.4: a supervisor failure. `code` is the latest latched failure, or
  * `realtime.cleanup_failed` when only a cancel threw. Every failure of the
@@ -387,8 +399,14 @@ export class RealtimeSupervisor {
         }
         this.#reconcile();
       })
-      .catch(() => {
-        if (!this.#stopped) this.#fail(DIAGNOSTICS_UNAVAILABLE);
+      .catch((error: unknown) => {
+        if (this.#stopped) return;
+        if (!retryable(error)) return this.#fail(DIAGNOSTICS_UNAVAILABLE);
+        // A leader handover or follower timeout: start on the retry schedule
+        // and let the live reports and the connect result stand in.
+        this.#initialized = true;
+        this.#retry();
+        this.#reconcile();
       });
   }
 
@@ -656,6 +674,7 @@ export class RealtimeSupervisor {
       resolve(this.#client.disconnectRealtime()),
     )
       .catch((error: unknown) => {
+        if (retryable(error)) return this.#retry();
         this.#failures.disconnectCauseCode = causeCode(error);
         this.#fail('realtime.disconnect_failed');
       })

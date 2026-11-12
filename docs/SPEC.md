@@ -6604,8 +6604,14 @@ pinned, never interpreted.
   promise that settles after the attempt, its disconnect and any driven round
   have settled; repeated and reentrant calls share it, and so do calls of the
   installed `close()`.
-- **Supervisor failures latch.** A rejected `disconnectRealtime`, an
-  unreadable diagnostics snapshot, or a host timer cancel that throws latches
+- **Supervisor failures latch.** A diagnostics read or disconnect that
+  rejects with a stable code marked `retryable` (`client.leader_handover`,
+  `client.follower_timeout`) latches nothing: it counts one retry on the
+  ordinary schedule, a failed diagnostics read then starts the supervisor
+  without the snapshot, and `stop()` does not surface it. A routine leader
+  handover therefore never ends realtime in a follower tab. A rejection that is
+  not retryable or carries no stable code, an unreadable diagnostics snapshot
+  of that kind, or a host timer cancel that throws latches
   phase `unsupported` with `failureCode` `realtime.disconnect_failed`,
   `realtime.diagnostics_unavailable` or `realtime.cleanup_failed` (§10.3).
   The supervisor then makes no further attempt and releases any open socket;

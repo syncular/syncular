@@ -9,6 +9,7 @@ import type {
 } from '@syncular/client';
 import {
   browserConnectivitySignal,
+  ClientSyncError,
   documentLifecycleSignal,
   installRealtimeSupervisor,
   RealtimeSupervisor,
@@ -1459,6 +1460,84 @@ describe('realtime supervisor lifecycle (SPEC §8.4)', () => {
 });
 
 describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
+  test('a follower whose diagnostics read hits a leader handover retries and connects', async () => {
+    const f = lifecycle();
+    const handover = () =>
+      new ClientSyncError(
+        'client.leader_handover',
+        'the leader changed before it answered the call',
+        true,
+      );
+    const read = f.client.diagnosticsSnapshot;
+    let reads = 0;
+    f.client.diagnosticsSnapshot = async () => {
+      reads += 1;
+      if (reads === 1) throw handover();
+      return read();
+    };
+    await f.start();
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+    });
+    expect(await f.next()).toBe(1_000);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+
+    // A retryable disconnect failure takes the retry schedule as well.
+    const disconnect = f.client.disconnectRealtime;
+    f.client.disconnectRealtime = async () => {
+      f.client.disconnectRealtime = disconnect;
+      throw handover();
+    };
+    f.app.emit('background');
+    await settle();
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'background',
+      attempt: 1,
+    });
+    f.app.emit('active');
+    await settle();
+    expect(await f.next()).toBe(1_000);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    await f.supervisor.stop();
+  });
+
+  test('a non-retryable diagnostics or disconnect failure still latches', async () => {
+    const refusal = () =>
+      new ClientSyncError('client.worker_failed', 'the worker failed', false);
+    const f = lifecycle();
+    f.client.diagnosticsSnapshot = async () => {
+      throw refusal();
+    };
+    await f.start();
+    expect(f.supervisor.snapshot()).toMatchObject({
+      phase: 'unsupported',
+      failureCode: 'realtime.diagnostics_unavailable',
+    });
+    expect(f.timers.pending()).toBe(0);
+    expect(await rejection(f.supervisor.stop())).toMatchObject({
+      code: 'realtime.diagnostics_unavailable',
+    });
+
+    const g = lifecycle();
+    await g.start();
+    await g.next();
+    g.client.disconnectRealtime = async () => {
+      throw refusal();
+    };
+    g.app.emit('background');
+    await settle();
+    expect(g.supervisor.snapshot()).toMatchObject({
+      phase: 'unsupported',
+      failureCode: 'realtime.disconnect_failed',
+    });
+    expect(await rejection(g.supervisor.stop())).toMatchObject({
+      code: 'realtime.disconnect_failed',
+      disconnectCauseCode: 'client.worker_failed',
+    });
+  });
+
   test('a close reentered by an unsubscribe shares the pending close and its failure', async () => {
     const f = lifecycle();
     let nested: Promise<void> | undefined;

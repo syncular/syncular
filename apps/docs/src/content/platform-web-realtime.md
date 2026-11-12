@@ -114,9 +114,12 @@ with a `RealtimeSupervisorError` carrying that code:
 
 | `failureCode` | Cause |
 |---|---|
-| `realtime.disconnect_failed` | `disconnectRealtime()` rejected; `disconnectCauseCode` holds its Syncular code or `unknown` |
-| `realtime.diagnostics_unavailable` | The first `diagnosticsSnapshot()` read failed |
+| `realtime.disconnect_failed` | `disconnectRealtime()` rejected with a non-retryable error; `disconnectCauseCode` holds its Syncular code or `unknown` |
+| `realtime.diagnostics_unavailable` | The first `diagnosticsSnapshot()` read failed with a non-retryable error |
 | `realtime.cleanup_failed` | A timer cancel or signal unsubscribe threw |
+
+A retryable failure, such as `client.leader_handover` when another tab closes,
+counts one retry on the ordinary schedule and latches nothing.
 
 ```ts title="src/session.ts"
 import { RealtimeSupervisorError } from '@syncular/client';
