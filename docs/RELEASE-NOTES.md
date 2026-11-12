@@ -1,5 +1,62 @@
 # Syncular release notes
 
+## 0.65.2 release notes
+
+0.65.2 rewrites `RealtimeSupervisor` as one state machine and fixes six
+lifecycle faults reported against the 0.65.1 supervisor
+(SYNCULAR-REALTIME-LIFECYCLE-001). SSP2 and the wire version are unchanged, and
+the Rust core is unchanged. The browser, Tauri and React Native hosts install
+the same supervisor and get the same behavior.
+
+The supervisor now runs one attempt at a time, and a suspension (offline,
+background without `sharedTransport`, protected) voids the attempt in flight.
+The fixes:
+- Initialization survives host signals that arrive during the first
+  `diagnosticsSnapshot()` read. Before, the supervisor could stay idle.
+- A socket lost during the catch-up round schedules a retry. Before, the
+  attempt ended without one.
+- The successor attempt waits until the previous attempt and its
+  `disconnectRealtime()` have settled, including an asynchronous disconnect. A
+  socket the voided attempt opens late is disconnected first, so two sockets
+  never overlap.
+- The retry count and its pending delay survive offline, background and
+  protected phases. Connectivity flaps resume on the same backoff instead of
+  reconnecting at zero delay, and loss reports beside a pending retry do not
+  count again. A completed catch-up resets both.
+- `stop()` returns a promise that settles after the attempt, its disconnect and
+  any driven round. Repeated and reentrant calls share it, and the installed
+  `close()` waits for it before it closes the client.
+- A non-retryable disconnect failure, an unreadable first diagnostics read, or
+  a timer or subscription cancel that throws latches phase `unsupported` with
+  `failureCode` `realtime.disconnect_failed`, `realtime.diagnostics_unavailable`
+  or `realtime.cleanup_failed`. The supervisor makes no further connect
+  attempt and releases any open socket. `stop()` and `close()` reject with a
+  `RealtimeSupervisorError` of that code, which carries Syncular codes and
+  never a transport message. Recovery means closing the client and creating a
+  new one.
+
+A failure with a stable code marked `retryable: true`, such as
+`client.leader_handover` when another tab closes, latches nothing and counts
+one retry on the ordinary schedule, so a routine leader handover does not end
+realtime in a follower tab.
+
+Driven HTTP rounds are single-flight: reports that arrive during a round add
+one round after it. `online` reports and foreground returns drive no round
+while a socket is connected. Installing a second supervisor on one client
+throws `realtime.supervisor_already_installed`; the first install is kept.
+
+SPEC §8.4 states the supervisor's attempt, retry and latch rules, and §10.3
+lists the three new codes and `realtime.supervisor_already_installed`. See
+[Install the supervisor](https://syncular.dev/platform-web-realtime/#install-the-supervisor)
+and [Close and handle teardown failures](https://syncular.dev/platform-web-realtime/#close-and-handle-teardown-failures).
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A host
+that called `stop()` and ignored the result must await it and handle a
+rejection with `RealtimeSupervisorError`; an app that calls the installed
+`close()` handles the same rejection there. An app that installs the
+supervisor grows by 1,218 B minified (551 B gzip), measured on the
+`installRealtimeSupervisor` entry against 0.65.1.
+
 ## 0.65.1 release notes
 
 0.65.1 fixes a client behind a proxy that refuses WebSockets: it stopped
