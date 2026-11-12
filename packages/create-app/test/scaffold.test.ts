@@ -188,17 +188,15 @@ for (const template of TEMPLATES) {
       scaffoldApp({ template, targetDir: target, local: true });
       linkWorkspaceInto(target);
 
-      // tsrs follows the workspace symlinks and would also type-check the
-      // dependency SOURCES (workspace links are `.ts`, not shipped `.d.ts`) —
-      // that internal type noise is the packages' own concern (gated by the
-      // workspace `bun run typecheck`), not the template's. Assert only that
-      // the template's OWN files raise no diagnostics.
+      // The template's `customConditions: ["bun"]` resolves the published
+      // packages to their `.ts` sources as well, so the template's compiler
+      // options type-check those sources in a user's install. Every
+      // diagnostic counts, including those in linked package sources.
       const typecheck = run(['bun', TSRS, '--noEmit'], target);
-      const templateErrors = (typecheck.stdout + typecheck.stderr)
+      const errors = (typecheck.stdout + typecheck.stderr)
         .split('\n')
-        .filter((line) => /error TS/.test(line))
-        .filter((line) => !line.includes('/packages/'));
-      expect(templateErrors).toEqual([]);
+        .filter((line) => /error TS/.test(line));
+      expect(errors).toEqual([]);
 
       const smoke = run(['bun', 'test'], target);
       expect(smoke.exitCode).toBe(0);
