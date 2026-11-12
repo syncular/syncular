@@ -1821,6 +1821,24 @@ fn request_validation_fails_before_any_byte() {
         refused(&mut authority, None, frames).details,
         Some(json!({ "limit": "maxSubscriptionsPerRequest", "max": 500, "actual": 501 }))
     );
+    // A raised cap admits them and reports the configured max beyond it.
+    authority.set_max_subscriptions_per_request(501);
+    let mut frames = vec![pull_header(-1, &many, None, 0, 0)];
+    frames.extend(unit_frames(&many));
+    assert!(matches!(
+        client.round(&mut authority, frames).first(),
+        Some(Frame::RespHeader {
+            reset_required: false,
+            ..
+        })
+    ));
+    let more: Vec<_> = (0..502).map(|i| org(&format!("o{i}"))).collect();
+    let mut frames = vec![pull_header(-1, &more, None, 0, 0)];
+    frames.extend(unit_frames(&more));
+    assert_eq!(
+        refused(&mut authority, None, frames).details,
+        Some(json!({ "limit": "maxSubscriptionsPerRequest", "max": 501, "actual": 502 }))
+    );
     let stale = encode_request("c1", 1, Some("other".to_owned()), None, vec![empty_pull()]);
     let frames = decode(&authority.sync(&stale).unwrap());
     assert!(matches!(
@@ -1830,6 +1848,72 @@ fn request_validation_fails_before_any_byte() {
             ..
         }]
     ));
+}
+
+#[test]
+fn a_bootstrap_scan_seeks_one_scope_value_of_any_column_type() {
+    let schema = json!({ "version": 1, "tables": [{
+        "name": "codes",
+        "primaryKey": "id",
+        "columns": [
+            column("id", "string", false),
+            column("rank", "integer", false),
+            column("tier", "string", false),
+        ],
+        "scopes": [{ "pattern": "rank:{rank}" }, { "pattern": "tier:{tier}" }],
+    }]});
+    let mut authority = LocalAuthority::open(":memory:", &schema).unwrap();
+    let client = Session::new(&mut authority, "c1");
+    let compiled = authority.schema.table("codes").unwrap().clone();
+    let operations = (0..300)
+        .map(|i| Operation {
+            table: "codes".to_owned(),
+            row_id: format!("r{i:03}"),
+            op: Op::Upsert,
+            base_version: None,
+            payload: Some(encode_sparse_row(
+                &compiled.columns,
+                compiled.pk,
+                &vec![
+                    SparseSlot::Value(ColumnValue::String(format!("r{i:03}"))),
+                    SparseSlot::Value(ColumnValue::Integer(i % 3)),
+                    SparseSlot::Value(ColumnValue::String(format!("t{}", i % 2))),
+                ],
+            )),
+        })
+        .collect();
+    client.push(&mut authority, "a", operations);
+    let scan = |unit: &[(&str, &str)], after: Option<&str>, limit: usize| -> Vec<String> {
+        let unit: Vec<_> = unit
+            .iter()
+            .map(|(variable, value)| ((*variable).to_owned(), (*value).to_owned()))
+            .collect();
+        store::scan_rows(&authority.conn, &compiled, &unit, after, limit)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.row_id)
+            .collect()
+    };
+    let expected = |keep: fn(i64) -> bool| -> Vec<String> {
+        (0..300)
+            .filter(|i| keep(*i))
+            .map(|i| format!("r{i:03}"))
+            .collect()
+    };
+    assert_eq!(scan(&[("rank", "1")], None, 1000), expected(|i| i % 3 == 1));
+    assert_eq!(
+        scan(&[("rank", "2"), ("tier", "t0")], None, 1000),
+        expected(|i| i % 3 == 2 && i % 2 == 0)
+    );
+    // A value the column type parses but its rendering differs from, or one
+    // it cannot hold, matches nothing.
+    for unit in [[("rank", "01")], [("rank", "x")], [("tier", "0")]] {
+        assert!(scan(&unit, None, 1000).is_empty());
+    }
+    // §4.7 paging keeps `_sync_row_id` order.
+    let first = scan(&[("rank", "1")], None, 10);
+    let next = scan(&[("rank", "1")], first.last().map(String::as_str), 10);
+    assert_eq!([first, next].concat(), expected(|i| i % 3 == 1)[..20]);
 }
 
 #[cfg(not(feature = "crdt-yjs"))]

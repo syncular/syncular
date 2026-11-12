@@ -104,11 +104,6 @@ fn bootstrap(
             .then_some((as_of, index, row_cursor))
     });
     let (pin, mut index, mut row_cursor) = resume.unwrap_or((max_seq, 0, None));
-    let effective: Vec<(String, Vec<String>)> = unit
-        .scopes
-        .iter()
-        .map(|(key, value)| (key.clone(), vec![value.clone()]))
-        .collect();
     let mut frames = Vec::new();
     let mut pages = 0;
     while index < unit.tables.len() {
@@ -128,8 +123,8 @@ fn bootstrap(
         let table = unit.tables[index];
         let mut rows = store::scan_rows(
             conn,
-            &table.name,
-            &effective,
+            table,
+            unit.scopes,
             row_cursor.as_deref(),
             limits.snapshot_rows + 1,
         )?;
@@ -398,6 +393,7 @@ pub(crate) fn handle(
     conn: &Connection,
     schema: &Schema,
     now: i64,
+    max_units: usize,
     request: &[u8],
 ) -> Result<Vec<u8>, AuthorityError> {
     let message = decode_message(request).map_err(|e| {
@@ -407,7 +403,7 @@ pub(crate) fn handle(
             json!({ "detail": e.detail }),
         )
     })?;
-    let result = respond(conn, schema, now, &message);
+    let result = respond(conn, schema, now, max_units, &message);
     if let (Err(error), MsgKind::Request, Some(Frame::ReqHeader { client_id, .. })) =
         (&result, message.msg_kind, message.frames.first())
     {
@@ -425,6 +421,7 @@ fn respond(
     conn: &Connection,
     schema: &Schema,
     now: i64,
+    max_units: usize,
     message: &Message,
 ) -> Result<Vec<u8>, AuthorityError> {
     if message.msg_kind != MsgKind::Request {
@@ -542,11 +539,11 @@ fn respond(
         ));
     }
     // §1.7: the UNIT cap (the reference `maxSubscriptionsPerRequest`).
-    if unit_frames.len() > 500 {
+    if unit_frames.len() > max_units {
         return Err(AuthorityError::with_details(
             "sync.limit_exceeded",
             "request carries more units than the server accepts (§1.7)",
-            json!({ "limit": "maxSubscriptionsPerRequest", "max": 500, "actual": unit_frames.len() }),
+            json!({ "limit": "maxSubscriptionsPerRequest", "max": max_units, "actual": unit_frames.len() }),
         ));
     }
 

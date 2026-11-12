@@ -1239,12 +1239,14 @@ fn integer_scope_columns_and_keys_bind_by_their_declared_type() {
         )
         .unwrap();
     let seven = vec![("project_id".to_owned(), vec!["7".to_owned()])];
-    assert!(client.scoped_rows_exist("counts", &seven, &[]));
-    assert!(!client.scoped_rows_exist(
-        "counts",
-        &[("project_id".to_owned(), vec!["07".to_owned()])],
-        &[]
-    ));
+    assert!(client.scoped_rows_exist("counts", &seven, &[]).unwrap());
+    assert!(!client
+        .scoped_rows_exist(
+            "counts",
+            &[("project_id".to_owned(), vec!["07".to_owned()])],
+            &[]
+        )
+        .unwrap());
     let pinned = HashSet::from(["3".to_owned()]);
     let (remaining, deferred) = client
         .evict_scope_rows(
@@ -1262,6 +1264,54 @@ fn integer_scope_columns_and_keys_bind_by_their_declared_type() {
         .map(|row| row["id"].as_i64().unwrap())
         .collect();
     assert_eq!(ids, vec![1, 2, 3]);
+}
+
+#[test]
+fn a_scoped_delete_excludes_thousands_of_owners_in_one_bounded_statement() {
+    let schema = json!({"version": 1, "tables": [{"name": "codes", "primaryKey": "id",
+        "columns": [{"name": "id", "type": "string", "nullable": false},
+                    {"name": "org_id", "type": "string", "nullable": false},
+                    {"name": "rank", "type": "integer", "nullable": false}],
+        "scopes": [{"pattern": "org:{org_id}"}, {"pattern": "rank:{rank}", "column": "rank"}]}]});
+    let mut client = SyncClient::new("owners".into(), &schema, ClientLimits::default()).unwrap();
+    let rows = "('r1','o1',1,1), ('r2','o2',2,1), ('r3','o3',3,1), ('r4','o1',4,1)";
+    client
+        .conn
+        .execute_batch(&format!(
+            "INSERT INTO _syncular_base_codes VALUES {rows}; INSERT INTO codes VALUES {rows};"
+        ))
+        .unwrap();
+    let scope = |pairs: &[(&str, String)]| -> Vec<(String, Vec<String>)> {
+        pairs
+            .iter()
+            .map(|(variable, value)| ((*variable).to_owned(), vec![value.clone()]))
+            .collect()
+    };
+    let owners: Vec<_> = (0..3_000)
+        .map(|i| scope(&[("org_id", format!("x{i}"))]))
+        .chain((0..2_000).map(|i| scope(&[("org_id", "zz".to_owned()), ("rank", i.to_string())])))
+        .chain((0..2_000).map(|i| scope(&[("rank", (i + 9).to_string())])))
+        .chain([
+            scope(&[("org_id", "o2".to_owned())]),
+            scope(&[("rank", "4".to_owned()), ("org_id", "o1".to_owned())]),
+        ])
+        .collect();
+    let effective = vec![(
+        "rank".to_owned(),
+        ["1", "2", "3", "4"].map(str::to_owned).to_vec(),
+    )];
+    assert!(client
+        .purge_scope_rows("codes", &effective, &owners)
+        .unwrap());
+    for table in ["codes", "_syncular_base_codes"] {
+        let ids: Vec<String> = client
+            .query(&format!("SELECT id FROM {table} ORDER BY id"), &[])
+            .unwrap()
+            .into_iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ids, ["r2", "r4"]);
+    }
 }
 
 #[test]

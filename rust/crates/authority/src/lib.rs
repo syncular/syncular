@@ -122,6 +122,7 @@ pub struct LocalAuthority {
     schema: Schema,
     state: AuthorityState,
     clock: Clock,
+    max_subscriptions_per_request: usize,
 }
 
 impl LocalAuthority {
@@ -149,6 +150,7 @@ impl LocalAuthority {
             schema,
             state: AuthorityState::Local,
             clock,
+            max_subscriptions_per_request: 500,
         };
         authority.state = match authority.read_meta("state")?.as_deref() {
             None | Some("local") => AuthorityState::Local,
@@ -180,6 +182,13 @@ impl LocalAuthority {
         store::prune(&self.conn, (self.clock)(), retention)
     }
 
+    /// §1.7: the most `UNIT` frames one request may carry (the reference
+    /// `maxSubscriptionsPerRequest`, default 500); more fail the request
+    /// with `sync.limit_exceeded`.
+    pub fn set_max_subscriptions_per_request(&mut self, max: usize) {
+        self.max_subscriptions_per_request = max;
+    }
+
     pub fn state(&self) -> AuthorityState {
         self.state
     }
@@ -192,7 +201,13 @@ impl LocalAuthority {
         if self.state != AuthorityState::Local {
             return Err(unavailable(self.state));
         }
-        sync::handle(&self.conn, &self.schema, (self.clock)(), request)
+        sync::handle(
+            &self.conn,
+            &self.schema,
+            (self.clock)(),
+            self.max_subscriptions_per_request,
+            request,
+        )
     }
 
     /// §12.3 attach: upload every live row to `remote`, resumable after a

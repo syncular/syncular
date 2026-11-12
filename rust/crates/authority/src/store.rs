@@ -332,27 +332,35 @@ pub(crate) fn delete_row(
     Ok(())
 }
 
-/// Does a stored scope map match the effective scopes (§3.2)?
-pub(crate) fn matches_effective(scopes: &Scopes, effective: &[(String, Vec<String>)]) -> bool {
-    effective.iter().all(|(variable, values)| {
-        scopes
-            .get(variable)
-            .is_some_and(|value| values.contains(value))
-    })
-}
-
 /// Up to `limit` rows after `after` in `_sync_row_id` order whose stored
-/// scopes match `effective` (the reference `scanRows`).
+/// scopes match the unit's scope map (the reference `scanRows`). Candidates
+/// seek the scope index of the unit's first variable in key order; the
+/// stored scopes decide, so the seek only has to keep every match.
 pub(crate) fn scan_rows(
     conn: &Connection,
-    table: &str,
-    effective: &[(String, Vec<String>)],
+    table: &Table,
+    unit: &[(String, String)],
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<StoredRow>, AuthorityError> {
+    let (variable, value) = unit.iter().min().ok_or_else(|| corrupt("unit scopes"))?;
+    let column = &table.columns[table
+        .scopes
+        .iter()
+        .find(|scope| &scope.variable == variable)
+        .ok_or_else(|| corrupt("unit scopes"))?
+        .column];
+    // The column holds the typed value its stored scope renders from.
+    let key = match (column.ty, value.as_str()) {
+        (ColumnType::Integer, _) => value
+            .parse()
+            .map_or_else(|_| SqlValue::Text(value.clone()), SqlValue::Integer),
+        _ => SqlValue::Text(value.clone()),
+    };
     let sql = format!(
-        "SELECT {ROW_COLUMNS} FROM {} WHERE _sync_partition=?1 AND _sync_row_id>?2 ORDER BY _sync_row_id LIMIT ?3",
-        quote(table)
+        "SELECT {ROW_COLUMNS} FROM {} WHERE _sync_partition=?1 AND {}=?4 AND _sync_row_id>?2 ORDER BY _sync_row_id LIMIT ?3",
+        quote(&table.name),
+        quote(&column.name)
     );
     let batch = limit.max(64);
     let mut rows = Vec::new();
@@ -362,14 +370,17 @@ pub(crate) fn scan_rows(
             .prepare_cached(&sql)
             .and_then(|mut statement| {
                 statement
-                    .query_map(params![PARTITION, cursor, batch as i64], read_row)?
+                    .query_map(params![PARTITION, cursor, batch as i64, key], read_row)?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
             .db()?;
         let exhausted = page.len() < batch;
         for row in page {
             cursor.clone_from(&row.row_id);
-            if matches_effective(&row.scopes, effective) {
+            if unit
+                .iter()
+                .all(|(variable, value)| row.scopes.get(variable) == Some(value))
+            {
                 rows.push(row);
                 if rows.len() >= limit {
                     break;
@@ -1231,6 +1242,18 @@ fn create_indexes(conn: &Connection, table: &Table) -> Result<(), AuthorityError
     for name in existing {
         conn.execute_batch(&format!("DROP INDEX {}", quote(&name)))
             .db()?;
+    }
+    // §4.7: one index per scope column, so a bootstrap reads only its
+    // unit's rows in `_sync_row_id` order.
+    for scope in &table.scopes {
+        let column = &table.columns[scope.column].name;
+        conn.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {} (_sync_partition, {}, _sync_row_id)",
+            quote(&format!("sync_sx_{}", json!([table.name, column]))),
+            quote(&table.name),
+            quote(column)
+        ))
+        .db()?;
     }
     for index in &table.indexes {
         let columns: Vec<String> = std::iter::once("_sync_partition".to_owned())

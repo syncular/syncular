@@ -627,18 +627,21 @@ fn local_scope_predicate(
     if effective.is_empty() || effective.iter().any(|(_, values)| values.is_empty()) {
         return Ok(None);
     }
-    let mut clauses = Vec::new();
-    let mut params = Vec::new();
-    for (variable, values) in effective {
+    let column = |variable: &str| {
         let name = table.scope_column(variable).ok_or(())?;
         let column = table
             .columns
             .iter()
             .find(|column| column.name == name)
             .ok_or(())?;
-        let key = quote_ident(name);
+        Ok((quote_ident(name), column.ty == ColumnType::Integer))
+    };
+    let mut clauses = Vec::new();
+    let mut params = Vec::new();
+    for (variable, values) in effective {
+        let (key, integer) = column(variable)?;
         let holes = vec!["?"; values.len()].join(", ");
-        clauses.push(if column.ty == ColumnType::Integer {
+        clauses.push(if integer {
             params.extend(values.iter().cloned().map(SqlValue::Text));
             let seek = vec!["+CAST(? AS INTEGER)"; values.len()].join(", ");
             format!("{key} IN ({seek}) AND CAST({key} AS TEXT) IN ({holes})")
@@ -647,10 +650,64 @@ fn local_scope_predicate(
         });
         params.extend(values.iter().cloned().map(SqlValue::Text));
     }
+    // Owners bind as one JSON parameter per variable set, so the statement
+    // keeps its size at any owner count; owners of one variable bind the
+    // union of their values. An owner holding other values of a variable
+    // `effective` names owns none of its rows and drops out. Values compare
+    // as text, the exact semantics of the effective clauses.
+    let mut groups: BTreeMap<Vec<&str>, Vec<Vec<&[String]>>> = BTreeMap::new();
     for owner in owners {
-        if let Some((sql, owner_params)) = local_scope_predicate(table, owner, &[])? {
-            clauses.push(format!("NOT ({sql})"));
-            params.extend(owner_params);
+        if owner.is_empty()
+            || owner.iter().any(|(variable, values)| {
+                values.is_empty()
+                    || effective.iter().any(|(name, wanted)| {
+                        name == variable && wanted.iter().all(|value| !values.contains(value))
+                    })
+            })
+        {
+            continue;
+        }
+        let mut owner: Vec<_> = owner.iter().collect();
+        owner.sort_by(|a, b| a.0.cmp(&b.0));
+        groups
+            .entry(
+                owner
+                    .iter()
+                    .map(|(variable, _)| variable.as_str())
+                    .collect(),
+            )
+            .or_default()
+            .push(owner.iter().map(|(_, values)| values.as_slice()).collect());
+    }
+    let within = |variable: &str, list: &str| {
+        let (key, integer) = column(variable)?;
+        let key = if integer {
+            format!("CAST({key} AS TEXT)")
+        } else {
+            key
+        };
+        Ok(format!("{key} IN (SELECT value FROM json_each({list}))"))
+    };
+    for (variables, tuples) in groups {
+        if let [variable] = variables[..] {
+            let values: BTreeSet<&String> = tuples.iter().flatten().copied().flatten().collect();
+            params.push(SqlValue::Text(
+                Value::from_iter(values.into_iter().cloned()).to_string(),
+            ));
+            clauses.push(format!("NOT {}", within(variable, "?")?));
+        } else {
+            params.push(SqlValue::Text(
+                serde_json::to_string(&tuples).expect("owner tuples serialize"),
+            ));
+            let matches = variables
+                .iter()
+                .enumerate()
+                .map(|(index, variable)| within(variable, &format!("o.value,'$[{index}]'")))
+                .collect::<Result<Vec<_>, ()>>()?;
+            clauses.push(format!(
+                "NOT EXISTS (SELECT 1 FROM json_each(?) o WHERE {})",
+                matches.join(" AND ")
+            ));
         }
     }
     Ok(Some((clauses.join(" AND "), params)))
@@ -2189,6 +2246,7 @@ impl SyncClient {
                  CREATE TABLE IF NOT EXISTS _syncular_windows (
                    base TEXT NOT NULL, unit TEXT NOT NULL, sub_id TEXT NOT NULL,
                    PRIMARY KEY (base, unit));
+                 CREATE INDEX IF NOT EXISTS _syncular_windows_unit ON _syncular_windows(sub_id);
                  CREATE TABLE IF NOT EXISTS _syncular_pending_evictions (
                    unit_id TEXT NOT NULL, tbl TEXT NOT NULL,
                    effective_scopes TEXT NOT NULL, PRIMARY KEY (unit_id, tbl));
@@ -3401,25 +3459,71 @@ impl SyncClient {
         }
     }
 
+    /// Whether a base or visible row matches the scope predicate; `false`
+    /// without a local scope-column mapping. A SQLite failure is an error.
     fn scoped_rows_exist(
         &self,
         table_name: &str,
         effective: &[(String, Vec<String>)],
         owners: &[Vec<(String, Vec<String>)>],
-    ) -> bool {
+    ) -> Result<bool, String> {
         let Some(table) = self.schema.table(table_name) else {
-            return false;
+            return Ok(false);
         };
         let Ok(Some((predicate, params))) = local_scope_predicate(table, effective, owners) else {
-            return false;
+            return Ok(false);
         };
-        let sql = format!(
-            "SELECT 1 FROM {} WHERE {predicate} LIMIT 1",
-            base_table(table_name)
-        );
-        self.conn
-            .query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
-            .is_ok()
+        for source in [base_table(table_name), visible_table(table_name)] {
+            if self
+                .conn
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM {source} WHERE {predicate})"),
+                    rusqlite::params_from_iter(&params),
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// §5.6 first-page clear of `unit_id`'s pair: delete its rows except
+    /// those another owner covers (§3.3), failing closed without a local
+    /// scope-column mapping. Owners are read only when a row matches, inside
+    /// the caller's transaction. Returns whether rows matched.
+    fn clear_scope(
+        &mut self,
+        table: &TableSchema,
+        effective: &[(String, Vec<String>)],
+        unit_id: &str,
+    ) -> Result<bool, SectionError> {
+        let storage = |message| SectionError::Abort("storage.failed".to_owned(), message);
+        let matched = self
+            .scoped_rows_exist(&table.name, effective, &[])
+            .map_err(storage)?;
+        let owners = if matched {
+            unit_owners(
+                &self.stored(load_units(&self.conn)).map_err(storage)?,
+                table,
+                unit_id,
+            )
+        } else {
+            Vec::new()
+        };
+        let changed = matched
+            && (owners.is_empty()
+                || self
+                    .scoped_rows_exist(&table.name, effective, &owners)
+                    .map_err(storage)?);
+        if !self
+            .purge_scope_rows(&table.name, effective, &owners)
+            .map_err(storage)?
+        {
+            return Err(SectionError::FailClosed);
+        }
+        Ok(changed)
     }
 
     /// §7.4.5: true while a schema-bump reset + first re-bootstrap runs.
@@ -8875,10 +8979,10 @@ impl SyncClient {
                             p.import_write_ms = None;
                             p.import_commit_ms = None;
                         });
-                        let (pair, clear, effective, owners) =
+                        let (pair, clear, effective) =
                             self.segment_pair(&unit, &echo, &seeded, &segment.table)?;
                         report.segment_rows_applied +=
-                            self.apply_segment(&pair, &segment, clear, &effective, &owners)?;
+                            self.apply_segment(&pair, &segment, clear, &effective, &unit.id)?;
                         seeded.insert(segment.table);
                     }
                     Frame::SegmentRef {
@@ -9009,14 +9113,14 @@ impl SyncClient {
                                         .to_owned(),
                                 ));
                             }
-                            let (pair, clear, effective, owners) =
+                            let (pair, clear, effective) =
                                 self.segment_pair(&unit, &echo, &seeded, &table)?;
                             report.segment_rows_applied += self.apply_sqlite_segment(
                                 &pair,
                                 &bytes,
                                 clear,
                                 &effective,
-                                &owners,
+                                &unit.id,
                                 row_count,
                                 as_of_commit_seq,
                                 &scope_digest,
@@ -9026,10 +9130,10 @@ impl SyncClient {
                             let segment = decode_rows_segment(&bytes).map_err(|e| {
                                 SectionError::Abort(e.code.as_str().to_owned(), e.detail)
                             })?;
-                            let (pair, clear, effective, owners) =
+                            let (pair, clear, effective) =
                                 self.segment_pair(&unit, &echo, &seeded, &segment.table)?;
                             report.segment_rows_applied +=
-                                self.apply_segment(&pair, &segment, clear, &effective, &owners)?;
+                                self.apply_segment(&pair, &segment, clear, &effective, &unit.id)?;
                             seeded.insert(segment.table);
                         }
                     }
@@ -9103,8 +9207,8 @@ impl SyncClient {
         Ok(())
     }
 
-    /// §5.6: the table, first-page flag, effective scopes and owners of one
-    /// segment of `unit`'s section.
+    /// §5.6: the table, first-page flag and effective scopes of one segment
+    /// of `unit`'s section.
     #[allow(clippy::type_complexity)]
     fn segment_pair(
         &self,
@@ -9112,15 +9216,7 @@ impl SyncClient {
         echo: &[EchoRecord],
         seeded: &BTreeSet<String>,
         name: &str,
-    ) -> Result<
-        (
-            TableSchema,
-            bool,
-            Vec<(String, Vec<String>)>,
-            Vec<Vec<(String, Vec<String>)>>,
-        ),
-        SectionError,
-    > {
+    ) -> Result<(TableSchema, bool, Vec<(String, Vec<String>)>), SectionError> {
         let table = self.schema.table(name).cloned().ok_or_else(|| {
             SectionError::Abort(
                 "sync.schema_mismatch".to_owned(),
@@ -9136,11 +9232,7 @@ impl SyncClient {
                     "a segment names no active pair of its unit".to_owned(),
                 )
             })?;
-        let units = self
-            .stored(load_units(&self.conn))
-            .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-        let owners = unit_owners(&units, &table, &unit.id);
-        Ok((table, !seeded.contains(name), effective, owners))
+        Ok((table, !seeded.contains(name), effective))
     }
 
     /// §4.4 `SUB_END` of an active, revoked or reset section, inside the
@@ -9188,7 +9280,7 @@ impl SyncClient {
             return Ok(batch);
         }
         let revoked = start.status == SubStatus::Revoked;
-        let units = self.stored(load_units(&self.conn))?;
+        let mut units = None;
         let mut failed = false;
         let mut rearmed = false;
         for table in self.schema.tables.clone() {
@@ -9207,7 +9299,11 @@ impl SyncClient {
             // §3.3: purge a pair the response revokes, keyed on the echo the
             // client persisted while the pair was active.
             if let (Some(last), None) = (&last, &next) {
-                let owners = unit_owners(&units, &table, &unit.id);
+                let units = match units {
+                    Some(ref units) => units,
+                    None => units.insert(self.stored(load_units(&self.conn))?),
+                };
+                let owners = unit_owners(units, &table, &unit.id);
                 failed |= !self.purge_pair(&mut batch, &table, last, &owners)?;
             }
         }
@@ -9340,8 +9436,9 @@ impl SyncClient {
                 batch.table(&operation.table);
             }
         }
-        self.purge_scope_rows(&table.name, last, owners)
-            .map_err(|()| "storage.failed: the revoked scope purge failed".to_owned())?;
+        if !self.purge_scope_rows(&table.name, last, owners)? {
+            return Err("storage.failed: the revoked scope purge failed".to_owned());
+        }
         self.record_scope_map(batch, &table.name, last);
         if self.drop_doomed_outbox(table, last, owners)? {
             batch.status = true;
@@ -9609,7 +9706,7 @@ impl SyncClient {
         segment: &RowsSegment,
         first_page: bool,
         effective: &[(String, Vec<String>)],
-        owners: &[Vec<(String, Vec<String>)>],
+        unit_id: &str,
     ) -> Result<u32, SectionError> {
         // §5.2: the column table validates against the generated schema —
         // order, names, types, nullability; mismatch is fatal. §5.11: the
@@ -9667,14 +9764,8 @@ impl SyncClient {
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
-                if !block.is_empty()
-                    || (clear && self.scoped_rows_exist(&table.name, effective, owners))
-                {
+                if clear && self.clear_scope(table, effective, unit_id)? || !block.is_empty() {
                     batch.table(&table.name);
-                }
-                if clear {
-                    self.purge_scope_rows(&table.name, effective, owners)
-                        .map_err(|()| SectionError::FailClosed)?;
                 }
                 for (row_index, row) in block.iter().enumerate() {
                     let decrypted;
@@ -9750,7 +9841,7 @@ impl SyncClient {
         bytes: &[u8],
         first_page: bool,
         effective: &[(String, Vec<String>)],
-        owners: &[Vec<(String, Vec<String>)>],
+        unit_id: &str,
         row_count: i64,
         as_of_commit_seq: i64,
         scope_digest: &str,
@@ -9797,7 +9888,7 @@ impl SyncClient {
                 table,
                 first_page,
                 effective,
-                owners,
+                unit_id,
                 row_count,
                 as_of_commit_seq,
                 scope_digest,
@@ -9814,7 +9905,7 @@ impl SyncClient {
         table: &crate::schema::TableSchema,
         first_fresh_page: bool,
         effective: &[(String, Vec<String>)],
-        owners: &[Vec<(String, Vec<String>)>],
+        unit_id: &str,
         row_count: i64,
         as_of_commit_seq: i64,
         scope_digest: &str,
@@ -9970,12 +10061,8 @@ impl SyncClient {
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
-                if clear {
-                    if self.scoped_rows_exist(&table.name, effective, owners) {
-                        batch.table(&table.name);
-                    }
-                    self.purge_scope_rows(&table.name, effective, owners)
-                        .map_err(|()| SectionError::FailClosed)?;
+                if clear && self.clear_scope(table, effective, unit_id)? {
+                    batch.table(&table.name);
                 }
                 let mut processed = 0u32;
                 {
@@ -10678,17 +10765,22 @@ impl SyncClient {
     // -- scope purge + doomed outbox (§3.3) ----------------------------------------
 
     /// Delete base and visible rows owned by the effective scopes
-    /// ([`local_scope_predicate`]); `Err(())` = no local scope-column mapping
-    /// for a key (the fail-closed case).
+    /// ([`local_scope_predicate`]); `Ok(false)` = no local scope-column
+    /// mapping for a key (the fail-closed case). A SQLite failure is an error.
     fn purge_scope_rows(
         &mut self,
         table_name: &str,
         effective: &[(String, Vec<String>)],
         owners: &[Vec<(String, Vec<String>)>],
-    ) -> Result<(), ()> {
-        let table = self.schema.table(table_name).ok_or(())?;
-        let Some((predicate, params)) = local_scope_predicate(table, effective, owners)? else {
-            return Ok(());
+    ) -> Result<bool, String> {
+        let Some(table) = self.schema.table(table_name) else {
+            return Ok(false);
+        };
+        let Ok(predicate) = local_scope_predicate(table, effective, owners) else {
+            return Ok(false);
+        };
+        let Some((predicate, params)) = predicate else {
+            return Ok(true);
         };
         self.overlay_dirty.table(table_name);
         for source in [base_table(table_name), visible_table(table_name)] {
@@ -10697,9 +10789,9 @@ impl SyncClient {
                     &format!("DELETE FROM {source} WHERE {predicate}"),
                     rusqlite::params_from_iter(&params),
                 )
-                .map_err(|_| ())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// §3.3: drop pending commits whose upserts provably land in the
