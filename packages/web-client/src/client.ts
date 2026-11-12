@@ -6003,7 +6003,7 @@ export class SyncClient {
     table: CompiledClientTable,
     clearFirst: boolean,
     effective: ScopeMap,
-    owners: readonly ScopeMap[],
+    owners: () => readonly ScopeMap[],
     hasRows: boolean,
     resetEpoch: number,
     image: boolean,
@@ -6022,7 +6022,7 @@ export class SyncClient {
         const result = this.#applyBatch((batch) => {
           if (
             hasRows ||
-            (clearFirst && this.#scopedRowsExist(table, effective, owners))
+            (clearFirst && this.#scopedRowsExist(table, effective, owners()))
           )
             batch.table(table.name);
           const result = fn();
@@ -6057,7 +6057,7 @@ export class SyncClient {
       table: CompiledClientTable,
       clearFirst: boolean,
       effective: ScopeMap,
-      owners: readonly ScopeMap[],
+      owners: () => readonly ScopeMap[],
     ) => number | Promise<number>,
   ): Promise<void> {
     const { unit } = section;
@@ -6067,12 +6067,22 @@ export class SyncClient {
       : undefined;
     if (effective === undefined)
       throw invalidRequest('a segment names no active pair of its unit');
+    // §3.3 owners matter only for rows the clear would reach, so a pair
+    // with no matching local or retained row never reads the unit list.
+    let owners: readonly ScopeMap[] | undefined;
     try {
       summary.segmentRowsApplied += await apply(
         table,
         !section.seeded.has(tableName),
         effective,
-        unitOwners(loadUnits(this.#db), table, unit.id),
+        () =>
+          (owners ??=
+            this.#db.query(
+              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`,
+              [table.name],
+            ).length > 0 || this.#scopedRowsExist(table, effective, [])
+              ? unitOwners(loadUnits(this.#db), table, unit.id)
+              : []),
       );
       section.seeded.add(tableName);
     } catch (error) {
@@ -6205,7 +6215,7 @@ export class SyncClient {
         return;
       }
       const revoked = start.status === 'revoked';
-      const units = loadUnits(this.#db);
+      let units: UnitRecord[] | undefined;
       let failed = false;
       let rearmed = false;
       for (const table of this.#schema.tables.values()) {
@@ -6227,7 +6237,7 @@ export class SyncClient {
             batch,
             table,
             last,
-            unitOwners(units, table, unit.id),
+            unitOwners((units ??= loadUnits(this.#db)), table, unit.id),
           );
       }
       if (revoked || failed) {

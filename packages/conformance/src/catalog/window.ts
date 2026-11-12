@@ -326,6 +326,48 @@ export const windowScenarios: readonly Scenario[] = [
   },
 
   {
+    // One-row units on the primary key, more than SQLite's expression-depth
+    // limit of 1,000: every bootstrap clear and eviction excludes the rows
+    // the other units own without growing its statement per unit.
+    name: 'window/shrink-beside-many-one-row-units',
+    specRefs: ['§4.8', '§3.3', '§1.7'],
+    requires: ['server-limits'],
+    server: { limits: { maxSubscriptionsPerRequest: 1_200 } },
+    async run(ctx) {
+      const values = Array.from(
+        { length: 1_100 },
+        (_, i) => `p${String(i).padStart(4, '0')}`,
+      );
+      const rows = values.map((value) => task(`t-${value}`, value));
+      for (let i = 0; i < rows.length; i += 500)
+        await seedTasks(ctx, rows.slice(i, i + 500));
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['*'] },
+      });
+      await a.api.subscribeMany([{ project_id: 'p0001' }]);
+      await a.api.setWindow?.(BASE, values);
+      await syncIdle(a);
+      checkEqual((await readIds(a)).length, 1_100, 'every unit bootstrapped');
+
+      await a.api.setWindow?.(BASE, values.slice(2));
+      const kept = await readIds(a);
+      checkEqual(kept.length, 1_099, 'one row evicted');
+      check(!kept.includes('t-p0000'), 'the departed unit row is evicted');
+      check(
+        kept.includes('t-p0001'),
+        'the explicitly subscribed unit keeps its row',
+      );
+      await syncIdle(a);
+
+      await a.api.setWindow?.(BASE, values);
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
+
+  {
     name: 'window/outbox-pin-defers-eviction-until-drain',
     specRefs: ['§4.8', 'B.18c'],
     async run(ctx) {

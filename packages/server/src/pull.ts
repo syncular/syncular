@@ -115,6 +115,7 @@ export function planUnit(
   scopes: UnitScopes,
   tables: readonly CompiledTable[],
   resolved: ResolvedScopes,
+  id = unitId(scopes),
 ): UnitPlan {
   const requested: ScopeMap = {};
   for (const [key, value] of Object.entries(scopes)) requested[key] = [value];
@@ -144,7 +145,7 @@ export function planUnit(
   }
   const active = pairs.size > 0;
   return {
-    id: unitId(scopes),
+    id,
     scopes,
     tables,
     pairs,

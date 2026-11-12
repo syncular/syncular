@@ -646,6 +646,9 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       WINDOWS_TABLE,
       'base TEXT NOT NULL,unit TEXT NOT NULL,sub_id TEXT NOT NULL,PRIMARY KEY(base,unit)',
     );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS ${WINDOWS_TABLE}_unit ON ${WINDOWS_TABLE}(sub_id)`,
+    );
     // §4.8 E1: per-table scopes of units that left with pinned or unevicted
     // rows. Retried when the outbox drains; cancelled when the unit re-enters.
     createTable(

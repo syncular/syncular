@@ -352,7 +352,9 @@ async function planRequest(
 
   // §4.1: the effective list is the traveling list, or the stored list the
   // digest names; a digest naming neither answers `unregistered`.
-  let list: { scopes: UnitScopes; tables: CompiledTable[] }[] | undefined;
+  let list:
+    | { scopes: UnitScopes; tables: CompiledTable[]; id: string }[]
+    | undefined;
   let registration: ClientRegistration | undefined;
   if (pullHeader !== undefined) {
     // §4.2: rows support is mandatory (bits 0 and 1).
@@ -399,7 +401,7 @@ async function planRequest(
           );
         }
         ids.add(id);
-        return { scopes, tables };
+        return { scopes, tables, id };
       });
       const progressed = new Set<string>();
       for (const frame of progressFrames) {
@@ -438,8 +440,8 @@ async function planRequest(
             header: pullHeader,
             limits: clampPullLimits(pullHeader),
             registration,
-            units: list?.map(({ scopes, tables }) => {
-              const plan = planUnit(scopes, tables, resolved);
+            units: list?.map(({ scopes, tables, id }) => {
+              const plan = planUnit(scopes, tables, resolved, id);
               return { plan, progress: progress.get(plan.id) };
             }),
           },

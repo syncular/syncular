@@ -228,7 +228,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
             asOfCommitSeq: 7,
             scopeDigest: 'digest',
           },
-          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: () => [],
+          },
         ),
       ).toBe(rows.length);
       expect(db.decoded).toBe(0);
@@ -280,7 +284,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
           {
             clearFirst: true,
             effective: { project_id: ['p1'] },
-            owners: [],
+            owners: () => [],
             onProgress: (rows) => progress.push(rows),
             transaction: (fn) => {
               const result = db.transaction(fn);
@@ -348,7 +352,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
           table,
           image.db.serialize(),
           descriptor,
-          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: () => [],
+          },
         ),
       ).rejects.toThrow();
       expect(db.query('SELECT count(*) AS n FROM tasks')).toEqual([
@@ -368,7 +376,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
           table,
           image.db.serialize(),
           descriptor,
-          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: () => [],
+          },
         ),
       ).resolves.toBe(2050);
       expect(
@@ -412,7 +424,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
             asOfCommitSeq: 7,
             scopeDigest: 'digest',
           },
-          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: () => [],
+          },
         ),
       ).rejects.toThrow();
     } finally {
@@ -482,7 +498,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
           asOfCommitSeq: 7,
           scopeDigest: 'digest',
         },
-        { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+        {
+          clearFirst: true,
+          effective: { project_id: ['p1'] },
+          owners: () => [],
+        },
       ).then(
         () => undefined,
         (error: unknown) => error,
@@ -528,7 +548,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
           },
         ]),
         descriptor,
-        { clearFirst: false, effective: { project_id: ['p1'] }, owners: [] },
+        {
+          clearFirst: false,
+          effective: { project_id: ['p1'] },
+          owners: () => [],
+        },
       ),
     ).toBe(1);
     upsertLocalRow(db, table, ['t2', 'p1', 'original'], 1);
@@ -547,7 +571,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
           },
         ]),
         descriptor,
-        { clearFirst: false, effective: { project_id: ['p1'] }, owners: [] },
+        {
+          clearFirst: false,
+          effective: { project_id: ['p1'] },
+          owners: () => [],
+        },
       ),
     ).rejects.toThrow();
     expect(

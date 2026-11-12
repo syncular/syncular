@@ -21,6 +21,8 @@ import {
   ValidationRejection,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import { deleteScopedRows } from '../src/apply';
+import { compileClientSchema, ensureLocalSchema } from '../src/schema';
 import { schema as generatedSchema } from '../../typegen/test/fixtures/basic/syncular.generated';
 import {
   docsInProjectQuery,
@@ -505,5 +507,51 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
         .flatMap((batch) => batch.tables)
         .filter((t) => t.table === 'docs'),
     ).toEqual([{ table: 'docs' }]);
+  });
+});
+
+describe('owner exclusion at scale (§4.8)', () => {
+  test('a scoped delete excludes thousands of owners in one bounded statement', () => {
+    const schema = compileClientSchema({
+      version: 1,
+      tables: [
+        {
+          name: 'codes',
+          primaryKey: 'id',
+          scopes: ['org:{org_id}', { pattern: 'rank:{rank}', column: 'rank' }],
+          columns: [
+            { name: 'id', type: 'string', nullable: false },
+            { name: 'org_id', type: 'string', nullable: false },
+            { name: 'rank', type: 'integer', nullable: false },
+          ],
+        },
+      ],
+    });
+    const table = schema.tables.get('codes')!;
+    const db = new BunClientDatabase(':memory:');
+    ensureLocalSchema(db, schema);
+    for (const [id, org, rank] of [
+      ['r1', 'o1', 1],
+      ['r2', 'o2', 2],
+      ['r3', 'o3', 3],
+      ['r4', 'o1', 4],
+    ] as const)
+      db.exec('INSERT INTO codes(id,org_id,rank)VALUES(?,?,?)', [
+        id,
+        org,
+        rank,
+      ]);
+    const owners = [
+      ...Array.from({ length: 3_000 }, (_, i) => ({ org_id: [`x${i}`] })),
+      ...Array.from({ length: 2_000 }, (_, i) => ({
+        org_id: ['zz'],
+        rank: [String(i)],
+      })),
+      ...Array.from({ length: 2_000 }, (_, i) => ({ rank: [String(i + 9)] })),
+      { org_id: ['o2'] },
+      { org_id: ['o1'], rank: ['4'] },
+    ];
+    deleteScopedRows(db, table, { rank: ['1', '2', '3', '4'] }, owners);
+    expect(tableRows(db, 'codes').map((row) => row.id)).toEqual(['r2', 'r4']);
   });
 });

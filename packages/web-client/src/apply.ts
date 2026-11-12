@@ -248,25 +248,48 @@ export function localScopePredicate(
   const entries = Object.entries(effective);
   if (!entries.length || entries.some(([, values]) => !values.length)) return;
   const params: string[] = [];
-  const sql = entries
-    .map(([variable, values]) => {
-      const column = table.scopeColumnByVariable.get(variable);
-      if (column === undefined)
-        throw new ClientSyncError(
-          'sync.scope_revoked',
-          'table has no local scope-column mapping',
-        );
-      params.push(...values);
-      return `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`;
-    })
-    .join(' AND ');
-  const kept = owners.flatMap((owner) => {
-    const scope = localScopePredicate(table, owner, []);
-    if (scope === undefined) return [];
-    params.push(...scope.params);
-    return [` AND NOT (${scope.sql})`];
+  const within = (variable: string, list: string) => {
+    const column = table.scopeColumnByVariable.get(variable);
+    if (column === undefined)
+      throw new ClientSyncError(
+        'sync.scope_revoked',
+        'table has no local scope-column mapping',
+      );
+    return `${quoteIdent(column)} IN (SELECT value FROM json_each(${list}))`;
+  };
+  const clauses = entries.map(([variable, values]) => {
+    params.push(JSON.stringify(values));
+    return within(variable, '?');
   });
-  return { sql: sql + kept.join(''), params };
+  // Owners bind as one JSON parameter per variable set, so the statement
+  // stays the same size at any owner count; owners of one variable bind the
+  // union of their values. An owner holding another value of a variable
+  // `effective` names owns none of its rows and drops out.
+  const groups = new Map<string, string[][][]>();
+  for (const owner of owners) {
+    const keys = Object.keys(owner).sort();
+    if (
+      keys.some((key) =>
+        effective[key]?.every((value) => !owner[key]!.includes(value)),
+      )
+    )
+      continue;
+    const tuples = groups.get(keys.join()) ?? [];
+    tuples.push(keys.map((key) => owner[key]!));
+    groups.set(keys.join(), tuples);
+  }
+  for (const [key, tuples] of groups) {
+    const keys = key.split(',');
+    params.push(JSON.stringify(keys[1] ? tuples : tuples.flat(2)));
+    clauses.push(
+      keys[1]
+        ? `NOT EXISTS (SELECT 1 FROM json_each(?) o WHERE ${keys
+            .map((variable, i) => within(variable, `o.value,'$[${i}]'`))
+            .join(' AND ')})`
+        : `NOT ${within(key, '?')}`,
+    );
+  }
+  return { sql: clauses.join(' AND '), params };
 }
 
 /** {@link localScopePredicate} over decoded row values (retained rows). */
@@ -436,8 +459,9 @@ export async function applySqliteSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
-    /** Pair scopes of the units that own rows of the table (§3.3). */
-    readonly owners: readonly ScopeMap[];
+    /** Pair scopes of the units that own rows of the table (§3.3), read
+     * inside the clearing transaction. */
+    readonly owners: () => readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
     readonly isCurrent?: () => boolean;
@@ -554,7 +578,7 @@ export async function applySqliteSegment(
           : [
               ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
               ...(first && options.clearFirst
-                ? bootstrapScope(db, table, options.effective, options.owners)
+                ? bootstrapScope(db, table, options.effective, options.owners())
                 : []),
               ...rows.map((row) =>
                 JSON.stringify([table.name, String(row[table.primaryKey])]),
@@ -562,7 +586,7 @@ export async function applySqliteSegment(
             ];
         const protectedRows = restoreFailedBases(db, schema, scope);
         if (first && options.clearFirst)
-          deleteScopedRows(db, table, options.effective, options.owners);
+          deleteScopedRows(db, table, options.effective, options.owners());
         const kept = new Set<string>();
         const skipped = new Set<string>();
         const landing = rows.filter((row) =>
@@ -641,8 +665,9 @@ export async function applyRowsSegment(
   options: {
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
-    /** Pair scopes of the units that own rows of the table (§3.3). */
-    readonly owners: readonly ScopeMap[];
+    /** Pair scopes of the units that own rows of the table (§3.3), read
+     * inside the clearing transaction. */
+    readonly owners: () => readonly ScopeMap[];
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
     readonly isCurrent?: () => boolean;
@@ -677,7 +702,7 @@ export async function applyRowsSegment(
       const scope: OverlayScope = [
         ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
         ...(clearThisBlock
-          ? bootstrapScope(db, table, options.effective, options.owners)
+          ? bootstrapScope(db, table, options.effective, options.owners())
           : []),
         ...rows.map((row) =>
           JSON.stringify([
@@ -688,7 +713,7 @@ export async function applyRowsSegment(
       ];
       const protectedRows = restoreFailedBases(db, schema, scope);
       if (clearThisBlock) {
-        deleteScopedRows(db, table, options.effective, options.owners);
+        deleteScopedRows(db, table, options.effective, options.owners());
       }
       const kept = new Set<string>();
       const skipped = new Set<string>();

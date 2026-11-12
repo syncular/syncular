@@ -257,7 +257,11 @@ describe('§5.11 encrypted round-trip', () => {
             asOfCommitSeq: 1,
             scopeDigest: 'digest',
           },
-          { clearFirst: true, effective: { project_id: ['p1'] }, owners: [] },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: () => [],
+          },
         ),
       ).rejects.toMatchObject({
         code: 'sync.invalid_request',

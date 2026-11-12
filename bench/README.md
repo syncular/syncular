@@ -40,6 +40,33 @@ time. `--dir` keeps the databases; otherwise they are deleted. The lane has no
 timing assertions. The same measurements for the TypeScript authority are in
 [the local authority guide](../apps/docs/src/content/guide-local-authority.md).
 
+## Primary-key unit lane
+
+`pk-unit-lane.ts` measures one-row units: a window over a variable that the
+table maps to its primary key, the shape an app uses to keep the reference
+rows its own data names (SPEC §4.8):
+
+```sh
+bun bench/src/pk-unit-lane.ts --units 500,2000,10000
+```
+
+It seeds 20,000 catalogue rows in two releases, raises
+`maxSubscriptionsPerRequest` to 20,000 and windows in every second row. Per
+size it prints one JSON object: the first sync to idle, a pull with an
+unchanged list (median of 20), a one-id window change (median of 10) and a
+pull after a commit to a referenced row (median of 10), each with request and
+response bytes, server and client time and the server's storage calls. It
+ends with the bytes of the client's `_syncular_*` tables. The lane has no
+timing assertions; the results are in
+[the pitfalls page](../apps/docs/src/content/pitfalls.md).
+
+`unit-bench` measures the same phases in the Rust core, with the Rust local
+authority as the server:
+
+```sh
+cargo run --release --manifest-path rust/Cargo.toml -p syncular-bench --bin unit-bench -- --sizes 500,2000,10000
+```
+
 ## Image import lane
 
 `bench:image-import` generates two catalogue images of the size one
