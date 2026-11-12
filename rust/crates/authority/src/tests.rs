@@ -1636,7 +1636,19 @@ fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
             json!("layout_changed_without_version_bump")
         )
     );
+    let scope_indexes = |authority: &LocalAuthority| -> Vec<String> {
+        authority
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='nodes' AND name LIKE 'sync_sx_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
     let mut authority = LocalAuthority::open(&path, &rescoped(2, "id")).unwrap();
+    // §4.7: the index of the column no pattern maps any more is gone.
+    assert_eq!(scope_indexes(&authority), [r#"sync_sx_["nodes","id"]"#]);
     let scopes = |authority: &LocalAuthority, row_id: &str| -> String {
         authority
             .conn

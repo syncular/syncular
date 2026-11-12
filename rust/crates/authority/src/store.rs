@@ -1233,23 +1233,33 @@ fn reencode(conn: &Connection, table: &Table, old: &[Column]) -> Result<(), Auth
     Ok(())
 }
 
-/// Replace the table's `sync_ix_*` indexes with the declared ones.
+/// Replace the table's `sync_ix_*` indexes with the declared ones and keep
+/// one `sync_sx_*` index per scope column (§4.7), so a bootstrap reads only
+/// its unit's rows in `_sync_row_id` order. A column no scope pattern maps
+/// any more loses its index.
 fn create_indexes(conn: &Connection, table: &Table) -> Result<(), AuthorityError> {
+    let scoped: Vec<(&str, String)> = table
+        .scopes
+        .iter()
+        .map(|scope| {
+            let column = table.columns[scope.column].name.as_str();
+            (column, format!("sync_sx_{}", json!([table.name, column])))
+        })
+        .collect();
     let existing: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?1 AND substr(name, 1, 8)='sync_ix_'")
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?1 AND substr(name, 1, 8) IN ('sync_ix_', 'sync_sx_')")
         .and_then(|mut statement| statement.query_map([&table.name], |row| row.get(0))?.collect())
         .db()?;
     for name in existing {
-        conn.execute_batch(&format!("DROP INDEX {}", quote(&name)))
-            .db()?;
+        if !scoped.iter().any(|(_, index)| *index == name) {
+            conn.execute_batch(&format!("DROP INDEX {}", quote(&name)))
+                .db()?;
+        }
     }
-    // §4.7: one index per scope column, so a bootstrap reads only its
-    // unit's rows in `_sync_row_id` order.
-    for scope in &table.scopes {
-        let column = &table.columns[scope.column].name;
+    for (column, index) in &scoped {
         conn.execute_batch(&format!(
             "CREATE INDEX IF NOT EXISTS {} ON {} (_sync_partition, {}, _sync_row_id)",
-            quote(&format!("sync_sx_{}", json!([table.name, column]))),
+            quote(index),
             quote(&table.name),
             quote(column)
         ))
