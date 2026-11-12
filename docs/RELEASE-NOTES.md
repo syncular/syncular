@@ -1,5 +1,21 @@
 # Syncular release notes
 
+## 0.67.2 release notes
+
+0.67.2 makes the end of each automatic drive observable in every browser tab.
+SSP2, the wire version and the multi-tab protocol are unchanged.
+
+The worker posts a `synced` event with the summary or error of each automatic
+`syncUntilIdle` drive, and the leader tab relays it to its followers. Only the
+leader tab's configuration `onSynced` received it, so a follower could not
+tell a recovered replica from one whose drive was still failing.
+`SyncClientHandle.onSynced(listener)` delivers it in the leader and every
+follower tab and returns an unsubscribe function. A follower receives the
+drives of the leader it is bound to and drops a relayed event stamped with a
+previous leader's epoch; a drive that ended before the tab bound is not
+replayed. A listener stays registered when its tab promotes. The Tauri and
+React Native hosts do not expose `onSynced`.
+
 ## 0.67.1 release notes
 
 0.67.1 records how a window change applies when it fails part-way, runs the

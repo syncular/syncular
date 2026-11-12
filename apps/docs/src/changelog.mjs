@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'Every tab sees the end of each automatic drive',
+    body: "The worker posts the summary or error of each automatic `syncUntilIdle` drive, and the leader relays it to every follower, but only the leader tab's configuration `onSynced` received it. `handle.onSynced(listener)` now delivers it in the leader and every follower tab and returns an unsubscribe function. A follower drops the result of a previous leader by its epoch, and a listener stays registered across a promotion.",
+    links: [
+      {
+        href: '/platform-web-realtime/#realtime-policy',
+        label: 'Handle events',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'A window change that fails part-way keeps what it applied',
     body: '`setWindow` applies the entering values in the order you list them, then the leaving values, one transaction per value, in both clients. A failure at one value returns the error and keeps the values applied before it; calling `setWindow` again with the same set applies the rest and registers each unit once. SPEC §4.8 now states this rule, and a test in each core pins it.',
     links: [

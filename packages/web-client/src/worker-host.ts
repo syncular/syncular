@@ -260,11 +260,8 @@ export interface SyncClientHandleConfig {
   readonly onLeadershipChange?: (state: LeadershipState) => void;
   readonly onSyncNeeded?: (reason: 'startup' | 'hello' | WakeReason) => void;
   readonly onConflict?: (conflict: ConflictRecord) => void;
-  /** A worker-side autoSync round finished (or failed). */
-  readonly onSynced?: (result: {
-    readonly summary?: SyncSummary;
-    readonly error?: WorkerErrorShape;
-  }) => void;
+  /** The leader worker's automatic drive ended (leader tab only). */
+  readonly onSynced?: SyncedListener;
   /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
   readonly onUpgrading?: (upgrading: boolean) => void;
   /** §8.6: presence on a scope key changed, or the server refused this
@@ -273,6 +270,15 @@ export interface SyncClientHandleConfig {
   /** Atomic privacy-safe diagnostics changed. */
   readonly onDiagnostics?: (snapshot: ClientDiagnosticsSnapshot) => void;
 }
+
+/**
+ * The end of one automatic `syncUntilIdle` drive in the leader worker: its
+ * summary, or the error it failed with.
+ */
+export type SyncedListener = (result: {
+  readonly summary?: SyncSummary;
+  readonly error?: WorkerErrorShape;
+}) => void;
 
 interface Pending {
   resolve(value: unknown): void;
@@ -338,6 +344,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   #core: LeaderCore | undefined;
   readonly #invalidation: InvalidationEmitter;
   readonly #progress = new ProgressEmitter();
+  readonly #synced = new Set<SyncedListener>();
   readonly #changes: ChangeEmitter;
   readonly #presence: Set<
     (scopeKey: string, error?: PresenceErrorCode) => void
@@ -456,6 +463,14 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
       this.#changes.emit(event.batch);
       const legacy = invalidationFromChange(event.batch);
       if (legacy !== undefined) this.#invalidation.emit(legacy);
+    } else if (event.kind === 'synced') {
+      for (const listener of this.#synced) {
+        try {
+          listener(syncedResult(event));
+        } catch {
+          /* a UI listener must never break event dispatch */
+        }
+      }
     } else if (event.kind === 'diagnostics') {
       this.#diagnostics.emit(
         withClientDiagnosticsHost(event.snapshot, {
@@ -513,6 +528,19 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     this.#presence.add(listener);
     return () => {
       this.#presence.delete(listener);
+    };
+  }
+
+  /**
+   * Subscribe to the end of every automatic drive of the current leader's
+   * worker, in leader and follower tabs alike. A follower receives only the
+   * drives of the leader it is bound to; a drive that ended before this tab
+   * bound is not replayed. Returns an unsubscribe function.
+   */
+  onSynced(listener: SyncedListener): () => void {
+    this.#synced.add(listener);
+    return () => {
+      this.#synced.delete(listener);
     };
   }
 
@@ -1073,6 +1101,15 @@ function buildInitConfig(
   };
 }
 
+function syncedResult(
+  event: Extract<SyncWorkerEvent, { kind: 'synced' }>,
+): Parameters<SyncedListener>[0] {
+  return {
+    ...(event.summary !== undefined ? { summary: event.summary } : {}),
+    ...(event.error !== undefined ? { error: event.error } : {}),
+  };
+}
+
 /** Route a worker event to the config-level callbacks (leader visibility). */
 function fireConfigCallbacks(
   config: SyncClientHandleConfig,
@@ -1087,10 +1124,7 @@ function fireConfigCallbacks(
   } else if (event.kind === 'presence') {
     config.onPresence?.(event.scopeKey, event.error);
   } else if (event.kind === 'synced') {
-    config.onSynced?.({
-      ...(event.summary !== undefined ? { summary: event.summary } : {}),
-      ...(event.error !== undefined ? { error: event.error } : {}),
-    });
+    config.onSynced?.(syncedResult(event));
   } else if (event.kind === 'diagnostics') {
     config.onDiagnostics?.(event.snapshot);
   }

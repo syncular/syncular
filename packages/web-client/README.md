@@ -86,7 +86,8 @@ acquires the Web Locks leader lock *before* spawning the worker — one
 core per origin. Wake-ups are handled inside the worker (`autoSync`,
 SPEC §8.4); the supported page-level realtime supervisor owns reconnect and
 resume policy. The main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
-events for rendering.
+events for rendering in the leader tab; `handle.onSynced(listener)` reports the
+end of each automatic drive in every tab, followers included.
 
 For a reviewed recovery from a retained conflict or rejection, call
 `await client.proveCurrentBase(outcome)`. The result contains bases for every

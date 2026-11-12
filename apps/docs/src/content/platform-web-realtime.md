@@ -175,8 +175,20 @@ page reacts to revisioned changes and re-queries. On a direct `SyncClient`,
 provide `onSyncNeeded` and call `sync()` when it fires.
 
 The handle's `onSyncNeeded`, `onConflict`, `onSynced`, `onUpgrading`,
-`onPresence`, and `onDiagnostics` callbacks give the main thread the events it
-needs for rendering. `connectRealtime()` and `disconnectRealtime()` remain for
+`onPresence`, and `onDiagnostics` configuration callbacks give the main thread the
+events it needs for rendering. They fire in the tab whose worker raised the
+event, which is the leader tab.
+
+`handle.onSynced(listener)` fires in every tab, leader and follower, at the
+end of each automatic drive with `{ summary }` or `{ error }`, and returns an
+unsubscribe function. A follower receives the drives of the leader it is bound
+to: the leader stamps every relayed event with its epoch, and the follower
+drops an event of a previous leader. A drive that ended before the tab bound is
+not replayed; read `statusSnapshot()` for the current state. A listener stays
+registered when its tab promotes and then receives the drives of the tab's own
+worker. The Tauri and React Native hosts do not expose `onSynced`.
+
+`connectRealtime()` and `disconnectRealtime()` remain for
 custom hosts. Both are idempotent and single-flight, so repeated or concurrent
 connects cannot orphan another socket.
 

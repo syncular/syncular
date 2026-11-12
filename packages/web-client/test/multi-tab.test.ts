@@ -188,11 +188,15 @@ class ChannelPartition<E = SyncWorkerEvent> {
   }
 }
 
-/** A worker that answers every call at once, except `held`, which it never answers. */
+/**
+ * A worker that answers every call at once, except `held`, which it never
+ * answers. `posts` receives the function that posts a worker message.
+ */
 function fakeReadyWorker(
   clientId: string,
   initConfigs: WorkerInitConfig[],
   held?: string,
+  posts?: Array<(data: unknown) => void>,
 ): Worker {
   const messageListeners = new Set<(event: MessageEvent) => void>();
   let readyScheduled = false;
@@ -201,6 +205,7 @@ function fakeReadyWorker(
       listener({ data } as MessageEvent);
     }
   };
+  posts?.push(emit);
   return {
     addEventListener: (
       type: string,
@@ -787,6 +792,95 @@ for (const preflight of [false, true]) {
     expect(changes).toBeGreaterThan(seen.changes);
   });
 }
+
+test('every handle observes the end of each automatic drive of its current leader', async () => {
+  const lock = makeSharedLock();
+  const lockName = `mt-synced-${lockSeq++}`;
+  const partition = new ChannelPartition();
+  const posts = new Map<string, Array<(data: unknown) => void>>();
+  const configSynced: Array<{
+    readonly tab: string;
+    readonly result: unknown;
+  }> = [];
+  const make = async (tab: string): Promise<SyncClientHandle> => {
+    const workerPosts: Array<(data: unknown) => void> = [];
+    posts.set(tab, workerPosts);
+    const handle = await createSyncClientHandle({
+      worker: () => fakeReadyWorker(tab, [], undefined, workerPosts),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl },
+      autoSync: false,
+      leaderLock: lock,
+      lockName,
+      channelFactory: partition.factory,
+      onSynced: (result) => configSynced.push({ tab, result }),
+    });
+    open.push(handle);
+    return handle;
+  };
+  // A drive result as the worker posts it; the summary stays opaque here.
+  const drive = (tab: string, result: object): void => {
+    for (const post of posts.get(tab) ?? []) {
+      post({ t: 'event', event: { kind: 'synced', ...result } });
+    }
+  };
+  const failed = {
+    error: { code: 'sync.network', message: 'offline', retryable: true },
+  };
+  const succeeded = (pushed: number) => ({ summary: { pushed } });
+
+  // (1) Tab b joins while tab a's drive is still running; the drive fails.
+  const a = await make('a');
+  const b = await make('b');
+  expect(b.role).toBe('follower');
+  const aSeen: unknown[] = [];
+  const bSeen: unknown[] = [];
+  a.onSynced((result) => aSeen.push(result));
+  const offB = b.onSynced((result) => bSeen.push(result));
+  drive('a', failed);
+  await drain();
+  expect(aSeen).toEqual([failed]);
+  expect(bSeen).toEqual([failed]);
+
+  // (2) The next drive succeeds after the failure.
+  drive('a', succeeded(1));
+  await drain();
+  expect(bSeen).toEqual([failed, succeeded(1)]);
+  expect(configSynced.map((entry) => entry.tab)).toEqual(['a', 'a']);
+
+  // (3) Tab a closes; b promotes and keeps its listener. Tab c follows b and
+  // drops a drive result stamped with a's epoch.
+  const announced = partition.sent.find(
+    (entry) => entry.message.t === 'announce',
+  );
+  if (announced?.message.t !== 'announce') throw new Error('no announce');
+  const promoted = Promise.withResolvers<string>();
+  b.onRoleChange(promoted.resolve);
+  await a.close();
+  expect(await promoted.promise).toBe('leader');
+  const c = await make('c');
+  expect(c.role).toBe('follower');
+  const cSeen: unknown[] = [];
+  c.onSynced((result) => cSeen.push(result));
+  partition.deliver(announced.name, {
+    t: 'event',
+    epoch: announced.message.epoch,
+    event: { kind: 'synced', ...succeeded(99) },
+  } as MultiTabMessage);
+  drive('b', succeeded(2));
+  await drain();
+  expect(cSeen).toEqual([succeeded(2)]);
+  expect(bSeen.at(-1)).toEqual(succeeded(2));
+  expect(configSynced.map((entry) => entry.tab)).toEqual(['a', 'a', 'b']);
+
+  // Unsubscribing stops delivery.
+  offB();
+  drive('b', failed);
+  await drain();
+  expect(bSeen).toHaveLength(3);
+  expect(cSeen).toHaveLength(2);
+});
 
 test('a tab promoted while its own core starts past the follower timeout returns as leader', async () => {
   // A full-page navigation: the previous document still holds the lock when
