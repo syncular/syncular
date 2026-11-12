@@ -81,21 +81,24 @@ const WORKLOAD = {
  * and from `bench:ci` runs on that host (25k rows, load ~3.3 on 10 cores);
  * regenerate the record with a plain `bun run bench` before retuning.
  *
- * - `bootstrapRowsPerSecFloor` 90,000/s: the local 100k bootstrap runs at
- *   ~260-275k rows/s (CI mode ~260-277k). The floor sits ~3x below that to
- *   absorb slower shared CI runners, yet still catches an apply-path
- *   regression toward a naive row-by-row rate (~125k rows/s locally => well
- *   under 90k/s on a CI runner). Rows/sec normalizes across the reduced CI
- *   row count.
- * - `imageBootstrapRowsPerSecFloor` 600,000/s: the §5.3 sqlite-image lane
+ * - `bootstrapRowsPerSecFloor` 65,000/s: the local 100k bootstrap runs at
+ *   ~260-275k rows/s (CI mode ~260-277k). GitHub runners measured
+ *   76,948-129,626/s on unchanged code in ten CI runs (2026-11-11/12); the
+ *   image lane slowed by the same factor in the slow runs, so the spread is
+ *   runner speed. The floor sits 15% below the slowest runner seen and still
+ *   catches an apply-path regression toward a naive row-by-row rate (~125k
+ *   rows/s locally, 2.2x slower: ~59k/s on the fastest runner seen). Rows/sec
+ *   normalizes across the reduced CI row count. The previous 90,000/s floor
+ *   failed on slow runners.
+ * - `imageBootstrapRowsPerSecFloor` 450,000/s: the §5.3 sqlite-image lane
  *   (warm/storm case, stored image reused per scopes+pin) runs at ~2.1M
- *   rows/s locally at 100k and 1.9-2.2M rows/s at the CI-mode 25k rows. The
- *   floor sits ~3x below that. The regression fixed in 49f5d3c2 (image
- *   import reading every staged row back for overlay reconciliation with an
- *   empty outbox) measured 0.7-0.8M rows/s in CI mode on the same host, so
- *   the old 300,000/s floor passed it; this floor catches it on a host as
- *   fast as the baseline. Asserted on the warm median: the §5.3 reuse rule
- *   is part of what the budget pins.
+ *   rows/s locally at 100k and 1.9-2.2M rows/s at the CI-mode 25k rows;
+ *   GitHub runners measured 630k-1.55M/s in the same ten runs. The
+ *   regression fixed in 49f5d3c2 (image import reading every staged row back
+ *   for overlay reconciliation with an empty outbox) measured 0.7-0.8M
+ *   rows/s in CI mode locally; `imageToRowsRatioFloor` catches it on any
+ *   runner, and this floor catches a collapse of the lane. Asserted on the
+ *   warm median: the §5.3 reuse rule is part of what the budget pins.
  * - `imageToRowsRatioFloor` 5: the warm image lane must be at least 5x the
  *   rows lane's rows/s within the same run. Locally the ratio is 7.3-8.4 in
  *   CI mode (7.9 at 100k) and 3.1-3.4 with the 49f5d3c2 regression. Both
@@ -121,8 +124,8 @@ const WORKLOAD = {
  *   letting the payload drift unbounded.
  */
 const BUDGETS = {
-  bootstrapRowsPerSecFloor: 90_000,
-  imageBootstrapRowsPerSecFloor: 600_000,
+  bootstrapRowsPerSecFloor: 65_000,
+  imageBootstrapRowsPerSecFloor: 450_000,
   imageToRowsRatioFloor: 5,
   propagationP95CeilingMs: 20,
   ownJsRawCeilingBytes: 175 * 1024,
