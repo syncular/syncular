@@ -7,7 +7,7 @@
 // demo server (apps/demo, port 8787) — start that first, then `flutter run`.
 import 'dart:io' show Platform;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:syncular/syncular.dart';
 
