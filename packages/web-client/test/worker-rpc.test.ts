@@ -12,6 +12,7 @@ import { unitId, decodeMessage } from '@syncular/core';
 import {
   ClientSyncError,
   createSyncClientHandle,
+  singleOwnerLock,
   INVALID_HOST_RESPONSE_CODE,
   LOCAL_AUTHORITY_UNCONFIGURED_CODE,
   type LeaderLease,
@@ -120,6 +121,7 @@ async function forgedReplyHandle(
   value: unknown,
 ): Promise<SyncClientHandle> {
   return createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () =>
       scriptedWorker((called) => ({ replied: called === method, value })),
     schema: { version: 1, tables: [] },
@@ -155,6 +157,7 @@ async function makeHandle(
 ): Promise<{ handle: SyncClientHandle; events: HandleEvents }> {
   const events: HandleEvents = { wakes: [], conflicts: 0, synced: [] };
   const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () => new Worker(WORKER_URL),
     schema: CLIENT_SCHEMA,
     database: { mode: 'custom' },
@@ -200,6 +203,7 @@ test('worker RPC retains structured segment transport evidence', async () => {
     causeMessage: 'Load failed',
   };
   const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () =>
       scriptedWorker((method) => ({
         replied: false,
@@ -1124,6 +1128,7 @@ test('a second handle on the same lock (multiTab: false) gets a clear not-leader
 test('worker init failure rejects the handle cleanly', async () => {
   await expectRejectsWithCode(
     createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
       worker: () => new Worker(WORKER_URL),
       schema: CLIENT_SCHEMA,
       database: { mode: 'custom', options: 'fail' },
@@ -1156,6 +1161,7 @@ test('retryable storage ownership failure crosses worker RPC and releases leader
   let caught: unknown;
   try {
     await createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
       worker: () => new Worker(WORKER_URL),
       schema: CLIENT_SCHEMA,
       database: { mode: 'custom', options: 'storage-busy' },
@@ -1174,6 +1180,7 @@ test('retryable storage ownership failure crosses worker RPC and releases leader
   // The failed worker released its leader lease, so the same factory can be
   // attempted again instead of leaving this origin permanently wedged.
   const recovered = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () => new Worker(WORKER_URL),
     schema: CLIENT_SCHEMA,
     database: { mode: 'custom' },
@@ -1321,6 +1328,7 @@ test('remote worker refuses local authority before opening storage and omits its
   });
   await expectRejectsWithCode(
     createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
       worker: () => worker,
       schema: CLIENT_SCHEMA,
       database: { mode: 'custom' },
@@ -1356,6 +1364,7 @@ test('remote worker refuses local authority before opening storage and omits its
 test('ordinary worker rejects authority declarations before opening storage', async () => {
   await expectRejectsWithCode(
     createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
       worker: () =>
         new Worker(new URL('./ordinary-rpc-worker.ts', import.meta.url).href),
       schema: CLIENT_SCHEMA,
@@ -1379,6 +1388,7 @@ test('ordinary worker rejects authority declarations before opening storage', as
 test('forged worker authority RPC arguments reach the core zero-argument refusal', async () => {
   const worker = new Worker(WORKER_URL);
   const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () => worker,
     schema: CLIENT_SCHEMA,
     database: { mode: 'custom' },
@@ -1484,6 +1494,7 @@ test('wake-ups during a queued round share one follow-up drive', async () => {
     }
   });
   const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () => worker,
     schema: CLIENT_SCHEMA,
     database: { mode: 'custom' },
@@ -1609,6 +1620,7 @@ test('concurrent and repeated handle close join one held worker close', async ()
   let releaseClose: (() => void) | undefined;
   let closeCalls = 0;
   const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () =>
       scriptedWorker((method) => {
         if (method !== 'close') return { replied: false };
@@ -1744,4 +1756,23 @@ test('a requested drive reaches onSynced like an automatic one', async () => {
   expect(refusals).toHaveLength(1);
   expect(refusals[0]?.error?.code).toBe((caught as ClientSyncError).code);
   expect(refused.events.synced).toEqual(refusals);
+});
+
+test('a runtime without Web Locks refuses the handle before spawning a worker', async () => {
+  expect(navigator.locks).toBeUndefined();
+  let spawned = 0;
+  const caught = await createSyncClientHandle({
+    worker: () => {
+      spawned += 1;
+      return new Worker(WORKER_URL);
+    },
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: false,
+  }).catch((error: unknown) => error);
+  expect(caught).toBeInstanceOf(ClientSyncError);
+  expect((caught as ClientSyncError).code).toBe('client.web_locks_unavailable');
+  expect((caught as ClientSyncError).retryable).toBe(false);
+  expect(spawned).toBe(0);
 });

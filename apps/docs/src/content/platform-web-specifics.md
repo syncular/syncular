@@ -298,6 +298,7 @@ coordinator releases it after `close`.
 | Other storage | The client does not use IndexedDB. No wa-sqlite or absurd-sql style fallback is planned. |
 | Storage class | OPFS starts in the best-effort bucket. Use the persistence calls above to establish and surface the browser's decision. |
 | Missing OPFS APIs | Non-retryable `client.storage_unavailable`. |
+| Missing Web Locks | `createSyncClientHandle` refuses with non-retryable `client.web_locks_unavailable` before it spawns the worker. A host that guarantees one owner per replica injects `leaderLock` (`singleOwnerLock()` for a single-context test host). |
 
 ### Startup retries
 

@@ -1,5 +1,23 @@
 # Syncular release notes
 
+## 0.68.0 release notes
+
+0.68.0 refuses a browser Worker handle on a page without Web Locks. SSP2 and
+the wire version are unchanged.
+
+**Web Locks.** `createSyncClientHandle` granted every tab the leader lease when
+the page had no `navigator.locks` and the host injected no `leaderLock`, so
+two tabs could both run a core against the same replica
+(SYNCULAR-WORKER-WEB-LOCK-FALLBACK-001). The handle now rejects with
+non-retryable `client.web_locks_unavailable` before it spawns the worker.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Pages
+served from an insecure origin (plain `http:` other than `localhost`) and test
+runtimes such as Bun and Node have no Web Locks. Serve the app from a secure
+origin, or, where the host guarantees one owner per replica, pass
+`leaderLock: singleOwnerLock()` or another `LeaderLock`. Current browsers expose
+Web Locks on a secure origin.
+
 ## 0.67.3 release notes
 
 0.67.3 reports a requested drive to every tab. SSP2 and the wire version are

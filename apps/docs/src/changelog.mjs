@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'A page without Web Locks refuses the worker handle',
+    body: '`createSyncClientHandle` fell back to a lock that grants every request when the page had no `navigator.locks`, so two tabs could both run a core against the same replica. It now rejects with non-retryable `client.web_locks_unavailable` before it spawns the worker. A host that guarantees one owner per replica by other means passes `leaderLock`.',
+    links: [
+      {
+        href: '/platform-web-specifics/#support-floor',
+        label: 'Web support floor',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'A requested drive reaches every tab',
     body: "`handle.onSynced` heard only automatic drives. A drive a tab requested through `handle.syncUntilIdle()` resolved in that tab alone, so after a failed endpoint recovered through one tab's drive, the leader and the other tabs stayed unconfirmed until the next automatic drive. The worker now reports the end of every drive to idle, automatic or requested, to every handle's `onSynced` and to the leader tab's configuration `onSynced`.",
     links: [

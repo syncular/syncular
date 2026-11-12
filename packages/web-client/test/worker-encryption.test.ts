@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test';
 import {
   type ClientSchema,
   createSyncClientHandle,
+  singleOwnerLock,
   type SyncClientHandle,
 } from '@syncular/client';
 import type { RowColumn } from '@syncular/core';
@@ -56,6 +57,7 @@ test('worker keyring encrypts by a row key-id column and decrypts locally', asyn
   const handles: SyncClientHandle[] = [];
   const makeHandle = async (clientId: string) => {
     const handle = await createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
       worker: () => new Worker(WORKER_URL),
       schema: CLIENT_SCHEMA,
       database: { mode: 'custom' },
@@ -128,6 +130,7 @@ test('a worker round that meets a row without its key fails with client.encrypti
   const http = serveOverHttp(server);
   const makeHandle = (clientId: string, keys: Record<string, Uint8Array>) =>
     createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
       worker: () => new Worker(WORKER_URL),
       schema: CLIENT_SCHEMA,
       database: { mode: 'custom' },

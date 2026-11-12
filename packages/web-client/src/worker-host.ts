@@ -74,7 +74,6 @@ import {
 import {
   type LeaderLease,
   type LeaderLock,
-  singleOwnerLock,
   webLocksLeaderLock,
 } from './leader-lock';
 import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
@@ -224,7 +223,10 @@ export interface SyncClientHandleConfig {
   readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /** Worker-side host loop (§8.4); default true. */
   readonly autoSync?: boolean;
-  /** Default: Web Locks when available, else single-owner. */
+  /**
+   * Default: Web Locks. A runtime without Web Locks refuses the handle with
+   * `client.web_locks_unavailable` unless the host injects a lock.
+   */
   readonly leaderLock?: LeaderLock;
   readonly lockName?: string;
   /** Shared by default; isolated derives the database/lock/channel tuple. */
@@ -287,9 +289,12 @@ interface Pending {
 
 function defaultLeaderLock(): LeaderLock {
   const nav = (globalThis as { navigator?: { locks?: LockManager } }).navigator;
-  return nav?.locks !== undefined
-    ? webLocksLeaderLock(nav.locks)
-    : singleOwnerLock();
+  if (nav?.locks === undefined)
+    throw new ClientSyncError(
+      'client.web_locks_unavailable',
+      'this runtime has no Web Locks; inject a leaderLock',
+    );
+  return webLocksLeaderLock(nav.locks);
 }
 
 /**

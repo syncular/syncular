@@ -7,6 +7,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import {
   ClientSyncError,
   createSyncClientHandle,
+  singleOwnerLock,
   LOCAL_AUTHORITY_UNCONFIGURED_CODE,
   type SyncClientHandle,
 } from '@syncular/client';
@@ -39,6 +40,7 @@ async function handleFor(
   clientId: string,
 ): Promise<SyncClientHandle> {
   const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
     worker: () => new Worker(new URL(worker, import.meta.url).href),
     schema: CLIENT_SCHEMA,
     database: { mode: 'custom' },

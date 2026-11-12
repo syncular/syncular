@@ -5060,6 +5060,14 @@ when pending outbox commits exist. A denied request leaves the database usable
 with best-effort durability. A second origin-local outbox store does not cover
 origin eviction and MUST NOT be presented as an eviction backup.
 
+**Browser leader lease.** A browser Worker handle elects its leader tab with an
+exclusive Web Lock. When the host injects no leader lock and the document has
+no `navigator.locks`, the handle MUST refuse before it spawns a worker with the
+non-retryable client-local code `client.web_locks_unavailable`. It MUST NOT
+grant an uncoordinated lease, because two tabs would then both run a core
+against the same replica. A host that guarantees a single owner by other means
+injects its own lock.
+
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
 SAHs. This lock belongs to the worker, so a replacement document waits until
@@ -7487,6 +7495,7 @@ structured kind/limit/size/commit details],
 `client.storage_full` [§7.5 — local SQLite storage hit `SQLITE_FULL`; non-retryable],
 `client.storage_busy` [§7.5 — a local write hit SQLite `SQLITE_BUSY` or
 `SQLITE_LOCKED`, including extended codes; retryable],
+`client.web_locks_unavailable` [§7.1 — a browser Worker handle without an injected leader lock found no Web Locks; non-retryable],
 `client.query_failed` [§7.6 — the diagnostics code for any other failed
 owned snapshot read; never raised as an error],
 `client.worker_restart_required` [a browser worker module

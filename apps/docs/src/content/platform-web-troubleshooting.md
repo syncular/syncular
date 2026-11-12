@@ -16,6 +16,7 @@ and tab failures to their entries there.
 | `client.leader_incompatible` | The leader runs another multi-tab protocol or schema version. | [Troubleshooting](/troubleshooting/#clientleader_incompatible-in-a-follower-tab) |
 | `client.leadership_taken` | Another tab took over while this one did not respond. | [Troubleshooting](/troubleshooting/#clientleadership_taken-in-a-tab-that-stopped-responding) |
 | `client.storage_busy` at startup | Another live engine still holds the OPFS pool. | [Troubleshooting](/troubleshooting/#clientstorage_busy-while-opening-the-app) |
+| `client.web_locks_unavailable` at startup | The page has no `navigator.locks`: an insecure origin (plain `http:` other than `localhost`), or a test runtime such as Bun or Node. | [Support floor](/platform-web-specifics/#support-floor) |
 | Pending outbox on best-effort storage | The browser has not granted persistence. | [Troubleshooting](/troubleshooting/#pending-outbox-on-best-effort-browser-storage) |
 | `client.worker_restart_required` | A dev server worker graph refers to a retired chunk. | [Troubleshooting](/troubleshooting/#clientworker_restart_required-after-a-package-upgrade) |
 | Build errors naming `sqlite-wasm` or the worker | The Vite config lacks the optimizer exclusions or `worker.format: 'es'`. | [Install & first sync](/platform-web-install/#configure-vite) |

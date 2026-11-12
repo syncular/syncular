@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   ClientSyncError,
   createSyncClientHandle,
+  singleOwnerLock,
   decodeLocalDataRebootstrapResult,
   INVALID_HOST_RESPONSE_CODE,
 } from '@syncular/client';
@@ -106,6 +107,7 @@ describe('local rebootstrap acknowledgement decoder', () => {
     'the Worker adapter rejects malformed value %#',
     async (value) => {
       const handle = await createSyncClientHandle({
+        leaderLock: singleOwnerLock(),
         worker: () => malformedResultWorker(value),
         schema: { version: 1, tables: [] },
         database: { mode: 'custom' },
