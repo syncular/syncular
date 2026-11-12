@@ -1,5 +1,59 @@
 # Syncular release notes
 
+## 0.66.1 release notes
+
+0.66.1 lets a bounded SYQL query join a table by its primary key
+(SYNCULAR-SYQL-BOUNDED-LEFT-JOIN-001) and fixes the `minimal` template of
+`create-syncular-app`. SSP2, the wire version and the Rust core are unchanged.
+
+A query such as `left join codes p on p.id = c.parent_id` failed with
+`SYQL6006_INVALID_SORT` when it was bounded, because `typegen` proved no result
+identity for any `LEFT JOIN` or for a table read twice. SYQL §14.2 now binds a
+relation when an `ON` equality equates its primary key with a parameter, a
+literal, a column of a relation earlier in the `FROM` clause, or a column of a
+CTE reference. Each row before it matches at most one row of a bound relation,
+so a `LEFT JOIN` of it keeps the rows, identity and total order of the
+relations before it, and an inner join of it removes rows without duplicating
+one. A bound relation contributes its key to the result identity only when the
+scope projects it, so the query neither projects nor orders the joined key.
+
+The proof refuses these cases, and a bounded query that contains one still
+fails with `SYQL6006_INVALID_SORT`:
+
+- a `LEFT JOIN` on a non-key column;
+- an `ON` clause that binds the key and contains `OR`, `NOT`, `CASE`,
+  `BETWEEN`, `COLLATE` or a subquery;
+- a `RIGHT` or `FULL` join, `DISTINCT`, `GROUP BY`, an aggregate, a compound
+  operator, `WITH RECURSIVE` or a CTE column list;
+- one column of a two-column CTE identity as the join key, because a CTE
+  reference is never bound.
+
+A statement without CTEs now goes through the same per-scope proof. The rule
+that a scope reads each table at most once is gone: the compiler matches each
+instance by its alias, so a self-join that projects each instance's key under
+its own alias gets that pair as its row key. Some existing queries therefore
+gain row keys in generated code. In the `basic` typegen fixture,
+`taskPriorityPeers` now has the row key `(taskId, peerId)` in the TypeScript,
+Rust, Swift, Kotlin and Dart output. A query without a row key uses unkeyed
+reconciliation.
+
+SYQL §14.2 has the full rule and a worked `searchCodes` example. See
+[Result identity](https://syncular.dev/syql/#result-identity).
+
+The `minimal` template of `create-syncular-app` set `lib` to `["ES2023"]`.
+Under the `bun` condition the published packages resolve to their `.ts`
+sources, so the user's `tsc` checks them with the template's compiler options,
+and without the DOM lib it failed on `LockManager` and `BodyInit`. A fresh
+minimal app's `bun run typecheck` reported 8 errors in the 0.66.0 packages. The
+template now uses `["ES2023", "DOM", "DOM.Iterable"]`, like the other
+templates, and reports 0. The scaffold typecheck test now counts diagnostics in
+the linked package sources too.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. No API is
+removed. Run `syncular generate` to pick up the new row keys: a query that
+gains a row key changes its generated code. An existing minimal app adds `"DOM"` and
+`"DOM.Iterable"` to `lib` in its `tsconfig.json` to clear the errors.
+
 ## 0.66.0 release notes
 
 0.66.0 imports SQLite images in growing transactions in both cores
