@@ -23,8 +23,10 @@ loses the reply of a `mutate` call reads its commit by that ID through
 holds throws `client.commit_id_reused` and writes nothing (SPEC §7.1). The ID
 already travelled in `PUSH_COMMIT`, so the wire is unchanged. The browser
 client now reports `sync.outbox_incompatible` with the static message the
-native client uses, and three `mutate` and `patch` validation errors no longer
-put table or column names in the message.
+native client uses. A patch that changes the primary key, writes a differing
+scope column or nulls a non-nullable column fails with a static message and
+carries the table and column in `details` in both clients; the Rust client
+previously put them in `details.legacyCause`.
 
 ## 0.68.0 release notes
 

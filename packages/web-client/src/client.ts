@@ -3465,6 +3465,7 @@ export class SyncClient {
           );
         for (const column of table.columns) {
           if (!normalized.has(column.name)) continue;
+          const at = { table: table.name, column: column.name };
           // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
           // server accepts a present scope column whose value equals the
           // stored row and applies it as a no-op, so a decoded envelope
@@ -3489,14 +3490,22 @@ export class SyncClient {
                 ),
               )
             ) {
-              throw invalidRequest('patch cannot write a scope column (§3.4)');
+              throw invalidRequest(
+                'patch cannot write a scope column (§3.4)',
+                false,
+                at,
+              );
             }
             continue;
           }
           const value = normalized.get(column.name);
           if (value === undefined || value === null) {
             if (!column.nullable) {
-              throw invalidRequest('a non-nullable column is null (§6.1)');
+              throw invalidRequest(
+                'a non-nullable column is null (§6.1)',
+                false,
+                at,
+              );
             }
             json[column.name] = null;
             continue;
@@ -3632,7 +3641,9 @@ export class SyncClient {
     const normalized = normalizeRecordKeys(compiled, partial);
     const pkOverride = normalized.get(pkColumn.name);
     if (pkOverride !== undefined && String(pkOverride) !== rowId) {
-      throw invalidRequest('patch cannot change the primary key');
+      throw invalidRequest('patch cannot change the primary key', false, {
+        table,
+      });
     }
     const pkType = localColumnType(pkColumn);
     const typedPk =
@@ -4050,12 +4061,10 @@ export class SyncClient {
             },
           );
       } catch (error) {
-        if (error instanceof OutboxEncodeError) {
-          this.#dropIncompatibleCommit(commit, error.message);
-          processed += 1;
-          continue;
-        }
-        if (error instanceof EncryptError) {
+        if (
+          error instanceof OutboxEncodeError ||
+          error instanceof EncryptError
+        ) {
           this.#dropIncompatibleCommit(commit, error.message, error.code);
           processed += 1;
           continue;

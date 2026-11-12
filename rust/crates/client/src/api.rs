@@ -711,7 +711,6 @@ fn static_authoring_message(code: &str) -> Option<&'static str> {
         "sync.invalid_request" => Some("the authoring request is invalid"),
         "sync.row_missing" => Some("a sparse patch requires a local row"),
         "sync.constraint_violation" => Some("local write violates a unique constraint"),
-        "client.commit_id_reused" => Some("clientCommitId is held"),
         DEFAULT_CLIENT_ERROR_CODE => Some(GENERIC_AUTHORING_MESSAGE),
         _ => None,
     }

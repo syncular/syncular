@@ -6185,7 +6185,10 @@ Both cores guarantee that a classified SQLite storage failure preserves its
 `rollbackFailure` in `details`. A native failure with a known code identity
 keeps that code; a failure with no code identity uses the stable default
 `client.failed`. The native APIs use a static `message` that carries no table,
-row, column, or other dynamic value, and preserve a legacy cause string with
+row, column, or other dynamic value. A `patch` that changes the primary key,
+writes a differing scope column, or nulls a non-nullable column fails with
+`sync.invalid_request` and details `{ table, column }` (`{ table }` for the
+primary key) in both cores. Other failures preserve a legacy cause string with
 dynamic values in `details.legacyCause`. Hosts of the native API MUST read
 the structured fields and MUST NOT parse a `"<code>: "` prefix from a rendered
 string.

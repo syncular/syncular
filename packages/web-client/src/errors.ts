@@ -61,8 +61,14 @@ export class ClientSyncError extends Error {
 export function invalidRequest(
   message: string,
   retryable = false,
+  details?: Readonly<Record<string, unknown>>,
 ): ClientSyncError {
-  return new ClientSyncError('sync.invalid_request', message, retryable);
+  return new ClientSyncError(
+    'sync.invalid_request',
+    message,
+    retryable,
+    details,
+  );
 }
 
 /** Shared retryable `sync.transport_failed` construction for client transports. */

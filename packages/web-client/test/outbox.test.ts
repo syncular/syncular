@@ -224,7 +224,22 @@ describe('encode-at-send (§6.1)', () => {
     );
     // A patch cannot write a scope column (§3.4).
     expect(() => a.client.patch('tasks', 't1', { projectId: 'p2' })).toThrow(
-      'scope column',
+      expect.objectContaining({
+        code: 'sync.invalid_request',
+        details: { table: 'tasks', column: 'project_id' },
+      }),
+    );
+    expect(() => a.client.patch('tasks', 't1', { id: 't2' })).toThrow(
+      expect.objectContaining({
+        message: 'patch cannot change the primary key',
+        details: { table: 'tasks' },
+      }),
+    );
+    expect(() => a.client.patch('tasks', 't1', { title: null })).toThrow(
+      expect.objectContaining({
+        message: 'a non-nullable column is null (§6.1)',
+        details: { table: 'tasks', column: 'title' },
+      }),
     );
   });
 

@@ -231,6 +231,16 @@ impl From<CommitOperation> for OutboxOp {
     }
 }
 
+/// §7.5 static authoring refusal; the table and column travel in details.
+fn invalid_authoring(message: &str, details: Value) -> ClientError {
+    ClientError {
+        code: "sync.invalid_request".to_owned(),
+        message: message.to_owned(),
+        details: Some(details),
+        retryable: false,
+    }
+}
+
 /// §7.1 chained base: `later` repeats `earlier`'s positive base on the same
 /// row and presents only columns `earlier` presents.
 fn chains_on(earlier: &OutboxOp, later: &OutboxOp) -> bool {
@@ -5758,21 +5768,25 @@ impl SyncClient {
             match held {
                 Ok(false) => {}
                 Ok(true) => {
-                    return self
-                        .finish_authoring(prior, Err("client.commit_id_reused".to_owned()))
-                        .map_err(|error| ClientError {
+                    return self.finish_authoring(
+                        prior,
+                        Err(ClientError {
+                            code: "client.commit_id_reused".to_owned(),
+                            message: "clientCommitId is held".to_owned(),
                             details: Some(json!({ "clientCommitId": id })),
-                            ..error
-                        })
+                            retryable: false,
+                        }),
+                    )
                 }
-                Err(message) => return self.finish_authoring(prior, Err(message)),
+                Err(message) => return self.finish_authoring(prior, Err(message.into())),
             }
         }
-        let outcome = (|| -> Result<String, String> {
+        let outcome = (|| -> Result<String, ClientError> {
             if mutations.is_empty() {
                 return Err(
                     "sync.invalid_request: a commit must contain at least one operation (§6.1)"
-                        .to_owned(),
+                        .to_owned()
+                        .into(),
                 );
             }
             let mut ops = Vec::with_capacity(mutations.len());
@@ -5832,13 +5846,15 @@ impl SyncClient {
                         base_version,
                     } => {
                         if self.schema.table(&table).is_none() {
-                            return Err(format!("sync.unknown_table: unknown table {table:?}"));
+                            return Err(
+                                format!("sync.unknown_table: unknown table {table:?}").into()
+                            );
                         }
                         // §2.4: the server rejects a rowId holding U+0000.
                         if row_id.contains('\0') {
-                            return Err(
-                                "sync.invalid_request: rowId holds U+0000 (§2.4)".to_owned()
-                            );
+                            return Err("sync.invalid_request: rowId holds U+0000 (§2.4)"
+                                .to_owned()
+                                .into());
                         }
                         ops.push(OutboxOp {
                             upsert: false,
@@ -5851,7 +5867,7 @@ impl SyncClient {
                     }
                 }
             }
-            self.record_outbox_commit(ops, client_commit_id)
+            Ok(self.record_outbox_commit(ops, client_commit_id)?)
         })();
         self.finish_authoring(prior, outcome)
     }
@@ -5864,16 +5880,11 @@ impl SyncClient {
     fn finish_authoring(
         &self,
         prior: Option<QueryReadFailure>,
-        outcome: Result<String, String>,
+        outcome: Result<String, ClientError>,
     ) -> Result<String, ClientError> {
         let fresh = self.storage_failure.borrow_mut().take();
         *self.storage_failure.borrow_mut() = fresh.clone().or(prior);
-        match outcome {
-            Ok(id) => Ok(id),
-            Err(message) => Err(fresh
-                .map(ClientError::from)
-                .unwrap_or_else(|| ClientError::from(message))),
-        }
+        outcome.map_err(|error| fresh.map(ClientError::from).unwrap_or(error))
     }
 
     fn record_outbox_commit(
@@ -5957,9 +5968,9 @@ impl SyncClient {
         row_id: &str,
         partial: Map<String, Value>,
         base_version: Option<i64>,
-    ) -> Result<String, String> {
+    ) -> Result<String, ClientError> {
         let operation = self.prepare_patch(table, row_id, partial, base_version)?;
-        self.record_outbox_commit(vec![operation], None)
+        Ok(self.record_outbox_commit(vec![operation], None)?)
     }
 
     fn prepare_patch(
@@ -5968,7 +5979,7 @@ impl SyncClient {
         row_id: &str,
         partial: Map<String, Value>,
         base_version: Option<i64>,
-    ) -> Result<OutboxOp, String> {
+    ) -> Result<OutboxOp, ClientError> {
         let schema_table = self
             .schema
             .table(table)
@@ -5976,13 +5987,16 @@ impl SyncClient {
         let partial = normalize_values_casing(schema_table, partial)?;
         if let Some(pk) = partial.get(&schema_table.primary_key) {
             if render_row_id_json(Some(pk)).ok().as_deref() != Some(row_id) {
-                return Err(format!(
-                    "sync.invalid_request: table {table:?}: patch cannot change the primary key"
+                return Err(invalid_authoring(
+                    "patch cannot change the primary key",
+                    json!({ "table": table }),
                 ));
             }
         }
         if !self.visible_row_exists(schema_table, row_id)? {
-            return Err("sync.row_missing: a sparse patch requires a local row".to_owned());
+            return Err("sync.row_missing: a sparse patch requires a local row"
+                .to_owned()
+                .into());
         }
         // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
         // server accepts a present scope column whose value equals the
@@ -6032,9 +6046,9 @@ impl SyncClient {
                 stored.get("$bytes").is_none() && incoming.as_ref() == Some(stored)
             });
             if !equal {
-                return Err(format!(
-                    "sync.invalid_request: table {table:?}: patch cannot write scope column {:?} (§3.4)",
-                    scope.column
+                return Err(invalid_authoring(
+                    "patch cannot write a scope column (§3.4)",
+                    json!({ "table": table, "column": scope.column }),
                 ));
             }
         }
@@ -6057,7 +6071,8 @@ impl SyncClient {
                 _ => {
                     return Err(format!(
                     "sync.invalid_request: table {table:?}: invalid integer primary key {row_id:?}"
-                ))
+                )
+                    .into())
                 }
             },
             ColumnType::Boolean => match row_id {
@@ -6066,12 +6081,24 @@ impl SyncClient {
                 _ => {
                     return Err(format!(
                     "sync.invalid_request: table {table:?}: invalid boolean primary key {row_id:?}"
-                ))
+                )
+                    .into())
                 }
             },
             _ => Value::from(row_id.to_owned()),
         };
         values.insert(schema_table.primary_key.clone(), pk_value);
+        // §6.1: a patch cannot null a non-nullable column.
+        if let Some(column) = schema_table
+            .columns
+            .iter()
+            .find(|column| !column.nullable && values.get(&column.name) == Some(&Value::Null))
+        {
+            return Err(invalid_authoring(
+                "a non-nullable column is null (§6.1)",
+                json!({ "table": table, "column": column.name }),
+            ));
+        }
         // §5.11: structural validation only; an absent key-id selector is
         // resolved at the push seam from the stored local row, and a
         // key-selection or unknown-key failure becomes a durable
@@ -6707,7 +6734,7 @@ impl SyncClient {
         value: &str,
     ) -> Result<String, ClientError> {
         let prior = self.storage_failure.borrow_mut().take();
-        let outcome = (|| -> Result<String, String> {
+        let outcome = (|| -> Result<String, ClientError> {
             let current = self
                 .crdt_column_bytes(table, row_id, column)?
                 .unwrap_or_default();
@@ -6731,7 +6758,7 @@ impl SyncClient {
         len: u32,
     ) -> Result<String, ClientError> {
         let prior = self.storage_failure.borrow_mut().take();
-        let outcome = (|| -> Result<String, String> {
+        let outcome = (|| -> Result<String, ClientError> {
             let current = self
                 .crdt_column_bytes(table, row_id, column)?
                 .unwrap_or_default();
@@ -6754,7 +6781,7 @@ impl SyncClient {
         update: &[u8],
     ) -> Result<String, ClientError> {
         let prior = self.storage_failure.borrow_mut().take();
-        let outcome = (|| -> Result<String, String> {
+        let outcome = (|| -> Result<String, ClientError> {
             let current = self
                 .crdt_column_bytes(table, row_id, column)?
                 .unwrap_or_default();
@@ -6777,7 +6804,7 @@ impl SyncClient {
         row_id: &str,
         column: &str,
         crdt_bytes: &[u8],
-    ) -> Result<String, String> {
+    ) -> Result<String, ClientError> {
         let mut bytes_obj = Map::new();
         bytes_obj.insert("$bytes".to_owned(), Value::from(bytes_to_hex(crdt_bytes)));
         let mut partial = Map::new();

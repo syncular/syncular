@@ -66,7 +66,7 @@ export function chainsOn(
     later.op === 'upsert' &&
     earlier.rowId === later.rowId &&
     earlier.table === later.table &&
-    (later.baseVersion ?? 0) > 0 &&
+    later.baseVersion! > 0 &&
     earlier.baseVersion === later.baseVersion &&
     Object.keys(later.values ?? {}).every(
       (column) => earlier.values?.[column] !== undefined,

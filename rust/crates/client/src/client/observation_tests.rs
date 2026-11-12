@@ -369,15 +369,24 @@ fn patch_with_a_scope_column_matches_the_stored_local_row() {
     );
     let differing = differing.expect_err("a differing scope column is rejected");
     assert_eq!(differing.code, "sync.invalid_request");
-    assert_eq!(differing.message, "the authoring request is invalid");
-    assert!(
-        differing
-            .details
-            .as_ref()
-            .and_then(|details| details["legacyCause"].as_str())
-            .is_some_and(|cause| cause.contains("patch cannot write scope column")),
-        "{differing:?}"
+    assert_eq!(
+        differing.message,
+        "patch cannot write a scope column (§3.4)"
     );
+    assert_eq!(
+        differing.details,
+        Some(json!({ "table": "tasks", "column": "project_id" }))
+    );
+    let moved = client
+        .patch(
+            "tasks",
+            "t1",
+            Map::from_iter([("id".to_owned(), json!("t2"))]),
+            None,
+        )
+        .expect_err("a patch cannot move the primary key");
+    assert_eq!(moved.message, "patch cannot change the primary key");
+    assert_eq!(moved.details, Some(json!({ "table": "tasks" })));
 
     // An absent local row leaves nothing to prove equality against, so
     // the patch fails closed.
@@ -477,14 +486,26 @@ fn patch_scope_column_parity_for_the_primary_key_and_coerced_values() {
     );
     let differing = differing.expect_err("a differing scope value is rejected");
     assert_eq!(differing.code, "sync.invalid_request");
-    assert_eq!(differing.message, "the authoring request is invalid");
-    assert!(
-        differing
-            .details
-            .as_ref()
-            .and_then(|details| details["legacyCause"].as_str())
-            .is_some_and(|cause| cause.contains("patch cannot write scope column")),
-        "{differing:?}"
+    assert_eq!(
+        differing.message,
+        "patch cannot write a scope column (§3.4)"
+    );
+    assert_eq!(
+        differing.details,
+        Some(json!({ "table": "buckets", "column": "bucket" }))
+    );
+    let nulled = client
+        .patch(
+            "buckets",
+            "b1",
+            Map::from_iter([("body".to_owned(), Value::Null)]),
+            None,
+        )
+        .expect_err("a non-nullable column cannot be nulled");
+    assert_eq!(nulled.message, "a non-nullable column is null (§6.1)");
+    assert_eq!(
+        nulled.details,
+        Some(json!({ "table": "buckets", "column": "body" }))
     );
 }
 
