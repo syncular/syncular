@@ -759,6 +759,33 @@ describe('§4.8 windows as sets of units', () => {
     expect(ids('tasks')).toEqual(['t1']);
   });
 
+  test('a widen that fails at one value keeps the values before it; the same call converges', async () => {
+    const db = new BunClientDatabase();
+    const { client } = await scripted(db);
+    const base = { variable: 'project_id' };
+    const values = ['p1', 'p2', 'p3', 'p4'];
+    db.exec(
+      "CREATE TRIGGER fail_p3 BEFORE INSERT ON _syncular_windows WHEN new.unit='p3' BEGIN SELECT RAISE(ABORT,'widen failed'); END",
+    );
+    await expect(client.setWindow(base, values)).rejects.toThrow(
+      'widen failed',
+    );
+    expect(client.windowState(base).units).toEqual(['p1', 'p2']);
+    expect(client.units().map((unit) => unit.scopes.project_id)).toEqual([
+      'p1',
+      'p2',
+    ]);
+    db.exec('DROP TRIGGER fail_p3');
+    await client.setWindow(base, values);
+    expect(client.windowState(base).units).toEqual(values);
+    expect(
+      client
+        .units()
+        .map((unit) => unit.scopes.project_id)
+        .sort(),
+    ).toEqual(values);
+  });
+
   test('E1: a pinned row survives the eviction and leaves when its commit drains', async () => {
     const { client, round, ids } = await scripted();
     const base = { variable: 'project_id' };

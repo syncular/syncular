@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'A window change that fails part-way keeps what it applied',
+    body: '`setWindow` applies the entering values in the order you list them, then the leaving values, one transaction per value, in both clients. A failure at one value returns the error and keeps the values applied before it; calling `setWindow` again with the same set applies the rest and registers each unit once. SPEC §4.8 now states this rule, and a test in each core pins it.',
+    links: [
+      {
+        href: '/concepts-windowing/#changing-the-window-is-a-set-difference',
+        label: 'Changing the window',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: "A multi-variable unit's stored image follows all of its values",
     body: "The sqlite-lane scope pin of a unit with several scope variables followed only the first variable in key order. A unit `{ catalogue_availability: 'offered', catalogue_content_set_id: 's1' }` took a new pin whenever any set published offered codes, so its stored image no longer matched and the server served the table row by row until the image was rebuilt. The pin is now the newest commit whose changes to the table carry every value of the unit. A scope move out of the unit through either variable still moves it, because both halves of a move carry the row's whole scope map. The SQLite, D1 and Postgres storages find it by leapfrogging between the keys' index ranges: 9 µs on SQLite with 100,000 newer commits under the first value, where the first-variable range alone would scan 64 ms.",
     links: [

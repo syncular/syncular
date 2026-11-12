@@ -2254,6 +2254,12 @@ mutation of a registered unit:
 - **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
   re-bootstrapped nor evicted.
 
+The client applies a window change value by value: first each entering value
+in the order the caller lists it, then each leaving value, each in its own
+transaction. A failure at one value returns the error and keeps every value
+applied before it; the same call repeated converges on the requested set
+with one registration per unit.
+
 **Primary-key windows.** A window whose variable a table maps to its primary
 key (`{ pattern: 'code:{code_id}', column: 'id' }`) keeps an explicit,
 changing set of that table's rows: one unit per key, each a one-row unit with

@@ -968,6 +968,39 @@ fn a_window_and_an_explicit_subscribe_share_one_unit_and_the_last_release_evicts
 }
 
 #[test]
+fn a_widen_that_fails_at_one_value_keeps_the_values_before_it_and_the_same_call_converges() {
+    let mut h = Harness::new();
+    let base = project_window();
+    let values: Vec<String> = ["p1", "p2", "p3", "p4"].map(String::from).to_vec();
+    let held = |h: &Harness| -> Vec<String> {
+        let mut held: Vec<String> = h
+            .client
+            .units()
+            .unwrap()
+            .into_iter()
+            .map(|unit| unit.scopes["project_id"].clone())
+            .collect();
+        held.sort();
+        held
+    };
+    h.client
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER fail_p3 BEFORE INSERT ON _syncular_windows WHEN new.unit = 'p3'
+             BEGIN SELECT RAISE(ABORT, 'widen failed'); END",
+        )
+        .unwrap();
+    let error = h.client.set_window(&base, &values).unwrap_err();
+    assert!(error.contains("widen failed"), "{error}");
+    assert_eq!(h.client.window_state(&base).unwrap().units, ["p1", "p2"]);
+    assert_eq!(held(&h), ["p1", "p2"]);
+    h.client.conn.execute_batch("DROP TRIGGER fail_p3").unwrap();
+    h.client.set_window(&base, &values).unwrap();
+    assert_eq!(h.client.window_state(&base).unwrap().units, values);
+    assert_eq!(held(&h), values);
+}
+
+#[test]
 fn e1_a_pinned_row_survives_the_eviction_and_leaves_when_its_commit_drains() {
     let mut h = Harness::new();
     let base = project_window();
