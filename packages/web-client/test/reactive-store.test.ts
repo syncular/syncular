@@ -275,8 +275,11 @@ describe('leader link recovery', () => {
       units: ['p1', 'p2'],
     });
     off();
-    retained.release();
+    const released = retained.release();
     store.dispose();
+    await expect(released).rejects.toMatchObject({
+      code: 'client.reactive_store_disposed',
+    });
   });
 
   test('a claim rejected during a handover is claimed again when this tab leads', async () => {
@@ -1306,6 +1309,30 @@ describe('composable windows and domain routing', () => {
       store.dispose();
     });
   }
+
+  test('a retention release settles with the core edit that applies it', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const both = store.retainWindow(BASE, ['p1', 'p2']);
+    await both.ready;
+    const p1 = store.retainWindow(BASE, ['p1']);
+    await p1.ready;
+
+    const failure = new Error('eviction failed');
+    client.setWindowFailure = failure;
+    await expect(both.release()).rejects.toBe(failure);
+    expect(client.setWindowCalls.at(-1)).toEqual({ base: BASE, units: ['p1'] });
+
+    client.setWindowFailure = undefined;
+    const retry = store.retainWindow(BASE, ['p1']);
+    await retry.ready;
+    expect(client.setWindowCalls.at(-1)).toEqual({ base: BASE, units: ['p1'] });
+    await p1.release();
+    await retry.release();
+    expect(client.setWindowCalls.at(-1)).toEqual({ base: BASE, units: [] });
+    await expect(retry.release()).resolves.toBeUndefined();
+    store.dispose();
+  });
 
   test('treats window release after client closure as best-effort teardown', async () => {
     const client = new FakeReactiveClient();

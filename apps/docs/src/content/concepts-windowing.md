@@ -65,7 +65,7 @@ Eviction is a voluntary local delete driven by your retention policy. The server
 - **Version state dies with the row**: a re-entered row's optimistic-write version comes only from its re-delivery, so no stale version cache exists.
 - **Re-entry is a fresh bootstrap**: it snapshots current server state and works at any distance, however much log the server pruned since the eviction. A re-entered row is writable immediately.
 
-Cleanup yields between committed chunks. A durable pending-eviction record lets a reopened client resume cleanup before its next network request, including when that request fails offline. Re-entry cancels pending cleanup and starts a fresh bootstrap. Storage failures remain errors, including a failure to persist the cleanup record. Authorization revocation keeps its atomic security purge.
+Cleanup yields between committed chunks. A durable pending-eviction record lets a reopened client finish cleanup before `start()` resolves, offline or with the transport gate closed. A client reopened in security preflight finishes it before `activateSecurity()` resolves. Rows the outbox pins stay until their write drains. Re-entry cancels pending cleanup and starts a fresh bootstrap. Storage failures remain errors, including a failure to persist the cleanup record. Authorization revocation keeps its atomic security purge.
 
 ## The completeness oracle
 
@@ -172,8 +172,9 @@ const retention = store.retainWindow({ variable: 'list_id' }, [
 ]);
 await retention.ready;
 
-// Later, release only this owner's claim.
-retention.release();
+// Later, release only this owner's claim. The promise settles after the
+// core applies the release and evicts the departed units' rows.
+await retention.release();
 ```
 
 React applications use the lifecycle-safe adapter for a known working set:
@@ -187,4 +188,4 @@ const retention = useRetainedWindow({ variable: 'list_id' }, [
 
 It composes with generated query claims, normalizes duplicate units, cleans up on unmount, and surfaces registration through `isPending` and `error`. Handle `error` even when another query already renders cached rows. `setWindow`, `windowState`, and React's `useWindow` remain explicit primitives that feed the same union coordinator; generated queries do not need their coverage repeated by hand.
 
-Query and window observers keep inactive entries only until the next microtask. The final unsubscribe removes the entry from change dispatch immediately, and cleanup releases its rows and invalidates pending reads. A same-microtask remount preserves the shared snapshot, and a later subscription starts a fresh read, including subscriptions held by an older React render. Releasing the final window owner removes the empty claim group after the core applies the release. Disposing the store rejects unapplied retention handles with `client.reactive_store_disposed`.
+Query and window observers keep inactive entries only until the next microtask. The final unsubscribe removes the entry from change dispatch immediately, and cleanup releases its rows and invalidates pending reads. A same-microtask remount preserves the shared snapshot, and a later subscription starts a fresh read, including subscriptions held by an older React render. Releasing the final window owner removes the empty claim group after the core applies the release. `release()` rejects with the window edit's error when the core fails to apply the release; the departed units then stay registered until the next claim on the base applies the union again. Disposing the store rejects unapplied `ready` and `release()` promises with `client.reactive_store_disposed`, so await `release()` before `dispose()` when the release must finish.

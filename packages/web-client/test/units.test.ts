@@ -25,7 +25,9 @@ import {
 import { type ClientSchema, SyncClient } from '../src';
 import { BunClientDatabase } from '../src/bun-database';
 import type { SqlRow, SqlValue } from '../src/database';
+import { deleteUnit } from '../src/state';
 import type { RealtimeHandlers } from '../src/transport';
+import { savePendingEviction, WINDOWS_TABLE } from '../src/window';
 
 const TASKS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -819,6 +821,49 @@ describe('§4.8 windows as sets of units', () => {
     );
     expect(ids('tasks')).toEqual([]);
   });
+
+  for (const preflight of [false, true])
+    test(`a restart drains an interrupted eviction before any read, transport closed (preflight ${preflight})`, async () => {
+      const db = new BunClientDatabase();
+      const { client, round, ids } = await scripted(db);
+      const base = { variable: 'project_id' };
+      await client.setWindow(base, ['p1', 'p2']);
+      await round(
+        ...bootstrap(P1, 3, [rows('notes'), rows('tasks', ['t1', 'p1', 'a'])]),
+        ...bootstrap(P2, 3, [rows('notes'), rows('tasks', ['t2', 'p2', 'b'])]),
+        ...live(3),
+      );
+      expect(ids('tasks')).toEqual(['t1', 't2']);
+      // The durable state a crash leaves after the release of p2 committed its
+      // first eviction chunk: the unit and its window value are gone, the
+      // remaining rows wait in the pending-eviction registry.
+      db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE unit=?`, ['p2']);
+      deleteUnit(db, unitId(P2));
+      savePendingEviction(db, {
+        unitId: unitId(P2),
+        table: 'tasks',
+        effective: { project_id: ['p2'] },
+      });
+      const reopened = new SyncClient({
+        database: db,
+        schema: SCHEMA,
+        clientId: 'units-client',
+        transport: async () => {
+          throw new Error('the transport stays closed');
+        },
+        transportEnabled: false,
+        securityPreflight: preflight,
+      });
+      await reopened.start();
+      if (preflight) {
+        expect(db.query('SELECT id FROM tasks ORDER BY id')).toHaveLength(2);
+        await reopened.activateSecurity();
+      }
+      expect(
+        reopened.query('SELECT id FROM tasks ORDER BY id').map((row) => row.id),
+      ).toEqual(['t1']);
+      expect(db.query('SELECT 1 FROM _syncular_pending_evictions')).toEqual([]);
+    });
 
   test('a deferred eviction chunk keeps the pages a bootstrapping unit already applied', async () => {
     const { client, round, ids } = await scripted();

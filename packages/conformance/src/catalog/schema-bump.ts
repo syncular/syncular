@@ -632,8 +632,10 @@ export const schemaBumpScenarios: readonly Scenario[] = [
                   "SELECT count(*) AS n FROM _syncular_pending_evictions WHERE unit_id='removed-unit'",
                 )
               ).rows,
-              [{ n: change === 'compatible' ? 1 : 0 }],
-              'orphaned pending window evictions obey the same compatibility fence',
+              [{ n: 0 }],
+              // §4.8: the reopen finishes a compatible eviction (the reset left
+              // nothing to delete); the bump drops an incompatible one.
+              'a reopen leaves no orphaned pending window eviction',
             );
           checkEqual(
             (await a.api.unitState(unitId(docs)))?.cursor,

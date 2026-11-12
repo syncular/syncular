@@ -2338,12 +2338,14 @@ per-table echo in the pending-eviction registry. Later chunks delete at most
 1,024 rows and publish independent revisions. The host yields between
 committed chunks; readers see missing coverage from the first chunk onward.
 Each chunk rechecks outbox pins. Re-entry cancels the pending marker before
-registering the unit again. Restart MUST schedule remaining work even with
-no registered unit or outbox; cleanup runs before the next network request
-and survives transport failure. A failed chunk rolls back its rows and
-revision while earlier chunks and the pending marker remain durable. Failure
-to read, save, or delete a pending marker MUST surface; it MUST NOT be
-treated as an empty cleanup queue.
+registering the unit again. Opening an active replica MUST finish the
+remaining work before the open resolves, and activating a replica in security
+preflight MUST finish it before the activation resolves, with or without a
+registered unit, an outbox, or an open transport gate (§8.8). Rows the outbox
+pins stay pending, and every sync round retries them before its request. A
+failed chunk rolls back its rows and revision while earlier chunks and the
+pending marker remain durable. Failure to read, save, or delete a pending
+marker MUST surface; it MUST NOT be treated as an empty cleanup queue.
 
 This chunking applies to cache eviction. Permission revocation and security
 purges retain their existing atomic deletion and availability rules.

@@ -1542,6 +1542,67 @@ fn a_version_3_pending_eviction_that_cannot_be_carried_fails_loudly_before_any_w
 }
 
 #[test]
+fn a_restart_drains_an_interrupted_eviction_before_any_read_or_round() {
+    for preflight in [false, true] {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "syncular-restart-evict-{}.db",
+                uuid::Uuid::new_v4()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let mut client = SyncClient::open_path(
+            "units-client".into(),
+            &schema(),
+            ClientLimits::default(),
+            &path,
+        )
+        .unwrap();
+        // The durable state a crash leaves after a release committed its first
+        // eviction chunk: no unit holds p2, its rows wait in the registry.
+        client
+            .conn
+            .execute_batch(
+                r#"INSERT INTO tasks(id, project_id, title, _syncular_version) VALUES ('t1','p1','a',1), ('t2','p2','b',1);
+                   INSERT INTO _syncular_pending_evictions(unit_id, tbl, effective_scopes)
+                     VALUES ('gone-p2', 'tasks', '{"project_id":["p2"]}');"#,
+            )
+            .unwrap();
+        if preflight {
+            client.begin_security_preflight().unwrap();
+        }
+        drop(client);
+        let mut client = SyncClient::open_path(
+            "units-client".into(),
+            &schema(),
+            ClientLimits::default(),
+            &path,
+        )
+        .unwrap();
+        let stored = |client: &SyncClient| {
+            client
+                .conn
+                .prepare("SELECT id FROM tasks ORDER BY id")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+        };
+        if preflight {
+            assert_eq!(stored(&client), vec!["t1", "t2"]);
+            client
+                .activate_security(crate::values::EncryptionConfig::default())
+                .unwrap();
+        }
+        assert_eq!(stored(&client), vec!["t1"]);
+        assert!(client.load_pending_evictions().unwrap().is_empty());
+        drop(client);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn a_scope_changing_bump_deletes_the_pending_evictions_of_the_changed_table() {
     let path = std::env::temp_dir()
         .join(format!(
@@ -1550,7 +1611,7 @@ fn a_scope_changing_bump_deletes_the_pending_evictions_of_the_changed_table() {
         ))
         .to_string_lossy()
         .into_owned();
-    let client = SyncClient::open_path(
+    let mut client = SyncClient::open_path(
         "units-client".into(),
         &schema(),
         ClientLimits::default(),
@@ -1565,6 +1626,9 @@ fn a_scope_changing_bump_deletes_the_pending_evictions_of_the_changed_table() {
                  ('gone-notes', 'notes', '{"org_id":["o1"]}');"#,
         )
         .unwrap();
+    // A replica reopened in preflight keeps its pending evictions until
+    // activation, so the registry shows what the bump kept.
+    client.begin_security_preflight().unwrap();
     drop(client);
     // §7.4.3: `tasks` changes its prefix; `notes` keeps every declaration.
     let mut bumped = schema();

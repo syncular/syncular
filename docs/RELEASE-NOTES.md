@@ -11,12 +11,24 @@ two tabs could both run a core against the same replica
 (SYNCULAR-WORKER-WEB-LOCK-FALLBACK-001). The handle now rejects with
 non-retryable `client.web_locks_unavailable` before it spawns the worker.
 
+**Window eviction.** A release that a crash interrupted between eviction
+chunks finished only at the next sync round, so an offline or
+transport-closed replica kept the released rows readable after a restart
+(SYNCULAR-WINDOW-UNSUBSCRIBE-001). The TypeScript and Rust cores now finish
+the pending eviction when an active replica opens, and in `activateSecurity`
+for a replica in security preflight. Rows the outbox pins stay until their
+write drains. `WindowRetention.release()` returns a promise that settles
+after the core applies the release and its eviction and rejects with the
+window edit's error (SYNCULAR-RETAINED-RELEASE-FAILURE-001).
+
 **Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Pages
 served from an insecure origin (plain `http:` other than `localhost`) and test
 runtimes such as Bun and Node have no Web Locks. Serve the app from a secure
 origin, or, where the host guarantees one owner per replica, pass
 `leaderLock: singleOwnerLock()` or another `LeaderLock`. Current browsers expose
-Web Locks on a secure origin.
+Web Locks on a secure origin. Code that calls `retention.release()` and then
+`store.dispose()` without awaiting the release receives a
+`client.reactive_store_disposed` rejection; await or handle it.
 
 ## 0.67.3 release notes
 

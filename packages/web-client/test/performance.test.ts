@@ -166,7 +166,7 @@ describe('local querySnapshot performance lanes', () => {
       process.env.SYNCULAR_PERF_GATE === '1' ? 8 : 25,
     );
 
-    retention.release();
+    await retention.release();
     store.dispose();
     await client.close();
     db.close();

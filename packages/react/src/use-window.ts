@@ -75,7 +75,9 @@ export function useRetainedWindow(
     );
     return () => {
       active = false;
-      retention.release();
+      // An unmounted component has nowhere to show a failed release; the next
+      // claim on the base applies it again.
+      retention.release().catch(() => {});
     };
   }, [stableBase, stableUnits, store]);
 
@@ -98,7 +100,9 @@ export function useWindow(base: WindowBase): UseWindowResult {
   );
 
   useEffect(
-    () => () => store.releaseWindowClaims(owner.current),
+    () => () => {
+      store.releaseWindowClaims(owner.current).catch(() => {});
+    },
     [stableBase, store],
   );
 

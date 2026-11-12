@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title:
+      'Interrupted evictions finish offline, and a retention release reports its result',
+    body: "A window release that a crash interrupted between eviction chunks finished only at the next sync round, so an offline replica kept the released rows readable after a restart. Both cores now finish it before `start()` resolves, or before `activateSecurity()` resolves for a replica in security preflight, with the transport gate open or closed. `WindowRetention.release()` now returns a promise that settles after the core applies the release and its eviction, and rejects with the window edit's error.",
+    links: [
+      {
+        href: '/concepts-windowing/#advanced-claims-retention-and-observers',
+        label: 'Claims and retention',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'A page without Web Locks refuses the worker handle',
     body: '`createSyncClientHandle` fell back to a lock that grants every request when the page had no `navigator.locks`, so two tabs could both run a core against the same replica. It now rejects with non-retryable `client.web_locks_unavailable` before it spawns the worker. A host that guarantees one owner per replica by other means passes `leaderLock`.',
     links: [

@@ -2073,7 +2073,15 @@ impl SyncClient {
         })();
         match startup {
             Ok(()) => match client.conn.execute_batch("COMMIT") {
-                Ok(()) => Ok(client),
+                // §4.8: an eviction a crash interrupted finishes before any
+                // read, with or without a transport; a replica reopened in
+                // preflight finishes it at activation.
+                Ok(()) => {
+                    if !client.security_preflight {
+                        client.drain_pending_evictions()?;
+                    }
+                    Ok(client)
+                }
                 Err(error) => {
                     let failure = Self::sqlite_failure(&client.storage_failure, error);
                     if let Err(rollback) = client.conn.execute_batch("ROLLBACK") {
@@ -2183,6 +2191,8 @@ impl SyncClient {
                 "sync.invalid_request: activateSecurity requires security preflight".to_owned(),
             );
         }
+        // §4.8: an interrupted eviction finishes before protected reads open.
+        self.drain_pending_evictions()?;
         self.enqueue_startup_sync_if_needed()?;
         self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY)?;
         self.encryption = encryption;
@@ -3609,6 +3619,9 @@ impl SyncClient {
             // Prepared insert statements were derived from the reverted schema.
             self.insert_sql.borrow_mut().clear();
             return Err(error);
+        }
+        if !self.security_preflight {
+            self.drain_pending_evictions()?;
         }
         Ok(())
     }

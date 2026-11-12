@@ -1276,21 +1276,17 @@ export class SyncClient {
       throw classifySqliteFailure(error).error;
     }
     this.#started = true;
+    // §4.8: an eviction a crash interrupted finishes before any read, with or
+    // without a transport; a preflight replica finishes it at activation.
+    if (this.#securityLifecycle === 'active')
+      await this.#serialize(() => this.#drainPendingEvictions());
     // A persisted active subscription needs one catch-up round on every open:
     // realtime only covers changes after the socket connects, and an
     // idempotent setWindow/subscribe call correctly creates no new command
     // effect. Pending outbox work has the same restart requirement. Surface
     // this as an exact core-owned intent so hosts never need a startup poll or
     // an application-issued sync() call.
-    const startupWork =
-      this.#schemaFloor === undefined &&
-      (countOutbox(this.#db) > 0 ||
-        this.#db.query(
-          `SELECT 1 FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL LIMIT 1`,
-        ).length > 0 ||
-        loadPendingEvictions(this.#db).length > 0 ||
-        loadUnits(this.#db).some((unit) => unit.status === 'active'));
-    if (startupWork && this.#securityLifecycle === 'active') {
+    if (this.#securityLifecycle === 'active' && this.#hasStartupWork()) {
       this.#needsPull = true;
       this.#emitSyncNeeded('startup');
       this.#emitSyncIntent({ kind: 'interactive' });
@@ -1667,22 +1663,29 @@ export class SyncClient {
       );
     }
     await (this.#preflightBarrier ?? this.#opChain);
+    // §4.8: an interrupted eviction finishes before protected reads open.
+    await this.#serialize(() => this.#drainPendingEvictions());
     this.#encryption = options.encryption;
     this.#securityLifecycle = 'active';
-    const startupWork =
+    if (this.#hasStartupWork()) {
+      this.#setSyncNeeded(true);
+      this.#emitSyncNeeded('startup');
+      this.#emitSyncIntent({ kind: 'interactive' });
+    }
+    this.#emitDiagnostics();
+  }
+
+  /** Persisted work an opened or activated replica owes one round (§8.4). */
+  #hasStartupWork(): boolean {
+    return (
       this.#schemaFloor === undefined &&
       (countOutbox(this.#db) > 0 ||
         this.#db.query(
           `SELECT 1 FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL LIMIT 1`,
         ).length > 0 ||
         loadPendingEvictions(this.#db).length > 0 ||
-        loadUnits(this.#db).some((unit) => unit.status === 'active'));
-    if (startupWork) {
-      this.#setSyncNeeded(true);
-      this.#emitSyncNeeded('startup');
-      this.#emitSyncIntent({ kind: 'interactive' });
-    }
-    this.#emitDiagnostics();
+        loadUnits(this.#db).some((unit) => unit.status === 'active'))
+    );
   }
 
   // -- accessors ------------------------------------------------------------

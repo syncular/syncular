@@ -81,8 +81,12 @@ export interface ExternalStoreEntry<T> {
 export interface WindowRetention {
   /** Resolves once this retained claim has reached the core window. */
   readonly ready: Promise<void>;
-  /** Release only this retention owner's units from the composable union. */
-  readonly release: () => void;
+  /**
+   * Release only this retention owner's units from the composable union.
+   * Settles with the core window edit that applies the release, after its
+   * eviction (§4.8); rejects with that edit's error.
+   */
+  readonly release: () => Promise<void>;
 }
 
 export interface StatusStoreSnapshot {
@@ -465,7 +469,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         this.#offStatus = undefined;
         this.#offRound?.();
         this.#offRound = undefined;
-        this.store.releaseWindowClaims(this.#owner);
+        // A failed release leaves the group unapplied; the next claim on
+        // the base applies it again. Only a retention handle reports it.
+        this.store.releaseWindowClaims(this.#owner).catch(() => {});
       }
     };
   };
@@ -541,7 +547,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#offStatus = undefined;
     this.#offRound?.();
     this.#offRound = undefined;
-    this.store.releaseWindowClaims(this.#owner);
+    this.store.releaseWindowClaims(this.#owner).catch(() => {});
     this.reset();
   }
 
@@ -1069,9 +1075,9 @@ export class ReactiveClientStore {
     return {
       ready,
       release: () => {
-        if (!active) return;
+        if (!active) return Promise.resolve();
         active = false;
-        this.releaseWindowClaims(owner);
+        return this.releaseWindowClaims(owner);
       },
     };
   }
@@ -1125,10 +1131,19 @@ export class ReactiveClientStore {
     return result;
   }
 
-  releaseWindowClaims(owner: symbol): void {
+  /** Settles once every core window edit that drops the owner's claims ran. */
+  releaseWindowClaims(owner: symbol): Promise<void> {
+    const edits: Promise<void>[] = [];
     for (const group of this.#windowClaims.values()) {
-      if (group.claims.delete(owner)) this.#scheduleWindow(group);
+      if (!group.claims.delete(owner)) continue;
+      edits.push(
+        new Promise<void>((resolve, reject) => {
+          group.waiters.push({ resolve, reject });
+        }),
+      );
+      this.#scheduleWindow(group);
     }
+    return Promise.all(edits).then(() => undefined);
   }
 
   /** Apply every claimed window group again and claim again for query entries
