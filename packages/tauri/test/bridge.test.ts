@@ -378,6 +378,26 @@ describe('createTauriSyncClient', () => {
     ).toBe('c1');
   });
 
+  test('a second create on a live native host is refused until the first closes', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    const config = { schema: { version: 1, tables: [] }, tauri };
+    const first = await createTauriSyncClient(config);
+    const creates = () =>
+      calls.filter(
+        (c) =>
+          c.cmd === 'plugin:syncular|syncular_command' &&
+          (c.args.command as { method: string }).method === 'create',
+      ).length;
+    await expect(createTauriSyncClient(config)).rejects.toMatchObject({
+      code: 'client.native_client_exists',
+    });
+    expect(creates()).toBe(1);
+    await first.close();
+    const second = await createTauriSyncClient(config);
+    expect(creates()).toBe(2);
+    await second.close();
+  });
+
   test('forwards the database name, never a path, into the native create', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     await createTauriSyncClient({

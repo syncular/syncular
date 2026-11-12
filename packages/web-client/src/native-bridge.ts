@@ -293,6 +293,9 @@ type OutcomeRowValue = ConflictRecord['serverRow'][string];
  * returns a promise from one host round trip; React hooks accept the
  * canonical snapshot interface directly.
  */
+/** Native hosts whose one core a live bridge client of this page holds. */
+const heldHosts = new WeakSet<object>();
+
 export abstract class NativeBridgeClient implements PromiseMethods<
   ClientSnapshotMethods & Pick<SyncClient, 'unit' | 'units' | 'unitCatchup'>
 > {
@@ -308,6 +311,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
   >();
   #closed = false;
   #closing: Promise<void> | undefined;
+  #host: object | undefined;
   #securityLifecycle: SecurityLifecycle;
   #preflightBarrier: Promise<void> | undefined;
 
@@ -371,14 +375,32 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return reply.result;
   }
 
-  /** @internal Settle the native `create`; a failure detaches the listener. */
-  async __open(create: () => Promise<NativeReply>): Promise<void> {
+  /**
+   * @internal Settle the native `create`; a failure detaches the listener.
+   * `host` is the page's native host: its one core serves one live bridge
+   * client, so a second `create` before `close()` settles is refused
+   * instead of replacing the first client's core.
+   */
+  async __open(
+    create: () => Promise<NativeReply>,
+    host: object,
+  ): Promise<void> {
+    if (heldHosts.has(host)) {
+      this.#release();
+      throw new this.#Error(
+        'client.native_client_exists',
+        'this page already holds the native client; close it before creating another',
+      );
+    }
+    heldHosts.add(host);
     try {
       await this.#reply(create);
     } catch (error) {
+      heldHosts.delete(host);
       this.#release();
       throw error;
     }
+    this.#host = host;
   }
 
   /** Dispatch a command through the closed check and the preflight gate. */
@@ -1163,6 +1185,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       const shutdown = this.shutdown();
       this.#closed = true;
       this.#closing = shutdown.finally(() => {
+        if (this.#host !== undefined) heldHosts.delete(this.#host);
         this.#release();
         this.#invalidationListeners.clear();
         this.#progress.clear();

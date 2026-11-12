@@ -2,8 +2,10 @@
 
 ## 0.68.0 release notes
 
-0.68.0 refuses a browser Worker handle on a page without Web Locks. SSP2 and
-the wire version are unchanged.
+0.68.0 refuses a browser Worker handle on a page without Web Locks and a
+second native client in one page, finishes interrupted window evictions
+offline, reports a retention release, and ends progress payloads at unit
+section boundaries. SSP2 and the wire version are unchanged.
 
 **Web Locks.** `createSyncClientHandle` granted every tab the leader lease when
 the page had no `navigator.locks` and the host injected no `leaderLock`, so
@@ -31,6 +33,14 @@ at a section's start. At its end they clear `unitId`, `table` and
 and restart at 0 at a section's start, the work done for the new section so
 far; totals stay absent until a payload reports them.
 
+**One native client per page.** A second `createTauriSyncClient` or
+`createNativeSyncClient` in the same page replaced the first client's native
+core, with its pending writes and security state
+(SYNCULAR-NATIVE-MULTI-INSTANCE-001). The bridges now reject it with
+`client.native_client_exists` before the native `create` runs, until the
+first client's `close()` settles. A page reload starts without a client and
+takes the core over as before. Two live native replicas remain unsupported.
+
 **Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Pages
 served from an insecure origin (plain `http:` other than `localhost`) and test
 runtimes such as Bun and Node have no Web Locks. Serve the app from a secure
@@ -38,7 +48,9 @@ origin, or, where the host guarantees one owner per replica, pass
 `leaderLock: singleOwnerLock()` or another `LeaderLock`. Current browsers expose
 Web Locks on a secure origin. Code that calls `retention.release()` and then
 `store.dispose()` without awaiting the release receives a
-`client.reactive_store_disposed` rejection; await or handle it.
+`client.reactive_store_disposed` rejection; await or handle it. Tauri and
+React Native code that creates a new client before the previous one closed
+awaits `close()` first.
 
 ## 0.67.3 release notes
 

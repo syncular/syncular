@@ -238,6 +238,24 @@ describe('createNativeSyncClient', () => {
     expect(pump.started).toBe(1);
   });
 
+  test('a second create on a live native module is refused until the first closes', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
+    const config = {
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    };
+    const first = await createNativeSyncClient(config);
+    await expect(createNativeSyncClient(config)).rejects.toMatchObject({
+      code: 'client.native_client_exists',
+    });
+    expect(calls.filter((call) => call.fn === 'create')).toHaveLength(1);
+    await first.close();
+    const second = await createNativeSyncClient(config);
+    expect(calls.filter((call) => call.fn === 'create')).toHaveLength(2);
+    await second.close();
+  });
+
   test('forwards previousVersionContext into the native create envelope', async () => {
     const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
     await createNativeSyncClient({

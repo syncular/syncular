@@ -28,6 +28,12 @@ The native module and the event emitter are injectable:
 `createNativeSyncClient({ nativeModule, eventEmitter })` is how the bridge
 unit-tests off-device. In an app, both auto-resolve.
 
+The native module holds one core. While a client created through a native
+module is open, a second `createNativeSyncClient` on the same module rejects
+with `client.native_client_exists` before the native `create` runs. Await
+`close()` on the first client before creating another. A JavaScript reload
+starts without a client.
+
 ## Atomic snapshot reads
 
 `client.snapshotRead({ statements, coverage, units, commitIds, owner })` reads

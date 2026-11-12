@@ -104,8 +104,16 @@ export class TauriSyncError extends NativeSyncError {
 }
 
 /** Resolve the Tauri primitives from the ambient environment when not injected. */
-async function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
-  if (injected !== undefined) return injected;
+/** The page's Tauri API, resolved once so it identifies the native host. */
+let pageTauri: Promise<TauriApi> | undefined;
+
+function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
+  if (injected !== undefined) return Promise.resolve(injected);
+  pageTauri ??= resolveAmbientTauri();
+  return pageTauri;
+}
+
+async function resolveAmbientTauri(): Promise<TauriApi> {
   // Prefer the ambient global (present when `withGlobalTauri` is enabled).
   // Otherwise use the ESM package (the common path). The specifier must remain
   // literal and bundler-visible: hiding a bare package import behind
@@ -266,10 +274,12 @@ export async function createTauriSyncClient(
     config.securityPreflight === true ? 'preflight' : 'active',
   );
   client = opened;
-  await opened.__open(() =>
-    tauri.invoke<NativeReply>(`${PLUGIN}syncular_command`, {
-      command: { method: 'create', params: { ...params, events } },
-    }),
+  await opened.__open(
+    () =>
+      tauri.invoke<NativeReply>(`${PLUGIN}syncular_command`, {
+        command: { method: 'create', params: { ...params, events } },
+      }),
+    tauri,
   );
   return opened;
 }

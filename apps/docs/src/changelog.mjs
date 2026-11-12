@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'A second native client in one page is refused',
+    body: "The Tauri plugin and the React Native module hold one native core. A second `createTauriSyncClient` or `createNativeSyncClient` in the same page replaced the first client's core, with its pending writes and security state. The bridges now refuse it with `client.native_client_exists` before the native `create` runs, until the first client's `close()` settles. A page reload starts without a client and takes the core over as before.",
+    links: [
+      {
+        href: '/platform-tauri-specifics/',
+        label: 'Tauri specifics',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'Sync progress follows unit sections',
     body: "`SUB_START` and `SUB_END` left progress untouched, so after a section ended the snapshot still named the previous unit's last segment and its totals. Both cores now set `unitId` and clear the payload fields at a section's start. At its end they clear `unitId`, `table` and `segmentId` and keep the last payload's counters, which `complete` and `failed` report. Totals stay absent until the next payload reports them.",
     links: [

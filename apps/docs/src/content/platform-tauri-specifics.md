@@ -86,6 +86,13 @@ with `sync.client_owned_by_another_webview`, and the command never reaches the
 client. A reload keeps the webview's label, so the owner stays the owner. Open
 the client in one webview.
 
+Within one page, `createTauriSyncClient` refuses a second client while the
+first is open with `client.native_client_exists`, before the native `create`
+runs: the plugin's one core would otherwise replace the first client's core,
+including its pending writes and security state. Close the first client and
+await `close()` before creating another. A page reload starts without a client,
+so its `create` takes over the core.
+
 The Rust core originates the table, scope, window, status, and conflict domains.
 The bridge forwards them without counter diffing or a global-invalidation
 fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe SQLite integers use

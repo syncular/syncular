@@ -403,13 +403,15 @@ export async function createNativeSyncClient(
     config.autoSync ?? true,
     config.securityPreflight === true ? 'preflight' : 'active',
   );
-  await client.__open(async () =>
-    JSON.parse(
-      await nativeModule.create(
-        JSON.stringify(transportConfig),
-        JSON.stringify(createParams),
+  await client.__open(
+    async () =>
+      JSON.parse(
+        await nativeModule.create(
+          JSON.stringify(transportConfig),
+          JSON.stringify(createParams),
+        ),
       ),
-    ),
+    nativeModule,
   );
 
   // Begin pumping poll_event → native event emitter.
