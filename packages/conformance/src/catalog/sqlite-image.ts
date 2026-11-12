@@ -88,6 +88,20 @@ export const sqliteImageScenarios: readonly Scenario[] = [
         [],
         'an image completes its table in one pull — paging limits do not apply (§5.3)',
       );
+      const progress = await image.api.progressSnapshot?.();
+      if (progress !== undefined)
+        checkEqual(
+          [typeof progress.importWriteMs, typeof progress.importCommitMs],
+          ['number', 'number'],
+          'the image payload reports its write and commit time (§7.7)',
+        );
+      const rowsProgress = await control.api.progressSnapshot?.();
+      if (rowsProgress !== undefined)
+        checkEqual(
+          [rowsProgress.importWriteMs, rowsProgress.importCommitMs],
+          [undefined, undefined],
+          'a rows payload reports no import time (§7.7)',
+        );
       const pin = await ctx.server.getMaxCommitSeq();
       checkEqual(
         await unitCursor(image, U1),

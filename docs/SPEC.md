@@ -452,18 +452,19 @@ a streaming reader needs:
    open unit section, and `COMMIT` and `LIVE_END` only inside the open
    live section; sections never nest or interleave.
 4. **Apply transaction**: one local write transaction per `COMMIT` frame,
-   and one per rows-segment *block* (§5.2) or SQLite-image chunk of at most
-   1,024 rows (§5.3). Durable client state is persisted only when the
+   and one per rows-segment *block* (§5.2) or SQLite-image chunk (§5.3).
+   Durable client state is persisted only when the
    section trailer is processed: a unit's cursor, resume token and echo at
    its `SUB_END`, the replica cursor, joins and echo digest at `LIVE_END`.
    A client MUST finish each frame or block transaction before starting the
    next. A client MAY run consecutive frame and block transactions of one
    response as savepoints of one **coalesced apply transaction** holding at
-   most 1,024 applied rows; a frame or block that would take it past the
-   bound starts after the earlier ones commit. Each frame or block keeps its
-   own savepoint and publishes its own revision (§7.5). The client publishes
-   the change batches of a coalesced apply transaction only after its
-   `COMMIT`, and sends a realtime ack (§8.2) only for cursors already
+   most 1,024 applied rows or one SQLite-image chunk; a frame, block or
+   chunk that would take it past the bound starts after the earlier ones
+   commit, and an image chunk commits before the next one starts. Each frame
+   or block keeps its own savepoint and publishes its own revision (§7.5).
+   The client publishes the change batches of a coalesced apply transaction
+   only after its `COMMIT`, and sends a realtime ack (§8.2) only for cursors already
    committed. When that `COMMIT` fails, the client rolls back every frame
    and block it held, restores its in-memory state to the transaction's
    start, publishes none of its change batches, applies no further frame of
@@ -2535,8 +2536,11 @@ matching rule, same `asOfCommitSeq`). Consequences, all normative:
   whole-table, and dead always-NULL variance is exactly what SSP2 kills.)
 
 **Application contract** (the §5.6 rules, specialized): the client
-applies the image in **transactions of at most 1,024 rows**, with the §5.6
-fresh-bootstrap first-page clear in the first transaction (an image is always
+applies the image in **chunks**, one local transaction each: the first
+chunk holds 1,024 rows and each later chunk twice the rows of the one before,
+up to 65,536. While local writes to the table need replay (§7.1), a chunk
+holds 1,024 rows. The §5.6
+fresh-bootstrap first-page clear runs in the first transaction (an image is always
 the first page), then primary-key upserts for every image row with
 `_syncular_version` landing as the row's last-known `server_version`.
 Mechanics are implementation detail (ATTACH + `INSERT INTO … SELECT`,
@@ -2561,14 +2565,42 @@ semantics plus version seeding. Before applying, the client MUST:
 
 **Application.** Validate metadata, column order, the declared single primary key
 against the generated schema, and total row count before
-writing. Apply the image in primary-key order, at most 1,024 rows per local
-transaction, with the first-page clear in the first transaction (§5.6). Publish
-a revision after each committed chunk, preserving optimistic writes. Yield
-between chunks; persist the unit's checkpoint only at `SUB_END`. Failure
-rolls back the current chunk and leaves the committed prefix for safe retry
-(§7.8). Empty images still apply a required first-page clear. NULL primary keys MUST NOT
-be skipped by chunk boundaries, and the applied row count MUST equal the
-descriptor before a unit's checkpoint can advance.
+writing. Apply the image in primary-key order in the chunks above, with the
+first-page clear in the first transaction (§5.6). Within a chunk, copy at most
+1,024 rows per statement and report progress after each statement (§7.7).
+Publish a revision after each committed chunk, preserving optimistic writes.
+Yield between chunks; persist the unit's checkpoint only at `SUB_END`. Failure
+rolls back the whole current chunk and leaves the committed prefix for safe
+retry (§7.8). Empty images still apply a required first-page clear. NULL
+primary keys MUST NOT be skipped by statement or chunk boundaries, and the
+applied row count MUST equal the descriptor before a unit's checkpoint can
+advance. After the last chunk commits outside any open transaction, the client
+runs `PRAGMA wal_checkpoint(TRUNCATE)`: a WAL replica otherwise keeps the
+largest chunk's pages in its `-wal` file.
+
+DECISION (2026-11-12): image chunks grow because every commit rewrites the
+table's index pages. A fresh table's secondary indexes take keys in an order
+unrelated to the primary key, so each 1,024-row commit dirties most of their
+leaf pages again. `bench/src/image-import-lane.ts` imports 67,302 + 87,267
+rows (351 MB of images, string keys, two secondary indexes per table) through
+the reference TypeScript client on an Apple M5 Pro. With 1,024-row
+transactions, the OPFS SAH-pool replica in Chromium wrote 1.16 GB through the
+VFS in 1,630 ms and synced 474 times in 1,430 ms; the import took 4,287 ms.
+With growing chunks it wrote 317 MB in 477 ms and synced 72 times in 134 ms;
+the import took 1,645 ms and committed 14 transactions instead of 152. A Bun
+file replica (WAL, `synchronous=FULL`) went from 6,003 ms to 3,609 ms and
+now ends with a 24 KB WAL instead of 2.25 MB. The first chunk stays at 1,024
+rows, so the first committed revision arrives as early as before; the cap
+bounds the time one chunk holds the worker. A raw sqlite-wasm comparison on
+the same VFS with one 87,267-row, 123 MB table settled the alternatives:
+growing chunks took 1,010 ms, one transaction 1,093 ms, and one transaction
+with the indexes built after the rows 649 ms. That last form holds the
+worker for the whole image and leaves no committed prefix to keep. Turning
+journaling and sync off on top of it saved 44 ms, while the same replica file
+holds the outbox, outcomes and cursors; both stay unchanged. A replica cannot
+adopt an image file as a table's storage: SQLite stores a table in its own
+file's pages, and an attached file would split the atomic commit, the FTS
+triggers and the outbox across files.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version
@@ -6255,8 +6287,16 @@ byte count. Both direct and signed-URL downloads follow this contract.
 intermediate updates every 1,024 rows and the final count. These are work counters:
 rows within the current chunk remain uncommitted until that chunk commits.
 Progress MUST NOT advance a cursor. Rows segments retain their
-per-block transactions; SQLite images commit in chunks of at most 1,024 rows
-(§7.8). Earlier committed chunks survive a later interruption.
+per-block transactions; SQLite images commit in growing chunks (§5.3, §7.8).
+Earlier committed chunks survive a later interruption.
+
+A SQLite image payload's `import` progress carries `importWriteMs` and
+`importCommitMs` once its first chunk has committed: the whole milliseconds
+the payload's chunks spent before COMMIT (row statements, index maintenance,
+the first-page clear and replay of local writes) and in committing them and
+publishing their revisions. Each counter sums its chunks and resets with the
+payload. Index maintenance is part of the row statements, so no separate
+index time exists. Rows payloads omit both.
 
 `complete` is emitted only after the round has applied its section trailers
 and reconciled the optimistic read model. It means the round completed, not that

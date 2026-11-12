@@ -71,6 +71,9 @@
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
       },
+      "devDependencies": {
+        "playwright": "1.63.0",
+      },
     },
     "bindings/react-native": {
       "name": "@syncular/react-native",

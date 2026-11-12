@@ -18,7 +18,16 @@ import {
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import {
+  echoDigest,
+  encodeMessage,
+  encodeRowsSegment,
+  PROTOCOL_WIRE_VERSION,
+} from '@syncular/core';
+import { createHash } from 'node:crypto';
 import { applySqliteSegment, upsertLocalRow } from '../src/apply';
+import { SyncClient } from '../src/client';
+import type { SyncProgress } from '../src/progress';
 
 const SCHEMA: ClientSchema = {
   version: 1,
@@ -222,6 +231,73 @@ describe('CREATE INDEX subset — client local DDL', () => {
         rows.length,
       );
     } finally {
+      db.close();
+    }
+  });
+
+  test('image transactions double from 1,024 rows and roll back whole on failure', async () => {
+    const db = new BunClientDatabase();
+    const image = new BunClientDatabase();
+    const compiled = compileClientSchema(SCHEMA);
+    const table = compiled.tables.get('tasks')!;
+    try {
+      ensureLocalSchema(db, compiled);
+      image.exec(
+        'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, title TEXT, _syncular_version INTEGER NOT NULL)',
+      );
+      // Row 5000 lies in the second statement of the third transaction.
+      image.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<7268) INSERT INTO tasks SELECT printf('%05d',x),'p1',CASE WHEN x=5000 THEN NULL ELSE 'title '||x END,1 FROM n",
+      );
+      image.exec(
+        'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+      );
+      image.exec(
+        "INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',7268)",
+      );
+      const count = () =>
+        Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n);
+      let committed: number[] = [];
+      let progress: number[] = [];
+      const apply = () =>
+        applySqliteSegment(
+          db,
+          compiled,
+          table,
+          image.db.serialize(),
+          {
+            table: 'tasks',
+            rowCount: 7268,
+            asOfCommitSeq: 7,
+            scopeDigest: 'digest',
+          },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: [],
+            onProgress: (rows) => progress.push(rows),
+            transaction: (fn) => {
+              const result = db.transaction(fn);
+              committed.push(count());
+              return result;
+            },
+          },
+        );
+      await expect(apply()).rejects.toThrow();
+      expect(committed).toEqual([1024, 3072]);
+      expect(progress).toEqual([1024, 2048, 3072, 4096]);
+      expect(count()).toBe(3072);
+      image.exec("UPDATE tasks SET title='title 5000' WHERE id='05000'");
+      committed = [];
+      progress = [];
+      await expect(apply()).resolves.toBe(7268);
+      expect(committed).toEqual([1024, 3072, 7168, 7268]);
+      expect(progress).toEqual([
+        ...Array.from({ length: 7 }, (_, index) => (index + 1) * 1024),
+        7268,
+      ]);
+    } finally {
+      image.close();
       db.close();
     }
   });
@@ -498,4 +574,123 @@ describe('CREATE INDEX subset — client local DDL', () => {
       /index "idx_bad" names unknown column "nope"/,
     );
   });
+});
+
+test('an image payload reports its import cost and the next payload starts without it', async () => {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ project_id: ['p1'] }))
+    .digest('hex');
+  const image = new Database(':memory:');
+  image.exec(
+    'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL); CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+  );
+  image.exec(
+    "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<3000) INSERT INTO tasks SELECT printf('%05d',x),'p1','title '||x,1 FROM n",
+  );
+  image
+    .query("INSERT INTO _syncular_segment VALUES (1,'tasks',1,1,?,3000)")
+    .run(digest);
+  const bytes = new Uint8Array(image.serialize());
+  image.close();
+  const segmentId = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const notes = encodeRowsSegment({
+    table: 'notes',
+    schemaVersion: 1,
+    columns: [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'project_id', type: 'string', nullable: false },
+    ],
+    blocks: [[{ serverVersion: 1, values: ['n1', 'p1'] }]],
+  });
+  const database = new BunClientDatabase();
+  let unit = '';
+  const client = new SyncClient({
+    database,
+    schema: {
+      version: 1,
+      tables: [
+        SCHEMA.tables[0]!,
+        {
+          name: 'notes',
+          columns: [
+            { name: 'id', type: 'string', nullable: false },
+            { name: 'project_id', type: 'string', nullable: false },
+          ],
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    },
+    segments: async () => bytes,
+    transport: async () =>
+      encodeMessage({
+        wireVersion: PROTOCOL_WIRE_VERSION,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'test', resetRequired: false },
+          {
+            type: 'SUB_START',
+            id: unit,
+            status: 'active',
+            reasonCode: '',
+            bootstrap: true,
+            fenced: [],
+          },
+          {
+            type: 'SEGMENT_REF',
+            segmentId,
+            mediaType: 'sqlite',
+            table: 'tasks',
+            byteLength: bytes.byteLength,
+            rowCount: 3000,
+            asOfCommitSeq: 1,
+            scopeDigest: digest,
+          },
+          { type: 'SEGMENT_INLINE', payload: notes },
+          { type: 'SUB_END', nextCursor: 1 },
+          { type: 'LIVE_START', status: 'active', reasonCode: '' },
+          {
+            type: 'LIVE_END',
+            throughSeq: 1,
+            echoDigest: echoDigest([
+              { id: unit, status: 'active', fenced: [] },
+            ]),
+          },
+        ],
+      }),
+  });
+  try {
+    await client.start();
+    database.exec(
+      "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','test')",
+    );
+    await client.setWindow({ variable: 'project_id' }, ['p1']);
+    unit = client.units()[0]!.id;
+    const seen: SyncProgress[] = [];
+    const off = client.onProgress((progress) => seen.push(progress));
+    await client.sync();
+    off();
+    const tasks = seen.filter(
+      (progress) => progress.table === 'tasks' && progress.phase === 'import',
+    );
+    // The cost appears once the first transaction committed.
+    expect(tasks[0]?.importWriteMs).toBeUndefined();
+    expect(tasks.at(-1)).toMatchObject({
+      rowsProcessed: 3000,
+      importWriteMs: expect.any(Number),
+      importCommitMs: expect.any(Number),
+    });
+    const later = seen.slice(seen.indexOf(tasks.at(-1)!) + 1);
+    expect(later.some((progress) => progress.table === 'notes')).toBe(true);
+    expect(
+      later.every(
+        (progress) =>
+          progress.importWriteMs === undefined &&
+          progress.importCommitMs === undefined,
+      ),
+    ).toBe(true);
+  } finally {
+    await client.close();
+    database.close();
+  }
 });

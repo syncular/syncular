@@ -12,6 +12,10 @@ export interface SyncProgress {
   readonly bytesTotal?: number;
   readonly rowsProcessed: number;
   readonly rowsTotal?: number;
+  /** Time in this payload's import transactions before COMMIT, in ms. */
+  readonly importWriteMs?: number | undefined;
+  /** Time committing them and publishing their changes, in ms. */
+  readonly importCommitMs?: number | undefined;
   readonly errorCode?: string;
   readonly causeKind?: TransportCauseKind;
   readonly httpStatus?: number;

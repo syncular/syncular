@@ -7790,7 +7790,56 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
             .unwrap()[0]["n"],
         2050
     );
-    assert_eq!(client.drain_change_batches().len(), 3);
+    assert_eq!(client.drain_change_batches().len(), 2);
+}
+
+#[test]
+fn image_chunks_double_and_roll_back_whole_on_failure() {
+    let mut client = client();
+    let image = Connection::open_in_memory().unwrap();
+    // Row 5000 lies in the second 1,024 rows of the third chunk.
+    image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+        WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<7268)
+        INSERT INTO tasks SELECT printf('%05d',x),CASE WHEN x=5000 THEN NULL ELSE 'p1' END,1 FROM n;
+        CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+        INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',7268);").unwrap();
+    let table = client.schema.table("tasks").unwrap().clone();
+    let scopes = vec![("project_id".into(), vec!["p1".into()])];
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    client.progress.start();
+    let _subscription = client
+        .progress
+        .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
+    let count = |client: &SyncClient| {
+        client
+            .query("SELECT count(*) AS n FROM tasks", &[])
+            .unwrap()[0]["n"]
+            .clone()
+    };
+    assert!(client
+        .apply_sqlite_image(&image, &table, true, &scopes, &[], 7268, 7, "digest")
+        .is_err());
+    assert!(client.conn.is_autocommit());
+    assert_eq!(count(&client), 3072);
+    assert_eq!(client.drain_change_batches().len(), 2);
+    assert_eq!(*seen.lock().unwrap(), vec![0, 1024, 2048, 3072, 4096]);
+    image
+        .execute("UPDATE tasks SET project_id='p1' WHERE id='05000'", [])
+        .unwrap();
+    seen.lock().unwrap().clear();
+    assert!(matches!(
+        client.apply_sqlite_image(&image, &table, true, &scopes, &[], 7268, 7, "digest"),
+        Ok(7268)
+    ));
+    assert_eq!(count(&client), 7268);
+    assert_eq!(client.drain_change_batches().len(), 4);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![1024, 2048, 3072, 4096, 5120, 6144, 7168, 7268]
+    );
+    let progress = client.progress.snapshot().unwrap();
+    assert!(progress.import_write_ms.is_some() && progress.import_commit_ms.is_some());
 }
 
 #[test]

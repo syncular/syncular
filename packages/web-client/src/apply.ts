@@ -208,33 +208,21 @@ export function validateSegmentColumns(
   table: CompiledClientTable,
   segment: RowsSegment,
 ): void {
-  const mismatch = (detail: string): never => {
+  if (
+    segment.table !== table.name ||
+    segment.schemaVersion !== schema.version ||
+    segment.columns.length !== table.columns.length ||
+    table.columns.some(
+      (expected, i) =>
+        expected.name !== segment.columns[i]?.name ||
+        expected.type !== segment.columns[i]?.type ||
+        expected.nullable !== segment.columns[i]?.nullable,
+    )
+  )
     throw new ClientSyncError(
       'sync.schema_mismatch',
-      `rows segment for ${JSON.stringify(segment.table)} does not match the generated schema: ${detail}`,
+      'rows segment columns do not match the generated schema (§5.2)',
     );
-  };
-  if (segment.table !== table.name) {
-    mismatch(`segment table ${JSON.stringify(segment.table)}`);
-  }
-  if (segment.schemaVersion !== schema.version) {
-    mismatch(`segment schemaVersion ${segment.schemaVersion}`);
-  }
-  if (segment.columns.length !== table.columns.length) {
-    mismatch(`column count ${segment.columns.length}`);
-  }
-  for (let i = 0; i < table.columns.length; i++) {
-    const expected = table.columns[i];
-    const actual = segment.columns[i];
-    if (expected === undefined || actual === undefined) continue;
-    if (
-      expected.name !== actual.name ||
-      expected.type !== actual.type ||
-      expected.nullable !== actual.nullable
-    ) {
-      mismatch(`column ${i} (${actual.name})`);
-    }
-  }
 }
 
 /**
@@ -427,10 +415,10 @@ function imageInvalid(detail: string): never {
 }
 
 /**
- * Apply a §5.3 sqlite image in committed chunks of at most 1,024 rows: validate
- * the in-file metadata against the descriptor, validate the data table's
- * column names/order against the generated schema, run the §5.6
- * first-page clear when fresh, then bulk-copy each chunk through a
+ * Apply a §5.3 sqlite image in committed transactions of 1,024 to 65,536
+ * rows: validate the in-file metadata against the descriptor, validate the
+ * data table's column names/order against the generated schema, run the
+ * §5.6 first-page clear when fresh, then bulk-copy 1,024-row ranges through a
  * primary-key upsert — `_syncular_version` lands in
  * `_sync_version` exactly like a rows segment's per-row `serverVersion`.
  */
@@ -477,22 +465,15 @@ export async function applySqliteSegment(
     if (meta.length !== 1 || record === undefined) {
       imageInvalid('_syncular_segment must contain exactly one row');
     }
-    if (record.format !== 1) imageInvalid(`format ${String(record.format)}`);
-    if (record.tbl !== table.name) {
-      imageInvalid(`image table ${String(record.tbl)}`);
-    }
-    if (Number(record.sv) !== schema.version) {
-      imageInvalid(`schemaVersion ${String(record.sv)}`);
-    }
-    if (Number(record.pin) !== descriptor.asOfCommitSeq) {
-      imageInvalid(`asOfCommitSeq ${String(record.pin)}`);
-    }
-    if (record.sd !== descriptor.scopeDigest) {
-      imageInvalid('scopeDigest mismatch');
-    }
-    if (Number(record.rc) !== descriptor.rowCount) {
-      imageInvalid(`rowCount ${String(record.rc)}`);
-    }
+    if (
+      record.format !== 1 ||
+      record.tbl !== table.name ||
+      Number(record.sv) !== schema.version ||
+      Number(record.pin) !== descriptor.asOfCommitSeq ||
+      record.sd !== descriptor.scopeDigest ||
+      Number(record.rc) !== descriptor.rowCount
+    )
+      imageInvalid('_syncular_segment does not match the descriptor');
 
     // 2. Column names and order vs the generated schema (§5.3 rule 3 —
     //    sync.schema_mismatch, the §5.2 rule specialized).
@@ -510,7 +491,7 @@ export async function applySqliteSegment(
     ) {
       throw new ClientSyncError(
         'sync.schema_mismatch',
-        `sqlite segment for ${JSON.stringify(table.name)} does not match the generated schema: columns [${actual.join(', ')}] (§5.3)`,
+        'sqlite segment columns do not match the generated schema (§5.3)',
       );
     }
 
@@ -529,42 +510,43 @@ export async function applySqliteSegment(
       .map((name) => `${name}=excluded.${name}`)
       .join(', ');
     const version = quoteIdent(SYNC_VERSION_COLUMN);
-    let after: SqlValue | undefined;
-    let applied = 0;
-    for (;;) {
-      if (options.isCurrent?.() === false) return applied;
+    // A statement copies the 1,024 rows after `from`; NULL keys cannot hide
+    // between statements.
+    const range = (from?: SqlValue) => {
+      const params = from === undefined ? [] : [from];
+      const predicates = from === undefined ? [] : [`${primaryKey}>?`];
       const boundary = db.query(
-        `SELECT ${primaryKey} AS boundary FROM ${source} ${after === undefined ? '' : `WHERE ${primaryKey} > ?`} ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
-        after === undefined ? [] : [after],
-      )[0]?.boundary;
+        `SELECT ${primaryKey} AS b FROM ${source} WHERE ${predicates[0] ?? 'true'} ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
+        params,
+      )[0]?.b;
       if (boundary === null) imageInvalid('image primary key must not be null');
-      const predicates: string[] = [];
-      const params: SqlValue[] = [];
-      if (after !== undefined) {
-        predicates.push(`${primaryKey} > ?`);
-        params.push(after);
-      }
       if (boundary !== undefined) {
-        predicates.push(`${primaryKey} <= ?`);
+        predicates.push(`${primaryKey}<=?`);
         params.push(boundary);
       }
+      return [boundary, predicates.join(' AND ') || 'true', params] as const;
+    };
+    let [boundary, where, params] = range();
+    let applied = 0;
+    // §5.3: a transaction holds one statement at first and doubles after each
+    // commit up to 64; a replaying transaction holds one.
+    for (let statements = 1; ; statements = Math.min(statements * 2, 64)) {
+      if (options.isCurrent?.() === false) return applied;
+      const first = applied === 0;
       const replay =
         countOutbox(db) ||
         db.query(`SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`, [
           table.name,
         ]).length;
       const rows = replay
-        ? db.query(
-            `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
-            params,
-          )
+        ? db.query(`SELECT * FROM ${source} WHERE ${where}`, params)
         : [];
       (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
         const scope = !replay
           ? []
           : [
               ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
-              ...(after === undefined && options.clearFirst
+              ...(first && options.clearFirst
                 ? bootstrapScope(db, table, options.effective, options.owners)
                 : []),
               ...rows.map((row) =>
@@ -572,7 +554,7 @@ export async function applySqliteSegment(
               ),
             ];
         const protectedRows = restoreFailedBases(db, schema, scope);
-        if (after === undefined && options.clearFirst)
+        if (first && options.clearFirst)
           deleteScopedRows(db, table, options.effective, options.owners);
         const kept = new Set<string>();
         const skipped = new Set<string>();
@@ -586,17 +568,27 @@ export async function applySqliteSegment(
             skipped,
           ),
         );
-        const where = predicates.join(' AND ') || 'true';
-        db.exec(
-          `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${where} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates} WHERE excluded.${version}>${quoteIdent(table.name)}.${version}`,
-          params,
-        );
-        applied += Number(
-          db.query(
-            `SELECT count(*)AS n FROM ${source} WHERE ${where}`,
+        for (let statement = 1; ; statement++) {
+          db.exec(
+            `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${where} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates} WHERE excluded.${version}>${quoteIdent(table.name)}.${version}`,
             params,
-          )[0]?.n,
-        );
+          );
+          applied += Number(
+            db.query(
+              `SELECT count(*)AS n FROM ${source} WHERE ${where}`,
+              params,
+            )[0]?.n,
+          );
+          options.onProgress?.(applied);
+          if (
+            replay ||
+            statement === statements ||
+            boundary === undefined ||
+            applied === count
+          )
+            break;
+          [boundary, where, params] = range(boundary);
+        }
         if (protectedRows)
           for (const row of landing) {
             retainedBaseWrite(
@@ -614,13 +606,14 @@ export async function applySqliteSegment(
           }
         return rebaseScope(scope, kept, skipped);
       });
-      options.onProgress?.(applied);
       await yieldToHost();
       if (boundary === undefined || applied === count) break;
-      after = boundary;
+      [boundary, where, params] = range(boundary);
     }
     if (applied !== count)
       imageInvalid('image applied row count does not match descriptor');
+    // A file replica's WAL keeps its high-water size until truncated.
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     return applied;
   });
 }

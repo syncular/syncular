@@ -703,6 +703,12 @@ function progressValue(value: JsonValue): DriverSyncProgress {
     ...(typeof object.rowsTotal === 'number'
       ? { rowsTotal: object.rowsTotal }
       : {}),
+    ...(typeof object.importWriteMs === 'number'
+      ? { importWriteMs: object.importWriteMs }
+      : {}),
+    ...(typeof object.importCommitMs === 'number'
+      ? { importCommitMs: object.importCommitMs }
+      : {}),
     ...(typeof object.errorCode === 'string'
       ? { errorCode: object.errorCode }
       : {}),

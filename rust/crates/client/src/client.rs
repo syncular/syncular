@@ -8872,6 +8872,8 @@ impl SyncClient {
                             p.rows_processed = 0;
                             p.rows_total =
                                 Some(segment.blocks.iter().map(|block| block.len() as u64).sum());
+                            p.import_write_ms = None;
+                            p.import_commit_ms = None;
                         });
                         let (pair, clear, effective, owners) =
                             self.segment_pair(&unit, &echo, &seeded, &segment.table)?;
@@ -8920,6 +8922,8 @@ impl SyncClient {
                             p.bytes_total = u64::try_from(byte_length).ok();
                             p.rows_processed = 0;
                             p.rows_total = u64::try_from(row_count).ok();
+                            p.import_write_ms = None;
+                            p.import_commit_ms = None;
                         });
                         let observer = self.progress.clone();
                         let mut on_progress = |bytes| observer.update(|p| p.bytes_received = bytes);
@@ -9930,6 +9934,8 @@ impl SyncClient {
             .query([])
             .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
         let mut applied = 0u32;
+        let mut limit = 1024u32;
+        let (mut write, mut commit) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
         loop {
             let clear = applied == 0 && first_fresh_page;
             let rollback = self.capture();
@@ -9939,10 +9945,13 @@ impl SyncClient {
             let reconcile_pending =
                 !protected && pending && table.indexes.iter().any(|index| index.unique);
             let mirror_visible = !protected && !reconcile_pending;
-            // A chunk holds up to 1,024 rows (§5.3).
-            self.coalesce_unit(1024)
+            // §5.3: a chunk holds 1,024 rows at first and doubles after each
+            // commit up to 65,536; a chunk that replays local writes holds 1,024.
+            let chunk = if pending || protected { 1024 } else { limit };
+            self.coalesce_unit(chunk as usize)
                 .and_then(|()| self.begin_observation("syncular_image_chunk"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let started = std::time::Instant::now();
             let result = (|| {
                 self.rebuild_overlay_if_dirty()
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -9967,7 +9976,7 @@ impl SyncClient {
                     } else {
                         None
                     };
-                    for _ in 0..1024 {
+                    for _ in 0..chunk {
                         let Some(row) = rows.next().map_err(|error| {
                             invalid(Self::sqlite_failure(&self.storage_failure, error))
                         })?
@@ -10003,8 +10012,12 @@ impl SyncClient {
                         let landed = ins.raw_execute().map_err(|error| {
                             invalid(Self::sqlite_failure(&self.storage_failure, error))
                         })? > 0;
+                        processed += 1;
+                        if processed.is_multiple_of(1024) && processed < chunk {
+                            self.progress
+                                .update(|p| p.rows_processed = u64::from(applied + processed));
+                        }
                         if !landed {
-                            processed += 1;
                             continue;
                         }
                         if let Some(mirror) = &mut mirror {
@@ -10022,7 +10035,6 @@ impl SyncClient {
                                 |error| invalid(Self::sqlite_failure(&self.storage_failure, error)),
                             )?);
                         }
-                        processed += 1;
                     }
                 }
                 if processed > 0 {
@@ -10031,25 +10043,49 @@ impl SyncClient {
                 }
                 self.reconcile_import(table, &mut changed_keys, protected, reconcile_pending)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+                let written = std::time::Instant::now();
                 self.finish_observation("syncular_image_chunk", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-                Ok(processed)
+                Ok((processed, written))
             })();
-            let processed = match result {
-                Ok(processed) => processed,
+            let (processed, written) = match result {
+                Ok(done) => done,
                 Err(error) => {
                     self.rollback_observation("syncular_image_chunk");
                     self.restore(rollback);
                     return Err(error);
                 }
             };
+            // The chunk commits before the yield, also inside a coalesced apply.
+            let coalesced = self.coalesced.is_some();
+            if coalesced {
+                self.commit_coalesced_apply()
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            }
+            write += written - started;
+            commit += written.elapsed();
             applied += processed;
-            self.progress
-                .update(|p| p.rows_processed = u64::from(applied));
+            let last = processed < chunk || i64::from(applied) == actual_count;
+            // A file replica's WAL keeps its high-water size until truncated.
+            if last && self.conn.is_autocommit() {
+                self.conn
+                    .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                    .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
+            }
+            if coalesced {
+                self.begin_coalesced_apply()
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            }
+            self.progress.update(|p| {
+                p.rows_processed = u64::from(applied);
+                p.import_write_ms = u64::try_from(write.as_millis()).ok();
+                p.import_commit_ms = u64::try_from(commit.as_millis()).ok();
+            });
             std::thread::yield_now();
-            if processed < 1024 || i64::from(applied) == actual_count {
+            if last {
                 break;
             }
+            limit = (limit * 2).min(65_536);
         }
         if i64::from(applied) != actual_count {
             return Err(invalid(format!(

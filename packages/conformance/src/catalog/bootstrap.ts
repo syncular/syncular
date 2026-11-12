@@ -55,8 +55,10 @@ export const bootstrapScenarios: readonly Scenario[] = [
           batches?.filter((batch) =>
             batch.tables.some((table) => table.table === 'tasks'),
           ).length,
-          3,
-          'rows blocks and image chunks each publish three committed revisions',
+          accept === 3 ? 3 : 2,
+          accept === 3
+            ? 'each rows block publishes one committed revision'
+            : 'image transactions of 1,024 and then up to 2,048 rows publish two revisions (§5.3)',
         );
         const events = await a.api.drainProgress?.();
         check(events !== undefined, 'driver captures live listener events');

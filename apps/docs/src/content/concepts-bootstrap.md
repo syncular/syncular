@@ -35,7 +35,7 @@ A segment is content-addressed, scope-bound, and carries a `mediaType`.
 | `rows` | A columnar block of encoded rows | The mandatory fallback. Small tables ship inline. |
 | `sqlite` | A prebuilt SQLite database image | The preferred lane. The client copies whole tables in. |
 
-The client attaches a SQLite image and imports primary-key ranges of at most 1,024 rows per transaction. The server builds each image once per scope set and snapshot pin and reuses it for every client that requests the same snapshot.
+The client attaches a SQLite image and imports it in primary-key order. The first transaction holds 1,024 rows and each later one twice the rows of the one before, up to 65,536; while local writes to the table wait for replay, every transaction holds 1,024 rows ([SPEC §5.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#53-sqlite-segments-mediatype--sqlite--premier-path)). Each commit rewrites the pages of the table's secondary indexes, so fewer commits write less: 67,302 + 87,267 catalogue rows (351 MB of images, two secondary indexes per table) import into an OPFS replica in Chromium in 1,645 ms with 317 MB written, against 4,287 ms and 1.16 GB with 1,024-row transactions (`bench/src/image-import-lane.ts`, Apple M5 Pro). Journaling and `synchronous=FULL` stay on, because the replica file also holds the outbox. After the last transaction, a WAL replica truncates its `-wal` file. The server builds each image once per scope set and snapshot pin and reuses it for every client that requests the same snapshot.
 
 ## Where segments are delivered
 
@@ -57,7 +57,7 @@ Segment transfer errors omit request URLs, including signed paths, and raw excep
 
 ## Reading during import
 
-The import yields after each committed rows block or image chunk, so local queries can read the committed prefix while later chunks import. The client restores pending optimistic edits before it publishes each revision. Window coverage stays pending until the unit's checkpoint commits, so render partial results with the query's coverage state.
+The import yields after each committed rows block or image transaction, so local queries can read the committed prefix while later transactions import. The largest image transaction holds the worker while it runs: 367 ms for 32,768 rows of about 2 KB in the OPFS measurement above. The client restores pending optimistic edits before it publishes each revision. Window coverage stays pending until the unit's checkpoint commits, so render partial results with the query's coverage state.
 
 - **Interruption.** An interrupted import keeps earlier committed chunks and leaves the unit's checkpoint incomplete. The retry clears the fresh snapshot's scope in its first transaction and applies the snapshot again.
 - **Failure.** A failing chunk rolls back its rows, search index changes, and revision together. Malformed image primary keys and mismatched applied row counts fail the import without advancing its checkpoint.

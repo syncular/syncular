@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'SQLite images import in growing transactions',
+    body: "Both cores import a SQLite image in transactions of 1,024 rows, then twice as many per transaction up to 65,536, instead of a commit every 1,024 rows. Each commit rewrote the pages of the table's secondary indexes, so 67,302 + 87,267 catalogue rows (351 MB of images) wrote 1.16 GB to an OPFS replica in 152 transactions. They now write 317 MB in 14 transactions and import in 1,645 ms instead of 4,287 ms on an Apple M5 Pro. The first transaction still holds 1,024 rows, a table with local writes awaiting replay keeps 1,024-row transactions, and journaling and `synchronous=FULL` are unchanged. Progress still updates every 1,024 rows, and an image payload's `import` progress now carries `importWriteMs` and `importCommitMs`. A WAL replica truncates its `-wal` file after the import.",
+    links: [
+      {
+        href: '/concepts-bootstrap/#the-segment',
+        label: 'SQLite image import',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title:
       'The realtime supervisor keeps one socket owner through flaps and close',
     body: 'The realtime supervisor now runs one attempt at a time. After an offline, background or protected phase, the next attempt waits until the interrupted attempt and its disconnect have settled, and a socket that attempt opens late is disconnected first. Before, the supervisor could start a successor while the old connect was outstanding and did not wait for an asynchronous `disconnectRealtime()`. A socket lost during the catch-up round now schedules a retry, a host signal during the first diagnostics read no longer leaves the supervisor idle, and offline/online flaps keep the retry count and delay instead of reconnecting at zero delay. `stop()` returns a promise that settles after the attempt, its disconnect and any driven round, and the installed `close()` waits for it. A non-retryable disconnect or first diagnostics read failure, or a throwing timer cancel, latches phase `unsupported` with `failureCode` `realtime.disconnect_failed`, `realtime.diagnostics_unavailable` or `realtime.cleanup_failed`, and `close()` rejects with a `RealtimeSupervisorError` of that code. HTTP rounds now run on each `online` report and each foreground return whenever no socket is connected, one round at a time.',

@@ -5432,6 +5432,8 @@ export class SyncClient {
                 bytesTotal: frame.byteLength,
                 rowsProcessed: 0,
                 rowsTotal: frame.rowCount,
+                importWriteMs: undefined,
+                importCommitMs: undefined,
               });
               prefetch();
               const pending = prefetched.get(frame);
@@ -5476,6 +5478,8 @@ export class SyncClient {
                   (n, block) => n + block.length,
                   0,
                 ),
+                importWriteMs: undefined,
+                importCommitMs: undefined,
               });
             await this.#applySegmentOrFail(
               section,
@@ -5491,6 +5495,7 @@ export class SyncClient {
                     ? image.rowCount > 0
                     : segment!.blocks.some((block) => block.length > 0),
                   resetEpoch,
+                  image !== undefined,
                 );
                 return image !== undefined
                   ? applySqliteSegment(
@@ -6001,15 +6006,20 @@ export class SyncClient {
     owners: readonly ScopeMap[],
     hasRows: boolean,
     resetEpoch: number,
+    image: boolean,
   ): Parameters<typeof applyRowsSegment>[4] {
+    let writeMs = 0;
+    let commitMs = 0;
     return {
       clearFirst,
       effective,
       owners,
       isCurrent: () => this.#localResetEpoch === resetEpoch,
       onProgress: (rowsProcessed) => this.#progress.update({ rowsProcessed }),
-      transaction: (fn) =>
-        this.#applyBatch((batch) => {
+      transaction: (fn) => {
+        const started = performance.now();
+        let written = started;
+        const result = this.#applyBatch((batch) => {
           if (
             hasRows ||
             (clearFirst && this.#scopedRowsExist(table, effective, owners))
@@ -6017,8 +6027,19 @@ export class SyncClient {
             batch.table(table.name);
           const result = fn();
           this.#replayOutbox(result, false);
+          written = performance.now();
           return result;
-        }),
+        });
+        // §7.7: image payloads report their import cost.
+        writeMs += written - started;
+        commitMs += performance.now() - written;
+        if (image)
+          this.#progress.update({
+            importWriteMs: Math.round(writeMs),
+            importCommitMs: Math.round(commitMs),
+          });
+        return result;
+      },
     };
   }
 

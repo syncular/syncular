@@ -56,6 +56,7 @@ export type CrashPoint =
   | 'download'
   | 'before-import'
   | 'mid-import'
+  | 'mid-transaction'
   | 'after-chunk'
   | 'after-import';
 

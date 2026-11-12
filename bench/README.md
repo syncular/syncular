@@ -40,6 +40,31 @@ time. `--dir` keeps the databases; otherwise they are deleted. The lane has no
 timing assertions. The same measurements for the TypeScript authority are in
 [the local authority guide](../apps/docs/src/content/guide-local-authority.md).
 
+## Image import lane
+
+`bench:image-import` generates two catalogue images of the size one
+application reported (67,302 rows with about 2 KB each and 87,267 rows with
+about 0.9 KB each, string keys, two secondary indexes per table, 351 MB) and
+bootstraps both through a real `SyncClient` in one synthetic response:
+
+```sh
+bun run --cwd bench bench:image-import -- --scale 1
+```
+
+The Bun half imports into a file replica (WAL, `synchronous=FULL`) and reports
+the WAL and database sizes afterwards. The browser half runs the production
+OPFS SAH-pool replica in a module worker of headless Chromium on a persistent
+profile; an incognito context keeps OPFS in memory and measures nothing useful.
+A shim around the sqlite-wasm module times the VFS `xWrite` and `xSync` of
+the replica and its journal. Both halves report transactions per table, the
+image payloads' `importWriteMs` and `importCommitMs`, the longest single
+transaction, and progress restarts. The browser half adds the origin's storage
+estimate with the replica open and closed and the OPFS file sizes. Chromium
+counts handle reservations in the open estimate, so it exceeds the file sizes
+until the replica closes. `--skip-browser` and `--skip-bun` run one half. The
+lane has no timing assertions; SPEC §5.3 records the numbers behind the
+growing image transactions.
+
 ## Server SQLite lanes
 
 Two standalone scripts measure `SqliteServerStorage` on `bun:sqlite`:

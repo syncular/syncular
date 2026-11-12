@@ -419,12 +419,9 @@ function opfsSahPoolError(error: unknown, directory: string): ClientSyncError {
   }
   return new ClientSyncError(
     STORAGE_BUSY_CODE,
-    'Could not acquire the persistent OPFS storage directory ' +
-      `${JSON.stringify(directory)}. Another live engine may still own its ` +
-      'SAH pool, or the browser may still be releasing it after a reload. ' +
-      'Close the other instance or retry after a short delay; do not delete ' +
-      `or rename the directory. Underlying error: ${detail}`,
+    'Another engine holds the OPFS storage directory, or the browser is still releasing it; retry after it closes',
     true,
+    { directory, cause: detail },
   );
 }
 
@@ -454,24 +451,18 @@ function configureSahCrashRecovery(
   const stack = wasm.pstack.pointer;
   try {
     const output = wasm.pstack.allocPtr();
-    if (
-      db.pointer === undefined ||
+    const filePointer =
+      db.pointer !== undefined &&
       capi.sqlite3_file_control(
         db.pointer,
         'main',
         capi.SQLITE_FCNTL_FILE_POINTER,
         output,
-      ) !== 0 ||
-      !wasm.peekPtr(output)
-    ) {
-      throw new ClientSyncError(
-        STORAGE_UNAVAILABLE_CODE,
-        'Could not configure OPFS crash recovery',
-      );
-    }
-    const file = new capi.sqlite3_file(wasm.peekPtr(output));
-    const methodsPointer = file.$pMethods;
-    file.dispose(); // Borrowed struct view; SQLite still owns the file.
+      ) === 0 &&
+      wasm.peekPtr(output);
+    const file = filePointer ? new capi.sqlite3_file(filePointer) : undefined;
+    const methodsPointer = file?.$pMethods;
+    file?.dispose(); // Borrowed struct view; SQLite still owns the file.
     if (!methodsPointer) {
       throw new ClientSyncError(
         STORAGE_UNAVAILABLE_CODE,
@@ -514,10 +505,7 @@ export async function openPersistentWasmDatabase(
   }
   if (!inWorkerContext()) {
     throw invalidRequest(
-      'openPersistentWasmDatabase() must run inside a Web Worker: the ' +
-        'persistent mode is whole-core-in-a-worker by design (Direction ' +
-        'decision 2, 2026-07-03). Use the worker handle from the main ' +
-        'thread, or openWasmDatabase() for explicitly ephemeral state.',
+      'openPersistentWasmDatabase() must run inside a Web Worker; use the worker handle on the main thread, or openWasmDatabase() for ephemeral state',
     );
   }
   const storage = (
@@ -526,9 +514,7 @@ export async function openPersistentWasmDatabase(
   if (typeof storage?.getDirectory !== 'function') {
     throw new ClientSyncError(
       STORAGE_UNAVAILABLE_CODE,
-      'OPFS is unavailable in this browser — the syncular support floor ' +
-        'requires OPFS (~2023+ browsers). There is no IndexedDB or ' +
-        'in-memory fallback for persistent mode.',
+      'Persistent storage requires OPFS, which this browser lacks',
     );
   }
   if (!navigator.locks) {

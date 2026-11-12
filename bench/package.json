@@ -5,6 +5,7 @@
   "scripts": {
     "bench": "bun run src/index.ts",
     "bench:ci": "bun run src/index.ts --ci",
+    "bench:image-import": "bun src/image-import-lane.ts",
     "bench:patch": "bun src/patch-lane.ts",
     "bench:rekey": "bun src/rekey-lane.ts",
     "bench:responsiveness": "bun src/responsiveness.ts",
@@ -17,5 +18,8 @@
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/client": "workspace:*"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
   }
 }

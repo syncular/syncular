@@ -22,6 +22,12 @@ pub struct SyncProgress {
     pub rows_processed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_total: Option<u64>,
+    /// SQLite image payloads: time in import transactions before COMMIT, in ms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_write_ms: Option<u64>,
+    /// SQLite image payloads: time committing them and publishing their changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_commit_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,6 +139,8 @@ impl ProgressObserver {
             bytes_total: None,
             rows_processed: 0,
             rows_total: None,
+            import_write_ms: None,
+            import_commit_ms: None,
             error_code: None,
             cause_kind: None,
             http_status: None,

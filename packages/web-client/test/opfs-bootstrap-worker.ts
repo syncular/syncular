@@ -18,6 +18,7 @@ let armed: CrashPoint | undefined;
 let database: ClientDatabase;
 let failCommit = false;
 let importing = false;
+let imageInserts = 0;
 let attachedImage = false;
 const databaseHandles = new WeakSet<object>();
 
@@ -26,7 +27,11 @@ function stopAt(point: CrashPoint, bytes = 0, databaseWrite = false): void {
   armed = undefined;
   const receipt: CrashReceipt = { point, bytes, databaseWrite };
   scope.postMessage({ t: 'crash-point', receipt });
-  if (point === 'mid-import' || point === 'after-chunk') {
+  if (
+    point === 'mid-import' ||
+    point === 'mid-transaction' ||
+    point === 'after-chunk'
+  ) {
     const barrier = new XMLHttpRequest();
     barrier.open('GET', '/crash-barrier', false);
     barrier.send();
@@ -51,8 +56,11 @@ scope.FileSystemSyncAccessHandle.prototype.write = function (buffer, options) {
     databaseHandles.add(this);
   }
   const written = originalWrite.call(this, buffer, options);
-  if (importing && databaseHandles.has(this))
+  if (importing && databaseHandles.has(this)) {
     stopAt('mid-import', written, true);
+    // The third image statement is the second of the second transaction.
+    if (imageInserts === 3) stopAt('mid-transaction', written, true);
+  }
   return written;
 };
 
@@ -153,7 +161,10 @@ startSyncWorker({
       }
       const imageInsert =
         sql.startsWith('INSERT INTO "catalogue"') && sql.includes('SELECT');
-      if (imageInsert) importing = true;
+      if (imageInsert) {
+        importing = true;
+        imageInserts += 1;
+      }
       try {
         exec(sql, params);
         if (attachedImage && sql === 'COMMIT') stopAt('after-chunk', 1024);
@@ -176,6 +187,7 @@ startSyncWorker({
     database.withSqliteImage = async (bytes, alias, apply) => {
       stopAt('before-import', bytes.byteLength);
       attachedImage = true;
+      imageInserts = 0;
       let result;
       try {
         result = await withImage(bytes, alias, apply);

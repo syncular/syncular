@@ -480,6 +480,7 @@ for (const point of [
   'download',
   'before-import',
   'mid-import',
+  'mid-transaction',
   'after-chunk',
   'after-import',
   'after-checkpoint',
@@ -533,7 +534,9 @@ for (const point of [
         expect(receipt.point).toBe(point);
         evidence.interruption = receipt;
         expect(receipt.bytes).toBeGreaterThan(0);
-        expect(receipt.databaseWrite).toBe(point === 'mid-import');
+        expect(receipt.databaseWrite).toBe(
+          point === 'mid-import' || point === 'mid-transaction',
+        );
       }
       // Termination interrupts actual SQLite work without a client close RPC.
       const oldWorker = page.workers()[0];
@@ -579,7 +582,7 @@ for (const point of [
       expect(recovered.rows).toEqual(
         point === 'after-import' || point === 'after-checkpoint'
           ? expected
-          : point === 'after-chunk'
+          : point === 'after-chunk' || point === 'mid-transaction'
             ? expected.slice(0, 1024)
             : [],
       );

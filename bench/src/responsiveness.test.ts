@@ -17,7 +17,7 @@ test('responsiveness fixture verifies reads before import and eviction finish', 
   ]);
 });
 
-test('SQLite image imports retain bulk copying and yield between committed chunks', async () => {
+test('SQLite image imports retain bulk copying and yield between growing transactions', async () => {
   const result = await runResponsiveness(2500, 'sqlite');
   expect(result.cachedPhase).toBe('ready');
   expect(
@@ -28,7 +28,7 @@ test('SQLite image imports retain bulk copying and yield between committed chunk
       m.transactions,
     ]),
   ).toEqual([
-    ['import', 1024, true, 3],
+    ['import', 1024, true, 2],
     ['evict', 1476, true, 3],
   ]);
 });
