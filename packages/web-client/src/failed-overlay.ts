@@ -29,6 +29,8 @@ import type {
 import { deleteLocalRow, upsertLocalRow } from './apply';
 
 /** Protected failure state. The server base advances independently of intent. */
+const SET_UNIQUE_CONFLICTS = `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE commit_id=? AND idx=?`;
+
 export function ensureFailedOverlaySchema(db: ClientDatabase): void {
   db.exec(
     `CREATE TABLE IF NOT EXISTS ${RETAINED_ROWS}(commit_id TEXT NOT NULL,idx INTEGER NOT NULL,tbl TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,op TEXT NOT NULL,intent TEXT,base TEXT,version INTEGER,unique_conflicts TEXT,commit_seq INTEGER,PRIMARY KEY(commit_id,idx))`,
@@ -81,22 +83,19 @@ export function retainedBaseWrite(
           })),
       );
     }
-    db.exec(
-      `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE commit_id=? AND idx=?`,
-      [
-        conflicts.length
-          ? JSON.stringify(
-              conflicts.sort(
-                (a, b) =>
-                  table.indexes.findIndex((index) => index.name === a.index) -
-                  table.indexes.findIndex((index) => index.name === b.index),
-              ),
-            )
-          : null,
-        retained.commit_id as string,
-        Number(retained.idx),
-      ],
-    );
+    db.exec(SET_UNIQUE_CONFLICTS, [
+      conflicts.length
+        ? JSON.stringify(
+            conflicts.sort(
+              (a, b) =>
+                table.indexes.findIndex((index) => index.name === a.index) -
+                table.indexes.findIndex((index) => index.name === b.index),
+            ),
+          )
+        : null,
+      retained.commit_id as string,
+      Number(retained.idx),
+    ]);
   }
 }
 
@@ -272,19 +271,16 @@ export function failedOverlayCommits(
             ).length,
         );
         if (authorized.length)
-          db.exec(
-            `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE commit_id=? AND idx=?`,
-            [
-              JSON.stringify(
-                authorized.map((conflict) => ({
-                  ...conflict,
-                  serverRow: mapRowValues(conflict.serverRow, rowValueToJson),
-                })),
-              ),
-              row.commit_id as string,
-              row.idx as number,
-            ],
-          );
+          db.exec(SET_UNIQUE_CONFLICTS, [
+            JSON.stringify(
+              authorized.map((conflict) => ({
+                ...conflict,
+                serverRow: mapRowValues(conflict.serverRow, rowValueToJson),
+              })),
+            ),
+            row.commit_id as string,
+            row.idx as number,
+          ]);
       }
     }
     const prior = commits.get(id);

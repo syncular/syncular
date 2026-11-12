@@ -1,5 +1,18 @@
 # Syncular release notes
 
+## 0.69.0 release notes
+
+An edit authored before the client's previous edit of the same row is
+acknowledged no longer conflicts with that edit. Both edits read the same
+local version, so a quick undo of a confirmed row reached the server with a
+`baseVersion` the first edit had already passed, and the server answered
+`sync.version_conflict` against the client's own write. Both clients now hold
+such a chained upsert out of the request that carries the edit it chains on,
+and move its `baseVersion` to the version that edit wrote when its change
+arrives (SPEC §7.1, "Chained base"). A write by another client after the first
+edit still conflicts. An upsert that also writes a column the first edit left
+absent keeps its base. SSP2 and the wire version are unchanged.
+
 ## 0.68.0 release notes
 
 0.68.0 refuses a browser Worker handle on a page without Web Locks and a

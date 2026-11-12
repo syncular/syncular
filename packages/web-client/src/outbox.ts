@@ -52,6 +52,27 @@ export interface OutboxCommit {
   readonly operations: readonly OutboxOperation[];
 }
 
+/**
+ * §7.1 chained base: `later` repeats `earlier`'s positive base on the same row
+ * and presents only columns `earlier` presents.
+ */
+export function chainsOn(
+  earlier: OutboxOperation,
+  later: OutboxOperation,
+): boolean {
+  // Only an upsert carries values, and it always carries its primary key.
+  return (
+    later.op === 'upsert' &&
+    earlier.rowId === later.rowId &&
+    earlier.table === later.table &&
+    (later.baseVersion ?? 0) > 0 &&
+    earlier.baseVersion === later.baseVersion &&
+    Object.keys(later.values ?? {}).every(
+      (column) => earlier.values?.[column] !== undefined,
+    )
+  );
+}
+
 /** Protected local rollback image; never encoded or exposed in outcomes. */
 export interface OutboxBeforeImage {
   readonly opIndex: number;

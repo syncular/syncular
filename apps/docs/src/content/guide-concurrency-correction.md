@@ -82,6 +82,7 @@ Choose `baseVersion` by intent:
 | Compare-and-set an existing confirmed row | The positive generated `serverVersion` you read |
 | Deliberate last-write-wins | Omit it |
 | Chain edits on a new or unconfirmed local row | Omit it until a positive confirmed version arrives |
+| Edit a confirmed row again (an undo) before your previous edit is acknowledged | The same positive version you read; the client rebases it |
 
 A positive `baseVersion` compares per column. A stale base conflicts only when
 an operation presents a column that moved past it. An operation that leaves the
@@ -90,6 +91,19 @@ moved. The server rejects a `baseVersion` above the row's current
 `server_version` with `sync.invalid_request`. An unversioned upsert loses to a
 delete inside the tombstone horizon with `sync.row_deleted`, so use `0` to
 recreate a deleted row deliberately.
+
+The local `serverVersion` of a row stays at the version you read until the
+server delivers the row again. A stroke and its immediate undo therefore both
+carry the same base, and the server would report the undo as a conflict with
+the stroke. The outbox holds the undo out of the stroke's request. When the
+stroke's change arrives, the client moves the undo's `baseVersion` to the
+version the stroke wrote, so the undo applies unless another writer changed one
+of its columns after the stroke. The rebase covers an upsert that writes only
+columns the earlier edit wrote. An undo that also writes a column the earlier
+edit left absent keeps its base and conflicts on the columns the earlier edit
+wrote. Author such an edit after the row shows the version the earlier edit
+wrote. The rule is
+SPEC §7.1, "Chained base".
 
 :::warning{title="Never pass the local sentinel as a base"}
 A newly optimistic local row carries an internal negative version. It marks a row

@@ -365,13 +365,17 @@ export function recordCommitOutcome(
   return commitOutcome(db, outcome.clientCommitId) as CommitOutcome;
 }
 
+function outcomeRow(db: ClientDatabase, clientCommitId: string) {
+  return db.query(`${SELECT_OUTCOME} WHERE client_commit_id=?`, [
+    clientCommitId,
+  ])[0];
+}
+
 export function commitOutcome(
   db: ClientDatabase,
   clientCommitId: string,
 ): CommitOutcome | undefined {
-  const row = db.query(`${SELECT_OUTCOME} WHERE client_commit_id=?`, [
-    clientCommitId,
-  ])[0];
+  const row = outcomeRow(db, clientCommitId);
   return row === undefined ? undefined : parseOutcome(db, row);
 }
 
@@ -385,9 +389,7 @@ export function persistedCommitOutcome(
   db: ClientDatabase,
   clientCommitId: string,
 ): CommitOutcome | undefined {
-  const row = db.query(`${SELECT_OUTCOME} WHERE client_commit_id=?`, [
-    clientCommitId,
-  ])[0];
+  const row = outcomeRow(db, clientCommitId);
   if (row === undefined) return undefined;
   function corrupt(): never {
     throw new ClientSyncError(

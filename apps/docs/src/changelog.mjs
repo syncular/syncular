@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'A quick undo no longer conflicts with your own edit',
+    body: "An edit of a confirmed row authored before the previous edit of that row was acknowledged carried the same `baseVersion`, and the server reported it as `sync.version_conflict` against the client's own write. Both clients now send such an edit after the one it chains on and move its base to the version that edit wrote, so an immediate undo applies. A write by another client in between still conflicts.",
+    links: [
+      {
+        href: '/guide-concurrency-correction/',
+        label: 'Handling conflicts',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'A second native client in one page is refused',
     body: "The Tauri plugin and the React Native module hold one native core. A second `createTauriSyncClient` or `createNativeSyncClient` in the same page replaced the first client's core, with its pending writes and security state. The bridges now refuse it with `client.native_client_exists` before the native `create` runs, until the first client's `close()` settles. A page reload starts without a client and takes the core over as before.",
     links: [

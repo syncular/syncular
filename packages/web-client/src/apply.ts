@@ -1,5 +1,12 @@
 import { hasUniqueIndex } from './schema';
-import { OUTBOX_IMAGES, countOutbox } from './outbox';
+import {
+  chainsOn,
+  countOutbox,
+  listOutbox,
+  OUTBOX_IMAGES,
+  OUTBOX_TABLE,
+  type OutboxOperation,
+} from './outbox';
 import { RETAINED_ROWS, type OverlayScope } from './failed-overlay';
 import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
 /**
@@ -186,6 +193,25 @@ export async function applyCommitFrame(
         `UPDATE ${OUTBOX_IMAGES} SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE tbl=? AND row_id=?`,
         [frame.commitSeq, change.table.name, rowId],
       );
+      // §7.1 chained base: this change names the version an acknowledged own
+      // commit wrote; pending upserts chained on it move to that version.
+      for (const { op } of db.query(
+        `SELECT op FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq=?`,
+        [change.table.name, rowId, frame.commitSeq],
+      )) {
+        const earlier: OutboxOperation = JSON.parse(op as string);
+        for (const commit of listOutbox(db, scope))
+          db.exec(`UPDATE ${OUTBOX_TABLE} SET operations=? WHERE seq=?`, [
+            JSON.stringify(
+              commit.operations.map((operation) =>
+                chainsOn(earlier, operation)
+                  ? { ...operation, baseVersion: rowVersion }
+                  : operation,
+              ),
+            ),
+            commit.seq,
+          ]);
+      }
       db.exec(
         `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
         [change.table.name, rowId, frame.commitSeq],

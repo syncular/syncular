@@ -208,11 +208,7 @@ export function encodeSparseRow(
   primaryKeyIndex: number,
   values: readonly SparseRowValue[],
 ): Uint8Array {
-  if (values.length !== columns.length) {
-    throw new Error(
-      `row value count ${values.length} does not match column count ${columns.length}`,
-    );
-  }
+  requireColumnCount(columns, values);
   const presence = new Uint8Array(Math.ceil(columns.length / 8));
   let presentCount = 0;
   for (let i = 0; i < columns.length; i++) {
@@ -365,16 +361,23 @@ export function decodeSparseRow(
   return values;
 }
 
-export function writeRow(
-  writer: ByteWriter,
+function requireColumnCount(
   columns: readonly RowColumn[],
-  values: readonly RowValue[],
+  values: readonly unknown[],
 ): void {
   if (values.length !== columns.length) {
     throw new Error(
       `row value count ${values.length} does not match column count ${columns.length}`,
     );
   }
+}
+
+export function writeRow(
+  writer: ByteWriter,
+  columns: readonly RowColumn[],
+  values: readonly RowValue[],
+): void {
+  requireColumnCount(columns, values);
   const bitmapLength = Math.ceil(columns.length / 8);
   const bitmap = new Uint8Array(bitmapLength);
   for (let i = 0; i < columns.length; i++) {

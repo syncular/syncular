@@ -3543,6 +3543,135 @@ fn local_rebootstrap_cannot_bypass_schema_floor() {
 }
 
 #[test]
+fn an_edit_authored_before_the_previous_own_acknowledgement_rebases_on_it() {
+    let path =
+        std::env::temp_dir().join(format!("syncular-chained-base-{}.db", uuid::Uuid::new_v4()));
+    let path = path.to_str().expect("UTF-8 temp path").to_owned();
+    let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
+        "columns":[{"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"title","type":"string","nullable":false}],
+        "scopes":[{"pattern":"project:{project_id}"}]}]});
+    let open = || {
+        SyncClient::open_path_with_identity(
+            Some("chained-base".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            &path,
+        )
+        .expect("open client")
+    };
+    let row = |title: &str| {
+        Map::from_iter([
+            ("id".into(), json!("t1")),
+            ("project_id".into(), json!("p1")),
+            ("title".into(), json!(title)),
+        ])
+    };
+    let mut client = open();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    live_unit(&client, &[("project_id", "p1")]);
+    client
+        .write_base_row(
+            "tasks",
+            &vec![
+                Some(ColumnValue::String("t1".into())),
+                Some(ColumnValue::String("p1".into())),
+                Some(ColumnValue::String("a".into())),
+            ],
+            1,
+        )
+        .unwrap();
+    client.rebuild_overlay().expect("rebuild overlay");
+    let upsert = |title: &str| Mutation::Upsert {
+        table: "tasks".into(),
+        values: row(title),
+        base_version: Some(1),
+    };
+    let stroke = client.mutate(vec![upsert("stroke")]).unwrap();
+    let undo = client.mutate(vec![upsert("a")]).unwrap();
+    let pushed = |request: &Message| {
+        request
+            .frames
+            .iter()
+            .filter_map(|frame| match frame {
+                Frame::PushCommit {
+                    client_commit_id,
+                    operations,
+                    ..
+                } => Some((client_commit_id.clone(), operations[0].base_version)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let (request, meta) = client.build_request(false).unwrap();
+    assert_eq!(
+        pushed(&request),
+        vec![(stroke.clone(), Some(1))],
+        "the undo never rides with the commit it chains on"
+    );
+    let mut frames = vec![
+        Frame::RespHeader {
+            required_schema_version: None,
+            latest_schema_version: None,
+            log_epoch: "epoch-1".into(),
+            reset_required: false,
+        },
+        Frame::PushResult {
+            client_commit_id: stroke,
+            status: PushStatus::Applied,
+            commit_seq: Some(7),
+            results: vec![OpResult::Applied { op_index: 0 }],
+        },
+    ];
+    frames.extend(live_section(
+        7,
+        vec![Frame::Commit {
+            commit_seq: 7,
+            actor_id: "actor".into(),
+            created_at_ms: 1,
+            tables: vec!["tasks".into()],
+            changes: vec![ssp2::model::Change {
+                table_index: 0,
+                row_id: "t1".into(),
+                op: Op::Upsert,
+                row_version: 2,
+                scopes: vec![("project_id".into(), "p1".into())],
+                row: Some(
+                    encode_row_json(
+                        client.schema.table("tasks").unwrap(),
+                        "t1",
+                        &row("stroke"),
+                        &client.encryption,
+                    )
+                    .unwrap(),
+                ),
+            }],
+        }],
+    ));
+    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let outcome = client.process_response(
+        &mut transport,
+        Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames,
+        },
+        &meta,
+    );
+    assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+    drop(client);
+    let client = open();
+    assert_eq!(
+        pushed(&client.build_request(false).unwrap().0),
+        vec![(undo, Some(2))],
+        "the persisted undo carries the version the stroke wrote"
+    );
+    drop(client);
+    std::fs::remove_file(&path).expect("remove temp database");
+}
+
+#[test]
 fn diego_applied_sparse_moves_stay_visible_until_pull_image_arrives() {
     let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
         "columns":[{"name":"id","type":"string","nullable":false},

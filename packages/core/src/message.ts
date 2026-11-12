@@ -313,7 +313,7 @@ export interface ResponseMessage {
 
 export type SyncMessage = RequestMessage | ResponseMessage;
 
-type DefinedObject<T> = {
+export type DefinedObject<T> = {
   [K in keyof T as undefined extends T[K] ? never : K]: T[K];
 } & {
   [K in keyof T as undefined extends T[K] ? K : never]?: Exclude<
@@ -321,7 +321,10 @@ type DefinedObject<T> = {
     undefined
   >;
 };
-function definedObject<const T extends object>(record: T): DefinedObject<T> {
+/** Drops `undefined` members in place, typed as optional properties. */
+export function definedObject<const T extends object>(
+  record: T,
+): DefinedObject<T> {
   for (const key of Object.keys(record) as (keyof T)[]) {
     if (record[key] === undefined) delete record[key];
   }

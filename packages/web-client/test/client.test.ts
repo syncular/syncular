@@ -342,6 +342,145 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     expect(tableRows(a.db, 'tasks')[0]?._sync_version).toBe(3);
   });
 
+  test('an edit authored before the previous own edit acknowledges rebases on it (§7.1)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-chained-'));
+    const databasePath = join(directory, 'client.db');
+    const server = makeServer();
+    const other = await makeClient(server, { clientId: 'chained-other' });
+    try {
+      const first = await makeClient(server, {
+        clientId: 'chained',
+        databasePath,
+      });
+      let undo: string;
+      try {
+        first.client.subscribe({ project_id: 'p1' });
+        first.client.mutate([
+          { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'a') },
+        ]);
+        await first.client.syncUntilIdle();
+        // Both edits read version 1: the stroke and its undo.
+        const stroke = first.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t1', 'p1', 'stroke'),
+            baseVersion: 1,
+          },
+        ]);
+        undo = first.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues('t1', 'p1', 'a'),
+            baseVersion: 1,
+          },
+        ]);
+        const round = await first.client.sync();
+        expect(round.applied).toEqual([stroke]);
+        expect(round.deferredCommits).toBe(1);
+        expect(
+          first.client
+            .pendingCommits()
+            .map((commit) => [
+              commit.clientCommitId,
+              commit.operations[0]?.baseVersion,
+            ]),
+        ).toEqual([[undo, 2]]);
+      } finally {
+        await first.client.close();
+        first.db.close();
+      }
+      const reopened = await makeClient(server, {
+        clientId: 'chained',
+        databasePath,
+      });
+      try {
+        expect(
+          reopened.client.pendingCommits()[0]?.operations[0],
+        ).toMatchObject({ baseVersion: 2 });
+        const summary = await reopened.client.syncUntilIdle();
+        expect(summary.conflicts).toEqual([]);
+        expect(summary.applied).toEqual([undo]);
+        expect(tableRows(reopened.db, 'tasks')[0]).toMatchObject({
+          title: 'a',
+          _sync_version: 3,
+        });
+
+        // A foreign write between the two edits still conflicts.
+        const stroke = reopened.client.patch(
+          'tasks',
+          't1',
+          { title: 'stroke' },
+          { baseVersion: 3 },
+        );
+        const late = reopened.client.patch(
+          'tasks',
+          't1',
+          { title: 'a' },
+          { baseVersion: 3 },
+        );
+        expect((await reopened.client.sync()).applied).toEqual([stroke]);
+        other.client.subscribe({ project_id: 'p1' });
+        await other.client.syncUntilIdle();
+        other.client.patch(
+          'tasks',
+          't1',
+          { title: 'foreign' },
+          { baseVersion: 4 },
+        );
+        await other.client.syncUntilIdle();
+        const conflicted = await reopened.client.sync();
+        expect(conflicted.rejected).toEqual([late]);
+        expect(conflicted.conflicts[0]).toMatchObject({
+          code: 'sync.version_conflict',
+          serverVersion: 5,
+          conflictColumns: ['title'],
+        });
+      } finally {
+        await reopened.client.close();
+        reopened.db.close();
+      }
+    } finally {
+      await other.client.close();
+      other.db.close();
+      server.storage.db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('an edit presenting a column the earlier own edit did not keeps its base (§7.1)', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'chained-partial' });
+    try {
+      a.client.subscribe({ project_id: 'p1' });
+      a.client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'a') },
+      ]);
+      await a.client.syncUntilIdle();
+      const title = a.client.patch(
+        'tasks',
+        't1',
+        { title: 'b' },
+        { baseVersion: 1 },
+      );
+      const wider = a.client.patch(
+        'tasks',
+        't1',
+        { title: 'c', priority: 4 },
+        { baseVersion: 1 },
+      );
+      const summary = await a.client.sync();
+      expect(summary.applied).toEqual([title]);
+      expect(summary.rejected).toEqual([wider]);
+      expect(summary.conflicts[0]?.conflictColumns).toEqual(['title']);
+    } finally {
+      await a.client.close();
+      a.db.close();
+      server.storage.db.close();
+    }
+  });
+
   test('lost insert race (baseVersion 0) surfaces the winner row', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });

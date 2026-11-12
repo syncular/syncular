@@ -218,6 +218,37 @@ impl OutboxOp {
     }
 }
 
+impl From<CommitOperation> for OutboxOp {
+    fn from(operation: CommitOperation) -> Self {
+        Self {
+            upsert: operation.op == "upsert",
+            table: operation.table,
+            row_id: operation.row_id,
+            base_version: operation.base_version,
+            values: operation.values,
+            insert: operation.insert,
+        }
+    }
+}
+
+/// §7.1 chained base: `later` repeats `earlier`'s positive base on the same
+/// row and presents only columns `earlier` presents.
+fn chains_on(earlier: &OutboxOp, later: &OutboxOp) -> bool {
+    // Only an upsert carries values, and it always carries its primary key.
+    earlier.row_id == later.row_id
+        && earlier.table == later.table
+        && later.base_version.is_some_and(|base| base > 0)
+        && earlier.base_version == later.base_version
+        && later.values.as_ref().is_some_and(|values| {
+            values.keys().all(|column| {
+                earlier
+                    .values
+                    .as_ref()
+                    .is_some_and(|earlier| earlier.contains_key(column))
+            })
+        })
+}
+
 impl From<&OutboxOp> for CommitOperation {
     fn from(operation: &OutboxOp) -> Self {
         Self {
@@ -7205,6 +7236,16 @@ impl SyncClient {
                 deferred_commits = total_outbox - index;
                 break;
             }
+            // §7.1 chained base: the commit waits for the change of the commit
+            // it chains on, which supplies its rebased version.
+            if self.outbox[..index]
+                .iter()
+                .flat_map(|earlier| &earlier.ops)
+                .any(|earlier| commit.ops.iter().any(|op| chains_on(earlier, op)))
+            {
+                deferred_commits = total_outbox - index;
+                break;
+            }
             let operations = commit
                 .ops
                 .iter()
@@ -9566,6 +9607,66 @@ impl SyncClient {
         let applied = (|| {
             let mut batch = ChangeAccumulator::default();
             self.record_commit_changes(&mut batch, tables, changes);
+            // §7.1 chained base: a change names the version an acknowledged own
+            // commit wrote; pending upserts chained on it move to that version.
+            for change in changes {
+                let Some(table) = tables.get(change.table_index as usize) else {
+                    continue;
+                };
+                let acknowledged = self
+                    .conn
+                    .prepare_cached("SELECT op_json FROM _syncular_acked_rows WHERE tbl=?1 AND id=?2 AND commit_seq=?3")
+                    .and_then(|mut statement| {
+                        statement
+                            .query_map(rusqlite::params![table, change.row_id, sequence], |row| row.get::<_, String>(0))?
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .map_err(|error| TransportError::new("storage.failed", Self::sqlite_failure(&self.storage_failure, error)))?
+                    .iter()
+                    .map(|op| serde_json::from_str::<CommitOperation>(op).map(OutboxOp::from))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| TransportError::new("storage.failed", "sync.local_corrupt: invalid acknowledged operation".to_owned()))?;
+                for index in 0..self.outbox.len() {
+                    if !self.outbox[index]
+                        .ops
+                        .iter()
+                        .any(|op| acknowledged.iter().any(|earlier| chains_on(earlier, op)))
+                    {
+                        continue;
+                    }
+                    let commit = Arc::make_mut(&mut self.outbox[index]);
+                    for op in &mut commit.ops {
+                        if acknowledged.iter().any(|earlier| chains_on(earlier, op)) {
+                            op.base_version = Some(change.row_version);
+                        }
+                    }
+                    let ops = serde_json::to_string(
+                        &commit
+                            .ops
+                            .iter()
+                            .map(CommitOperation::from)
+                            .collect::<Vec<_>>(),
+                    )
+                    .map_err(|_| {
+                        TransportError::new(
+                            "storage.failed",
+                            "sync.local_corrupt: unencodable outbox".to_owned(),
+                        )
+                    })?;
+                    let id = commit.client_commit_id.clone();
+                    self.conn
+                        .execute(
+                            "UPDATE _syncular_outbox SET ops_json=?1 WHERE commit_id=?2",
+                            rusqlite::params![ops, id],
+                        )
+                        .map_err(|error| {
+                            TransportError::new(
+                                "storage.failed",
+                                Self::sqlite_failure(&self.storage_failure, error),
+                            )
+                        })?;
+                }
+            }
             {
                 let storage_failed = |error| {
                     TransportError::new(
@@ -11389,15 +11490,11 @@ impl SyncClient {
             let values = if op.op == "upsert" && self.visible_row(table, &op.row_id)?.is_none() {
                 Some(serde_json::from_str(&intent).map_err(|_| "sync.local_corrupt".to_owned())?)
             } else {
-                op.values
+                op.values.clone()
             };
             Ok(OutboxOp {
-                table: op.table,
-                row_id: op.row_id,
-                upsert: op.op == "upsert",
-                base_version: op.base_version,
                 values,
-                insert: op.insert,
+                ..op.into()
             })
         })
         .collect()

@@ -4963,7 +4963,8 @@ documents: a JSON boolean for a `boolean` column.
 - The outbox is FIFO: commits are pushed strictly in creation order, and
   a client MUST NOT reorder or coalesce commits once a push containing
   them may have reached the server (the idempotency key pins their
-  content).
+  content). The chained-base rebase below is the only rewrite of a pending
+  commit's content.
   Each request contains a contiguous prefix of the surviving outbox. A
   client MAY configure three per-request push budgets: whole commits, total
   operations, and the encoded request byte size. The default operation budget
@@ -5017,6 +5018,41 @@ documents: a JSON boolean for a `boolean` column.
   without `commitSeq` are invalid host responses. The client MUST schedule
   an immediate following pull when acknowledged intent remains uncovered;
   this obligation does not depend on an origin realtime notification.
+- **Chained base.** The local `_sync_version` of a row stays at the version
+  the app read until the server delivers the row again, so an edit authored
+  while an earlier own edit of that row is unacknowledged repeats the earlier
+  edit's base. A pending upsert `L` is *chained* on an upsert `E` of an
+  earlier commit when both write the same row, `L.baseVersion` equals
+  `E.baseVersion` and is positive, and every column in `L`'s persisted
+  values is a column in `E`'s persisted values (§7.2.1: the values map is
+  the presence set).
+
+  A request MUST NOT carry a commit with an operation chained on an
+  operation of an earlier commit in the same request: that commit and the
+  complete suffix are deferred to a later request, like a commit over a push
+  budget. When the client applies a `COMMIT` whose `commitSeq` equals the
+  acknowledged `commitSeq` of a commit holding `E` and changes `E`'s row,
+  the client sets the `baseVersion` of every pending
+  operation chained on `E` to the change's `rowVersion`. The rewrite is part
+  of the transaction that applies the `COMMIT`, so it is durable with the
+  outbox and survives restart. When that change deletes the row, the rebased
+  upsert receives `sync.row_missing` as it would with its original base.
+
+  The server applied `E` only after every column `E` presents had a
+  `column_version` at or below `E.baseVersion`, and the apply set them to
+  the change's `rowVersion` (§6.2). The rebased `L` therefore conflicts
+  exactly when another writer changed one of its columns after `E`; a
+  foreign write before `E` made `E` conflict. An upsert that also presents a
+  column `E` did not present keeps its base, because the later version would
+  hide a foreign write to that column before `E`; it conflicts on the
+  columns `E` wrote. No rebase happens when `E`'s commit conflicts or is
+  rejected, since the server never wrote `E`'s version, or when the client
+  never applies the `COMMIT` of `E`'s `commitSeq` while it holds `E` as
+  acknowledged intent (a delivery before the acknowledgement, a bootstrap,
+  or a reset covers the row instead). Such an operation keeps its base and
+  takes the ordinary §6.2 outcome. A rebased commit that already reached the
+  server keeps its first result: the server answers its `clientCommitId`
+  from the idempotency record (§2.3).
 - Reconciliation MUST rebuild only tables whose server base or pending/retained
   operations changed. Unchanged visible tables and their FTS projections MUST
   remain untouched. A schema reset or restart recovering an interrupted overlay

@@ -411,15 +411,8 @@ export function httpBlobTransport(
         } catch {
           // Not JSON: inline bytes.
         }
-        if (typeof envelope?.url === 'string') {
-          return {
-            kind: 'url',
-            url: envelope.url,
-            ...(typeof envelope.urlExpiresAtMs === 'number'
-              ? { urlExpiresAtMs: envelope.urlExpiresAtMs }
-              : {}),
-          };
-        }
+        const grant = envelope && urlGrant(envelope);
+        if (grant) return grant;
       }
       return { kind: 'bytes', bytes };
     },
@@ -461,22 +454,11 @@ export function httpBlobTransport(
         'blob grant read failed',
         () => response.json(),
         response.status,
-      )) as {
-        url?: string;
-        urlExpiresAtMs?: number;
-        present?: boolean;
-      };
-      if (typeof body.url === 'string') {
-        return {
-          kind: 'url',
-          url: body.url,
-          ...(typeof body.urlExpiresAtMs === 'number'
-            ? { urlExpiresAtMs: body.urlExpiresAtMs }
-            : {}),
-        };
-      }
-      if (body.present === true) return { kind: 'present' };
-      return { kind: 'none' };
+      )) as { url?: unknown; urlExpiresAtMs?: unknown; present?: boolean };
+      return (
+        urlGrant(body) ??
+        (body.present === true ? { kind: 'present' } : { kind: 'none' })
+      );
     },
     // §5.9.3: direct-to-storage PUT — no host auth (the URL is the grant).
     uploadToUrl: async (blobId, url, bytes, mediaType, signal) => {
@@ -568,4 +550,17 @@ export function webSocketRealtimeConnector(
         handlers.onClose?.();
       };
     });
+}
+
+/** §5.9.3, §5.9.5: a JSON body with a string `url` is a presigned grant. */
+function urlGrant(body: { url?: unknown; urlExpiresAtMs?: unknown }) {
+  return typeof body.url === 'string'
+    ? {
+        kind: 'url' as const,
+        url: body.url,
+        ...(typeof body.urlExpiresAtMs === 'number'
+          ? { urlExpiresAtMs: body.urlExpiresAtMs }
+          : {}),
+      }
+    : undefined;
 }

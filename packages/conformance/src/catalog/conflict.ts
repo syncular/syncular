@@ -289,6 +289,65 @@ export const conflictScenarios: readonly Scenario[] = [
     },
   },
 
+  // §7.1 chained base: an undo authored before the stroke's acknowledgement
+  // reads the same version; the stroke's change rebases it. A foreign write
+  // after the stroke still conflicts.
+  {
+    name: 'conflict/chained-own-edit-rebases-on-acknowledgement',
+    specRefs: ['§7.1', '§6.2'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'chained-a');
+      const b = await bootstrapped(ctx, 'actor-b', 'chained-b');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'base') },
+      ]);
+      await syncIdle(a);
+
+      const stroke = await a.api.patch('tasks', 't1', { title: 'stroke' }, 1);
+      const undo = await a.api.patch('tasks', 't1', { title: 'base' }, 1);
+      checkEqual(
+        (await syncOk(a)).applied,
+        [stroke],
+        'the undo waits for the change of the stroke it chains on',
+      );
+      const drained = await syncIdle(a);
+      checkEqual(drained.rejected, [], 'the rebased undo does not conflict');
+      checkEqual(drained.applied, [undo], 'the rebased undo applies');
+      let t1 = (await ctx.server.readRows('tasks')).find(
+        (row) => row.rowId === 't1',
+      );
+      checkEqual(t1?.values.title, 'base', 'the undo restored the row');
+      checkEqual(t1?.version, 3, 'stroke and undo each wrote one version');
+
+      const again = await a.api.patch('tasks', 't1', { title: 'stroke' }, 3);
+      const late = await a.api.patch('tasks', 't1', { title: 'base' }, 3);
+      checkEqual((await syncOk(a)).applied, [again], 'the stroke applies');
+      await syncIdle(b);
+      await b.api.patch('tasks', 't1', { title: 'foreign' }, 4);
+      await syncIdle(b);
+      const report = await syncOk(a);
+      checkEqual(
+        report.rejected,
+        [late],
+        'a foreign write after the stroke conflicts with the rebased undo',
+      );
+      const conflict = (await a.api.conflicts()).find(
+        (record) => record.clientCommitId === late,
+      );
+      checkEqual(conflict?.serverVersion, 5, 'the foreign version');
+      checkEqual(conflict?.conflictColumns, ['title'], 'the moved column');
+      t1 = (await ctx.server.readRows('tasks')).find(
+        (row) => row.rowId === 't1',
+      );
+      checkEqual(t1?.values.title, 'foreign', 'the foreign write stands');
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a, b], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+
   // §7.2: a rollback rebuilds the row from the last server-delivered base.
   // B queues an unrelated commit and then its edit of t1; A's write of t1
   // reaches B in the round that drains only the unrelated commit, so the edit

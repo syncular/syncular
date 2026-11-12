@@ -62,6 +62,7 @@ import {
   unitId,
   type UnitScopes,
   type WakeReason,
+  definedObject,
 } from '@syncular/core';
 import { EncryptError } from '@syncular/core';
 import { EncodeError } from '@syncular/core';
@@ -161,6 +162,7 @@ import {
 } from './local-rebootstrap-receipt';
 import {
   appendOutboxCommit,
+  chainsOn,
   deleteOutboxCommit,
   encodeOutboxCommit,
   listOutbox,
@@ -1852,12 +1854,8 @@ export class SyncClient {
       });
     };
     const deliveryOf = (id: string): CommitDelivery => {
-      const pending =
-        this.#db.query(
-          `SELECT 1 FROM ${OUTBOX_TABLE} WHERE client_commit_id=? LIMIT 1`,
-          [id],
-        ).length > 0;
-      if (pending) return { status: 'pending', clientCommitId: id };
+      if (this.#outboxCommitExists(id))
+        return { status: 'pending', clientCommitId: id };
       const outcome = persistedCommitOutcome(this.#db, id);
       return outcome === undefined
         ? { status: 'unknown', clientCommitId: id }
@@ -3996,7 +3994,16 @@ export class SyncClient {
       // §6.1/§7.1: the commit-count and operation caps are hard. A first
       // commit that alone exceeds the operation cap is a typed capacity error
       // and stays queued; a later one defers with the complete suffix.
-      if (maxCommits !== undefined && pushFrames.length >= maxCommits) {
+      // §7.1 chained base: a commit chained on an earlier commit of this
+      // request waits for that commit's change, which supplies its version.
+      if (
+        (maxCommits !== undefined && pushFrames.length >= maxCommits) ||
+        outbox.some((earlier) =>
+          earlier.operations.some((prior) =>
+            commit.operations.some((operation) => chainsOn(prior, operation)),
+          ),
+        )
+      ) {
         deferred = pendingCount - processed;
         break;
       }
@@ -6878,21 +6885,6 @@ export class SyncClient {
       );
     }
   }
-}
-
-type DefinedObject<T> = {
-  [K in keyof T as undefined extends T[K] ? never : K]: T[K];
-} & {
-  [K in keyof T as undefined extends T[K] ? K : never]?: Exclude<
-    T[K],
-    undefined
-  >;
-};
-function definedObject<const T extends object>(record: T): DefinedObject<T> {
-  for (const key of Object.keys(record) as (keyof T)[]) {
-    if (record[key] === undefined) delete record[key];
-  }
-  return record as DefinedObject<T>;
 }
 
 function requireRowId(value: unknown): string {
