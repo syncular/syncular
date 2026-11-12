@@ -1166,13 +1166,31 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     query: { readonly table: string; readonly scopes: UnitScopes },
   ): Promise<number> {
-    const variable = Object.keys(query.scopes).sort()[0];
-    const value = variable === undefined ? undefined : query.scopes[variable];
-    if (variable === undefined || value === undefined) return 0;
-    // One index-only max over the (partition, tbl, var, value) prefix.
-    const [row] = await this.guardedAll<{ seq: number | null }>(
-      'SELECT max(commit_seq) AS seq FROM sync_change_scopes WHERE partition=? AND tbl=? AND var=? AND value=?',
-      [partition, query.table, variable, value],
+    const keys = Object.entries(query.scopes).sort(([a], [b]) =>
+      a < b ? -1 : 1,
+    );
+    if (keys.length === 0) return 0;
+    // Leapfrog over the unit's key ranges: each step seeks the next key's
+    // newest commit at or below the current bound, so the pin costs one
+    // seek per key per range it jumps, whatever the history above it.
+    const [row] = await this.guardedAll<{ seq: number }>(
+      `WITH RECURSIVE step(seq, i, same) AS (
+         SELECT 9007199254740991, 0, 0
+         UNION ALL
+         SELECT (SELECT max(commit_seq) FROM sync_change_scopes
+                  WHERE partition=?1 AND tbl=?2
+                    AND var=json_extract(?3, '$[' || CAST(step.i%?4 AS INTEGER) || '][0]')
+                    AND value=json_extract(?3, '$[' || CAST(step.i%?4 AS INTEGER) || '][1]')
+                    AND commit_seq<=step.seq),
+                step.i+1,
+                CASE WHEN (SELECT max(commit_seq) FROM sync_change_scopes
+                  WHERE partition=?1 AND tbl=?2
+                    AND var=json_extract(?3, '$[' || CAST(step.i%?4 AS INTEGER) || '][0]')
+                    AND value=json_extract(?3, '$[' || CAST(step.i%?4 AS INTEGER) || '][1]')
+                    AND commit_seq<=step.seq)=step.seq THEN step.same+1 ELSE 1 END
+         FROM step WHERE step.seq IS NOT NULL AND step.same<?4)
+       SELECT seq FROM step WHERE same>=?4`,
+      [partition, query.table, JSON.stringify(keys), keys.length],
     );
     return row?.seq ?? 0;
   }

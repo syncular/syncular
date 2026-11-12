@@ -1121,12 +1121,13 @@ export interface ServerStorage {
   ): Promise<LiveWindow>;
 
   /**
-   * Newest commitSeq whose change to `query.table` carries the unit's value
-   * of its first variable (keys sorted): the `readLiveWindow` candidate rule,
-   * so no change the unit would receive for the table sits above it. 0 when
-   * the index holds none (never written, or pruned). The §4.7 sqlite-lane
-   * scope pin reads it; it MUST be one index lookup, independent of the
-   * table's history.
+   * Newest commitSeq whose changes to `query.table` carry every value of
+   * the unit's scope map in the change-scope index. Every change the unit
+   * would receive for the table, and each half of a scope move into or out
+   * of it, carries all of those values, so none sits above it. 0 when the
+   * index holds none (never written, or pruned). The §4.7 sqlite-lane scope
+   * pin reads it; it MUST seek the keys' index ranges (one seek per key per
+   * jump between them) and never scan the commits above the result.
    */
   latestScopedChangeSeq(
     partition: string,

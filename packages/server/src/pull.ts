@@ -372,8 +372,8 @@ async function readTableStart(
   if (!sqliteLaneEligible(limits, pair.table, startRowCursor)) {
     return { firstPage: await scan };
   }
-  // §4.7: a sqlite-lane table pins at the newest change carrying the unit's
-  // index key (never below the horizon, never above maxCommitSeq), so a
+  // §4.7: a sqlite-lane table pins at the newest commit carrying all of the
+  // unit's values (never below the horizon, never above maxCommitSeq), so a
   // stored image stays the reuse key's match until this scope changes
   // (§5.3). The server computes the pin; a client token never supplies it.
   const [firstPage, latest] = await Promise.all([

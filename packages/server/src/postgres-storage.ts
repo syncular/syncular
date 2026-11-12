@@ -3280,20 +3280,32 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     query: { readonly table: string; readonly scopes: UnitScopes },
   ): Promise<number> {
-    const variable = Object.keys(query.scopes).sort()[0];
-    const value = variable === undefined ? undefined : query.scopes[variable];
-    if (variable === undefined || value === undefined) return 0;
-    // Concurrent reads of a pull share one statement across tables: one
-    // index-only max over the (partition, tbl, var, value) prefix per spec.
+    const keys = Object.entries(query.scopes).sort(([a], [b]) =>
+      a < b ? -1 : 1,
+    );
+    if (keys.length === 0) return 0;
+    // Concurrent reads of a pull share one statement across tables. Per spec
+    // a leapfrog over the unit's key ranges: each step seeks the next key's
+    // newest commit at or below the current bound.
     const [row] = await this.#batchedPage<{ seq: unknown }>(
       'latestScopedChange',
-      `SELECT s.i AS sub,
-         (SELECT max(commit_seq) FROM sync_change_scopes
-           WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=s.value) AS seq
-       FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, value text)
+      `SELECT s.i AS sub, (
+         WITH RECURSIVE step(seq, i, same) AS (
+           SELECT 9007199254740991::bigint, 0, 0
+           UNION ALL
+           SELECT x.seq, step.i+1,
+                  CASE WHEN x.seq=step.seq THEN step.same+1 ELSE 1 END
+           FROM step CROSS JOIN LATERAL (
+             SELECT max(c.commit_seq) AS seq FROM sync_change_scopes AS c
+              WHERE c.partition=$1 AND c.tbl=s.tbl
+                AND c.var=s.keys->(step.i%s.n)->>0 AND c.value=s.keys->(step.i%s.n)->>1
+                AND c.commit_seq<=step.seq) AS x
+           WHERE step.seq IS NOT NULL AND step.same<s.n)
+         SELECT seq FROM step WHERE same>=s.n) AS seq
+       FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, keys jsonb, n int)
        ORDER BY s.i`,
       partition,
-      { tbl: query.table, var: variable, value },
+      { tbl: query.table, keys, n: keys.length },
     );
     return row === undefined || row.seq === null ? 0 : asNumber(row.seq);
   }

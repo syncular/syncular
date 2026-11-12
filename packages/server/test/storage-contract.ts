@@ -1138,6 +1138,70 @@ export function runStorageContract(
       expect(await latest('tasks', { project_id: 'p9' })).toBe(0);
     });
 
+    test('latestScopedChangeSeq pins a unit at the newest commit carrying all of its values', async () => {
+      const storage = await make();
+      type Change = readonly [string, 'upsert' | 'delete', string, string];
+      // [rowId, op, org_id, project_id]: one commit per list.
+      const commits: readonly (readonly Change[])[] = [
+        [['d1', 'upsert', 'o1', 'p1']],
+        // A write under the same first value in another project.
+        [['d2', 'upsert', 'o1', 'p2']],
+        // §2.2 scope move out of the unit through its second variable.
+        [
+          ['d1', 'delete', 'o1', 'p1'],
+          ['d1', 'upsert', 'o1', 'p3'],
+        ],
+        // A scope move out of o2/p1 through the first variable.
+        [['d3', 'upsert', 'o2', 'p1']],
+        [
+          ['d3', 'delete', 'o2', 'p1'],
+          ['d3', 'upsert', 'o3', 'p1'],
+        ],
+        // Two changes of one commit that carry the values only jointly.
+        [
+          ['d4', 'upsert', 'o1', 'p4'],
+          ['d5', 'upsert', 'o5', 'p1'],
+        ],
+      ];
+      for (const [i, changes] of commits.entries()) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: `m${i}`,
+          actorId: 'a',
+          createdAtMs: NOW + i,
+          changes: changes.map(([rowId, op, org, project], j) => ({
+            table: 'docs',
+            rowId,
+            op,
+            rowVersion: i + 1,
+            scopes: { org_id: org, project_id: project },
+            ...(op === 'upsert' ? { payload: bytes(i * 10 + j) } : {}),
+          })),
+        });
+        await tx.commit();
+      }
+      const latest = (org_id: string, project_id: string) =>
+        storage.latestScopedChangeSeq(PARTITION, {
+          table: 'docs',
+          scopes: { org_id, project_id },
+        });
+      // The write under o1/p2 leaves o1/p1 at the move that took d1 out.
+      expect(await latest('o1', 'p2')).toBe(2);
+      expect(await latest('o1', 'p3')).toBe(3);
+      expect(await latest('o2', 'p1')).toBe(5);
+      expect(await latest('o3', 'p1')).toBe(5);
+      // The index is per commit and table, so a commit whose changes carry
+      // the values only jointly still moves the pin (o1 from d4, p1 from d5).
+      expect(await latest('o1', 'p1')).toBe(6);
+      expect(await latest('o9', 'p1')).toBe(0);
+      const single = await storage.latestScopedChangeSeq(PARTITION, {
+        table: 'docs',
+        scopes: { project_id: 'p2' },
+      });
+      expect(single).toBe(2);
+    });
+
     // --- Per-outbox acknowledged watermark (§6.3.2) and §9 settlement ---
 
     /**
