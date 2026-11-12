@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'Name your commit before mutate returns',
+    body: '`mutate` accepts an optional `clientCommitId` in both clients and every binding. An app whose worker or bridge loses the reply reads the commit by that ID through `pendingCommits` and `commitOutcome` instead of guessing which applied outcome was its own. An ID the replica still holds throws `client.commit_id_reused` and writes nothing.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#caller-supplied-commit-ids',
+        label: 'Caller-supplied commit IDs',
+      },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title: 'A quick undo no longer conflicts with your own edit',
     body: "An edit of a confirmed row authored before the previous edit of that row was acknowledged carried the same `baseVersion`, and the server reported it as `sync.version_conflict` against the client's own write. Both clients now send such an edit after the one it chains on and move its base to the version that edit wrote, so an immediate undo applies. A write by another client in between still conflicts.",
     links: [

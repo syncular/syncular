@@ -10,6 +10,7 @@ import type { OverlayScope } from './failed-overlay';
  * upgrade to N+1 by re-encoding.
  */
 import {
+  definedObject,
   encodeSparseRow,
   type PushCommitFrame,
   type PushOperation,
@@ -230,8 +231,12 @@ export function replaceOutboxBeforeImages(
  * so the caller can drop the commit through the rejection channel.
  */
 export class OutboxEncodeError extends ClientSyncError {
-  constructor(message: string) {
-    super('sync.outbox_incompatible', message, false);
+  constructor() {
+    super(
+      'sync.outbox_incompatible',
+      'the persisted commit cannot encode under the current schema',
+      false,
+    );
   }
 }
 
@@ -244,9 +249,7 @@ function sparseValues(
   // bump removed (or renamed) it — the commit cannot be expressed now.
   for (const key of Object.keys(values)) {
     if (!table.columnIndex.has(key)) {
-      throw new OutboxEncodeError(
-        `outbox column ${JSON.stringify(key)} is absent from table ${JSON.stringify(table.name)} (§7.4.4)`,
-      );
+      throw new OutboxEncodeError();
     }
   }
   return table.columns.map((column) => {
@@ -255,9 +258,7 @@ function sparseValues(
     if (!insert) return undefined;
     // §7.1: an insert-intent operation presents every current column.
     if (!column.nullable) {
-      throw new OutboxEncodeError(
-        'an outbox insert lacks a non-nullable column (§7.4.4)',
-      );
+      throw new OutboxEncodeError();
     }
     return null;
   });
@@ -283,27 +284,23 @@ export async function encodeOutboxCommit(
   const operations: PushOperation[] = [];
   for (const op of commit.operations) {
     if (op.op === 'delete') {
-      operations.push({
-        table: op.table,
-        rowId: op.rowId,
-        op: 'delete',
-        ...(op.baseVersion !== undefined
-          ? { baseVersion: op.baseVersion }
-          : {}),
-      });
+      operations.push(
+        definedObject({
+          table: op.table,
+          rowId: op.rowId,
+          op: 'delete',
+          baseVersion: op.baseVersion,
+        }),
+      );
       continue;
     }
     const table = schema.tables.get(op.table);
     if (table === undefined) {
       // §7.4.4: the bump removed this table — the commit cannot be encoded.
-      throw new OutboxEncodeError(
-        `outbox table ${JSON.stringify(op.table)} is absent from the current schema (§7.4.4)`,
-      );
+      throw new OutboxEncodeError();
     }
     if (op.values === undefined) {
-      throw invalidRequest(
-        `outbox upsert on ${op.table}/${op.rowId} has no values`,
-      );
+      throw invalidRequest('an outbox upsert has no values');
     }
     let values = sparseValues(table, op.values, op.insert === true);
     if (table.hasEncryptedColumns) {
@@ -317,13 +314,15 @@ export async function encodeOutboxCommit(
         storedKeyIdFor?.(table, op.rowId),
       );
     }
-    operations.push({
-      table: op.table,
-      rowId: op.rowId,
-      op: 'upsert',
-      ...(op.baseVersion !== undefined ? { baseVersion: op.baseVersion } : {}),
-      payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
-    });
+    operations.push(
+      definedObject({
+        table: op.table,
+        rowId: op.rowId,
+        op: 'upsert',
+        baseVersion: op.baseVersion,
+        payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
+      }),
+    );
   }
   return {
     type: 'PUSH_COMMIT',

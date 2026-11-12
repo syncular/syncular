@@ -3402,15 +3402,35 @@ export class SyncClient {
   /**
    * Record one atomic local commit (§7.1): appended to the outbox in
    * schema-agnostic form and applied optimistically to the local mirror.
-   * Returns the generated `clientCommitId`.
+   * Returns the generated `clientCommitId`, or the caller's unused one
+   * (`client.commit_id_reused` when this replica holds it).
    */
-  mutate(mutations: readonly MutationInput[]): string {
-    return this.#recordMutations(mutations);
+  mutate(
+    mutations: readonly MutationInput[],
+    options?: { readonly clientCommitId?: string },
+  ): string {
+    return this.#recordMutations(mutations, options?.clientCommitId);
   }
 
-  #recordMutations(mutations: readonly MutationInput[]): string {
+  #recordMutations(
+    mutations: readonly MutationInput[],
+    supplied?: string,
+  ): string {
     this.#requireActive();
-    const clientCommitId = crypto.randomUUID();
+    // §7.1: a supplied ID is non-empty (§6.1) and unknown to this replica.
+    if (supplied === '') throw invalidRequest('clientCommitId is empty');
+    if (
+      supplied !== undefined &&
+      (this.#outboxCommitExists(supplied) ||
+        readCommitOutcome(this.#db, supplied))
+    )
+      throw new ClientSyncError(
+        'client.commit_id_reused',
+        'clientCommitId is held',
+        false,
+        { clientCommitId: supplied },
+      );
+    const clientCommitId = supplied ?? crypto.randomUUID();
     const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
@@ -3469,18 +3489,14 @@ export class SyncClient {
                 ),
               )
             ) {
-              throw invalidRequest(
-                `table ${table.name}: patch cannot write scope column ${JSON.stringify(column.name)} (§3.4)`,
-              );
+              throw invalidRequest('patch cannot write a scope column (§3.4)');
             }
             continue;
           }
           const value = normalized.get(column.name);
           if (value === undefined || value === null) {
             if (!column.nullable) {
-              throw invalidRequest(
-                `table ${table.name}: column ${JSON.stringify(column.name)} is not nullable (§6.1)`,
-              );
+              throw invalidRequest('a non-nullable column is null (§6.1)');
             }
             json[column.name] = null;
             continue;
@@ -3584,9 +3600,12 @@ export class SyncClient {
   }
 
   /** Host-facing mutation result with explicit network work intent (§7.5). */
-  mutateCommand(mutations: readonly MutationInput[]): CommandResult<string> {
+  mutateCommand(
+    mutations: readonly MutationInput[],
+    options?: { readonly clientCommitId?: string },
+  ): CommandResult<string> {
     return {
-      value: this.mutate(mutations),
+      value: this.mutate(mutations, options),
       effects: {
         sync: { kind: this.#transportEnabled ? 'interactive' : 'none' },
       },
@@ -3613,9 +3632,7 @@ export class SyncClient {
     const normalized = normalizeRecordKeys(compiled, partial);
     const pkOverride = normalized.get(pkColumn.name);
     if (pkOverride !== undefined && String(pkOverride) !== rowId) {
-      throw invalidRequest(
-        `table ${compiled.name}: patch cannot change the primary key`,
-      );
+      throw invalidRequest('patch cannot change the primary key');
     }
     const pkType = localColumnType(pkColumn);
     const typedPk =

@@ -32,6 +32,19 @@ client.mutate([
 | Omitted columns | Retain their values. |
 | Encrypted columns | A patch that writes only plaintext columns needs no encryption key for omitted encrypted columns. Their stored ciphertext stays unchanged. |
 
+## Caller-supplied commit IDs
+
+`mutate` returns the commit's `clientCommitId` once the commit is queued. A worker or native bridge that fails mid-call can lose that reply after the commit was queued. To know your commit regardless, pass your own ID:
+
+```ts title="src/sync.ts"
+const eventId = crypto.randomUUID();
+await client.mutate([{ table: 'todos', op: 'upsert', values: todo }], {
+  clientCommitId: eventId,
+});
+```
+
+After a lost reply, read the commit by that ID instead of calling `mutate` again. `pendingCommits()` lists it while it is queued, and `commitOutcome(eventId)` returns its final outcome once the server answered. When neither knows the ID, the lost call queued nothing, and calling `mutate` again with the same ID is safe. A call with an ID the outbox or the outcome journal still holds throws `client.commit_id_reused` with `details.clientCommitId` and writes nothing. An empty ID throws `sync.invalid_request`. The client does not detect an ID it no longer holds, such as one whose outcome left the journal through retention; never reuse an ID for a different commit. Kotlin, Swift and Flutter take the ID as a `clientCommitId` argument of `mutate`, and the command bridge as the `clientCommitId` parameter of the `mutate` command.
+
 ## Acknowledgement and replay
 
 An `applied` or `cached` acknowledgement confirms server acceptance and removes the commit from the send queue. The client keeps its local intent in protected storage until an authoritative change for the same row arrives at that commit sequence or later. A completed covering bootstrap also retires it. Empty pulls, restarts, and later edits keep acknowledged intent. This runs automatically in Bun, the web worker, and native clients, independent of `retainFailedCommits`.

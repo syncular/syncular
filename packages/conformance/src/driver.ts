@@ -1299,7 +1299,10 @@ export interface ClientInstance {
   drainSyncIntents?(): Promise<readonly DriverSyncIntent[]>;
 
   /** Record one atomic local commit (§7.1); returns its clientCommitId. */
-  mutate(mutations: readonly ClientMutation[]): Promise<string>;
+  mutate(
+    mutations: readonly ClientMutation[],
+    options?: { readonly clientCommitId?: string },
+  ): Promise<string>;
   patch(
     table: string,
     rowId: string,

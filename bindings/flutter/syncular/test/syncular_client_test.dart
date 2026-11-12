@@ -290,6 +290,19 @@ void main() {
         () => client.readRows('does_not_exist'), throwsA(isA<SyncularError>()));
   });
 
+  test('mutate records a caller-supplied clientCommitId once', () {
+    final client = makeClient();
+    addTearDown(client.close);
+    client.subscribe({'id': 't1'});
+    expect(client.mutate([upsert('t1', 'x')], clientCommitId: 'event-1'),
+        'event-1');
+    expect(
+        () => client.mutate([upsert('t2', 'y')], clientCommitId: 'event-1'),
+        throwsA(isA<SyncularError>()
+            .having((error) => error.code, 'code', 'client.commit_id_reused')));
+    expect(client.pendingCommitIds(), ['event-1']);
+  });
+
   test('snapshots and pending outcomes after an offline mutate', () {
     final client = makeClient();
     addTearDown(client.close);

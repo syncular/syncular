@@ -42,7 +42,10 @@ export interface SyncClientLike extends ClientSnapshotReader {
     sql: string,
     params?: readonly SqlValue[],
   ): SqlRow[] | Promise<SqlRow[]>;
-  mutate(mutations: readonly MutationInput[]): string | Promise<string>;
+  mutate(
+    mutations: readonly MutationInput[],
+    options?: { readonly clientCommitId?: string },
+  ): string | Promise<string>;
   patch(
     table: string,
     rowId: string,

@@ -135,6 +135,23 @@ class SyncularClientTest {
     }
 
     @Test
+    fun mutateRecordsACallerSuppliedCommitIdOnce() {
+        val client = makeClient()
+        try {
+            client.subscribe(mapOf("id" to "t1"))
+            assertEquals("event-1", client.mutate(listOf(upsert("t1", "x")), clientCommitId = "event-1"))
+            val error = assertFailsWith<SyncularException> {
+                client.mutate(listOf(upsert("t2", "y")), clientCommitId = "event-1")
+            }
+            assertEquals("client.commit_id_reused", error.code)
+            assertEquals("event-1", error.details?.get("clientCommitId")?.string)
+            assertEquals(listOf("event-1"), client.pendingCommitIds())
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun syncUntilIdleForwardsTimeoutMsToTheCore() {
         val client = makeClient()
         try {

@@ -3543,6 +3543,63 @@ fn local_rebootstrap_cannot_bypass_schema_floor() {
 }
 
 #[test]
+fn mutate_records_a_caller_supplied_commit_id_once() {
+    let mut client = client();
+    let write = |client: &mut SyncClient, row: &str, id: &str| {
+        client.mutate_with_commit_id(
+            vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!(row)),
+                    ("project_id".into(), json!("p1")),
+                ]),
+                base_version: None,
+            }],
+            Some(id.to_owned()),
+        )
+    };
+    assert_eq!(write(&mut client, "t1", "event-1").unwrap(), "event-1");
+    let reused = write(&mut client, "t2", "event-1").unwrap_err();
+    assert_eq!(reused.code, "client.commit_id_reused");
+    assert!(!reused.retryable);
+    assert_eq!(reused.details, Some(json!({ "clientCommitId": "event-1" })));
+    assert_eq!(
+        write(&mut client, "t3", "").unwrap_err().code,
+        "sync.invalid_request"
+    );
+    client.begin_observation("test_journal").unwrap();
+    client
+        .persist_commit_outcome(
+            "event-2",
+            CommitOutcomeStatus::Applied,
+            &[CommitOperationOutcome::Applied { op_index: 0 }],
+            None,
+        )
+        .unwrap();
+    client
+        .finish_observation("test_journal", ChangeAccumulator::default())
+        .unwrap();
+    assert_eq!(
+        write(&mut client, "t4", "event-2").unwrap_err().code,
+        "client.commit_id_reused",
+        "a journaled ID is held"
+    );
+    assert_eq!(
+        client
+            .outbox
+            .iter()
+            .map(|commit| commit.client_commit_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["event-1"]
+    );
+    assert_eq!(
+        client.query("SELECT id FROM tasks", &[]).unwrap(),
+        vec![Map::from_iter([("id".to_owned(), json!("t1"))])],
+        "refused calls wrote nothing"
+    );
+}
+
+#[test]
 fn an_edit_authored_before_the_previous_own_acknowledgement_rebases_on_it() {
     let path =
         std::env::temp_dir().join(format!("syncular-chained-base-{}.db", uuid::Uuid::new_v4()));

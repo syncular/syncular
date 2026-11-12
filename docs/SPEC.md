@@ -4949,6 +4949,18 @@ documents: a JSON boolean for a `boolean` column.
   client-generated `clientCommitId`s (unique forever per client; UUIDs
   recommended). The outbox is schema-agnostic (§0): it survives a schema
   bump and replays on top of the fresh re-bootstrap (§7.4).
+- `mutate` accepts an optional caller-supplied `clientCommitId`, so an app
+  that loses the call's reply (a worker or bridge failing mid-call) knows
+  which commit was its own. A supplied ID is non-empty (§6.1); an empty one
+  is `sync.invalid_request`. When the outbox or the outcome journal
+  (§7.2.1) still holds the ID, the call fails with `client.commit_id_reused` (not retryable, details
+  `{ clientCommitId }`) and records nothing: no outbox commit, local row
+  write, revision or sync intent. The app then reads the commit by ID:
+  `pendingCommits` lists it while it is pending and `commitOutcome` returns
+  its final outcome. The client cannot detect reuse of an ID it no longer
+  holds, such as one whose journal entry retention pruned; keeping such IDs
+  unique is the caller's obligation under §2.3. The ID travels in
+  `PUSH_COMMIT.clientCommitId` as before, so SSP2 is unchanged.
 - The outbox numbers its commits with a sequence `seq` that strictly
   increases in creation order and never repeats under one `outboxId`. A
   client generates a random `outboxId` when it creates its outbox and
@@ -7534,6 +7546,9 @@ client-local, retryable, and never on the wire],
 exceeds the configured operation or encoded byte budget, or the fixed
 request frames exceed the byte budget; non-retryable, client-local, with
 structured kind/limit/size/commit details],
+`client.commit_id_reused` [§7.1: a caller-supplied `clientCommitId` names a
+commit the replica still holds; non-retryable, client-local, with
+`clientCommitId` in details],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],

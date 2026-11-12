@@ -1218,7 +1218,10 @@ class RustClientInstance implements ClientInstance {
     return { bucket: result.bucket, units };
   }
 
-  async mutate(mutations: readonly ClientMutation[]): Promise<string> {
+  async mutate(
+    mutations: readonly ClientMutation[],
+    options?: { readonly clientCommitId?: string },
+  ): Promise<string> {
     const wire = mutations.map((mutation) =>
       mutation.op !== 'delete'
         ? {
@@ -1239,7 +1242,12 @@ class RustClientInstance implements ClientInstance {
           },
     );
     const result = asObject(
-      await this.#shim.call('mutate', { mutations: wire as JsonValue }),
+      await this.#shim.call('mutate', {
+        mutations: wire as JsonValue,
+        ...(options?.clientCommitId === undefined
+          ? {}
+          : { clientCommitId: options.clientCommitId }),
+      }),
       'mutate',
     );
     if (typeof result.clientCommitId !== 'string') {

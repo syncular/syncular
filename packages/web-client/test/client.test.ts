@@ -449,6 +449,51 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     }
   });
 
+  test('mutate records a caller-supplied clientCommitId once (§7.1)', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'supplied-id' });
+    try {
+      a.client.subscribe({ project_id: 'p1' });
+      await a.client.syncUntilIdle();
+      const write = (id: string) =>
+        a.client.mutate(
+          [{ table: 'tasks', op: 'upsert', values: taskValues(id, 'p1') }],
+          { clientCommitId: 'event-1' },
+        );
+      const refused = (id: string) => {
+        try {
+          write(id);
+        } catch (error) {
+          return error;
+        }
+        return undefined;
+      };
+      expect(write('t1')).toBe('event-1');
+      expect(refused('t2')).toMatchObject({
+        code: 'client.commit_id_reused',
+        retryable: false,
+        details: { clientCommitId: 'event-1' },
+      });
+      expect(() =>
+        a.client.mutate(
+          [{ table: 'tasks', op: 'upsert', values: taskValues('t3', 'p1') }],
+          { clientCommitId: '' },
+        ),
+      ).toThrow(expect.objectContaining({ code: 'sync.invalid_request' }));
+      expect(a.client.pendingCommits().map((c) => c.clientCommitId)).toEqual([
+        'event-1',
+      ]);
+      expect((await a.client.syncUntilIdle()).applied).toEqual(['event-1']);
+      expect(a.client.commitOutcome('event-1')?.status).toBe('applied');
+      expect(refused('t2')).toMatchObject({ code: 'client.commit_id_reused' });
+      expect(tableRows(a.db, 'tasks').map((row) => row.id)).toEqual(['t1']);
+    } finally {
+      await a.client.close();
+      a.db.close();
+      server.storage.db.close();
+    }
+  });
+
   test('an edit presenting a column the earlier own edit did not keeps its base (§7.1)', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'chained-partial' });

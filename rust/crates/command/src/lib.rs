@@ -955,8 +955,18 @@ pub fn dispatch<T: Transport>(
         }
         "mutate" => {
             let mutations = parse_mutations(params.get("mutations")).map_err(client_err)?;
+            // §7.1: an optional caller-supplied commit ID.
+            let client_commit_id = match params.get("clientCommitId") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(id)) => Some(id.clone()),
+                Some(_) => {
+                    return Err(client_err(
+                        "sync.invalid_request: clientCommitId must be a string".to_owned(),
+                    ))
+                }
+            };
             let id = need_client(client)?
-                .mutate(mutations)
+                .mutate_with_commit_id(mutations, client_commit_id)
                 .map_err(CommandError::from_client)?;
             Ok(json!({
                 "clientCommitId": id,

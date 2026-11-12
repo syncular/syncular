@@ -664,8 +664,11 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('windowState', [base]);
   }
 
-  mutate(mutations: readonly MutationInput[]): Promise<string> {
-    return this.#call('mutate', [mutations]);
+  mutate(
+    mutations: readonly MutationInput[],
+    options?: { readonly clientCommitId?: string },
+  ): Promise<string> {
+    return this.#call('mutate', [mutations, options]);
   }
 
   /** Partial-update convenience: read-merge-write one full-row upsert. */

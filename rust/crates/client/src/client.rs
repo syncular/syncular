@@ -5731,7 +5731,43 @@ impl SyncClient {
     /// §2.3 idempotency key. Failures are structured so callers read
     /// `code`/`message`/`details` instead of parsing a string prefix.
     pub fn mutate(&mut self, mutations: Vec<Mutation>) -> Result<String, ClientError> {
+        self.mutate_with_commit_id(mutations, None)
+    }
+
+    /// [`Self::mutate`] under a caller-supplied `clientCommitId` (§7.1), so an
+    /// app that loses the reply knows its commit. The ID is non-empty (§6.1);
+    /// one this replica still holds fails with `client.commit_id_reused`.
+    pub fn mutate_with_commit_id(
+        &mut self,
+        mutations: Vec<Mutation>,
+        client_commit_id: Option<String>,
+    ) -> Result<String, ClientError> {
         let prior = self.storage_failure.borrow_mut().take();
+        if let Some(id) = &client_commit_id {
+            let held = if id.is_empty() {
+                Err("sync.invalid_request: clientCommitId is empty".to_owned())
+            } else {
+                self.conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM _syncular_outbox WHERE commit_id=?1 UNION ALL SELECT 1 FROM _syncular_commit_outcomes WHERE client_commit_id=?1)",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+            };
+            match held {
+                Ok(false) => {}
+                Ok(true) => {
+                    return self
+                        .finish_authoring(prior, Err("client.commit_id_reused".to_owned()))
+                        .map_err(|error| ClientError {
+                            details: Some(json!({ "clientCommitId": id })),
+                            ..error
+                        })
+                }
+                Err(message) => return self.finish_authoring(prior, Err(message)),
+            }
+        }
         let outcome = (|| -> Result<String, String> {
             if mutations.is_empty() {
                 return Err(
@@ -5815,7 +5851,7 @@ impl SyncClient {
                     }
                 }
             }
-            self.record_outbox_commit(ops)
+            self.record_outbox_commit(ops, client_commit_id)
         })();
         self.finish_authoring(prior, outcome)
     }
@@ -5840,9 +5876,13 @@ impl SyncClient {
         }
     }
 
-    fn record_outbox_commit(&mut self, ops: Vec<OutboxOp>) -> Result<String, String> {
+    fn record_outbox_commit(
+        &mut self,
+        ops: Vec<OutboxOp>,
+        client_commit_id: Option<String>,
+    ) -> Result<String, String> {
         let commit = OutboxCommit {
-            client_commit_id: uuid::Uuid::new_v4().to_string(),
+            client_commit_id: client_commit_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             ops,
         };
         self.begin_observation("syncular_mutation")?;
@@ -5919,7 +5959,7 @@ impl SyncClient {
         base_version: Option<i64>,
     ) -> Result<String, String> {
         let operation = self.prepare_patch(table, row_id, partial, base_version)?;
-        self.record_outbox_commit(vec![operation])
+        self.record_outbox_commit(vec![operation], None)
     }
 
     fn prepare_patch(

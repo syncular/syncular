@@ -578,8 +578,8 @@ export function startSyncWorkerCore(
     setWindow: async (base, units) => {
       await requireClient().setWindowCommand(base, units);
     },
-    mutate: (mutations) => {
-      return requireClient().mutateCommand(mutations).value;
+    mutate: (mutations, options) => {
+      return requireClient().mutateCommand(mutations, options).value;
     },
     patch: (table, rowId, partial, options) => {
       // Same §8.4 rule as `mutate`: a local write must push without the app

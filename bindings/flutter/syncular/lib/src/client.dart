@@ -244,9 +244,14 @@ class SyncularClient {
   // -- Typed conveniences (mirror the command surface) ------------------------
 
   /// Apply local mutations optimistically; returns the client commit id. Works
-  /// OFFLINE — the row is visible immediately via [readRows]/[query].
-  String mutate(List<Map<String, Object?>> mutations) {
-    final result = command('mutate', {'mutations': mutations});
+  /// OFFLINE — the row is visible immediately via [readRows]/[query]. A
+  /// supplied [clientCommitId] names the commit before the call returns; one
+  /// this replica still holds fails with `client.commit_id_reused`.
+  String mutate(List<Map<String, Object?>> mutations, {String? clientCommitId}) {
+    final result = command('mutate', {
+      'mutations': mutations,
+      if (clientCommitId != null) 'clientCommitId': clientCommitId,
+    });
     final id = result['clientCommitId'];
     if (id is! String) {
       throw const SyncularError(

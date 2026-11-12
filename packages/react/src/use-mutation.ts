@@ -19,7 +19,10 @@ export interface UseMutationOptions {
 }
 
 export interface UseMutationResult {
-  mutate: (mutations: readonly MutationInput[]) => Promise<string>;
+  mutate: (
+    mutations: readonly MutationInput[],
+    options?: { readonly clientCommitId?: string },
+  ) => Promise<string>;
   readonly pendingCount: number;
   /** True while at least one local enqueue is unresolved. */
   readonly isPending: boolean;
@@ -88,8 +91,10 @@ export function useMutation<Row, Insert, Update, Id>(
     [],
   );
   const mutate = useCallback(
-    (mutations: readonly MutationInput[]) =>
-      run(() => client.mutate(mutations)),
+    (
+      mutations: readonly MutationInput[],
+      options?: { readonly clientCommitId?: string },
+    ) => run(() => client.mutate(mutations, options)),
     [client, run],
   );
   const base: UseMutationResult = {

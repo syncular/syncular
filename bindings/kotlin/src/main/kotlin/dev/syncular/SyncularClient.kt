@@ -176,9 +176,13 @@ class SyncularClient private constructor(
     // -- Typed conveniences (mirror the command surface) -----------------------
 
     /** Apply local mutations optimistically; returns the client commit id.
-     *  Works OFFLINE — the row is visible immediately via readRows/query. */
-    fun mutate(mutations: List<JsonValue>): String {
-        val result = command("mutate", JsonValue.obj("mutations" to JsonValue.arr(mutations)))
+     *  Works OFFLINE — the row is visible immediately via readRows/query.
+     *  A supplied [clientCommitId] names the commit before the call returns;
+     *  one this replica still holds fails with `client.commit_id_reused`. */
+    fun mutate(mutations: List<JsonValue>, clientCommitId: String? = null): String {
+        val params = mutableMapOf<String, JsonValue>("mutations" to JsonValue.arr(mutations))
+        clientCommitId?.let { params["clientCommitId"] = JsonValue.of(it) }
+        val result = command("mutate", JsonValue.Obj(params))
         return result["clientCommitId"]?.string
             ?: throw SyncularException("client.failed", "mutate returned no clientCommitId")
     }

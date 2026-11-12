@@ -339,6 +339,17 @@ private final class StubbedReplyClient: SyncularClient {
     }
 }
 
+@Test func mutateRecordsACallerSuppliedCommitIdOnce() throws {
+    let client = try makeClient()
+    defer { client.close() }
+    try client.subscribe(scopes: ["id": "t1"])
+    #expect(try client.mutate([upsert(id: "t1", title: "x")], clientCommitId: "event-1") == "event-1")
+    var caught: SyncularError?
+    do { _ = try client.mutate([upsert(id: "t2", title: "y")], clientCommitId: "event-1") } catch let error as SyncularError { caught = error } catch {}
+    #expect(caught?.code == "client.commit_id_reused")
+    #expect(try client.pendingCommitIds() == ["event-1"])
+}
+
 @Test func snapshotsAndPendingOutcomesAfterOfflineMutate() throws {
     let client = try makeClient()
     defer { client.close() }

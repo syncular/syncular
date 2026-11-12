@@ -13,6 +13,19 @@ arrives (SPEC §7.1, "Chained base"). A write by another client after the first
 edit still conflicts. An upsert that also writes a column the first edit left
 absent keeps its base. SSP2 and the wire version are unchanged.
 
+`mutate` takes an optional caller-supplied `clientCommitId` in both clients
+and on every binding surface: `mutate(mutations, { clientCommitId })` in the
+browser client, the worker handle, the Tauri and React Native bridges and
+`useMutation`, a `clientCommitId` argument in Kotlin, Swift and Flutter, and
+the `clientCommitId` parameter of the native `mutate` command. An app that
+loses the reply of a `mutate` call reads its commit by that ID through
+`pendingCommits` and `commitOutcome`. A call with an ID the replica still
+holds throws `client.commit_id_reused` and writes nothing (SPEC §7.1). The ID
+already travelled in `PUSH_COMMIT`, so the wire is unchanged. The browser
+client now reports `sync.outbox_incompatible` with the static message the
+native client uses, and three `mutate` and `patch` validation errors no longer
+put table or column names in the message.
+
 ## 0.68.0 release notes
 
 0.68.0 refuses a browser Worker handle on a page without Web Locks and a

@@ -250,9 +250,13 @@ public class SyncularClient {
 
     /// Apply local mutations optimistically; returns the client commit id.
     /// Works OFFLINE — the row is visible immediately via `readRows`/`query`.
+    /// A supplied `clientCommitId` names the commit before the call returns;
+    /// one this replica still holds fails with `client.commit_id_reused`.
     @discardableResult
-    public func mutate(_ mutations: [JSONValue]) throws -> String {
-        let result = try command(method: "mutate", params: .object(["mutations": .array(mutations)]))
+    public func mutate(_ mutations: [JSONValue], clientCommitId: String? = nil) throws -> String {
+        var params: [String: JSONValue] = ["mutations": .array(mutations)]
+        if let clientCommitId { params["clientCommitId"] = .string(clientCommitId) }
+        let result = try command(method: "mutate", params: .object(params))
         guard case let .object(fields) = result, let id = fields["clientCommitId"]?.stringValue else {
             throw SyncularError(code: "client.failed", message: "mutate returned no clientCommitId")
         }

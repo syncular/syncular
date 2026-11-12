@@ -135,6 +135,71 @@ const LEGACY_VALUE_SCHEMA: DriverSchema = {
 };
 
 export const offlineScenarios: readonly Scenario[] = [
+  // §7.1: a caller-supplied clientCommitId names the commit before the reply
+  // arrives; an ID the replica still holds is refused without a write.
+  {
+    name: 'offline/caller-supplied-commit-id',
+    specRefs: ['§7.1', '§2.3', '§7.2.1'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'supplied-id',
+        allowed: { project_id: ['p1'] },
+      });
+      await a.api.subscribe({ project_id: 'p1' });
+      await syncIdle(a);
+      const reused = async (what: string) => {
+        let code: string | undefined;
+        try {
+          await a.api.mutate(
+            [{ op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'x') }],
+            { clientCommitId: 'event-1' },
+          );
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(code, 'client.commit_id_reused', what);
+      };
+      checkEqual(
+        await a.api.mutate(
+          [{ op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'mine') }],
+          { clientCommitId: 'event-1' },
+        ),
+        'event-1',
+        'mutate records the commit under the supplied ID',
+      );
+      await reused('a pending ID is refused');
+      let empty: string | undefined;
+      try {
+        await a.api.mutate(
+          [{ op: 'upsert', table: 'tasks', values: task('t3', 'p1', 'x') }],
+          { clientCommitId: '' },
+        );
+      } catch (error) {
+        empty = (error as { code?: string }).code;
+      }
+      checkEqual(empty, 'sync.invalid_request', 'an empty ID is invalid');
+      const report = await syncIdle(a);
+      checkEqual(report.applied, ['event-1'], 'the push carries the ID');
+      checkEqual(
+        (await a.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === 'event-1',
+        )?.status,
+        'applied',
+        'the journal answers for the supplied ID',
+      );
+      await reused('a journaled ID is refused');
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'refused calls wrote nothing',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
   {
     name: 'offline/unsafe-row-integers-refuse-before-queuing',
     specRefs: ['§2.4', '§7.1'],
