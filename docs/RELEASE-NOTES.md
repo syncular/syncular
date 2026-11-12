@@ -1,8 +1,8 @@
 # Syncular release notes
 
-## 0.66.2 release notes
+## 0.67.0 release notes
 
-0.66.2 makes thousands of one-row units sync in linear time in both cores
+0.67.0 makes thousands of one-row units sync in linear time in both cores
 (SYNCULAR-EXACT-ROW-RETENTION-001) and pins a multi-variable unit's stored
 image on all of its values (SYNCULAR-UNIT-PIN-FIRST-VARIABLE-001). SSP2 and
 the wire version are unchanged.
@@ -21,10 +21,10 @@ pair with no matching local row reads no units, and SQLite failures in a Rust
 clear are storage errors. The Rust local authority bootstraps through an index
 per scope column instead of reading every row, and takes the unit cap through
 `set_max_subscriptions_per_request`. At 10,000 units a first sync takes
-1.5 s in TypeScript and 0.7 s in Rust (159 s in Rust before, with 9,003 units
+1.5 s in TypeScript and 0.7 s in Rust (154 s in Rust before, with 9,003 units
 failed). SPEC §4.8 records the decision against a set-valued unit; the
 pitfalls page has the measured cost per unit. Raise
-`maxSubscriptionsPerRequest` past 500 only after both cores run 0.66.2.
+`maxSubscriptionsPerRequest` past 500 only after both cores run 0.67.0.
 
 The §4.7 scope pin followed only a unit's first scope variable in key order,
 so a write under that value in any other scope moved the pin and made the
