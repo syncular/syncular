@@ -22,7 +22,7 @@ import {
   type UnitScopes,
   unitId,
 } from '@syncular/core';
-import { type ClientSchema, SyncClient } from '../src';
+import { type ClientSchema, SyncClient, type SyncProgress } from '../src';
 import { BunClientDatabase } from '../src/bun-database';
 import type { SqlRow, SqlValue } from '../src/database';
 import { deleteUnit } from '../src/state';
@@ -908,6 +908,49 @@ describe('§4.8 windows as sets of units', () => {
       ...live(4),
     );
     expect(ids('notes')).toEqual(['n1', 'n2']);
+  });
+});
+
+describe('§7.7 progress across sections', () => {
+  test('a section boundary ends the previous payload without inventing totals', async () => {
+    const { client, round } = await scripted();
+    client.subscribe(P1);
+    client.subscribe(P2);
+    const seen: SyncProgress[] = [];
+    client.onProgress((progress) => seen.push(progress));
+    await round(
+      ...bootstrap(P1, 3, [
+        rows('notes'),
+        rows('tasks', ['t1', 'p1', 'a'], ['t2', 'p1', 'b']),
+      ]),
+      start(unitId(P2)),
+      { type: 'SUB_END', nextCursor: 3 },
+      ...live(3),
+    );
+    const boundary = (unit: string | undefined) =>
+      seen.findIndex(
+        (progress, index) =>
+          index > 0 &&
+          progress.unitId === unit &&
+          progress.table === undefined &&
+          progress.rowsTotal === undefined,
+      );
+    const p2 = boundary(unitId(P2));
+    expect(seen.slice(0, p2).some((p) => p.rowsTotal === 2)).toBe(true);
+    expect(seen[p2]).toMatchObject({
+      state: 'running',
+      phase: 'import',
+      unitId: unitId(P2),
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
+    expect(seen[p2]?.segmentId).toBeUndefined();
+    expect(seen[p2]?.bytesTotal).toBeUndefined();
+    const ended = seen.slice(p2 + 1).find((p) => p.unitId === undefined);
+    expect(ended).toMatchObject({ state: 'running', rowsProcessed: 0 });
+    expect(ended?.table).toBeUndefined();
+    expect(seen.at(-1)).toMatchObject({ state: 'complete' });
+    expect(seen.at(-1)?.unitId).toBeUndefined();
   });
 });
 

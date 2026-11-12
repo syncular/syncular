@@ -8287,6 +8287,14 @@ impl SyncClient {
                         }
                         _ => {}
                     }
+                    if ended {
+                        // The counters stay: `complete` and `failed` report them.
+                        self.progress.update(|p| {
+                            p.unit_id = None;
+                            p.table = None;
+                            p.segment_id = None;
+                        });
+                    }
                     match error {
                         Some(Frame::Error {
                             code,
@@ -8950,11 +8958,24 @@ impl SyncClient {
         report: &mut SyncReport,
     ) -> Result<(), SectionError> {
         let storage = |message| SectionError::Abort("storage.failed".to_owned(), message);
-        let Some(unit) = self
+        let unit = self
             .stored(get_unit(&self.conn, &start.id))
             .map_err(storage)?
-            .filter(|unit| unit.status == UnitStatus::Active)
-        else {
+            .filter(|unit| unit.status == UnitStatus::Active);
+        // §7.7: a section boundary ends the previous payload.
+        self.progress.update(|p| {
+            p.phase = ProgressPhase::Import;
+            p.unit_id = unit.as_ref().map(|unit| unit.id.clone());
+            p.table = None;
+            p.segment_id = None;
+            p.bytes_received = 0;
+            p.bytes_total = None;
+            p.rows_processed = 0;
+            p.rows_total = None;
+            p.import_write_ms = None;
+            p.import_commit_ms = None;
+        });
+        let Some(unit) = unit else {
             return Ok(());
         };
         let echo: Vec<EchoRecord> = start

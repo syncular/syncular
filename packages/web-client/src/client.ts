@@ -910,6 +910,18 @@ export type ClientSnapshotReader = {
     | Promise<ReturnType<ClientSnapshotMethods[Key]>>;
 };
 
+/** §7.7: progress fields of a payload; no payload is current. */
+const NO_PAYLOAD: Partial<SyncProgress> = {
+  table: undefined,
+  segmentId: undefined,
+  bytesReceived: 0,
+  bytesTotal: undefined,
+  rowsProcessed: 0,
+  rowsTotal: undefined,
+  importWriteMs: undefined,
+  importCommitMs: undefined,
+};
+
 export class SyncClient {
   readonly #config: SyncClientConfig;
   readonly #authorityReads: AuthorityReadPolicy | undefined;
@@ -5409,6 +5421,12 @@ export class SyncClient {
                     skip: false,
                   }
                 : undefined;
+            // §7.7: a section boundary ends the previous payload.
+            this.#progress.update({
+              ...NO_PAYLOAD,
+              phase: 'import',
+              unitId: section?.unit.id,
+            });
             break;
           }
           case 'SEGMENT_INLINE':
@@ -5427,16 +5445,13 @@ export class SyncClient {
             let bytes: Uint8Array;
             if (frame.type === 'SEGMENT_REF') {
               this.#progress.update({
+                ...NO_PAYLOAD,
                 phase: 'download',
                 unitId,
                 table: frame.table,
                 segmentId: frame.segmentId,
-                bytesReceived: 0,
                 bytesTotal: frame.byteLength,
-                rowsProcessed: 0,
                 rowsTotal: frame.rowCount,
-                importWriteMs: undefined,
-                importCommitMs: undefined,
               });
               prefetch();
               const pending = prefetched.get(frame);
@@ -5470,19 +5485,16 @@ export class SyncClient {
               image === undefined ? decodeRowsSegment(bytes) : undefined;
             if (frame.type === 'SEGMENT_INLINE' && segment !== undefined)
               this.#progress.update({
+                ...NO_PAYLOAD,
                 phase: 'import',
                 unitId,
                 table: segment.table,
-                segmentId: undefined,
                 bytesReceived: bytes.byteLength,
                 bytesTotal: bytes.byteLength,
-                rowsProcessed: 0,
                 rowsTotal: segment.blocks.reduce(
                   (n, block) => n + block.length,
                   0,
                 ),
-                importWriteMs: undefined,
-                importCommitMs: undefined,
               });
             await this.#applySegmentOrFail(
               section,
@@ -5532,6 +5544,12 @@ export class SyncClient {
             )
               this.#finishSection(section, frame, summary);
             section = undefined;
+            // The counters stay: `complete` and `failed` report them.
+            this.#progress.update({
+              unitId: undefined,
+              table: undefined,
+              segmentId: undefined,
+            });
             break;
           }
           case 'LIVE_START': {

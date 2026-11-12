@@ -1673,3 +1673,53 @@ fn acknowledged_intent_of_named_rows_reads_through_the_row_index() {
         "{plan:?}"
     );
 }
+
+#[test]
+fn a_section_boundary_ends_the_previous_payload_without_inventing_totals() {
+    let mut h = Harness::new();
+    h.client.subscribe(p1()).unwrap();
+    h.client.subscribe(p2()).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<crate::SyncProgress>::new()));
+    let sink = seen.clone();
+    let _subscription = h
+        .client
+        .progress()
+        .subscribe(move |progress| sink.lock().unwrap().push(progress.clone()));
+    let pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t1", "p1", "a"], &["t2", "p1", "b"]]),
+    ];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        vec![
+            start(&id_of(&p2()), SubStatus::Active, false, vec![]),
+            end(3, None),
+        ],
+        live(3, vec![]),
+    ]));
+    let seen = seen.lock().unwrap();
+    let p2_id = id_of(&p2());
+    let boundary = seen
+        .iter()
+        .position(|p| {
+            p.unit_id.as_deref() == Some(p2_id.as_str())
+                && p.table.is_none()
+                && p.rows_total.is_none()
+        })
+        .expect("a p2 section boundary");
+    assert!(seen[..boundary].iter().any(|p| p.rows_total == Some(2)));
+    let at = &seen[boundary];
+    assert_eq!(at.state, crate::ProgressState::Running);
+    assert_eq!(at.phase, crate::ProgressPhase::Import);
+    assert_eq!((at.bytes_received, at.rows_processed), (0, 0));
+    assert!(at.segment_id.is_none() && at.bytes_total.is_none());
+    let ended = seen[boundary + 1..]
+        .iter()
+        .find(|p| p.unit_id.is_none())
+        .expect("the p2 section end");
+    assert_eq!(ended.state, crate::ProgressState::Running);
+    assert!(ended.table.is_none() && ended.rows_total.is_none());
+    let last = seen.last().unwrap();
+    assert_eq!(last.state, crate::ProgressState::Complete);
+    assert!(last.unit_id.is_none());
+}

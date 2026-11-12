@@ -5,13 +5,13 @@ export interface SyncProgress {
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
   readonly phase: 'request' | 'download' | 'import';
-  readonly unitId?: string;
-  readonly table?: string;
+  readonly unitId?: string | undefined;
+  readonly table?: string | undefined;
   readonly segmentId?: string | undefined;
   readonly bytesReceived: number;
-  readonly bytesTotal?: number;
+  readonly bytesTotal?: number | undefined;
   readonly rowsProcessed: number;
-  readonly rowsTotal?: number;
+  readonly rowsTotal?: number | undefined;
   /** Time in this payload's import transactions before COMMIT, in ms. */
   readonly importWriteMs?: number | undefined;
   /** Time committing them and publishing their changes, in ms. */

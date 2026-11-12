@@ -1175,7 +1175,7 @@ export interface DriverSyncProgress {
   readonly phase: 'request' | 'download' | 'import';
   readonly bytesReceived: number;
   readonly rowsProcessed: number;
-  readonly rowsTotal?: number;
+  readonly rowsTotal?: number | undefined;
   readonly importWriteMs?: number | undefined;
   readonly importCommitMs?: number | undefined;
   readonly errorCode?: string;

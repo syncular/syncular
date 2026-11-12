@@ -17,6 +17,14 @@
 export const changelog = [
   {
     date: '2026-11-12',
+    title: 'Sync progress follows unit sections',
+    body: "`SUB_START` and `SUB_END` left progress untouched, so after a section ended the snapshot still named the previous unit's last segment and its totals. Both cores now set `unitId` and clear the payload fields at a section's start. At its end they clear `unitId`, `table` and `segmentId` and keep the last payload's counters, which `complete` and `failed` report. Totals stay absent until the next payload reports them.",
+    links: [
+      { href: '/platform-web-realtime/#sync-progress', label: 'Sync progress' },
+    ],
+  },
+  {
+    date: '2026-11-12',
     title:
       'Interrupted evictions finish offline, and a retention release reports its result',
     body: "A window release that a crash interrupted between eviction chunks finished only at the next sync round, so an offline replica kept the released rows readable after a restart. Both cores now finish it before `start()` resolves, or before `activateSecurity()` resolves for a replica in security preflight, with the transport gate open or closed. `WindowRetention.release()` now returns a promise that settles after the core applies the release and its eviction, and rejects with the window edit's error.",

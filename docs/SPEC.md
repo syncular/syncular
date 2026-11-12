@@ -6334,7 +6334,14 @@ client instance. `syncUntilIdle` starts an attempt for each round. `state` is
 A new attempt resets counters and failure state. `unitId`, `table`, and
 `segmentId` identify the current payload when present. Payload counters reset
 when the current payload changes. They are not an aggregate percentage across
-units or rounds. Unknown totals remain absent.
+units or rounds. Unknown totals remain absent. A response's `SUB_START` moves
+progress to `import`, sets `unitId` to the section's unit (absent for a
+section the client skips), and clears `table`, `segmentId`, `bytesTotal`,
+`rowsTotal` and the import timings; `bytesReceived` and `rowsProcessed`
+restart at 0, the work done for the new section so far. Its `SUB_END` clears
+`unitId`, `table` and `segmentId` and keeps the counters and totals of the
+section's last payload, which `complete` and `failed` report. No snapshot
+names the unit, table or segment of a section that already ended.
 
 `bytesReceived` counts decoded response-body bytes, with optional `bytesTotal`.
 HTTP segment transports report intermediate bytes at 64 KiB boundaries (or

@@ -21,6 +21,16 @@ write drains. `WindowRetention.release()` returns a promise that settles
 after the core applies the release and its eviction and rejects with the
 window edit's error (SYNCULAR-RETAINED-RELEASE-FAILURE-001).
 
+**Progress sections.** `SUB_START` and `SUB_END` left progress untouched,
+so a snapshot after a section ended still named the previous unit's segment
+and totals (SYNCULAR-PROGRESS-SEGMENT-LIFECYCLE-001). Both cores now set
+`unitId` and clear `table`, `segmentId`, the totals and the import timings
+at a section's start. At its end they clear `unitId`, `table` and
+`segmentId` and keep the last payload's counters, which `complete` and
+`failed` report. `bytesReceived` and `rowsProcessed` stay required numbers
+and restart at 0 at a section's start, the work done for the new section so
+far; totals stay absent until a payload reports them.
+
 **Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Pages
 served from an insecure origin (plain `http:` other than `localhost`) and test
 runtimes such as Bun and Node have no Web Locks. Serve the app from a secure
