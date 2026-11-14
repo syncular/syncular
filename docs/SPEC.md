@@ -6679,7 +6679,7 @@ The single JSON data-plane event:
 | Reason | Meaning | Client action |
 |---|---|---|
 | `delta-too-large` | The delta exceeded message limits | Sync round (pull) |
-| `catchup-required` | Gap not bridgeable from the replay buffer (reconnect, drops, flow control) | Sync round (pull) |
+| `catchup-required` | Gap not bridgeable from the replay buffer (reconnect, drops, flow control), or a host refresh that removed or narrowed a registration (§8.7) | Sync round (pull) |
 | `reset-required` | Server-declared discontinuity (schema rollover, horizon, forced resync) | Sync round (pull); expect `reset`/`requiredSchemaVersion` there |
 
 Wake-ups are idempotent and coalescible; the client MUST treat any
@@ -7172,7 +7172,12 @@ waiting for each client to run a round. The call fails closed: a session
 whose resolver call fails or whose client record cannot be read loses
 every registration, so it receives no further deltas until it
 re-registers. This differs from the round-end rule above, which keeps the
-previous registrations when a round fails.
+previous registrations when a round fails. When the refresh removes a
+registration of a session or narrows its effective scopes (a scope value
+the previous registration allowed is no longer allowed), the server MUST
+send that session a `catchup-required` wake-up (§8.3), so its client runs
+the round whose §3.3 revocation purge drops the rows it lost. Sessions
+whose registrations kept or widened their scopes receive no wake-up.
 
 ### 8.8 Realtime policy and connectivity state
 

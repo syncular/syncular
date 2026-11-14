@@ -947,6 +947,59 @@ describe('host-initiated scope refresh (§8.7)', () => {
     expect(b.wire.binaries).toHaveLength(1);
   });
 
+  test('a refresh that removes a registration wakes only that session', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-a', { project_id: ['p1', 'p2'] }],
+      ['actor-b', { project_id: ['p1', 'p2'] }],
+    ]);
+    const hub = hubWithScopes(t, allowed);
+    const wakes = (wire: Wire) =>
+      wire.texts.flatMap((text) => {
+        const parsed = parseRealtimeServerEvent(text);
+        return parsed.known && parsed.event.event === 'sync'
+          ? [parsed.event.data.reason]
+          : [];
+      });
+    const connect = async (actorId: string, clientId: string) => {
+      const units = [{ project_id: 'p1' }, { project_id: 'p2' }];
+      await t.storage.putClientRecord('part-1', {
+        clientId,
+        actorId,
+        wireVersion: 4,
+        schemaVersion: 1,
+        cursor: 0,
+        updatedAtMs: t.now.ms,
+        registration: { units, digest: registrationDigest(units) },
+        catchingUp: [],
+      });
+      const wire = makeWire();
+      const session = await hub.connect({
+        partition: 'part-1',
+        actorId,
+        clientId,
+        send: wire.send,
+      });
+      return { wire, session };
+    };
+    const a = await connect('actor-a', 'client-a');
+    const b = await connect('actor-b', 'client-b');
+    expect(b.session.registrations).toHaveLength(2);
+
+    // The host drops actor-b's p2 membership and refreshes the partition.
+    allowed.set('actor-b', { project_id: ['p1'] });
+    await hub.refreshScopes('part-1');
+    expect(b.session.registrations).toHaveLength(1);
+    expect(a.session.registrations).toHaveLength(2);
+    expect(wakes(b.wire)).toEqual(['catchup-required']);
+    expect(wakes(a.wire)).toEqual([]);
+
+    // A refresh that changes nothing wakes no one.
+    await hub.refreshScopes('part-1');
+    expect(wakes(b.wire)).toEqual(['catchup-required']);
+    expect(wakes(a.wire)).toEqual([]);
+  });
+
   test('a resolver failure during refresh leaves that session receiving nothing', async () => {
     const t = makeContext();
     const allowed = new Map<string, ScopeMap>([

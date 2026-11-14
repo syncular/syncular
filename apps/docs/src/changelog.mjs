@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-14',
+    title: 'refreshScopes wakes the sessions it revoked',
+    body: '`RealtimeHub.refreshScopes` sends a `catchup-required` wake-up to each session whose registrations it removed or narrowed. The client runs a round, and its revocation purge deletes the rows of the revoked scope. Before, the refresh stopped the deltas but sent the session nothing, so an idle client kept the revoked rows until it happened to sync again. Sessions whose scopes stayed the same or widened receive no wake-up.',
+    links: [
+      {
+        href: '/concepts-realtime/#membership-changes',
+        label: 'Membership changes',
+      },
+    ],
+  },
+  {
     date: '2026-11-12',
     title: 'Name your commit before mutate returns',
     body: '`mutate` accepts an optional `clientCommitId` in both clients and every binding. An app whose worker or bridge loses the reply reads the commit by that ID through `pendingCommits` and `commitOutcome` instead of guessing which applied outcome was its own. An ID the replica still holds throws `client.commit_id_reused` and writes nothing.',

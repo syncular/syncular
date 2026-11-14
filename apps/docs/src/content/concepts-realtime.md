@@ -162,3 +162,5 @@ await hub.refreshScopes(partition);          // after a connection change
 ```
 
 `refreshScopes` re-resolves the matching sessions through the hub's scope resolver and reconciles presence as a round end does. It fails closed: a session whose resolver call fails, or whose client record cannot be read, loses every registration and receives no further deltas until it registers again. The round-end path keeps the previous registrations when a round fails, because a failed round must change nothing. The host-initiated path has the opposite job.
+
+A session whose registrations `refreshScopes` removed or narrowed also receives a `catchup-required` wake-up. Its client runs a round, and that round's revocation purge ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract)) deletes the rows of the revoked scope from local storage. Sessions whose scopes stayed the same or widened receive no wake-up.

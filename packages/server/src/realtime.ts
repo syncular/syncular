@@ -846,9 +846,32 @@ export class RealtimeSession {
     // the keys before, reconcile after (leaves on lost keys, snapshots on
     // gained keys).
     const previousKeys = this.scopeKeys;
+    const previous = this.registrations;
     this.registrations = registrations;
     this.scopeKeys = this.#hub.scopeKeysOf(registrations);
     this.reconcilePresence(previousKeys);
+    // §8.7: a host refresh that removes or narrows a registration wakes the
+    // session, so its client runs the round whose §3.3 revocation purge
+    // drops the rows it lost. A registration survives when the same unit
+    // and table come back with every previous scope value still allowed.
+    if (
+      failClosed &&
+      previous.some(
+        (old) =>
+          !registrations.some(
+            (next) =>
+              next.id === old.id &&
+              next.table === old.table &&
+              Object.entries(next.effective).every(
+                ([variable, values]) =>
+                  old.effective[variable]?.every((value) =>
+                    values.includes(value),
+                  ) ?? false,
+              ),
+          ),
+      )
+    )
+      this.sendWake('catchup-required');
   }
 
   /** §8.7 protocol violation: drop the connection, fail loud. The
