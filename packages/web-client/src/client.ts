@@ -3688,6 +3688,8 @@ export class SyncClient {
           `local purge id ${JSON.stringify(purge.purgeId)} was already used with a different plan`,
         );
       }
+      // A retry after a failed rewrite finishes it.
+      this.#erasePurgedPages();
       return { alreadyApplied: true, purgedRows: 0, droppedCommits: 0 };
     }
     // RFC 0005 D7: the container file cannot be a purge target (its name is not
@@ -3697,8 +3699,9 @@ export class SyncClient {
 
     const priorRejections = [...this.#rejections];
     const priorConflicts = [...this.#conflicts];
+    let result: LocalDataPurgeResult;
     try {
-      return this.#applyBatch((batch) => {
+      result = this.#applyBatch((batch) => {
         const targetsByTable = this.#localPurgeTargetsByTable(purge);
         restoreFailedBases(this.#db, this.#schema);
         this.#dropRetainedRows(batch, (table, values) =>
@@ -3780,9 +3783,11 @@ export class SyncClient {
         }
 
         if (doomed.length > 0) {
+          // §5.11 purge erasure: the journal keeps a dropped commit's identity and codes,
+          // never its operations, so no purged value survives in it.
           for (const commit of doomed) {
             const results: CommitOperationOutcome[] = commit.operations.map(
-              (operation, opIndex) => {
+              (_operation, opIndex) => {
                 const rejection: RejectionRecord = {
                   clientCommitId: commit.clientCommitId,
                   opIndex,
@@ -3790,7 +3795,6 @@ export class SyncClient {
                   message:
                     'the commit was dropped by an application-authorized local data purge',
                   retryable: false,
-                  operation,
                 };
                 this.#rejections.push(rejection);
                 return { status: 'error', rejection };
@@ -3801,7 +3805,6 @@ export class SyncClient {
               status: 'rejected',
               recordedAtMs: this.#now(),
               results,
-              operations: commit.operations,
             });
           }
           pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
@@ -3824,6 +3827,24 @@ export class SyncClient {
       this.#rejections = priorRejections;
       this.#conflicts = priorConflicts;
       throw error;
+    }
+    this.#erasePurgedPages();
+    return result;
+  }
+
+  /**
+   * §5.11 purge erasure: SQLite leaves a deleted value in the freed pages of the database
+   * file, and a file replica's WAL keeps the frames written before the
+   * purge, until either is rewritten. VACUUM rebuilds the file from the
+   * remaining rows, and the checkpoint truncates the WAL.
+   */
+  #erasePurgedPages(): void {
+    this.#db.exec('PRAGMA secure_delete = ON');
+    try {
+      this.#db.exec('VACUUM');
+      this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally {
+      this.#db.exec('PRAGMA secure_delete = OFF');
     }
   }
 

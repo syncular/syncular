@@ -10746,6 +10746,8 @@ impl SyncClient {
                     input.purge_id
                 ));
             }
+            // A retry after a failed rewrite finishes it.
+            self.erase_purged_pages()?;
             return Ok(LocalDataPurgeResult {
                 already_applied: true,
                 purged_rows: 0,
@@ -10808,16 +10810,15 @@ impl SyncClient {
                 }
             }
             let mut rejections = Vec::new();
+            // §5.11 purge erasure: the journal keeps a dropped commit's identity and
+            // codes, never its operations, so no purged value survives in it.
             for commit in &doomed {
                 for operation in &commit.ops {
                     batch.table(&operation.table);
                     self.overlay_dirty.table(&operation.table);
                 }
-                let results = commit
-                    .ops
-                    .iter()
-                    .enumerate()
-                    .map(|(op_index, operation)| {
+                let results = (0..commit.ops.len())
+                    .map(|op_index| {
                         let rejection = RejectionRecord {
                             client_commit_id: commit.client_commit_id.clone(),
                             op_index: op_index as i32,
@@ -10825,7 +10826,7 @@ impl SyncClient {
                             message: "the commit was dropped by an application-authorized local data purge".to_owned(),
                             retryable: false,
                             details: None,
-                            operation: Some(CommitOperation::from(operation)),
+                            operation: None,
                         };
                         rejections.push(rejection.clone());
                         CommitOperationOutcome::Error { rejection }
@@ -10835,7 +10836,7 @@ impl SyncClient {
                     &commit.client_commit_id,
                     CommitOutcomeStatus::Rejected,
                     &results,
-                    Some(&commit.ops),
+                    None,
                 )?;
                 self.delete_outbox_persisted(&commit.client_commit_id)?;
             }
@@ -10891,7 +10892,26 @@ impl SyncClient {
             }
         };
         self.cancel_sync_round();
+        self.erase_purged_pages()?;
         Ok(result)
+    }
+
+    /// §5.11 purge erasure: SQLite leaves a deleted value in the freed pages of the
+    /// database file, and the WAL keeps the frames written before the purge,
+    /// until either is rewritten. VACUUM rebuilds the file from the remaining
+    /// rows, and the checkpoint truncates the WAL.
+    fn erase_purged_pages(&self) -> Result<(), String> {
+        let erased = self
+            .conn
+            .execute_batch("PRAGMA secure_delete = ON; VACUUM;")
+            .and_then(|()| {
+                self.conn
+                    .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            });
+        let reset = self.conn.execute_batch("PRAGMA secure_delete = OFF");
+        erased
+            .and(reset)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     /// Application-authorized recovery of the replicated projection. Unlike a

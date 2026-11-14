@@ -11417,3 +11417,91 @@ fn a_unit_limit_refusal_reaches_the_app_with_its_details_and_is_not_retried() {
         Some("sync.limit_exceeded")
     );
 }
+
+#[test]
+fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
+    let dir = std::env::temp_dir().join(format!("syncular-purge-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("replica dir");
+    let path = dir.join("client.db");
+    let schema = json!({
+        "version": 1,
+        "tables": [{
+            "name": "patient_notes",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "practice_id", "type": "string", "nullable": false },
+                { "name": "encryption_key_id", "type": "string", "nullable": false },
+                { "name": "title", "type": "string", "nullable": false }
+            ],
+            "scopes": [{ "pattern": "practice:{practice_id}" }]
+        }]
+    });
+    let marker = "PURGEMARKER-RUST-9d41";
+    let mut client = SyncClient::open_path_with_identity(
+        Some("purge-file-client".to_owned()),
+        &schema,
+        ClientLimits::default(),
+        path.to_str().expect("utf-8 path"),
+    )
+    .expect("file client");
+    for i in 0..200 {
+        client
+            .conn
+            .execute(
+                "INSERT INTO _syncular_base_patient_notes(id, practice_id, encryption_key_id, title, _syncular_version) VALUES (?1, 'practice-1', 'key-revoked', ?2, 1)",
+                rusqlite::params![format!("t{i}"), format!("{marker} {i}")],
+            )
+            .expect("seed base row");
+    }
+    client
+        .conn
+        .execute(
+            "INSERT INTO _syncular_base_patient_notes(id, practice_id, encryption_key_id, title, _syncular_version) VALUES ('kept', 'practice-1', 'key-held', 'Kept original', 1)",
+            [],
+        )
+        .expect("seed kept row");
+    client.overlay_dirty.set(true);
+    client.rebuild_overlay_if_dirty().expect("rebuild overlay");
+    // A pending edit of a purged row is dropped; its outcome keeps no value.
+    client
+        .mutate(vec![Mutation::Upsert {
+            table: "patient_notes".to_owned(),
+            values: Map::from_iter([
+                ("id".to_owned(), Value::from("t0")),
+                ("practice_id".to_owned(), Value::from("practice-1")),
+                ("encryption_key_id".to_owned(), Value::from("key-revoked")),
+                ("title".to_owned(), Value::from(format!("{marker} pending"))),
+            ]),
+            base_version: None,
+        }])
+        .expect("pending edit");
+    let purged = client
+        .purge_local_data(&LocalDataPurgeInput {
+            purge_id: "purge-file".to_owned(),
+            targets: vec![LocalDataPurgeTarget {
+                table: "patient_notes".to_owned(),
+                selectors: BTreeMap::from([(
+                    "encryption_key_id".to_owned(),
+                    vec!["key-revoked".to_owned()],
+                )]),
+            }],
+        })
+        .expect("purge");
+    assert_eq!(purged.purged_rows, 200);
+    drop(client);
+    let mut files = 0;
+    for entry in std::fs::read_dir(&dir).expect("read replica dir") {
+        let file = entry.expect("dir entry").path();
+        let bytes = std::fs::read(&file).expect("read replica file");
+        files += 1;
+        assert!(
+            !bytes
+                .windows(marker.len())
+                .any(|window| window == marker.as_bytes()),
+            "purged value found in {file:?}"
+        );
+    }
+    assert!(files > 0);
+    std::fs::remove_dir_all(&dir).expect("remove replica dir");
+}

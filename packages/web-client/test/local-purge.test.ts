@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type ClientSchema,
   ClientSyncError,
@@ -93,6 +96,39 @@ function values(id: string, keyId: string, title: string) {
 }
 
 describe('application-authorized local data purge', () => {
+  test('leaves no purged value in any file of the replica', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-purge-'));
+    const local = await makeClient(makeServer(), {
+      clientId: 'purge-file-client',
+      schema: SCHEMA,
+      databasePath: join(dir, 'client.db'),
+    });
+    const marker = 'PURGEMARKER-7f3a';
+    for (let i = 0; i < 200; i++) {
+      insertBase(local.db, `t${i}`, 'key-revoked', `${marker} ${i}`);
+    }
+    insertBase(local.db, 'kept', 'key-held', 'Kept original');
+    // A pending edit of a purged row is dropped; its outcome keeps no value.
+    local.client.mutate([
+      {
+        table: 'patient_notes',
+        op: 'upsert',
+        values: values('t0', 'key-revoked', `${marker} pending`),
+      },
+    ]);
+    expect(local.client.purgeLocalData(PURGE).purgedRows).toBe(200);
+    expect(tableRows(local.db, 'patient_notes').map((row) => row.id)).toEqual([
+      'kept',
+    ]);
+    await local.client.close();
+    local.db.close();
+    const files = readdirSync(dir);
+    expect(files).toContain('client.db');
+    for (const file of files) {
+      expect(readFileSync(join(dir, file)).includes(marker)).toBe(false);
+    }
+  });
+
   test('atomically removes exact rows and FTS, rolls back siblings, and records whole-commit rejection', async () => {
     const local = await makeClient(makeServer(), {
       clientId: 'local-purge-client',

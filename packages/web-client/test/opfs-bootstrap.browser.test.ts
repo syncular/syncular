@@ -1316,6 +1316,77 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
   }
 }, 60000);
 
+test('OPFS purge leaves no purged value in any file of the pool', async () => {
+  const marker = 'PURGEMARKER-OPFS-51c2';
+  const seed = await makeClient(freshSource, {
+    actorId: 'seed',
+    clientId: 'purge-seed',
+    schema: OPFS_SCHEMA,
+  });
+  const browser = await chromium.launch();
+  try {
+    seed.client.mutate(
+      Array.from({ length: 200 }, (_, i) => ({
+        table: 'catalogue',
+        op: 'upsert' as const,
+        values: { id: `purge-${i}`, project_id: 'p1', title: `${marker} ${i}` },
+      })),
+    );
+    await seed.client.syncUntilIdle();
+    const page = await browser.newPage();
+    await page.goto(`${server.url.href}?fresh`);
+    await page.evaluate(() => window.opfsTest.open());
+    const purged = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({ project_id: 'p1' });
+      await client.syncUntilIdle();
+      const result = await client.purgeLocalData({
+        purgeId: 'opfs-purge',
+        targets: [{ table: 'catalogue', selectors: { project_id: ['p1'] } }],
+      });
+      await client.close();
+      return result.purgedRows;
+    });
+    expect(purged).toBeGreaterThanOrEqual(200);
+    await page.evaluate(() => window.opfsTest.terminate());
+    const found = await page.evaluate(async (needle) => {
+      const bytes = new TextEncoder().encode(needle);
+      const hits: string[] = [];
+      let files = 0;
+      const walk = async (dir: FileSystemDirectoryHandle, path: string) => {
+        for await (const [name, handle] of dir as unknown as AsyncIterable<
+          [string, FileSystemHandle]
+        >) {
+          if (handle.kind === 'directory') {
+            await walk(handle as FileSystemDirectoryHandle, `${path}/${name}`);
+            continue;
+          }
+          files += 1;
+          const data = new Uint8Array(
+            await (
+              await (handle as FileSystemFileHandle).getFile()
+            ).arrayBuffer(),
+          );
+          outer: for (let i = 0; i + bytes.length <= data.length; i++) {
+            for (let j = 0; j < bytes.length; j++)
+              if (data[i + j] !== bytes[j]) continue outer;
+            hits.push(`${path}/${name}`);
+            break;
+          }
+        }
+      };
+      await walk(await navigator.storage.getDirectory(), '');
+      return { files, hits };
+    }, marker);
+    expect(found.files).toBeGreaterThan(0);
+    expect(found.hits).toEqual([]);
+  } finally {
+    await seed.client.close();
+    seed.db.close();
+    await browser.close();
+  }
+}, 60000);
+
 test('OPFS offline inserts use a facility write scope across restart and revocation', async () => {
   alternativeSource.allowed.seed = { project_id: ['p1', 'p2'] };
   alternativeSource.allowed.reader = { row_id: ['old'] };

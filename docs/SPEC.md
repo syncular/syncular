@@ -3787,6 +3787,15 @@ bounded, application-authorized `purgeLocalData` primitive (§7.3.4); and it MAY
 close/shut down the client or set the transport gate (§8.8). It MAY read the
 creation-time authority policy through `authoritySnapshot()` as defined below.
 No other application-data operation is permitted.
+
+**Purge erasure.** After `purgeLocalData` applies its plan, and again on a
+retry that finds the plan applied, the client MUST rewrite the replica file
+(SQLite `VACUUM` with `secure_delete` on) and truncate its WAL. SQLite
+otherwise keeps a deleted value in freed pages and in WAL frames written
+before the purge. The journal entry of a commit the purge drops keeps its
+`clientCommitId` and one `client.local_data_purged` result per operation
+index, and omits the `operations` collection and every nested `operation`
+(§7.2.1).
 In particular, runtime transport-header replacement is an active-session
 operation; native bridges MUST gate it independently rather than relying only
 on a JavaScript wrapper.
@@ -5281,7 +5290,8 @@ failed commit, stored only in its canonical shape. A client-local drop of a
 commit whose envelope the journal cannot store (§7.4.4
 `invalid_stored_values`) omits the `operations` collection and the nested
 `operation`, and keeps the durable `clientCommitId`, the rejection code, and
-the bounded `details.reason` as its record. For server rejections, the envelope
+the bounded `details.reason` as its record. A commit a local data purge drops
+omits them too (purge erasure, §5.11). For server rejections, the envelope
 is required because the server reports only the terminating operation while every sibling rolled back; without it an
 application cannot safely reconstruct atomic aggregate intent after the
 outbox drains or the process restarts. Historical entries and successful
