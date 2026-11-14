@@ -1336,6 +1336,28 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
         changes: changes.slice(1),
       },
     ]);
+    // Historical Bun SQL bindings stored scopes as a JSONB string; the live
+    // read matches those rows too.
+    await base.query(
+      'UPDATE sync_changes SET scopes=to_jsonb(scopes::text) WHERE partition=$1',
+      ['change-scopes'],
+    );
+    expect(
+      await storage.readLiveWindow('change-scopes', {
+        units: [
+          {
+            scopes: { project_id: 'p\n1' },
+            afterSeq: 0,
+            tables: new Map([
+              ['docs', { project_id: ['p\n1'], org_id: ["org's 雪"] }],
+            ]),
+          },
+        ],
+        throughSeq: 1,
+        limitChanges: 10,
+        limitBytes: 16 * 1024 * 1024,
+      }),
+    ).toEqual(window);
     await base.query(
       "ALTER TABLE sync_change_scopes ADD CHECK (value <> 'rejected')",
     );

@@ -1,5 +1,14 @@
 # Syncular release notes
 
+## 0.70.1 release notes
+
+The Postgres live read of 0.70.0 compared `sync_changes.scopes` as a JSON
+object, so it skipped changes that historical Bun SQL bindings stored with
+their scopes as a JSON string, and a replica behind such a change never
+received it. The read now decodes both forms, as the change decoder already
+did. SQLite and D1 storages are unaffected. Upgrade from 0.70.0 directly;
+nothing else changes.
+
 ## 0.70.0 release notes
 
 A commit too large for one pull no longer stalls every replica behind it

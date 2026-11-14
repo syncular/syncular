@@ -3345,7 +3345,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
            LEFT JOIN sync_commits m ON m.partition=$1 AND m.commit_seq=c.commit_seq
            LEFT JOIN LATERAL (SELECT k.i AS key,
                sum(coalesce(octet_length(ch.payload), 0) + octet_length(ch.row_id) + octet_length(ch.scopes::text)) AS bytes
-             FROM sync_changes ch JOIN k ON ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND ch.scopes->>k.var=k.value
+             FROM sync_changes ch JOIN k ON ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND (CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END)->>k.var=k.value
              WHERE ch.partition=$1 AND ch.commit_seq=c.commit_seq
              GROUP BY k.i) z ON true
            ORDER BY c.commit_seq, z.key`,
@@ -3375,7 +3375,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
              ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
            FROM sync_changes ch
            WHERE ch.partition=$1 AND ch.commit_seq>$3 AND ch.commit_seq<=$4
-             AND EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND ch.scopes->>k.var=k.value)
+             AND EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND (CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END)->>k.var=k.value)
            ORDER BY ch.commit_seq, ch.idx`,
           [partition, JSON.stringify(keys), after, through],
         );
