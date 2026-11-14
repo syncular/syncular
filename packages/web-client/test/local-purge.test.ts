@@ -14,6 +14,7 @@ import {
   tableRows,
   taskValues,
 } from './helpers';
+import { recordCommitOutcome } from '../src/outcomes';
 
 const SCHEMA: ClientSchema = {
   version: 1,
@@ -96,6 +97,62 @@ function values(id: string, keyId: string, title: string) {
 }
 
 describe('application-authorized local data purge', () => {
+  test('a prior conflict of a purged row keeps its ids and codes only', async () => {
+    const local = await makeClient(makeServer(), {
+      clientId: 'purge-conflict-client',
+      schema: SCHEMA,
+    });
+    insertBase(local.db, 'target', 'key-revoked', 'Target original');
+    const operation = {
+      table: 'patient_notes',
+      rowId: 'target',
+      op: 'upsert' as const,
+      values: values('target', 'key-revoked', 'Local secret'),
+    };
+    recordCommitOutcome(local.db, {
+      clientCommitId: 'prior-conflict',
+      status: 'conflict',
+      recordedAtMs: 1,
+      results: [
+        {
+          status: 'conflict',
+          conflict: {
+            clientCommitId: 'prior-conflict',
+            opIndex: 0,
+            table: 'patient_notes',
+            rowId: 'target',
+            code: 'sync.version_conflict',
+            message: 'conflict',
+            serverVersion: 2,
+            serverRow: { title: 'Server secret' },
+            conflictColumns: ['title'],
+            operation,
+          },
+        },
+      ],
+      operations: [operation],
+    });
+    local.client.purgeLocalData(PURGE);
+    const outcome = local.client.commitOutcome('prior-conflict');
+    expect(outcome?.operations).toBeUndefined();
+    expect(outcome?.results).toEqual([
+      {
+        status: 'conflict',
+        conflict: {
+          clientCommitId: 'prior-conflict',
+          opIndex: 0,
+          table: 'patient_notes',
+          rowId: 'target',
+          code: 'sync.version_conflict',
+          message: 'conflict',
+          serverVersion: 2,
+          serverRow: {},
+          conflictColumns: [],
+        },
+      },
+    ]);
+  });
+
   test('leaves no purged value in any file of the replica', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'syncular-purge-'));
     const local = await makeClient(makeServer(), {
@@ -108,6 +165,16 @@ describe('application-authorized local data purge', () => {
       insertBase(local.db, `t${i}`, 'key-revoked', `${marker} ${i}`);
     }
     insertBase(local.db, 'kept', 'key-held', 'Kept original');
+    // An earlier server rejection of a purged row journals its operations.
+    const rejected = local.client.mutate([
+      {
+        table: 'patient_notes',
+        op: 'upsert',
+        values: values('t1', 'key-revoked', `${marker} rejected`),
+      },
+    ]);
+    await local.client.sync();
+    expect(local.client.commitOutcome(rejected)?.operations).toHaveLength(1);
     // A pending edit of a purged row is dropped; its outcome keeps no value.
     local.client.mutate([
       {
@@ -120,6 +187,15 @@ describe('application-authorized local data purge', () => {
     expect(tableRows(local.db, 'patient_notes').map((row) => row.id)).toEqual([
       'kept',
     ]);
+    const scrubbed = local.client.commitOutcome(rejected);
+    expect(scrubbed?.status).toBe('rejected');
+    expect(scrubbed?.operations).toBeUndefined();
+    expect(
+      scrubbed?.results.every(
+        (result) =>
+          result.status === 'error' && result.rejection.operation === undefined,
+      ),
+    ).toBe(true);
     await local.client.close();
     local.db.close();
     const files = readdirSync(dir);

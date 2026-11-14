@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-14',
+    title: 'A purge also clears earlier outcomes of the purged rows',
+    body: '`purgeLocalData` rewrites the outcome journal entries recorded before it that name a purged row or carry a matching value: an earlier rejection or conflict loses its operations, rejection details and conflict row, and keeps its commit id, status and codes. With the 0.70.2 file rewrite, a purged row leaves no value in the replica file.',
+    links: [
+      {
+        href: '/concepts-local-data-purge/#what-the-purge-does',
+        label: 'What the purge does',
+      },
+    ],
+  },
+  {
+    date: '2026-11-14',
     title: 'A local data purge leaves no purged value in the replica file',
     body: 'SQLite kept a purged value readable in freed pages of the database file and in WAL frames written before the purge; a raw scan of an OPFS pool file still found the name of a purged row. `purgeLocalData` now rewrites the replica file with `VACUUM` and `secure_delete` and truncates the WAL, in the browser worker, in Bun and Node replicas and in the native client. A commit the purge drops is journaled without its operations. Outcomes journaled before the purge still keep theirs.',
     links: [

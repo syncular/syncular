@@ -1,5 +1,22 @@
 # Syncular release notes
 
+## 0.70.3 release notes
+
+`purgeLocalData` now also rewrites the outcome journal entries recorded before
+the purge (SYNCULAR-PURGE-FREED-PAGES-001, the gap 0.70.2 left open). An entry
+with an operation on a target table whose row the purge removes or whose
+values match a target, or with a conflict whose server row matches, keeps its
+commit id, status, resolution, and per result the operation index, code,
+message and retryability; a conflict keeps its table, row id and
+`serverVersion` with an empty `serverRow` and no `conflictColumns`. The entry
+loses its `operations`, every nested `operation` and rejection `details`
+(SPEC §5.11, "Purge erasure"). Both cores apply the rule in the purge
+transaction, before the file rewrite. The marker tests now also seed an
+earlier rejected outcome of a purged row and find no marker byte in any file.
+
+**Upgrade notes.** An app that showed the values of an earlier rejection or
+conflict of a purged row now reads only its ids and codes.
+
 ## 0.70.2 release notes
 
 `purgeLocalData` leaves no purged value readable in the replica file

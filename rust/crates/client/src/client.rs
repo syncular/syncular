@@ -10862,6 +10862,80 @@ impl SyncClient {
                     purged_rows += 1;
                 }
             }
+            // §5.11 purge erasure: a journaled outcome with an operation or
+            // conflict row the purge reaches keeps its identity, status, ids
+            // and codes only.
+            let touches = |table: &str, row_id: &str, values: Option<&Map<String, Value>>| {
+                targets.iter().any(|target| {
+                    target.table == table
+                        && (row_ids.get(table).is_some_and(|ids| ids.contains(row_id))
+                            || values.is_some_and(|values| {
+                                Self::local_purge_values_match(target, values)
+                            }))
+                })
+            };
+            let entries = self
+                .conn
+                .prepare("SELECT client_commit_id, results_json, operations_json FROM _syncular_commit_outcomes")
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        })?
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            for (client_commit_id, results_json, operations_json) in entries {
+                let corrupt = |_| "sync.local_corrupt: persisted commit outcome is invalid".to_owned();
+                let mut results: Vec<CommitOperationOutcome> =
+                    serde_json::from_str(&results_json).map_err(corrupt)?;
+                let operations: Vec<CommitOperation> = operations_json
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(corrupt)?
+                    .unwrap_or_default();
+                let named = operations
+                    .iter()
+                    .chain(results.iter().filter_map(|result| match result {
+                        CommitOperationOutcome::Conflict { conflict } => conflict.operation.as_ref(),
+                        CommitOperationOutcome::Error { rejection } => rejection.operation.as_ref(),
+                        CommitOperationOutcome::Applied { .. } => None,
+                    }))
+                    .any(|operation| touches(&operation.table, &operation.row_id, operation.values.as_ref()))
+                    || results.iter().any(|result| {
+                        matches!(result, CommitOperationOutcome::Conflict { conflict }
+                            if touches(&conflict.table, &conflict.row_id, Some(&conflict.server_row)))
+                    });
+                if !named {
+                    continue;
+                }
+                for result in &mut results {
+                    match result {
+                        CommitOperationOutcome::Conflict { conflict } => {
+                            conflict.server_row = Map::new();
+                            conflict.conflict_columns.clear();
+                            conflict.operation = None;
+                        }
+                        CommitOperationOutcome::Error { rejection } => {
+                            rejection.details = None;
+                            rejection.operation = None;
+                        }
+                        CommitOperationOutcome::Applied { .. } => {}
+                    }
+                }
+                let results_json = serde_json::to_string(&results).map_err(|error| error.to_string())?;
+                self.conn
+                    .execute(
+                        "UPDATE _syncular_commit_outcomes SET results_json = ?1, operations_json = NULL WHERE client_commit_id = ?2",
+                        rusqlite::params![results_json, client_commit_id],
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                batch.outcomes = true;
+            }
             self.rebuild_overlay_if_dirty()?;
             self.delete_unreferenced_cached_blobs()?;
             self.conn

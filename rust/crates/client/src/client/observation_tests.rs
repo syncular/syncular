@@ -11463,6 +11463,42 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
         .expect("seed kept row");
     client.overlay_dirty.set(true);
     client.rebuild_overlay_if_dirty().expect("rebuild overlay");
+    // An earlier server rejection of a purged row journals its operation.
+    let rejected_op = CommitOperation {
+        table: "patient_notes".to_owned(),
+        row_id: "t1".to_owned(),
+        op: "upsert".to_owned(),
+        base_version: None,
+        values: Some(Map::from_iter([
+            ("id".to_owned(), Value::from("t1")),
+            (
+                "title".to_owned(),
+                Value::from(format!("{marker} rejected")),
+            ),
+        ])),
+        insert: false,
+    };
+    let rejected_results = vec![CommitOperationOutcome::Error {
+        rejection: RejectionRecord {
+            client_commit_id: "rejected-commit".to_owned(),
+            op_index: 0,
+            code: "app.rejected".to_owned(),
+            message: "rejected".to_owned(),
+            retryable: false,
+            details: None,
+            operation: Some(rejected_op.clone()),
+        },
+    }];
+    client
+        .conn
+        .execute(
+            "INSERT INTO _syncular_commit_outcomes (client_commit_id, status, recorded_at_ms, results_json, operations_json, resolution) VALUES ('rejected-commit', 'rejected', 1, ?1, ?2, 'active')",
+            rusqlite::params![
+                serde_json::to_string(&rejected_results).expect("results json"),
+                serde_json::to_string(&vec![rejected_op]).expect("operations json"),
+            ],
+        )
+        .expect("seed rejected outcome");
     // A pending edit of a purged row is dropped; its outcome keeps no value.
     client
         .mutate(vec![Mutation::Upsert {
@@ -11489,6 +11525,29 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
         })
         .expect("purge");
     assert_eq!(purged.purged_rows, 200);
+    let (results_json, operations_json): (String, Option<String>) = client
+        .conn
+        .query_row(
+            "SELECT results_json, operations_json FROM _syncular_commit_outcomes WHERE client_commit_id = 'rejected-commit'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("scrubbed outcome");
+    assert_eq!(operations_json, None);
+    assert_eq!(
+        serde_json::from_str::<Vec<CommitOperationOutcome>>(&results_json).expect("results"),
+        vec![CommitOperationOutcome::Error {
+            rejection: RejectionRecord {
+                client_commit_id: "rejected-commit".to_owned(),
+                op_index: 0,
+                code: "app.rejected".to_owned(),
+                message: "rejected".to_owned(),
+                retryable: false,
+                details: None,
+                operation: None,
+            },
+        }]
+    );
     drop(client);
     let mut files = 0;
     for entry in std::fs::read_dir(&dir).expect("read replica dir") {

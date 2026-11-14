@@ -3795,7 +3795,15 @@ otherwise keeps a deleted value in freed pages and in WAL frames written
 before the purge. The journal entry of a commit the purge drops keeps its
 `clientCommitId` and one `client.local_data_purged` result per operation
 index, and omits the `operations` collection and every nested `operation`
-(§7.2.1).
+(§7.2.1). In the same transaction the purge rewrites every journal entry
+recorded before it that has an operation or a conflict row the purge reaches:
+an operation on a target table whose row the purge removes or whose values
+match a target, or a conflict whose `serverRow` matches. The entry keeps its
+`clientCommitId`, status, resolution, and per result the operation index,
+code, message and retryability, a conflict's `table`, `rowId` and
+`serverVersion`, with an empty `serverRow` and no `conflictColumns`. It
+loses the `operations` collection, every nested `operation` and rejection
+`details`.
 In particular, runtime transport-header replacement is an active-session
 operation; native bridges MUST gate it independently rather than relying only
 on a JavaScript wrapper.

@@ -98,7 +98,7 @@ A failed purge preserves the captured sync round, so its response can still appl
 
 After the transaction commits, the client rewrites the replica file with SQLite `VACUUM` (with `secure_delete` on) and truncates the WAL. SQLite otherwise keeps a deleted value readable in freed pages of the database file and in WAL frames written before the purge; a test that writes 200 marker rows and purges them finds the marker in the raw file without the rewrite. The rewrite runs in the OPFS worker database, in Bun and Node file replicas, and in the native client behind Tauri and the other bindings. Its cost grows with the replica size, because `VACUUM` copies every remaining row. A retry with the same id and plan runs the rewrite again, so a host retries a purge whose rewrite failed.
 
-Outcomes journaled before the purge, such as an earlier rejection or conflict of a purged row, keep their operations and conflict rows; the purge does not rewrite them yet.
+Outcomes journaled before the purge that name a purged row or carry a matching value, such as an earlier rejection or conflict, lose their operations, rejection details and conflict rows in the same transaction. They keep their commit id, status, resolution, codes and row ids, and a conflict keeps its `serverVersion` with an empty `serverRow`.
 
 Retrying the same id and plan returns `alreadyApplied: true` with zero new counts. Reusing an id with a different plan fails closed. A host retry after a crash or an ambiguous bridge response is therefore safe. The durable evidence that rejected pending work leaves is described on [Conflicts & optimistic writes](/concepts-conflicts/).
 

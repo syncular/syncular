@@ -530,3 +530,86 @@ export function activeFailureRecords(outcomes: readonly CommitOutcome[]): {
   }
   return { conflicts, rejections };
 }
+
+/**
+ * §5.11 purge erasure: every journal entry with an operation, or a conflict
+ * row, that `touches` accepts keeps its identity, status, ids and codes only.
+ * Returns whether an entry changed.
+ */
+export function scrubPurgedOutcomes(
+  db: ClientDatabase,
+  touches: (
+    table: string,
+    rowId: string,
+    values: Readonly<Record<string, unknown>> | undefined,
+  ) => boolean,
+): boolean {
+  let changed = false;
+  for (const row of db.query(
+    `SELECT client_commit_id,results,operations FROM ${OUTCOMES_TABLE}`,
+  )) {
+    const results = JSON.parse(
+      String(row.results),
+    ) as StoredCommitOperationOutcome[];
+    const operations =
+      typeof row.operations === 'string'
+        ? (JSON.parse(row.operations) as OutboxOperation[])
+        : [];
+    const named = [
+      ...operations,
+      ...results.flatMap((result) =>
+        result.status === 'conflict'
+          ? [
+              {
+                table: result.conflict.table,
+                rowId: result.conflict.rowId,
+                values: result.conflict.serverRow,
+              },
+              ...(result.conflict.operation === undefined
+                ? []
+                : [result.conflict.operation]),
+            ]
+          : result.status === 'error' &&
+              result.rejection.operation !== undefined
+            ? [result.rejection.operation]
+            : [],
+      ),
+    ];
+    if (!named.some((op) => touches(op.table, op.rowId, op.values))) continue;
+    const scrubbed: StoredCommitOperationOutcome[] = results.map((result) => {
+      if (result.status === 'conflict') {
+        const { clientCommitId, opIndex, table, rowId, code, message } =
+          result.conflict;
+        return {
+          status: 'conflict',
+          conflict: {
+            clientCommitId,
+            opIndex,
+            table,
+            rowId,
+            code,
+            message,
+            serverVersion: result.conflict.serverVersion,
+            serverRow: {},
+            conflictColumns: [],
+          },
+        };
+      }
+      if (result.status === 'error') {
+        const { clientCommitId, opIndex, code, message, retryable } =
+          result.rejection;
+        return {
+          status: 'error',
+          rejection: { clientCommitId, opIndex, code, message, retryable },
+        };
+      }
+      return result;
+    });
+    db.exec(
+      `UPDATE ${OUTCOMES_TABLE} SET results=?,operations=NULL WHERE client_commit_id=?`,
+      [JSON.stringify(scrubbed), String(row.client_commit_id)],
+    );
+    changed = true;
+  }
+  return changed;
+}

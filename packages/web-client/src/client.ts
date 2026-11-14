@@ -191,6 +191,7 @@ import {
   type ResolveCommitOutcomeInput,
   commitOutcome as readCommitOutcome,
   recordCommitOutcome,
+  scrubPurgedOutcomes,
 } from './outcomes';
 import {
   buildPreviousVersionAudit,
@@ -3781,6 +3782,17 @@ export class SyncClient {
             );
           }
         }
+        if (
+          scrubPurgedOutcomes(this.#db, (table, rowId, values) =>
+            (targetsByTable.get(table) ?? []).some(
+              (target) =>
+                rowIds.get(table)?.has(rowId) === true ||
+                (values !== undefined &&
+                  localDataPurgeTargetMatches(target, values)),
+            ),
+          )
+        )
+          batch.outcomes();
 
         if (doomed.length > 0) {
           // §5.11 purge erasure: the journal keeps a dropped commit's identity and codes,
