@@ -1318,6 +1318,7 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
 
 test('OPFS purge leaves no purged value in any file of the pool', async () => {
   const marker = 'PURGEMARKER-OPFS-51c2';
+  freshSource.allowed['actor-1'] = { project_id: ['p1'] };
   const seed = await makeClient(freshSource, {
     actorId: 'seed',
     clientId: 'purge-seed',
