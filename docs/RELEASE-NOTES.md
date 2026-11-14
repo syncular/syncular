@@ -1,5 +1,38 @@
 # Syncular release notes
 
+## 0.70.0 release notes
+
+A commit too large for one pull no longer stalls every replica behind it
+(SYNCULAR-LIVE-WINDOW-MEMORY-001). The live section read joined every change
+of up to 64 candidate commits, all tables and all payloads, before it filtered
+them by unit, and a section never split a commit. A 154 MB import therefore
+loaded the whole commit on every pull of a replica whose cursor lay behind it,
+and a 128 MB Durable Object reset on each attempt. The storage now sizes
+candidate commits in SQL without reading a payload and loads only the changes
+of covered tables that carry a unit's first scope value; a unit that matches
+one row of the commit reads that row. The new server limit
+`limits.maxLiveSectionBytes` (default 16 MiB) cuts a section before the
+commit that would pass it. A commit whose changes for the request pass the
+budget on their own resets the units it reaches with the existing
+`sync.cursor_expired` reset; they bootstrap from the stored rows or a SQLite
+image at a pin above the commit (SPEC §4.6, "Live byte budget"). Local
+authorities apply no budget. SSP2, the wire version and both clients are
+unchanged.
+
+`RealtimeHub.refreshScopes` now sends a `catchup-required` wake-up to each
+session whose registrations it removed or narrowed
+(SYNCULAR-REALTIME-SCOPE-REVOCATION-WAKE-001). The refresh stopped the
+session's deltas but sent nothing, so an idle client never ran the round whose
+revocation purge drops the revoked rows (SPEC §8.7).
+
+**Upgrade notes.** A custom `ServerStorage` implements the new
+`LiveWindowQuery.limitBytes` and returns `LiveWindow.oversized`; the
+reference storages build on `readLiveWindowPages`, which now takes a
+candidate read and a change read. A host on a small heap sets
+`limits.maxLiveSectionBytes` well below it. Units that share their first
+scope value share one index range, so a commit past the budget resets all of
+them together.
+
 ## 0.69.0 release notes
 
 An edit authored before the client's previous edit of the same row is

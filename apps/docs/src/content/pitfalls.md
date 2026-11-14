@@ -338,6 +338,12 @@ Every statement behind Hyperdrive is a round trip (8 to 10 ms per statement from
 
 See [Storage reference](/server-storage-reference/#postgres).
 
+### Do prune the commit log on a schedule
+
+Nothing prunes the commit log automatically, and every change keeps its full payload until a pruning pass removes it. A scope move logs the whole row again under the new scope values even when no reader can hold them: one measured move of 94,416 rows into such a scope logged 212 MB of upsert payload (SPEC §2.2). Run `pruneCommitLog` hourly to daily for every partition; such a commit leaves once active client cursors pass it, and at the latest at the 30-day age force limit (SPEC §4.6). Since 0.70.0 a pull never loads such a commit past `maxLiveSectionBytes`: it reads only changes that carry its units' first scope value, and it resets the units an oversized commit reaches, which bootstrap instead.
+
+See [Commit-log pruning](/server-operations/#commit-log-pruning).
+
 ## Caching and service workers
 
 ### Don't cache private responses in a service worker or CDN
