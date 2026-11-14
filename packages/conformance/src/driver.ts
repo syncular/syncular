@@ -161,6 +161,8 @@ export interface ServerLimitsOptions {
   readonly maxCascadeOperationsPerCommit?: number;
   /** §1.7 `UNIT` frames per request (reference default 500). */
   readonly maxSubscriptionsPerRequest?: number;
+  /** §4.6 live-section byte budget (reference default 16 MiB). */
+  readonly maxLiveSectionBytes?: number;
   readonly maxDeltaBytes?: number;
   readonly segmentTtlMs?: number;
   /** §8.6.2 presence document size cap (bytes). */
@@ -287,7 +289,9 @@ export type ServerCapability =
   /** §9 serving more than one schema version at once. */
   | 'schema-window'
   /** Host-configured `ServerLimitsOptions`. */
-  | 'server-limits';
+  | 'server-limits'
+  /** §4.6 live byte budget (`maxLiveSectionBytes`); not in the §12 profile. */
+  | 'live-byte-budget';
 
 /**
  * §6.7 declarative write-validation rule (JSON-able so it crosses the

@@ -273,6 +273,7 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
         ],
         throughSeq: seq,
         limitChanges: 10,
+        limitBytes: 16 * 1024 * 1024,
       });
       expect(commits).toHaveLength(1);
       expect(commits[0]?.changes).toHaveLength(4);
@@ -356,6 +357,7 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
         ],
         throughSeq: message?.commitSeq ?? 1,
         limitChanges: 10,
+        limitBytes: 16 * 1024 * 1024,
       });
       expect(commits).toHaveLength(1);
       // The deletion left its tombstone (§5.2): an unversioned upsert cannot
@@ -495,7 +497,7 @@ describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
           ) && /"_sync_row_id"=\$\d+$/.test(text),
       );
       const windowReads = sql.filter((text) =>
-        text.includes('LEFT JOIN sync_changes ch'),
+        text.includes('EXISTS (SELECT 1 FROM k'),
       );
       expect(singleRowReads).toEqual([]);
       expect(windowReads).toHaveLength(1);
@@ -518,7 +520,7 @@ describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
         ),
       ).toEqual([]);
       expect(
-        sql.filter((text) => text.includes('LEFT JOIN sync_changes ch')),
+        sql.filter((text) => text.includes('EXISTS (SELECT 1 FROM k')),
       ).toHaveLength(1);
     } finally {
       await db.close();

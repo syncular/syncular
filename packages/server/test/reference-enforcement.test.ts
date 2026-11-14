@@ -234,6 +234,7 @@ describe('declared references (§6.11)', () => {
       ],
       throughSeq: seq,
       limitChanges: 10,
+      limitBytes: 16 * 1024 * 1024,
     });
     // §2.2: the cascaded delete advances i1's version and carries it.
     expect(window.commits.flatMap((commit) => commit.changes)).toEqual([

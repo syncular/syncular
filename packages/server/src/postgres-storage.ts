@@ -3314,52 +3314,77 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     query: LiveWindowQuery,
   ): Promise<LiveWindow> {
-    // One statement per page: one LATERAL range of
+    // Two statements per page. The candidate read takes one LATERAL range of
     // `sync_change_scopes_by_key` per unit key, each DISTINCT and LIMITed at
-    // the index, merged in commit order and LIMITed again, then LEFT JOINed
-    // to the commit meta and every change of the commit. A candidate whose
-    // commit vanished comes back with NULL meta and still advances the scan.
-    return readLiveWindowPages(query, async (keys, limit) => {
-      const { rows } = await this.#exec.query<{
-        commit_seq: unknown;
-        actor_id: string | null;
-        created_at_ms: unknown;
-        tbl: string | null;
-        row_id: string;
-        op: unknown;
-        row_version: unknown;
-        scopes: unknown;
-        payload: unknown;
-      }>(
-        `SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
-           ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-         FROM (SELECT DISTINCT s.commit_seq
-             FROM jsonb_to_recordset($2::text::jsonb) AS k(var text, value text, after bigint)
-             CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
+    // the index, merged in commit order and LIMITed again, then LEFT JOINs
+    // the commit meta (NULL when the commit vanished, which still advances
+    // the scan) and, per key, the byte size of the changes the key reads;
+    // `octet_length` of a TOASTed payload reads its pointer, never the value.
+    // The change read then loads only those changes of the commits the byte
+    // budget admits.
+    return readLiveWindowPages(
+      query,
+      async (keys, limit) => {
+        const { rows } = await this.#exec.query<{
+          commit_seq: unknown;
+          actor_id: string | null;
+          created_at_ms: unknown;
+          key: unknown;
+          bytes: unknown;
+        }>(
+          `WITH k AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::text::jsonb) AS k(i int, var text, value text, after bigint, tables jsonb)),
+           c AS MATERIALIZED (SELECT DISTINCT s.commit_seq
+             FROM k CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
                WHERE partition=$1 AND var=k.var AND value=k.value
                  AND commit_seq>k.after AND commit_seq<=$3
                ORDER BY commit_seq LIMIT $4) s
-             ORDER BY s.commit_seq LIMIT $4) c
-         LEFT JOIN sync_commits m ON m.partition=$1 AND m.commit_seq=c.commit_seq
-         LEFT JOIN sync_changes ch ON ch.partition=$1 AND ch.commit_seq=c.commit_seq
-         ORDER BY c.commit_seq, ch.idx`,
-        [partition, JSON.stringify(keys), query.throughSeq, limit],
-      );
-      return rows.map((record) => ({
-        commitSeq: asNumber(record.commit_seq),
-        ...(record.actor_id === null
-          ? {}
-          : {
-              meta: {
-                actorId: record.actor_id,
-                createdAtMs: asNumber(record.created_at_ms),
-              },
-            }),
-        ...(record.tbl === null
-          ? {}
-          : { change: toStoredChange({ ...record, tbl: record.tbl }) }),
-      }));
-    });
+             ORDER BY s.commit_seq LIMIT $4)
+           SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
+             z.key AS key, z.bytes AS bytes
+           FROM c
+           LEFT JOIN sync_commits m ON m.partition=$1 AND m.commit_seq=c.commit_seq
+           LEFT JOIN LATERAL (SELECT k.i AS key,
+               sum(coalesce(octet_length(ch.payload), 0) + octet_length(ch.row_id) + octet_length(ch.scopes::text)) AS bytes
+             FROM sync_changes ch JOIN k ON ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND ch.scopes->>k.var=k.value
+             WHERE ch.partition=$1 AND ch.commit_seq=c.commit_seq
+             GROUP BY k.i) z ON true
+           ORDER BY c.commit_seq, z.key`,
+          [partition, JSON.stringify(keys), query.throughSeq, limit],
+        );
+        return rows.map((record) => ({
+          commitSeq: asNumber(record.commit_seq),
+          ...(record.actor_id === null
+            ? {}
+            : {
+                meta: {
+                  actorId: record.actor_id,
+                  createdAtMs: asNumber(record.created_at_ms),
+                },
+              }),
+          ...(record.key === null
+            ? {}
+            : { key: asNumber(record.key), bytes: asNumber(record.bytes) }),
+        }));
+      },
+      async (keys, after, through) => {
+        const { rows } = await this.#exec.query<
+          ChangeRecord & { commit_seq: unknown }
+        >(
+          `WITH k AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::text::jsonb) AS k(i int, var text, value text, after bigint, tables jsonb))
+           SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
+             ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
+           FROM sync_changes ch
+           WHERE ch.partition=$1 AND ch.commit_seq>$3 AND ch.commit_seq<=$4
+             AND EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND ch.scopes->>k.var=k.value)
+           ORDER BY ch.commit_seq, ch.idx`,
+          [partition, JSON.stringify(keys), after, through],
+        );
+        return rows.map((record) => ({
+          commitSeq: asNumber(record.commit_seq),
+          change: toStoredChange(record),
+        }));
+      },
+    );
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {

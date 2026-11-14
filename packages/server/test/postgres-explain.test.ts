@@ -133,20 +133,22 @@ test('readLiveWindow ranges the key index once per unit (no Seq Scan)', async ()
     units,
     throughSeq: ROWS,
     limitChanges: 64,
+    limitBytes: 16 * 1024 * 1024,
   });
-  expect(texts).toHaveLength(1);
-  const plan = await explain(db, texts[0]!, [
-    PARTITION,
-    JSON.stringify(
-      units.map((unit) => ({
-        var: 'project_id',
-        value: unit.scopes.project_id,
-        after: 0,
-      })),
-    ),
-    ROWS,
-    64,
-  ]);
+  // One candidate read and one change read.
+  expect(texts).toHaveLength(2);
+  const keys = JSON.stringify(
+    units.map((unit, i) => ({
+      i,
+      var: 'project_id',
+      value: unit.scopes.project_id,
+      after: 0,
+      tables: ['tasks'],
+    })),
+  );
+  const changePlan = await explain(db, texts[1]!, [PARTITION, keys, 0, ROWS]);
+  expect(changePlan).not.toContain('Seq Scan on sync_changes');
+  const plan = await explain(db, texts[0]!, [PARTITION, keys, ROWS, 64]);
   expect(plan).toContain('Index Only Scan using sync_change_scopes_by_key');
   expect(plan).not.toContain('Seq Scan on sync_change_scopes');
   expect(plan).not.toContain('Seq Scan on sync_commits');

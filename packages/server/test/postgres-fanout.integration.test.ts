@@ -173,6 +173,7 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       ],
       throughSeq: 1,
       limitChanges: 10,
+      limitBytes: 16 * 1024 * 1024,
     };
     const window = await storage.readLiveWindow(partition, query);
     const [commit] = window.commits;

@@ -379,6 +379,47 @@ export const unitScenarios: readonly Scenario[] = [
   },
 
   {
+    // A commit whose changes for a live unit pass the server's live byte
+    // budget cannot be served from the log: the live section resets, and
+    // the units bootstrap from the stored rows.
+    name: 'units/oversized-commit-resets-the-units-it-reaches',
+    specRefs: ['§4.6', '§4.5'],
+    requires: ['server-limits', 'live-byte-budget'],
+    server: { limits: { maxLiveSectionBytes: 16 * 1024 } },
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: BOTH,
+      });
+      await a.api.subscribe(U1);
+      await a.api.subscribe(U2);
+      await seedTasks(ctx, [task('a1', 'p1'), task('b1', 'p2')]);
+      await syncIdle(a);
+      await seedTasks(
+        ctx,
+        Array.from({ length: 8 }, (_, i) =>
+          task(`big${i}`, 'p1', 'x'.repeat(4096)),
+        ),
+      );
+      await seedTasks(ctx, [task('b2', 'p2')]);
+      const responses = captureResponses(ctx, a);
+      await syncOk(a);
+      checkEqual(
+        responses()[0]?.frames.find((frame) => frame.type === 'LIVE_START'),
+        {
+          type: 'LIVE_START',
+          status: 'reset',
+          reasonCode: 'sync.cursor_expired',
+        },
+        'the live section behind the oversized commit resets (§4.6)',
+      );
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
+
+  {
     name: 'units/eviction-keeps-a-row-another-unit-holds',
     specRefs: ['§3.3', '§4.8', 'B.25'],
     async run(ctx) {

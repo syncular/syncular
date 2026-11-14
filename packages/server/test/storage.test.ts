@@ -1326,6 +1326,7 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
       ],
       throughSeq: 1,
       limitChanges: 10,
+      limitBytes: 16 * 1024 * 1024,
     });
     expect(window.commits).toEqual([
       {
@@ -1541,6 +1542,7 @@ for (const backend of ['SQLite', 'Postgres', 'D1'] as const) {
               ],
               throughSeq: 3,
               limitChanges: 100,
+              limitBytes: 16 * 1024 * 1024,
             })
           ).commits.map((commit) => commit.commitSeq),
         ).toEqual([1, 2, 3]);

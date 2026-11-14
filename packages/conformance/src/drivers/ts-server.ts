@@ -426,6 +426,7 @@ class TsServerInstance implements ServerInstance {
     inlineSegmentMaxBytes: number;
     maxCascadeOperationsPerCommit: number;
     maxSubscriptionsPerRequest: number;
+    maxLiveSectionBytes: number;
   };
   readonly #maxBlobBytes: number | undefined;
   #resolverFailing = false;
@@ -472,6 +473,8 @@ class TsServerInstance implements ServerInstance {
         options.limits?.maxCascadeOperationsPerCommit ?? 1_000,
       maxSubscriptionsPerRequest:
         options.limits?.maxSubscriptionsPerRequest ?? 500,
+      maxLiveSectionBytes:
+        options.limits?.maxLiveSectionBytes ?? 16 * 1024 * 1024,
     };
     this.#maxBlobBytes = options.limits?.maxBlobBytes;
     this.#segments = new MemorySegmentStore(
@@ -1467,6 +1470,7 @@ export const tsServerDriver: ServerDriver = {
     'sqlite-image',
     'schema-window',
     'server-limits',
+    'live-byte-budget',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);

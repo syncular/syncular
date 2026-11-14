@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-11-14',
+    title:
+      'A large commit no longer stalls the pull of every replica behind it',
+    body: "The live section read every change of up to 64 candidate commits, all tables and all payloads, before it filtered them, and a section never split a commit. A 150 MB import therefore loaded 150 MB per pull for each replica behind it and reset a 128 MB Durable Object on every attempt. The storage now sizes candidate commits in SQL and loads only the changes of covered tables that carry a unit's scope value. The new `limits.maxLiveSectionBytes` (16 MiB by default) cuts a section before the commit that would pass it, and resets the units that a commit larger than the budget reaches, so they bootstrap from the stored rows instead.",
+    links: [
+      {
+        href: '/guide-server/#request-limits',
+        label: 'Request limits',
+      },
+    ],
+  },
+  {
+    date: '2026-11-14',
     title: 'refreshScopes wakes the sessions it revoked',
     body: '`RealtimeHub.refreshScopes` sends a `catchup-required` wake-up to each session whose registrations it removed or narrowed. The client runs a round, and its revocation purge deletes the rows of the revoked scope. Before, the refresh stopped the deltas but sent the session nothing, so an idle client kept the revoked rows until it happened to sync again. Sessions whose scopes stayed the same or widened receive no wake-up.',
     links: [

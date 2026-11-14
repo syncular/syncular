@@ -312,6 +312,35 @@ describe('external segments (SEGMENT_REF)', () => {
     }
   });
 
+  test('§4.6: a live replica behind a commit past the live byte budget re-bootstraps to its state', async () => {
+    const server = makeServer();
+    await seedTasks(server, 2);
+    const b = await makeClient(server, { clientId: 'client-b' });
+    b.client.subscribe({ project_id: 'p1' });
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks')).toHaveLength(2);
+    // One commit of 8 rows of 4 KiB titles, past a 16 KiB budget.
+    server.limits.maxLiveSectionBytes = 16 * 1024;
+    const writer = await makeClient(server, { clientId: 'writer' });
+    writer.client.mutate(
+      Array.from({ length: 8 }, (_, i) => ({
+        table: 'tasks',
+        op: 'upsert' as const,
+        values: taskValues(`big${i}`, 'p1', 'x'.repeat(4096)),
+      })),
+    );
+    await writer.client.syncUntilIdle();
+    const reset = await b.client.sync();
+    expect(reset.resets).toEqual([unitId({ project_id: 'p1' })]);
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks').map((row) => row.id)).toEqual([
+      ...Array.from({ length: 8 }, (_, i) => `big${i}`),
+      't000',
+      't001',
+    ]);
+    expect(b.client.unit(unitId({ project_id: 'p1' }))?.status).toBe('active');
+  });
+
   test('referenced segments download, verify, and apply', async () => {
     const server = makeServer();
     server.limits.inlineSegmentMaxBytes = 0; // force SEGMENT_REF

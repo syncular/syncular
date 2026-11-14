@@ -165,6 +165,7 @@ describe('push apply (§6.2)', () => {
       ],
       throughSeq: firstSeq + 1,
       limitChanges: 10,
+      limitBytes: 16 * 1024 * 1024,
     });
     expect(commits).toHaveLength(1);
     expect(commits[0]?.changes[0]?.op).toBe('upsert');
@@ -256,6 +257,7 @@ describe('push apply (§6.2)', () => {
       ],
       throughSeq: seq + 1,
       limitChanges: 10,
+      limitBytes: 16 * 1024 * 1024,
     });
     expect(commits).toHaveLength(1);
     expect(commits[0]?.changes[0]?.op).toBe('delete');

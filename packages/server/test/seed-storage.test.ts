@@ -249,6 +249,7 @@ describe('a commit above the PostgreSQL bind-parameter limit', () => {
           ],
           throughSeq: maxSeq,
           limitChanges: 1_000_000,
+          limitBytes: 16 * 1024 * 1024,
         });
         windows.push(
           commits.map((commit) => ({

@@ -137,6 +137,63 @@ describe('cursors behind the horizon (§4.6)', () => {
   });
 });
 
+describe('commits past the live byte budget (§4.6)', () => {
+  const P2 = { project_id: 'p2' };
+  const budget = () => {
+    const t = makeContext({ limits: { maxLiveSectionBytes: 2048 } });
+    t.scopes.value = { ...t.scopes.value, project_id: ['p1', 'p2'] };
+    return t;
+  };
+
+  test('a live replica behind an oversized commit resets and re-bootstraps to its state', async () => {
+    const t = budget();
+    const replica = new TestReplica().register(P1);
+    await replica.pull(t);
+    await seedTask(t, 'c1', 't1', 'p1');
+    await replica.pull(t);
+    expect(replica.cursor).toBe(1);
+    await seedTask(t, 'c2', 't2', 'p1', 'x'.repeat(4096));
+    const reset = await replica.pull(t);
+    expect(live(reset).start).toEqual({
+      type: 'LIVE_START',
+      status: 'reset',
+      reasonCode: 'sync.cursor_expired',
+    });
+    expect(live(reset).commits).toHaveLength(0);
+    expect(replica.cursor).toBe(-1);
+    const again = await replica.pull(t);
+    expect(section(again, P1).start.bootstrap).toBe(true);
+    expect(replica.cursor).toBe(2);
+    expect(replica.idle).toBe(true);
+  });
+
+  test('an oversized commit resets only the post-bootstrap units it reaches', async () => {
+    const t = budget();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await seedTask(t, 'c2', 't2', 'p1', 'x'.repeat(4096));
+    await seedTask(t, 'c3', 't3', 'p2');
+    const message = await sync(
+      t,
+      pullFrames([P1, P2], {
+        progress: [progressFrame(P1, 1), progressFrame(P2, 1)],
+      }),
+    );
+    expect(section(message, P1).start).toMatchObject({
+      status: 'reset',
+      reasonCode: 'sync.cursor_expired',
+    });
+    expect(section(message, P1).end.nextCursor).toBe(1);
+    expect(live(message).start.status).toBe('active');
+    expect(
+      live(message).commits.map((commit) => [
+        commit.commitSeq,
+        commit.changes.map((change) => change.rowId),
+      ]),
+    ).toEqual([[3, ['t3']]]);
+    expect(live(message).end.throughSeq).toBe(3);
+  });
+});
+
 describe('pruneCommitLog retention floors (§4.6)', () => {
   test('a delayed older pass cannot regress a newer committed horizon', async () => {
     const t = makeContext();

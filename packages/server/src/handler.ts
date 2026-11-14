@@ -918,18 +918,30 @@ async function* streamResponse(
         // resets the live section), and the section is read again.
         let live: LiveWindow | undefined;
         for (;;) {
-          const scan = units.flatMap(({ plan: unit }, index) => {
+          const scanned = units.flatMap(({ plan: unit }, index) => {
             const afterSeq = bound(states[index]!);
             return afterSeq === undefined
               ? []
-              : [{ scopes: unit.scopes, afterSeq, tables: unit.pairs }];
+              : [{ index, scopes: unit.scopes, afterSeq, tables: unit.pairs }];
           });
-          if (liveReset || scan.length === 0) break;
+          if (liveReset || scanned.length === 0) break;
           live = await ctx.storage.readLiveWindow(ctx.partition, {
-            units: scan,
+            units: scanned,
             throughSeq: maxSeq,
             limitChanges: limits.limitCommits,
+            limitBytes: limitsOf(ctx).maxLiveSectionBytes,
           });
+          // §4.6: a commit past the byte budget on its own cannot be served
+          // from the log; the units it reaches reset and bootstrap.
+          for (const at of live.oversized?.units ?? []) {
+            const index = scanned[at]!.index;
+            if (states[index]!.kind === 'live') liveReset = true;
+            else states[index] = { kind: 'reset' };
+          }
+          if (live.oversized !== undefined) {
+            live = undefined;
+            continue;
+          }
           const recheck = await ctx.storage.getHorizonSeq(ctx.partition);
           let expired = false;
           for (const [index, state] of states.entries()) {

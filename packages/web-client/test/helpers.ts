@@ -108,6 +108,7 @@ export interface TestServer {
   readonly limits: {
     maxOperationsPerRequest: number;
     inlineSegmentMaxBytes: number;
+    maxLiveSectionBytes: number;
   };
   readonly faults: ServerFaults;
   readonly now: { ms: number };
@@ -167,6 +168,7 @@ export function makeServer(
   const limits = {
     maxOperationsPerRequest: 500,
     inlineSegmentMaxBytes: 256 * 1024,
+    maxLiveSectionBytes: 16 * 1024 * 1024,
   };
   const now = { ms: 1_750_000_000_000 };
   void storage.touchPartition(PARTITION, now.ms, TEST_LOG_EPOCH);

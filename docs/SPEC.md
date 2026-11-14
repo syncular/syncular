@@ -1895,8 +1895,9 @@ scopes match the pair's effective scopes, and `commitSeq` exceeds that
 unit's lower bound. A `COMMIT` frame holds every matching change of its
 commit once, in the commit's change order, across tables; the frame's table
 dictionary carries every table it names. `T` is `maxCommitSeq` read at the
-start of the pull, or the `commitSeq` of the last delivered commit when the
-`limitCommits` budget cut the section. With an empty scan set the section
+start of the pull, or, when a budget cut the section, the `commitSeq` of the
+last delivered commit (`limitCommits`) or of the last commit the scan passed
+(the live byte budget, §4.6). With an empty scan set the section
 carries no commit and `T = maxCommitSeq`. `LIVE_END.throughSeq = T`.
 
 **`COMMIT` frame payload** (one frame per commit):
@@ -2056,6 +2057,20 @@ Servers prune the commit log. The contract:
 - A reset unit SHOULD keep its local rows until bootstrap application
   replaces them (§5.6): `reset` is a staleness signal, not a purge signal;
   only `revoked` purges (§3.3).
+- **Live byte budget.** A server MAY bound the stored bytes (payload, row
+  id, scopes) of the changes it loads for one live section; the reference
+  server's `maxLiveSectionBytes` defaults to 16 MiB. It sizes candidate
+  commits before it loads any payload, counting the changes of a covered
+  table whose stored scopes carry a unit's first scope value. The section
+  stops before the commit that would pass the budget, which cuts it (§4.5).
+  A commit whose sized changes pass the budget on their own cannot be served
+  from the log: the server removes units from the scan set, those whose
+  first scope value carries the most of the commit's bytes first, until the
+  rest fits. A removed live unit resets the live section and a removed
+  post-bootstrap or completing unit gets `SUB_START.status = reset`, both
+  with `reasonCode = "sync.cursor_expired"` and the client rules above; the
+  server then reads the section again. A reset unit bootstraps at a pin at
+  or above the commit, so the commit never reaches it through the log.
 - **Tombstones** (§2.2) prune in the same pass: a pruning run deletes every
   tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
   precedence rule of §6.2 no longer sees the delete, and the ordinary insert
@@ -7711,7 +7726,7 @@ list, digest and record cursor (§4.5), and keeps the per-outbox watermark
 (§6.3.2), so it retains the results of at most one push request of its one
 replica. It MAY produce SQLite segments (§5.3). It authenticates every request to
 partition `local` and actor `local`, resolves every declared scope variable to
-all values, and issues no lease. It has no realtime channel (§8), blob routes
+all values, and issues no lease. It applies no live byte budget (§4.6). It has no realtime channel (§8), blob routes
 (§5.9), write or commit validators (§6.7, §6.8), reactions (§6.9) or remote
 operations.
 

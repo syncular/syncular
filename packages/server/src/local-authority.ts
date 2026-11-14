@@ -215,6 +215,10 @@ export async function openLocalAuthority(
           segments: new MemorySegmentStore(),
           resolveScopes: () => allowed,
           clock,
+          // §12.2: the client's own process serves its own commits; the
+          // live byte budget (§4.6) bounds a shared server's heap and does
+          // not apply here, as in the native authority.
+          limits: { maxLiveSectionBytes: Number.MAX_SAFE_INTEGER },
           ...(options.crdtMergers !== undefined
             ? { crdtMergers: options.crdtMergers }
             : {}),

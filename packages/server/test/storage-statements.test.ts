@@ -463,6 +463,7 @@ for (const kind of KINDS) {
       units,
       throughSeq: 40,
       limitChanges: 1000,
+      limitBytes: 16 * 1024 * 1024,
     });
     expect(window.commits.map((commit) => commit.commitSeq)).toEqual(
       Array.from({ length: 40 }, (_, i) => i)
@@ -470,22 +471,30 @@ for (const kind of KINDS) {
         .map((i) => i + 1),
     );
     const statements = drain();
-    // D1 runs the SQLite statement text behind its published-schema guard,
-    // one batch of two statements.
-    expect(statements).toHaveLength(kind === 'd1' ? 2 : 1);
+    // One candidate read and one change read. D1 runs each SQLite statement
+    // behind its published-schema guard, one batch of two statements each.
+    expect(statements).toHaveLength(kind === 'd1' ? 4 : 2);
     if (kind === 'd1') return;
-    const lines = await plan(statements[0]!, [
-      PARTITION,
-      JSON.stringify(
-        units.map((unit) => ({
-          var: 'project_id',
-          value: unit.scopes.project_id,
-          after: 0,
-        })),
+    const keys = JSON.stringify(
+      units.map((unit, i) => ({
+        i,
+        var: 'project_id',
+        value: unit.scopes.project_id,
+        after: 0,
+        tables: ['tasks'],
+      })),
+    );
+    // The change read ranges the log by (partition, commit_seq).
+    const changeLines = await plan(statements[1]!, [PARTITION, keys, 0, 40]);
+    expect(
+      changeLines.some((line) =>
+        kind === 'sqlite'
+          ? line.startsWith('SEARCH ch USING') &&
+            line.includes('commit_seq>? AND commit_seq<?')
+          : /Index Scan using sync_changes_pkey on sync_changes/.test(line),
       ),
-      40,
-      1000,
-    ]);
+    ).toBe(true);
+    const lines = await plan(statements[0]!, [PARTITION, keys, 40, 1000]);
     if (kind === 'sqlite') {
       // The 13 keys drive the loop; each seeks one range of the key index.
       expect(lines).toContain(
@@ -630,6 +639,7 @@ test('D1 scope scans bind scope values as one parameter (D4)', async () => {
     })),
     throughSeq: 1,
     limitChanges: 500,
+    limitBytes: 16 * 1024 * 1024,
   });
   expect(window.commits.flatMap((commit) => commit.changes)).toHaveLength(150);
   const reader = await storage.begin(PARTITION);

@@ -91,6 +91,13 @@ export interface ServerLimits {
   readonly maxSubscriptionsPerRequest: number;
   /** Cap on concurrent registered-query watches per watch session. */
   readonly maxWatchesPerSession: number;
+  /**
+   * §4.6 byte budget of one live section: the stored bytes (payload, row id,
+   * scopes) of the changes a pull loads from the log. A section stops before
+   * the commit that would pass it; a commit whose changes for the scan set
+   * pass it alone resets the units it reaches, which bootstrap instead.
+   */
+  readonly maxLiveSectionBytes: number;
 }
 
 export const DEFAULT_LIMITS: ServerLimits = {
@@ -103,6 +110,8 @@ export const DEFAULT_LIMITS: ServerLimits = {
   maxSubscriptionsPerRequest: 500,
   // Every commit reruns a session's affected watches one after another.
   maxWatchesPerSession: 100,
+  // The live section is buffered whole before the first unit section.
+  maxLiveSectionBytes: 16 * 1024 * 1024,
 };
 
 /** Receives applied commits for realtime fanout (§8.2). */

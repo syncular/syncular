@@ -496,6 +496,12 @@ export interface LiveWindowQuery {
   readonly throughSeq: number;
   /** The `limitCommits` budget: stop after the commit that reaches it. */
   readonly limitChanges: number;
+  /**
+   * `ServerLimits.maxLiveSectionBytes`: the stored bytes (payload, row id,
+   * scopes) of the changes a section loads. The section stops before the
+   * commit that would pass it; a commit that passes it alone is oversized.
+   */
+  readonly limitBytes: number;
 }
 
 /** The commits of one live section (§4.5). */
@@ -503,10 +509,19 @@ export interface LiveWindow {
   /** Oldest first, each with its matching changes in change order. */
   readonly commits: readonly StoredCommit[];
   /**
-   * `T`: `query.throughSeq`, or the last delivered `commitSeq` when the
-   * budget cut the section.
+   * `T`: `query.throughSeq`, or the last scanned `commitSeq` when a budget
+   * cut the section.
    */
   readonly throughSeq: number;
+  /**
+   * A commit whose changes for the scan set pass `limitBytes` on their own
+   * (§4.6): `units` are the indexes into `query.units` it reaches. The
+   * section is unusable; the caller resets those units and reads again.
+   */
+  readonly oversized?: {
+    readonly commitSeq: number;
+    readonly units: readonly number[];
+  };
 }
 
 export interface RowScanQuery {
@@ -1111,9 +1126,11 @@ export interface ServerStorage {
    * The §4.5 live section: every commit in `(min afterSeq, throughSeq]`
    * carrying a change that matches a unit of the scan set, oldest first,
    * each with its matching changes once, in change order, across tables.
-   * Stops after the commit whose matching changes reach `limitChanges`
-   * (never splitting a commit). Candidates come from the change-scope key
-   * index, one index range per distinct unit key, never from a log scan.
+   * Stops after the commit whose matching changes reach `limitChanges`, or
+   * before the commit that would pass `limitBytes` (never splitting a
+   * commit). Candidates come from the change-scope key index, one index
+   * range per distinct unit key, never from a log scan, and only changes of
+   * a covered table carrying a unit key's value are read.
    */
   readLiveWindow(
     partition: string,

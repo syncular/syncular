@@ -967,6 +967,7 @@ export function runStorageContract(
         units: [unit],
         throughSeq: 3,
         limitChanges: 10,
+        limitBytes: 16 * 1024 * 1024,
       });
       // One commit per entry with every matching change in change order.
       expect(
@@ -986,6 +987,7 @@ export function runStorageContract(
         units: [unit],
         throughSeq: 3,
         limitChanges: 1,
+        limitBytes: 16 * 1024 * 1024,
       });
       expect(cut.commits.map((commit) => commit.commitSeq)).toEqual([1]);
       expect(cut.commits[0]?.changes).toHaveLength(2);
@@ -996,6 +998,7 @@ export function runStorageContract(
           units: [{ ...unit, tables: new Map() }],
           throughSeq: 3,
           limitChanges: 10,
+          limitBytes: 16 * 1024 * 1024,
         }),
       ).toEqual({ commits: [], throughSeq: 3 });
     });
@@ -1051,6 +1054,7 @@ export function runStorageContract(
         ],
         throughSeq: 5,
         limitChanges: 10,
+        limitBytes: 16 * 1024 * 1024,
       });
       expect(
         window.commits.map((commit) => [
@@ -1096,9 +1100,103 @@ export function runStorageContract(
         ],
         throughSeq: 70,
         limitChanges: 1,
+        limitBytes: 16 * 1024 * 1024,
       });
       expect(window.commits.map((commit) => commit.commitSeq)).toEqual([70]);
       expect(window.throughSeq).toBe(70);
+    });
+
+    test('readLiveWindow bounds the bytes it loads and names the units an oversized commit reaches (§4.6)', async () => {
+      const storage = await make();
+      const big = new Uint8Array(4096);
+      // 1: a 200-byte tasks change. 2: one docs change and a 3-row tasks write of
+      // 12 KiB. 3: a 200-byte tasks change.
+      const commits: [string, string, Uint8Array][][] = [
+        [['tasks', 't1', new Uint8Array(200)]],
+        [
+          ['docs', 'd1', bytes(2)],
+          ['tasks', 't2', big],
+          ['tasks', 't3', big],
+          ['tasks', 't4', big],
+        ],
+        [['tasks', 't5', new Uint8Array(200)]],
+      ];
+      for (const [i, commit] of commits.entries()) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c',
+          clientCommitId: `k${i}`,
+          actorId: 'a',
+          createdAtMs: NOW + i,
+          changes: commit.map(([table, rowId, payload]) => ({
+            table,
+            rowId,
+            op: 'upsert',
+            rowVersion: 1,
+            scopes:
+              table === 'docs'
+                ? { org_id: 'o1', project_id: 'p1' }
+                : { project_id: 'p1' },
+            payload,
+          })),
+        });
+        await tx.commit();
+      }
+      const tasks = {
+        scopes: { project_id: 'p1' },
+        afterSeq: 0,
+        tables: new Map([['tasks', { project_id: ['p1'] }]]),
+      };
+      const docs = {
+        scopes: { org_id: 'o1' },
+        afterSeq: 0,
+        tables: new Map([['docs', { org_id: ['o1'] }]]),
+      };
+      // A commit past the budget on its own ends the read and names the
+      // units it reaches: the tasks unit, never the docs unit.
+      const oversized = await storage.readLiveWindow(PARTITION, {
+        units: [docs, tasks],
+        throughSeq: 3,
+        limitChanges: 100,
+        limitBytes: 8192,
+      });
+      expect(oversized.commits).toEqual([]);
+      expect(oversized.oversized).toEqual({ commitSeq: 2, units: [1] });
+      // The docs unit alone reads its one change of commit 2 and none of
+      // the tasks payloads.
+      const alone = await storage.readLiveWindow(PARTITION, {
+        units: [docs],
+        throughSeq: 3,
+        limitChanges: 100,
+        limitBytes: 8192,
+      });
+      expect(alone.oversized).toBeUndefined();
+      expect(
+        alone.commits.map((commit) => [
+          commit.commitSeq,
+          commit.changes.map((change) => change.rowId),
+        ]),
+      ).toEqual([[2, ['d1']]]);
+      expect(alone.throughSeq).toBe(3);
+      // Below the commit's size, the section stops before the commit that
+      // would pass the budget, and T is the last commit it scanned.
+      const cut = await storage.readLiveWindow(PARTITION, {
+        units: [tasks],
+        throughSeq: 3,
+        limitChanges: 100,
+        limitBytes: 3 * 4096 + 100,
+      });
+      expect(cut.oversized).toBeUndefined();
+      expect(cut.commits.map((commit) => commit.commitSeq)).toEqual([1]);
+      expect(cut.throughSeq).toBe(1);
+      const next = await storage.readLiveWindow(PARTITION, {
+        units: [{ ...tasks, afterSeq: 1 }],
+        throughSeq: 3,
+        limitChanges: 100,
+        limitBytes: 3 * 4096 + 100,
+      });
+      expect(next.commits.map((commit) => commit.commitSeq)).toEqual([2]);
+      expect(next.throughSeq).toBe(2);
     });
 
     test('latestScopedChangeSeq reads the newest commit of a table for the unit key', async () => {
@@ -1890,6 +1988,7 @@ export function runStorageContract(
         ],
         throughSeq: 5,
         limitChanges: 100,
+        limitBytes: 16 * 1024 * 1024,
       });
       expect(window.commits.map((c) => c.commitSeq)).toEqual([3, 4, 5]);
     });
