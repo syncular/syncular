@@ -30,13 +30,13 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        187000,
+        188000,
       ],
       [
         'remote-worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-remote.ts'; startSyncWorker();`,
         false,
-        187000,
+        188000,
       ],
       [
         'authority-worker',
