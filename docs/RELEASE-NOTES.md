@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## 0.70.2 release notes
+
+`purgeLocalData` leaves no purged value readable in the replica file
+(SYNCULAR-PURGE-FREED-PAGES-001). SQLite kept a deleted value in freed pages
+of the database file and in WAL frames written before the purge; a raw scan of
+an OPFS sahpool file found the name of a purged row after the purge reported
+zero remaining rows. Both cores now rewrite the replica file after the purge
+commits (`VACUUM` with `secure_delete` on) and truncate the WAL, and run the
+rewrite again when a retry finds the plan applied (SPEC §5.11, "Purge
+erasure"). Tests write 200 marker rows and a pending edit, purge, close, and
+find no marker byte in any file of the replica: the OPFS worker pool in
+Chromium, a Bun file replica, and a native file replica.
+
+A commit the purge drops is now journaled with its `clientCommitId` and one
+`client.local_data_purged` result per operation, without the `operations`
+envelope or the nested `operation` (SPEC §7.2.1). Outcomes journaled before
+the purge keep their operations and conflict rows.
+
+**Upgrade notes.** The purge now costs a `VACUUM`: its time grows with the
+size of the remaining replica. An app that read the operations of a purged
+commit from its outcome or rejection reads only the commit id and codes.
+
 ## 0.70.1 release notes
 
 The Postgres live read of 0.70.0 compared `sync_changes.scopes` as a JSON

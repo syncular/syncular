@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-14',
+    title: 'A local data purge leaves no purged value in the replica file',
+    body: 'SQLite kept a purged value readable in freed pages of the database file and in WAL frames written before the purge; a raw scan of an OPFS pool file still found the name of a purged row. `purgeLocalData` now rewrites the replica file with `VACUUM` and `secure_delete` and truncates the WAL, in the browser worker, in Bun and Node replicas and in the native client. A commit the purge drops is journaled without its operations. Outcomes journaled before the purge still keep theirs.',
+    links: [
+      {
+        href: '/concepts-local-data-purge/#what-the-purge-does',
+        label: 'What the purge does',
+      },
+    ],
+  },
+  {
+    date: '2026-11-14',
     title:
       'A large commit no longer stalls the pull of every replica behind it',
     body: "The live section read every change of up to 64 candidate commits, all tables and all payloads, before it filtered them, and a section never split a commit. A 150 MB import therefore loaded 150 MB per pull for each replica behind it and reset a 128 MB Durable Object on every attempt. The storage now sizes candidate commits in SQL and loads only the changes of covered tables that carry a unit's scope value. The new `limits.maxLiveSectionBytes` (16 MiB by default) cuts a section before the commit that would pass it, and resets the units that a commit larger than the budget reaches, so they bootstrap from the stored rows instead.",
