@@ -508,6 +508,8 @@ describe('createTauriSyncClient', () => {
         () => client.progressSnapshot(),
       ])
         expect(call).toThrow('the native sync client is closed');
+      // A closed client holds no socket: releasing it is not a failure.
+      await client.disconnectRealtime();
       await client.close(); // Disposal remains idempotent.
       expect(calls.length).toBe(before);
     });
@@ -556,6 +558,16 @@ describe('createTauriSyncClient', () => {
       present: false,
       discarded: false,
     });
+    // Preflight already closed the socket; a supervisor releasing it again
+    // during the transition must not be refused.
+    await client.disconnectRealtime();
+    expect(
+      calls.some(
+        (call) =>
+          (call.args.command as { method?: string } | undefined)?.method ===
+          'disconnectRealtime',
+      ),
+    ).toBe(true);
     expect(await client.securityLifecycle()).toBe('preflight');
 
     await client.activateSecurity({

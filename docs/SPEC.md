@@ -3784,7 +3784,10 @@ Construction with `securityPreflight: true` MUST NOT accept an `encryption`
 keyring in the same call. During preflight the host MAY inspect
 `securityLifecycle`, `statusSnapshot`, and `localRevision`; it MAY execute the
 bounded, application-authorized `purgeLocalData` primitive (§7.3.4); and it MAY
-close/shut down the client or set the transport gate (§8.8). It MAY read the
+close/shut down the client, set the transport gate (§8.8), or call
+`disconnectRealtime`. Entering preflight closes the socket, so that call only
+confirms it is closed; it succeeds, as it does on a client that is closed or
+not yet created. It MAY read the
 creation-time authority policy through `authoritySnapshot()` as defined below.
 No other application-data operation is permitted.
 
@@ -6792,23 +6795,27 @@ pinned, never interpreted.
   promise that settles after the attempt, its disconnect and any driven round
   have settled; repeated and reentrant calls share it, and so do calls of the
   installed `close()`.
-- **Supervisor failures latch.** A diagnostics read or disconnect that
-  rejects with a stable code marked `retryable` (`client.leader_handover`,
+- **A refused disconnect does not latch.** When `disconnectRealtime()`
+  rejects, the supervisor counts the socket as released and counts one retry
+  on the ordinary schedule. The snapshot carries the rejection's Syncular code
+  (`unknown` otherwise, never its message) as `disconnectCauseCode` until
+  the next phase `connected`. A socket the client kept open reports
+  `connected` in the client diagnostics, and the supervisor adopts it after
+  the catch-up round, or releases it again while suspended.
+- **Supervisor failures latch.** A diagnostics read that rejects with a stable
+  code marked `retryable` (`client.leader_handover`,
   `client.follower_timeout`) latches nothing: it counts one retry on the
-  ordinary schedule, a failed diagnostics read then starts the supervisor
-  without the snapshot, and `stop()` does not surface it. A routine leader
-  handover therefore never ends realtime in a follower tab. A rejection that is
-  not retryable or carries no stable code, an unreadable diagnostics snapshot
-  of that kind, or a host timer cancel that throws latches
-  phase `unsupported` with `failureCode` `realtime.disconnect_failed`,
-  `realtime.diagnostics_unavailable` or `realtime.cleanup_failed` (§10.3).
-  The supervisor then makes no further attempt and releases any open socket;
-  `online` and foreground reports still drive HTTP rounds. `stop()` rejects
-  with the latest latched code, or with `realtime.cleanup_failed` when only a
-  subscription or cancel threw during stop. The rejection also names every
-  failure of the lifetime in its own field (`cleanupFailureCode`,
-  `diagnosticsFailureCode`, `disconnectCauseCode`) and keeps a cause only as
-  a Syncular code, `unknown` otherwise, never its message. A host recovers by
+  ordinary schedule, the supervisor starts without the snapshot, and `stop()`
+  does not surface it. A routine leader handover therefore never ends realtime
+  in a follower tab. A diagnostics read that rejects without a retryable
+  stable code, or a host timer cancel that throws, latches phase
+  `unsupported` with `failureCode` `realtime.diagnostics_unavailable` or
+  `realtime.cleanup_failed` (§10.3). The supervisor then makes no further
+  attempt and releases any open socket; `online` and foreground reports still
+  drive HTTP rounds. `stop()` rejects with the latest latched code, or with
+  `realtime.cleanup_failed` when only a subscription or cancel threw during
+  stop. The rejection also names every failure of the lifetime in its own
+  field (`cleanupFailureCode`, `diagnosticsFailureCode`). A host recovers by
   closing the client and creating a new one. The installed `close()` closes
   the client after a failed stop too; when both fail it rejects with the stop
   code plus `stopFailureCode` and `closeFailureCode`.
@@ -7566,10 +7573,10 @@ durable local-recovery receipt is malformed or unreadable; non-retryable and
 sanitized before application code], `client.invalid_host_response` [a Worker or native
 command bridge returned a malformed value for a strictly decoded public
 result; non-retryable and sanitized before application code],
-`realtime.disconnect_failed`, `realtime.diagnostics_unavailable`,
-`realtime.cleanup_failed` [§8.4: the TypeScript realtime supervisor latched a
-failed disconnect, an unreadable diagnostics snapshot, or a host timer or
-subscription cancel that threw; client-local, non-retryable, raised by
+`realtime.diagnostics_unavailable`,
+`realtime.cleanup_failed` [§8.4: the TypeScript realtime supervisor latched an
+unreadable diagnostics snapshot, or a host timer or subscription cancel that
+threw; client-local, non-retryable, raised by
 `stop()` and published as the snapshot's `failureCode`],
 `realtime.supervisor_already_installed` [§8.4: a second supervisor was
 installed on one client], `client.realtime_cancelled` [§8.4 — disconnect or close invalidated an

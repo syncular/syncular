@@ -1495,6 +1495,7 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     expect(f.supervisor.snapshot()).toEqual({
       phase: 'background',
       attempt: 1,
+      disconnectCauseCode: 'client.leader_handover',
     });
     f.app.emit('active');
     await settle();
@@ -1503,7 +1504,7 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     await f.supervisor.stop();
   });
 
-  test('a non-retryable diagnostics or disconnect failure still latches', async () => {
+  test('a non-retryable diagnostics failure latches; a refused disconnect retries', async () => {
     const refusal = () =>
       new ClientSyncError('client.worker_failed', 'the worker failed', false);
     const f = lifecycle();
@@ -1523,19 +1524,81 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     const g = lifecycle();
     await g.start();
     await g.next();
+    const disconnect = g.client.disconnectRealtime;
     g.client.disconnectRealtime = async () => {
+      g.client.disconnectRealtime = disconnect;
       throw refusal();
     };
     g.app.emit('background');
     await settle();
-    expect(g.supervisor.snapshot()).toMatchObject({
-      phase: 'unsupported',
-      failureCode: 'realtime.disconnect_failed',
-    });
-    expect(await rejection(g.supervisor.stop())).toMatchObject({
-      code: 'realtime.disconnect_failed',
+    expect(g.supervisor.snapshot()).toEqual({
+      phase: 'background',
+      attempt: 1,
       disconnectCauseCode: 'client.worker_failed',
     });
+    g.app.emit('active');
+    await settle();
+    expect(g.supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+      disconnectCauseCode: 'client.worker_failed',
+    });
+    const syncs = g.counts.sync;
+    expect(await g.next()).toBe(1_000);
+    expect(g.counts.sync).toBe(syncs + 1);
+    expect(g.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(await rejection(g.supervisor.stop())).toBeUndefined();
+  });
+
+  test('a disconnect refused during a protection preflight keeps the retry schedule', async () => {
+    const f = lifecycle();
+    await f.start();
+    await f.next();
+    const disconnect = f.client.disconnectRealtime;
+    f.client.disconnectRealtime = async () => {
+      f.client.disconnectRealtime = disconnect;
+      throw new ClientSyncError(
+        'client.security_preflight_required',
+        'the local replica is in security preflight',
+      );
+    };
+    f.protection.emit('preflight');
+    await settle();
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'protected',
+      attempt: 1,
+      disconnectCauseCode: 'client.security_preflight_required',
+    });
+    f.protection.emit('active');
+    await settle();
+    const syncs = f.counts.sync;
+    expect(await f.next()).toBe(1_000);
+    expect(f.counts.sync).toBe(syncs + 1);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(await rejection(f.supervisor.stop())).toBeUndefined();
+  });
+
+  test('a disconnect refused after a failed connect keeps the retry schedule', async () => {
+    const f = lifecycle();
+    f.failConnect(1);
+    const disconnect = f.client.disconnectRealtime;
+    f.client.disconnectRealtime = async () => {
+      f.client.disconnectRealtime = disconnect;
+      throw new ClientSyncError('client.worker_failed', 'the worker failed');
+    };
+    await f.start();
+    await f.next();
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+      disconnectCauseCode: 'client.worker_failed',
+    });
+    expect(await f.next()).toBe(1_000);
+    expect(f.counts.connect).toBe(2);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(await rejection(f.supervisor.stop())).toBeUndefined();
   });
 
   test('a close reentered by an unsubscribe shares the pending close and its failure', async () => {
@@ -1670,32 +1733,35 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     });
   });
 
-  test('a failed disconnect latches the supervisor closed through a late catch-up', async () => {
+  test('a disconnect refused during a late catch-up keeps the retry schedule', async () => {
     const f = lifecycle();
     const pull = f.blockPull();
     await f.start();
     await f.next();
+    const disconnect = f.client.disconnectRealtime;
     f.client.disconnectRealtime = async () => {
+      f.client.disconnectRealtime = disconnect;
       throw new Error('synthetic-private-disconnect');
     };
     f.app.emit('background');
     await settle();
-    expect(f.supervisor.snapshot()).toMatchObject({
-      phase: 'unsupported',
-      failureCode: 'realtime.disconnect_failed',
-    });
-    f.app.emit('active');
-    expect(f.timers.pending()).toBe(0);
-    pull.resolve();
-    await settle();
-    expect(f.supervisor.snapshot()).toMatchObject({
-      phase: 'unsupported',
-      failureCode: 'realtime.disconnect_failed',
-    });
-    expect(await rejection(f.supervisor.stop())).toMatchObject({
-      code: 'realtime.disconnect_failed',
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'background',
+      attempt: 1,
       disconnectCauseCode: 'unknown',
     });
+    f.app.emit('active');
+    pull.resolve();
+    await settle();
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+      disconnectCauseCode: 'unknown',
+    });
+    expect(await f.next()).toBe(1_000);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(await rejection(f.supervisor.stop())).toBeUndefined();
   });
 
   test('a disconnect failure keeps only a Syncular cause code', async () => {
@@ -1744,19 +1810,20 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
       };
       f.protection.emit('preflight');
       await settle();
-      const error = await rejection(f.supervisor.stop());
-      expect(error).toMatchObject({
-        code: 'realtime.disconnect_failed',
+      const snapshot = f.supervisor.snapshot();
+      expect(snapshot).toEqual({
+        phase: 'protected',
+        attempt: 1,
         disconnectCauseCode,
       });
-      expect(leaks(error, 'synthetic-sensitive')).toBe(false);
-      expect(Object.hasOwn(error as object, 'cause')).toBe(false);
+      expect(leaks(snapshot, 'synthetic-sensitive')).toBe(false);
+      expect(await rejection(f.supervisor.stop())).toBeUndefined();
       expect(f.timers.pending()).toBe(0);
     }
     expect(getterCalls).toBe(0);
   });
 
-  test('stop, disconnect and close failures combine into one named rejection', async () => {
+  test('stop and close failures combine into one named rejection', async () => {
     const f = lifecycle();
     throwingUnsubscribe(f.client);
     f.client.disconnectRealtime = async () => {
@@ -1779,12 +1846,13 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     expect(client.close()).toBe(first);
     const error = await rejection(first);
     expect(error).toMatchObject({
-      code: 'realtime.disconnect_failed',
-      stopFailureCode: 'realtime.disconnect_failed',
-      disconnectCauseCode: 'client.leader_handover',
+      code: 'realtime.cleanup_failed',
+      stopFailureCode: 'realtime.cleanup_failed',
       cleanupFailureCode: 'realtime.cleanup_failed',
       closeFailureCode: 'client.worker_failed',
     });
+    // A refused disconnect is not a supervisor failure.
+    expect(Object.hasOwn(error as object, 'disconnectCauseCode')).toBe(false);
     expect(leaks(error, 'synthetic-private')).toBe(false);
     expect(Object.hasOwn(error as object, 'cause')).toBe(false);
     expect(f.counts.close).toBe(1);
@@ -1802,7 +1870,7 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     expect(await rejection(client.close())).toBe(failure);
   });
 
-  test('diagnostics, disconnect and close failures keep distinct codes', async () => {
+  test('diagnostics and close failures keep distinct codes', async () => {
     const f = lifecycle();
     const read = deferred();
     f.client.diagnosticsSnapshot = async () => {
@@ -1827,12 +1895,12 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     await settle();
     const error = await rejection(client.close());
     expect(error).toMatchObject({
-      code: 'realtime.disconnect_failed',
-      stopFailureCode: 'realtime.disconnect_failed',
+      code: 'realtime.diagnostics_unavailable',
+      stopFailureCode: 'realtime.diagnostics_unavailable',
       diagnosticsFailureCode: 'realtime.diagnostics_unavailable',
-      disconnectCauseCode: 'client.worker_failed',
       closeFailureCode: 'unknown',
     });
+    expect(Object.hasOwn(error as object, 'disconnectCauseCode')).toBe(false);
     expect(leaks(error, 'synthetic-private')).toBe(false);
   });
 });

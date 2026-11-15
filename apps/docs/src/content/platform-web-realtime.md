@@ -92,8 +92,15 @@ const state = realtimeSupervisorSnapshot(handle);
 // protected | unsupported | stopped
 ```
 
-The snapshot holds only the phase, the attempt count, and the library-owned
-retry delay. Transport errors, URLs, identities, and headers never reach it.
+The snapshot holds only the phase, the attempt count, the library-owned
+retry delay, a latched `failureCode`, and `disconnectCauseCode`. Transport
+errors, URLs, identities, and headers never reach it.
+
+When `disconnectRealtime()` rejects, the supervisor counts the socket as
+released and schedules a retry. `disconnectCauseCode` names the rejection's
+Syncular code, or `unknown`, until the next `connected`; report it as a
+support code. A socket the client kept open shows up as `connected` in the
+client diagnostics, and the supervisor adopts it after a catch-up round.
 Only `connected` means the socket carries the rounds; in every other phase
 they go over HTTP. An `attempt` of 1 or more means the last socket attempt
 failed, so a status line can say that sync runs without realtime.
@@ -114,7 +121,6 @@ with a `RealtimeSupervisorError` carrying that code:
 
 | `failureCode` | Cause |
 |---|---|
-| `realtime.disconnect_failed` | `disconnectRealtime()` rejected with a non-retryable error; `disconnectCauseCode` holds its Syncular code or `unknown` |
 | `realtime.diagnostics_unavailable` | The first `diagnosticsSnapshot()` read failed with a non-retryable error |
 | `realtime.cleanup_failed` | A timer cancel or signal unsubscribe threw |
 
@@ -128,7 +134,7 @@ try {
   await handle.close();
 } catch (error) {
   if (error instanceof RealtimeSupervisorError) {
-    reportSyncFailure(error.code, error.disconnectCauseCode);
+    reportSyncFailure(error.code);
   }
   throw error;
 }

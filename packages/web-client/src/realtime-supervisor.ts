@@ -48,12 +48,16 @@ export interface RealtimeSupervisorSnapshot {
   readonly retryDelayMs?: number;
   /** The latched failure of phase `unsupported` (or `stopped`). */
   readonly failureCode?: RealtimeSupervisorFailureCode;
+  /**
+   * The Syncular code (or `unknown`) the latest refused
+   * `disconnectRealtime()` rejected with, kept until the next `connected`.
+   */
+  readonly disconnectCauseCode?: string;
 }
 
 /** SPEC §10.3: client-local supervisor failures, never on the wire. */
 export type RealtimeSupervisorFailureCode =
   | 'realtime.diagnostics_unavailable'
-  | 'realtime.disconnect_failed'
   | 'realtime.cleanup_failed';
 
 export interface RealtimeSupervisorOptions {
@@ -262,8 +266,6 @@ export class RealtimeSupervisorError extends ClientSyncError {
   declare readonly code: RealtimeSupervisorFailureCode;
   declare readonly cleanupFailureCode?: 'realtime.cleanup_failed';
   declare readonly diagnosticsFailureCode?: 'realtime.diagnostics_unavailable';
-  /** The code the client's `disconnectRealtime` rejected with. */
-  declare readonly disconnectCauseCode?: string;
   /** Set by the installed `close()` when the client close failed as well. */
   declare readonly stopFailureCode?: RealtimeSupervisorFailureCode;
   declare readonly closeFailureCode?: string;
@@ -285,8 +287,9 @@ export class RealtimeSupervisorError extends ClientSyncError {
  * exponential jitter, and the backoff survives offline, background and
  * protected suspensions. While no socket is connected, each failed connect,
  * each host `online` report and each foreground return drives one HTTP round
- * (§1.8). A disconnect, diagnostics or cleanup failure latches phase
- * `unsupported` with its `failureCode`, and `stop()` rejects with it.
+ * (§1.8). A refused disconnect counts one retry and names its cause in the
+ * snapshot. A diagnostics or cleanup failure latches phase `unsupported` with
+ * its `failureCode`, and `stop()` rejects with it.
  */
 export class RealtimeSupervisor {
   readonly #client: RealtimeSupervisorClient;
@@ -330,8 +333,8 @@ export class RealtimeSupervisor {
   readonly #failures: {
     cleanupFailureCode?: 'realtime.cleanup_failed';
     diagnosticsFailureCode?: 'realtime.diagnostics_unavailable';
-    disconnectCauseCode?: string;
   } = {};
+  #disconnectCause: string | undefined;
   #snapshot: RealtimeSupervisorSnapshot = { phase: 'idle', attempt: 0 };
 
   constructor(
@@ -487,7 +490,11 @@ export class RealtimeSupervisor {
       });
   }
 
-  #publish(snapshot: RealtimeSupervisorSnapshot): void {
+  #publish(next: RealtimeSupervisorSnapshot): void {
+    const snapshot =
+      this.#disconnectCause === undefined
+        ? next
+        : { ...next, disconnectCauseCode: this.#disconnectCause };
     if (JSON.stringify(this.#snapshot) === JSON.stringify(snapshot)) return;
     this.#snapshot = Object.freeze(snapshot);
     for (const listener of this.#listeners) {
@@ -639,6 +646,7 @@ export class RealtimeSupervisor {
         this.#connected = true;
         this.#attempt = 0;
         this.#delayMs = 0;
+        this.#disconnectCause = undefined;
         this.#publish({ phase: 'connected', attempt: 0 });
         return;
       }
@@ -674,9 +682,11 @@ export class RealtimeSupervisor {
       resolve(this.#client.disconnectRealtime()),
     )
       .catch((error: unknown) => {
-        if (retryable(error)) return this.#retry();
-        this.#failures.disconnectCauseCode = causeCode(error);
-        this.#fail('realtime.disconnect_failed');
+        // The socket counts as released: one the client kept open reports
+        // `connected` in its diagnostics and is adopted after a catch-up.
+        this.#disconnectCause = causeCode(error);
+        this.#retry();
+        this.#publish(this.#snapshot);
       })
       .finally(() => {
         this.#disconnecting = undefined;

@@ -1200,6 +1200,8 @@ test('close terminates the worker and rejects later calls', async () => {
   await handle.close();
   await handle.close(); // idempotent
   await expectRejectsWithCode(handle.query('SELECT 1'), WORKER_FAILED_CODE);
+  // A closed handle holds no socket: releasing it is not a failure.
+  await handle.disconnectRealtime();
 });
 
 for (const [name, attempts, delays, errorCode] of [

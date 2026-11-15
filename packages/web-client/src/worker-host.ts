@@ -828,7 +828,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('connectRealtime', []);
   }
 
+  /** A closed handle holds no socket, so its disconnect succeeds. */
   disconnectRealtime(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
     return this.#call('disconnectRealtime', []);
   }
 

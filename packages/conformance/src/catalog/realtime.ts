@@ -432,4 +432,27 @@ export const realtimeScenarios: readonly Scenario[] = [
       );
     },
   },
+
+  {
+    name: 'realtime/disconnect-is-allowed-during-security-preflight',
+    specRefs: ['§8.4', '§5.11'],
+    requires: ['realtime'],
+    async run(ctx) {
+      const handle = await connectedClient(ctx, 'preflight', 'preflight');
+      await handle.api.connectRealtime();
+      await handle.api.beginSecurityPreflight();
+      // Preflight closed the socket; a supervisor releasing it again during
+      // the transition is not refused, and repeating it is idempotent.
+      await handle.api.disconnectRealtime();
+      await handle.api.disconnectRealtime();
+      await handle.api.activateSecurity();
+      await handle.api.connectRealtime();
+      await syncIdle(handle);
+      checkEqual(
+        (await handle.api.diagnosticsSnapshot?.())?.host.realtime,
+        'connected',
+        'the socket reconnects after activation',
+      );
+    },
+  },
 ];

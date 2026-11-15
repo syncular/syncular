@@ -663,6 +663,7 @@ pub fn dispatch<T: Transport>(
                 | "beginSecurityPreflight"
                 | "activateSecurity"
                 | "setTransportEnabled"
+                | "disconnectRealtime"
                 | "purgeLocalData"
                 | "previousVersionDiscard"
                 | "localRevision"
@@ -1510,7 +1511,10 @@ pub fn dispatch<T: Transport>(
             Ok(json!({}))
         }
         "disconnectRealtime" => {
-            need_client(client)?.disconnect_realtime(transport);
+            // A shut-down or not yet created client holds no socket.
+            if let Some(running) = client.as_mut() {
+                running.disconnect_realtime(transport);
+            }
             Ok(json!({}))
         }
         "setPresence" => {
@@ -2689,7 +2693,55 @@ mod tests {
         )
         .expect("authorized cleanup is allowed during preflight");
         assert_eq!(discarded, json!({ "present": false, "discarded": false }));
+        // Preflight closed the socket; releasing it again is allowed.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "disconnectRealtime",
+            &json!({}),
+        )
+        .expect("disconnect is allowed during preflight");
         assert!(client.as_ref().is_some_and(SyncClient::security_preflight));
+    }
+
+    #[test]
+    fn disconnect_without_a_client_succeeds() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "disconnectRealtime",
+            &json!({}),
+        )
+        .expect("a missing client holds no socket");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "disconnectRealtime",
+            &json!({}),
+        )
+        .expect("a shut-down client holds no socket");
     }
 
     #[test]

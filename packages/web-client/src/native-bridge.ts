@@ -417,6 +417,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         'beginSecurityPreflight',
         'activateSecurity',
         'setTransportEnabled',
+        'disconnectRealtime',
         'purgeLocalData',
         'previousVersionDiscard',
         'localRevision',
@@ -1177,7 +1178,9 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     await this.command('connectRealtime', {});
   }
 
+  /** A closed client holds no socket, so its disconnect succeeds. */
   async disconnectRealtime(): Promise<void> {
+    if (this.#closed) return;
     await this.command('disconnectRealtime', {});
   }
 

@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-15',
+    title: 'A refused realtime disconnect no longer ends realtime',
+    body: 'When `disconnectRealtime()` rejects, the realtime supervisor now counts the socket as released and reconnects on its retry schedule, followed by a catch-up round. Before, it latched phase `unsupported` with `realtime.disconnect_failed` and made no further attempt, so a page that stayed online and visible received no round until a reload. The snapshot names the refusal as `disconnectCauseCode` until the next `connected`. The Tauri, React Native and other native hosts no longer refuse `disconnectRealtime` during security preflight or once the client is shut down, and the browser handle accepts it after `close()`.',
+    links: [
+      {
+        href: '/platform-web-realtime/',
+        label: 'Browser: realtime & lifecycle',
+      },
+    ],
+  },
+  {
     date: '2026-11-14',
     title: 'A purge also clears earlier outcomes of the purged rows',
     body: '`purgeLocalData` rewrites the outcome journal entries recorded before it that name a purged row or carry a matching value: an earlier rejection or conflict loses its operations, rejection details and conflict row, and keeps its commit id, status and codes. With the 0.70.2 file rewrite, a purged row leaves no value in the replica file.',
