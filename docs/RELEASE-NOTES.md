@@ -1,5 +1,42 @@
 # Syncular release notes
 
+## 0.71.0 release notes
+
+A refused `disconnectRealtime()` no longer ends realtime for the page
+(SYNCULAR-SUPERVISOR-LATCH-001). The realtime supervisor latched phase
+`unsupported` with `realtime.disconnect_failed` on such a refusal and then
+made no further connect attempt; only a host `online` or foreground report
+still drove a round. A page that stayed visible and online sat on stale data,
+or behind its splash during a first load, until it was reloaded. The supervisor
+now counts the socket as released and counts one retry on the ordinary
+schedule: the next connect and its catch-up round follow after the retry delay.
+A socket the client kept open reports `connected` in the client diagnostics
+and is adopted after the catch-up round (SPEC §8.4).
+
+The snapshot of a supervisor whose disconnect was refused carries
+`disconnectCauseCode`, the rejection's Syncular code or `unknown`, until the
+next phase `connected` (SYNCULAR-SUPERVISOR-LATCH-CAUSE-001).
+
+Two refusals came from normal operation and are gone. The native command layer
+(Rust, used by Tauri, React Native, Swift, Kotlin and Flutter) and the
+TypeScript native bridge refused `disconnectRealtime` during security
+preflight with `client.security_preflight_required`, so a supervisor that
+released its socket when the session locked latched. Entering preflight closes
+the socket, and `disconnectRealtime` is now permitted then (SPEC §5.11). The
+native command layer refused it with `client.failed` while no client existed
+(after `shutdown`, before a replacing `create`); it now succeeds. The native
+bridge and the browser handle resolve it after `close()`. A conformance
+scenario runs the preflight case on both cores.
+
+**Upgrade notes.** `realtime.disconnect_failed` is removed from
+`RealtimeSupervisorFailureCode`, and `RealtimeSupervisorError` no longer has
+`disconnectCauseCode`; `stop()` and the installed `close()` no longer
+reject for a refused disconnect. Drop any branch that matched the code. A host
+that wrapped `disconnectRealtime` to record the refusal's code reads
+`realtimeSupervisorSnapshot(client).disconnectCauseCode` instead. Phase
+`unsupported` with a `failureCode` now means only
+`realtime.diagnostics_unavailable` or `realtime.cleanup_failed`.
+
 ## 0.70.3 release notes
 
 `purgeLocalData` now also rewrites the outcome journal entries recorded before
