@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.71.1 release notes
+
+A member who loses access while a bootstrap runs now ends with the unit
+`revoked` instead of a failed drive (SYNCULAR-UNIT-REVOKED-STATUS-001). The
+server builds a response with a segment reference, the access changes, and the
+segment endpoint refuses the download with `sync.forbidden` because it
+re-authorizes every download (SPEC §5.5). Both cores failed the drive with that
+code and scheduled no further round, so the app showed a failed sync until
+something else drove one. They now apply nothing of that unit's section, leave
+its `SUB_END` unpersisted, and run the next round in the same
+`syncUntilIdle` drive; the server revokes the unit there and the client purges
+it as for any revocation (§3.3). A server that keeps refusing ends the drive on
+its round budget. A conformance scenario runs the case on both cores.
+
+A unit with status `failed` and `sync.scope_revoked` comes only from the
+fail-closed rule of §3.3 and §5.6: the generated schema has no local scope
+column for one of the unit's scope variables. Access changes never produce it.
+
+**Upgrade notes.** None. A drive that failed with `sync.forbidden` from a
+segment download now resolves and reports the unit in `revoked`.
+
 ## 0.71.0 release notes
 
 A refused `disconnectRealtime()` no longer ends realtime for the page
