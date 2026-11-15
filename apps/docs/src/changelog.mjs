@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-15',
+    title: 'Access lost during a bootstrap revokes the unit',
+    body: "When access changes after the server answered with a segment reference and before the client downloads it, the segment endpoint refuses the download with `sync.forbidden`. Both cores now apply nothing of that unit's section and run the next round in the same drive, which revokes the unit. Before, the drive failed with `sync.forbidden` and no further round ran until the host drove one, so a member who lost access during the first bootstrap saw a failed sync.",
+    links: [
+      {
+        href: '/concepts-scopes/',
+        label: 'Scopes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-15',
     title: 'A refused realtime disconnect no longer ends realtime',
     body: 'When `disconnectRealtime()` rejects, the realtime supervisor now counts the socket as released and reconnects on its retry schedule, followed by a catch-up round. Before, it latched phase `unsupported` with `realtime.disconnect_failed` and made no further attempt, so a page that stayed online and visible received no round until a reload. The snapshot names the refusal as `disconnectCauseCode` until the next `connected`. The Tauri, React Native and other native hosts no longer refuse `disconnectRealtime` during security preflight or once the client is shut down, and the browser handle accepts it after `close()`.',
     links: [

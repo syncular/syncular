@@ -19,4 +19,6 @@ export class TransportFaults extends TestkitTransportFaults {
   dropNextUrlFetches = 0;
   /** Corrupt the next signed-URL fetch's bytes (§5.1 tamper). */
   corruptNextUrlFetch = false;
+  /** Run once before the next direct segment download reaches the server. */
+  beforeNextSegmentDownload: (() => Promise<void>) | undefined;
 }

@@ -635,6 +635,9 @@ export class ScenarioContext {
             faults.dropNextSegmentRequests -= 1;
             throw new TransportFault('injected: segment request lost');
           }
+          const before = faults.beforeNextSegmentDownload;
+          faults.beforeNextSegmentDownload = undefined;
+          await before?.();
           const result = await route.server.downloadSegment(
             actorId,
             request.segmentId,

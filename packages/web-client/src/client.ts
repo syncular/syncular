@@ -5523,13 +5523,29 @@ export class SyncClient {
               const pending = prefetched.get(frame);
               prefetched.delete(frame);
               if (pending !== undefined) reporting = frame;
-              bytes = await (pending ??
-                this.#downloadSegment(
-                  frame,
-                  section.unit.scopes,
-                  (bytesReceived) => this.#progress.update({ bytesReceived }),
-                  signal,
-                ));
+              try {
+                bytes = await (pending ??
+                  this.#downloadSegment(
+                    frame,
+                    section.unit.scopes,
+                    (bytesReceived) => this.#progress.update({ bytesReceived }),
+                    signal,
+                  ));
+              } catch (error) {
+                // §5.5: access changed since the response. The unit stays
+                // catching up with its cursor unpersisted, and the next
+                // round's SUB_START settles it (revoked or a new bootstrap).
+                // A host downloader may throw any error carrying the code.
+                if (
+                  typeof error !== 'object' ||
+                  error === null ||
+                  !('code' in error) ||
+                  error.code !== 'sync.forbidden'
+                )
+                  throw error;
+                section.skip = true;
+                break;
+              }
               this.#progress.update({ phase: 'import' });
             } else {
               bytes = frame.payload;

@@ -349,6 +349,8 @@ struct SectionStart {
 
 enum SectionError {
     FailClosed,
+    /// §5.5: the server refused a segment with `sync.forbidden`.
+    Refused,
     Abort(String, String),
     Transport(TransportError),
 }
@@ -9219,7 +9221,15 @@ impl SyncClient {
                                     },
                                     &mut on_progress,
                                 )
-                                .map_err(|e| self.segment_fetch_failed(e))?
+                                .map_err(|e| {
+                                    // §5.5: access changed since the response;
+                                    // the next round's SUB_START settles the unit.
+                                    if e.code == "sync.forbidden" {
+                                        SectionError::Refused
+                                    } else {
+                                        self.segment_fetch_failed(e)
+                                    }
+                                })?
                         };
                         // §5.4: the descriptor's byteLength caps the body before
                         // §5.1 verifies the content address; the client discards
@@ -9291,6 +9301,8 @@ impl SyncClient {
         })();
         match applied {
             Ok(()) => {}
+            // The unit keeps catching up with its cursor unpersisted.
+            Err(SectionError::Refused) => return Ok(()),
             Err(SectionError::FailClosed) => {
                 // §5.6: the failure is unit-local; the rest of the response
                 // still applies and the failed unit leaves the list.

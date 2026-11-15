@@ -587,3 +587,39 @@ test('batched image construction converges cold and warm clients with all row ve
   }
   server.storage.db.close();
 }, 60_000);
+
+test('a segment refused because access changed ends the unit revoked, not failed (§5.5)', async () => {
+  const server = makeServer();
+  server.limits.inlineSegmentMaxBytes = 0; // force SEGMENT_REF
+  const seeder = await makeClient(server, { clientId: 'seeder' });
+  seeder.client.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'task') },
+  ]);
+  await seeder.client.sync();
+
+  const c = await makeClient(server, { clientId: 'member', actorId: 'member' });
+  const id = c.client.subscribe({ project_id: 'p1' });
+  // The server builds the response, then the member loses p1 before the
+  // client downloads the segment the response names.
+  let open!: () => void;
+  c.faults.holdResponseOnce = {
+    opened: new Promise<void>((resolve) => (open = resolve)),
+    onHeld: () => {
+      server.allowed.member = { project_id: ['p2'] };
+      open();
+    },
+  };
+  const result = await c.client.syncUntilIdle();
+  expect(result.revoked).toEqual([id]);
+  expect(result.failed).toEqual([]);
+  expect(c.client.units()[0]).toMatchObject({
+    status: 'revoked',
+    reasonCode: 'sync.scope_revoked',
+  });
+  expect(c.client.diagnosticsSnapshot().units).toMatchObject({
+    revoked: 1,
+    failed: 0,
+  });
+  expect(c.client.progressSnapshot()?.state).toBe('complete');
+  expect(tableRows(c.db, 'tasks')).toEqual([]);
+});

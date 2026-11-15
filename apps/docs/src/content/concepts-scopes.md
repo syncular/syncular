@@ -52,6 +52,8 @@ Syncular intersects each requested variable on its own.
 ::caption[A revoked unit stays in the local registry with status `revoked` until the app subscribes to its scope map again or releases it. [SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract) defines the purge contract.]
 :::
 
+Access can also change while a bootstrap runs, after the server answered with a segment reference and before the client downloads it. The segment endpoint re-authorizes every download and refuses that one with `sync.forbidden`. The client applies nothing of the unit's section, fails no round, and runs the next round in the same `syncUntilIdle` drive; the server revokes the unit there. A unit ends `failed` only when the generated schema has no local scope column for one of its scope variables.
+
 ## resolveScopes
 
 A server has one resolver. The server calls it at most once per request and memoizes the result. It returns every scope value the actor holds, across all tables.

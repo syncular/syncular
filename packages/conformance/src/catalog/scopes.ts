@@ -1134,6 +1134,41 @@ export const scopeScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'scopes/segment-refused-after-revocation-ends-the-unit-revoked',
+    specRefs: ['§5.5', '§3.3'],
+    requires: ['scope-authorization', 'segment-refs', 'server-limits'],
+    server: { limits: { inlineSegmentMaxBytes: 0 } },
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('member', { project_id: ['p1'] });
+      await seedTasks(ctx, [task('t1', 'p1', 'external')]);
+      const member = await ctx.newClient({
+        actorId: 'member',
+        clientId: 'member',
+        allowed: { project_id: ['p1'] },
+      });
+      // The member loses p1 after the server answered with the segment
+      // reference and before the client downloads it.
+      member.faults.beforeNextSegmentDownload = () =>
+        ctx.server.setAllowedScopes('member', { project_id: ['p2'] });
+      const id = await member.api.subscribe({ project_id: 'p1' });
+      const outcome = await member.api.syncUntilIdle();
+      check(outcome.ok, 'the refused segment fails no drive');
+      checkEqual(
+        member.directDownloads.length,
+        1,
+        'the client fetched the referenced segment once',
+      );
+      const unit = (await member.api.units()).find((u) => u.id === id);
+      checkEqual(unit?.status, 'revoked', 'the next round revokes the unit');
+      checkEqual(
+        await member.api.readRows('tasks'),
+        [],
+        'no row of the refused segment is applied',
+      );
+    },
+  },
+
+  {
     name: 'scopes/scope-move-keeps-the-row-in-either-section-order',
     specRefs: ['§2.2', '§4.5', '§3.4'],
     async run(ctx) {

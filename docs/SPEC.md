@@ -2850,6 +2850,14 @@ for clients without signed-URL support.
   status, or resolution failure ⇒ HTTP
   403 `sync.forbidden`. A segment reference obtained earlier is not a
   bearer capability; only signed URLs are (deliberately, with short TTL).
+- A client whose download is refused with `sync.forbidden` MUST NOT fail
+  the round for it: access changed after the server built the response.
+  The client applies no further segment of that unit's section, does not
+  persist the section's `SUB_END`, and applies the rest of the response.
+  The unit stays catching up, so the drive runs another round, whose
+  `SUB_START` settles the unit (`revoked` per §3.3, or a fresh bootstrap
+  under the changed grant). A server that keeps refusing ends the drive on
+  its round budget (§7.8).
 - A server MAY eventually *forget* an expired segment entirely (object
   stores garbage-collect); from that point the segment is
   indistinguishable from never-existing and `sync.not_found` applies —
