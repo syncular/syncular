@@ -96,7 +96,7 @@ See [Subscriptions & the outbox](/concepts-subscriptions/#a-unit).
 
 ### Do give a table encrypted with a key some readers lack its own variable
 
-When one scope variable spans a plaintext table and a table encrypted with a key that only some readers hold, a reader without the key receives the encrypted rows with every unit it registers on that variable. Its rounds fail with `client.encryption_key_missing`, `details.table` and `details.keyId` name the table and the key id, and its units stay `bootstrapping`. Give the encrypted table its own scope variable and register units on it only on devices that hold its key.
+When one scope variable spans a plaintext table and a table encrypted with a key that only some readers hold, a reader without the key receives the encrypted rows with every unit it registers on that variable. Its rounds fail with `client.encryption_key_missing`, `details.table` and `details.keyId` name the table and the key id, and its units stay `bootstrapping`. Give the encrypted table its own scope variable and register units on it only on devices that hold its key, or set `missingKey: 'seal'` on the keyring ([Rows under a key the device lacks](/concepts-encryption/#rows-under-a-key-the-device-lacks)).
 
 See [Client-side encryption](/concepts-encryption/#a-protected-value-shares-a-row-with-shared-data).
 
@@ -111,6 +111,12 @@ See [Subscriptions & the outbox](/concepts-subscriptions/).
 Units survive a restart. An app that registers one unit per value it reads from synced rows (one unit per pinned ruleset) and releases only the units it registered in the same process keeps every unit whose value disappeared while the app was closed: each one still travels in the registration list and still receives rows. After `subscribeMany` with the current set, unsubscribe every explicit unit of that variable that the set does not contain.
 
 See [Subscriptions & the outbox](/concepts-subscriptions/#what-a-unit-holds).
+
+### Do release a window base the app stopped claiming
+
+The client persists every window in the replica, so a window serves an offline launch before any view claims it again. A live query's coverage claim changes only the bases it names; a base that no claim of the running app names keeps its units registered for the life of the replica, and `rebootstrapLocalData` bootstraps them again. When an app version stops using a base, call `setWindow(base, [])` for it once at startup.
+
+See [Windowing](/concepts-windowing/).
 
 ### Don't assume a new row starts at version 1
 
