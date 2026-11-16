@@ -1,5 +1,35 @@
 # Syncular release notes
 
+## 0.72.2 release notes
+
+An image import transaction now holds at least 1,024 rows and is sized to
+250 ms (SYNCULAR-WORKER-READ-BEHIND-APPLY-001, SPEC §5.3). 0.72.1 sized each
+transaction after the first to the rows the one before applied in 100 ms. A
+commit costs tens of milliseconds whatever its row count, so that rule shrank
+transactions to a few hundred rows, and with OPFS in memory to 22 to 98 rows.
+Measured through a web app's own worker in headless Chromium, on a catalogue of
+114,007 codes (a 424 MB image with two secondary indexes and an FTS5
+projection) and 87,442 relations:
+
+| Rule | OPFS on disk | OPFS in memory |
+|---|---|---|
+| 0.72.0, doubling | 4.3 s + 1.8 s, transactions up to 1.79 s | 19 s for the codes, up to 9.0 s |
+| 0.72.1, 100 ms | 6.0 s + 4.2 s, up to 185 ms | more than 140 s for the codes |
+| 0.72.2, 250 ms, 1,024-row floor | 3.0 s + 1.2 s, up to 446 ms | 64 s for the codes, up to 881 ms |
+
+OPFS sits in memory in a private window and in an ephemeral browser profile,
+such as a Playwright `browser.newContext()`; there each write slows as the file
+grows. Measure import throughput with a persistent profile
+(`chromium.launchPersistentContext`).
+
+A live query whose first read answers with no rows while coverage is pending
+now publishes that answer with its revision and `phase: 'loading'`. The store
+kept the unread snapshot instead, with `revision` undefined, so a host could
+not tell an answered empty read from one still waiting.
+
+**Upgrade notes.** None. A live query renders once more when its first read is
+empty and incomplete.
+
 ## 0.72.1 release notes
 
 A local read during a SQLite image import now waits for about one 100 ms

@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-11-16',
+    title: 'Image import transactions hold at least 1,024 rows',
+    body: '0.72.1 sized each image transaction after the first to 100 ms. A commit costs tens of milliseconds whatever its row count, so the rule shrank transactions to a few hundred rows, and with OPFS in memory to under 100: a 114,007-row catalogue took 6.0 s on disk and more than 140 s in memory, against 4.3 s and 19 s with 0.72.0. A transaction now holds at least 1,024 rows and is sized to 250 ms. The same import takes 3.0 s on disk with transactions of up to 345 ms.',
+    links: [
+      {
+        href: '/concepts-bootstrap/',
+        label: 'Bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-11-16',
+    title: 'Live queries publish the revision of an empty first read',
+    body: "A live query whose first read answered with no rows while coverage was pending kept the unread snapshot, with `revision` undefined, so a host could not tell an answered empty read from one still waiting. The store now publishes that answer once with its revision and `phase: 'loading'`.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/',
+        label: 'React reads and writes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-16',
     title: 'Image imports size transactions by time',
     body: 'A SQLite image imported in transactions that doubled from 1,024 to 65,536 rows. Rows with an FTS5 projection over long text cost about 550 ms per 1,024 rows, so later transactions held the worker for seconds and a local read waited up to 7.4 s. Both cores now size each transaction after the first from the one before: at most twice its rows, and at most the rows it applied per 100 ms from start to commit. Cheap rows still double until a transaction reaches 100 ms.',
     links: [
