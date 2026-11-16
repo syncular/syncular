@@ -8073,30 +8073,39 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
 }
 
 #[test]
-fn image_chunks_shrink_to_the_rows_the_chunk_before_applied_per_100_ms() {
-    let mut client = client();
-    client.image_chunk_ms.set(Some(400.0));
-    let image = Connection::open_in_memory().unwrap();
-    image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
-        WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1364)
-        INSERT INTO tasks SELECT printf('%05d',x),'p1',1 FROM n;
-        CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
-        INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1364);").unwrap();
-    let table = client.schema.table("tasks").unwrap().clone();
-    let scopes = vec![("project_id".into(), vec!["p1".into()])];
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = seen.clone();
-    client.progress.start();
-    let _subscription = client
-        .progress
-        .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
-    assert!(matches!(
-        client.apply_sqlite_image(&image, &table, true, &scopes, "", 1364, 7, "digest"),
-        Ok(1364)
-    ));
-    // 400 ms per chunk: 1,024 rows, then 1,024 × 100 / 400 = 256, 64, 16, 4.
-    assert_eq!(client.drain_change_batches().len(), 5);
-    assert_eq!(*seen.lock().unwrap(), vec![0, 1024, 1280, 1344, 1360, 1364]);
+fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
+    // 1,024 rows, then 1,024 × 250 / 128 = 2,000 and 2,000 × 250 / 128 =
+    // 3,906; at 400 ms, 1,024 × 250 / 400 = 640 rows stays at the floor.
+    for (chunk_ms, total, expected) in [
+        (
+            128.0,
+            8000,
+            vec![0, 1024, 2048, 3024, 4048, 5072, 6096, 6930, 7954, 8000],
+        ),
+        (400.0, 3000, vec![0, 1024, 2048, 3000]),
+    ] {
+        let mut client = client();
+        client.image_chunk_ms.set(Some(chunk_ms));
+        let image = Connection::open_in_memory().unwrap();
+        image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+            WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{total})
+            INSERT INTO tasks SELECT printf('%05d',x),'p1',1 FROM n;
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',{total});")).unwrap();
+        let table = client.schema.table("tasks").unwrap().clone();
+        let scopes = vec![("project_id".into(), vec!["p1".into()])];
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        client.progress.start();
+        let _subscription = client
+            .progress
+            .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
+        assert!(matches!(
+            client.apply_sqlite_image(&image, &table, true, &scopes, "", total, 7, "digest"),
+            Ok(applied) if i64::from(applied) == total
+        ));
+        assert_eq!(*seen.lock().unwrap(), expected);
+    }
 }
 
 #[test]

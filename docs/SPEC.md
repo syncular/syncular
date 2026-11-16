@@ -2600,9 +2600,9 @@ matching rule, same `asOfCommitSeq`). Consequences, all normative:
 
 **Application contract** (the §5.6 rules, specialized): the client
 applies the image in **chunks**, one local transaction each: the first
-chunk holds 1,024 rows. Each later chunk holds at least one row and at most
+chunk holds 1,024 rows. Each later chunk holds at least 1,024 rows, at most
 twice the rows of the chunk before, at most 65,536 rows, and at most the rows
-the chunk before applied per 100 ms of its duration, measured on a monotonic
+the chunk before applied per 250 ms of its duration, measured on a monotonic
 clock from the chunk's start to its `COMMIT`. While local writes to the
 table need replay (§7.1), a chunk holds at most 1,024 rows. The §5.6
 fresh-bootstrap first-page clear runs in the first transaction (an image is always
@@ -2668,16 +2668,21 @@ file's pages, and an attached file would split the atomic commit, the FTS
 triggers and the outbox across files.
 
 DECISION (2026-11-16): a chunk's duration bounds how long a local read waits,
-so the chunk size follows the duration of the chunk before. A catalogue whose
-codes table carries an FTS5 projection imported 114,007 rows in headless
-Chromium at about 550 ms per 1,024 rows, because the projection's triggers
-tokenize every row's search text. Row-count doubling took that import to
-transactions of 1.1, 2.3 and 4.5 s, and a `querySnapshot` sent during the
-import waited up to 7.4 s. With the 100 ms rule the second chunk holds about
-186 rows, and a read waits for at most one chunk. Cheaper rows double until
-a chunk takes 100 ms: at the 2026-11-12 rate of 367 ms per 32,768 rows, chunks
-level off near 8,900 rows. The duration includes the `COMMIT`, because FTS5 writes its
-pending terms when the transaction commits.
+so the chunk size follows the duration of the chunk before. The duration
+includes the `COMMIT`, because FTS5 writes its pending terms when the
+transaction commits. A web app's catalogue of 114,007 codes (a 424 MB image,
+two secondary indexes and an FTS5 projection) and 87,442 relations was
+imported through the app's own worker in headless Chromium with OPFS on disk.
+Row-count doubling took 4.3 s and 1.8 s, with transactions of up to 1.79 s. A
+100 ms budget with no floor took 6.0 s and 4.2 s: a commit costs tens of
+milliseconds whatever its row count, so the rule shrank chunks to a few
+hundred rows. A 250 ms budget with a 1,024-row floor took 3.0 s and 1.2 s,
+with transactions of up to 345 ms and 446 ms. With OPFS in memory (an
+ephemeral browser profile or a private window), each write slows as the file
+grows: doubling took 19 s with transactions of up to 9.0 s, the 100 ms rule
+took more than 140 s in chunks of 22 to 98 rows, and the 250 ms rule took
+64 s with transactions of up to 881 ms. The floor bounds the commit count at
+one per 1,024 rows on any storage.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version

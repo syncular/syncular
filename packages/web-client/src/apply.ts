@@ -588,10 +588,10 @@ export async function applySqliteSegment(
     };
     let [boundary, where, params] = range(undefined, 1024);
     let applied = 0;
-    // §5.3: the first chunk holds 1,024 rows. A later chunk holds at most
-    // twice the rows of the one before, at most 65,536, and at most the rows
-    // the one before applied per 100 ms from its start to its COMMIT; a
-    // replaying chunk holds one statement.
+    // §5.3: the first chunk holds 1,024 rows. A later chunk holds at least
+    // 1,024 rows, at most twice the rows of the one before, at most 65,536,
+    // and at most the rows the one before applied per 250 ms from its start
+    // to its COMMIT; a replaying chunk holds one statement.
     for (let size = 1024; ;) {
       if (options.isCurrent?.() === false) return applied;
       const started = now();
@@ -679,8 +679,8 @@ export async function applySqliteSegment(
       await yieldToHost();
       if (boundary === undefined || applied === count) break;
       size = Math.max(
-        1,
-        Math.min(2 * chunk, 65_536, Math.floor((chunk * 100) / duration)),
+        1024,
+        Math.min(2 * chunk, 65_536, Math.floor((chunk * 250) / duration)),
       );
       [boundary, where, params] = range(boundary, Math.min(1024, size));
     }

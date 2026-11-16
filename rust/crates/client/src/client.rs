@@ -10286,10 +10286,10 @@ impl SyncClient {
                 !protected && pending && table.indexes.iter().any(|index| index.unique);
             let mirror_visible = !protected && !reconcile_pending;
             // §5.3: the first chunk holds 1,024 rows. A later chunk holds at
-            // most twice the rows of the one before, at most 65,536, and at
-            // most the rows the one before applied per 100 ms from its start
-            // to its COMMIT; a chunk that replays local writes holds at most
-            // 1,024.
+            // least 1,024 rows, at most twice the rows of the one before, at
+            // most 65,536, and at most the rows the one before applied per
+            // 250 ms from its start to its COMMIT; a chunk that replays local
+            // writes holds at most 1,024.
             let chunk = if pending || protected {
                 limit.min(1024)
             } else {
@@ -10434,7 +10434,8 @@ impl SyncClient {
             // A zero duration saturates the cast and leaves the doubling.
             limit = (processed * 2)
                 .min(65_536)
-                .min(((f64::from(processed) * 100.0 / duration) as u32).max(1));
+                .min((f64::from(processed) * 250.0 / duration) as u32)
+                .max(1024);
         }
         if i64::from(applied) != actual_count {
             return Err(invalid(format!(
