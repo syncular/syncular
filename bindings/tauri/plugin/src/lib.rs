@@ -1896,11 +1896,11 @@ mod tests {
         conn.execute("DELETE FROM _syncular_units WHERE id='b'", [])
             .unwrap();
         command(json!({"method": "beginSecurityPreflight", "params": {}}));
-        assert!(
-            command(json!({"method": "authoritySnapshot", "params": {}}))
-                .get("error")
-                .is_none()
-        );
+        // Entering preflight emits one status batch (§5.11), which advances the
+        // revision; a second lock does not.
+        let locked = command(json!({"method": "authoritySnapshot", "params": {}}));
+        assert!(locked.get("error").is_none());
+        let before = locked["result"]["revision"].clone();
         // The owner's mailbox serializes a lock/read race without admitting SQL.
         let barrier = std::sync::Barrier::new(2);
         std::thread::scope(|scope| {

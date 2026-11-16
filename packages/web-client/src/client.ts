@@ -1642,10 +1642,11 @@ export class SyncClient {
   beginSecurityPreflight(): Promise<void> {
     this.#requireStarted();
     if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
-    this.#applyBatch((batch) => {
-      this.#securityLifecycle = 'preflight';
-      batch.status();
-    });
+    if (this.#securityLifecycle !== 'preflight')
+      this.#applyBatch((batch) => {
+        this.#securityLifecycle = 'preflight';
+        batch.status();
+      });
     this.#securityEpoch += 1;
     this.disconnectRealtime();
     const barrier = (async () => {
@@ -1693,7 +1694,6 @@ export class SyncClient {
       this.#emitSyncNeeded('startup');
       this.#emitSyncIntent({ kind: 'interactive' });
     }
-    this.#emitDiagnostics();
   }
 
   /** Persisted work an opened or activated replica owes one round (§8.4). */

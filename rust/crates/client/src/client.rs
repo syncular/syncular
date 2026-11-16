@@ -2201,11 +2201,15 @@ impl SyncClient {
     /// Use [`SyncClient::seal_security_on_teardown`] for the shutdown barrier,
     /// which must NOT leave that durable mark.
     pub fn begin_security_preflight(&mut self) -> Result<(), String> {
+        let entering = !self.security_preflight;
         self.seal_security_on_teardown();
         // Persist the quarantine so it survives handle teardown and restart:
         // reopening this replica re-enters preflight until activation clears it.
         self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1")?;
-        self.emit_status_batch()
+        if entering {
+            self.emit_status_batch()?;
+        }
+        Ok(())
     }
 
     /// One change batch carrying the status snapshot (§5.11 lifecycle).
