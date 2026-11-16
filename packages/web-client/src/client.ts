@@ -1642,7 +1642,10 @@ export class SyncClient {
   beginSecurityPreflight(): Promise<void> {
     this.#requireStarted();
     if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
-    this.#securityLifecycle = 'preflight';
+    this.#applyBatch((batch) => {
+      this.#securityLifecycle = 'preflight';
+      batch.status();
+    });
     this.#securityEpoch += 1;
     this.disconnectRealtime();
     const barrier = (async () => {
@@ -1681,7 +1684,10 @@ export class SyncClient {
     // §4.8: an interrupted eviction finishes before protected reads open.
     await this.#serialize(() => this.#drainPendingEvictions());
     this.#encryption = options.encryption;
-    this.#securityLifecycle = 'active';
+    this.#applyBatch((batch) => {
+      this.#securityLifecycle = 'active';
+      batch.status();
+    });
     if (this.#hasStartupWork()) {
       this.#setSyncNeeded(true);
       this.#emitSyncNeeded('startup');
@@ -2399,6 +2405,7 @@ export class SyncClient {
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#needsPull,
       previousVersionContext: this.#previousVersionStatus(),
+      securityLifecycle: this.#securityLifecycle,
     };
   }
 

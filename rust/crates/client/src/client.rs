@@ -2204,7 +2204,19 @@ impl SyncClient {
         self.seal_security_on_teardown();
         // Persist the quarantine so it survives handle teardown and restart:
         // reopening this replica re-enters preflight until activation clears it.
-        self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1")
+        self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1")?;
+        self.emit_status_batch()
+    }
+
+    /// One change batch carrying the status snapshot (§5.11 lifecycle).
+    fn emit_status_batch(&mut self) -> Result<(), String> {
+        self.begin_observation("syncular_status")?;
+        let batch = ChangeAccumulator {
+            status: true,
+            ..ChangeAccumulator::default()
+        };
+        self.finish_observation("syncular_status", batch)
+            .inspect_err(|_| self.rollback_observation("syncular_status"))
     }
 
     /// Release core-owned key material as a host tears the client down,
@@ -2240,7 +2252,7 @@ impl SyncClient {
         self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY)?;
         self.encryption = encryption;
         self.security_preflight = false;
-        Ok(())
+        self.emit_status_batch()
     }
 
     fn clock_now_ms(&self) -> i64 {
@@ -2689,6 +2701,7 @@ impl SyncClient {
             schema_floor: self.schema_floor.clone(),
             sync_needed: self.sync_needed,
             previous_version_context: self.previous_version_status(),
+            security_lifecycle: self.security_lifecycle(),
         }
     }
 

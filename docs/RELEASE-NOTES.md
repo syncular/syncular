@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## 0.72.0 release notes
+
+A live query refused during security preflight no longer stays `error` after
+activation (SYNCULAR-QUERY-PREFLIGHT-REREAD-001). The reactive store published
+`phase: 'error'` with `client.security_preflight_required` for a read or
+window claim that met the closed gate, and only a committed change of one of
+its tables or `refresh()` read again, so an entry over quiet tables stayed in
+error after `activateSecurity()`. The entry now keeps its last snapshot
+(rows, phase, revision) without an error and reads and claims again when the
+status reports `active` (SPEC §5.11). A `ready` query stays `ready` through the
+gate; a query first subscribed in preflight stays `loading`.
+
+`SyncStatusSnapshot` gains `securityLifecycle` (`preflight` or `active`) in
+both cores, and entering preflight and activation each emit one change batch
+that carries the status. The browser worker forwards it to the reactive store,
+and the native bridge passes the Rust core's batch through.
+
+**Upgrade notes.** Code that builds a `SyncStatusSnapshot` itself (test
+doubles, custom hosts) adds `securityLifecycle`. A refresh-on-activation
+workaround can go. Availability and `renderBoundary` are unchanged: preflight
+is not a `blocked` reason.
+
 ## 0.71.1 release notes
 
 A member who loses access while a bootstrap runs now ends with the unit

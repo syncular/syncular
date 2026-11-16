@@ -391,6 +391,15 @@ function localReadsBlocked(availability: SyncAvailability): boolean {
   );
 }
 
+/** §5.11: a read or claim the security gate refused waits for activation. */
+function refusedByPreflight(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    error.code === 'client.security_preflight_required'
+  );
+}
+
 /** One frozen snapshot per phase and availability for entries that have no
  * successful read, so switching between unread entries keeps the snapshot and
  * `rows` identity. */
@@ -428,6 +437,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   #desiredRevision = 0n;
   #claimError: Error | undefined;
   #claimPending = false;
+  #claimGated = false;
+  #gated = false;
   #offStatus: (() => void) | undefined;
   #offRound: (() => void) | undefined;
 
@@ -518,8 +529,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           if (generation !== this.#generation || this.#listeners.size === 0)
             return;
           this.#claimPending = false;
-          this.#claimError = errorOf(error);
-          this.#requestRead();
+          if (refusedByPreflight(error)) this.#gate(true);
+          else {
+            this.#claimError = errorOf(error);
+            this.#requestRead();
+          }
         },
       );
   }
@@ -538,6 +552,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#desiredRevision = 0n;
     this.#claimError = undefined;
     this.#claimPending = false;
+    this.#claimGated = false;
+    this.#gated = false;
     this.#state = unreadQuerySnapshot('loading', { state: 'ready' });
   }
 
@@ -626,6 +642,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   #onAvailabilityChange(): void {
+    if (
+      this.#gated &&
+      this.store.status.getSnapshot().status?.securityLifecycle !== 'preflight'
+    )
+      this.#resume();
     const availability = this.store.availabilitySnapshot();
     if (localReadsBlocked(availability)) {
       this.#publish({
@@ -647,6 +668,37 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       availability,
     });
     if (wasBlocked) this.#requestRead();
+  }
+
+  /** §5.11: the security gate refused this entry's read or claim. The
+   * entry keeps its snapshot and reads again when the status reports
+   * activation; a refusal that raced activation finds the client active. */
+  #gate(claim = false): void {
+    this.#gated = true;
+    if (claim) this.#claimGated = true;
+    if (this.#state.isRefreshing)
+      this.#publish({ ...this.#state, isRefreshing: false });
+    const generation = this.#generation;
+    void Promise.resolve(this.store.client.statusSnapshot()).then(
+      (status) => {
+        if (
+          generation === this.#generation &&
+          status.securityLifecycle !== 'preflight'
+        )
+          this.#resume();
+      },
+      () => {},
+    );
+  }
+
+  #resume(): void {
+    if (!this.#gated) return;
+    this.#gated = false;
+    if (this.#claimGated) {
+      this.#claimGated = false;
+      this.#claimCoverage();
+    }
+    this.#requestRead();
   }
 
   /** SPEC §7.5 failed transfer: incomplete coverage stops waiting on a failed
@@ -759,6 +811,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       } while (this.#requested && this.#listeners.size > 0);
     } catch (error) {
       if (generation !== this.#generation || this.#listeners.size === 0) return;
+      if (refusedByPreflight(error)) {
+        this.#requested = false;
+        this.#gate();
+        return;
+      }
       // SPEC §7.5: a failed latest read is never `ready`; the last
       // successful rows and revision stay available beside the error.
       this.#publish({

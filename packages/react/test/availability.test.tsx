@@ -32,6 +32,7 @@ function status(
     schemaFloor,
     syncNeeded: false,
     previousVersionContext: { present: false },
+    securityLifecycle: 'active',
   } as const;
 }
 

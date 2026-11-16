@@ -6,7 +6,7 @@
  * the frozen batch only after commit. Bridges forward this shape verbatim.
  */
 import type { ScopeMap } from '@syncular/core';
-import type { LeaseState, SchemaFloor } from './client';
+import type { LeaseState, SchemaFloor, SecurityLifecycle } from './client';
 import type { CompiledClientTable } from './schema';
 
 export type LocalRevision = bigint;
@@ -30,6 +30,11 @@ export interface SyncStatusSnapshot {
   readonly leaseState: LeaseState | undefined;
   readonly schemaFloor: SchemaFloor | undefined;
   readonly syncNeeded: boolean;
+  /**
+   * §5.11: 'preflight' while protected reads, claims and sync are refused;
+   * a change batch carries the snapshot at each transition.
+   */
+  readonly securityLifecycle: SecurityLifecycle;
   /**
    * RFC 0005 A2: whether a previous-version cache is present, so a host's
    * update/rollback path can require its discard. `createdAtMs` is the capture

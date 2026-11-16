@@ -3788,6 +3788,12 @@ therefore implements the same two-state lifecycle:
 - `active`: the accepted keyring is installed and the ordinary client surface
   and host loop are available.
 
+`statusSnapshot().securityLifecycle` reports the state. Entering preflight
+and activation each emit one change batch that carries the status snapshot
+(§7.5), on every host. A live query of the reactive store whose read or window
+claim the gate refuses keeps its last snapshot (rows, phase and revision) and
+reports no error; it reads and claims again when a status reports `active`.
+
 Construction with `securityPreflight: true` MUST NOT accept an `encryption`
 keyring in the same call. During preflight the host MAY inspect
 `securityLifecycle`, `statusSnapshot`, and `localRevision`; it MAY execute the

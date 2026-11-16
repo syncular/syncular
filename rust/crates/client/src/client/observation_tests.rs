@@ -11564,3 +11564,40 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
     assert!(files > 0);
     std::fs::remove_dir_all(&dir).expect("remove replica dir");
 }
+
+#[test]
+fn security_preflight_and_activation_each_emit_the_status_lifecycle() {
+    let schema = json!({
+        "version": 1,
+        "tables": [{
+            "name": "tasks",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "project_id", "type": "string", "nullable": false }
+            ],
+            "scopes": [{ "pattern": "project:{project_id}" }]
+        }]
+    });
+    let mut client = SyncClient::new(
+        "lifecycle-client".to_owned(),
+        &schema,
+        ClientLimits::default(),
+    )
+    .expect("client");
+    client.drain_change_batches();
+    let lifecycle = |client: &mut SyncClient| {
+        client
+            .drain_change_batches()
+            .into_iter()
+            .filter_map(|batch| batch.status.map(|status| status.security_lifecycle))
+            .collect::<Vec<_>>()
+    };
+    client.begin_security_preflight().expect("preflight");
+    assert_eq!(lifecycle(&mut client), vec!["preflight"]);
+    assert_eq!(client.status_snapshot().security_lifecycle, "preflight");
+    client
+        .activate_security(crate::values::EncryptionConfig::default())
+        .expect("activate");
+    assert_eq!(lifecycle(&mut client), vec!["active"]);
+}

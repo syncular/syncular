@@ -243,6 +243,9 @@ pub struct SyncStatusSnapshot {
     /// RFC 0005 A2: container presence, so a host can enforce the downgrade
     /// precondition (`previousVersionDiscard`) instead of documenting it.
     pub previous_version_context: PreviousVersionStatus,
+    /// §5.11: "preflight" while protected reads, claims and sync are refused;
+    /// a change batch carries the snapshot at each transition.
+    pub security_lifecycle: &'static str,
 }
 
 /// RFC 0005 A2: presence of the previous-version container file.

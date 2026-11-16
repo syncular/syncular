@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-16',
+    title: 'Live queries wait through security preflight',
+    body: 'A live query that read or claimed its window while the client was in security preflight went to `error` with `client.security_preflight_required` and stayed there after `activateSecurity()` until its tables changed. It now keeps its last rows and phase without an error and reads again on activation, on the browser worker and the native bridge. `statusSnapshot().securityLifecycle` reports the gate, and entering and leaving preflight each emit a status change batch.',
+    links: [
+      {
+        href: '/concepts-local-data-purge/#race-free-security-bootstrap',
+        label: 'Security preflight',
+      },
+    ],
+  },
+  {
     date: '2026-11-15',
     title: 'Access lost during a bootstrap revokes the unit',
     body: "When access changes after the server answered with a segment reference and before the client downloads it, the segment endpoint refuses the download with `sync.forbidden`. Both cores now apply nothing of that unit's section and run the next round in the same drive, which revokes the unit. Before, the drive failed with `sync.forbidden` and no further round ran until the host drove one, so a member who lost access during the first bootstrap saw a failed sync.",

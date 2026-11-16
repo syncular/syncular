@@ -1,6 +1,7 @@
 import type { ClientSchema } from '../src/schema';
 import type { ClientDiagnosticsSnapshot } from '../src/diagnostics';
 import { singleOwnerLock } from '../src/leader-lock';
+import { ReactiveClientStore } from '../src/reactive-store';
 import type { SyncProgress } from '../src/progress';
 import {
   createSyncClientHandle,
@@ -35,6 +36,7 @@ declare global {
       arm(point: CrashPoint): Promise<void>;
       probe(): Promise<OpfsProbe>;
       limitStorage(limit: number, failCommit?: boolean): Promise<void>;
+      gatePhases(): Promise<string[]>;
     };
   }
 }
@@ -121,6 +123,47 @@ window.opfsTest = {
     (await window.opfsTest.ready).onProgress((progress) =>
       window.opfsTest.progress.push(progress),
     );
+  },
+  gatePhases: async () => {
+    const client = await window.opfsTest.ready;
+    const store = new ReactiveClientStore(client);
+    const entry = store.query({
+      id: 'gate',
+      sql: 'SELECT id FROM catalogue ORDER BY id',
+      dependencies: [{ table: 'catalogue' }],
+    });
+    const late = store.query({
+      id: 'gate-late',
+      sql: 'SELECT id FROM catalogue ORDER BY id',
+      dependencies: [{ table: 'catalogue' }],
+    });
+    const phases: string[] = [];
+    const reached = (target: typeof entry, done: () => boolean) =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (!done()) return;
+          off();
+          resolve();
+        };
+        const off = target.subscribe(check);
+        check();
+      });
+    const keep = entry.subscribe(() => {});
+    await reached(entry, () => entry.getSnapshot().phase === 'ready');
+    phases.push(entry.getSnapshot().phase);
+    await client.beginSecurityPreflight();
+    entry.refresh();
+    // The refused refresh ends without an error and keeps the snapshot.
+    await reached(entry, () => !entry.getSnapshot().isRefreshing);
+    const keepLate = late.subscribe(() => {});
+    phases.push(entry.getSnapshot().phase, String(entry.getSnapshot().error));
+    await client.activateSecurity();
+    await reached(late, () => late.getSnapshot().phase === 'ready');
+    phases.push(late.getSnapshot().phase);
+    keep();
+    keepLate();
+    store.dispose();
+    return phases;
   },
   limitStorage: (limit, failCommit = false) =>
     new Promise((resolve) => {

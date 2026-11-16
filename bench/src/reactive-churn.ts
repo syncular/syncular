@@ -39,6 +39,7 @@ export async function reactiveChurn(count = 10_000) {
       schemaFloor: undefined,
       syncNeeded: false,
       previousVersionContext: { present: false },
+      securityLifecycle: 'active',
     }),
     conflicts: () => [],
     rejections: () => [],

@@ -34,6 +34,7 @@ const STATUS: SyncStatusSnapshot = {
   schemaFloor: undefined,
   syncNeeded: false,
   previousVersionContext: { present: false },
+  securityLifecycle: 'active',
 };
 
 const COMPLETE = { complete: true, pending: [], missing: [] } as const;
@@ -1773,5 +1774,58 @@ describe('observation ownership', () => {
     await drainMicrotasks();
     expect(store.cacheStats().windowClaims).toBe(0);
     store.dispose();
+  });
+});
+
+describe('security preflight gate (SPEC §5.11)', () => {
+  test('a refused read keeps its snapshot and reads again on activation', async () => {
+    const { makeClient, makeServer, taskValues } = await import('./helpers');
+    const local = await makeClient(makeServer(), { clientId: 'gate-client' });
+    local.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'one') },
+    ]);
+    const store = new ReactiveClientStore(local.client);
+    const spec = {
+      id: 'tasks',
+      sql: 'SELECT id FROM tasks ORDER BY id',
+      dependencies: [{ table: 'tasks' }],
+    };
+    const ready = store.query<{ id: string }>(spec);
+    const offReady = ready.subscribe(() => {});
+    await drainMicrotasks(24);
+    expect(ready.getSnapshot().phase).toBe('ready');
+
+    await local.client.beginSecurityPreflight();
+    await drainMicrotasks(24);
+    expect(store.status.getSnapshot().status?.securityLifecycle).toBe(
+      'preflight',
+    );
+    // A refresh inside the gate keeps the ready snapshot; a new entry stays
+    // loading. Neither turns `error`.
+    ready.refresh();
+    const late = store.query<{ id: string }>({ ...spec, id: 'late' });
+    const offLate = late.subscribe(() => {});
+    await drainMicrotasks(24);
+    expect(ready.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      error: undefined,
+      isRefreshing: false,
+    });
+    expect(ready.getSnapshot().rows.map((row) => row.id)).toEqual(['t1']);
+    expect(late.getSnapshot()).toMatchObject({
+      phase: 'loading',
+      error: undefined,
+    });
+
+    await local.client.activateSecurity();
+    await drainMicrotasks(24);
+    for (const entry of [ready, late]) {
+      expect(entry.getSnapshot().phase).toBe('ready');
+      expect(entry.getSnapshot().rows.map((row) => row.id)).toEqual(['t1']);
+    }
+    offReady();
+    offLate();
+    store.dispose();
+    await local.client.close();
   });
 });

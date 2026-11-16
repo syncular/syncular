@@ -1316,6 +1316,25 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
   }
 }, 60000);
 
+test('OPFS live query refused in preflight reads again on activation', async () => {
+  freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.goto(`${server.url.href}?fresh`);
+    await page.evaluate(() => window.opfsTest.open());
+    expect(await page.evaluate(() => window.opfsTest.gatePhases())).toEqual([
+      'ready',
+      'ready',
+      'undefined',
+      'ready',
+    ]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
 test('OPFS purge leaves no purged value in any file of the pool', async () => {
   const marker = 'PURGEMARKER-OPFS-51c2';
   freshSource.allowed['actor-1'] = { project_id: ['p1'] };
