@@ -2600,9 +2600,11 @@ matching rule, same `asOfCommitSeq`). Consequences, all normative:
 
 **Application contract** (the §5.6 rules, specialized): the client
 applies the image in **chunks**, one local transaction each: the first
-chunk holds 1,024 rows and each later chunk twice the rows of the one before,
-up to 65,536. While local writes to the table need replay (§7.1), a chunk
-holds 1,024 rows. The §5.6
+chunk holds 1,024 rows. Each later chunk holds at least one row and at most
+twice the rows of the chunk before, at most 65,536 rows, and at most the rows
+the chunk before applied per 100 ms of its duration, measured on a monotonic
+clock from the chunk's start to its `COMMIT`. While local writes to the
+table need replay (§7.1), a chunk holds at most 1,024 rows. The §5.6
 fresh-bootstrap first-page clear runs in the first transaction (an image is always
 the first page), then primary-key upserts for every image row with
 `_syncular_version` landing as the row's last-known `server_version`.
@@ -2654,8 +2656,7 @@ With growing chunks it wrote 317 MB in 477 ms and synced 72 times in 134 ms;
 the import took 1,645 ms and committed 14 transactions instead of 152. A Bun
 file replica (WAL, `synchronous=FULL`) went from 6,003 ms to 3,609 ms and
 now ends with a 24 KB WAL instead of 2.25 MB. The first chunk stays at 1,024
-rows, so the first committed revision arrives as early as before; the cap
-bounds the time one chunk holds the worker. A raw sqlite-wasm comparison on
+rows, so the first committed revision arrives as early as before. A raw sqlite-wasm comparison on
 the same VFS with one 87,267-row, 123 MB table settled the alternatives:
 growing chunks took 1,010 ms, one transaction 1,093 ms, and one transaction
 with the indexes built after the rows 649 ms. That last form holds the
@@ -2665,6 +2666,18 @@ holds the outbox, outcomes and cursors; both stay unchanged. A replica cannot
 adopt an image file as a table's storage: SQLite stores a table in its own
 file's pages, and an attached file would split the atomic commit, the FTS
 triggers and the outbox across files.
+
+DECISION (2026-11-16): a chunk's duration bounds how long a local read waits,
+so the chunk size follows the duration of the chunk before. A catalogue whose
+codes table carries an FTS5 projection imported 114,007 rows in headless
+Chromium at about 550 ms per 1,024 rows, because the projection's triggers
+tokenize every row's search text. Row-count doubling took that import to
+transactions of 1.1, 2.3 and 4.5 s, and a `querySnapshot` sent during the
+import waited up to 7.4 s. With the 100 ms rule the second chunk holds about
+186 rows, and a read waits for at most one chunk. Cheaper rows double until
+a chunk takes 100 ms: at the 2026-11-12 rate of 367 ms per 32,768 rows, chunks
+level off near 8,900 rows. The duration includes the `COMMIT`, because FTS5 writes its
+pending terms when the transaction commits.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version

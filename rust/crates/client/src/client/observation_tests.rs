@@ -8025,6 +8025,7 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
 #[test]
 fn image_chunks_double_and_roll_back_whole_on_failure() {
     let mut client = client();
+    client.image_chunk_ms.set(Some(0.0));
     let image = Connection::open_in_memory().unwrap();
     // Row 5000 lies in the second 1,024 rows of the third chunk.
     image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
@@ -8069,6 +8070,33 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
     );
     let progress = client.progress.snapshot().unwrap();
     assert!(progress.import_write_ms.is_some() && progress.import_commit_ms.is_some());
+}
+
+#[test]
+fn image_chunks_shrink_to_the_rows_the_chunk_before_applied_per_100_ms() {
+    let mut client = client();
+    client.image_chunk_ms.set(Some(400.0));
+    let image = Connection::open_in_memory().unwrap();
+    image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+        WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1364)
+        INSERT INTO tasks SELECT printf('%05d',x),'p1',1 FROM n;
+        CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+        INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1364);").unwrap();
+    let table = client.schema.table("tasks").unwrap().clone();
+    let scopes = vec![("project_id".into(), vec!["p1".into()])];
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    client.progress.start();
+    let _subscription = client
+        .progress
+        .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
+    assert!(matches!(
+        client.apply_sqlite_image(&image, &table, true, &scopes, "", 1364, 7, "digest"),
+        Ok(1364)
+    ));
+    // 400 ms per chunk: 1,024 rows, then 1,024 × 100 / 400 = 256, 64, 16, 4.
+    assert_eq!(client.drain_change_batches().len(), 5);
+    assert_eq!(*seen.lock().unwrap(), vec![0, 1024, 1280, 1344, 1360, 1364]);
 }
 
 #[test]

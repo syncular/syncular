@@ -469,9 +469,9 @@ function imageInvalid(detail: string): never {
 }
 
 /**
- * Apply a §5.3 sqlite image in committed transactions of 1,024 to 65,536
- * rows: validate the in-file metadata against the descriptor, validate the
- * data table's column names/order against the generated schema, run the
+ * Apply a §5.3 sqlite image in committed chunks of at most 65,536 rows,
+ * each sized from the time the chunk before took: validate the in-file
+ * metadata against the descriptor, validate the data table's column names/order against the generated schema, run the
  * §5.6 first-page clear when fresh, then bulk-copy 1,024-row ranges through a
  * primary-key upsert — `_syncular_version` lands in
  * `_sync_version` exactly like a rows segment's per-row `serverVersion`.
@@ -491,8 +491,11 @@ export async function applySqliteSegment(
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
     readonly isCurrent?: () => boolean;
+    /** Monotonic milliseconds that time each chunk. */
+    readonly now?: () => number;
   },
 ): Promise<number> {
+  const now = options.now ?? (() => performance.now());
   const withImage = db.withSqliteImage?.bind(db);
   if (withImage === undefined) {
     throw invalidRequest(
@@ -567,13 +570,13 @@ export async function applySqliteSegment(
       .map((name) => `${name}=excluded.${name}`)
       .join(', ');
     const version = quoteIdent(SYNC_VERSION_COLUMN);
-    // A statement copies the 1,024 rows after `from`; NULL keys cannot hide
-    // between statements.
-    const range = (from?: SqlValue) => {
+    // A statement copies the `rows` rows after `from`; NULL keys cannot
+    // hide between statements.
+    const range = (from: SqlValue | undefined, rows: number) => {
       const params = from === undefined ? [] : [from];
       const predicates = from === undefined ? [] : [`${primaryKey}>?`];
       const boundary = db.query(
-        `SELECT ${primaryKey} AS b FROM ${source} WHERE ${predicates[0] ?? 'true'} ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
+        `SELECT ${primaryKey} AS b FROM ${source} WHERE ${predicates[0] ?? 'true'} ORDER BY ${primaryKey} LIMIT 1 OFFSET ${rows - 1}`,
         params,
       )[0]?.b;
       if (boundary === null) imageInvalid('image primary key must not be null');
@@ -583,12 +586,16 @@ export async function applySqliteSegment(
       }
       return [boundary, predicates.join(' AND ') || 'true', params] as const;
     };
-    let [boundary, where, params] = range();
+    let [boundary, where, params] = range(undefined, 1024);
     let applied = 0;
-    // §5.3: a transaction holds one statement at first and doubles after each
-    // commit up to 64; a replaying transaction holds one.
-    for (let statements = 1; ; statements = Math.min(statements * 2, 64)) {
+    // §5.3: the first chunk holds 1,024 rows. A later chunk holds at most
+    // twice the rows of the one before, at most 65,536, and at most the rows
+    // the one before applied per 100 ms from its start to its COMMIT; a
+    // replaying chunk holds one statement.
+    for (let size = 1024; ;) {
       if (options.isCurrent?.() === false) return applied;
+      const started = now();
+      let chunk = 0;
       const first = applied === 0;
       const replay =
         countOutbox(db) ||
@@ -625,26 +632,31 @@ export async function applySqliteSegment(
             skipped,
           ),
         );
-        for (let statement = 1; ; statement++) {
+        for (;;) {
           db.exec(
             `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${where} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates} WHERE excluded.${version}>${quoteIdent(table.name)}.${version}`,
             params,
           );
-          applied += Number(
+          const copied = Number(
             db.query(
               `SELECT count(*)AS n FROM ${source} WHERE ${where}`,
               params,
             )[0]?.n,
           );
+          applied += copied;
+          chunk += copied;
           options.onProgress?.(applied);
           if (
             replay ||
-            statement === statements ||
+            chunk >= size ||
             boundary === undefined ||
             applied === count
           )
             break;
-          [boundary, where, params] = range(boundary);
+          [boundary, where, params] = range(
+            boundary,
+            Math.min(1024, size - chunk),
+          );
         }
         if (protectedRows)
           for (const row of landing) {
@@ -663,9 +675,14 @@ export async function applySqliteSegment(
           }
         return rebaseScope(scope, kept, skipped);
       });
+      const duration = now() - started;
       await yieldToHost();
       if (boundary === undefined || applied === count) break;
-      [boundary, where, params] = range(boundary);
+      size = Math.max(
+        1,
+        Math.min(2 * chunk, 65_536, Math.floor((chunk * 100) / duration)),
+      );
+      [boundary, where, params] = range(boundary, Math.min(1024, size));
     }
     if (applied !== count)
       imageInvalid('image applied row count does not match descriptor');

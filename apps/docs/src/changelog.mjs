@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-16',
+    title: 'Image imports size transactions by time',
+    body: 'A SQLite image imported in transactions that doubled from 1,024 to 65,536 rows. Rows with an FTS5 projection over long text cost about 550 ms per 1,024 rows, so later transactions held the worker for seconds and a local read waited up to 7.4 s. Both cores now size each transaction after the first from the one before: at most twice its rows, and at most the rows it applied per 100 ms from start to commit. Cheap rows still double until a transaction reaches 100 ms.',
+    links: [
+      {
+        href: '/concepts-bootstrap/',
+        label: 'Bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-11-16',
     title: 'Live queries wait through security preflight',
     body: 'A live query that read or claimed its window while the client was in security preflight went to `error` with `client.security_preflight_required` and stayed there after `activateSecurity()` until its tables changed. It now keeps its last rows and phase without an error and reads again on activation, on the browser worker and the native bridge. `statusSnapshot().securityLifecycle` reports the gate, and entering and leaving preflight each emit a status change batch.',
     links: [

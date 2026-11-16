@@ -291,6 +291,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
               committed.push(count());
               return result;
             },
+            now: () => 0,
           },
         );
       await expect(apply()).rejects.toThrow();
@@ -306,6 +307,63 @@ describe('CREATE INDEX subset — client local DDL', () => {
         ...Array.from({ length: 7 }, (_, index) => (index + 1) * 1024),
         7268,
       ]);
+    } finally {
+      image.close();
+      db.close();
+    }
+  });
+
+  test('image chunks shrink to the rows the chunk before applied per 100 ms', async () => {
+    const db = new BunClientDatabase();
+    const image = new BunClientDatabase();
+    const compiled = compileClientSchema(SCHEMA);
+    try {
+      ensureLocalSchema(db, compiled);
+      image.exec(
+        'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, title TEXT, _syncular_version INTEGER NOT NULL)',
+      );
+      image.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1364) INSERT INTO tasks SELECT printf('%05d',x),'p1','title '||x,1 FROM n",
+      );
+      image.exec(
+        'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+      );
+      image.exec(
+        "INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1364)",
+      );
+      let clock = 0;
+      const committed: number[] = [];
+      await expect(
+        applySqliteSegment(
+          db,
+          compiled,
+          compiled.tables.get('tasks')!,
+          image.db.serialize(),
+          {
+            table: 'tasks',
+            rowCount: 1364,
+            asOfCommitSeq: 7,
+            scopeDigest: 'digest',
+          },
+          {
+            clearFirst: true,
+            effective: { project_id: ['p1'] },
+            owners: () => [],
+            // Every chunk takes 400 ms from its start to its COMMIT.
+            transaction: (fn) => {
+              const result = db.transaction(fn);
+              clock += 400;
+              committed.push(
+                Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n),
+              );
+              return result;
+            },
+            now: () => clock,
+          },
+        ),
+      ).resolves.toBe(1364);
+      // 1,024 rows, then 1,024 × 100 / 400 = 256, 64, 16 and 4.
+      expect(committed).toEqual([1024, 1280, 1344, 1360, 1364]);
     } finally {
       image.close();
       db.close();

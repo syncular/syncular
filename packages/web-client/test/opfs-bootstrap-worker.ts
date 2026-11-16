@@ -58,8 +58,9 @@ scope.FileSystemSyncAccessHandle.prototype.write = function (buffer, options) {
   const written = originalWrite.call(this, buffer, options);
   if (importing && databaseHandles.has(this)) {
     stopAt('mid-import', written, true);
-    // The third image statement is the second of the second transaction.
-    if (imageInserts === 3) stopAt('mid-transaction', written, true);
+    // The second image statement opens the second transaction, whose size
+    // follows the first one's duration (§5.3).
+    if (imageInserts === 2) stopAt('mid-transaction', written, true);
   }
   return written;
 };

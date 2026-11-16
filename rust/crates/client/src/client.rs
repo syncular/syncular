@@ -570,6 +570,9 @@ pub struct SyncClient {
     /// once per response rather than once per acknowledgement.
     #[cfg(test)]
     outcome_prune_count: Cell<usize>,
+    /// Test-only pinned duration of every §5.3 image chunk, in ms.
+    #[cfg(test)]
+    image_chunk_ms: Cell<Option<f64>>,
     /// Exact observer-transaction output drained by command/FFI hosts.
     progress: ProgressObserver,
     change_queue: VecDeque<ClientChangeBatch>,
@@ -2012,6 +2015,8 @@ impl SyncClient {
             acknowledged_replay_count: Cell::new(0),
             #[cfg(test)]
             outcome_prune_count: Cell::new(0),
+            #[cfg(test)]
+            image_chunk_ms: Cell::new(None),
             progress: ProgressObserver::default(),
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
@@ -10280,9 +10285,16 @@ impl SyncClient {
             let reconcile_pending =
                 !protected && pending && table.indexes.iter().any(|index| index.unique);
             let mirror_visible = !protected && !reconcile_pending;
-            // §5.3: a chunk holds 1,024 rows at first and doubles after each
-            // commit up to 65,536; a chunk that replays local writes holds 1,024.
-            let chunk = if pending || protected { 1024 } else { limit };
+            // §5.3: the first chunk holds 1,024 rows. A later chunk holds at
+            // most twice the rows of the one before, at most 65,536, and at
+            // most the rows the one before applied per 100 ms from its start
+            // to its COMMIT; a chunk that replays local writes holds at most
+            // 1,024.
+            let chunk = if pending || protected {
+                limit.min(1024)
+            } else {
+                limit
+            };
             self.coalesce_unit(chunk as usize)
                 .and_then(|()| self.begin_observation("syncular_image_chunk"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -10412,11 +10424,17 @@ impl SyncClient {
                 p.import_write_ms = u64::try_from(write.as_millis()).ok();
                 p.import_commit_ms = u64::try_from(commit.as_millis()).ok();
             });
+            let duration = started.elapsed().as_secs_f64() * 1000.0;
+            #[cfg(test)]
+            let duration = self.image_chunk_ms.get().unwrap_or(duration);
             std::thread::yield_now();
             if last {
                 break;
             }
-            limit = (limit * 2).min(65_536);
+            // A zero duration saturates the cast and leaves the doubling.
+            limit = (processed * 2)
+                .min(65_536)
+                .min(((f64::from(processed) * 100.0 / duration) as u32).max(1));
         }
         if i64::from(applied) != actual_count {
             return Err(invalid(format!(

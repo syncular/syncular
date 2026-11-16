@@ -243,7 +243,7 @@ const unsubscribe = handle.onProgress((progress) => {
 | `phase` | `request`, `download`, or `import`. |
 | `state` | `running`, `complete`, or `failed`. |
 | `unitId`, `table`, `segmentId` | The current payload; `segmentId` is optional. A unit section's start sets `unitId` (absent for a section the client skips) and clears `table`, `segmentId`, the totals and both counters. Its end clears `unitId`, `table` and `segmentId` and keeps the counters of its last payload. |
-| `bytesTotal`, `rowsTotal` | Absent when unknown. |
+| `bytesTotal`, `rowsTotal` | Absent when unknown. A `SEGMENT_REF` sets both when its download starts, so `bytesReceived / bytesTotal` is the payload's share during `download`; `rowsProcessed` stays 0 until `import`. |
 | `rowsProcessed` | Work inside an import transaction, including rows a failure can roll back. |
 | `errorCode`, `retryDelayMs` | Set on `failed`. A scheduled background retry also sets `retryDelayMs`: 250 ms, doubling per consecutive failure up to 30,000 ms. |
 
