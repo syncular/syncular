@@ -625,6 +625,136 @@ export const encryptionScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §5.11 sealed apply: under `missingKey: 'seal'` a row whose key the
+    // keyring lacks lands with its encrypted columns NULL and the key id in
+    // `_sync_sealed_key`, the round completes, the row refuses local writes,
+    // and installing the key reveals it.
+    name: 'encryption/missing-key-seals-row',
+    specRefs: ['§5.11'],
+    server: SELECTED_SERVER,
+    async run(ctx: ScenarioContext) {
+      const writer = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-seal-writer',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: selectedKeys,
+      });
+      await writer.api.subscribe(U1);
+      await syncIdle(writer);
+      await writer.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            encryption_key_id: SELECTED_KEY_ID,
+            note: 'confidential',
+          },
+        },
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r2',
+            project_id: 'p1',
+            encryption_key_id: null,
+            note: null,
+          },
+        },
+      ]);
+      await syncIdle(writer);
+
+      const sealing: DriverEncryptionConfig = {
+        keys: {},
+        keyIdColumns: { secrets: 'encryption_key_id' },
+        missingKey: 'seal',
+      };
+      const reader = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-seal-reader',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: sealing,
+      });
+      await reader.api.subscribe(U1);
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.readRows('secrets')).map((row) => ({
+          rowId: row.rowId,
+          values: row.values,
+          sealedKey: row.sealedKey,
+        })),
+        [
+          {
+            rowId: 'r1',
+            values: {
+              id: 'r1',
+              project_id: 'p1',
+              encryption_key_id: SELECTED_KEY_ID,
+              note: null,
+            },
+            sealedKey: SELECTED_KEY_ID,
+          },
+          {
+            rowId: 'r2',
+            values: {
+              id: 'r2',
+              project_id: 'p1',
+              encryption_key_id: null,
+              note: null,
+            },
+            sealedKey: undefined,
+          },
+        ],
+        'the round completes; r1 lands sealed, r2 lands plain',
+      );
+
+      const refusal = await reader.api
+        .mutate([
+          {
+            op: 'upsert',
+            table: 'secrets',
+            values: {
+              id: 'r1',
+              project_id: 'p1',
+              encryption_key_id: SELECTED_KEY_ID,
+              note: null,
+            },
+          },
+        ])
+        .then(
+          () => undefined,
+          (error: { code?: string; details?: unknown }) => ({
+            code: error.code,
+            details: error.details,
+          }),
+        );
+      checkEqual(
+        refusal,
+        {
+          code: 'client.encryption_key_missing',
+          details: { table: 'secrets', keyId: SELECTED_KEY_ID },
+        },
+        'a write to a sealed row fails at once',
+      );
+
+      await reader.api.beginSecurityPreflight();
+      await reader.api.activateSecurity({
+        ...sealing,
+        keys: selectedKeys.keys,
+      });
+      await syncIdle(reader);
+      const revealed = (await reader.api.readRows('secrets'))[0];
+      checkEqual(
+        { note: revealed?.values.note, sealedKey: revealed?.sealedKey },
+        { note: 'confidential', sealedKey: undefined },
+        'installing the key reveals the sealed row',
+      );
+    },
+  },
+  {
     // §5.11: a sparse patch that omits the key-id selector resolves it from
     // the stored local row; an unresolvable key id is a durable
     // `client.encrypt_failed` rejection instead of a sync() abort.

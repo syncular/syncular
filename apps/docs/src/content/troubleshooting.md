@@ -53,7 +53,7 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 | `client.storage_fenced` | A worker's database was taken over; the worker refuses every statement | [below](#clientleadership_taken-in-a-tab-that-stopped-responding) |
 | `client.storage_busy` | The OPFS pool is still held by another engine | [below](#clientstorage_busy-while-opening-the-app) |
 | `client.worker_restart_required` | A stale dev-server worker graph | [below](#clientworker_restart_required-after-a-package-upgrade) |
-| `client.encryption_key_missing` | A delivered row names a key id the keyring does not hold; `details.table` and `details.keyId` name it | [Encryption keys](/concepts-encryption/#encryption-keys) |
+| `client.encryption_key_missing` | A delivered row names a key id the keyring does not hold, or a write names a sealed row; `details.table` and `details.keyId` name it | [Rows under a key the device lacks](/concepts-encryption/#rows-under-a-key-the-device-lacks) |
 | `client.decrypt_failed` | A wrong key, or an envelope that does not decrypt or parse | [Encryption keys](/concepts-encryption/#encryption-keys) |
 | `client.encrypt_failed` | No usable key id at the push encode seam | [Encryption keys](/concepts-encryption/#encryption-keys) |
 | `client.security_preflight_required` | Protected work before `activateSecurity` | [Authorized local purge](/concepts-local-data-purge/#race-free-security-bootstrap) |

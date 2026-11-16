@@ -3922,7 +3922,8 @@ authentication failure, malformed envelope, or a post-decrypt value-parse
 failure) surface as `client.decrypt_failed`. Both codes are client-local
 (never on the wire; the `client.` family is client-only per §10.3) and not
 retryable: a wrong or missing key does not fix itself. The client raises
-them at the apply seam (§4.5/§5.6), and the round fails with that code. The
+them at the apply seam (§4.5/§5.6), and the round fails with that code;
+under `missingKey: 'seal'` (below) a missing key seals the row instead. The
 code is the round's error identity on every host: the rejected `sync()`
 call, the failed progress snapshot (`errorCode`), and the diagnostics
 `lastRound.errorCode` all carry it, and a Worker or native bridge MUST
@@ -3932,6 +3933,40 @@ declares its variables (§4.1), so a reader that lacks the key of an
 encrypted table MUST NOT share that table's scope variable with the units it
 does register; the encrypted table takes its own variable (the sidecar shape
 above).
+
+**Sealed apply (`missingKey: 'seal'`).** A table that selects its key per row
+(`keyIdColumns`, `keyIdFor`) can hold rows under keys a device never
+receives, and a reader cannot list them before it registers the unit. The
+keyring takes `missingKey: 'fail' | 'seal'`; `'fail'` is the default and keeps
+the rule above. Under `'seal'`, a delivered upsert (§4.5 `COMMIT`, §5.6 rows
+segment) with at least one encrypted envelope whose `keyId` the keyring does
+not hold lands **sealed** and the round continues:
+
+- every encrypted column of the row is NULL in the local mirror, whatever its
+  declared nullability; the non-encrypted columns, `_sync_version` and the
+  §4.5 version guard apply as for any row;
+- the reserved column `_sync_sealed_key` holds the `keyId` of the first such
+  envelope in column order, and the reserved column `_sync_sealed` holds the
+  row's encrypted envelopes for a later reveal. Both are NULL on an unsealed
+  row. Every table with an encrypted column carries them; a `SELECT *` strips
+  them like `_sync_version` (§7.5), and an explicit alias reads the marker
+  (`SELECT _sync_sealed_key AS sealed_key`);
+- `client.decrypt_failed` still fails the round: a wrong key or a malformed
+  envelope is never sealed.
+
+The client **reveals** sealed rows when `activateSecurity()` installs a
+keyring and at the start of every sync round: each sealed row whose envelope
+keys the keyring now holds is decrypted from `_sync_sealed` into its columns,
+both reserved columns are cleared, and the change publishes one revision per
+table. A reveal that hits `client.decrypt_failed` fails the round. A later
+delivery of the row replaces its sealed state like any other upsert.
+
+A sealed row is read-only on the device: `mutate`, `patch` and delete of a
+sealed row fail at once with `client.encryption_key_missing` and the details
+`{ table, keyId }`, before anything enters the outbox. A write could
+otherwise send NULL over ciphertext the device cannot see. The local mirror
+declares encrypted columns nullable; a replica created with `NOT NULL`
+encrypted columns or without the reserved columns is rebuilt once at open.
 
 **Nonce discipline.** The 12-byte nonce **MUST** be from a cryptographically
 secure RNG on every production encrypt (never reused with the same key —
@@ -3996,7 +4031,8 @@ key and vice versa; a raw-driver assertion confirms the **server row holds a
 ciphertext envelope, not plaintext**), a wrong-key apply surfacing
 `client.decrypt_failed`, a missing-key apply surfacing
 `client.encryption_key_missing` with its details in the sync result,
-progress and last round, and committed crypto **test vectors** (fixed-nonce
+progress and last round, a sealed apply under `missingKey: 'seal'` that
+completes the round, marks the row and reveals it once the key is installed, and committed crypto **test vectors** (fixed-nonce
 AES-GCM encrypt vectors and X25519 wrap/unwrap vectors under
 `spec/vectors/crypto/`) that both cores reproduce byte-for-byte.
 

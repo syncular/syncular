@@ -62,7 +62,7 @@ use crate::transport::{BlobDownload, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, column_value_to_json, decode_row_bytes, encode_sparse_row_json, full_row_values,
     is_canonical_bytes_envelope, json_to_column_value, json_to_scope_map, normalize_values_casing,
-    render_row_id_json, scope_map_to_json,
+    render_row_id_json, scope_map_to_json, SealedRow,
 };
 
 /// §4.2 default: rows and SQLite images, both applied in committed chunks.
@@ -1042,12 +1042,17 @@ fn blob_id_for(bytes: &[u8]) -> String {
 enum RowParam<'a> {
     Cell(&'a Option<ColumnValue>),
     Version(i64),
+    Text(Option<&'a str>),
 }
 
 impl rusqlite::ToSql for RowParam<'_> {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
         Ok(match self {
             RowParam::Version(v) => ToSqlOutput::Owned(SqlValue::Integer(*v)),
+            RowParam::Text(text) => match text {
+                Some(text) => ToSqlOutput::Borrowed(ValueRef::Text(text.as_bytes())),
+                None => ToSqlOutput::Owned(SqlValue::Null),
+            },
             RowParam::Cell(cell) => match cell {
                 None => ToSqlOutput::Owned(SqlValue::Null),
                 Some(ColumnValue::String(s)) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
@@ -1233,11 +1238,17 @@ fn query_connection(
         .collect::<Result<_, _>>()?;
     // §2.4: an unaliased physical version column stays engine-internal, so a
     // `SELECT *` row feeds straight back into mutation values. An explicit
-    // alias (`_sync_version AS v`) returns it as ordinary query data.
+    // alias (`_sync_version AS v`) returns it as ordinary query data. The
+    // §5.11 sealed columns follow the same rule.
     let columns: Vec<(usize, String)> = stmt
         .column_names()
         .enumerate()
-        .filter(|(_, name)| *name != "_syncular_version")
+        .filter(|(_, name)| {
+            !matches!(
+                *name,
+                "_syncular_version" | "_sync_sealed_key" | "_sync_sealed"
+            )
+        })
         .map(|(i, name)| (i, name.to_owned()))
         .collect();
     let bound_refs: Vec<&dyn rusqlite::ToSql> =
@@ -2261,6 +2272,9 @@ impl SyncClient {
         self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY)?;
         self.encryption = encryption;
         self.security_preflight = false;
+        // §5.11: rows sealed under a key this keyring now holds open at once.
+        self.reveal_sealed_rows()
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
         self.emit_status_batch()
     }
 
@@ -4137,6 +4151,12 @@ impl SyncClient {
                 let mut cols: Vec<String> =
                     table.columns.iter().map(|c| quote_ident(&c.name)).collect();
                 cols.push("\"_syncular_version\" INTEGER NOT NULL".to_owned());
+                cols.extend(
+                    table
+                        .sealed_columns()
+                        .iter()
+                        .map(|name| format!("{} TEXT", quote_ident(name))),
+                );
                 let sql = format!(
                     "CREATE TABLE IF NOT EXISTS {full} ({} , PRIMARY KEY ({}))",
                     cols.join(", "),
@@ -4145,6 +4165,43 @@ impl SyncClient {
                 self.conn
                     .execute(&sql, [])
                     .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                // §5.11: a replica created before sealed apply gains the
+                // reserved columns in place, on both halves in the same order,
+                // so data, indexes and the FTS projection stay.
+                for name in table.sealed_columns() {
+                    let present: bool = self
+                        .conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                            rusqlite::params![format!("{index_prefix}{}", table.name), name],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                    if !present {
+                        self.conn
+                            .execute(
+                                &format!(
+                                    "ALTER TABLE {full} ADD COLUMN {} TEXT",
+                                    quote_ident(name)
+                                ),
+                                [],
+                            )
+                            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                    }
+                }
+                // The reveal at every round start reads the sealed rows of the
+                // base half through this partial index.
+                if table.has_encrypted_columns() && !index_prefix.is_empty() {
+                    self.conn
+                        .execute(
+                            &format!(
+                                "CREATE INDEX IF NOT EXISTS {} ON {full} (\"_sync_sealed_key\") WHERE \"_sync_sealed_key\" IS NOT NULL",
+                                quote_ident(&format!("_syncular_sealed_{}", table.name))
+                            ),
+                            [],
+                        )
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                }
                 // Local secondary indexes (CREATE INDEX subset). Created on
                 // both halves so mirror reads hit an index on either. Runs on
                 // both the initial create and the §7.4.3 reset recreate path.
@@ -5845,6 +5902,7 @@ impl SyncClient {
                         // §6.7 `mutate` marks every column present: fill missing
                         // nullable columns with NULL before the payload is built.
                         let values = full_row_values(schema_table, values)?;
+                        self.refuse_sealed_row(schema_table, &row_id)?;
                         // §5.11: validate the payload encodes with the current
                         // codec. A key-selection or unknown-key failure is a
                         // durable rejection at the push seam (§10.3), never an
@@ -5869,11 +5927,10 @@ impl SyncClient {
                         row_id,
                         base_version,
                     } => {
-                        if self.schema.table(&table).is_none() {
-                            return Err(
-                                format!("sync.unknown_table: unknown table {table:?}").into()
-                            );
-                        }
+                        let schema_table = self.schema.table(&table).ok_or_else(|| {
+                            format!("sync.unknown_table: unknown table {table:?}")
+                        })?;
+                        self.refuse_sealed_row(schema_table, &row_id)?;
                         // §2.4: the server rejects a rowId holding U+0000.
                         if row_id.contains('\0') {
                             return Err("sync.invalid_request: rowId holds U+0000 (§2.4)"
@@ -6022,6 +6079,7 @@ impl SyncClient {
                 .to_owned()
                 .into());
         }
+        self.refuse_sealed_row(schema_table, row_id)?;
         // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
         // server accepts a present scope column whose value equals the
         // stored row and applies it as a no-op, so a decoded envelope
@@ -6664,10 +6722,17 @@ impl SyncClient {
                 Some(Value::Bool(b)) => b.to_string(),
                 other => format!("{}", other.cloned().unwrap_or(Value::Null)),
             };
+            let sealed_key = if schema_table.has_encrypted_columns() {
+                row.get(schema_table.columns.len() + 1)
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+            } else {
+                None
+            };
             out.push(RowState {
                 row_id,
                 version,
                 values,
+                sealed_key,
             });
         }
         Ok(out)
@@ -7718,6 +7783,15 @@ impl SyncClient {
                         recommended_action: None,
                     })
                 })?;
+            // §5.11: reveal rows sealed under a key the keyring gained since.
+            self.reveal_sealed_rows().map_err(|error| {
+                Box::new(SyncOutcome::Failed {
+                    error_code: error.code,
+                    message: error.message,
+                    details: error.details,
+                    recommended_action: None,
+                })
+            })?;
             let has_log_epoch = self.get_meta(LOG_EPOCH_KEY).map_err(|message| {
                 Box::new(SyncOutcome::Failed {
                     error_code: "storage.failed".into(),
@@ -8914,7 +8988,7 @@ impl SyncClient {
                                         .and_then(|t| {
                                             decode_row_bytes(t, server_row, &self.encryption)
                                                 .ok()
-                                                .map(|row| (t, row))
+                                                .map(|(row, _)| (t, row))
                                         })
                                         .map(|(t, row)| {
                                             let mut map = Map::new();
@@ -9860,8 +9934,8 @@ impl SyncClient {
                             "upsert change without row payload".to_owned(),
                         )
                     })?;
-                    // §5.11: decrypt encrypted columns on apply.
-                    let row = {
+                    // §5.11: decrypt encrypted columns on apply, or seal the row.
+                    let (row, sealed) = {
                         #[cfg(feature = "bench-internals")]
                         let _phase = self.benchmark_phases.start(Phase::RowDecode);
                         // §5.11: a decrypt failure keeps its own identity.
@@ -9870,7 +9944,7 @@ impl SyncClient {
                     let table_name = table.name.clone();
                     // §4.5 version guard: only a newer upsert lands.
                     let landed = self
-                        .write_base_row(&table_name, &row, change.row_version)
+                        .write_base_row(&table_name, &row, change.row_version, sealed.as_ref())
                         .map_err(|m| TransportError::new("sync.invalid_request", m))?;
                     if mirror_visible && landed {
                         self.write_row(
@@ -9878,6 +9952,7 @@ impl SyncClient {
                             &table_name,
                             &row,
                             change.row_version,
+                            sealed.as_ref(),
                         )
                         .map_err(|m| TransportError::new("sync.invalid_request", m))?;
                     }
@@ -10005,17 +10080,22 @@ impl SyncClient {
                 }
                 for (row_index, row) in block.iter().enumerate() {
                     let decrypted;
+                    let mut sealed = None;
                     let values = if table.has_encrypted_columns() {
                         let mut values = row.values.clone();
-                        crate::values::decrypt_segment_row(table, &mut values, &self.encryption)
-                            .map_err(SectionError::Transport)?;
+                        sealed = crate::values::decrypt_segment_row(
+                            table,
+                            &mut values,
+                            &self.encryption,
+                        )
+                        .map_err(SectionError::Transport)?;
                         decrypted = values;
                         &decrypted
                     } else {
                         &row.values
                     };
                     if !self
-                        .write_base_row(&table.name, values, row.server_version)
+                        .write_base_row(&table.name, values, row.server_version, sealed.as_ref())
                         .map_err(|message| {
                             SectionError::Abort("sync.invalid_request".into(), message)
                         })?
@@ -10035,6 +10115,7 @@ impl SyncClient {
                             &table.name,
                             values,
                             row.server_version,
+                            sealed.as_ref(),
                         )
                         .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                     }
@@ -10582,6 +10663,7 @@ impl SyncClient {
             .iter()
             .map(|column| column.name.as_str())
             .chain(std::iter::once("_syncular_version"))
+            .chain(table.sealed_columns().iter().copied())
             .filter(|name| *name != table.primary_key)
             .map(|name| {
                 let name = quote_ident(name);
@@ -11555,6 +11637,7 @@ impl SyncClient {
         }
         let mut columns: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
         columns.push(quote_ident("_syncular_version"));
+        columns.extend(table.sealed_columns().iter().map(|name| quote_ident(name)));
         let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
         let primary_key = quote_ident(&table.primary_key);
         let updates = columns
@@ -11582,9 +11665,15 @@ impl SyncClient {
     }
 
     /// §4.5: write a server row under the version guard; returns whether it
-    /// landed.
-    fn write_base_row(&self, table_name: &str, row: &Row, version: i64) -> Result<bool, String> {
-        let landed = self.write_row(&base_table(table_name), table_name, row, version)?;
+    /// landed. `sealed` is its §5.11 sealed state, `None` for an unsealed row.
+    fn write_base_row(
+        &self,
+        table_name: &str,
+        row: &Row,
+        version: i64,
+        sealed: Option<&SealedRow>,
+    ) -> Result<bool, String> {
+        let landed = self.write_row(&base_table(table_name), table_name, row, version, sealed)?;
         if landed {
             self.overlay_dirty.table(table_name);
         }
@@ -11597,6 +11686,7 @@ impl SyncClient {
         table_name: &str,
         row: &Row,
         version: i64,
+        sealed: Option<&SealedRow>,
     ) -> Result<bool, String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::RowWrite);
@@ -11612,7 +11702,16 @@ impl SyncClient {
         let params = row
             .iter()
             .map(RowParam::Cell)
-            .chain(std::iter::once(RowParam::Version(version)));
+            .chain(std::iter::once(RowParam::Version(version)))
+            .chain(
+                [
+                    sealed.map(|sealed| sealed.key_id.as_str()),
+                    sealed.map(|sealed| sealed.envelopes.as_str()),
+                ]
+                .into_iter()
+                .take(table.sealed_columns().len())
+                .map(RowParam::Text),
+            );
         stmt.execute(rusqlite::params_from_iter(params))
             .map(|changed| changed > 0)
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
@@ -12007,7 +12106,7 @@ impl SyncClient {
             })?);
         }
         let version = local.as_ref().map_or(-1, |(_, version)| *version);
-        self.write_row(&visible, &table.name, &row, version)
+        self.write_row(&visible, &table.name, &row, version, None)
             .map(|_| ())
             .map_err(|error| {
                 if error.starts_with("UNIQUE constraint failed:") {
@@ -12033,6 +12132,115 @@ impl SyncClient {
                 |row| row.get(0),
             )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+    }
+
+    /// §5.11: a sealed row is read-only; a write could otherwise send NULL
+    /// over ciphertext this device cannot see.
+    fn refuse_sealed_row(&self, table: &TableSchema, row_id: &str) -> Result<(), ClientError> {
+        if !table.has_encrypted_columns() {
+            return Ok(());
+        }
+        let key_id: Option<String> = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT \"_sync_sealed_key\" FROM {} WHERE {}",
+                    visible_table(&table.name),
+                    row_id_predicate(table)
+                ),
+                rusqlite::params![row_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+            .flatten();
+        match key_id {
+            None => Ok(()),
+            Some(key_id) => Err(ClientError {
+                code: "client.encryption_key_missing".to_owned(),
+                message: "the row is sealed under a key this device does not hold".to_owned(),
+                details: Some(json!({ "table": table.name, "keyId": key_id })),
+                retryable: false,
+            }),
+        }
+    }
+
+    /// §5.11 reveal: decrypt every sealed base row whose envelope keys the
+    /// keyring now holds into its columns and clear both reserved columns,
+    /// one change batch per table. `client.decrypt_failed` fails the caller.
+    fn reveal_sealed_rows(&mut self) -> Result<(), TransportError> {
+        let storage = |message: String| TransportError::new("storage.failed", message);
+        let tables: Vec<TableSchema> = self
+            .schema
+            .tables
+            .iter()
+            .filter(|table| table.has_encrypted_columns())
+            .cloned()
+            .collect();
+        for table in &tables {
+            let base = base_table(&table.name);
+            let pk = quote_ident(&table.primary_key);
+            let sealed: Vec<(SqlValue, i64, String)> = self
+                .conn
+                .prepare_cached(&format!(
+                    "SELECT {pk}, \"_syncular_version\", \"_sync_sealed\" FROM {base} WHERE \"_sync_sealed_key\" IS NOT NULL"
+                ))
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                        .collect()
+                })
+                .map_err(|error| storage(Self::sqlite_failure(&self.storage_failure, error)))?;
+            let mut revealed = Vec::new();
+            for (key, version, envelopes) in sealed {
+                if let Some(row) =
+                    crate::values::reveal_sealed_row(table, &envelopes, &self.encryption)?
+                {
+                    revealed.push((key, version, row));
+                }
+            }
+            if revealed.is_empty() {
+                continue;
+            }
+            self.begin_observation("syncular_reveal").map_err(storage)?;
+            let outcome = (|| {
+                let assignments = table
+                    .encrypted_columns
+                    .iter()
+                    .map(|enc| format!("{}=?", quote_ident(&table.columns[enc.index].name)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut statement = self
+                    .conn
+                    .prepare_cached(&format!(
+                        "UPDATE {base} SET {assignments},\"_sync_sealed_key\"=NULL,\"_sync_sealed\"=NULL WHERE {pk}=? AND \"_syncular_version\"=?"
+                    ))
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                for (key, version, row) in &revealed {
+                    let mut params = table
+                        .encrypted_columns
+                        .iter()
+                        .map(|enc| owned_sql_value(RowParam::Cell(&row[enc.index])))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    params.push(key.clone());
+                    params.push(SqlValue::Integer(*version));
+                    statement
+                        .execute(rusqlite::params_from_iter(params))
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                }
+                drop(statement);
+                self.overlay_dirty.table(&table.name);
+                self.rebuild_overlay()?;
+                let mut batch = ChangeAccumulator::default();
+                batch.table(&table.name);
+                self.finish_observation("syncular_reveal", batch)
+            })();
+            if outcome.is_err() {
+                self.rollback_observation("syncular_reveal");
+            }
+            outcome.map_err(storage)?;
+        }
+        Ok(())
     }
 
     /// The visible (optimistic) row's values plus version, or `None` when the

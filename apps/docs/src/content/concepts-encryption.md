@@ -184,6 +184,28 @@ const encryption = {
 
 When authentication or a signed revocation must run first, create the client with `securityPreflight: true` instead of `encryption`, apply the exact [authorized local purge](/concepts-local-data-purge/#race-free-security-bootstrap), then install the accepted keyring with `activateSecurity({ encryption })`. Protected work fails with `client.security_preflight_required` until activation. Use `beginSecurityPreflight()` for live key rotation or removal.
 
+### Rows under a key the device lacks
+
+A table that selects its key per row (`keyIdColumns` or `keyIdFor`) can hold rows under keys a device never receives: imported rows, rotated rows, another practice's rows in a shared unit. Set `missingKey: 'seal'` on the keyring, or on a direct client's `encryption` config, to keep syncing past them. The default, `'fail'`, fails the round as described above.
+
+```ts title="src/sync.ts"
+const encryption = {
+  keys: { 'practice-key-v1': practiceKey },
+  keyIdColumns: { patients: 'encryption_key_id' },
+  missingKey: 'seal' as const,
+};
+```
+
+Under `'seal'`, a delivered row with an envelope under a key the keyring does not hold lands sealed: every encrypted column is NULL, the other columns hold their values, and the round goes on. The reserved column `_sync_sealed_key` holds the missing key id; read it with an alias, because `SELECT *` strips it like `_sync_version`:
+
+```sql
+SELECT id, name, _sync_sealed_key AS sealed_key FROM patients
+```
+
+A sealed row is read-only. `mutate`, `patch` and delete of it fail at once with `client.encryption_key_missing`, because a write would send NULL over ciphertext the device cannot see. The client keeps the row's envelopes locally. When `activateSecurity()` installs a keyring that holds the key, or the next sync round starts with the key available, the client decrypts the row, clears `_sync_sealed_key` and publishes the change. A wrong key or a corrupt envelope still fails the round with `client.decrypt_failed`.
+
+Render a NULL encrypted column of a sealed row as locked, never as empty: NULL there means the value is unknown on this device.
+
 ### What a write sends
 
 A mutation sends the columns it presents. A `patch` carries the primary key plus the columns you set, and only those columns are encrypted and replaced on the server. An encrypted column that a patch omits stays byte-identical on the server, so ciphertext and nonce are never reused, and an immutable value inside a mutable row survives without a resend.
@@ -276,7 +298,7 @@ Put a signal for no-key clients in the plaintext primary or in another plaintext
 
 ### A no-key client holds a sidecar unit
 
-An undecryptable row fails the round with `client.encryption_key_missing` and starves unrelated frames in the same response. Register units on the sidecar's scope variable only on clients that hold the sidecar key.
+An undecryptable row fails the round with `client.encryption_key_missing` and starves unrelated frames in the same response. Register units on the sidecar's scope variable only on clients that hold the sidecar key, or set `missingKey: 'seal'` ([Rows under a key the device lacks](#rows-under-a-key-the-device-lacks)).
 
 ### Codegen gives no warning
 

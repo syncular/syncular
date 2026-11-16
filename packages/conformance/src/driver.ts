@@ -855,6 +855,8 @@ export interface ClientRowState {
   /** Local synced version (`-1` = optimistic, not yet server-versioned). */
   readonly version: number;
   readonly values: DriverRow;
+  /** §5.11 `_sync_sealed_key` of a sealed row; absent on an unsealed row. */
+  readonly sealedKey?: string;
 }
 
 /** §4.1 client state of one registered unit. */
@@ -976,6 +978,8 @@ export interface DriverEncryptionConfig {
   readonly keys: Readonly<Record<string, { readonly $bytes: string }>>;
   /** §5.11 `keyIdColumns`: table name → non-encrypted selector column. */
   readonly keyIdColumns?: Readonly<Record<string, string>>;
+  /** §5.11 sealed apply; absent ⇒ `'fail'`. */
+  readonly missingKey?: 'fail' | 'seal';
 }
 
 /**
@@ -1191,7 +1195,8 @@ export interface DriverSyncProgress {
 export interface ClientInstance {
   authoritySnapshot(): Promise<DriverAuthoritySnapshot>;
   beginSecurityPreflight(): Promise<void>;
-  activateSecurity(): Promise<void>;
+  /** §5.11: `encryption` installs that keyring on activation. */
+  activateSecurity(encryption?: DriverEncryptionConfig): Promise<void>;
   /** §4.1: register one unit; returns its derived id. */
   subscribe(scopes: DriverUnitScopes): Promise<string>;
   /** Register several units in one local transaction; returns their ids. */

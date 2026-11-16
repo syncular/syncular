@@ -75,7 +75,7 @@ fn queued_insert_after_bump(next: &Value, strip_marker: bool) -> SyncClient {
 /// outbox over it.
 fn seed_base_row(client: &mut SyncClient, row: Row) {
     client
-        .write_row(&base_table("tasks"), "tasks", &row, 1)
+        .write_row(&base_table("tasks"), "tasks", &row, 1, None)
         .unwrap();
     client.overlay_dirty.set(true);
     client.rebuild_overlay().unwrap();

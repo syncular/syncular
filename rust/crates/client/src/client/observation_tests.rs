@@ -272,6 +272,7 @@ fn an_unresolvable_key_id_becomes_a_durable_rejection_at_the_push_seam() {
             "secrets",
             &vec![Some(ColumnValue::String("ghost".into())), None, None],
             1,
+            None,
         )
         .unwrap();
     client.rebuild_overlay().expect("rebuild overlay");
@@ -575,6 +576,7 @@ fn patch_types_an_integer_primary_key_from_its_canonical_row_id() {
                 Some(ColumnValue::String("before".into())),
             ],
             1,
+            None,
         )
         .unwrap();
     client.rebuild_overlay().expect("rebuild overlay");
@@ -3658,6 +3660,7 @@ fn an_edit_authored_before_the_previous_own_acknowledgement_rebases_on_it() {
                 Some(ColumnValue::String("a".into())),
             ],
             1,
+            None,
         )
         .unwrap();
     client.rebuild_overlay().expect("rebuild overlay");
@@ -3770,6 +3773,7 @@ fn diego_applied_sparse_moves_stay_visible_until_pull_image_arrives() {
                 Some(ColumnValue::Integer(1)),
             ],
             1,
+            None,
         )
         .unwrap();
     client.rebuild_overlay().expect("rebuild overlay");
@@ -4340,6 +4344,7 @@ fn row_id_lookups_preserve_text_matching_and_seek_lossless_keys() {
                         Some(ColumnValue::String(format!("p{index}"))),
                     ],
                     1,
+                    None,
                 )
                 .unwrap();
         }
@@ -4542,6 +4547,7 @@ fn pending_row_reconciliation_matches_full_fifo_replay() {
                                 Some(ColumnValue::String(format!("base{index}"))),
                             ],
                             1,
+                            None,
                         )
                         .unwrap();
                 }
@@ -4666,6 +4672,7 @@ fn remote_unique_values_reconsider_pending_writes_on_other_rows() {
                     Some(ColumnValue::String(title.into())),
                 ],
                 1,
+                None,
             )
             .unwrap();
     }
@@ -4771,6 +4778,7 @@ fn measure_scoped_overlay(unchanged_rows: i64, rounds: i64) -> Vec<u128> {
                     Some(ColumnValue::String("p1".into())),
                 ],
                 round,
+                None,
             )
             .unwrap();
         let mut report = SyncReport::default();
@@ -5423,6 +5431,7 @@ fn appended_overlay_matches_full_fifo_replay_with_constraints_and_fts() {
                         Some(ColumnValue::String(format!("base{index}"))),
                     ],
                     1,
+                    None,
                 )
                 .unwrap();
         }
@@ -6166,6 +6175,7 @@ fn overlay_replay_failure_rolls_back_push_and_pull_apply_boundaries() {
                 Some(ColumnValue::Boolean(false)),
             ],
             1,
+            None,
         )
         .unwrap();
     client.rebuild_overlay().unwrap();
@@ -6369,6 +6379,7 @@ fn overlay_replay_keeps_secondary_unique_deferral_and_lazy_base_precedence() {
                 Some(ColumnValue::Boolean(false)),
             ],
             1,
+            None,
         )
         .unwrap();
     client.rebuild_overlay_if_dirty().unwrap();
@@ -6394,6 +6405,7 @@ fn overlay_replay_keeps_secondary_unique_deferral_and_lazy_base_precedence() {
                 Some(ColumnValue::Boolean(false)),
             ],
             1,
+            None,
         )
         .unwrap();
     client.conn.execute_batch("DROP TABLE tasks").unwrap();
@@ -6953,6 +6965,7 @@ fn retained_rejection_survives_file_reopen_and_security_purge() {
                     Some(ColumnValue::String("server".into())),
                 ],
                 1,
+                None,
             )
             .unwrap();
         first.rebuild_overlay().expect("rebuild overlay");
@@ -8349,6 +8362,7 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                             Some(ColumnValue::String(title.into())),
                         ],
                         1,
+                        None,
                     )
                     .unwrap();
             }
@@ -8437,7 +8451,9 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                     Ok(1)
                 ));
             }
-            reference.write_base_row("tasks", &values, version).unwrap();
+            reference
+                .write_base_row("tasks", &values, version, None)
+                .unwrap();
             reference.rebuild_overlay().expect("rebuild overlay");
             for table in ["tasks", "notes"] {
                 for sql in [format!("SELECT * FROM {table} ORDER BY id"),format!("SELECT _syncular_source_id,title FROM {table}_fts ORDER BY _syncular_source_id"),format!("SELECT source_id FROM _syncular_fts_{table}_fts ORDER BY source_id")] {
@@ -8516,6 +8532,7 @@ fn import_reconciliation_preserves_typed_pending_primary_keys() {
                             Some(ColumnValue::String(title.into())),
                         ],
                         1,
+                        None,
                     )
                     .unwrap();
             }

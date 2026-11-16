@@ -185,3 +185,69 @@ test('a worker round that meets a row without its key fails with client.encrypti
     await http.stop();
   }
 });
+
+test('a worker keyring with missingKey seal lands the row sealed and completes the round', async () => {
+  const server = makeServer(SERVER_SCHEMA);
+  server.allowed['actor-1'] = { project_id: ['p1'] };
+  const http = serveOverHttp(server);
+  const makeHandle = (
+    clientId: string,
+    keys: Record<string, Uint8Array>,
+    missingKey?: 'seal',
+  ) =>
+    createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
+      worker: () => new Worker(WORKER_URL),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl, segmentsUrl: http.segmentsUrl },
+      clientId,
+      autoSync: false,
+      lockName: `worker-encryption-${clientId}`,
+      encryption: {
+        keys,
+        keyIdColumns: { secrets: 'encryption_key_id' },
+        ...(missingKey !== undefined ? { missingKey } : {}),
+      },
+    });
+  const writer = await makeHandle('worker-seal-writer', {
+    'practice-key-v1': KEY,
+  });
+  const reader = await makeHandle('worker-seal-reader', {}, 'seal');
+  try {
+    await writer.subscribe({ project_id: 'p1' });
+    await writer.syncUntilIdle();
+    await writer.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: {
+          id: 'secret-1',
+          project_id: 'p1',
+          encryption_key_id: 'practice-key-v1',
+          note: 'patient identity',
+        },
+      },
+    ]);
+    await writer.syncUntilIdle();
+
+    await reader.subscribe({ project_id: 'p1' });
+    await reader.syncUntilIdle();
+    expect(
+      await reader.query(
+        'SELECT id, encryption_key_id, note, _sync_sealed_key AS sealed_key FROM secrets',
+      ),
+    ).toEqual([
+      {
+        id: 'secret-1',
+        encryption_key_id: 'practice-key-v1',
+        note: null,
+        sealed_key: 'practice-key-v1',
+      },
+    ]);
+  } finally {
+    await writer.close();
+    await reader.close();
+    await http.stop();
+  }
+});

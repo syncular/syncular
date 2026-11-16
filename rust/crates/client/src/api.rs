@@ -1370,6 +1370,9 @@ pub struct RowState {
     /// (from a `COMMIT` change or a segment row record, §5.2/§5.6).
     pub version: i64,
     pub values: Map<String, Value>,
+    /// §5.11 `_sync_sealed_key` of a sealed row; absent on an unsealed row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sealed_key: Option<String>,
 }
 
 /// One AND-combined application-authorized local purge target. Targets in

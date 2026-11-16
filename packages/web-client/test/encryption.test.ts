@@ -9,6 +9,8 @@ import {
   type ClientSchema,
   compileClientSchema,
   decryptRowValues,
+  decryptOrSealRowValues,
+  ensureLocalSchema,
   encryptionConfigFromKeyring,
   encryptRowValues,
 } from '@syncular/client';
@@ -636,4 +638,176 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
     await a.client.close();
     a.db.close();
   }
+});
+
+describe('§5.11 sealed apply', () => {
+  test('a missing key seals the row, the round completes, and the key reveals it', async () => {
+    const server = makeServer(SERVER_SCHEMA);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    const writer = await makeClient(server, {
+      clientId: 'client-writer',
+      schema: CLIENT_SCHEMA,
+      encryption: { keyProvider: goodProvider },
+    });
+    writer.client.subscribe({ project_id: 'p1' });
+    await writer.client.syncUntilIdle();
+    writer.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: { id: 's1', project_id: 'p1', note: 'first', amount: 1 },
+      },
+    ]);
+    await writer.client.sync();
+
+    let key: Uint8Array | undefined;
+    const reader = await makeClient(server, {
+      clientId: 'client-reader',
+      schema: CLIENT_SCHEMA,
+      encryption: {
+        keyProvider: (id) => (id === 'secrets' ? key : undefined),
+        missingKey: 'seal',
+      },
+    });
+    reader.client.subscribe({ project_id: 'p1' });
+    // The bootstrap segment carries the row.
+    await reader.client.syncUntilIdle();
+    const sealedRead = () =>
+      reader.client.query(
+        'SELECT id, project_id, note, amount, _sync_sealed_key AS sealed_key FROM secrets',
+      );
+    expect(sealedRead()).toEqual([
+      {
+        id: 's1',
+        project_id: 'p1',
+        note: null,
+        amount: null,
+        sealed_key: 'secrets',
+      },
+    ]);
+    // `SELECT *` strips the reserved columns like `_sync_version`.
+    expect(reader.client.query('SELECT * FROM secrets')).toEqual([
+      { id: 's1', project_id: 'p1', note: null, amount: null },
+    ]);
+
+    // A COMMIT for the sealed row keeps it sealed.
+    writer.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: { id: 's1', project_id: 'p1', note: 'second', amount: 2 },
+      },
+    ]);
+    await writer.client.sync();
+    await reader.client.syncUntilIdle();
+    expect(sealedRead()).toEqual([
+      {
+        id: 's1',
+        project_id: 'p1',
+        note: null,
+        amount: null,
+        sealed_key: 'secrets',
+      },
+    ]);
+
+    // A sealed row is read-only; nothing enters the outbox.
+    const sealed = {
+      code: 'client.encryption_key_missing',
+      details: { table: 'secrets', keyId: 'secrets' },
+    };
+    expect(() =>
+      reader.client.mutate([
+        {
+          table: 'secrets',
+          op: 'upsert',
+          values: { id: 's1', project_id: 'p1', note: 'overwrite', amount: 3 },
+        },
+      ]),
+    ).toThrow(expect.objectContaining(sealed));
+    expect(() => reader.client.patch('secrets', 's1', { amount: 3 })).toThrow(
+      expect.objectContaining(sealed),
+    );
+    expect(() =>
+      reader.client.mutate([{ table: 'secrets', op: 'delete', rowId: 's1' }]),
+    ).toThrow(expect.objectContaining(sealed));
+    expect(reader.client.pendingCommits()).toHaveLength(0);
+
+    // The next round reveals the row once the key is there.
+    key = KEY;
+    await reader.client.syncUntilIdle();
+    expect(sealedRead()).toEqual([
+      {
+        id: 's1',
+        project_id: 'p1',
+        note: 'second',
+        amount: 2,
+        sealed_key: null,
+      },
+    ]);
+  });
+
+  test('missingKey defaults to fail', async () => {
+    const schema = compileClientSchema(CLIENT_SCHEMA);
+    const table = schema.tables.get('secrets')!;
+    const envelope = await encryptValue('string', 'x', 'secrets', KEY);
+    await expect(
+      decryptOrSealRowValues({ keyProvider: () => undefined }, table, [
+        's1',
+        'p1',
+        envelope,
+        null,
+      ]),
+    ).rejects.toMatchObject({ code: 'client.encryption_key_missing' });
+    // A wrong key is never sealed.
+    await expect(
+      decryptOrSealRowValues(
+        { keyProvider: wrongProvider, missingKey: 'seal' },
+        table,
+        ['s1', 'p1', envelope, null],
+      ),
+    ).rejects.toMatchObject({ code: 'client.decrypt_failed' });
+  });
+
+  test('a replica with NOT NULL encrypted columns is rebuilt with its rows', () => {
+    const db = new BunClientDatabase();
+    try {
+      db.exec(
+        'CREATE TABLE secrets(id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL, note TEXT NOT NULL, amount INTEGER, _sync_version INTEGER NOT NULL DEFAULT 0)',
+      );
+      db.exec('CREATE INDEX secrets_by_project ON secrets(project_id)');
+      db.exec("INSERT INTO secrets VALUES ('s1','p1','kept',7,3)");
+      ensureLocalSchema(db, compileClientSchema(CLIENT_SCHEMA));
+      expect(
+        db
+          .query('PRAGMA table_info(secrets)')
+          .map((column) => [column.name, column.notnull]),
+      ).toEqual([
+        ['id', 1],
+        ['project_id', 1],
+        ['note', 0],
+        ['amount', 0],
+        ['_sync_version', 1],
+        ['_sync_sealed_key', 0],
+        ['_sync_sealed', 0],
+      ]);
+      expect(db.query('SELECT * FROM secrets')).toEqual([
+        {
+          id: 's1',
+          project_id: 'p1',
+          note: 'kept',
+          amount: 7,
+          _sync_version: 3,
+          _sync_sealed_key: null,
+          _sync_sealed: null,
+        },
+      ]);
+      expect(
+        db.query(
+          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='secrets' AND sql IS NOT NULL ORDER BY name",
+        ),
+      ).toEqual([{ name: '_syncular_sealed_secrets' }]);
+    } finally {
+      db.close();
+    }
+  });
 });

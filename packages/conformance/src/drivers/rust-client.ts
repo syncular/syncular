@@ -53,6 +53,7 @@ import type {
   DriverChangeBatch,
   DriverCommitDelivery,
   DriverCommitOutcome,
+  DriverEncryptionConfig,
   DriverPreviousVersionAudit,
   DriverPreviousVersionReason,
   DriverPreviousVersionSnapshot,
@@ -1512,8 +1513,28 @@ class RustClientInstance implements ClientInstance {
   async beginSecurityPreflight(): Promise<void> {
     await this.#shim.call('beginSecurityPreflight', {});
   }
-  async activateSecurity(): Promise<void> {
-    await this.#shim.call('activateSecurity', {});
+  async activateSecurity(encryption?: DriverEncryptionConfig): Promise<void> {
+    await this.#shim.call(
+      'activateSecurity',
+      encryption === undefined
+        ? {}
+        : {
+            encryption: {
+              keys: Object.fromEntries(
+                Object.entries(encryption.keys).map(([id, key]) => [
+                  id,
+                  { $bytes: key.$bytes },
+                ]),
+              ),
+              ...(encryption.keyIdColumns !== undefined
+                ? { keyIdColumns: { ...encryption.keyIdColumns } }
+                : {}),
+              ...(encryption.missingKey !== undefined
+                ? { missingKey: encryption.missingKey }
+                : {}),
+            },
+          },
+    );
   }
 
   async readRows(table: string): Promise<ClientRowState[]> {

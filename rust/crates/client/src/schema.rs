@@ -130,6 +130,17 @@ impl TableSchema {
     pub fn has_encrypted_columns(&self) -> bool {
         !self.encrypted_columns.is_empty()
     }
+
+    /// §5.11 sealed apply: the reserved `_sync_sealed_key` and `_sync_sealed`
+    /// columns every table with an encrypted column stores after
+    /// `_syncular_version`, in this order.
+    pub fn sealed_columns(&self) -> &'static [&'static str] {
+        if self.has_encrypted_columns() {
+            &["_sync_sealed_key", "_sync_sealed"]
+        } else {
+            &[]
+        }
+    }
 }
 
 impl TableSchema {

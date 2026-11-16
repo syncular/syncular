@@ -239,8 +239,11 @@ import {
   quoteIdent,
   recordToRowValues,
   rowValueToJson,
+  SEALED_COLUMN,
+  SEALED_KEY_COLUMN,
   SYNC_VERSION_COLUMN,
   stripSyncColumns,
+  toSqlValue,
 } from './schema';
 import {
   bootstrapping,
@@ -1689,6 +1692,7 @@ export class SyncClient {
       this.#securityLifecycle = 'active';
       batch.status();
     });
+    await this.#serialize(() => this.#revealSealed());
     if (this.#hasStartupWork()) {
       this.#setSyncNeeded(true);
       this.#emitSyncNeeded('startup');
@@ -3561,6 +3565,23 @@ export class SyncClient {
         insert: insert ? true : undefined,
       });
     });
+    // §5.11: a sealed row is read-only; a write could send NULL over
+    // ciphertext this device cannot see.
+    for (const operation of operations) {
+      const table = this.#table(operation.table);
+      if (!table.hasEncryptedColumns) continue;
+      const keyId = this.#db.query(
+        `SELECT ${quoteIdent(SEALED_KEY_COLUMN)} AS k FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
+        [pkSqlValue(table, operation.rowId)],
+      )[0]?.k;
+      if (typeof keyId === 'string')
+        throw new ClientSyncError(
+          'client.encryption_key_missing',
+          'the row is sealed under a key this device does not hold',
+          false,
+          { table: table.name, keyId },
+        );
+    }
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
         appendOutboxCommit(
@@ -4269,6 +4290,53 @@ export class SyncClient {
     return this.#sync();
   }
 
+  /**
+   * §5.11 reveal: under `missingKey: 'seal'`, decrypt every sealed row whose
+   * envelope keys the keyring now holds and clear its reserved columns, one
+   * revision per table.
+   */
+  async #revealSealed(): Promise<void> {
+    if (this.#encryption?.missingKey !== 'seal') return;
+    const { decryptRowValues } = await import('./encryption');
+    for (const table of this.#schema.tables.values()) {
+      if (!table.hasEncryptedColumns) continue;
+      const encrypted = table.columns.filter((column) => column.encrypted);
+      const revealed: SqlValue[][] = [];
+      for (const row of this.#db.query(
+        `SELECT ${quoteIdent(table.primaryKey)} AS id,${quoteIdent(SYNC_VERSION_COLUMN)} AS v,${quoteIdent(SEALED_COLUMN)} AS e FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
+      )) {
+        const stored: Record<string, number[]> = JSON.parse(String(row.e));
+        const values = await decryptRowValues(
+          this.#encryption,
+          table,
+          table.columns.map((column) =>
+            stored[column.name] ? new Uint8Array(stored[column.name]!) : null,
+          ),
+        ).catch((error: { code?: string }) => {
+          if (error.code !== 'client.encryption_key_missing') throw error;
+        });
+        if (values)
+          revealed.push([
+            ...table.columns.flatMap((column, i) =>
+              column.encrypted ? [toSqlValue(values[i] ?? null)] : [],
+            ),
+            row.id ?? null,
+            row.v ?? null,
+          ]);
+      }
+      if (revealed.length > 0)
+        this.#applyBatch((batch) => {
+          // A delivery since the read replaced the sealed state.
+          for (const params of revealed)
+            this.#db.exec(
+              `UPDATE ${quoteIdent(table.name)} SET ${encrypted.map((column) => `${quoteIdent(column.name)}=?,`).join('')}${quoteIdent(SEALED_KEY_COLUMN)}=NULL,${quoteIdent(SEALED_COLUMN)}=NULL WHERE ${quoteIdent(table.primaryKey)}=? AND ${quoteIdent(SYNC_VERSION_COLUMN)}=? AND ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
+              params,
+            );
+          batch.table(table.name);
+        });
+    }
+  }
+
   /** `signal` is the `syncUntilIdle` deadline (§7.8); `sync()` has none. */
   #sync(signal?: AbortSignal): Promise<SyncSummary> {
     this.#requireActive();
@@ -4419,6 +4487,7 @@ export class SyncClient {
     this.#setSyncNeeded(false);
     try {
       await this.#drainPendingEvictions();
+      await this.#revealSealed();
       const logEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
       // §7.4.4: encode the outbox with the CURRENT codec; a commit that
       // cannot express itself under the new schema (a dropped column/table)

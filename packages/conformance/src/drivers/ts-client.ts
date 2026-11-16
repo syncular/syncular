@@ -80,6 +80,9 @@ function buildEncryption(
     ...(config.keyIdColumns !== undefined
       ? { keyIdColumns: config.keyIdColumns }
       : {}),
+    ...(config.missingKey !== undefined
+      ? { missingKey: config.missingKey }
+      : {}),
   };
 }
 
@@ -902,8 +905,11 @@ class TsClientInstance implements ClientInstance {
   async beginSecurityPreflight(): Promise<void> {
     await this.#client.beginSecurityPreflight();
   }
-  async activateSecurity(): Promise<void> {
-    await this.#client.activateSecurity();
+  async activateSecurity(encryption?: DriverEncryptionConfig): Promise<void> {
+    const keyring = buildEncryption(encryption);
+    await this.#client.activateSecurity(
+      keyring !== undefined ? { encryption: keyring } : {},
+    );
   }
 
   async readRows(table: string): Promise<ClientRowState[]> {
@@ -925,6 +931,9 @@ class TsClientInstance implements ClientInstance {
         rowId: String(rowId),
         version: Number(row[SYNC_VERSION_COLUMN] ?? 0),
         values: values as DriverRow,
+        ...(typeof row._sync_sealed_key === 'string'
+          ? { sealedKey: row._sync_sealed_key }
+          : {}),
       };
     });
   }

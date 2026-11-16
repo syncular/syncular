@@ -50,6 +50,11 @@ export interface EncryptionConfig {
    */
   readonly keyIdColumns?: Readonly<Record<string, string>>;
   /**
+   * §5.11 sealed apply. `'fail'` (default) fails a round on an envelope whose
+   * key the provider lacks; `'seal'` lands that row sealed and continues.
+   */
+  readonly missingKey?: 'fail' | 'seal';
+  /**
    * Nonce source (§5.11). Production omits this (secure RNG). ONLY the crypto
    * golden-vector generator injects a fixed nonce — never a production path.
    */
@@ -60,6 +65,7 @@ export interface EncryptionConfig {
 export interface EncryptionKeyringConfig {
   readonly keys: Readonly<Record<string, Uint8Array>>;
   readonly keyIdColumns?: Readonly<Record<string, string>>;
+  readonly missingKey?: 'fail' | 'seal';
 }
 
 /**
@@ -86,6 +92,9 @@ export function encryptionConfigFromKeyring(
       Object.hasOwn(keyring.keys, keyId) ? keyring.keys[keyId] : undefined,
     ...(keyring.keyIdColumns !== undefined
       ? { keyIdColumns: keyring.keyIdColumns }
+      : {}),
+    ...(keyring.missingKey !== undefined
+      ? { missingKey: keyring.missingKey }
       : {}),
   };
 }
@@ -204,6 +213,56 @@ export async function encryptRowValues<T extends RowValue | undefined>(
     )) as T;
   }
   return out;
+}
+
+/** §5.11 sealed state of a row: the `_sync_sealed_key` and `_sync_sealed` cells. */
+export interface SealedRow {
+  readonly keyId: string;
+  /** JSON object of encrypted column name → envelope bytes. */
+  readonly envelopes: string;
+}
+
+/**
+ * The apply seam (§4.5 COMMIT, §5.6 rows segment): {@link decryptRowValues},
+ * except that under `missingKey: 'seal'` a missing key leaves every
+ * encrypted column NULL and `sealed` carries the first missing key id and
+ * the envelopes (§5.11).
+ */
+export async function decryptOrSealRowValues(
+  config: EncryptionConfig | undefined,
+  table: CompiledClientTable,
+  values: readonly RowValue[],
+): Promise<{ values: RowValue[]; sealed?: SealedRow }> {
+  try {
+    return { values: await decryptRowValues(config, table, values) };
+  } catch (error) {
+    if (
+      config?.missingKey !== 'seal' ||
+      !(error instanceof DecryptError) ||
+      error.code !== 'client.encryption_key_missing'
+    )
+      throw error;
+    // §5.11: every encrypted column is NULL; `_sync_sealed` keeps the
+    // envelopes as byte arrays for the reveal.
+    return {
+      values: values.map((value, i) =>
+        table.columns[i]?.encrypted ? null : value,
+      ),
+      sealed: {
+        keyId: error.details!.keyId,
+        envelopes: JSON.stringify(
+          Object.fromEntries(
+            table.columns.flatMap((column, i) => {
+              const value = values[i];
+              return column.encrypted && value instanceof Uint8Array
+                ? [[column.name, [...value]]]
+                : [];
+            }),
+          ),
+        ),
+      },
+    };
+  }
 }
 
 /**

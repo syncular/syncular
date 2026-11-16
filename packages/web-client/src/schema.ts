@@ -262,6 +262,10 @@ export function compileClientSchema(
  */
 export const SYNC_VERSION_COLUMN = '_sync_version';
 
+/** §5.11 sealed apply: the missing key id, and the envelopes kept for a reveal. */
+export const SEALED_KEY_COLUMN = '_sync_sealed_key';
+export const SEALED_COLUMN = '_sync_sealed';
+
 /** `_sync_version` for optimistic rows the server has never confirmed. */
 export const OPTIMISTIC_VERSION = -1;
 
@@ -376,15 +380,25 @@ function createSyncedTable(
   // §6.11: a declared reference is deliberately NOT emitted here. Windowing
   // evicts a parent independently of its children, so local SQLite never
   // enforces a reference; the server enforces it.
+  // §5.11: a sealed row holds NULL in every encrypted column.
   const columns = table.columns.map((column) => {
-    const notNull = column.nullable ? '' : ' NOT NULL';
+    const notNull = column.nullable || column.encrypted ? '' : ' NOT NULL';
     const pk = column.name === table.primaryKey ? ' PRIMARY KEY' : '';
     return `${quoteIdent(column.name)} ${sqlType(column)}${notNull}${pk}`;
   });
   columns.push(`${quoteIdent(SYNC_VERSION_COLUMN)} INTEGER NOT NULL DEFAULT 0`);
+  if (table.hasEncryptedColumns)
+    columns.push(
+      `${quoteIdent(SEALED_KEY_COLUMN)} TEXT`,
+      `${quoteIdent(SEALED_COLUMN)} TEXT`,
+    );
   db.exec(
     `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)}(${columns.join(', ')})`,
   );
+  if (table.hasEncryptedColumns)
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS ${quoteIdent(`_syncular_sealed_${table.name}`)} ON ${quoteIdent(table.name)}(${quoteIdent(SEALED_KEY_COLUMN)}) WHERE ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
+    );
   // Local secondary indexes (CREATE INDEX subset). Created here so both the
   // initial ensureLocalSchema and the §7.4.3 drop-and-recreate reset path
   // materialize them. IF NOT EXISTS keeps it idempotent; the DROP TABLE in the
@@ -561,6 +575,31 @@ export function ensureLocalSyncedSchema(
 ): void {
   db.transaction(() => {
     for (const table of schema.tables.values()) {
+      // §5.11: rebuild a table created before sealed apply (NOT NULL
+      // encrypted columns, no reserved columns), keeping its rows.
+      const info = table.hasEncryptedColumns
+        ? db.query(`PRAGMA table_info(${quoteIdent(table.name)})`)
+        : [];
+      if (
+        info.length > 0 &&
+        !info.some((column) => column.name === SEALED_KEY_COLUMN)
+      ) {
+        const old = quoteIdent('_syncular_rebuild');
+        db.exec(`ALTER TABLE ${quoteIdent(table.name)} RENAME TO ${old}`);
+        for (const index of db.query(
+          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='_syncular_rebuild' AND sql IS NOT NULL",
+        ))
+          db.exec(`DROP INDEX ${quoteIdent(String(index.name))}`);
+        createSyncedTable(db, table);
+        const names = [
+          ...table.columns.map((column) => quoteIdent(column.name)),
+          quoteIdent(SYNC_VERSION_COLUMN),
+        ].join(', ');
+        db.exec(
+          `INSERT INTO ${quoteIdent(table.name)}(${names})SELECT ${names} FROM ${old}`,
+        );
+        db.exec(`DROP TABLE ${old}`);
+      }
       createSyncedTable(db, table);
     }
     for (const table of schema.tables.values()) {

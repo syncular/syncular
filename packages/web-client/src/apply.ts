@@ -23,7 +23,7 @@ import {
   type SegmentRow,
 } from '@syncular/core';
 import type { ClientDatabase, SqlValue } from './database';
-import type { EncryptionConfig } from './encryption';
+import type { EncryptionConfig, SealedRow } from './encryption';
 import { ClientSyncError, invalidRequest } from './errors';
 import {
   type CompiledClientSchema,
@@ -32,6 +32,8 @@ import {
   matchesLocalScopes,
   type JsonRowValue,
   pkSqlValue,
+  SEALED_COLUMN,
+  SEALED_KEY_COLUMN,
   SYNC_VERSION_COLUMN,
   toSqlValue,
   rowValueToJson,
@@ -44,6 +46,9 @@ function upsertSql(table: CompiledClientTable): string {
   const names = [
     ...table.columns.map((column) => quoteIdent(column.name)),
     quoteIdent(SYNC_VERSION_COLUMN),
+    ...(table.hasEncryptedColumns
+      ? [quoteIdent(SEALED_KEY_COLUMN), quoteIdent(SEALED_COLUMN)]
+      : []),
   ];
   const placeholders = names.map(() => '?').join(', ');
   const updates = names
@@ -59,8 +64,15 @@ export function upsertLocalRow(
   values: readonly RowValue[],
   syncVersion: number,
   serverWrite = true,
+  sealed?: SealedRow,
 ): void {
-  db.exec(upsertSql(table), [...values.map(toSqlValue), syncVersion]);
+  db.exec(upsertSql(table), [
+    ...values.map(toSqlValue),
+    syncVersion,
+    ...(table.hasEncryptedColumns
+      ? [sealed?.keyId ?? null, sealed?.envelopes ?? null]
+      : []),
+  ]);
   if (serverWrite)
     retainedBaseWrite(
       db,
@@ -144,7 +156,12 @@ export async function applyCommitFrame(
 ): Promise<void> {
   type Resolved =
     | { op: 'delete'; table: CompiledClientTable }
-    | { op: 'upsert'; table: CompiledClientTable; values: readonly RowValue[] };
+    | {
+        op: 'upsert';
+        table: CompiledClientTable;
+        values: readonly RowValue[];
+        sealed?: SealedRow | undefined;
+      };
   const resolved: Resolved[] = [];
   for (const change of frame.changes) {
     const tableName = frame.tables[change.tableIndex];
@@ -167,12 +184,15 @@ export async function applyCommitFrame(
     if (change.row === undefined) {
       throw invalidRequest('upsert change without row payload');
     }
-    let values = decodeRow(table.columns, change.row);
+    const values = decodeRow(table.columns, change.row);
     if (table.hasEncryptedColumns) {
-      const { decryptRowValues } = await import('./encryption');
-      values = await decryptRowValues(encryption, table, values);
-    }
-    resolved.push({ op: 'upsert', table, values });
+      const { decryptOrSealRowValues } = await import('./encryption');
+      resolved.push({
+        op: 'upsert',
+        table,
+        ...(await decryptOrSealRowValues(encryption, table, values)),
+      });
+    } else resolved.push({ op: 'upsert', table, values });
   }
   transaction(() => {
     // Exact keys name the rows this frame rebases; unique-key peers widen the
@@ -218,7 +238,15 @@ export async function applyCommitFrame(
       );
       if (!land) continue;
       if (change.op === 'delete') deleteLocalRow(db, change.table, rowId);
-      else upsertLocalRow(db, change.table, change.values, rowVersion);
+      else
+        upsertLocalRow(
+          db,
+          change.table,
+          change.values,
+          rowVersion,
+          true,
+          change.sealed,
+        );
     }
     return rebaseScope(scope, kept, skipped);
   });
@@ -727,15 +755,19 @@ export async function applyRowsSegment(
     // §5.11: decrypt this block's rows before opening the sync transaction
     // (WebCrypto is async; the SQLite transaction is not). Decrypt failure
     // aborts before any write in this block.
-    const rows: { values: readonly RowValue[]; serverVersion: number }[] = [];
+    const rows: {
+      values: readonly RowValue[];
+      serverVersion: number;
+      sealed?: SealedRow | undefined;
+    }[] = [];
     for (const row of block) {
-      const values = table.hasEncryptedColumns
-        ? await (async () => {
-            const { decryptRowValues } = await import('./encryption');
-            return decryptRowValues(encryption, table, row.values);
-          })()
-        : row.values;
-      rows.push({ values, serverVersion: row.serverVersion });
+      if (table.hasEncryptedColumns) {
+        const { decryptOrSealRowValues } = await import('./encryption');
+        rows.push({
+          ...(await decryptOrSealRowValues(encryption, table, row.values)),
+          serverVersion: row.serverVersion,
+        });
+      } else rows.push(row);
     }
     if (options.isCurrent?.() === false) break;
     const clearThisBlock = first && options.clearFirst;
@@ -769,6 +801,7 @@ export async function applyRowsSegment(
             row.values,
             row.serverVersion,
             protectedRows,
+            row.sealed,
           );
         applied += 1;
         if (applied % 1024 === 0) options.onProgress?.(applied);

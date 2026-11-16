@@ -24,6 +24,27 @@ pub struct EncryptionConfig {
     /// Portable per-table selector: the named non-encrypted string column in
     /// each plaintext row contains the key id used for new envelopes.
     pub key_id_columns: HashMap<String, String>,
+    /// §5.11 sealed apply: what a delivered row whose envelope `keyId` the
+    /// keyring lacks does to the round.
+    pub missing_key: MissingKey,
+}
+
+/// §5.11 `missingKey`: `Fail` fails the round with
+/// `client.encryption_key_missing`; `Seal` lands the row sealed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MissingKey {
+    #[default]
+    Fail,
+    Seal,
+}
+
+/// §5.11 sealed state of a delivered row: the `keyId` of its first
+/// undecryptable envelope (`_sync_sealed_key`) and its encrypted envelopes as
+/// a JSON object of column name to hex envelope (`_sync_sealed`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedRow {
+    pub key_id: String,
+    pub envelopes: String,
 }
 
 /// Manual Debug so a stray `{config:?}` log line stays free of key material:
@@ -44,6 +65,7 @@ impl std::fmt::Debug for EncryptionConfig {
         f.debug_struct("EncryptionConfig")
             .field("keys", &keys)
             .field("key_id_columns", &self.key_id_columns)
+            .field("missing_key", &self.missing_key)
             .finish()
     }
 }
@@ -469,12 +491,13 @@ pub fn encode_sparse_row_json(
 
 /// Decode one row-codec payload; trailing bytes are a decode error. §5.11:
 /// encrypted columns are decrypted here — the apply seam — back to their
-/// declared-type plaintext value for the local mirror.
+/// declared-type plaintext value for the local mirror, or the row lands
+/// sealed (`missingKey: Seal`).
 pub fn decode_row_bytes(
     table: &TableSchema,
     payload: &[u8],
     encryption: &EncryptionConfig,
-) -> Result<Row, TransportError> {
+) -> Result<(Row, Option<SealedRow>), TransportError> {
     let mut r = Reader::new(payload);
     // Decode with the WIRE columns (encrypted columns arrive as `bytes`).
     let mut row = decode_row(&mut r, &table.wire_columns)
@@ -485,10 +508,17 @@ pub fn decode_row_bytes(
             "row payload has trailing bytes",
         ));
     }
-    if table.has_encrypted_columns() {
-        decrypt_row(table, &mut row, encryption)?;
-    }
-    Ok(row)
+    let sealed = if table.has_encrypted_columns() {
+        decrypt_row(
+            table,
+            &mut row,
+            encryption,
+            encryption.missing_key == MissingKey::Seal,
+        )?
+    } else {
+        None
+    };
+    Ok((row, sealed))
 }
 
 /// §5.11: decrypt the encrypted columns of an already-decoded segment row
@@ -498,8 +528,13 @@ pub fn decrypt_segment_row(
     table: &TableSchema,
     row: &mut Row,
     encryption: &EncryptionConfig,
-) -> Result<(), TransportError> {
-    decrypt_row(table, row, encryption)
+) -> Result<Option<SealedRow>, TransportError> {
+    decrypt_row(
+        table,
+        row,
+        encryption,
+        encryption.missing_key == MissingKey::Seal,
+    )
 }
 
 // -- §5.11 encrypt/decrypt seam (feature-gated) ------------------------------
@@ -620,16 +655,20 @@ fn encrypt_sparse_row(
 }
 
 /// §5.11 apply seam: an unknown `keyId` is `client.encryption_key_missing`
-/// with `{ table, keyId }` details; every other failure is
+/// with `{ table, keyId }` details, or under `seal` the row comes back sealed:
+/// every encrypted column NULL plus its [`SealedRow`]. Every other failure is
 /// `client.decrypt_failed`.
 #[cfg(feature = "e2ee")]
 fn decrypt_row(
     table: &TableSchema,
     row: &mut Row,
     encryption: &EncryptionConfig,
-) -> Result<(), TransportError> {
+    seal: bool,
+) -> Result<Option<SealedRow>, TransportError> {
     use ssp2::crypto::{decrypt_value, DeclaredType, DecryptValueError};
     let failed = |message: String| TransportError::new("client.decrypt_failed", message);
+    let mut missing = None;
+    let mut envelopes = Map::new();
     for enc in &table.encrypted_columns {
         let Some(value) = row.get(enc.index).and_then(|v| v.as_ref()) else {
             continue;
@@ -642,21 +681,62 @@ fn decrypt_row(
         };
         let declared = DeclaredType::from_name(&enc.declared_type)
             .ok_or_else(|| failed(format!("unknown declaredType {:?}", enc.declared_type)))?;
+        envelopes.insert(
+            table.columns[enc.index].name.clone(),
+            Value::from(bytes_to_hex(envelope)),
+        );
         let keys = &encryption.keys;
-        let plain =
-            decrypt_value(declared, envelope, |id| keys.get(id).cloned()).map_err(|error| {
-                match error {
-                    DecryptValueError::KeyMissing { key_id } => TransportError {
-                        code: "client.encryption_key_missing".to_owned(),
-                        message: "no key for the envelope keyId".to_owned(),
-                        details: Some(serde_json::json!({ "table": table.name, "keyId": key_id })),
-                    },
-                    DecryptValueError::Failed(error) => failed(error.0),
-                }
-            })?;
-        row[enc.index] = Some(plain_to_column_value(plain));
+        match decrypt_value(declared, envelope, |id| keys.get(id).cloned()) {
+            Ok(plain) => row[enc.index] = Some(plain_to_column_value(plain)),
+            Err(DecryptValueError::KeyMissing { key_id }) if seal => {
+                missing.get_or_insert(key_id);
+            }
+            Err(DecryptValueError::KeyMissing { key_id }) => {
+                return Err(TransportError {
+                    code: "client.encryption_key_missing".to_owned(),
+                    message: "no key for the envelope keyId".to_owned(),
+                    details: Some(serde_json::json!({ "table": table.name, "keyId": key_id })),
+                })
+            }
+            Err(DecryptValueError::Failed(error)) => return Err(failed(error.0)),
+        }
     }
-    Ok(())
+    let Some(key_id) = missing else {
+        return Ok(None);
+    };
+    for enc in &table.encrypted_columns {
+        row[enc.index] = None;
+    }
+    Ok(Some(SealedRow {
+        key_id,
+        envelopes: Value::Object(envelopes).to_string(),
+    }))
+}
+
+/// §5.11 reveal: decrypt a sealed row's stored `_sync_sealed` envelopes into
+/// a row that holds only its encrypted columns; `None` while the keyring
+/// still lacks one of their keys.
+#[cfg(feature = "e2ee")]
+pub fn reveal_sealed_row(
+    table: &TableSchema,
+    envelopes: &str,
+    encryption: &EncryptionConfig,
+) -> Result<Option<Row>, TransportError> {
+    let corrupt = || TransportError::new("client.decrypt_failed", "sealed envelopes are corrupt");
+    let stored: Map<String, Value> = serde_json::from_str(envelopes).map_err(|_| corrupt())?;
+    let mut row: Row = vec![None; table.columns.len()];
+    for enc in &table.encrypted_columns {
+        if let Some(encoded) = stored.get(&table.columns[enc.index].name) {
+            let bytes = encoded
+                .as_str()
+                .and_then(|encoded| hex_to_bytes(encoded).ok())
+                .ok_or_else(corrupt)?;
+            row[enc.index] = Some(ColumnValue::Bytes(bytes));
+        }
+    }
+    Ok(decrypt_row(table, &mut row, encryption, true)?
+        .is_none()
+        .then_some(row))
 }
 
 /// Without the `e2ee` feature, a schema with encrypted columns is a
@@ -675,11 +755,21 @@ fn encrypt_row(
 }
 
 #[cfg(not(feature = "e2ee"))]
+pub fn reveal_sealed_row(
+    table: &TableSchema,
+    _envelopes: &str,
+    encryption: &EncryptionConfig,
+) -> Result<Option<Row>, TransportError> {
+    decrypt_row(table, &mut Vec::new(), encryption, true).map(|_| None)
+}
+
+#[cfg(not(feature = "e2ee"))]
 fn decrypt_row(
     table: &TableSchema,
     _row: &mut Row,
     _encryption: &EncryptionConfig,
-) -> Result<(), TransportError> {
+    _seal: bool,
+) -> Result<Option<SealedRow>, TransportError> {
     Err(TransportError::new(
         "client.decrypt_failed",
         format!(
