@@ -48,7 +48,9 @@ return <Rows rows={todos.rows} partial={todos.phase === 'partial'} />;
 ```
 
 The result is `{ rows, phase, revision, isLoading, isRefreshing, error,
-availability, refresh }`. Observing the query claims its coverage; unobserving releases only
+availability, refresh }`. `revision` stays `undefined` until the first local
+read answers; a read that answers with no rows while coverage is pending sets it
+and keeps `phase` at `loading`. Observing the query claims its coverage; unobserving releases only
 that consumer's claim. No separate `useWindow` effect or completeness read is
 needed.
 

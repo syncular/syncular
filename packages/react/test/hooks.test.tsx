@@ -181,7 +181,7 @@ describe('useRawSql', () => {
     view.unmount();
   });
 
-  test('growing coverage before the first complete read keeps rows identity and renders once', async () => {
+  test('growing coverage before the first complete read keeps rows identity', async () => {
     const client = new FakeClient();
     const base = { variable: 'project_id' };
     let renders = 0;
@@ -204,7 +204,8 @@ describe('useRawSql', () => {
     await flushEffects();
     expect(view.result.current.phase).toBe('loading');
     expect(view.result.current.rows).toBe(rows);
-    expect(renders).toBe(before + 1);
+    // The rerender, then the new query's first answer with its revision.
+    expect(renders).toBe(before + 2);
     view.unmount();
   });
 

@@ -601,7 +601,10 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   #publish(next: LiveQueryResult<Row>): void {
+    // A revision change alone publishes nothing, except the first answer:
+    // an empty answered read differs from an unread one by its revision.
     if (
+      (next.revision === undefined) === (this.#state.revision === undefined) &&
       next.rows === this.#state.rows &&
       next.phase === this.#state.phase &&
       next.error === this.#state.error &&

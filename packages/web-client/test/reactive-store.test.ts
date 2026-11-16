@@ -222,6 +222,31 @@ describe('reactive cache identity', () => {
     offRight();
     store.dispose();
   });
+
+  test('an empty read with incomplete coverage publishes its revision', async () => {
+    const client = new FakeReactiveClient();
+    client.snapshots.push({
+      revision: 1n,
+      rows: [],
+      coverage: { complete: false, pending: [], missing: [] },
+    });
+    const store = new ReactiveClientStore(client);
+    const query = store.query<Row>(querySpec());
+    const unread = query.getSnapshot();
+    let published = 0;
+    const off = query.subscribe(() => (published += 1));
+    await drainMicrotasks();
+
+    expect(unread.revision).toBeUndefined();
+    expect(published).toBe(1);
+    expect(query.getSnapshot()).toMatchObject({
+      rows: [],
+      phase: 'loading',
+      revision: 1n,
+    });
+    off();
+    store.dispose();
+  });
 });
 
 describe('leader link recovery', () => {
@@ -757,7 +782,8 @@ describe('failed sync rounds', () => {
       error: undefined,
       rows: [{ id: 't1', title: 'first' }],
     });
-    expect(phases).toEqual(['error', 'loading', 'ready']);
+    // The first answer publishes `loading` with its revision.
+    expect(phases).toEqual(['loading', 'error', 'loading', 'ready']);
     off();
     store.dispose();
   });
@@ -1398,8 +1424,13 @@ describe('keyed reconciliation performance', () => {
     expect(second.getSnapshot()).toBe(initial);
     await drainMicrotasks();
     expect(client.reads).toHaveLength(1);
-    expect(notifications).toBe(0);
-    expect(second.getSnapshot()).toBe(initial);
+    // The answer, empty and pending, publishes its revision once.
+    expect(notifications).toBe(1);
+    expect(second.getSnapshot()).toMatchObject({
+      phase: 'loading',
+      revision: 1n,
+    });
+    expect(second.getSnapshot().rows).toBe(initial.rows);
     offSecond();
     store.dispose();
   });
