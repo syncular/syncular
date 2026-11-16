@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-16',
+    title: 'Sealed apply for rows under a missing key',
+    body: "A row whose envelope named a key the keyring did not hold failed the whole round with `client.encryption_key_missing`, so one row under another practice's key stopped sync for every table. With `missingKey: 'seal'` on the keyring, both cores land such a row with its encrypted columns NULL and the key id in the reserved column `_sync_sealed_key`, and the round continues. A sealed row refuses local writes. Installing the key through `activateSecurity()`, or the next round with the key available, decrypts it in place. The default stays `'fail'`.",
+    links: [
+      {
+        href: '/concepts-encryption/#rows-under-a-key-the-device-lacks',
+        label: 'Rows under a key the device lacks',
+      },
+    ],
+  },
+  {
+    date: '2026-11-16',
     title: 'Image import transactions hold at least 1,024 rows',
     body: '0.72.1 sized each image transaction after the first to 100 ms. A commit costs tens of milliseconds whatever its row count, so the rule shrank transactions to a few hundred rows, and with OPFS in memory to under 100: a 114,007-row catalogue took 6.0 s on disk and more than 140 s in memory, against 4.3 s and 19 s with 0.72.0. A transaction now holds at least 1,024 rows and is sized to 250 ms. The same import takes 3.0 s on disk with transactions of up to 345 ms.',
     links: [

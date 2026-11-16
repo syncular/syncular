@@ -1,5 +1,31 @@
 # Syncular release notes
 
+## 0.73.0 release notes
+
+A keyring can seal rows under a key it does not hold instead of failing the
+round (SYNCULAR-ENCRYPTION-SEALED-APPLY-001, SPEC §5.11). A table that selects
+its key per row can carry imported or rotated rows under keys a device never
+receives. One such row failed every round of that device with
+`client.encryption_key_missing`, and no table or unit of the round applied.
+
+`missingKey: 'seal'` on the keyring (worker, Tauri and React Native
+keyrings, and a direct client's `encryption` config) lands such a row sealed:
+every encrypted column is NULL, the non-encrypted columns hold their values,
+the reserved column `_sync_sealed_key` holds the missing key id, and the round
+continues. `SELECT *` strips the reserved columns; read the marker with an
+alias (`SELECT _sync_sealed_key AS sealed_key`). `mutate`, `patch` and delete
+of a sealed row fail at once with `client.encryption_key_missing` and
+`{ table, keyId }`. The client keeps the row's envelopes locally and decrypts
+them when `activateSecurity()` installs a keyring that holds the key, or at the
+start of the next round with the key available. `client.decrypt_failed`
+still fails the round. The default, `'fail'`, keeps the 0.72 behaviour.
+
+**Upgrade notes.** Tables with encrypted columns gain two reserved columns and
+nullable encrypted columns in the local mirror. Both cores rebuild such a
+table once when they open a replica created by an earlier version, keeping its
+rows. Opt in with `missingKey: 'seal'` and render a NULL encrypted column of
+a row whose `_sync_sealed_key` is set as locked, never as empty.
+
 ## 0.72.2 release notes
 
 An image import transaction now holds at least 1,024 rows and is sized to
