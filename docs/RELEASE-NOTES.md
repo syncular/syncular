@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.72.1 release notes
+
+A local read during a SQLite image import now waits for about one 100 ms
+transaction (SYNCULAR-WORKER-READ-BEHIND-APPLY-001). Both cores imported an
+image in transactions that doubled from 1,024 to 65,536 rows. A catalogue whose
+codes table carries an FTS5 projection imports 1,024 rows in about 550 ms in
+headless Chromium, because the projection's triggers tokenize every row, so
+its later transactions held the browser worker for 1.1, 2.3 and 4.5 s and a
+`querySnapshot` sent during the import waited up to 7.4 s. Each transaction
+after the first now holds at most twice the rows of the one before, at most
+65,536, and at most the rows the one before applied per 100 ms from its start
+to its `COMMIT` (SPEC §5.3). That catalogue's second transaction holds 186
+rows. Cheaper rows double until a transaction reaches 100 ms.
+
+During `download`, `bytesReceived / bytesTotal` of the progress snapshot is
+the payload's share; `rowsProcessed` stays 0 until `import`.
+
+**Upgrade notes.** None. An image of cheap rows commits a few more
+transactions than before; a status that reads only `rowsProcessed` shows no
+share while a segment downloads and can read the byte counters there.
+
 ## 0.72.0 release notes
 
 A live query refused during security preflight no longer stays `error` after
