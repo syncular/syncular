@@ -1,5 +1,31 @@
 # Syncular release notes
 
+## 0.78.1 release notes
+
+A reload never evicts a held window unit before the app could claim it
+(SYNCULAR-WINDOW-RELOAD-CLAIM-001, SPEC §4.8, §7.8). The reactive store's claim
+group for a window base started with no knowledge of the core's window, and
+`setWindow` names the whole window. After a reload the first claim to flush
+therefore released every persisted unit it did not name: on a catalogue with
+seven held releases, a query's coverage claim for one evicted the other six.
+
+- A claim group reads `windowState(base)` once before its first edit and keeps
+  the units it finds as unclaimed. Each flush sends the claimed units plus the
+  unclaimed ones. A unit leaves the unclaimed set the first time a claim names
+  it and is evicted from then on when no claim names it.
+- Disposing the store releases only its own claims; units it never claimed stay
+  held. A unit that no claim names after a restart stays registered until the
+  app claims and releases it once.
+- `useWindow(base)` and `store.window(base)` carry `loaded`: false until the
+  first window read returns, so `units: []` before it no longer looks like an
+  empty window.
+- Core `setWindow` is unchanged, so the Rust client and the native bindings
+  are unaffected; the claim coordinator exists only in the TypeScript reactive
+  store that the React, Tauri and React Native bindings use.
+
+**Upgrade notes.** Remove a `windowState` read before the first claim and a
+`claimCoverage: false` that only guarded against reload eviction.
+
 ## 0.78.0 release notes
 
 One push request applies in one storage transaction (SYNCULAR-PUSH-ROUNDTRIPS-001,

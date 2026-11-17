@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A reload never evicts a held window unit before the app claims it',
+    body: "After a reload the reactive store treated every window as empty, so the first claim to flush replaced the persisted window: a query's coverage claim for one catalogue release evicted the six other held releases, which downloaded again. A claim group now reads the core's window once before its first edit and keeps every held unit until a claim of the store names it. `useWindow` reports `loaded`, false until its first window read returns.",
+    links: [
+      {
+        href: '/concepts-windowing/',
+        label: 'Windowing',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'One push request applies in one transaction',
     body: 'Every commit of a push request ran its own transaction, so a request of 10 commits took the partition lock and read the serve gate 10 times: 82 statements on PostgreSQL, each a round trip under the lock. The server now applies a request in one transaction with one lock, one gate and idempotency read and one batched result insert; each commit writes behind its own savepoint and costs 3 statements. The same request takes 37 statements, and its idempotent replay 4 instead of 22.',
     links: [
