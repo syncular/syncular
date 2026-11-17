@@ -2,6 +2,17 @@
 
 ## 0.79.2 release notes
 
+PostgreSQL list parameters bind as JSON text on every driver. Since 0.78.0 the
+push admission read bound the request's client commit ids as a JS array
+against `client_commit_id = ANY($4::text[])`. node-postgres, Bun.SQL 1.4.4 and
+PGlite encode a JS array as a PostgreSQL array; Bun.SQL 1.4.0 sends it as
+plain text (`['a', 'b']` becomes `'a,b'`), so every push on that driver
+failed with `malformed array literal`. The admission read, the bulk row read
+and the two commit-summary reads now bind `JSON.stringify(list)` and expand it
+with `jsonb_array_elements_text`, as the rest of the storage already did. The
+PGlite storage contract refuses a JS array parameter, so a regression fails
+the gate on any driver.
+
 Concurrent `PostgresServerStorage.migrate()` calls are safe. Several server
 processes migrating an empty database at once failed with `type
 sync_partitions already exists`, because concurrent `CREATE TABLE IF NOT
