@@ -250,7 +250,8 @@ export function mergeSegmentRecord(
 /**
  * The §5.3 reuse key: sqlite images are not byte-deterministic, so
  * cross-client dedup is a metadata lookup, not hash convergence — one
- * stored image per (partition, table, schemaVersion, scope digest, pin).
+ * stored image per (partition, table, schemaVersion, scope digest, pin, range
+ * start).
  */
 export interface SegmentFindKey {
   readonly partition: string;
@@ -260,6 +261,8 @@ export interface SegmentFindKey {
   readonly mediaType: 'rows' | 'sqlite';
   readonly scopeDigest: string;
   readonly asOfCommitSeq: number;
+  /** The range start: the row id the image follows, `null` for the first. */
+  readonly rowCursor: string | null;
 }
 
 /**
@@ -313,9 +316,8 @@ export interface SegmentStore {
     segmentId: string,
   ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined>;
   /**
-   * Unexpired record for the §5.3 reuse key (whole-table segments only:
-   * `rowCursor` null), or undefined. Servers MUST reuse instead of
-   * rebuilding sqlite images while one exists (§5.3).
+   * Unexpired record for the §5.3 reuse key, or undefined. Servers MUST
+   * reuse instead of rebuilding sqlite images while one exists (§5.3).
    *
    * The digest matches when it is one of the record's `scopeDigests`
    * (§5.1). That cannot hand a sqlite image to the wrong digest: a sqlite
@@ -393,7 +395,9 @@ export class MemorySegmentStore implements SegmentStore {
     key: SegmentFindKey,
     nowMs: number,
   ): Promise<SegmentRecord | undefined> {
-    for (const { record } of this.#entries.values()) {
+    // The newest publication wins: a rebuild supersedes an image stored
+    // under the same key that the server no longer serves (§5.3 bound).
+    for (const { record } of [...this.#entries.values()].reverse()) {
       const publication = selectSegmentPublication(record, {
         partition: key.partition,
         logEpoch: key.logEpoch,
@@ -402,7 +406,7 @@ export class MemorySegmentStore implements SegmentStore {
         mediaType: key.mediaType,
         scopeDigest: key.scopeDigest,
         asOfCommitSeq: key.asOfCommitSeq,
-        rowCursor: null,
+        rowCursor: key.rowCursor,
         nowMs,
       });
       if (publication !== undefined) {

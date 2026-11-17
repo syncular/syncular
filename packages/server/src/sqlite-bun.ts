@@ -43,8 +43,8 @@ export class SqliteLeaseStore extends SharedSqliteLeaseStore {
 export const buildSqliteImage: SqliteImageBuilder = async (input) => {
   const db = new BunSqliteDatabase();
   try {
-    await writeSqliteImage(db, input);
-    return db.serialize();
+    const rowCount = await writeSqliteImage(db, input);
+    return { bytes: db.serialize(), rowCount };
   } finally {
     db.close();
   }

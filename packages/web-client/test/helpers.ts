@@ -109,6 +109,7 @@ export interface TestServer {
     maxOperationsPerRequest: number;
     inlineSegmentMaxBytes: number;
     maxLiveSectionBytes: number;
+    maxImageSegmentBytes: number;
   };
   readonly faults: ServerFaults;
   readonly now: { ms: number };
@@ -169,6 +170,7 @@ export function makeServer(
     maxOperationsPerRequest: 500,
     inlineSegmentMaxBytes: 256 * 1024,
     maxLiveSectionBytes: 16 * 1024 * 1024,
+    maxImageSegmentBytes: 32 * 1024 * 1024,
   };
   const now = { ms: 1_750_000_000_000 };
   void storage.touchPartition(PARTITION, now.ms, TEST_LOG_EPOCH);
@@ -287,6 +289,8 @@ export interface TestClient {
   readonly httpRounds: { count: number };
   /** Request bytes of every transport round, in order. */
   readonly requests: Uint8Array[];
+  /** Segment ids of every download the client started, in order. */
+  readonly downloads: string[];
 }
 
 export interface MakeClientOptions {
@@ -333,6 +337,7 @@ export async function makeClient(
   const httpRounds = { count: 0 };
   const requests: Uint8Array[] = [];
   let segmentCalls = 0;
+  const downloads: string[] = [];
   const config: SyncClientConfig = {
     database: db,
     schema: options.schema ?? CLIENT_SCHEMA,
@@ -420,6 +425,7 @@ export async function makeClient(
         return response;
       }),
     segments: async (request: SegmentFetchRequest) => {
+      downloads.push(request.segmentId);
       if (faults.stallSegmentDownloadOnce) {
         faults.stallSegmentDownloadOnce = false;
         throw new ClientSyncError(
@@ -480,7 +486,16 @@ export async function makeClient(
     'logEpoch',
     TEST_LOG_EPOCH,
   ]);
-  return { client, db, faults, wakes, intents, httpRounds, requests };
+  return {
+    client,
+    db,
+    faults,
+    wakes,
+    intents,
+    httpRounds,
+    requests,
+    downloads,
+  };
 }
 
 /**

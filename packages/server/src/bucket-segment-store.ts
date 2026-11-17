@@ -23,10 +23,11 @@
  *     objects.
  *
  *   {keyPrefix}find/{sha256Hex(canonical reuse key)}.json
- *     Whole-table reuse pointer (§5.3): written only when
- *     `rowCursor === null`, body = the record JSON. The reuse key is the
+ *     Image reuse pointer (§5.3): written for every sqlite image and every
+ *     first rows page, body = the record JSON. The reuse key is the
  *     canonical JSON array `[partition, logEpoch, table, schemaVersion,
- *     mediaType, scopeDigest, asOfCommitSeq]`, so `find` is one GET (plus a
+ *     mediaType, scopeDigest, asOfCommitSeq]` plus the range start when it is
+ *     not null, so `find` is one GET (plus a
  *     HEAD to confirm the segment object itself still exists — lifecycle GC
  *     may remove objects independently of pointers).
  *
@@ -319,6 +320,8 @@ export class BucketSegmentStore implements SegmentStore {
       key.mediaType,
       key.scopeDigest,
       key.asOfCommitSeq,
+      // A first range keeps the pointer key it had before range images.
+      ...(key.rowCursor === null ? [] : [key.rowCursor]),
     ]);
     return `${this.#prefix}find/${await sha256Hex(canonical)}.json`;
   }
@@ -425,7 +428,7 @@ export class BucketSegmentStore implements SegmentStore {
           sqliteSegments: metadata.mediaType === 'sqlite' ? 1 : 0,
         });
       }
-      if (metadata.rowCursor === null) {
+      if (metadata.rowCursor === null || metadata.mediaType === 'sqlite') {
         await this.#bucket.put(await this.#findKeyFor(metadata), {
           body: new TextEncoder().encode(recordJson),
           contentType: 'application/json',
@@ -556,7 +559,7 @@ export class BucketSegmentStore implements SegmentStore {
       mediaType: key.mediaType,
       scopeDigest: key.scopeDigest,
       asOfCommitSeq: key.asOfCommitSeq,
-      rowCursor: null,
+      rowCursor: key.rowCursor,
       nowMs,
     });
     if (publication === undefined) return undefined;

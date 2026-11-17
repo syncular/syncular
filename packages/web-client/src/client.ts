@@ -738,6 +738,19 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
     .join('');
 }
 
+const invalidHostResponse = (message: string) =>
+  new ClientSyncError('client.invalid_host_response', message);
+
+const outcomeNotFound = () =>
+  new ClientSyncError(
+    'sync.outcome_not_found',
+    'no durable outcome exists for the commit',
+  );
+
+/** The position a unit presents in a pull (§5.6 applied-segment rule). */
+const position = (unit: UnitRecord) =>
+  JSON.stringify([unit.id, unit.cursor, unit.bootstrapState]);
+
 interface OpenSection {
   readonly start: SubStartFrame;
   readonly unit: UnitRecord;
@@ -970,6 +983,13 @@ export class SyncClient {
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   readonly #progress = new ProgressEmitter();
+  /**
+   * §5.6 applied-segment rule: unit position → the segments applied in
+   * sections whose SUB_END did not persist.
+   */
+  readonly #appliedSegments = new Map<string, Set<string>>();
+  /** §5.3: a table's next image chunk size, carried across its ranges. */
+  readonly #chunkRows = new Map<string, number>();
   #progressAttempt = 0;
   /**
    * True from the synchronous entry of `sync()` until its serialized round
@@ -2945,10 +2965,7 @@ export class SyncClient {
     this.#requireActive();
     const current = readCommitOutcome(this.#db, input.clientCommitId);
     if (current === undefined) {
-      throw new ClientSyncError(
-        'sync.outcome_not_found',
-        `no durable outcome exists for ${JSON.stringify(input.clientCommitId)}`,
-      );
+      throw outcomeNotFound();
     }
     if (current.resolution !== 'active') return current;
     const replacement = input.replacementClientCommitId;
@@ -2993,10 +3010,7 @@ export class SyncClient {
           this.#now(),
         );
         if (resolved === undefined) {
-          throw new ClientSyncError(
-            'sync.outcome_not_found',
-            `no durable outcome exists for ${JSON.stringify(input.clientCommitId)}`,
-          );
+          throw outcomeNotFound();
         }
         this.#conflicts = this.#conflicts.filter(
           (record) => record.clientCommitId !== input.clientCommitId,
@@ -5380,8 +5394,7 @@ export class SyncClient {
     const currentLogEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
     if (header.resetRequired) {
       if (mode !== 'pull' || message.frames.length !== 1) {
-        throw new ClientSyncError(
-          'client.invalid_host_response',
+        throw invalidHostResponse(
           'a log-epoch reset response must contain only RESP_HEADER',
         );
       }
@@ -5392,8 +5405,7 @@ export class SyncClient {
       };
     }
     if (currentLogEpoch === undefined || currentLogEpoch !== header.logEpoch) {
-      throw new ClientSyncError(
-        'client.invalid_host_response',
+      throw invalidHostResponse(
         'the server changed logEpoch without requiring a reset',
       );
     }
@@ -5412,7 +5424,9 @@ export class SyncClient {
     // bootstrap overlaps its page fetches instead of paying one blocking round
     // trip per page. At most four downloads run at once, the Rust native
     // transport's pool size: enough to overlap round trips, while the client
-    // holds at most four bodies, the one being applied and three ahead. The
+    // holds at most four bodies, the one being applied and three ahead. An
+    // image starts only beside at most one other body, so at most two are
+    // images (§5.3 client memory); later descriptors wait in order. The
     // loop takes each body out of the map before applying it and tops the
     // window up at the next descriptor. Eligibility mirrors the loop: a
     // descriptor outside an applied section or from an unconfigured
@@ -5422,7 +5436,12 @@ export class SyncClient {
     const queued: [SegmentRefFrame, UnitScopes][] = [];
     const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
     const prefetch = () => {
-      for (let next; prefetched.size < 4 && (next = queued.shift());) {
+      for (
+        let next;
+        prefetched.size < 4 &&
+        !(queued[0]?.[0].mediaType === 'sqlite' && prefetched.size > 1) &&
+        (next = queued.shift());
+      ) {
         const [frame, scopes] = next;
         const pending = this.#downloadSegment(
           frame,
@@ -5454,10 +5473,7 @@ export class SyncClient {
           frame.type === 'SEGMENT_REF' &&
           open !== undefined &&
           this.#config.segments !== undefined &&
-          !(
-            frame.mediaType === 'sqlite' &&
-            (this.#acceptMask() & ACCEPT_SQLITE) === 0
-          )
+          !this.#appliedSegments.get(position(open))?.has(frame.segmentId)
         ) {
           queued.push([frame, open.scopes]);
         }
@@ -5575,14 +5591,27 @@ export class SyncClient {
           case 'SEGMENT_REF': {
             if (section === undefined || section.skip) break;
             const unitId = section.unit.id;
+            const image =
+              frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite'
+                ? frame
+                : undefined;
+            // §4.2, §5.3: an image needs accept bit 2 and carries no cursors.
             if (
-              frame.type === 'SEGMENT_REF' &&
-              frame.mediaType === 'sqlite' &&
-              (this.#acceptMask() & ACCEPT_SQLITE) === 0
-            ) {
+              image !== undefined &&
+              ((this.#acceptMask() & ACCEPT_SQLITE) === 0 ||
+                image.rowCursor !== undefined ||
+                image.nextRowCursor !== undefined)
+            )
               throw invalidRequest(
-                'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
+                'unadvertised or paged sqlite segment (§4.2, §5.3)',
               );
+            const applied =
+              this.#appliedSegments.get(position(section.unit)) ??
+              new Set<string>();
+            if (frame.type === 'SEGMENT_REF' && applied.has(frame.segmentId)) {
+              // §5.6: applied in an earlier attempt at this position.
+              section.seeded.add(frame.table);
+              break;
             }
             let bytes: Uint8Array;
             if (frame.type === 'SEGMENT_REF') {
@@ -5626,19 +5655,6 @@ export class SyncClient {
             } else {
               bytes = frame.payload;
             }
-            const image =
-              frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite'
-                ? frame
-                : undefined;
-            // Images are whole-table; paged image descriptors are invalid.
-            if (
-              image !== undefined &&
-              (image.rowCursor !== undefined ||
-                image.nextRowCursor !== undefined)
-            )
-              throw invalidRequest(
-                'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
-              );
             const segment =
               image === undefined ? decodeRowsSegment(bytes) : undefined;
             if (frame.type === 'SEGMENT_INLINE' && segment !== undefined)
@@ -5689,6 +5705,11 @@ export class SyncClient {
                     );
               },
             );
+            if (frame.type === 'SEGMENT_REF' && !section.skip)
+              this.#appliedSegments.set(
+                position(section.unit),
+                applied.add(frame.segmentId),
+              );
             break;
           }
           case 'SUB_END': {
@@ -5699,8 +5720,10 @@ export class SyncClient {
               section !== undefined &&
               !section.skip &&
               this.#localResetEpoch === resetEpoch
-            )
+            ) {
               this.#finishSection(section, frame, summary);
+              this.#appliedSegments.delete(position(section.unit));
+            }
             section = undefined;
             // The counters stay: `complete` and `failed` report them.
             this.#progress.update({
@@ -5918,10 +5941,7 @@ export class SyncClient {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
       if (frame.commitSeq === undefined)
-        throw new ClientSyncError(
-          'client.invalid_host_response',
-          'ACK lacks a commit sequence',
-        );
+        throw invalidHostResponse('ACK lacks a commit sequence');
       retainFailedRows(
         this.#db,
         commit,
@@ -6186,10 +6206,11 @@ export class SyncClient {
     hasRows: boolean,
     resetEpoch: number,
     image: boolean,
-  ): Parameters<typeof applyRowsSegment>[4] {
+  ): Parameters<typeof applySqliteSegment>[5] {
     let writeMs = 0;
     let commitMs = 0;
     return {
+      chunkRows: this.#chunkRows,
       clearFirst,
       effective,
       owners,
@@ -6354,7 +6375,7 @@ export class SyncClient {
     const hash = await sha256Hex(bytes);
     if (`sha256:${hash}` !== frame.segmentId) {
       throw invalidRequest(
-        `segment ${frame.segmentId} failed content-address verification (§5.1)`,
+        'segment failed content-address verification (§5.1)',
         true,
       );
     }

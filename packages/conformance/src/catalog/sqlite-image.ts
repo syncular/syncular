@@ -2,7 +2,7 @@
  * SQLite-image bootstrap (SPEC.md §5.3; Appendix B.10): whole-table
  * image delivery, rows-lane equivalence, integrity failure + recovery,
  * capability gating (§4.2 negotiation), server-side reuse (the
- * bootstrap-storm rule), and mid-table lane pinning.
+ * bootstrap-storm rule), mid-table lane pinning, and range images.
  *
  * The image *file format* checks open the served bytes with bun:sqlite —
  * a harness-side reference decoder, like raw.ts's reference codec: the
@@ -358,6 +358,112 @@ export const sqliteImageScenarios: readonly Scenario[] = [
         'the rows lane completed the remaining pages',
       );
       checkEqual(section.end.nextCursor, pin, 'resume kept the original pin');
+    },
+  },
+  {
+    // B.10(f): a table past maxImageSegmentBytes arrives as range images
+    // across resumed pulls. Every committed prefix ends at a whole range, a
+    // later range never re-clears, and a failed image download repeats only
+    // that image (§5.6 applied-segment rule).
+    name: 'sqlite-image/range-images-resume-and-retry-one-range',
+    specRefs: ['§5.3', '§5.6', '§4.7', 'B.10'],
+    requires: ['sqlite-image'],
+    server: { limits: { maxImageSegmentBytes: 100_000 } },
+    async run(ctx) {
+      const ids = Array.from(
+        { length: 40 },
+        (_, i) => `t${String(i).padStart(2, '0')}`,
+      );
+      await seedTasks(
+        ctx,
+        ids.map((id) => task(id, 'p1', id.repeat(1_000))),
+      );
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+        limits: {
+          limitSnapshotRows: 2,
+          maxSnapshotPages: 2,
+          accept: WITH_SQLITE,
+        },
+      });
+      await a.api.subscribe(U1);
+      // The rows of each range image, read with the reference decoder.
+      const rangeRows = async (segmentId: string) => {
+        const download = await ctx.server.downloadSegment(
+          'actor-a',
+          segmentId,
+          canonicalScopeJson({ project_id: ['p1'] }),
+        );
+        check(download.ok, 'a range image downloads through §5.5');
+        if (!download.ok) return [];
+        const img = Database.deserialize(download.bytes);
+        try {
+          return (
+            img.query('SELECT id FROM tasks ORDER BY id').all() as {
+              id: string;
+            }[]
+          ).map((row) => row.id);
+        } finally {
+          img.close();
+        }
+      };
+      const localIds = async () =>
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort();
+
+      const first = await syncOk(a);
+      checkEqual(
+        first.bootstrapping,
+        [unitId(U1)],
+        'two range images fill the first pull; the bootstrap resumes',
+      );
+      checkEqual(a.directDownloads.length, 2, 'two range images downloaded');
+      const [one, two] = a.directDownloads as [string, string];
+      const firstRanges = [
+        ...(await rangeRows(one)),
+        ...(await rangeRows(two)),
+      ];
+      checkEqual(
+        await localIds(),
+        firstRanges,
+        'the committed prefix is the first two whole ranges',
+      );
+
+      // The second image of the next pull breaks off.
+      a.faults.truncateNthSegmentDownload = 2;
+      const failed = await a.api.sync();
+      check(!failed.ok, 'the broken image failed the round');
+      const [three, four] = a.directDownloads.slice(2) as [string, string];
+      checkEqual(
+        await localIds(),
+        [...firstRanges, ...(await rangeRows(three))],
+        'the third range applied without clearing the first two',
+      );
+
+      await syncIdle(a);
+      const downloads = a.directDownloads;
+      check(
+        new Set(downloads).size >= 3,
+        'the table arrived as at least three range images',
+      );
+      checkEqual(
+        [one, two, three].map(
+          (id) => downloads.filter((other) => other === id).length,
+        ),
+        [1, 1, 1],
+        'applied range images are never downloaded again',
+      );
+      checkEqual(
+        downloads.filter((id) => id === four).length,
+        2,
+        'the broken range image is downloaded once more',
+      );
+      checkEqual(await localIds(), ids, 'the client holds every row');
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
     },
   },
 ];

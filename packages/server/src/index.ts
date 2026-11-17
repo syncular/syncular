@@ -85,6 +85,7 @@ export * from './sqlite-driver';
 export {
   IMAGE_METADATA_TABLE,
   IMAGE_VERSION_COLUMN,
+  type SqliteImage,
   type SqliteImageBuilder,
   type SqliteImageInput,
   writeSqliteImage,

@@ -109,7 +109,7 @@ test('a published image is served by a host without a builder until its scope ch
   );
   const ref = bootstrap.frames.find((frame) => frame.type === 'SEGMENT_REF');
   expect(ref).toMatchObject({
-    segmentId: published.segmentId,
+    segmentId: published.segmentIds[0],
     mediaType: 'sqlite',
     asOfCommitSeq: published.asOfCommitSeq,
   });
@@ -119,7 +119,7 @@ test('a published image is served by a host without a builder until its scope ch
   const download = await openSegmentDownload(
     { ...host, partition: 'part-1', actorId: 'actor-1' },
     {
-      segmentId: published.segmentId,
+      segmentId: published.segmentIds[0]!,
       scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
     },
   );
@@ -226,7 +226,7 @@ test('the §5.3 reuse lookup runs only for a snapshot past one rows page', async
   );
   expect(segments.found()).toBe(findsBefore + 1);
   const ref = first.frames.find((frame) => frame.type === 'SEGMENT_REF');
-  expect(ref).toMatchObject({ segmentId: published.segmentId });
+  expect(ref).toMatchObject({ segmentId: published.segmentIds[0] });
 
   const second = await sync(
     pullFrames([P1], { accept: 0b0111, limitSnapshotRows: 1 }),

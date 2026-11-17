@@ -313,13 +313,23 @@ export class SqliteSegmentStore implements SegmentStore {
     const publication = this.db
       .query<
         { segment_id: string },
-        [string, string, string, number, string, string, number, number]
+        [
+          string,
+          string,
+          string,
+          number,
+          string,
+          string,
+          number,
+          string | null,
+          number,
+        ]
       >(
         `SELECT segment_id FROM sync_segment_publications
          WHERE partition=? AND log_epoch=? AND tbl=? AND schema_version=? AND media_type=?
-           AND scope_digest=? AND as_of_commit_seq=? AND row_cursor IS NULL
+           AND scope_digest=? AND as_of_commit_seq=? AND row_cursor IS ?
            AND expires_at_ms > ?
-         LIMIT 1`,
+         ORDER BY created_at_ms DESC LIMIT 1`,
       )
       .get(
         key.partition,
@@ -329,20 +339,31 @@ export class SqliteSegmentStore implements SegmentStore {
         key.mediaType,
         key.scopeDigest,
         key.asOfCommitSeq,
+        key.rowCursor,
         nowMs,
       );
     const legacy = this.db
       .query<
         { segment_id: string },
-        [string, string, string, number, string, string, number, number]
+        [
+          string,
+          string,
+          string,
+          number,
+          string,
+          string,
+          number,
+          string | null,
+          number,
+        ]
       >(
         `SELECT s.segment_id
          FROM sync_segments s
          JOIN sync_segment_scopes sc ON sc.segment_id = s.segment_id
          WHERE s.partition=? AND s.log_epoch=? AND s.tbl=? AND s.schema_version=? AND s.media_type=?
-           AND sc.scope_digest=? AND s.as_of_commit_seq=? AND s.row_cursor IS NULL
+           AND sc.scope_digest=? AND s.as_of_commit_seq=? AND s.row_cursor IS ?
            AND s.expires_at_ms > ?
-         LIMIT 1`,
+         ORDER BY s.created_at_ms DESC LIMIT 1`,
       )
       .get(
         key.partition,
@@ -352,6 +373,7 @@ export class SqliteSegmentStore implements SegmentStore {
         key.mediaType,
         key.scopeDigest,
         key.asOfCommitSeq,
+        key.rowCursor,
         nowMs,
       );
     const segmentId = publication?.segment_id ?? legacy?.segment_id;
@@ -366,7 +388,7 @@ export class SqliteSegmentStore implements SegmentStore {
       mediaType: key.mediaType,
       scopeDigest: key.scopeDigest,
       asOfCommitSeq: key.asOfCommitSeq,
-      rowCursor: null,
+      rowCursor: key.rowCursor,
       nowMs,
     });
     if (match === undefined) return undefined;

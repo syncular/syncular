@@ -104,6 +104,7 @@ describe('S3SegmentStore specifics', () => {
         mediaType: META.mediaType,
         scopeDigest: META.scopeDigest,
         asOfCommitSeq: META.asOfCommitSeq,
+        rowCursor: null,
       },
       NOW + 1,
     );
@@ -258,6 +259,7 @@ describe('concurrent publication of one content address (§5.1)', () => {
       mediaType: META.mediaType,
       scopeDigest: 'digest-a',
       asOfCommitSeq: META.asOfCommitSeq,
+      rowCursor: null,
     };
     expect((await store.find(baseKey, NOW + 2))?.partition).toBe('p1');
     expect(

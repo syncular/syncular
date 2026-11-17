@@ -163,6 +163,8 @@ export interface ServerLimitsOptions {
   readonly maxSubscriptionsPerRequest?: number;
   /** §4.6 live-section byte budget (reference default 16 MiB). */
   readonly maxLiveSectionBytes?: number;
+  /** §5.3 bound on one sqlite image (reference default 32 MiB). */
+  readonly maxImageSegmentBytes?: number;
   readonly maxDeltaBytes?: number;
   readonly segmentTtlMs?: number;
   /** §8.6.2 presence document size cap (bytes). */

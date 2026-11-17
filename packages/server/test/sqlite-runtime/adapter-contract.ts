@@ -204,9 +204,11 @@ export async function runServerSqliteContract(runtime: Runtime): Promise<void> {
       schemaVersion: 1,
       asOfCommitSeq: 1,
       scopeDigest: 'scope',
+      maxBytes: 1 << 20,
       rowBatches: [[row]],
     });
-    const header = new TextDecoder().decode(image.slice(0, 16));
+    assert(image.rowCount === 1, 'the image holds the row');
+    const header = new TextDecoder().decode(image.bytes.slice(0, 16));
     assert(header === 'SQLite format 3\0', 'SQLite image header');
   } finally {
     rmSync(directory, { recursive: true, force: true });

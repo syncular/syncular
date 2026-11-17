@@ -29,6 +29,8 @@ import {
   makeContext,
   pushCommit,
   TASK_COLUMNS,
+  taskRow,
+  type TestContext,
   live,
   progressFrame,
   pullFrames,
@@ -1253,5 +1255,130 @@ describe('the bootstrap decision (§4.7)', () => {
     );
     expect(peak).toBe(1);
     expect(sections(message).size).toBe(6);
+  });
+});
+
+describe('range images (§5.3)', () => {
+  const P1 = { project_id: 'p1' };
+  const ids = Array.from(
+    { length: 120 },
+    (_, i) => `t${String(i).padStart(3, '0')}`,
+  );
+
+  async function seededTable(maxImageSegmentBytes: number) {
+    const t = makeContext({
+      limits: { maxImageSegmentBytes },
+    });
+    await sync(t, [
+      pushCommit(
+        'c1',
+        ids.map((id) => upsert('tasks', id, taskRow(id, 'p1', id.repeat(250)))),
+      ),
+    ]);
+    return t;
+  }
+
+  /** Pull until the bootstrap completes; every section's body and token. */
+  async function bootstrap(t: TestContext, clientId: string) {
+    const pulls: { body: SegmentRefFrame[]; inline: number; token?: string }[] =
+      [];
+    let token: string | undefined;
+    do {
+      const s = section(
+        await sync(
+          t,
+          pullFrames([P1], {
+            accept: 0b0111,
+            limitSnapshotRows: 10,
+            maxSnapshotPages: 2,
+            progress: [progressFrame(P1, token === undefined ? -1 : 1, token)],
+          }),
+          { clientId },
+        ),
+        P1,
+      );
+      token = s.end.bootstrapState;
+      pulls.push({
+        body: refSegments(s.body),
+        inline: inlineSegments(s.body).length,
+        ...(token !== undefined ? { token } : {}),
+      });
+    } while (token !== undefined);
+    return pulls;
+  }
+
+  async function imageRows(t: TestContext, ref: SegmentRefFrame) {
+    const stored = await t.segments.get(ref.segmentId);
+    if (stored === undefined) throw new Error('image not stored');
+    const db = Database.deserialize(stored.bytes);
+    try {
+      const meta = db
+        .query('SELECT "rowCount" AS n FROM _syncular_segment')
+        .get() as { n: number };
+      const rows = (
+        db.query('SELECT id FROM tasks ORDER BY id').all() as { id: string }[]
+      ).map((row) => row.id);
+      return { bytes: stored.bytes.length, rowCount: meta.n, rows };
+    } finally {
+      db.close();
+    }
+  }
+
+  test('a table past the bound arrives as range images across resumed pulls', async () => {
+    const t = await seededTable(100_000);
+    const pulls = await bootstrap(t, 'client-1');
+    const images = pulls.flatMap((pull) => pull.body);
+    expect(images.length).toBeGreaterThanOrEqual(3);
+    expect(pulls.length).toBeGreaterThanOrEqual(2);
+    expect(pulls.every((pull) => pull.body.length + pull.inline <= 2)).toBe(
+      true,
+    );
+    // Mid-image positions carry the lane in the opaque token.
+    expect(JSON.parse(pulls[0]!.token!)).toMatchObject({ image: true });
+    const pins = new Set(images.map((image) => image.asOfCommitSeq));
+    expect(pins.size).toBe(1);
+    const seen: string[] = [];
+    for (const image of images) {
+      expect(image.mediaType).toBe('sqlite');
+      expect(image.rowCursor).toBeUndefined();
+      expect(image.nextRowCursor).toBeUndefined();
+      const read = await imageRows(t, image);
+      expect(read.bytes).toBeLessThanOrEqual(100_000);
+      expect(read.rowCount).toBe(image.rowCount);
+      expect(read.rows.length).toBe(image.rowCount);
+      seen.push(...read.rows);
+    }
+    // Contiguous ranges in row order; a tail of one rows page or less may
+    // follow on the rows lane.
+    expect(seen).toEqual(ids.slice(0, seen.length));
+    expect(seen.length).toBeGreaterThan(ids.length - 10);
+
+    // A second client at the same scope pin reuses every range image.
+    const again = await bootstrap(t, 'client-2');
+    expect(
+      again.flatMap((pull) => pull.body).map((ref) => ref.segmentId),
+    ).toEqual(images.map((ref) => ref.segmentId));
+  });
+
+  test('a stored image past the bound is rebuilt as range images', async () => {
+    const t = await seededTable(Number.MAX_SAFE_INTEGER);
+    const whole = (await bootstrap(t, 'client-1')).flatMap((pull) => pull.body);
+    expect(whole.map((image) => image.rowCount)).toEqual([ids.length]);
+    Object.assign(t.ctx, { limits: { maxImageSegmentBytes: 100_000 } });
+    const ranges = (await bootstrap(t, 'client-2')).flatMap(
+      (pull) => pull.body,
+    );
+    expect(ranges.length).toBeGreaterThanOrEqual(3);
+    expect(ranges.map((image) => image.segmentId)).not.toContain(
+      whole[0]!.segmentId,
+    );
+  });
+
+  test('a row larger than the bound gets an image of its own', async () => {
+    const t = await seededTable(1);
+    const pulls = await bootstrap(t, 'client-1');
+    const images = pulls.flatMap((pull) => pull.body);
+    expect(images.every((image) => image.rowCount === 1)).toBe(true);
+    expect(images.length).toBe(ids.length - 10);
   });
 });

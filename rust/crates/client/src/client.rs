@@ -351,6 +351,9 @@ enum SectionError {
     FailClosed,
     /// §5.5: the server refused a segment with `sync.forbidden`.
     Refused,
+    /// §5.3 client memory: the round deferred this image's body to a later
+    /// pull of the same resume token.
+    Deferred,
     Abort(String, String),
     Transport(TransportError),
 }
@@ -366,6 +369,13 @@ pub(crate) struct RequestMeta {
     /// the running operation count reached the push cap — the next round
     /// pushes them (`sync_needed` stays set while any remain).
     deferred_commits: usize,
+    /// §5.6 applied-segment rule: per unit presenting its recorded cursor
+    /// and token, the segment ids neither downloaded nor applied again.
+    pub(crate) applied: BTreeMap<String, BTreeSet<String>>,
+    /// §5.3 client memory: (unit, segment id) of the first image whose body
+    /// the round did not fetch because the batch already holds two images.
+    /// That unit's section stops there without persisting `SUB_END`.
+    pub(crate) deferred: BTreeSet<(String, String)>,
 }
 
 #[derive(Default)]
@@ -581,6 +591,14 @@ pub struct SyncClient {
     retry_delay_ms: u64,
     /// §7.7: the background retry the current round scheduled, if any.
     round_retry_delay_ms: Option<u64>,
+    /// §5.6 applied-segment rule: per unit, the cursor and resume token it
+    /// presented and the `SEGMENT_REF`s applied completely in sections whose
+    /// `SUB_END` did not persist.
+    #[allow(clippy::type_complexity)]
+    applied_segments: HashMap<String, (Option<i64>, Option<String>, BTreeSet<String>)>,
+    /// §5.3: a table's next image chunk size, carried from one range image
+    /// of the table to the next.
+    image_chunk_rows: HashMap<String, u32>,
     /// A round whose response never completed (§1.5): the client keeps its
     /// code and reports it on every following request until a round receives a
     /// complete, decodable response. The server already recorded the round, so
@@ -2033,6 +2051,8 @@ impl SyncClient {
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
             round_retry_delay_ms: None,
+            applied_segments: HashMap::new(),
+            image_chunk_rows: HashMap::new(),
             round_failure: None,
             active_round: None,
             last_round: None,
@@ -7530,6 +7550,8 @@ impl SyncClient {
                 registration_digest,
                 accept,
                 deferred_commits,
+                applied: BTreeMap::new(),
+                deferred: BTreeSet::new(),
             },
         ))
     }
@@ -7823,7 +7845,23 @@ impl SyncClient {
                     retry_delay_ms,
                 }));
             }
-            let (message, meta) = self.build_request(url_capable)?;
+            let (message, mut meta) = self.build_request(url_capable)?;
+            let units = self.stored(load_units(&self.conn)).map_err(|message| {
+                Box::new(SyncOutcome::Failed {
+                    error_code: "storage.failed".into(),
+                    message,
+                    details: None,
+                    recommended_action: None,
+                })
+            })?;
+            meta.applied = units
+                .iter()
+                .filter_map(|unit| {
+                    let (cursor, token, ids) = self.applied_segments.get(&unit.id)?;
+                    (*cursor == unit.cursor && *token == unit.bootstrap_state)
+                        .then(|| (unit.id.clone(), ids.clone()))
+                })
+                .collect();
             let id = uuid::Uuid::new_v4();
             self.active_round = Some(id);
             let phase = if uploads.is_empty() {
@@ -7843,16 +7881,7 @@ impl SyncClient {
                 completed: None,
                 realtime: self.realtime_state == RealtimeState::Connected,
                 // §5.5: the owning unit's scope map, each value a one-element list.
-                scopes: self
-                    .stored(load_units(&self.conn))
-                    .map_err(|message| {
-                        Box::new(SyncOutcome::Failed {
-                            error_code: "storage.failed".into(),
-                            message,
-                            details: None,
-                            recommended_action: None,
-                        })
-                    })?
+                scopes: units
                     .into_iter()
                     .map(|unit| {
                         (
@@ -8108,12 +8137,20 @@ impl SyncClient {
         }
     }
 
-    /// Every unit's resume token: a bootstrap that advanced changes one (§4.7).
-    fn resume_tokens(&self) -> Option<Vec<(String, Option<String>)>> {
+    /// Every unit's resume token and applied-segment count: a bootstrap that
+    /// advanced changes one (§4.7), also when it applied images of a section
+    /// it deferred (§5.3, §5.6).
+    fn resume_tokens(&self) -> Option<Vec<(String, Option<String>, usize)>> {
         load_units(&self.conn).ok().map(|units| {
             units
                 .into_iter()
-                .map(|unit| (unit.id, unit.bootstrap_state))
+                .map(|unit| {
+                    let applied = self
+                        .applied_segments
+                        .get(&unit.id)
+                        .map_or(0, |(_, _, ids)| ids.len());
+                    (unit.id, unit.bootstrap_state, applied)
+                })
                 .collect()
         })
     }
@@ -9193,6 +9230,17 @@ impl SyncClient {
                 scopes: record.scopes.iter().cloned().collect(),
             })
             .collect();
+        // §5.6: the applied-segment record ends when the presented cursor or
+        // token changes.
+        if self
+            .applied_segments
+            .get(&unit.id)
+            .is_some_and(|(cursor, token, _)| {
+                (*cursor, token) != (unit.cursor, &unit.bootstrap_state)
+            })
+        {
+            self.applied_segments.remove(&unit.id);
+        }
         // §5.6: a resumed bootstrap keeps the tables it already seeded.
         let mut seeded: BTreeSet<String> = if unit.bootstrap_state.is_none() {
             BTreeSet::new()
@@ -9256,6 +9304,21 @@ impl SyncClient {
                                     media_type.name()
                                 ),
                             ));
+                        }
+                        // §5.6 applied-segment rule.
+                        if meta
+                            .applied
+                            .get(&unit.id)
+                            .is_some_and(|ids| ids.contains(&segment_id))
+                        {
+                            seeded.insert(table);
+                            continue;
+                        }
+                        if meta
+                            .deferred
+                            .contains(&(unit.id.clone(), segment_id.clone()))
+                        {
+                            return Err(SectionError::Deferred);
                         }
                         self.progress.update(|p| {
                             p.phase = ProgressPhase::Download;
@@ -9352,8 +9415,8 @@ impl SyncClient {
                         }
                         self.progress.update(|p| p.phase = ProgressPhase::Import);
                         if media_type == MediaType::Sqlite {
-                            // §5.3: images are whole-table — a paged sqlite
-                            // descriptor is invalid.
+                            // §5.3: a range image keeps its position in the resume
+                            // token; a descriptor row cursor is invalid.
                             if row_cursor.is_some() || next_row_cursor.is_some() {
                                 return Err(SectionError::Abort(
                                     "sync.invalid_request".to_owned(),
@@ -9384,6 +9447,13 @@ impl SyncClient {
                                 self.apply_segment(&pair, &segment, clear, &effective, &unit.id)?;
                             seeded.insert(segment.table);
                         }
+                        self.applied_segments
+                            .entry(unit.id.clone())
+                            .or_insert_with(|| {
+                                (unit.cursor, unit.bootstrap_state.clone(), BTreeSet::new())
+                            })
+                            .2
+                            .insert(segment_id);
                     }
                     _ => {
                         return Err(SectionError::Abort(
@@ -9398,7 +9468,7 @@ impl SyncClient {
         match applied {
             Ok(()) => {}
             // The unit keeps catching up with its cursor unpersisted.
-            Err(SectionError::Refused) => return Ok(()),
+            Err(SectionError::Refused | SectionError::Deferred) => return Ok(()),
             Err(SectionError::FailClosed) => {
                 // §5.6: the failure is unit-local; the rest of the response
                 // still applies and the failed unit leaves the list.
@@ -9454,6 +9524,7 @@ impl SyncClient {
             report.failed.truncate(counts.2);
             return Err(storage(message));
         }
+        self.applied_segments.remove(&unit.id);
         Ok(())
     }
 
@@ -10355,7 +10426,14 @@ impl SyncClient {
             .query([])
             .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
         let mut applied = 0u32;
-        let mut limit = 1024u32;
+        let mut limit = if first_fresh_page {
+            1024
+        } else {
+            self.image_chunk_rows
+                .get(&table.name)
+                .copied()
+                .unwrap_or(1024)
+        };
         let (mut write, mut commit) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
         loop {
             let clear = applied == 0 && first_fresh_page;
@@ -10366,7 +10444,8 @@ impl SyncClient {
             let reconcile_pending =
                 !protected && pending && table.indexes.iter().any(|index| index.unique);
             let mirror_visible = !protected && !reconcile_pending;
-            // §5.3: the first chunk holds 1,024 rows. A later chunk holds at
+            // §5.3: a table's first chunk holds 1,024 rows; a later range image
+            // starts at the size its previous range reached. A later chunk holds at
             // least 1,024 rows, at most twice the rows of the one before, at
             // most 65,536, and at most the rows the one before applied per
             // 250 ms from its start to its COMMIT; a chunk that replays local
@@ -10517,6 +10596,7 @@ impl SyncClient {
                 .min(65_536)
                 .min((f64::from(processed) * 250.0 / duration) as u32)
                 .max(1024);
+            self.image_chunk_rows.insert(table.name.clone(), limit);
         }
         if i64::from(applied) != actual_count {
             return Err(invalid(format!(
@@ -12679,3 +12759,6 @@ mod insert_intent_tests;
 
 #[cfg(test)]
 mod robustness_tests;
+
+#[cfg(test)]
+mod range_image_tests;

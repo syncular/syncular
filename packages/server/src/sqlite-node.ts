@@ -48,12 +48,13 @@ export const buildSqliteImage: SqliteImageBuilder = async (input) => {
   const path = join(directory, 'segment.db');
   const db = new NodeSqliteDatabase(path);
   try {
+    let rowCount: number;
     try {
-      await writeSqliteImage(db, input);
+      rowCount = await writeSqliteImage(db, input);
     } finally {
       db.close();
     }
-    return new Uint8Array(readFileSync(path));
+    return { bytes: new Uint8Array(readFileSync(path)), rowCount };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

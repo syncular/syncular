@@ -2208,25 +2208,33 @@ Bootstrap is **resumable, pinned, and paged**:
   multi-variable unit's values. A storage reads it with one index seek per
   key and per jump between the keys' ranges, never a scan of the commits
   above it. The server
-  computes the scope pin at every sqlite-lane table start; a resume token's
-  `asOfCommitSeq` never becomes an image reuse key.
+  computes the scope pin at every sqlite-lane table start, and again when a
+  pull resumes a table between two of its range images (§5.3); a resume
+  token's `asOfCommitSeq` never becomes an image reuse key.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
   shape `{ "asOfCommitSeq": i, "tables": [..], "tableIndex": i,
-  "rowCursor": string|null }`. **Clients MUST treat it as opaque** and
+  "rowCursor": string|null, "image"?: true }`. `image` is present only
+  when `rowCursor` is not null and the table continues with its next range
+  image (§5.3). **Clients MUST treat it as opaque** and
   round-trip it byte-for-byte; only servers interpret it. (The shape is
   specified so vectors and tooling can render it, not for clients.)
 - Each pull continues from (`tableIndex`, `rowCursor`), emitting up to
   `maxSnapshotPages` pages of up to `limitSnapshotRows` rows as segments
   (§5) in the unit's section, moving to the next table when one is
   exhausted, then returns the advanced resume token, or omits it when every
-  table is exhausted, which is the completion signal. A table served as a
-  sqlite image (§5.3) is exhausted by that single segment: the image is
-  whole-table, counts as one page, and is only chosen when the resume
-  position is at the table's start (null row cursor). Every covered table
+  table is   exhausted, which is the completion signal. A table on the sqlite lane
+  (§5.3) is served as range images in row order, each counting as one
+  page: the image lane starts only at the table's start (null row cursor),
+  and after a range image the token's `rowCursor` is the last row id the
+  image holds, with `image` set. Every covered table
   delivers at least one segment, an empty rows segment for a table with no
   matching row, so its first-page clear runs (§5.6).
 - A segment's `asOfCommitSeq` (§5.4) is the unit's pin for a rows segment
-  and the table's scope pin for a sqlite image.
+  and the table's scope pin for a sqlite image. A resumed pull recomputes
+  the scope pin, so a change that reaches the scope between two pulls of one
+  table's ranges serves the remaining ranges at the newer scope pin. Each
+  range holds the snapshot at its own scope pin, and the live section after
+  the unit's pin delivers every change in between (§4.5).
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
@@ -2569,22 +2577,33 @@ The segment bytes are a complete, well-formed **SQLite database file**
 (the motivating property: bootstrap becomes "import a database", not
 "insert N rows").
 
-**Whole-table, never paged.** A sqlite segment covers the unit's
-**entire** effective-scope row set for one table at the table's scope pin (§4.7) —
-the same rows a complete sequence of §5.2 rows pages would deliver (same
-matching rule, same `asOfCommitSeq`). Consequences, all normative:
+**Range images.** A table's sqlite lane covers the unit's **entire**
+effective-scope row set for the table at the table's scope pin (§4.7), the
+same rows a complete sequence of §5.2 rows pages would deliver (same
+matching rule), as one or more **range images**. Each range image holds a
+contiguous run of the table's rows in row order (the order of §4.7 row
+cursors), starting after the previous range's last row. The server bounds
+each image's file size by `maxImageSegmentBytes` (reference default 32 MiB):
+it measures the file while it inserts rows and cuts at a row boundary before
+the row that could carry the file past the bound. A row larger than the bound
+gets an image of its own. Consequences, all normative:
 
-- The descriptor's `rowCursor` and `nextRowCursor` MUST be absent (the
-  image is both the first and the last page of its table); a client
-  receiving a sqlite `SEGMENT_REF` with either present MUST reject it
+- The descriptor's `rowCursor` and `nextRowCursor` MUST be absent; the
+  range's position lives in the resume token (§4.7). A client receiving a
+  sqlite `SEGMENT_REF` with either present MUST reject it
   (`sync.invalid_request`, aborting per §1.4 rule 5).
-- `limitSnapshotRows` and `maxSnapshotPages` (§4.2) do not constrain the
-  image lane; against `maxSnapshotPages` an image counts as one page.
-- The sqlite lane is chosen only at the **start of a table** (§4.7
-  resume position with a null row cursor). A bootstrap resumed mid-table
-  MUST continue on the rows lane at the same pin — a server MUST NOT
-  switch lanes mid-table (re-clearing already-applied pages is the §5.6
-  first-page rule's job, and a resumed bootstrap never re-clears).
+- `limitSnapshotRows` does not constrain the image lane; against
+  `maxSnapshotPages` each range image counts as one page, so a response
+  carries at most `maxSnapshotPages` of them per unit and a resumed pull
+  continues at the next range.
+- The sqlite lane starts only at the **start of a table** (§4.7 resume
+  position with a null row cursor). A bootstrap resumed on the rows lane
+  MUST continue on the rows lane at the same pin. A position on the image
+  lane continues with the next range image while more than one rows page
+  remains there, and with rows pages to the table's end otherwise, or when
+  the server has no image for the position and cannot build one.
+- The first range image of a table is its first page and runs the §5.6
+  clear; later ranges and rows pages of the table do not.
 - Delivery is by `SEGMENT_REF` only; servers MUST NOT inline sqlite
   segments (§5.7).
 
@@ -2610,18 +2629,22 @@ matching rule, same `asOfCommitSeq`). Consequences, all normative:
   TEXT NOT NULL` (§3.5), `rowCount INTEGER NOT NULL` — the descriptor
   duplicated inside the file so a segment at rest is self-describing.
   (DECISION: the draft's `rowCursor`/`nextRowCursor`/`isFirstPage`/
-  `isLastPage` columns are dropped — a format-1 image is inherently
-  whole-table, and dead always-NULL variance is exactly what SSP2 kills.)
+  `isLastPage` columns are dropped. A range image is a valid format-1
+  image of its own rows, `rowCount` counts them, and the resume token
+  carries the position.)
 
 **Application contract** (the §5.6 rules, specialized): the client
 applies the image in **chunks**, one local transaction each: the first
-chunk holds 1,024 rows. Each later chunk holds at least 1,024 rows, at most
+chunk of a table's first range image holds 1,024 rows, and the first chunk of a
+later range image of the table holds the size the rule below gave the previous
+range's next chunk, when the client still knows it (1,024 rows otherwise).
+Each later chunk holds at least 1,024 rows, at most
 twice the rows of the chunk before, at most 65,536 rows, and at most the rows
 the chunk before applied per 250 ms of its duration, measured on a monotonic
 clock from the chunk's start to its `COMMIT`. While local writes to the
-table need replay (§7.1), a chunk holds at most 1,024 rows. The §5.6
-fresh-bootstrap first-page clear runs in the first transaction (an image is always
-the first page), then primary-key upserts for every image row with
+table need replay (§7.1), a chunk holds at most 1,024 rows. When the image is
+the table's first page (§5.6), the fresh-bootstrap clear runs in its first
+transaction, then primary-key upserts for every image row with
 `_syncular_version` landing as the row's last-known `server_version`.
 Mechanics are implementation detail (ATTACH + `INSERT INTO … SELECT`,
 `sqlite3_deserialize`, or row copy); the contract is replace-all
@@ -2647,7 +2670,8 @@ semantics plus version seeding. Before applying, the client MUST:
 **Application.** Validate metadata, column order, the declared single primary key
 against the generated schema, and total row count before
 writing. Apply the image in primary-key order in the chunks above, with the
-first-page clear in the first transaction (§5.6). Within a chunk, copy at most
+first-page clear in the first transaction of a table's first range (§5.6).
+Each range image applies in its own chunks. Within a chunk, copy at most
 1,024 rows per statement and report progress after each statement (§7.7).
 Publish a revision after each committed chunk, preserving optimistic writes.
 Yield between chunks; persist the unit's checkpoint only at `SUB_END`. Failure
@@ -2658,6 +2682,31 @@ applied row count MUST equal the descriptor before a unit's checkpoint can
 advance. After the last chunk commits outside any open transaction, the client
 runs `PRAGMA wal_checkpoint(TRUNCATE)`: a WAL replica otherwise keeps the
 largest chunk's pages in its `-wal` file.
+
+**Client memory.** A client holds at most two image bodies at once: the one
+it applies and one it downloads ahead. A client that fetches a response's
+segment bodies before it applies them fetches at most two image bodies per
+batch, applies them, and stops the unit section before the next image
+without persisting its `SUB_END`; the next pull presents the same resume
+token and continues with the §5.6 applied-segment rule. Peak memory then
+follows `maxImageSegmentBytes`, never the table size.
+
+DECISION (2026-11-17): images are cut into ranges because a client holds an
+image body whole. The TypeScript client reads the body into one buffer and
+copies it into the SQLite heap for `sqlite3_deserialize`, so a 424 MB image
+needs at least 848 MB at its peak, and a body that breaks off downloads the
+whole image again. `bench/src/image-range-lane.ts` bootstraps 67,302 +
+87,267 catalogue rows (351 MB of images) through the reference server and the
+TypeScript client into an OPFS replica in Chromium on a persistent profile
+(Apple M5 Pro). As one image per table, the renderer peaked at 1,310 to
+1,351 MiB of resident memory with a 319 MiB SQLite heap. With 32 MiB range
+images (9 + 3 images, three data rounds at the default four pages), it peaked
+at 434 to 490 MiB with an 83 MiB heap. The import took 1.6 to 1.7 s against
+1.5 s; before a later range continued its table's chunk size, every range
+restarted at 1,024 rows, and the import committed 58 transactions instead of
+16 and took 2.4 s. A 64 MiB bound saved about 0.4 s in one session and cost
+100 to 150 MiB more memory; the 32 MiB default keeps three bound-sized
+buffers within the memory of one 100 MB image.
 
 DECISION (2026-11-12): image chunks grow because every commit rewrites the
 table's index pages. A fresh table's secondary indexes take keys in an order
@@ -2708,15 +2757,19 @@ therefore never pin image bytes, and two conformant servers may produce
 different `segmentId`s for the same logical snapshot. Cross-client dedup
 consequently comes from server-side reuse, not hash convergence: a
 server SHOULD serve one stored image per (partition, table,
-schemaVersion, scope digest, `asOfCommitSeq`) and MUST NOT rebuild per
-client while an unexpired one exists for that key — the §5.1
+schemaVersion, scope digest, `asOfCommitSeq`, range start) and MUST NOT
+rebuild per client while an unexpired one exists for that key — the §5.1
 build-once SHOULD made hard for the format where identical bytes cannot
 be assumed. This is the bootstrap-storm answer: N clients holding the
 same scopes at the same pin download one image (from the CDN, with
 §5.4 signed URLs). Because a sqlite-lane bootstrap pins at its scope pin
 (§4.7), a stored image stays the match for its key until a change reaches
 its scope; a host without a SQLite engine serves images a publisher stored
-under that key and serves the rows lane when none exists.
+under that key and serves the rows lane when none exists. A stored image larger
+than the serving host's `maxImageSegmentBytes` that holds more than one row
+does not match, so an image stored under a larger bound (or before range
+images) is built again in ranges; a store returns the newest image stored
+under a key.
 
 The reference TypeScript server builds new images only when the host supplies
 `sqliteImageBuilder` in its request context or server config. The neutral server
@@ -2940,7 +2993,21 @@ for clients without signed-URL support.
   earlier pages already applied. Tables arrive in the unit's bootstrap
   order (§4.7), so a `SEGMENT_REF` first page also has `rowCursor` absent,
   and a `SEGMENT_INLINE`, which carries no descriptor, is a first page
-  exactly when it is the first segment of its table in the bootstrap.
+  exactly when it is the first segment of its table in the bootstrap. A
+  later range image of a table also has `rowCursor` absent and is not a
+  first page.
+- **Applied-segment rule.** A client records the `segmentId` of every
+  `SEGMENT_REF` it applied completely in a unit section whose `SUB_END` it
+  has not persisted, together with the cursor and resume token the unit
+  presented. When the unit's next pull presents the same cursor and token, a
+  `SEGMENT_REF` whose `segmentId` the record holds is neither downloaded
+  nor applied again, and its table counts as having received a segment. The
+  record ends when the unit's `SUB_END` persists or its cursor or token
+  changes. A failed download therefore repeats only that segment and the
+  segments after it: a server serves the same stored images for the same
+  position (§5.3 reuse). The record MAY live in memory; a client that loses
+  it applies the segments again, which the version guard and the first-page
+  clear keep correct.
 - **Fail closed at the clear too.** The first-page delete uses the §3.3
   matching rule *including its fail-closed clause*: with no local
   scope-column mapping for an effective key, the client MUST NOT clear
@@ -8097,9 +8164,9 @@ Each is a driver-interface script, not a prose test.
    (§5.2, §5.6, §6.2).
 
 10. **SQLite-image bootstrap.** (a) Equivalence: a client advertising
-    `accept` bit 2 bootstraps an image-eligible table in a single pull
-    (no paging, `bootstrapState` never emitted) and ends row-, value-
-    and version-identical to a rows-lane control client, with
+    `accept` bit 2 bootstraps an image-eligible table within one range
+    image in a single pull (`bootstrapState` never emitted) and ends
+    row-, value- and version-identical to a rows-lane control client, with
     incremental handoff at the pin (§5.3, §5.6, §4.7). (b) Descriptor
     shape and reuse: the sqlite `SEGMENT_REF` carries no
     `rowCursor`/`nextRowCursor`, and a second client with the same
@@ -8110,7 +8177,12 @@ Each is a driver-interface script, not a prose test.
     (d) Capability gating: without bit 2 the same table bootstraps via
     paged rows segments (§4.2 negotiation). (e) Lane pinning: a
     bootstrap resumed mid-table stays on the rows lane even when the
-    resuming pull advertises bit 2 (§5.3, §4.7).
+    resuming pull advertises bit 2 (§5.3, §4.7). (f) Range images: a
+    table past `maxImageSegmentBytes` arrives as at least three range
+    images across at least two pulls; the client ends with every row,
+    the first-page clear runs once, every committed prefix ends at a
+    whole range, and an interrupted image download repeats only that
+    image (§5.3, §5.6).
 
 11. **Sync rounds over the socket.** (a) Equivalence: a client syncing
     over the socket binding (§8.7) and a control client syncing over

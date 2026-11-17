@@ -214,6 +214,8 @@ interface BootstrapToken {
   tables: string[];
   tableIndex: number;
   rowCursor: string | null;
+  /** Present when the table at `tableIndex` continues on the image lane. */
+  image?: true;
 }
 
 /**
@@ -242,7 +244,9 @@ function parseBootstrapToken(
       parsed.tableIndex === undefined ||
       parsed.tableIndex < 0 ||
       parsed.tableIndex >= tables.length ||
-      (parsed.rowCursor !== null && typeof parsed.rowCursor !== 'string')
+      (parsed.rowCursor !== null && typeof parsed.rowCursor !== 'string') ||
+      (parsed.image !== undefined &&
+        (parsed.image !== true || parsed.rowCursor === null))
     ) {
       return undefined;
     }
@@ -251,6 +255,7 @@ function parseBootstrapToken(
       tables: parsed.tables as string[],
       tableIndex: parsed.tableIndex,
       rowCursor: parsed.rowCursor ?? null,
+      ...(parsed.image === true ? { image: true as const } : {}),
     };
   } catch {
     return undefined;
@@ -302,8 +307,12 @@ function segmentRefFrame(
     // under different scopes (§5.1), and the record's primary digest is not
     // necessarily the caller's (§5.5).
     scopeDigest,
-    ...(record.rowCursor !== null ? { rowCursor: record.rowCursor } : {}),
-    ...(record.nextRowCursor !== null
+    // §5.3: an image descriptor carries no cursors; the resume token holds
+    // the position of a table's next range.
+    ...(record.mediaType === 'rows' && record.rowCursor !== null
+      ? { rowCursor: record.rowCursor }
+      : {}),
+    ...(record.mediaType === 'rows' && record.nextRowCursor !== null
       ? { nextRowCursor: record.nextRowCursor }
       : {}),
     ...(extra.url !== undefined ? { url: extra.url } : {}),
@@ -320,8 +329,8 @@ interface BootstrapPair {
 }
 
 /**
- * §5.3: the sqlite-image lane — whole-table, chosen only at the start of a
- * table (a mid-table resume stays on the rows lane, never switching lanes),
+ * §5.3: the sqlite-image lane, chosen at the start of a table or continued
+ * after a range image (a table on the rows lane never switches to images),
  * and only when the client advertised bit 2. §5.11: a table with any
  * encrypted column is image-INELIGIBLE — an image copies ciphertext
  * wholesale with no per-row decrypt pass, so it MUST be served on the rows
@@ -331,12 +340,50 @@ function sqliteLaneEligible(
   limits: PullLimits,
   table: CompiledTable,
   startRowCursor: string | null,
+  imageLane: boolean,
 ): boolean {
   return (
     (limits.accept & ACCEPT_SQLITE) !== 0 &&
-    startRowCursor === null &&
+    (startRowCursor === null || imageLane) &&
     table.encryptedColumnIndices.length === 0
   );
+}
+
+/**
+ * §5.3 reuse lookup for the range image that starts after `rowCursor`. Only
+ * a position with more than one rows page left can match a stored image, so
+ * a smaller remainder skips the lookup. A stored image past the bound (built
+ * under a larger one) does not match unless it holds a single row.
+ */
+async function findImage(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  limits: PullLimits,
+  pair: BootstrapPair,
+  scopePin: number,
+  rowCursor: string | null,
+  probe: readonly StoredRow[],
+  logEpoch: string,
+): Promise<SegmentRecord | undefined> {
+  if (probe.length <= limits.limitSnapshotRows) return undefined;
+  const stored = await ctx.segments.find(
+    {
+      partition: ctx.partition,
+      logEpoch,
+      table: pair.table.name,
+      schemaVersion: schema.version,
+      mediaType: 'sqlite',
+      scopeDigest: await scopeDigest(pair.effective),
+      asOfCommitSeq: scopePin,
+      rowCursor,
+    },
+    clockOf(ctx)(),
+  );
+  return stored !== undefined &&
+    (stored.byteLength <= limitsOf(ctx).maxImageSegmentBytes ||
+      stored.rowCount === 1)
+    ? stored
+    : undefined;
 }
 
 /** The reads a table's bootstrap needs before its first frame (§4.7, §5.3). */
@@ -360,6 +407,7 @@ async function readTableStart(
   unit: UnitPlan,
   pair: BootstrapPair,
   startRowCursor: string | null,
+  imageLane: boolean,
   maxSeq: number,
   horizonSeq: number,
   logEpoch: string,
@@ -370,7 +418,7 @@ async function readTableStart(
     afterRowId: startRowCursor,
     limit: limits.limitSnapshotRows + 1,
   });
-  if (!sqliteLaneEligible(limits, pair.table, startRowCursor)) {
+  if (!sqliteLaneEligible(limits, pair.table, startRowCursor, imageLane)) {
     return { firstPage: await scan };
   }
   // §4.7: a sqlite-lane table pins at the newest commit carrying all of the
@@ -385,33 +433,25 @@ async function readTableStart(
     }),
   ]);
   const scopePin = Math.min(maxSeq, Math.max(latest, horizonSeq));
-  // §5.3 eligibility: a stored image only matches a snapshot larger than one
-  // rows page, so the probe decides before the reuse lookup; a remote `find`
-  // on a small table would be a wasted round trip.
-  const stored =
-    firstPage.length <= limits.limitSnapshotRows
-      ? undefined
-      : await ctx.segments.find(
-          {
-            partition: ctx.partition,
-            logEpoch,
-            table: pair.table.name,
-            schemaVersion: schema.version,
-            mediaType: 'sqlite',
-            scopeDigest: await scopeDigest(pair.effective),
-            asOfCommitSeq: scopePin,
-          },
-          clockOf(ctx)(),
-        );
+  const stored = await findImage(
+    ctx,
+    schema,
+    limits,
+    pair,
+    scopePin,
+    startRowCursor,
+    firstPage,
+    logEpoch,
+  );
   return { firstPage, image: { scopePin, stored } };
 }
 
 /**
- * §5.3 sqlite-image lane: only when the snapshot exceeds one rows page.
- * Reuses an unexpired stored image for the same (partition, table,
- * schemaVersion, scope digest, scope pin) instead of rebuilding — the
- * bootstrap-storm rule. Returns false when no image is served (the rows lane
- * takes over).
+ * §5.3 sqlite-image lane: one range image starting after `rowCursor`, only
+ * when more than one rows page remains there. Reuses an unexpired stored
+ * image for the same (partition, table, schemaVersion, scope digest, scope
+ * pin, range start) instead of rebuilding — the bootstrap-storm rule.
+ * Returns undefined when no image is served (the rows lane takes over).
  */
 async function* sqliteImageSegment(
   ctx: SyncRequestContext,
@@ -419,12 +459,13 @@ async function* sqliteImageSegment(
   limits: PullLimits,
   pair: BootstrapPair,
   scopePin: number,
+  rowCursor: string | null,
   digest: string,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
   existing: SegmentRecord | undefined,
   probe: StoredRow[],
-): AsyncGenerator<ResponseFrame, boolean> {
+): AsyncGenerator<ResponseFrame, SegmentRecord | undefined> {
   const { storage, segments, partition } = ctx;
   const now = clockOf(ctx)();
   if (existing !== undefined) {
@@ -440,13 +481,13 @@ async function* sqliteImageSegment(
       digest,
       await signedUrlFields(ctx, limits, existing.segmentId, digest, now),
     );
-    return true;
+    return existing;
   }
-  if (probe.length <= limits.limitSnapshotRows) return false;
+  if (probe.length <= limits.limitSnapshotRows) return undefined;
   // §5.3: hosts opt into image construction with a runtime-specific builder.
   // Without one, matching stored images remain usable and cold pulls use rows.
   const buildImage = ctx.sqliteImageBuilder;
-  if (buildImage === undefined) return false;
+  if (buildImage === undefined) return undefined;
   let stores = imageBuilds.get(storage);
   if (stores === undefined) {
     stores = new WeakMap();
@@ -465,6 +506,7 @@ async function* sqliteImageSegment(
     mediaType: 'sqlite' as const,
     scopeDigest: digest,
     asOfCommitSeq: scopePin,
+    rowCursor,
   };
   const current = compileSchema(ctx.schema).tables.get(pair.table.name)!;
   const key = JSON.stringify(identity);
@@ -473,43 +515,65 @@ async function* sqliteImageSegment(
   if (building === undefined) {
     building = (async () => {
       // Another request can finish while this one's eligibility probe awaits.
-      const cached = await segments.find(identity, clockOf(ctx)());
+      const cached = await findImage(
+        ctx,
+        schema,
+        limits,
+        pair,
+        scopePin,
+        rowCursor,
+        probe,
+        logEpoch,
+      );
       if (cached !== undefined) return cached;
       builtHere = true;
-      let rowCount = 0;
-      const bytes = await buildImage({
+      // The builder stops at the size bound inside the latest batch; these
+      // locate the last row it took and whether rows follow it.
+      let yielded = 0;
+      let batch: readonly StoredRow[] = [];
+      let beforeBatch = rowCursor;
+      let exhausted = false;
+      const image = await buildImage({
         table: pair.table,
         schemaVersion: schema.version,
         asOfCommitSeq: scopePin,
         scopeDigest: digest,
+        maxBytes: limitsOf(ctx).maxImageSegmentBytes,
         rowBatches: (async function* () {
-          rowCount += probe.length;
-          yield probe.map((row) => ({
-            ...row,
-            payload: projectRowPayload(current, pair.table, row.payload),
-          }));
-          let afterRowId = probe[probe.length - 1]!.rowId;
+          let rows: readonly StoredRow[] = probe;
           for (;;) {
-            const rows = await storage.scanRows(partition, {
-              table: pair.table.name,
-              scopeFilter: pair.effective,
-              afterRowId,
-              limit: 5_000,
-            });
-            rowCount += rows.length;
+            beforeBatch = batch[batch.length - 1]?.rowId ?? beforeBatch;
+            batch = rows;
+            yielded += rows.length;
             yield rows.map((row) => ({
               ...row,
               payload: projectRowPayload(current, pair.table, row.payload),
             }));
             const last = rows[rows.length - 1];
-            if (rows.length < 5_000 || last === undefined) break;
-            afterRowId = last.rowId;
+            if (last === undefined || (rows !== probe && rows.length < 5_000))
+              break;
+            rows = await storage.scanRows(partition, {
+              table: pair.table.name,
+              scopeFilter: pair.effective,
+              afterRowId: last.rowId,
+              limit: 5_000,
+            });
           }
+          exhausted = true;
         })(),
       });
+      const index = image.rowCount - (yielded - batch.length) - 1;
+      if (image.rowCount < 1 || image.rowCount > yielded || index < -1) {
+        throw new Error('sqliteImageBuilder consumed rows out of order');
+      }
+      const last = index < 0 ? beforeBatch : batch[index]!.rowId;
       return segments.put(
-        { ...identity, rowCount, rowCursor: null, nextRowCursor: null },
-        bytes,
+        {
+          ...identity,
+          rowCount: image.rowCount,
+          nextRowCursor: image.rowCount < yielded || !exhausted ? last : null,
+        },
+        image.bytes,
         clockOf(ctx)(),
       );
     })();
@@ -539,12 +603,14 @@ async function* sqliteImageSegment(
       clockOf(ctx)(),
     ),
   );
-  return true;
+  return record;
 }
 
 /**
- * One table's segments within the page budget. Returns the pages it used
- * and the row cursor to resume at, `null` once the table is exhausted.
+ * One table's segments within the page budget: range images while the table
+ * is on the image lane, then rows pages. Returns the pages it used, the row
+ * cursor to resume at (`null` once the table is exhausted) and whether that
+ * position is on the image lane.
  */
 async function* tableSegments(
   ctx: SyncRequestContext,
@@ -557,28 +623,17 @@ async function* tableSegments(
   pageBudget: number,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
-): AsyncGenerator<ResponseFrame, { pages: number; rowCursor: string | null }> {
+): AsyncGenerator<
+  ResponseFrame,
+  { pages: number; rowCursor: string | null; image: boolean }
+> {
   const { storage, segments, partition } = ctx;
   const serverLimits = limitsOf(ctx);
   const digest = await scopeDigest(pair.effective);
   const now = clockOf(ctx)();
-  if (start.image !== undefined) {
-    const imaged = yield* sqliteImageSegment(
-      ctx,
-      schema,
-      limits,
-      pair,
-      start.image.scopePin,
-      digest,
-      trace,
-      logEpoch,
-      start.image.stored,
-      start.firstPage,
-    );
-    if (imaged) return { pages: 1, rowCursor: null };
-  }
   const current = compileSchema(ctx.schema).tables.get(pair.table.name)!;
   let rowCursor = startRowCursor;
+  let image = start.image;
   for (let page = 0; page < pageBudget; page++) {
     const scanned =
       page === 0
@@ -589,6 +644,41 @@ async function* tableSegments(
             afterRowId: rowCursor,
             limit: limits.limitSnapshotRows + 1,
           });
+    if (image !== undefined) {
+      // §5.3: every range of the table shares the scope pin computed at this
+      // section's table start.
+      const record = yield* sqliteImageSegment(
+        ctx,
+        schema,
+        limits,
+        pair,
+        image.scopePin,
+        rowCursor,
+        digest,
+        trace,
+        logEpoch,
+        page === 0
+          ? image.stored
+          : await findImage(
+              ctx,
+              schema,
+              limits,
+              pair,
+              image.scopePin,
+              rowCursor,
+              scanned,
+              logEpoch,
+            ),
+        scanned,
+      );
+      if (record !== undefined) {
+        if (record.nextRowCursor === null)
+          return { pages: page + 1, rowCursor: null, image: false };
+        rowCursor = record.nextRowCursor;
+        continue;
+      }
+      image = undefined;
+    }
     const pageRows = scanned.slice(0, limits.limitSnapshotRows);
     const hasMore = scanned.length > limits.limitSnapshotRows;
     // §5.2: every row record carries the row's current server_version.
@@ -650,10 +740,10 @@ async function* tableSegments(
         await signedUrlFields(ctx, limits, record.segmentId, digest, now),
       );
     }
-    if (!hasMore) return { pages: page + 1, rowCursor: null };
+    if (!hasMore) return { pages: page + 1, rowCursor: null, image: false };
     rowCursor = nextRowCursor;
   }
-  return { pages: pageBudget, rowCursor };
+  return { pages: pageBudget, rowCursor, image: image !== undefined };
 }
 
 /** A bootstrapping unit's position and its table starts, read ahead (§4.7). */
@@ -663,6 +753,8 @@ export interface BootstrapPlan {
   readonly pin: number;
   readonly tableIndex: number;
   readonly rowCursor: string | null;
+  /** Whether the position continues the table's range images (§5.3). */
+  readonly image: boolean;
   /** Table index → its start reads. */
   readonly starts: ReadonlyMap<number, Promise<TableStart>>;
 }
@@ -693,6 +785,7 @@ export function planBootstrap(
       : undefined;
   const tableIndex = resume?.tableIndex ?? 0;
   const rowCursor = resume?.rowCursor ?? null;
+  const image = resume?.image === true;
   const starts = new Map<number, Promise<TableStart>>();
   for (
     let index = tableIndex;
@@ -709,6 +802,7 @@ export function planBootstrap(
       unit,
       { table, effective },
       index === tableIndex ? rowCursor : null,
+      index === tableIndex && image,
       maxSeq,
       horizonSeq,
       logEpoch,
@@ -722,6 +816,7 @@ export function planBootstrap(
     pin: resume?.asOfCommitSeq ?? maxSeq,
     tableIndex,
     rowCursor,
+    image,
     starts,
   };
 }
@@ -741,7 +836,7 @@ export async function* bootstrapSegments(
   logEpoch: string,
 ): AsyncGenerator<ResponseFrame, string | undefined> {
   const { unit, pin } = plan;
-  let { tableIndex, rowCursor } = plan;
+  let { tableIndex, rowCursor, image } = plan;
   let pages = 0;
   for (;;) {
     while (
@@ -750,6 +845,7 @@ export async function* bootstrapSegments(
     ) {
       tableIndex += 1;
       rowCursor = null;
+      image = false;
     }
     if (tableIndex === unit.tables.length) return undefined;
     if (pages === limits.maxSnapshotPages) {
@@ -758,6 +854,7 @@ export async function* bootstrapSegments(
         tables: unit.tables.map((table) => table.name),
         tableIndex,
         rowCursor,
+        ...(image ? { image: true as const } : {}),
       };
       return JSON.stringify(token);
     }
@@ -776,6 +873,7 @@ export async function* bootstrapSegments(
     );
     pages += outcome.pages;
     rowCursor = outcome.rowCursor;
+    image = outcome.image;
     if (rowCursor === null) tableIndex += 1;
   }
 }
@@ -797,18 +895,21 @@ export interface PublishSqliteImageInput {
 }
 
 export interface PublishedSqliteImage {
-  readonly segmentId: string;
-  /** The §4.7 scope pin the image is stored under. */
+  /** The table's range images in row order (§5.3). */
+  readonly segmentIds: readonly string[];
+  /** The §4.7 scope pin the images are stored under. */
   readonly asOfCommitSeq: number;
   readonly scopeDigest: string;
+  /** Rows across every range image. */
   readonly rowCount: number;
+  /** Bytes across every range image. */
   readonly byteLength: number;
-  /** `reused` when an unexpired image for the same reuse key already existed. */
+  /** `reused` when an unexpired image existed for every range's reuse key. */
   readonly origin: 'built' | 'reused';
 }
 
 /**
- * Publish the §5.3 sqlite image that a pull of (`scopes`, `table`) looks up,
+ * Publish the §5.3 range images that a pull of (`scopes`, `table`) looks up,
  * from a host with a SQLite engine (a Bun process with the production
  * storage). It runs the pull's own bootstrap path (the §4.7 scope pin, the
  * reuse key, the build), so the stored identity is exactly the one a
@@ -848,11 +949,12 @@ export async function publishSqliteImage(
     partition,
     actorId: 'syncular.image-publisher',
   };
-  // One-row pages make every table above one row image-eligible (§5.3).
+  // One-row pages make every range above one row image-eligible (§5.3), and
+  // an unbounded page budget stores every range under one scope pin.
   const limits: PullLimits = {
     limitCommits: 1,
     limitSnapshotRows: 1,
-    maxSnapshotPages: 1,
+    maxSnapshotPages: Number.MAX_SAFE_INTEGER,
     accept: ACCEPT_SQLITE,
   };
   const maxSeq = await config.storage.getMaxCommitSeq(partition);
@@ -868,7 +970,7 @@ export async function publishSqliteImage(
     horizonSeq,
     logEpoch,
   );
-  let ref: SegmentRefFrame | undefined;
+  const refs: SegmentRefFrame[] = [];
   for await (const frame of bootstrapSegments(
     ctx,
     schema,
@@ -878,23 +980,26 @@ export async function publishSqliteImage(
     logEpoch,
   )) {
     if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
-      ref = frame;
+      refs.push(frame);
     }
   }
-  const image = trace.segments.find(
-    (segment) => segment.mediaType === 'sqlite',
-  );
-  if (ref === undefined || image === undefined) {
+  const first = refs[0];
+  if (first === undefined) {
     throw new Error(
       'publishSqliteImage: the scope holds at most one row, which pulls serve inline',
     );
   }
   return {
-    segmentId: ref.segmentId,
-    asOfCommitSeq: ref.asOfCommitSeq,
-    scopeDigest: ref.scopeDigest,
-    rowCount: ref.rowCount,
-    byteLength: ref.byteLength,
-    origin: image.origin === 'reused' ? 'reused' : 'built',
+    segmentIds: refs.map((ref) => ref.segmentId),
+    asOfCommitSeq: first.asOfCommitSeq,
+    scopeDigest: first.scopeDigest,
+    rowCount: refs.reduce((sum, ref) => sum + ref.rowCount, 0),
+    byteLength: refs.reduce((sum, ref) => sum + ref.byteLength, 0),
+    origin: trace.segments.every(
+      (segment) =>
+        segment.mediaType !== 'sqlite' || segment.origin === 'reused',
+    )
+      ? 'reused'
+      : 'built',
   };
 }

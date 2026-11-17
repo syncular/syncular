@@ -45,6 +45,7 @@ const KEY: SegmentFindKey = {
   mediaType: 'sqlite',
   scopeDigest: 'digest-a',
   asOfCommitSeq: 42,
+  rowCursor: null,
 };
 
 export function runSegmentStoreContract(
@@ -308,6 +309,33 @@ export function runSegmentStoreContract(
           )
         )?.table,
       ).toBe('docs');
+    });
+
+    test('find keys range images by their start and prefers the newest (§5.3)', async () => {
+      const store = await makeStore();
+      const second = await store.put(
+        { ...IMAGE_META, rowCursor: 'row-9', nextRowCursor: 'row-20' },
+        new Uint8Array([9]),
+        CONTRACT_NOW,
+      );
+      const found = await store.find(
+        { ...KEY, rowCursor: 'row-9' },
+        CONTRACT_NOW + 1,
+      );
+      expect(found?.segmentId).toBe(second.segmentId);
+      expect(found?.nextRowCursor).toBe('row-20');
+      expect(
+        await store.find({ ...KEY, rowCursor: 'row-8' }, CONTRACT_NOW + 1),
+      ).toBeUndefined();
+      await store.put(IMAGE_META, new Uint8Array([1]), CONTRACT_NOW);
+      const newer = await store.put(
+        IMAGE_META,
+        new Uint8Array([2]),
+        CONTRACT_NOW + 1,
+      );
+      expect((await store.find(KEY, CONTRACT_NOW + 2))?.segmentId).toBe(
+        newer.segmentId,
+      );
     });
 
     test('find never returns expired, paged, or differently-keyed records', async () => {

@@ -631,6 +631,9 @@ export class ScenarioContext {
         },
         downloadSegment: async (request) => {
           directDownloads.push(request.segmentId);
+          const truncate =
+            faults.truncateNthSegmentDownload > 0 &&
+            --faults.truncateNthSegmentDownload === 0;
           if (faults.dropNextSegmentRequests > 0) {
             faults.dropNextSegmentRequests -= 1;
             throw new TransportFault('injected: segment request lost');
@@ -644,8 +647,8 @@ export class ScenarioContext {
             request.requestedScopesJson,
           );
           if (!result.ok) throw new EndpointError(result.error);
-          if (faults.truncateNextSegmentDownload) {
-            faults.truncateNextSegmentDownload = false;
+          if (truncate || faults.truncateNextSegmentDownload) {
+            if (!truncate) faults.truncateNextSegmentDownload = false;
             return faults.truncate(result.bytes);
           }
           return result.bytes;

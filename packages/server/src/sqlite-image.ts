@@ -1,8 +1,8 @@
 import { rollbackAfterError } from './storage-errors';
 /**
  * SQLite-image segment generation (SPEC.md §5.3): a complete SQLite
- * database file carrying one table's whole effective-scope snapshot at
- * the bootstrap pin, plus the single-row `_syncular_segment` metadata
+ * database file carrying one range of a table's effective-scope snapshot at
+ * the table's scope pin, plus the single-row `_syncular_segment` metadata
  * table. Runtime entries provide the concrete SQLite database.
  *
  * Images are NOT byte-deterministic (§5.3): the content address pins the
@@ -58,6 +58,13 @@ export interface SqliteImageInput {
   readonly schemaVersion: number;
   readonly asOfCommitSeq: number;
   readonly scopeDigest: string;
+  /**
+   * The image's file-size bound (`ServerLimits.maxImageSegmentBytes`). The
+   * builder stops before the row that could pass it; the first row always
+   * goes in.
+   */
+  readonly maxBytes: number;
+  /** The range's rows in row order, from its start to the table's end. */
   readonly rowBatches:
     | AsyncIterable<readonly StoredRow[]>
     | Iterable<readonly StoredRow[]>;
@@ -73,13 +80,22 @@ export interface SqliteImageInput {
  */
 export type SqliteImageBuilder = (
   input: SqliteImageInput,
-) => Promise<Uint8Array>;
+) => Promise<SqliteImage>;
 
-/** Populate a §5.3 image database for a whole-table snapshot. */
+/** A built image and the number of leading input rows it holds. */
+export interface SqliteImage {
+  readonly bytes: Uint8Array;
+  readonly rowCount: number;
+}
+
+/**
+ * Populate a §5.3 image database with the leading input rows that fit
+ * `maxBytes`. Returns how many rows it consumed.
+ */
 export async function writeSqliteImage(
   db: SqliteDatabase,
   input: SqliteImageInput,
-): Promise<void> {
+): Promise<number> {
   const { table, rowBatches } = input;
   const primaryKey = table.columns[table.primaryKeyIndex]?.name;
   const columnDefs = table.columns.map((column) => {
@@ -103,15 +119,33 @@ export async function writeSqliteImage(
     `INSERT INTO ${quoteIdent(table.name)} (${names.join(', ')})
      VALUES (${names.map(() => '?').join(', ')})`,
   );
+  const pageSize = db
+    .query<{ page_size: number }>('PRAGMA page_size')
+    .get()!.page_size;
+  const pageCount = db.query<{ page_count: number }>('PRAGMA page_count');
   db.exec('BEGIN');
   try {
     let rowCount = 0;
-    for await (const rows of rowBatches) {
+    // An upper bound of the file size, re-measured when it nears the bound.
+    let size = pageCount.get()!.page_count * pageSize;
+    fill: for await (const rows of rowBatches) {
       for (const row of rows) {
+        // An appended row grows the table and its primary-key index by at
+        // most its cell (bounded by the payload plus a 9-byte varint per
+        // column, the version and the rowid), overflow rounding and a split
+        // per tree level.
+        const growth =
+          2 * (row.payload.length + 9 * (table.columns.length + 2)) +
+          16 * pageSize;
+        if (rowCount > 0 && size + growth > input.maxBytes) {
+          size = pageCount.get()!.page_count * pageSize;
+          if (size + growth > input.maxBytes) break fill;
+        }
         const values = decodeRow(table.columns, row.payload);
         insert.run(...values.map(toSql), row.serverVersion);
+        size += growth;
+        rowCount += 1;
       }
-      rowCount += rows.length;
     }
     db.query(
       `INSERT INTO ${IMAGE_METADATA_TABLE} VALUES (1, ?, ?, ?, ?, ?)`,
@@ -124,6 +158,7 @@ export async function writeSqliteImage(
     );
 
     db.exec('COMMIT');
+    return rowCount;
   } catch (error) {
     rollbackAfterError(() => {
       db.exec('ROLLBACK');

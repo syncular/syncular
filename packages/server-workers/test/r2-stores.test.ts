@@ -310,6 +310,7 @@ describe('R2 binding seam', () => {
         schemaVersion: META.schemaVersion,
         mediaType: META.mediaType,
         scopeDigest: META.scopeDigest,
+        rowCursor: null,
         asOfCommitSeq: META.asOfCommitSeq,
       },
       CONTRACT_NOW + 1,

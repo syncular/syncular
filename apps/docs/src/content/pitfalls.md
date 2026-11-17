@@ -284,7 +284,7 @@ See [Blobs](/concepts-blobs/) and [SPEC §5.9.6](https://github.com/syncular/syn
 
 ### Do size the inline segment limit for your row size
 
-`inlineSegmentMaxBytes` defaults to 256 KiB. A page of 1000 rows of a log table can weigh 0.4 to 1.1 MB, and every such page becomes a `SEGMENT_REF` with its own object-store put on the server and its own download on the client: 245 to 340 ms per page, 1.4 s for four pages on staging. The TypeScript client and the Rust `HostTransport` run four downloads of a response at a time, ahead of the page being applied; a custom `Transport` that keeps the default `download_segments` fetches them in order. An app that raised the inline limit to 2 MiB had no segments in a cold start, at the cost of larger responses, which compression offsets (an app measured 6 to 8 times on rows segments).
+`inlineSegmentMaxBytes` defaults to 256 KiB. A page of 1000 rows of a log table can weigh 0.4 to 1.1 MB, and every such page becomes a `SEGMENT_REF` with its own object-store put on the server and its own download on the client: 245 to 340 ms per page, 1.4 s for four pages on staging. The TypeScript client and the Rust `HostTransport` run four downloads of a response at a time, ahead of the page being applied, at most two of them SQLite images ([range images](/concepts-bootstrap/#range-images)); a custom `Transport` that keeps the default `download_segments` fetches them in order. An app that raised the inline limit to 2 MiB had no segments in a cold start, at the cost of larger responses, which compression offsets (an app measured 6 to 8 times on rows segments).
 
 See [Bootstrap & segments](/concepts-bootstrap/).
 

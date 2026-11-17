@@ -27,6 +27,11 @@ import {
   taskValues,
 } from './helpers';
 
+/** Settles every chained microtask the client queued so far. */
+async function drainMicrotasks(): Promise<void> {
+  for (let i = 0; i < 100; i++) await Promise.resolve();
+}
+
 async function seedTasks(
   server: TestServer,
   count: number,
@@ -134,7 +139,10 @@ describe('external segments (SEGMENT_REF)', () => {
    * A response whose frames are the only authority: N rows pages, one row
    * each, content-addressed so a misordered apply fails §5.1 verification.
    */
-  async function pageResponse(ids: readonly string[]): Promise<{
+  async function pageResponse(
+    ids: readonly string[],
+    mediaType: 'rows' | 'sqlite',
+  ): Promise<{
     response: Uint8Array;
     pages: { segmentId: string; bytes: Uint8Array }[];
   }> {
@@ -181,7 +189,7 @@ describe('external segments (SEGMENT_REF)', () => {
           ...pages.map((page) => ({
             type: 'SEGMENT_REF' as const,
             segmentId: page.segmentId,
-            mediaType: 'rows' as const,
+            mediaType,
             table: 'tasks',
             byteLength: page.bytes.byteLength,
             rowCount: 1,
@@ -197,7 +205,10 @@ describe('external segments (SEGMENT_REF)', () => {
   }
 
   /** One client whose segment downloads park on manual gates. */
-  async function gatedClient(ids: readonly string[]): Promise<{
+  async function gatedClient(
+    ids: readonly string[],
+    mediaType: 'rows' | 'sqlite' = 'rows',
+  ): Promise<{
     client: SyncClient;
     pages: { segmentId: string; bytes: Uint8Array }[];
     started: string[];
@@ -206,7 +217,7 @@ describe('external segments (SEGMENT_REF)', () => {
     issued: (count: number) => Promise<void>;
   }> {
     const db = new BunClientDatabase();
-    const { response, pages } = await pageResponse(ids);
+    const { response, pages } = await pageResponse(ids, mediaType);
     const started: string[] = [];
     const gates = new Map<
       string,
@@ -295,6 +306,24 @@ describe('external segments (SEGMENT_REF)', () => {
     }
   });
 
+  test('at most two image bodies download at once (§5.3 client memory)', async () => {
+    const { client, pages, started, gates, issued } = await gatedClient(
+      ['a', 'b', 'c', 'd'],
+      'sqlite',
+    );
+    try {
+      const round = client.sync();
+      await issued(2);
+      await drainMicrotasks();
+      expect(started).toEqual(pages.slice(0, 2).map((page) => page.segmentId));
+      gates.get(pages[0]!.segmentId)!.reject(new Error('dropped'));
+      await expect(round).rejects.toThrow('dropped');
+      expect(started).toHaveLength(2);
+    } finally {
+      await client.close();
+    }
+  });
+
   test('a page fetch apply never awaits cannot surface as an unhandled rejection', async () => {
     const { client, pages, gates, issued } = await gatedClient(['a', 'b', 'c']);
     try {
@@ -372,6 +401,46 @@ describe('external segments (SEGMENT_REF)', () => {
 
     await b.client.syncUntilIdle();
     expect(tableRows(b.db, 'tasks')).toHaveLength(5);
+  });
+});
+
+describe('range images (§5.3)', () => {
+  test('a table cut into range images applies every range; a failed range repeats alone', async () => {
+    const server = makeServer();
+    server.limits.maxImageSegmentBytes = 100_000;
+    const ids = Array.from(
+      { length: 120 },
+      (_, i) => `t${String(i).padStart(3, '0')}`,
+    );
+    const seeder = await makeClient(server, { clientId: 'seeder' });
+    seeder.client.mutate(
+      ids.map((id) => ({
+        table: 'tasks',
+        op: 'upsert' as const,
+        values: taskValues(id, 'p1', id.repeat(250)),
+      })),
+    );
+    await seeder.client.sync();
+    const b = await makeClient(server, {
+      clientId: 'client-b',
+      limits: { limitSnapshotRows: 10, maxSnapshotPages: 3, accept: 0b0111 },
+    });
+    b.client.subscribe({ project_id: 'p1' });
+    b.faults.corruptSegmentDownload = 3; // the third range image
+    await expect(b.client.sync()).rejects.toThrow('content-address');
+    const [first, second, third] = b.downloads;
+    const prefix = tableRows(b.db, 'tasks').map((row) => row.id);
+    // The first two ranges committed whole; the third left nothing.
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(prefix).toEqual(ids.slice(0, prefix.length));
+
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks').map((row) => row.id)).toEqual(ids);
+    // The retry skipped the applied ranges and downloaded the failed one.
+    expect(b.downloads.filter((id) => id === first)).toHaveLength(1);
+    expect(b.downloads.filter((id) => id === second)).toHaveLength(1);
+    expect(b.downloads.filter((id) => id === third)).toHaveLength(2);
+    expect(new Set(b.downloads).size).toBeGreaterThanOrEqual(3);
   });
 });
 

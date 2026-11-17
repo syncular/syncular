@@ -427,6 +427,7 @@ class TsServerInstance implements ServerInstance {
     maxCascadeOperationsPerCommit: number;
     maxSubscriptionsPerRequest: number;
     maxLiveSectionBytes: number;
+    maxImageSegmentBytes: number;
   };
   readonly #maxBlobBytes: number | undefined;
   #resolverFailing = false;
@@ -475,6 +476,8 @@ class TsServerInstance implements ServerInstance {
         options.limits?.maxSubscriptionsPerRequest ?? 500,
       maxLiveSectionBytes:
         options.limits?.maxLiveSectionBytes ?? 16 * 1024 * 1024,
+      maxImageSegmentBytes:
+        options.limits?.maxImageSegmentBytes ?? 32 * 1024 * 1024,
     };
     this.#maxBlobBytes = options.limits?.maxBlobBytes;
     this.#segments = new MemorySegmentStore(

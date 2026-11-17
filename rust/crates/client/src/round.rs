@@ -360,6 +360,7 @@ impl PreparedSyncRound {
                     // the host can overlap the fetches. One batch start is the
                     // fetch start for the expiry rule.
                     let batch_started_at = now_ms(self.fixed_now);
+                    let mut images = 0;
                     for frame in &response.frames {
                         match frame {
                             Frame::SubStart {
@@ -391,6 +392,27 @@ impl PreparedSyncRound {
                                 };
                                 if !advertised || (url.is_some() && self.meta.accept & 8 == 0) {
                                     break;
+                                }
+                                // §5.6 applied-segment rule: no second download.
+                                if self
+                                    .meta
+                                    .applied
+                                    .get(id)
+                                    .is_some_and(|ids| ids.contains(segment_id))
+                                {
+                                    continue;
+                                }
+                                // §5.3 client memory: two image bodies per batch;
+                                // the unit's section stops before the next one.
+                                if *media_type == MediaType::Sqlite {
+                                    if images == 2 {
+                                        self.meta
+                                            .deferred
+                                            .insert((id.to_owned(), segment_id.clone()));
+                                        scope = None;
+                                        continue;
+                                    }
+                                    images += 1;
                                 }
                                 // A negative byteLength admits no body (§5.4).
                                 let cap = u64::try_from(*byte_length).unwrap_or(0);

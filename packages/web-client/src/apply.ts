@@ -521,6 +521,11 @@ export async function applySqliteSegment(
     readonly isCurrent?: () => boolean;
     /** Monotonic milliseconds that time each chunk. */
     readonly now?: () => number;
+    /**
+     * Table → its next chunk size, carried from one range image of a table
+     * to the next (§5.3).
+     */
+    readonly chunkRows?: Map<string, number>;
   },
 ): Promise<number> {
   const now = options.now ?? (() => performance.now());
@@ -616,11 +621,16 @@ export async function applySqliteSegment(
     };
     let [boundary, where, params] = range(undefined, 1024);
     let applied = 0;
-    // §5.3: the first chunk holds 1,024 rows. A later chunk holds at least
+    // §5.3: a table's first chunk holds 1,024 rows; a later range image
+    // starts at the size its previous range reached. A later chunk holds at least
     // 1,024 rows, at most twice the rows of the one before, at most 65,536,
     // and at most the rows the one before applied per 250 ms from its start
     // to its COMMIT; a replaying chunk holds one statement.
-    for (let size = 1024; ;) {
+    for (
+      let size =
+        (!options.clearFirst && options.chunkRows?.get(table.name)) || 1024;
+      ;
+    ) {
       if (options.isCurrent?.() === false) return applied;
       const started = now();
       let chunk = 0;
@@ -710,6 +720,7 @@ export async function applySqliteSegment(
         1024,
         Math.min(2 * chunk, 65_536, Math.floor((chunk * 250) / duration)),
       );
+      options.chunkRows?.set(table.name, size);
       [boundary, where, params] = range(boundary, Math.min(1024, size));
     }
     if (applied !== count)

@@ -11655,3 +11655,34 @@ fn security_preflight_and_activation_each_emit_the_status_lifecycle() {
         .expect("activate");
     assert_eq!(lifecycle(&mut client), vec!["active"]);
 }
+
+#[test]
+fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
+    // §5.3: the first range runs 1,024 then 2,000 rows at 128 ms a chunk;
+    // the second range of the table starts at 2,000 instead of 1,024.
+    let mut client = client();
+    client.image_chunk_ms.set(Some(128.0));
+    let table = client.schema.table("tasks").unwrap().clone();
+    let scopes = vec![("project_id".into(), vec!["p1".into()])];
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    client.progress.start();
+    let _subscription = client
+        .progress
+        .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
+    for (first, from, to) in [(true, 1, 3000), (false, 3001, 8000)] {
+        let total = to - from + 1;
+        let image = Connection::open_in_memory().unwrap();
+        image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+            WITH RECURSIVE n(x) AS (SELECT {from} UNION ALL SELECT x+1 FROM n WHERE x<{to})
+            INSERT INTO tasks SELECT printf('%05d',x),'p1',1 FROM n;
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',{total});")).unwrap();
+        seen.lock().unwrap().clear();
+        assert!(matches!(
+            client.apply_sqlite_image(&image, &table, first, &scopes, "", total, 7, "digest"),
+            Ok(applied) if i64::from(applied) == total
+        ));
+    }
+    assert_eq!(*seen.lock().unwrap(), vec![1024, 2000, 3024, 4048, 5000]);
+}

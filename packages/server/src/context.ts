@@ -104,6 +104,12 @@ export interface ServerLimits {
    * pass it alone resets the units it reaches, which bootstrap instead.
    */
   readonly maxLiveSectionBytes: number;
+  /**
+   * §5.3 bound on one sqlite image's file size: the server cuts a table into
+   * range images in row order, each within this bound. A row larger than the
+   * bound gets an image of its own.
+   */
+  readonly maxImageSegmentBytes: number;
 }
 
 export const DEFAULT_LIMITS: ServerLimits = {
@@ -118,6 +124,8 @@ export const DEFAULT_LIMITS: ServerLimits = {
   maxWatchesPerSession: 100,
   // The live section is buffered whole before the first unit section.
   maxLiveSectionBytes: 16 * 1024 * 1024,
+  // §5.3 DECISION (2026-11-17): a client holds about three images at once.
+  maxImageSegmentBytes: 32 * 1024 * 1024,
 };
 
 /** Receives applied commits for realtime fanout (§8.2). */
