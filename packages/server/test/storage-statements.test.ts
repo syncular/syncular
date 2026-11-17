@@ -514,6 +514,71 @@ for (const kind of KINDS) {
   });
 }
 
+for (const kind of KINDS) {
+  test(`${kind} scope scans seek the variable with the fewest index entries`, async () => {
+    const { storage, drain } = await backend(kind);
+    // org_id o1 (the alphabetical first variable) is on all 2,000 rows;
+    // p-mid on 300 and p-small on the last 10 of them.
+    const seed = await storage.begin(PARTITION);
+    for (let i = 0; i < 2_000; i++) {
+      const rowId = `d${String(i).padStart(4, '0')}`;
+      const project = i >= 1_990 ? 'p-small' : i >= 1_690 ? 'p-mid' : 'p-big';
+      await seed.upsertRow('docs', {
+        rowId,
+        serverVersion: 1,
+        scopes: { org_id: 'o1', project_id: project },
+        payload: encodeRow(DOCS_COLUMNS, [rowId, 'o1', project]),
+      });
+    }
+    await seed.commit();
+    const scan = async (
+      read: Pick<ServerStorage, 'scanRows'>['scanRows'],
+      projects: string[],
+      limit: number,
+    ) => {
+      drain();
+      const rows = await read(PARTITION, {
+        table: 'docs',
+        scopeFilter: { org_id: ['o1'], project_id: projects },
+        afterRowId: null,
+        limit,
+      });
+      return { rows: rows.length, statements: drain().length };
+    };
+    const read = storage.scanRows.bind(storage);
+    // D1 runs every storage read behind its schema-guard statement.
+    const reads = (count: number) => (kind === 'd1' ? 2 * count : count);
+    // One probe and one page; seeking o1 took 32 pages of 64 entries.
+    expect(await scan(read, ['p-small'], 64)).toEqual({
+      rows: 10,
+      statements: reads(2),
+    });
+    // The page loop of a bootstrap reuses the pick.
+    expect(await scan(read, ['p-small'], 64)).toEqual({
+      rows: 10,
+      statements: reads(1),
+    });
+    // p-mid ties o1 at the caps 64 and 256 and counts 300 under 1,024.
+    expect(await scan(read, ['p-mid'], 64)).toEqual({
+      rows: 64,
+      statements: reads(4),
+    });
+    // A value without entries ends the scan in the probe.
+    expect(await scan(read, ['p-none'], 1)).toEqual({
+      rows: 0,
+      statements: reads(1),
+    });
+    const tx = await storage.begin(PARTITION);
+    const inTransaction = await scan(
+      (_, query) => tx.scanRows!(query),
+      ['p-small', 'p-none'],
+      64,
+    );
+    await tx.rollback();
+    expect(inTransaction).toEqual({ rows: 10, statements: reads(2) });
+  });
+}
+
 test('SQLite-family scope scans seek the inverted index for 1, 2 and 5 values (D6)', async () => {
   const native = new Database(':memory:');
   const storage = new SqliteServerStorage(new BunSqliteDatabase(native));

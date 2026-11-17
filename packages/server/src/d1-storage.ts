@@ -61,6 +61,7 @@ import {
   rewriteValues,
   SCHEMA_META_DDL_SQLITE,
   type StoredColumnLayout,
+  scanProbeSql,
   scanRowPageSql,
   schemaDdl,
   serverIndexDdl,
@@ -118,7 +119,7 @@ import {
   StorageConstraintError,
   StorageQueryError,
 } from './storage-errors';
-import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
+import { chooseScanVariable, resolveIndexRowScan } from './storage-query';
 
 // -- The subset of the D1 API this storage uses (structural typing) ---------
 // Declared locally so the package takes no `@cloudflare/workers-types`
@@ -206,6 +207,7 @@ class D1Transaction
     query: AuthoritativeQueryRequest,
   ) => BoundAuthoritativeQuery;
   readonly #pushApplySerialized: boolean;
+  readonly #scanVariables: Map<string, string>;
   readonly #buffer: SqliteStatementSpec[] = [];
   /** Live snapshot of `max_commit_seq`, advanced within this transaction. */
   #maxCommitSeq: number | undefined;
@@ -248,9 +250,11 @@ class D1Transaction
     resolveTable: (name: string) => CompiledTable,
     prepareQuery: (query: AuthoritativeQueryRequest) => BoundAuthoritativeQuery,
     pushApplySerialized: boolean,
+    scanVariables: Map<string, string>,
   ) {
     super(partition);
     this.#db = db;
+    this.#scanVariables = scanVariables;
     this.#resolveTable = resolveTable;
     this.#prepareQuery = prepareQuery;
     this.#pushApplySerialized = pushApplySerialized;
@@ -393,30 +397,40 @@ class D1Transaction
 
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.assertOpen();
-    const firstVariable = assertScopeIndexedScan(query);
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
-
+    // A probe that finds a variable without persisted entries leaves only
+    // this transaction's pending rows to merge.
+    const variable = await chooseScanVariable(
+      this.partition,
+      query,
+      this.#scanVariables,
+      (probes, cap) =>
+        this.all<{ sub: number; n: number }>(scanProbeSql('sqlite'), [
+          this.partition,
+          JSON.stringify(probes),
+          cap,
+        ]),
+    );
     const pendingForTable = [...this.#pending.entries()].filter(([key]) =>
       key.startsWith(`${query.table}\u0000`),
     );
     const persistedLimit = query.limit + pendingForTable.length;
+    const values = variable === undefined ? [] : query.scopeFilter[variable]!;
     const sql = scanRowPageSql(
       this.table(query.table),
-      firstValues.length,
+      values.length,
       'sqlite',
     );
     const persisted: StoredRow[] = [];
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, persistedLimit);
-    while (persisted.length < persistedLimit) {
+    while (values.length > 0 && persisted.length < persistedLimit) {
       const { results: records } = await this.#db
         .prepare(sql)
         .bind(
           this.partition,
           query.table,
-          firstVariable,
-          JSON.stringify(firstValues),
+          variable,
+          JSON.stringify(values),
           afterRowId,
           batchSize,
           this.partition,
@@ -1610,6 +1624,7 @@ export class D1ServerStorage
       },
       (query) => this.prepareAuthoritativeQuery(partition, query),
       this.#pushApplySerialized,
+      this.scanVariables,
     );
   }
 

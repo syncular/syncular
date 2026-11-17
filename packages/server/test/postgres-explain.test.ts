@@ -22,6 +22,7 @@ import {
   rowsReferencingBlobSql,
   type ServerSchema,
   scanRowBatchSql,
+  scanProbeSql,
   scanRowPageSql,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -205,6 +206,20 @@ test('batched scanRows pages stay index-driven per subscription', async () => {
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');
   expect(plan).not.toContain('Seq Scan on tasks');
+  await db.close();
+});
+
+test('the scan-variable probe counts on the scope primary key', async () => {
+  const { db } = await seededStorage();
+  const plan = await explain(db, scanProbeSql('postgres'), [
+    PARTITION,
+    JSON.stringify([
+      { i: 0, tbl: 'tasks', var: 'project_id', vals: ['p3'], lim: 64 },
+      { i: 1, tbl: 'tasks', var: 'org_id', vals: ['o1', 'o2'], lim: 256 },
+    ]),
+  ]);
+  expect(plan).toContain('Index Only Scan using sync_row_scopes_pk');
+  expect(plan).not.toContain('Seq Scan on sync_row_scopes');
   await db.close();
 });
 

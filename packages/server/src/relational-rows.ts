@@ -717,6 +717,29 @@ export function scanRowPageSql(
 }
 
 /**
+ * Selectivity probe for `chooseScanVariable`: per `{i, tbl, var, vals}`
+ * record of the JSON array, the count of its `sync_row_scopes` entries up
+ * to a cap, read from the covering primary key. Rows come back as
+ * `(sub, n)`, `sub` being the record's `i`.
+ *
+ * Bind order:
+ *   - postgres: [partition, records as JSON text]; each record carries its
+ *     own cap as `lim`, so probes of concurrent scans share one statement;
+ *   - sqlite:   [partition, records as JSON text, cap]. SQLite rejects a
+ *     correlated LIMIT, so one cap binds for every record.
+ */
+export function scanProbeSql(dialect: RelationalDialect): string {
+  return dialect === 'sqlite'
+    ? `SELECT json_extract(p.value, '$.i') AS sub, (SELECT count(*) FROM (SELECT 1 FROM sync_row_scopes
+         WHERE partition=?1 AND tbl=json_extract(p.value, '$.tbl') AND var=json_extract(p.value, '$.var')
+           AND value IN (SELECT value FROM json_each(p.value, '$.vals')) LIMIT ?3)) AS n
+       FROM json_each(?2) AS p`
+    : `SELECT p.i AS sub, (SELECT count(*) FROM (SELECT 1 FROM sync_row_scopes
+         WHERE partition=$1 AND tbl=p.tbl AND var=p.var AND value=ANY(p.vals) LIMIT p.lim) x) AS n
+       FROM jsonb_to_recordset($2::text::jsonb) AS p(i int, tbl text, var text, vals text[], lim int)`;
+}
+
+/**
  * PostgreSQL set-based form of `scanRowPageSql`: one statement answers the
  * page of every subscription scanning any table in a pull. `$2` is a JSON
  * array of `{i, tbl, var, vals, after, lim}` records; each record runs the

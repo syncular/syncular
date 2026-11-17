@@ -28,6 +28,7 @@ import {
   deleteSqliteRowScopesSql,
   indexRowPageStatement,
   quoteIdent,
+  scanProbeSql,
   scanRowPageSql,
   rowsReferencingBlobSql,
   selectRowSql,
@@ -91,7 +92,7 @@ import type {
   Tombstone,
 } from './storage';
 import {
-  assertScopeIndexedScan,
+  chooseScanVariable,
   readLiveWindowPages,
   resolveIndexRowScan,
 } from './storage-query';
@@ -670,6 +671,8 @@ export abstract class SqliteFamilyStorage {
   protected schemaVersion: number | undefined;
   /** Bound parameters one statement accepts. */
   protected abstract readonly maxBindParams: number;
+  /** `chooseScanVariable` picks, shared with this storage's transactions. */
+  protected readonly scanVariables = new Map<string, string>();
 
   /** Run one statement and return its rows. */
   protected abstract all<T>(
@@ -1270,15 +1273,25 @@ export abstract class SqliteFamilyStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    const firstVariable = assertScopeIndexedScan(query);
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
+    const variable = await chooseScanVariable(
+      partition,
+      query,
+      this.scanVariables,
+      (probes, cap) =>
+        this.guardedAll<{ sub: number; n: number }>(scanProbeSql('sqlite'), [
+          partition,
+          JSON.stringify(probes),
+          cap,
+        ]),
+    );
+    if (variable === undefined) return [];
+    const values = query.scopeFilter[variable]!;
     // Candidates via the inverted index LEFT JOINed to the row table — one
     // statement per page, never one per row (see `scanRowPageSql`). Exact
     // multi-variable verification against the stored scope map below.
     const sql = scanRowPageSql(
       this.table(query.table),
-      firstValues.length,
+      values.length,
       'sqlite',
     );
     const rows: StoredRow[] = [];
@@ -1290,8 +1303,8 @@ export abstract class SqliteFamilyStorage {
       >(sql, [
         partition,
         query.table,
-        firstVariable,
-        JSON.stringify(firstValues),
+        variable,
+        JSON.stringify(values),
         afterRowId,
         batchSize,
         partition,

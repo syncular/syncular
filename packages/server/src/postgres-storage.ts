@@ -94,6 +94,7 @@ import {
   SYNC_VERSION_COLUMN,
   type StoredColumnLayout,
   scanRowBatchSql,
+  scanProbeSql,
   scanRowPageSql,
   indexSignature,
   schemaDdl,
@@ -161,7 +162,7 @@ import {
   StorageConstraintError,
 } from './storage-errors';
 import {
-  assertScopeIndexedScan,
+  chooseScanVariable,
   readLiveWindowPages,
   resolveIndexRowScan,
 } from './storage-query';
@@ -1270,6 +1271,8 @@ class PostgresTransaction implements StorageTransaction {
   /** Schema version this transaction writes; rides every appended commit row. */
   #writerVersion: number;
   #resolveTable: (name: string) => CompiledTable;
+  /** The storage's `chooseScanVariable` picks. */
+  readonly #scanVariables: Map<string, string>;
   #open = true;
   #pushApplySavepoint = false;
   /**
@@ -1324,7 +1327,9 @@ class PostgresTransaction implements StorageTransaction {
     prepareQuery: (query: AuthoritativeQueryRequest) => BoundAuthoritativeQuery,
     resolve: () => void,
     reject: (error: unknown) => void,
+    scanVariables: Map<string, string>,
   ) {
+    this.#scanVariables = scanVariables;
     // One pinned connection carries one statement at a time: node-postgres
     // warns about a concurrently issued second query today and rejects it in
     // node-postgres 9. A whole-commit validator that fans independent reads
@@ -1546,12 +1551,23 @@ class PostgresTransaction implements StorageTransaction {
 
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
-    const firstVariable = assertScopeIndexedScan(query);
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
+    const variable = await chooseScanVariable(
+      this.#partition,
+      query,
+      this.#scanVariables,
+      (probes, cap) =>
+        this.#client
+          .query<{ sub: unknown; n: unknown }>(scanProbeSql('postgres'), [
+            this.#partition,
+            JSON.stringify(probes.map((probe) => ({ ...probe, lim: cap }))),
+          ])
+          .then(({ rows }) => rows),
+    );
+    if (variable === undefined) return [];
+    const values = query.scopeFilter[variable]!;
     const sql = scanRowPageSql(
       this.#resolveTable(query.table),
-      firstValues.length,
+      values.length,
       'postgres',
     );
     const rows: StoredRow[] = [];
@@ -1561,8 +1577,8 @@ class PostgresTransaction implements StorageTransaction {
       const { rows: records } = await this.#client.query<RowRecord>(sql, [
         this.#partition,
         query.table,
-        firstVariable,
-        ...firstValues,
+        variable,
+        ...values,
         afterRowId,
         batchSize,
       ]);
@@ -2170,6 +2186,8 @@ export class PostgresServerStorage implements ServerStorage {
    * (SYNCULAR-PULL-ROUNDTRIPS-001).
    */
   readonly #pageBatches = new Map<string, PendingPage[]>();
+  /** `chooseScanVariable` picks, shared with this storage's transactions. */
+  readonly #scanVariables = new Map<string, string>();
 
   constructor(exec: PgExecutor) {
     this.#exec = exec;
@@ -2720,6 +2738,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           (query) => this.#prepareAuthoritativeQuery(partition, query),
           resolveScope,
           rejectScope,
+          this.#scanVariables,
         );
         opened = true;
         resolveReady(tx);
@@ -3388,9 +3407,25 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    const firstVariable = assertScopeIndexedScan(query);
-    const firstValues = query.scopeFilter[firstVariable] ?? [];
-    if (firstValues.length === 0) return [];
+    // The probes of concurrent scans leave as one statement, like their pages.
+    const variable = await chooseScanVariable(
+      partition,
+      query,
+      this.#scanVariables,
+      (probes, cap) =>
+        Promise.all(
+          probes.map(async (probe) => {
+            const [row] = await this.#batchedPage<{ n: unknown }>(
+              'scanProbe',
+              scanProbeSql('postgres'),
+              partition,
+              { tbl: probe.tbl, var: probe.var, vals: probe.vals, lim: cap },
+            );
+            return { sub: probe.i, n: row?.n };
+          }),
+        ),
+    );
+    if (variable === undefined) return [];
     // Candidates via the inverted index (ordered + LIMITed at the covering
     // PK) LEFT JOINed to the row table — one round trip per page, never one
     // per row, and concurrent scans across tables share one statement (see
@@ -3411,8 +3446,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         partition,
         {
           tbl: query.table,
-          var: firstVariable,
-          vals: firstValues,
+          var: variable,
+          vals: query.scopeFilter[variable],
           after: afterRowId,
           lim: batchSize,
         },

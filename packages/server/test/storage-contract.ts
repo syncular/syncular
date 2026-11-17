@@ -1600,6 +1600,76 @@ export function runStorageContract(
       expect(page2.map((r) => r.rowId)).toEqual(['r4']);
     });
 
+    test('scanRows over several variables keeps rows matching every one, whichever it seeks', async () => {
+      const storage = await make();
+      const doc = (rowId: string, org: string, project: string) => ({
+        rowId,
+        serverVersion: 1,
+        scopes: { org_id: org, project_id: project },
+        payload: encodeRow(DOCS_COLUMNS, [rowId, org, project]),
+      });
+      const seed = await storage.begin(PARTITION);
+      // org_id o1 has 100 entries, project_id p1 has 5: the scan seeks p1.
+      for (let i = 0; i < 100; i++) {
+        await seed.upsertRow(
+          'docs',
+          doc(
+            `d${String(i).padStart(3, '0')}`,
+            'o1',
+            i % 25 === 0 ? 'p1' : 'p2',
+          ),
+        );
+      }
+      await seed.upsertRow('docs', doc('e1', 'o2', 'p1'));
+      await seed.commit();
+      const scan = async (
+        scopeFilter: Record<string, string[]>,
+        afterRowId: string | null,
+        limit: number,
+      ) =>
+        (
+          await storage.scanRows(PARTITION, {
+            table: 'docs',
+            scopeFilter,
+            afterRowId,
+            limit,
+          })
+        ).map((row) => row.rowId);
+      const release = { org_id: ['o1'], project_id: ['p1'] };
+      expect(await scan(release, null, 10)).toEqual([
+        'd000',
+        'd025',
+        'd050',
+        'd075',
+      ]);
+      expect(await scan(release, null, 2)).toEqual(['d000', 'd025']);
+      expect(await scan(release, 'd025', 10)).toEqual(['d050', 'd075']);
+      expect(
+        await scan({ org_id: ['o1', 'o2'], project_id: ['p1'] }, null, 10),
+      ).toEqual(['d000', 'd025', 'd050', 'd075', 'e1']);
+      expect(
+        await scan({ org_id: ['o1'], project_id: ['p2'] }, 'd097', 10),
+      ).toEqual(['d098', 'd099']);
+      expect(
+        await scan({ org_id: ['o1'], project_id: ['p9'] }, null, 1),
+      ).toEqual([]);
+      expect(await scan({ org_id: ['o1'], project_id: [] }, null, 1)).toEqual(
+        [],
+      );
+      // A row staged in the transaction counts although no persisted entry
+      // carries its value.
+      const tx = await storage.begin(PARTITION);
+      await tx.upsertRow('docs', doc('f1', 'o1', 'p9'));
+      const staged = await tx.scanRows?.({
+        table: 'docs',
+        scopeFilter: { org_id: ['o1'], project_id: ['p9'] },
+        afterRowId: null,
+        limit: 10,
+      });
+      await tx.rollback();
+      expect(staged?.map((row) => row.rowId)).toEqual(['f1']);
+    });
+
     test('scanRows rejects an empty or omitted scope filter explicitly', async () => {
       const storage = await make();
       for (const scopeFilter of [{}, undefined]) {

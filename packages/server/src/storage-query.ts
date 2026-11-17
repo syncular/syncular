@@ -15,22 +15,88 @@ import type {
 import { StorageQueryError } from './storage-errors';
 
 /**
- * Fail loudly instead of making an unsupported unscoped scan look empty.
- * Returns the first scope variable in sorted order — the one every adapter
- * drives its inverted-index candidate selection with.
+ * One variable of a scan filter whose index entries a probe counts; `i` is
+ * the row's `sub` in the probe result (see `scanProbeSql`).
  */
-export function assertScopeIndexedScan(query: RowScanQuery): string {
+export interface ScanProbe {
+  readonly i: number;
+  readonly tbl: string;
+  readonly var: string;
+  readonly vals: readonly string[];
+}
+
+/**
+ * The scope variable a `scanRows` call seeks the row-scope index with: the
+ * one whose values have the fewest index entries, ties broken alphabetically.
+ * `undefined` means the intersection is empty: a variable without values or
+ * without entries, so the scan returns no persisted row. An empty or omitted
+ * filter fails loudly instead of making an unsupported unscoped scan look
+ * empty.
+ *
+ * A single-variable filter needs no probe. Otherwise `count` counts each
+ * variable's entries in one statement, up to `cap`. The cap starts at
+ * max(64, limit) and grows fourfold, to at most 65,536, while the fewest
+ * count is shared by several variables at the cap.
+ *
+ * `chosen` memoizes the pick per (partition, table, filter), at most 1,024
+ * entries, so the page loop of a bootstrap probes once. A stale pick only
+ * costs index reads: every scan still verifies all variables against the
+ * stored scopes, so the choice never changes a result.
+ */
+export async function chooseScanVariable(
+  partition: string,
+  query: RowScanQuery,
+  chosen: Map<string, string>,
+  count: (
+    probes: readonly ScanProbe[],
+    cap: number,
+  ) => Promise<readonly { readonly sub: unknown; readonly n: unknown }[]>,
+): Promise<string | undefined> {
   const scopeFilter = (
     query as RowScanQuery & { readonly scopeFilter?: ScopeMap | null }
   ).scopeFilter;
-  const firstVariable =
+  const variables =
     scopeFilter === undefined || scopeFilter === null
-      ? undefined
-      : Object.keys(scopeFilter).sort()[0];
-  if (firstVariable === undefined) {
+      ? []
+      : Object.keys(scopeFilter).sort();
+  if (
+    scopeFilter === undefined ||
+    scopeFilter === null ||
+    variables[0] === undefined
+  ) {
     throw new StorageQueryError('sync.storage.scan_requires_scope');
   }
-  return firstVariable;
+  if (variables.some((variable) => scopeFilter[variable]?.length === 0)) {
+    return undefined;
+  }
+  if (variables.length === 1) return variables[0];
+  const key = JSON.stringify([
+    partition,
+    query.table,
+    variables.map((variable) => [variable, [...scopeFilter[variable]!].sort()]),
+  ]);
+  const cached = chosen.get(key);
+  if (cached !== undefined) return cached;
+  let tied = variables;
+  for (let cap = Math.max(64, query.limit); ; cap = Math.min(cap * 4, 65_536)) {
+    const counts = tied.map(() => 0);
+    const probes = tied.map((variable, i) => ({
+      i,
+      tbl: query.table,
+      var: variable,
+      vals: scopeFilter[variable]!,
+    }));
+    for (const row of await count(probes, cap)) {
+      counts[Number(row.sub)] = Number(row.n);
+    }
+    const fewest = Math.min(...counts);
+    if (fewest === 0) return undefined;
+    tied = tied.filter((_, i) => counts[i] === fewest);
+    if (fewest < cap || tied.length === 1 || cap >= 65_536) break;
+  }
+  if (chosen.size >= 1_024) chosen.delete(chosen.keys().next().value!);
+  chosen.set(key, tied[0]!);
+  return tied[0];
 }
 
 /** Validate and resolve one exact trusted-host relational index lookup. */
