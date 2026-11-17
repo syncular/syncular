@@ -889,6 +889,9 @@ interface WindowClaimGroup {
   appliedKey: string;
   appliedUnits: ReadonlySet<string>;
   inFlightUnits?: ReadonlySet<string> | undefined;
+  /** §7.8: units the core held before this group's first edit that no claim
+   * has named since. The store keeps them; undefined until read. */
+  unclaimed?: Set<string> | undefined;
   scheduled: boolean;
   running: boolean;
   requested: boolean;
@@ -898,9 +901,15 @@ interface WindowClaimGroup {
   }>;
 }
 
-class WindowEntry implements ExternalStoreEntry<WindowState> {
+class WindowEntry implements ExternalStoreEntry<
+  WindowState & { readonly loaded: boolean }
+> {
   readonly #listeners = new Set<() => void>();
-  #state: WindowState = { units: [], pending: [] };
+  #state: WindowState & { readonly loaded: boolean } = {
+    units: [],
+    pending: [],
+    loaded: false,
+  };
   #generation = 0;
   #delegate: WindowEntry | undefined;
   #running = false;
@@ -913,7 +922,8 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
     private readonly cache: ObservationCache,
   ) {}
 
-  getSnapshot = (): WindowState => this.#delegate?.getSnapshot() ?? this.#state;
+  getSnapshot = (): WindowState & { readonly loaded: boolean } =>
+    this.#delegate?.getSnapshot() ?? this.#state;
   subscribe = (listener: () => void): (() => void) => {
     const current = this.cache.activate(this.baseKey, this);
     if (current !== this) {
@@ -944,7 +954,7 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
     this.#generation += 1;
     this.#running = false;
     this.#requested = false;
-    this.#state = { units: [], pending: [] };
+    this.#state = { units: [], pending: [], loaded: false };
   }
   dispose(): void {
     this.#listeners.clear();
@@ -971,10 +981,15 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
         if (generation !== this.#generation || this.#listeners.size === 0)
           return;
         if (
+          !this.#state.loaded ||
           canonicalValue(next.units) !== canonicalValue(this.#state.units) ||
           canonicalValue(next.pending) !== canonicalValue(this.#state.pending)
         ) {
-          this.#state = next;
+          this.#state = {
+            units: next.units,
+            pending: next.pending,
+            loaded: true,
+          };
           for (const listener of this.#listeners) listener();
         }
       } while (this.#requested && this.#listeners.size > 0);
@@ -1142,7 +1157,9 @@ export class ReactiveClientStore {
     };
   }
 
-  window(base: WindowBase): ExternalStoreEntry<WindowState> {
+  window(
+    base: WindowBase,
+  ): ExternalStoreEntry<WindowState & { readonly loaded: boolean }> {
     const key = windowBaseKey(base);
     let entry = this.#windows.get(key) as WindowEntry | undefined;
     if (entry === undefined) {
@@ -1233,9 +1250,17 @@ export class ReactiveClientStore {
     try {
       while (group.requested) {
         group.requested = false;
-        const units = [
-          ...new Set([...group.claims.values()].flatMap((set) => [...set])),
-        ].sort();
+        // §7.8: a claim never releases a unit the core held before this
+        // group's first edit until a claim of this store has named it.
+        group.unclaimed ??= new Set(
+          (await this.client.windowState(group.base)).units,
+        );
+        if (this.#windowClaims.get(baseKey) !== group) return;
+        const claimed = new Set(
+          [...group.claims.values()].flatMap((set) => [...set]),
+        );
+        for (const unit of claimed) group.unclaimed.delete(unit);
+        const units = [...claimed, ...group.unclaimed].sort();
         const key = canonicalValue(units);
         if (key !== group.appliedKey) {
           group.inFlightUnits = new Set(units);
@@ -1385,6 +1410,9 @@ export class ReactiveClientStore {
           ),
         );
       }
+      // Disposal releases the claims of this store; units it never claimed
+      // stay held. A group that never read the core applied nothing.
+      if (group.unclaimed === undefined) continue;
       // Releasing a window is best-effort teardown. A resource owner may have
       // already closed the underlying worker/native handle before React effect
       // cleanup runs (notably during schema-changing HMR). Do not let that
@@ -1392,9 +1420,9 @@ export class ReactiveClientStore {
       // interface permits a plain void return, so a closed handle may also
       // throw synchronously; swallow that the same way.
       try {
-        void Promise.resolve(this.client.setWindow(group.base, [])).catch(
-          () => undefined,
-        );
+        void Promise.resolve(
+          this.client.setWindow(group.base, [...group.unclaimed]),
+        ).catch(() => undefined);
       } catch {
         // Same teardown race, surfaced synchronously.
       }

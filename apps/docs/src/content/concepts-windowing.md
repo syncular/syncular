@@ -162,6 +162,8 @@ A query whose claim was rejected shows phase `error` with the rejection. The sto
 
 Claims compose. If two mounted consumers require `{A,B}` and `{B,C}` on the same base, the effective core window is `{A,B,C}`. Unmounting the first drops only `A` and cannot overwrite the second consumer's claim.
 
+The window registry persists across restarts, and claims arrive in render order. Before its first edit of a base, the store reads the window state and keeps every unit registered at that read until one of its claims names the unit. After a reload, a query that claims one of seven held units therefore keeps all seven while the app's retention claim is still on its way. Once a claim has named a unit, the unit leaves the window when no claim names it. A held unit that no claim names stays registered; to drop it, claim it once and release the claim. Disposing the store releases the units its claims named and keeps the rest.
+
 The lower-level API serves prefetching, retention policies, and runtime-built queries:
 
 ```ts title="src/prefetch.ts"
@@ -186,6 +188,6 @@ const retention = useRetainedWindow({ variable: 'list_id' }, [
 ]);
 ```
 
-It composes with generated query claims, normalizes duplicate units, cleans up on unmount, and surfaces registration through `isPending` and `error`. Handle `error` even when another query already renders cached rows. `setWindow`, `windowState`, and React's `useWindow` remain explicit primitives that feed the same union coordinator; generated queries do not need their coverage repeated by hand.
+It composes with generated query claims, normalizes duplicate units, cleans up on unmount, and surfaces registration through `isPending` and `error`. Handle `error` even when another query already renders cached rows. React's `useWindow` feeds the same union coordinator. Its `loaded` field is `false` until the first read of the window state returns; until then `units` is empty whatever the window holds, so build no claim from it. The client's `setWindow` bypasses the coordinator: it names the whole window and evicts every unit it omits. Generated queries do not need their coverage repeated by hand.
 
 Query and window observers keep inactive entries only until the next microtask. The final unsubscribe removes the entry from change dispatch immediately, and cleanup releases its rows and invalidates pending reads. A same-microtask remount preserves the shared snapshot, and a later subscription starts a fresh read, including subscriptions held by an older React render. Releasing the final window owner removes the empty claim group after the core applies the release. `release()` rejects with the window edit's error when the core fails to apply the release; the departed units then stay registered until the next claim on the base applies the union again. Disposing the store rejects unapplied `ready` and `release()` promises with `client.reactive_store_disposed`, so await `release()` before `dispose()` when the release must finish.

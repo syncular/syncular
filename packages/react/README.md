@@ -240,7 +240,10 @@ Generated query coverage uses composable claims. Multiple consumers of the
 same window base contribute a union, and unmounting one removes only its own
 units. `useWindow(base)` remains the lower-level imperative interface for
 prefetching or dynamic query builders. Applications normally do not need it
-beside a generated `useQuery`.
+beside a generated `useQuery`. Its `loaded` field is `false` until the first
+window-state read returns; until then `units` is empty whatever the window
+holds. After a reload the store keeps every held unit until one of its claims
+names it, so a query's claim never evicts units the app has yet to claim.
 
 For a small known navigation working set,
 `useRetainedWindow(base, units)` prefetches and retains those units through the

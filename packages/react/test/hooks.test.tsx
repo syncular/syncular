@@ -706,10 +706,14 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
 
   test('shrinking drops a unit from completeness', async () => {
     const client = new FakeClient();
-    client.setWindow(base, ['p1', 'p2']);
-    client.completeBootstrap(base);
     const { result } = renderHook(() => useWindow(base), {
       wrapper: wrapper(client),
+    });
+    await act(async () => {
+      await result.current.setWindow(['p1', 'p2']);
+    });
+    act(() => {
+      client.completeBootstrap(base);
     });
     await waitFor(() =>
       expect([...result.current.units].sort()).toEqual(['p1', 'p2']),
@@ -721,6 +725,41 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
     await waitFor(() => expect(result.current.units).toEqual(['p2']));
     expect(result.current.isComplete('p1')).toBe(false);
     expect(result.current.isComplete('p2')).toBe(true);
+  });
+
+  test('after a reload a claim keeps the held units no claim has named yet', async () => {
+    const client = new FakeClient();
+    const held = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+    client.setWindow(base, held);
+    client.completeBootstrap(base);
+    const { result } = renderHook(() => useWindow(base), {
+      wrapper: wrapper(client),
+    });
+    expect(result.current.loaded).toBe(false);
+    expect(result.current.units).toEqual([]);
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.units).toEqual(held);
+
+    function Reader() {
+      useRawSql('SELECT * FROM tasks WHERE project_id = ?', ['r3'], {
+        id: 'test/release-tasks',
+        dependencies: [{ table: 'tasks', scopeKeys: ['project:r3'] }],
+        coverage: [{ base, units: ['r3'] }],
+      });
+      return null;
+    }
+    const reader = render(<Reader />, { wrapper: wrapper(client) });
+    await act(async () => {
+      await result.current.setWindow(['r1']);
+    });
+    expect(client.windowState(base).units).toEqual(held);
+    // A unit a claim named and then released leaves the window.
+    reader.unmount();
+    await waitFor(() =>
+      expect(client.windowState(base).units).toEqual(
+        held.filter((unit) => unit !== 'r3'),
+      ),
+    );
   });
 
   test('changing base while mounted releases the previous base claim', async () => {

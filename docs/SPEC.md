@@ -2299,6 +2299,11 @@ transaction. A failure at one value returns the error and keeps every value
 applied before it; the same call repeated converges on the requested set
 with one registration per unit.
 
+The registry persists across restarts, and `setWindow` names the whole
+window. A reactive store that composes the window from several owners' claims
+keeps the units it found registered until one of its claims names them
+(§7.8).
+
 **Primary-key windows.** A window whose variable a table maps to its primary
 key (`{ pattern: 'code:{code_id}', column: 'id' }`) keeps an explicit,
 changing set of that table's rows: one unit per key, each a one-row unit with
@@ -6784,6 +6789,21 @@ are already acknowledged MUST NOT wait for an unrelated widening operation.
 An in-flight removal or reset MUST NOT be acknowledged as retained ownership.
 A failed window edit can have committed a prefix. The ownership coordinator MUST
 invalidate its cached acknowledgement and reconcile later claims through the core.
+
+The ownership coordinator reads the base's window state before its first edit of
+the base. It MUST keep every unit registered at that read until one of its claims
+names the unit; from then on the unit leaves the window when no claim names it.
+Disposal releases the claimed units and keeps the rest. A window observer reports
+whether its first read of the window state has returned (`loaded`); before it,
+its empty unit list says nothing about the window.
+
+DECISION (2026-11-17): a claim never evicts a unit the window held before the
+coordinator's first edit. After a reload, a web app's query claimed its one
+catalogue release before the app's retained claim of all seven held releases
+reached the store, and the coordinator applied the query's claim alone: the
+window dropped from seven units to one and downloaded six releases again
+(430 MB). A unit nobody claims after a restart stays registered; the app drops
+it by claiming it once and releasing the claim.
 
 A client core that yields to local reads during a sync round (the TypeScript
 client) MUST NOT hold a widening window change until the round ends. The widen

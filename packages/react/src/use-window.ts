@@ -16,6 +16,9 @@ import { useReactiveStore } from './use-client';
 export interface UseWindowResult {
   readonly units: readonly string[];
   readonly pending: readonly string[];
+  /** False until the first read of the window state returns; `units` is
+   * empty before it whatever the window holds. */
+  readonly loaded: boolean;
   /** Update this component's claim; the store applies the union of all claims. */
   readonly setWindow: (units: readonly string[]) => Promise<void>;
   readonly isComplete: (unit: string) => boolean;
@@ -118,6 +121,7 @@ export function useWindow(base: WindowBase): UseWindowResult {
   return {
     units: state.units,
     pending: state.pending,
+    loaded: state.loaded,
     setWindow,
     isComplete,
   };

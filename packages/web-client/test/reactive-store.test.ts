@@ -148,8 +148,11 @@ class FakeReactiveClient implements ReactiveQueryClient {
     return this.setWindowGate;
   }
 
+  /** Units the core window held when the client opened. */
+  held: readonly string[] = [];
+
   windowState(): WindowState {
-    return { units: [], pending: [] };
+    return { units: this.held, pending: [] };
   }
 }
 
@@ -1399,6 +1402,78 @@ describe('composable windows and domain routing', () => {
   });
 });
 
+describe('window claims after a reload (SPEC §7.8)', () => {
+  const HELD = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+
+  test('a coverage claim applied before the retained claim evicts no held unit', async () => {
+    const client = new FakeReactiveClient();
+    client.held = HELD;
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const store = new ReactiveClientStore(client);
+    const off = store
+      .query<Row>(querySpec({ coverage: [{ base: BASE, units: ['r3'] }] }))
+      .subscribe(() => undefined);
+    await drainMicrotasks();
+    expect(client.setWindowCalls).toEqual([{ base: BASE, units: HELD }]);
+
+    const retained = store.retainWindow(BASE, HELD);
+    await retained.ready;
+    expect(client.setWindowCalls).toHaveLength(1);
+
+    // A unit a claim of this session named and then released is evicted.
+    const narrower = store.retainWindow(BASE, HELD.slice(0, 6));
+    await narrower.ready;
+    await retained.release();
+    expect(client.setWindowCalls.at(-1)).toEqual({
+      base: BASE,
+      units: HELD.slice(0, 6),
+    });
+    off();
+    store.dispose();
+  });
+
+  test('a held unit no claim named survives releases and disposal', async () => {
+    const client = new FakeReactiveClient();
+    client.held = ['r1', 'r2'];
+    const store = new ReactiveClientStore(client);
+    const retained = store.retainWindow(BASE, ['r2', 'r3']);
+    await retained.ready;
+    expect(client.setWindowCalls).toEqual([
+      { base: BASE, units: ['r1', 'r2', 'r3'] },
+    ]);
+    await retained.release();
+    expect(client.setWindowCalls.at(-1)).toEqual({ base: BASE, units: ['r1'] });
+    store.retainWindow(BASE, ['r4']);
+    await drainMicrotasks();
+    store.dispose();
+    expect(client.setWindowCalls.at(-1)).toEqual({ base: BASE, units: ['r1'] });
+  });
+
+  test('a window snapshot says whether it has read the core', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const entry = store.window(BASE);
+    let notified = 0;
+    const off = entry.subscribe(() => {
+      notified += 1;
+    });
+    expect(entry.getSnapshot()).toEqual({
+      units: [],
+      pending: [],
+      loaded: false,
+    });
+    await drainMicrotasks();
+    expect(entry.getSnapshot()).toEqual({
+      units: [],
+      pending: [],
+      loaded: true,
+    });
+    expect(notified).toBe(1);
+    off();
+    store.dispose();
+  });
+});
+
 describe('keyed reconciliation performance', () => {
   test('switching query identity before the first read keeps the unread snapshot identity', async () => {
     const client = new FakeReactiveClient();
@@ -1797,8 +1872,8 @@ describe('observation ownership', () => {
       code: 'client.reactive_store_disposed',
     });
     await drainMicrotasks();
+    // The disposed group applied nothing, so its teardown edits nothing.
     expect(client.setWindowCalls.map((call) => call.units)).toEqual([
-      [],
       ['fresh'],
     ]);
     fresh.release();
