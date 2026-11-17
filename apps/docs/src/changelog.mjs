@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'Validators see the authentication context',
+    body: "The context `authenticate` returns now reaches the row validators' ambient context and the commit validator's input, over HTTP and the socket, so a host can refuse every push of a read-only session while the same person pushes from their own device.",
+    links: [
+      {
+        href: '/guide-auth/#sessions-of-different-reach',
+        label: 'Sessions of different reach',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'A schema bump keeps tables whose generation did not change',
     body: 'Every schema version change dropped every synced table on every client, so a deploy that changed two tables made every client download a 424 MB catalogue again. Typegen now gives each table a generation that changes with its columns, primary key, scopes, indexes or FTS projections, or when a migration names the table. Across a bump both cores keep the rows of every table whose generation is unchanged, and a unit whose tables are all kept keeps its cursor; other tables and units re-bootstrap as before. A schema without generations keeps the full reset.',
     links: [

@@ -1,5 +1,17 @@
 # Syncular release notes
 
+## 0.77.1 release notes
+
+Row and commit validators receive the authentication context
+(SYNCULAR-VALIDATOR-CONTEXT-001, SPEC §1.1, §6.7). Since 0.75.0 the context
+`authenticate` returns reached `resolveScopes`, grants and leases, but a
+validator saw only the actor, so a host could not refuse the pushes of one
+session while the same person pushed from another device. `ValidateCommitInput`
+and the row validators' `ValidateContext` now carry `context`, on HTTP and
+socket pushes alike.
+
+**Upgrade notes.** None; the field is optional and absent without a context.
+
 ## 0.77.0 release notes
 
 A schema bump keeps the tables it did not change (SYNCULAR-SCHEMA-BUMP-KEEP-ROWS-001,
