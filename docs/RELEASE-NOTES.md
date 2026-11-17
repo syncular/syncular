@@ -1,5 +1,39 @@
 # Syncular release notes
 
+## 0.76.0 release notes
+
+A table's SQLite image is built and served as bounded primary-key range
+images (SYNCULAR-IMAGE-SEGMENT-SIZE-001, SPEC §4.7, §5.3, §5.6). The server
+published one image per table however large: a 424 MB catalogue image made a
+browser client hold the body and its copy in the wasm heap, and a body that
+broke off was downloaded again in full.
+
+- The server cuts each image at `limits.maxImageSegmentBytes` (default
+  32 MiB, measured on the SQLite file) and serves the ranges in primary-key
+  order as successive bootstrap pages; each counts as one page against
+  `maxSnapshotPages`. A single row larger than the bound gets an image of its
+  own. Ranges are built once and reused per range start.
+- Both clients clear the table on the first range only, commit each range in
+  its own chunks and start a later range at the chunk size the previous one
+  reached. They hold at most two image bodies at once, and a range applied
+  before a failed round is not downloaded or applied again on the retry.
+- Measured on 351 MB of catalogue images (67,302 + 87,267 rows) in Chromium
+  with OPFS on a persistent profile: one image per table peaked at
+  1,310 to 1,351 MiB renderer memory and imported in 1.5 s; 32 MiB ranges
+  peak at 434 to 490 MiB and import in 1.6 to 1.7 s.
+- `client.storage_io` already carries SQLite's extended result code in
+  `details.sqliteCode` on both cores.
+
+**Upgrade notes.** Breaking for hosts that build or store images themselves:
+a `SqliteImageBuilder` takes `maxBytes` and returns `{ bytes, rowCount }`;
+`publishSqliteImage` returns `segmentIds` instead of `segmentId`; a custom
+segment store keys on the new required `SegmentFindKey.rowCursor` (the range
+start, `null` for the first range). Republish images after upgrading, with
+the publisher's `maxImageSegmentBytes` equal to the serving host's. A stored
+image over the bound with more than one row is no longer served; the server
+rebuilds it in ranges, or serves rows until it is republished. Clients need no
+change.
+
 ## 0.75.0 release notes
 
 `authenticate` can return an authentication `context` (SYNCULAR-SERVER-SCOPE-CONTEXT-001,

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'SQLite images ship in bounded range images',
+    body: "The server published and served a table's SQLite image as one segment however large, so a browser client held the whole body and its copy in the wasm heap, and a broken download started over. The server now builds a table's image as primary-key range images of at most `limits.maxImageSegmentBytes` (default 32 MiB) and serves them as successive bootstrap pages. Both clients clear the table on the first range only, hold at most two image bodies at once, carry the chunk size across ranges, and do not download a range they already applied again. On 351 MB of catalogue images the browser worker's peak memory falls from about 1,330 MiB to about 460 MiB, and the import takes 1.6 to 1.7 s instead of 1.5 s.",
+    links: [
+      {
+        href: '/concepts-bootstrap/',
+        label: 'Bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'Sessions of different reach resolve their own scopes',
     body: "`authenticate` can return a `context` string beside `actorId` and `partition`, for example `kiosk:facility-a`. The server passes it unchanged to `resolveScopes` on HTTP and socket rounds, remote operations, segment and blob downloads, realtime registrations and admin reads, so one person's kiosk session and own device session resolve different scopes. Signed segment URLs carry the context in their token, and an auth lease authorizes only the context it was issued under.",
     links: [
