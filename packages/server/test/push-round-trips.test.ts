@@ -29,6 +29,7 @@ import {
   type ServerSchema,
   type ServerStorage,
   SqliteServerStorage,
+  type StorageTransaction,
   type SyncRequestContext,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -845,4 +846,82 @@ describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () 
       }
     });
   }
+
+  test('d1/double: a failure after a flushed commit still notifies that commit', async () => {
+    const d1 = new D1ServerStorage(new D1DatabaseDouble(), {
+      pushApplySerialized: true,
+    });
+    while (!(await d1.migrateSchema(compileSchema(TEST_SCHEMA))).complete) {
+      // Resume the resumable D1 migration until it lands.
+    }
+    // A storage fault, not a rejection: the second commit's append throws.
+    const storage = new Proxy(d1, {
+      get(target, property) {
+        if (property !== 'begin') {
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+        return async (partition: string) => {
+          const tx = await target.begin(partition);
+          return new Proxy(tx, {
+            get(txTarget, txProperty) {
+              if (txProperty === 'appendCommit') {
+                return async (
+                  ...args: Parameters<StorageTransaction['appendCommit']>
+                ) => {
+                  if (args[0].clientCommitId === 'broken') {
+                    throw new Error('injected storage fault');
+                  }
+                  return txTarget.appendCommit(...args);
+                };
+              }
+              const value = Reflect.get(txTarget, txProperty, txTarget);
+              return typeof value === 'function' ? value.bind(txTarget) : value;
+            },
+          });
+        };
+      },
+    });
+    const notified: string[] = [];
+    const ctx: SyncRequestContext = {
+      ...(await context(storage)),
+      realtime: {
+        notifyCommit: (_partition, commit) => {
+          notified.push(commit.changes.map((change) => change.rowId).join());
+        },
+      },
+    };
+    // The request fails without a single PUSH_RESULT.
+    await expect(
+      handleSyncRequest(
+        requestBytes(
+          [
+            pushCommit(
+              'durable',
+              [upsert('tasks', 'durable', taskRow('durable', 'p1'))],
+              1,
+            ),
+            pushCommit(
+              'broken',
+              [upsert('tasks', 'broken', taskRow('broken', 'p1'))],
+              2,
+            ),
+          ],
+          'client-1',
+          1,
+          TEST_LOG_EPOCH,
+          'outbox-1',
+        ),
+        ctx,
+      ),
+    ).rejects.toThrow('injected storage fault');
+    // The first commit's batch reached D1 before the fault: it stays applied
+    // and its notification still leaves; the failed commit leaves nothing.
+    expect(notified).toEqual(['durable']);
+    expect(await d1.getRow('part-1', 'tasks', 'durable')).toBeDefined();
+    expect(await d1.getRow('part-1', 'tasks', 'broken')).toBeUndefined();
+    expect(
+      (await d1.getPushResult('part-1', 'client-1', 'durable'))?.status,
+    ).toBe('applied');
+  });
 });

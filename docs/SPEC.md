@@ -4486,7 +4486,11 @@ results stay until their partition is reset.
   the commit's result is recorded, still under the request's one
   serialization, gate read and idempotency read. The reference D1 storage
   works this way. On it, a failure after a commit's batch leaves that commit
-  applied with its result stored, and the retry replays it as `cached`.
+  applied with its result stored, and the retry replays it as `cached`. The
+  server notifies realtime of every such durable commit, in `commitSeq`
+  order, once the failure is known and before the request fails; it never
+  notifies the commit that failed or one after it. A durable commit is never
+  left for peers to find at their next pull.
 
 DECISION (2026-11-17): one request, one transaction. A PostgreSQL host
 behind a connection pooler pays one network round trip per statement, and

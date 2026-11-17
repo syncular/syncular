@@ -211,6 +211,8 @@ class D1Transaction
   ) => BoundAuthoritativeQuery;
   readonly #pushApplySerialized: boolean;
   readonly #scanVariables: Map<string, string>;
+  /** Each push commit reaches D1 as its own batch when it closes (§6.4). */
+  readonly persistsCommitsOnClose = true;
   readonly #buffer: SqliteStatementSpec[] = [];
   /** Live snapshot of `max_commit_seq`, advanced within this transaction. */
   #maxCommitSeq: number | undefined;

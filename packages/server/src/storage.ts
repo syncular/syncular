@@ -712,6 +712,13 @@ export interface AuthoritativeQueryResult {
  * land together or not at all.
  */
 export interface StorageTransaction {
+  /**
+   * True when `putPushResult` and `rejectPushCommit` persist the closed
+   * commit at once (D1, one atomic batch per commit), so a later failure of
+   * the request leaves it applied and the push layer still notifies it
+   * (§6.4). Absent means the request's commits persist only at `commit()`.
+   */
+  readonly persistsCommitsOnClose?: boolean;
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
   /**
    * Optional candidate-state batch read by primary key. A storage with
