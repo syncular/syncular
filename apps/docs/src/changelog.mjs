@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A schema bump keeps tables whose generation did not change',
+    body: 'Every schema version change dropped every synced table on every client, so a deploy that changed two tables made every client download a 424 MB catalogue again. Typegen now gives each table a generation that changes with its columns, primary key, scopes, indexes or FTS projections, or when a migration names the table. Across a bump both cores keep the rows of every table whose generation is unchanged, and a unit whose tables are all kept keeps its cursor; other tables and units re-bootstrap as before. A schema without generations keeps the full reset.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/',
+        label: 'Schema upgrades',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'SQLite images ship in bounded range images',
     body: "The server published and served a table's SQLite image as one segment however large, so a browser client held the whole body and its copy in the wasm heap, and a broken download started over. The server now builds a table's image as primary-key range images of at most `limits.maxImageSegmentBytes` (default 32 MiB) and serves them as successive bootstrap pages. Both clients clear the table on the first range only, hold at most two image bodies at once, carry the chunk size across ranges, and do not download a range they already applied again. On 351 MB of catalogue images the browser worker's peak memory falls from about 1,330 MiB to about 460 MiB, and the import takes 1.6 to 1.7 s instead of 1.5 s.",
     links: [

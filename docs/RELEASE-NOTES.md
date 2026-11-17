@@ -1,5 +1,37 @@
 # Syncular release notes
 
+## 0.77.0 release notes
+
+A schema bump keeps the tables it did not change (SYNCULAR-SCHEMA-BUMP-KEEP-ROWS-001,
+SPEC §7.4.3). The §7.4.3 reset dropped every synced table on every client at
+every schema version change, so two deploys made every visitor of a public
+catalogue download 424 MB and then 177 MB again.
+
+- Typegen gives every table a `generation`: a hash of its columns, primary
+  key, scopes, references, indexes and FTS projections plus the names of
+  every migration that names the table. Typegen already refuses data
+  statements in migrations, so no migration changes rows outside the commit
+  log.
+- Both cores persist the generations with the schema marker. Across a bump a
+  table whose generation is unchanged keeps its rows, indexes and acknowledged
+  retained rows; its FTS projection is rebuilt locally from the kept rows. A
+  unit whose covered tables are all kept keeps its cursor, resume token and
+  echo, and the next round continues from it. Every other table and unit
+  resets and re-bootstraps as before, and the outbox replays as before.
+- A table whose scopes changed counts as changed and re-bootstraps. A unit
+  that covers a kept and a changed table re-downloads both: give a large,
+  stable table its own scope variable.
+- A schema without generations (hand-written) keeps the full reset. A replica
+  written before 0.77 persists its generations when 0.77 opens it at the same
+  schema version; a bump in the same deploy as the upgrade still resets fully.
+
+**Upgrade notes.** Regenerate with typegen so the client schema carries
+generations. Ship 0.77 without a schema version change first, so clients
+persist the generations before the next bump. The public
+export `dropAndRecreateSyncedTables` is replaced by `resetLocalReplica`.
+Keep tables you do not change out of migrations: a migration that names a
+table changes its generation.
+
 ## 0.76.0 release notes
 
 A table's SQLite image is built and served as bounded primary-key range
