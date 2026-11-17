@@ -4320,8 +4320,8 @@ Semantics:
 - Every apparently new push is serialized by partition before any operation
   read, authorization, conflict check, row validation, CRDT merge, or staged
   write. The server then re-checks the idempotency key while holding that
-  serialization boundary. It retains the boundary through the atomic commit
-  of either the applied result or a rejected/conflicted terminal result. Thus
+  serialization boundary. It retains the boundary until the request's
+  transaction (§6.4) commits every applied and rejected result. Thus
   two overlapping deliveries that both miss the optimistic lookup still run
   exactly one operation pipeline and return the first byte-equivalent result;
   callbacks, merges, row versions, commit-log entries, and realtime
@@ -4401,8 +4401,8 @@ validation, the clientId-actor binding (§1.5) and the `logEpoch` match
    `s < W` with the `sync.commit_expired` result of §6.3, unpersisted;
    otherwise processes the commit and stores its result with `o` and `s`.
 
-Steps 1 and 2 commit in the same transaction as the request's first stored
-commit result, or alone when no commit stores a result. A result stored
+Steps 1 and 2 commit with the request's transaction (§6.4), whatever the
+outcome of its commits, including a serve-gate refusal. A result stored
 without an outbox (`outboxId` absent) carries no sequence and is never
 deleted by step 2.
 
@@ -4464,6 +4464,50 @@ results stay until their partition is reset.
   in place of the conflict.
 - The idempotency record and result payload MUST be persisted in the same
   transaction as the commit's writes.
+- The server applies the commits of one request in one storage transaction
+  under one partition serialization (§6.3). It takes the partition lock,
+  reads the serve gate (RFC 0007) and the idempotency records of every
+  commit of the request, and runs §6.3.2 steps 1 and 2, once per request.
+  Each commit applies inside its own savepoint (or equivalent): a rejected
+  commit rolls back to it, and the request's earlier commits keep their
+  writes. Every commit keeps its own result, its frame-order position and
+  its own `commitSeq`. The server sends no `PUSH_RESULT` of the request and
+  notifies realtime (§8) of no commit before the transaction commits; it
+  then notifies each applied commit in `commitSeq` order and never a
+  rolled-back one.
+- A failure that no commit's result expresses (a storage error other than a
+  relational constraint violation, a lost connection, an exception thrown by
+  a host hook) rolls back the request's transaction. No commit of the
+  request applies, no result of it is stored, and the response carries no
+  `PUSH_RESULT` for it. The client keeps its outbox and retries; the retry
+  applies the commits as new.
+- A storage whose transaction cannot read its own staged writes across
+  commits persists each commit's writes and result as one atomic batch when
+  the commit's result is recorded, still under the request's one
+  serialization, gate read and idempotency read. The reference D1 storage
+  works this way. On it, a failure after a commit's batch leaves that commit
+  applied with its result stored, and the retry replays it as `cached`.
+
+DECISION (2026-11-17): one request, one transaction. A PostgreSQL host
+behind a connection pooler pays one network round trip per statement, and
+every statement of a commit runs under the partition lock. With one
+transaction per commit, a 10-commit request ran 10 `BEGIN`/`COMMIT` pairs,
+took the lock and read the gate 10 times, and wrote each result as its own
+statement: 82 Syncular statements for 10 one-row commits, about 13 ms each
+over Cloudflare Hyperdrive. One transaction runs 37: `BEGIN`, the lock, the
+two §6.3.2 statements, one admission read (gate, idempotency records, and
+the read-ahead of every commit's rows), then `SAVEPOINT`, the row write and
+the commit append per commit, one insert of all results, and `COMMIT`. A
+PostgreSQL savepoint stays open until the transaction ends: `ROLLBACK TO`
+targets the newest savepoint of its name, so a released savepoint buys
+nothing and `RELEASE` would cost a round trip per commit. The cost is the
+all-or-nothing failure above: a server fault in commit 9 discards commits
+1 to 8, which per-commit transactions had kept. The client retries the same
+commits under the same idempotency keys, so the outcome converges either way.
+D1 keeps a batch per commit because its transaction buffers writes and
+cannot answer a registered query over a table an earlier commit of the
+request wrote (`sync.storage.query_over_staged_writes`); one batch per
+request would refuse queries that one batch per commit answers.
 - Applied commits emit changes (§2.2) that become visible to pulls and
   realtime with their assigned `commitSeq`; a puller can never observe a
   commit's changes before its push response could have reported it

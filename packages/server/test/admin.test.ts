@@ -884,10 +884,15 @@ describe('people, delivery, search', () => {
       ['k2', 2],
     ] as const) {
       const tx = await storage.begin('part-1');
-      await tx.preparePushApply('client-1', clientCommitId, 1, [], {
-        outboxId: 'o1',
-        commits: [{ clientCommitId, clientSeq }],
-      });
+      await tx.preparePushApply(
+        'client-1',
+        [{ clientCommitId: clientCommitId }],
+        1,
+        {
+          outboxId: 'o1',
+          commits: [{ clientCommitId, clientSeq }],
+        },
+      );
       const commitSeq = await tx.appendCommit({
         clientId: 'client-1',
         clientCommitId,

@@ -937,7 +937,11 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
       expect(owner.ownerEpoch).toBe(stale.ownerEpoch + 1);
       // A backfill batch: one transaction over the CAS and the row writes.
       const tx = await harness.storage.begin(PARTITION);
-      await tx.preparePushApply('test-client', 'test-commit', 1);
+      await tx.preparePushApply(
+        'test-client',
+        [{ clientCommitId: 'test-commit' }],
+        1,
+      );
       const advanced = await tx.advanceCheckpoint(
         'tasks-projection',
         stale.ownerEpoch,
@@ -1438,7 +1442,11 @@ test('activation and the checkpoint CAS count returned rows', async () => {
       ),
     ).toBe('activated');
     const tx = await storage.begin(PARTITION);
-    await tx.preparePushApply('test-client', 'test-commit', 1);
+    await tx.preparePushApply(
+      'test-client',
+      [{ clientCommitId: 'test-commit' }],
+      1,
+    );
     const advanced = await tx.advanceCheckpoint(
       'tasks-projection',
       claimed.ownerEpoch,

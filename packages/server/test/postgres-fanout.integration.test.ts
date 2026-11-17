@@ -36,6 +36,7 @@ import {
   type ServerSchema,
   type ServerStorage,
   ValidationRejection,
+  type StorageTransaction,
 } from '@syncular/server';
 import { BunSQL, PG_URL, resetPublicSchema } from './pg-real';
 
@@ -223,7 +224,9 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
             return new Proxy(tx, {
               get(txTarget, txProperty) {
                 if (txProperty === 'preparePushApply') {
-                  return async (...args: [string, string, number]) => {
+                  return async (
+                    ...args: Parameters<StorageTransaction['preparePushApply']>
+                  ) => {
                     admissionArrivals += 1;
                     if (admissionArrivals <= 2) {
                       if (admissionArrivals === 2) release();
@@ -374,9 +377,13 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       const first = await left.begin(partition);
       const second = await right.begin(partition);
       let secondAcquired = false;
-      const firstLock = first.preparePushApply('client-a', 'commit-a', 1);
+      const firstLock = first.preparePushApply(
+        'client-a',
+        [{ clientCommitId: 'commit-a' }],
+        1,
+      );
       const secondLock = second
-        .preparePushApply('client-b', 'commit-b', 1)
+        .preparePushApply('client-b', [{ clientCommitId: 'commit-b' }], 1)
         .then(() => {
           secondAcquired = true;
         });

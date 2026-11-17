@@ -27,6 +27,7 @@ import {
   type SyncularServerEvents,
   ValidationRejection,
   type Validator,
+  type StorageTransaction,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import type { PgExecutor, PgQueryable } from '../src/pg-executor';
@@ -1020,7 +1021,9 @@ describe('whole-commit validation (§6.8)', () => {
             return new Proxy(tx, {
               get(txTarget, txProperty) {
                 if (txProperty === 'preparePushApply') {
-                  return async (...args: [string, string, number]) => {
+                  return async (
+                    ...args: Parameters<StorageTransaction['preparePushApply']>
+                  ) => {
                     admissions += 1;
                     return txTarget.preparePushApply(...args);
                   };

@@ -133,6 +133,7 @@ import type {
   PartitionRegistryEntry,
   PreparedPushApply,
   PrunedReactionCounts,
+  PushApplyCommit,
   PushWatermark,
   ReactionClaimQuery,
   ReactionFailure,
@@ -485,7 +486,7 @@ interface ServeGateRow {
   schema_version: unknown;
   log_epoch: string | null;
   pending: unknown;
-  result?: unknown;
+  results?: unknown;
   delete_floor?: unknown;
 }
 
@@ -545,17 +546,18 @@ type AdmissionRow = ServeGateRow & Partial<PrefetchRow>;
 
 /**
  * The push admission read: the RFC 0007 serve gate, the §2.3 idempotency
- * record, and (when the caller already knows the commit's row targets) the
- * read-ahead rows, in one statement with one snapshot. The caller takes the
- * partition lock first: under READ COMMITTED a statement's snapshot is fixed
- * at its start, so the read must be the statement *after* the lock to observe
- * a duplicate that committed while this transaction waited for it.
+ * records of every commit of the request, and (when the caller already knows
+ * the commits' row targets) the read-ahead rows, in one statement with one
+ * snapshot. The caller takes the partition lock first: under READ COMMITTED a
+ * statement's snapshot is fixed at its start, so the read must be the
+ * statement *after* the lock to observe a duplicate that committed while this
+ * transaction waited for it.
  */
 async function readAdmissionOn(
   client: PgQueryable,
   partition: string,
   clientId: string,
-  clientCommitId: string,
+  clientCommitIds: readonly string[],
   runningSchemaVersion: number,
   prefetch:
     | {
@@ -568,7 +570,7 @@ async function readAdmissionOn(
     | undefined,
 ): Promise<{
   gate: ServeGate;
-  persisted: StoredPushResult | undefined;
+  persisted: ReadonlyMap<string, unknown>;
   deleteFloor: number;
   prefetched: readonly PrefetchRow[];
 }> {
@@ -576,11 +578,11 @@ async function readAdmissionOn(
     partition,
     runningSchemaVersion,
     clientId,
-    clientCommitId,
+    [...clientCommitIds],
   ];
   let statement = `SELECT ${SERVE_GATE_PROJECTION},
-            (SELECT result FROM sync_push_results
-              WHERE partition=$1 AND client_id=$3 AND client_commit_id=$4) AS result,
+            (SELECT jsonb_object_agg(client_commit_id, result) FROM sync_push_results
+              WHERE partition=$1 AND client_id=$3 AND client_commit_id = ANY($4::text[])) AS results,
             (SELECT delete_floor FROM sync_partitions WHERE partition=$1) AS delete_floor`;
   if (prefetch !== undefined && prefetch.specs.length > 0) {
     params.push(JSON.stringify(prefetch.specs));
@@ -604,9 +606,17 @@ async function readAdmissionOn(
   }
   const { rows } = await client.query<AdmissionRow>(statement, params);
   const gateRow = rows.find((row) => row.tbl === null) ?? rows[0];
+  const results =
+    gateRow?.results === null || gateRow?.results === undefined
+      ? {}
+      : asJson(gateRow.results);
   return {
     gate: toServeGate(gateRow),
-    persisted: toPersistedPushResult(gateRow?.result),
+    persisted: new Map(
+      typeof results === 'object' && results !== null
+        ? Object.entries(results)
+        : [],
+    ),
     // asNumber maps the NULL of a partition without a commit to 0.
     deleteFloor: asNumber(gateRow?.delete_floor),
     prefetched: rows.filter(
@@ -1274,7 +1284,20 @@ class PostgresTransaction implements StorageTransaction {
   /** The storage's `chooseScanVariable` picks. */
   readonly #scanVariables: Map<string, string>;
   #open = true;
+  /** True once the request's current commit has written behind its savepoint. */
   #pushApplySavepoint = false;
+  /**
+   * The request's §2.3 results, written as one statement at `commit()`
+   * (§6.4): each commit closes with its result, and none is read back before
+   * the transaction ends.
+   */
+  readonly #pushResults: {
+    readonly client_id: string;
+    readonly client_commit_id: string;
+    readonly result: unknown;
+    readonly outbox_id: string | null;
+    readonly client_seq: number | null;
+  }[] = [];
   /**
    * `prefetchRows` results keyed `table\u0000rowId`; `null` records a row
    * (or tombstone) read as absent. A write in this transaction drops the
@@ -1423,9 +1446,12 @@ class PostgresTransaction implements StorageTransaction {
   }
 
   /**
-   * The candidate savepoint, taken before the transaction's first write.
-   * Every candidate write must be undoable by `commitRejectedPushResult`, and
-   * a refused commit that wrote nothing must not pay to create one.
+   * The current commit's candidate savepoint, taken before its first write.
+   * Every candidate write must be undoable by `rejectPushCommit`, and a
+   * refused commit that wrote nothing must not pay to create one. Each commit
+   * takes its own savepoint under the same name: `ROLLBACK TO` targets the
+   * newest, and an earlier commit's savepoint stays open until the
+   * transaction ends, so no `RELEASE` round trip is needed (§6.4).
    */
   #ensurePushSavepoint(): Promise<unknown> | undefined {
     if (this.#pushApplySavepoint) return undefined;
@@ -1634,12 +1660,8 @@ class PostgresTransaction implements StorageTransaction {
 
   async preparePushApply(
     clientId: string,
-    clientCommitId: string,
+    commits: readonly PushApplyCommit[],
     runningSchemaVersion: number,
-    targets: readonly {
-      readonly table: string;
-      readonly rowIds: readonly string[];
-    }[] = [],
     outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply> {
     this.#assertOpen();
@@ -1652,31 +1674,36 @@ class PostgresTransaction implements StorageTransaction {
     const watermark =
       outbox === undefined
         ? undefined
-        : await this.#settleOutbox(clientId, clientCommitId, outbox);
-    const tables: CompiledTable[] = [];
-    const specs: { tbl: string; ids: string[] }[] = [];
-    for (const target of targets) {
-      const ids = [...new Set(target.rowIds)].filter(
-        (rowId) => !this.#prefetchedRows.has(`${target.table}\u0000${rowId}`),
-      );
-      if (ids.length === 0) continue;
-      tables.push(this.#resolveTable(target.table));
-      specs.push({ tbl: target.table, ids });
+        : await this.#settleOutbox(clientId, outbox);
+    const ids = new Map<string, Set<string>>();
+    for (const commit of commits) {
+      for (const target of commit.targets ?? []) {
+        const table = ids.get(target.table) ?? new Set<string>();
+        for (const rowId of target.rowIds) {
+          if (!this.#prefetchedRows.has(`${target.table}\u0000${rowId}`)) {
+            table.add(rowId);
+          }
+        }
+        if (table.size > 0) ids.set(target.table, table);
+      }
     }
-    // One statement: the serve gate, the idempotency record, and the commit's
-    // read-ahead (when the caller already knows its targets).
+    const tables = [...ids.keys()].map((table) => this.#resolveTable(table));
+    const specs = [...ids].map(([tbl, rowIds]) => ({ tbl, ids: [...rowIds] }));
+    // One statement for the whole request: the serve gate, every commit's
+    // idempotency record, and the read-ahead of every commit's known rows.
     const admission = await readAdmissionOn(
       this.#client,
       this.#partition,
       clientId,
-      clientCommitId,
+      commits.map((commit) => commit.clientCommitId),
       runningSchemaVersion,
       specs.length === 0 ? undefined : { tables, specs },
     );
     this.#recordPrefetched(admission.prefetched);
     return {
       gate: admission.gate,
-      persisted: admission.persisted,
+      persisted: (clientCommitId) =>
+        toPersistedPushResult(admission.persisted.get(clientCommitId)),
       deleteFloor: admission.deleteFloor,
       ...(watermark === undefined ? {} : { watermark }),
     };
@@ -1684,23 +1711,18 @@ class PostgresTransaction implements StorageTransaction {
 
   /**
    * The §9 settlement and §6.3.2 steps 1 and 2 under the partition lock,
-   * before the candidate savepoint, so a rejection keeps them. Two
+   * before the first commit's savepoint, so no rejection discards them. Two
    * statements: the settlement touches disjoint rows (outside and inside the
    * request), and the watermark delete must see its sequences.
    */
   async #settleOutbox(
     clientId: string,
-    clientCommitId: string,
     outbox: OutboxSettlement,
   ): Promise<number> {
     const first = outbox.commits[0];
     const last = outbox.commits.at(-1);
-    if (
-      first === undefined ||
-      last === undefined ||
-      first.clientCommitId !== clientCommitId
-    ) {
-      throw new Error("outbox settlement rides the request's first commit");
+    if (first === undefined || last === undefined) {
+      throw new Error('outbox settlement needs the request commits');
     }
     const commits = JSON.stringify(
       outbox.commits.map((commit) => ({
@@ -1780,68 +1802,38 @@ class PostgresTransaction implements StorageTransaction {
     return readServeGateOn(this.#client, this.#partition, runningSchemaVersion);
   }
 
-  async commitRejectedPushResult(
+  async rejectPushCommit(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
     sequence?: OutboxSequence,
-  ): Promise<StoredPushResult> {
+  ): Promise<void> {
     this.#assertOpen();
     // Candidate rows that never reached the database are discarded with the
-    // staging map; a savepoint exists only when one did.
+    // staging map; a savepoint exists only when one did. It stays open: the
+    // rollback returns the database to where the next commit starts (the
+    // results wait in memory), so the next commit writes behind it.
     this.#staged.clear();
     this.#stagedBlobRefs.clear();
     if (this.#pushApplySavepoint) {
-      await this.#client.query('ROLLBACK TO SAVEPOINT syncular_push_candidate');
-      await this.#client.query('RELEASE SAVEPOINT syncular_push_candidate');
-      this.#pushApplySavepoint = false;
+      await this.#serial.query('ROLLBACK TO SAVEPOINT syncular_push_candidate');
     }
-    const canonical = await this.#insertPushResult(
-      clientId,
-      clientCommitId,
-      result,
-      sequence,
-    );
-    await this.commit();
-    return canonical;
+    this.#recordPushResult(clientId, clientCommitId, result, sequence);
   }
 
-  /** Insert the §2.3 outcome and return the canonical persisted value. */
-  async #insertPushResult(
+  #recordPushResult(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
     sequence: OutboxSequence | undefined,
-  ): Promise<StoredPushResult> {
-    const { rows } = await this.#client.query<{ result: unknown }>(
-      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result, outbox_id, client_seq)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING
-       RETURNING result`,
-      [
-        this.#partition,
-        clientId,
-        clientCommitId,
-        JSON.stringify(serializePushResult(result)),
-        sequence?.outboxId ?? null,
-        sequence?.clientSeq ?? null,
-      ],
-    );
-    if (rows[0] !== undefined) {
-      return toPersistedPushResult(rows[0].result) ?? result;
-    }
-    // `ON CONFLICT DO NOTHING` means a previously committed outcome won; read
-    // it rather than claiming this caller's candidate.
-    const existing = await getPushResultOn(
-      this.#client,
-      this.#partition,
-      clientId,
-      clientCommitId,
-    );
-    if (existing === undefined) {
-      throw new Error('push result insert did not persist an outcome');
-    }
-    return existing;
+  ): void {
+    this.#pushResults.push({
+      client_id: clientId,
+      client_commit_id: clientCommitId,
+      result: serializePushResult(result),
+      outbox_id: sequence?.outboxId ?? null,
+      client_seq: sequence?.clientSeq ?? null,
+    });
   }
 
   async upsertRow(
@@ -1930,8 +1922,15 @@ class PostgresTransaction implements StorageTransaction {
 
   async appendCommit(commit: NewCommit): Promise<number> {
     this.#assertOpen();
-    // The commit writes its delete tombstones below.
-    this.#prefetchedTombstones.clear();
+    // The commit writes its delete tombstones below; every other prefetched
+    // tombstone still holds for the request's later commits.
+    for (const change of commit.changes) {
+      if (change.op === 'delete') {
+        this.#prefetchedTombstones.delete(
+          `${change.table}\u0000${change.rowId}`,
+        );
+      }
+    }
     // The append advances the partition cursor; a registered query that runs
     // after it must read the new value.
     this.#cursorSeq = undefined;
@@ -2087,19 +2086,10 @@ class PostgresTransaction implements StorageTransaction {
     sequence?: OutboxSequence,
   ): Promise<void> {
     this.#assertOpen();
-    await this.#client.query(
-      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result, outbox_id, client_seq)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING`,
-      [
-        this.#partition,
-        clientId,
-        clientCommitId,
-        JSON.stringify(serializePushResult(result)),
-        sequence?.outboxId ?? null,
-        sequence?.clientSeq ?? null,
-      ],
-    );
+    this.#recordPushResult(clientId, clientCommitId, result, sequence);
+    // The commit is closed: the next commit's first write takes its own
+    // savepoint.
+    this.#pushApplySavepoint = false;
   }
 
   async enqueueReactions(reactions: readonly NewReaction[]): Promise<void> {
@@ -2129,6 +2119,19 @@ class PostgresTransaction implements StorageTransaction {
 
   async commit(): Promise<void> {
     this.#assertOpen();
+    if (this.#pushResults.length > 0) {
+      // Every result of the request in one statement; `#client` flushes the
+      // staged writes first.
+      await this.#client.query(
+        `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result, outbox_id, client_seq)
+         SELECT $1, r.client_id, r.client_commit_id, r.result, r.outbox_id, r.client_seq
+           FROM jsonb_to_recordset($2::text::jsonb)
+             AS r(client_id text, client_commit_id text, result jsonb, outbox_id text, client_seq bigint)
+         ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING`,
+        [this.#partition, JSON.stringify(this.#pushResults)],
+      );
+      this.#pushResults.length = 0;
+    }
     await this.#writeStaged();
     this.#open = false;
     // Signal the transaction wrapper to COMMIT; wait for it to actually land.

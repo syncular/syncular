@@ -68,6 +68,7 @@ import type {
   OutboxSequence,
   OutboxSettlement,
   PreparedPushApply,
+  PushApplyCommit,
   RowScanQuery,
   ServerStorage,
   ServeGate,
@@ -165,21 +166,19 @@ class SqliteTransaction
 
   async preparePushApply(
     clientId: string,
-    clientCommitId: string,
+    commits: readonly PushApplyCommit[],
     runningSchemaVersion: number,
-    _targets: readonly {
-      readonly table: string;
-      readonly rowIds: readonly string[];
-    }[] = [],
     outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply> {
     this.assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
-    // The settlement precedes the savepoint, so a rejection keeps it.
-    const settled =
-      outbox === undefined
-        ? undefined
-        : await this.settleOutbox(clientId, clientCommitId, outbox);
+    // The settlement precedes the first commit's savepoint, so no rejection
+    // discards it.
+    const admitted = await this.admitPushRequest(
+      clientId,
+      commits.map((commit) => commit.clientCommitId),
+      outbox,
+    );
     this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
     const gate = await this.#storage.readServeGate(
@@ -190,18 +189,7 @@ class SqliteTransaction
       'SELECT delete_floor FROM sync_partitions WHERE partition=?',
       [this.partition],
     );
-    const deleteFloor = floor?.delete_floor ?? 0;
-    return settled === undefined
-      ? {
-          gate,
-          deleteFloor,
-          persisted: await this.#storage.getPushResult(
-            this.partition,
-            clientId,
-            clientCommitId,
-          ),
-        }
-      : { gate, deleteFloor, ...settled };
+    return { gate, deleteFloor: floor?.delete_floor ?? 0, ...admitted };
   }
 
   async lockPartition(): Promise<void> {
@@ -234,24 +222,35 @@ class SqliteTransaction
     return this.#storage.readServeGate(this.partition, runningSchemaVersion);
   }
 
-  async commitRejectedPushResult(
+  async rejectPushCommit(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
     sequence?: OutboxSequence,
-  ): Promise<StoredPushResult> {
+  ): Promise<void> {
     this.assertOpen();
     if (!this.#pushApplySavepoint) {
       throw new Error('push rejection requires its apply savepoint');
     }
     this.#storage.db.exec('ROLLBACK TO SAVEPOINT syncular_push_candidate');
-    this.#storage.db.exec('RELEASE SAVEPOINT syncular_push_candidate');
-    this.#pushApplySavepoint = false;
     await this.putPushResult(clientId, clientCommitId, result, sequence);
-    await this.commit();
-    // The idempotency re-check found no record under the writer lock, so the
-    // insert above is the canonical outcome.
-    return result;
+  }
+
+  /**
+   * Closes the request's current commit: its writes and result join the
+   * transaction, and the next commit writes behind a new savepoint (§6.4).
+   */
+  override async putPushResult(
+    clientId: string,
+    clientCommitId: string,
+    result: StoredPushResult,
+    sequence?: OutboxSequence,
+  ): Promise<void> {
+    await super.putPushResult(clientId, clientCommitId, result, sequence);
+    if (this.#pushApplySavepoint) {
+      this.#storage.db.exec('RELEASE SAVEPOINT syncular_push_candidate');
+      this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
+    }
   }
 
   async upsertRow(

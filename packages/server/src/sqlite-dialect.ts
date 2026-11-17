@@ -2062,32 +2062,50 @@ export abstract class SqliteFamilyTransaction {
   }
 
   /**
-   * The §9 settlement and §6.3.2 steps 1 and 2 for one request, then the
-   * idempotency read of its first commit. The reads run before the writes,
-   * so D1, which buffers the writes until commit, answers exactly as SQLite:
-   * the first commit's result counts as deleted when the writes delete it.
+   * The §2.3 records of a request's commits and, with `outbox`, the §9
+   * settlement and §6.3.2 steps 1 and 2. The read runs before the writes, so
+   * D1, which buffers the writes, answers exactly as SQLite: a result the
+   * writes delete counts as absent.
    */
-  protected async settleOutbox(
+  protected async admitPushRequest(
     clientId: string,
-    clientCommitId: string,
-    outbox: OutboxSettlement,
+    clientCommitIds: readonly string[],
+    outbox: OutboxSettlement | undefined,
   ): Promise<{
-    readonly watermark: number;
-    readonly persisted: StoredPushResult | undefined;
+    readonly watermark?: number;
+    readonly persisted: (
+      clientCommitId: string,
+    ) => StoredPushResult | undefined;
   }> {
+    const p = this.partition;
+    const ids = JSON.stringify(clientCommitIds);
+    const persistedOf =
+      (records: ReadonlyMap<string, string>) =>
+      (clientCommitId: string): StoredPushResult | undefined => {
+        const record = records.get(clientCommitId);
+        return record === undefined ? undefined : deserializePushResult(record);
+      };
+    if (outbox === undefined) {
+      const rows = await this.all<{ client_commit_id: string; result: string }>(
+        `SELECT client_commit_id, result FROM sync_push_results
+          WHERE partition=? AND client_id=? AND client_commit_id IN (SELECT value FROM json_each(?))`,
+        [p, clientId, ids],
+      );
+      return {
+        persisted: persistedOf(
+          new Map(rows.map((row) => [row.client_commit_id, row.result])),
+        ),
+      };
+    }
     const first = outbox.commits[0];
     const last = outbox.commits.at(-1);
-    if (
-      first === undefined ||
-      last === undefined ||
-      first.clientCommitId !== clientCommitId
-    ) {
-      throw new Error("outbox settlement rides the request's first commit");
+    if (first === undefined || last === undefined) {
+      throw new Error('outbox settlement needs the request commits');
     }
-    const p = this.partition;
-    const [state] = await this.all<{
+    const rows = await this.all<{
       stored: number | null;
       last_sequenceless: number;
+      client_commit_id: string | null;
       result: string | null;
       outbox_id: string | null;
       client_seq: number | null;
@@ -2096,11 +2114,14 @@ export abstract class SqliteFamilyTransaction {
                 WHERE partition=?1 AND client_id=?2 AND outbox_id=?3) AS stored,
               EXISTS (SELECT 1 FROM sync_push_results WHERE partition=?1
                 AND client_id=?2 AND client_commit_id=?5 AND outbox_id IS NULL) AS last_sequenceless,
-              r.result AS result, r.outbox_id AS outbox_id, r.client_seq AS client_seq
+              r.client_commit_id AS client_commit_id, r.result AS result,
+              r.outbox_id AS outbox_id, r.client_seq AS client_seq
          FROM (SELECT 1) LEFT JOIN sync_push_results AS r
-           ON r.partition=?1 AND r.client_id=?2 AND r.client_commit_id=?4`,
-      [p, clientId, outbox.outboxId, first.clientCommitId, last.clientCommitId],
+           ON r.partition=?1 AND r.client_id=?2
+          AND r.client_commit_id IN (SELECT value FROM json_each(?4))`,
+      [p, clientId, outbox.outboxId, ids, last.clientCommitId],
     );
+    const state = rows[0];
     const watermark = Math.max(state?.stored ?? 0, first.clientSeq);
     const commits = JSON.stringify(
       outbox.commits.map((commit) => [commit.clientCommitId, commit.clientSeq]),
@@ -2133,20 +2154,22 @@ export abstract class SqliteFamilyTransaction {
       'DELETE FROM sync_push_results WHERE partition=? AND client_id=? AND outbox_id=? AND client_seq<?',
       [p, clientId, outbox.outboxId, watermark],
     );
-    // The sequence step 2 sees: (a) gives a pre-upgrade result the first
-    // commit's sequence; a result of this outbox keeps its stored one.
-    const deleted =
-      state?.outbox_id === null
-        ? first.clientSeq < watermark
-        : state?.outbox_id === outbox.outboxId &&
-          (state.client_seq ?? 0) < watermark;
-    return {
-      watermark,
-      persisted:
-        state?.result === null || state?.result === undefined || deleted
-          ? undefined
-          : deserializePushResult(state.result),
-    };
+    // The sequence step 2 sees: (a) gives a pre-upgrade result its commit's
+    // sequence in the request; a result of this outbox keeps its stored one.
+    const sequences = new Map(
+      outbox.commits.map((commit) => [commit.clientCommitId, commit.clientSeq]),
+    );
+    const records = new Map<string, string>();
+    for (const row of rows) {
+      if (row.client_commit_id === null || row.result === null) continue;
+      const deleted =
+        row.outbox_id === null
+          ? (sequences.get(row.client_commit_id) ?? 0) < watermark
+          : row.outbox_id === outbox.outboxId &&
+            (row.client_seq ?? 0) < watermark;
+      if (!deleted) records.set(row.client_commit_id, row.result);
+    }
+    return { watermark, persisted: persistedOf(records) };
   }
 
   async enqueueReactions(reactions: readonly NewReaction[]): Promise<void> {

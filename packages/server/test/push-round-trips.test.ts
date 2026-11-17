@@ -18,13 +18,17 @@ import {
   type ResponseMessage,
 } from '@syncular/core';
 import {
+  CommitValidationRejection,
   compileSchema,
+  D1ServerStorage,
   handleSyncRequest,
   MemorySegmentStore,
   type PgExecutor,
   type PgQueryable,
   PostgresServerStorage,
   type ServerSchema,
+  type ServerStorage,
+  SqliteServerStorage,
   type SyncRequestContext,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -39,35 +43,48 @@ import {
   TEST_SCHEMA,
   upsert,
 } from './helpers';
+import { D1DatabaseDouble } from './d1-double';
 
-/** Counts statements per scope: the pool and a storage transaction. */
+/**
+ * Counts statements per scope (the pool and a storage transaction) and
+ * records the text of every transaction's statements, one list per
+ * `BEGIN`.
+ */
 function countingExecutor(inner: PgExecutor): {
   executor: PgExecutor;
   count: { pool: number; transaction: number };
+  transactions: string[][];
 } {
   const count = { pool: 0, transaction: 0 };
+  const transactions: string[][] = [];
   const counted = (
     client: PgQueryable,
     scope: 'pool' | 'transaction',
+    statements?: string[],
   ): PgQueryable => ({
     query: (text, params) => {
       count[scope] += 1;
+      statements?.push(text);
       return client.query(text, params);
     },
   });
   return {
     count,
+    transactions,
     executor: {
       query: counted(inner, 'pool').query,
-      transaction: (fn) =>
-        inner.transaction((client) => fn(counted(client, 'transaction'))),
+      transaction: (fn) => {
+        const statements: string[] = [];
+        transactions.push(statements);
+        return inner.transaction((client) =>
+          fn(counted(client, 'transaction', statements)),
+        );
+      },
     },
   };
 }
 
-async function context(
-  storage: PostgresServerStorage,
-): Promise<SyncRequestContext> {
+async function context(storage: ServerStorage): Promise<SyncRequestContext> {
   const ctx: SyncRequestContext = {
     partition: 'part-1',
     actorId: 'actor-1',
@@ -639,4 +656,193 @@ describe('push declared-reference reads (SYNCULAR-PUSH-ROUNDTRIPS-003)', () => {
       await db.close();
     }
   }, 60_000);
+});
+
+describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
+  const tenCommits = Array.from({ length: 10 }, (_, i) =>
+    pushCommit(
+      `batch-${i}`,
+      [upsert('tasks', `batch-t${i}`, taskRow(`batch-t${i}`, 'p1'))],
+      i + 1,
+    ),
+  );
+
+  test('Postgres applies 10 commits under one lock and gate read, 3 statements per commit', async () => {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const storage = new PostgresServerStorage(counting.executor);
+    const notified: number[] = [];
+    const ctx: SyncRequestContext = {
+      ...(await context(storage)),
+      realtime: {
+        notifyCommit: (_partition, commit) => {
+          notified.push(commit.commitSeq);
+        },
+      },
+    };
+    const push = async () =>
+      pushResults(
+        decodeMessage(
+          await handleSyncRequest(
+            requestBytes(tenCommits, 'client-1', 1, TEST_LOG_EPOCH, 'outbox-1'),
+            ctx,
+          ),
+        ) as ResponseMessage,
+      );
+    try {
+      // Warm-up: the partition's first push initializes its lock row.
+      expect(
+        pushResults(
+          await sync(ctx, [
+            pushCommit('warm-up', [
+              upsert('tasks', 'warm-up', taskRow('warm-up', 'p1')),
+            ]),
+          ]),
+        )[0]?.status,
+      ).toBe('applied');
+      counting.transactions.length = 0;
+      notified.length = 0;
+      const applied = await push();
+      expect(applied.map((result) => result.status)).toEqual(
+        tenCommits.map(() => 'applied'),
+      );
+      const seqs = applied.map((result) => result.commitSeq ?? 0);
+      expect(seqs).toEqual(seqs.map((_, i) => seqs[0]! + i));
+      expect(notified).toEqual(seqs);
+      // One BEGIN for the whole request.
+      expect(counting.transactions).toHaveLength(1);
+      const statements = counting.transactions[0]!;
+      const matching = (pattern: RegExp) =>
+        statements.filter((text) => pattern.test(text));
+      expect(
+        matching(/FROM sync_partitions WHERE partition=\$1 FOR UPDATE/),
+      ).toHaveLength(1);
+      expect(matching(/sync_schema_meta/)).toHaveLength(1);
+      expect(matching(/sync_push_watermarks/)).toHaveLength(1);
+      expect(matching(/^SAVEPOINT/)).toHaveLength(10);
+      expect(matching(/^INSERT INTO sync_push_results/)).toHaveLength(1);
+      // Once per request: the lock, the two §6.3.2 settlement statements,
+      // the admission read and the insert of all results. Per commit: the
+      // savepoint, the row write and the commit append.
+      expect(statements).toHaveLength(5 + 10 * 3);
+
+      // An idempotent replay returns the stored results without a write.
+      counting.transactions.length = 0;
+      const replayed = await push();
+      expect(replayed.map((result) => result.status)).toEqual(
+        tenCommits.map(() => 'cached'),
+      );
+      expect(replayed.map((result) => result.commitSeq)).toEqual(seqs);
+      expect(notified).toEqual(seqs);
+      expect(counting.transactions).toHaveLength(1);
+      // The lock, the two settlement statements and the admission read.
+      expect(counting.transactions[0]).toHaveLength(4);
+    } finally {
+      await db.close();
+    }
+  });
+
+  for (const backend of ['postgres/pglite', 'sqlite', 'd1/double'] as const) {
+    test(`${backend}: a rejected middle commit rolls back only itself`, async () => {
+      const db =
+        backend === 'postgres/pglite' ? await PGlite.create() : undefined;
+      const d1 =
+        backend === 'd1/double'
+          ? new D1ServerStorage(new D1DatabaseDouble(), {
+              pushApplySerialized: true,
+            })
+          : undefined;
+      if (d1 !== undefined) {
+        while (!(await d1.migrateSchema(compileSchema(TEST_SCHEMA))).complete) {
+          // Resume the resumable D1 migration until it lands.
+        }
+      }
+      const storage: ServerStorage =
+        db !== undefined
+          ? new PostgresServerStorage(pgliteExecutor(db))
+          : (d1 ?? new SqliteServerStorage());
+      const notified: number[] = [];
+      const ctx: SyncRequestContext = {
+        ...(await context(storage)),
+        realtime: {
+          notifyCommit: (_partition, commit) => {
+            notified.push(commit.commitSeq);
+          },
+        },
+        // The read reaches the staged rows, so the middle commit has written
+        // them before its rejection rolls them back.
+        commitValidator: async ({ clientCommitId, read }) => {
+          if (clientCommitId !== 'middle') return;
+          expect(await read.getRow('tasks', 'middle-a')).toBeDefined();
+          throw new CommitValidationRejection(1, 'app.rejected');
+        },
+      };
+      try {
+        const results = pushResults(
+          decodeMessage(
+            await handleSyncRequest(
+              requestBytes(
+                [
+                  pushCommit(
+                    'first',
+                    [upsert('tasks', 'first', taskRow('first', 'p1'))],
+                    1,
+                  ),
+                  pushCommit(
+                    'middle',
+                    [
+                      upsert('tasks', 'middle-a', taskRow('middle-a', 'p1')),
+                      upsert('tasks', 'middle-b', taskRow('middle-b', 'p1')),
+                    ],
+                    2,
+                  ),
+                  pushCommit(
+                    'last',
+                    [upsert('tasks', 'last', taskRow('last', 'p1'))],
+                    3,
+                  ),
+                ],
+                'client-1',
+                1,
+                TEST_LOG_EPOCH,
+                'outbox-1',
+              ),
+              ctx,
+            ),
+          ) as ResponseMessage,
+        );
+        expect(
+          results.map((result) => [result.clientCommitId, result.status]),
+        ).toEqual([
+          ['first', 'applied'],
+          ['middle', 'rejected'],
+          ['last', 'applied'],
+        ]);
+        expect(results[1]?.results).toMatchObject([
+          { opIndex: 1, status: 'error', code: 'app.rejected' },
+        ]);
+        const [first, , last] = results;
+        expect(last?.commitSeq).toBe((first?.commitSeq ?? 0) + 1);
+        expect(notified).toEqual([first?.commitSeq ?? 0, last?.commitSeq ?? 0]);
+        for (const [rowId, present] of [
+          ['first', true],
+          ['middle-a', false],
+          ['middle-b', false],
+          ['last', true],
+        ] as const) {
+          expect(
+            (await storage.getRow('part-1', 'tasks', rowId)) !== undefined,
+          ).toBe(present);
+        }
+        expect(await storage.getMaxCommitSeq('part-1')).toBe(
+          last?.commitSeq ?? 0,
+        );
+        expect(
+          (await storage.getPushResult('part-1', 'client-1', 'middle'))?.status,
+        ).toBe('rejected');
+      } finally {
+        await db?.close();
+      }
+    });
+  }
 });

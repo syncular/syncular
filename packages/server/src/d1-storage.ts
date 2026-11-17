@@ -21,9 +21,11 @@
  *
  *   - reads (`getRow`) execute immediately against D1 (autocommit);
  *   - writes are **buffered** as prepared statements;
- *   - `commit()` flushes the whole buffer as one `db.batch(...)` — the same
- *     atomicity §6.4 requires (a rejected op rolls back by simply never
- *     flushing);
+ *   - `putPushResult` closes a push commit and flushes the buffer as one
+ *     `db.batch(...)` (§6.4: one atomic batch per commit, because a later
+ *     commit of the request must read the earlier one's writes from D1);
+ *     `commit()` flushes whatever remains. A rejected commit rolls back by
+ *     never flushing its part of the buffer;
  *   - `rollback()` drops the buffer unsent.
  *
  * `appendCommit` allocates the dense per-partition `commitSeq` (§2.1) by
@@ -103,6 +105,7 @@ import type {
   OutboxSequence,
   OutboxSettlement,
   PreparedPushApply,
+  PushApplyCommit,
   RowScanQuery,
   ScopeValueHistoryQuery,
   ServerStorage,
@@ -545,12 +548,8 @@ class D1Transaction
 
   async preparePushApply(
     clientId: string,
-    clientCommitId: string,
+    commits: readonly PushApplyCommit[],
     runningSchemaVersion: number,
-    _targets: readonly {
-      readonly table: string;
-      readonly rowIds: readonly string[];
-    }[] = [],
     outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply> {
     this.assertOpen();
@@ -561,12 +560,13 @@ class D1Transaction
     }
     // D1 has no interactive lock. The caller explicitly asserted that every
     // write for this partition is already serialized (normally by its DO).
-    // The settlement's writes sit below the checkpoint, so a rejection keeps
-    // them.
-    const settled =
-      outbox === undefined
-        ? undefined
-        : await this.settleOutbox(clientId, clientCommitId, outbox);
+    // The settlement's writes sit below the first commit's checkpoint, so a
+    // rejection keeps them.
+    const admitted = await this.admitPushRequest(
+      clientId,
+      commits.map((commit) => commit.clientCommitId),
+      outbox,
+    );
     this.#pushApplyCheckpoint = this.#buffer.length;
     // The serve gate and the delete floor (§2.2) in one round trip.
     const read = await this.#db
@@ -580,14 +580,7 @@ class D1Transaction
       logEpoch: undefined,
       pending: [],
     };
-    const deleteFloor = read?.delete_floor ?? 0;
-    return settled === undefined
-      ? {
-          gate,
-          deleteFloor,
-          persisted: await this.getPushResult(clientId, clientCommitId),
-        }
-      : { gate, deleteFloor, ...settled };
+    return { gate, deleteFloor: read?.delete_floor ?? 0, ...admitted };
   }
 
   advanceCheckpoint(
@@ -615,12 +608,12 @@ class D1Transaction
     };
   }
 
-  async commitRejectedPushResult(
+  async rejectPushCommit(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
     sequence?: OutboxSequence,
-  ): Promise<StoredPushResult> {
+  ): Promise<void> {
     this.assertOpen();
     const checkpoint = this.#pushApplyCheckpoint;
     if (checkpoint === undefined) {
@@ -632,10 +625,27 @@ class D1Transaction
     this.#maxCommitSeq = undefined;
     this.#applicationOpIndexes.clear();
     await this.putPushResult(clientId, clientCommitId, result, sequence);
-    await this.commit();
-    // The idempotency re-check found no record under the serialized apply, so
-    // the insert above is the canonical outcome.
-    return result;
+  }
+
+  /**
+   * Closes the request's current commit (§6.4): its buffered writes and this
+   * result reach D1 as one atomic batch. A later commit of the request then
+   * reads its rows, tombstones and registered queries from D1 itself, which
+   * a buffer spanning commits could not answer.
+   */
+  override async putPushResult(
+    clientId: string,
+    clientCommitId: string,
+    result: StoredPushResult,
+    sequence?: OutboxSequence,
+  ): Promise<void> {
+    await super.putPushResult(clientId, clientCommitId, result, sequence);
+    await this.#flush();
+    this.#pending.clear();
+    this.#clearedTombstones.clear();
+    this.#prefetched.clear();
+    this.#applicationOpIndexes.clear();
+    if (this.#pushApplyCheckpoint !== undefined) this.#pushApplyCheckpoint = 0;
   }
 
   async #assertNoUniqueCollision(
@@ -776,17 +786,19 @@ class D1Transaction
 
   async commit(): Promise<void> {
     this.assertOpen();
-    if (this.#buffer.length === 0) {
-      this.open = false;
-      return;
-    }
+    await this.#flush();
+    this.open = false;
+  }
+
+  /** Send the buffer as one atomic D1 batch: the §6.4 all-or-nothing write. */
+  async #flush(): Promise<void> {
+    if (this.#buffer.length === 0) return;
     const statements = this.#buffer.map((entry) =>
       this.#db.prepare(entry.sql).bind(...entry.params),
     );
-    // One atomic D1 batch — the §6.4 all-or-nothing commit.
     try {
       await this.#db.batch(statements);
-      this.open = false;
+      this.#buffer.length = 0;
     } catch (error) {
       if (isD1ConstraintError(error)) {
         // D1 batches are atomic. Keep this logical transaction open so the

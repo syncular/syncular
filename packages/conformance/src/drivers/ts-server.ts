@@ -51,6 +51,7 @@ import {
   type ServerSchema,
   type ServerStorage,
   type SqliteDatabase,
+  type StorageTransaction,
   SyncularAdmin,
   BunSqliteDatabase,
   SqliteServerStorage,
@@ -602,15 +603,23 @@ class TsServerInstance implements ServerInstance {
         return new Proxy(tx, {
           get: (target, property) => {
             if (property === 'preparePushApply') {
-              return async (...args: [string, string, number]) => {
-                if (this.#failNextIdempotencyLookup) {
-                  this.#failNextIdempotencyLookup = false;
-                  throw new SyncError(
-                    'sync.idempotency_cache_miss',
-                    'injected: unreadable idempotency record',
-                  );
-                }
-                return target.preparePushApply(...args);
+              return async (
+                ...args: Parameters<StorageTransaction['preparePushApply']>
+              ) => {
+                const prepared = await target.preparePushApply(...args);
+                return {
+                  ...prepared,
+                  persisted: (clientCommitId: string) => {
+                    if (this.#failNextIdempotencyLookup) {
+                      this.#failNextIdempotencyLookup = false;
+                      throw new SyncError(
+                        'sync.idempotency_cache_miss',
+                        'injected: unreadable idempotency record',
+                      );
+                    }
+                    return prepared.persisted(clientCommitId);
+                  },
+                };
               };
             }
             const value = Reflect.get(target, property, target);

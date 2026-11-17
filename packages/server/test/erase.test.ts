@@ -248,8 +248,12 @@ describe('eraseScopeValue', () => {
       // of the binding would keep the erased row's payload without the strip.
       for (const project of ['p1', 'p2']) {
         const tx = await storage.begin(PARTITION);
-        await tx.preparePushApply('writer', `conflict-${project}`, 1);
-        await tx.commitRejectedPushResult?.('writer', `conflict-${project}`, {
+        await tx.preparePushApply(
+          'writer',
+          [{ clientCommitId: `conflict-${project}` }],
+          1,
+        );
+        await tx.rejectPushCommit('writer', `conflict-${project}`, {
           status: 'rejected',
           recordedAtMs: 1_000,
           conflictAuthorization: {
@@ -269,6 +273,7 @@ describe('eraseScopeValue', () => {
             },
           ],
         });
+        await tx.commit();
       }
 
       const steps = await eraseAll(config, 'p1');

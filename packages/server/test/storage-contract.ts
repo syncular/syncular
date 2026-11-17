@@ -493,7 +493,11 @@ export function runStorageContract(
       const tx = await storage.begin(PARTITION);
       expect(tx.preparePushApply).toBeDefined();
       expect(tx.scanRows).toBeDefined();
-      await tx.preparePushApply('test-client', 'test-commit', 1);
+      await tx.preparePushApply(
+        'test-client',
+        [{ clientCommitId: 'test-commit' }],
+        1,
+      );
       await tx.deleteRow('tasks', 'r1');
       await tx.upsertRow('tasks', taskRow('r3', 'p1'));
       const rows = await tx.scanRows?.({
@@ -510,10 +514,14 @@ export function runStorageContract(
       const storage = await make();
       const tx = await storage.begin(PARTITION);
       expect(tx.preparePushApply).toBeDefined();
-      expect(tx.commitRejectedPushResult).toBeDefined();
-      await tx.preparePushApply('test-client', 'test-commit', 1);
+      expect(tx.rejectPushCommit).toBeDefined();
+      await tx.preparePushApply(
+        'test-client',
+        [{ clientCommitId: 'test-commit' }],
+        1,
+      );
       await tx.upsertRow('tasks', taskRow('candidate', 'p1'));
-      await tx.commitRejectedPushResult?.('c1', 'rejected-aggregate', {
+      await tx.rejectPushCommit('c1', 'rejected-aggregate', {
         status: 'rejected',
         results: [
           {
@@ -525,6 +533,7 @@ export function runStorageContract(
           },
         ],
       });
+      await tx.commit();
 
       expect(
         await storage.getRow(PARTITION, 'tasks', 'candidate'),
@@ -1312,28 +1321,26 @@ export function runStorageContract(
       outboxId: string,
       commits: readonly (readonly [string, number])[],
     ): Promise<{ watermark: number; outcomes: string[] }> {
-      let watermark = 0;
+      // One request, one transaction (§6.4).
       const outcomes: string[] = [];
-      for (const [i, [clientCommitId, clientSeq]] of commits.entries()) {
-        const tx = await storage.begin(PARTITION);
-        const prepared = await tx.preparePushApply(
-          'c1',
-          clientCommitId,
-          1,
-          [],
-          i === 0
-            ? {
-                outboxId,
-                commits: commits.map(([id, seq]) => ({
-                  clientCommitId: id,
-                  clientSeq: seq,
-                })),
-              }
-            : undefined,
-        );
-        if (i === 0) watermark = prepared.watermark ?? -1;
-        if (prepared.persisted !== undefined) {
-          outcomes.push(`cached:${prepared.persisted.commitSeq}`);
+      const tx = await storage.begin(PARTITION);
+      const prepared = await tx.preparePushApply(
+        'c1',
+        commits.map(([clientCommitId]) => ({ clientCommitId })),
+        1,
+        {
+          outboxId,
+          commits: commits.map(([clientCommitId, clientSeq]) => ({
+            clientCommitId,
+            clientSeq,
+          })),
+        },
+      );
+      const watermark = prepared.watermark ?? -1;
+      for (const [clientCommitId, clientSeq] of commits) {
+        const persisted = prepared.persisted(clientCommitId);
+        if (persisted !== undefined) {
+          outcomes.push(`cached:${persisted.commitSeq}`);
         } else if (clientSeq < watermark) {
           outcomes.push('expired');
         } else {
@@ -1356,8 +1363,8 @@ export function runStorageContract(
           );
           outcomes.push(`applied:${commitSeq}`);
         }
-        await tx.commit();
       }
+      await tx.commit();
       return { watermark, outcomes };
     }
 
@@ -1544,13 +1551,19 @@ export function runStorageContract(
       const storage = await make();
       await push(storage, 'o1', [['A', 1]]);
       const tx = await storage.begin(PARTITION);
-      const prepared = await tx.preparePushApply('c1', 'B', 1, [], {
-        outboxId: 'o1',
-        commits: [{ clientCommitId: 'B', clientSeq: 2 }],
-      });
-      expect(prepared).toMatchObject({ persisted: undefined, watermark: 2 });
+      const prepared = await tx.preparePushApply(
+        'c1',
+        [{ clientCommitId: 'B' }],
+        1,
+        {
+          outboxId: 'o1',
+          commits: [{ clientCommitId: 'B', clientSeq: 2 }],
+        },
+      );
+      expect(prepared.watermark).toBe(2);
+      expect(prepared.persisted('B')).toBeUndefined();
       await tx.upsertRow('tasks', taskRow('candidate', 'p1'));
-      await tx.commitRejectedPushResult(
+      await tx.rejectPushCommit(
         'c1',
         'B',
         {
@@ -1567,6 +1580,7 @@ export function runStorageContract(
         },
         { outboxId: 'o1', clientSeq: 2 },
       );
+      await tx.commit();
       expect(await storage.getPushResult(PARTITION, 'c1', 'A')).toBeUndefined();
       expect(
         await storage.getRow(PARTITION, 'tasks', 'candidate'),
@@ -1959,7 +1973,11 @@ export function runStorageContract(
       const storage = await make();
       const floor = async (): Promise<number> => {
         const tx = await storage.begin(PARTITION);
-        const prepared = await tx.preparePushApply('c', 'floor-probe', 1);
+        const prepared = await tx.preparePushApply(
+          'c',
+          [{ clientCommitId: 'floor-probe' }],
+          1,
+        );
         await tx.rollback();
         return prepared.deleteFloor;
       };

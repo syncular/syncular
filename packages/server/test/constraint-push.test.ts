@@ -345,7 +345,7 @@ describe('durable relational constraint rejection', () => {
             const tx = await target.begin(partition);
             return new Proxy(tx, {
               get(txTarget, txProperty) {
-                if (txProperty === 'commitRejectedPushResult' && !injected) {
+                if (txProperty === 'rejectPushCommit' && !injected) {
                   return async () => {
                     injected = true;
                     throw new Error('injected finalization failure');

@@ -10,8 +10,9 @@ import { retainRollbackFailure } from './storage-errors';
  * - a lost `baseVersion = 0` insert race re-authorizes the winner's row
  *   before disclosing it in a conflict record (§6.2).
  *
- * Per-commit atomicity (§6.4): one storage transaction per commit; the
- * idempotency record persists in the same transaction as the writes.
+ * Atomicity (§6.4): one storage transaction per push request, one savepoint
+ * per commit; every idempotency record persists in the same transaction as
+ * the writes.
  *
  * Optional per-table write validation (§6.7) runs after decode + the §3.4
  * scope check, on the row that will persist (post scope-strip, post CRDT
@@ -22,7 +23,6 @@ import {
   decodeRow,
   decodeSparseRow,
   encodeRow,
-  type PushCommitFrame,
   type PushOperation,
   type PushOperationResult,
   type PushResultFrame,
@@ -48,15 +48,18 @@ import { authorizeWrite, renderScopeValue, storedScopesForRow } from './scopes';
 import { decodeColumnVersions, encodeColumnVersions } from './relational-rows';
 import type {
   NewChange,
-  OutboxSequence,
+  NewReaction,
   OutboxSettlement,
-  PreparedPushApply,
+  PushApplyCommit,
   StorageTransaction,
-  StoredCommit,
   StoredPushResult,
   StoredRow,
 } from './storage';
-import { readCandidateRows, serveGateRefusal } from './storage';
+import {
+  commitDeleteFloor,
+  readCandidateRows,
+  serveGateRefusal,
+} from './storage';
 import { StorageConstraintError } from './storage-errors';
 import { transactionQuery } from './storage-query';
 import { serveNotReadyError } from './readiness';
@@ -1729,28 +1732,31 @@ export interface ProcessedPushCommit {
   readonly replayed: boolean;
   readonly recordedAtMs?: number;
   readonly cacheIdentity?: string;
-  /** The outbox watermark `W` the commit's settlement read (§6.3.2). */
-  readonly watermark?: number;
 }
 
-/** A pushed commit's outbox position and the request's watermark (§6.3.2). */
-export interface PushOutbox extends OutboxSequence {
-  /** `W` after the request's first commit. */
-  readonly watermark: number;
-  /** Present with the request's first commit: steps 1 and 2 run with it. */
-  readonly settlement?: OutboxSettlement;
+/** One commit of a push request (§6.4). */
+export interface PushRequestCommit {
+  readonly clientCommitId: string;
+  /**
+   * Runs after the partition lock and the idempotency read, inside the
+   * request's transaction, so its reads and the returned operations share
+   * the transaction that commits.
+   */
+  readonly buildOperations: (
+    tx: StorageTransaction,
+  ) => Promise<readonly ApplyOperation[]>;
+  /** The rows the commit names before its operations are built. */
+  readonly targets?: PushApplyCommit['targets'];
 }
 
 function processedPushCommit(
   clientCommitId: string,
   stored: StoredPushResult,
   replayed: boolean,
-  watermark?: number,
 ): ProcessedPushCommit {
   return {
     frame: resultFrame(clientCommitId, stored, replayed),
     replayed,
-    ...(watermark !== undefined ? { watermark } : {}),
     ...(stored.recordedAtMs !== undefined
       ? { recordedAtMs: stored.recordedAtMs }
       : {}),
@@ -1809,71 +1815,9 @@ function commitExpiredFrame(clientCommitId: string): PushResultFrame {
   };
 }
 
-export interface AppliedCommitEvent {
-  readonly commit: StoredCommit;
-}
-
 /**
- * Process one `PUSH_COMMIT` frame: idempotency replay (§2.3), sequential
- * atomic apply (§6.4), realtime notification for applied commits.
- */
-export async function processPushCommit(
-  ctx: SyncRequestContext,
-  schema: CompiledSchema,
-  resolved: ResolvedScopes,
-  clientId: string,
-  frame: PushCommitFrame,
-): Promise<PushResultFrame> {
-  return (
-    await processPushCommitWithTrace(ctx, schema, resolved, clientId, frame)
-  ).frame;
-}
-
-/**
- * Host-observable variant of `processPushCommit`. The SSP2 wire frame keeps
- * rejected replays as `status: rejected`; this companion result preserves the
- * cache provenance needed by structured events and server helpers.
- */
-export async function processPushCommitWithTrace(
-  ctx: SyncRequestContext,
-  schema: CompiledSchema,
-  resolved: ResolvedScopes,
-  clientId: string,
-  frame: PushCommitFrame,
-  wireSchema: CompiledSchema = schema,
-  outbox?: PushOutbox,
-): Promise<ProcessedPushCommit> {
-  // The frame names its rows before the transaction opens, so the admission
-  // read carries the commit's read-ahead and the apply issues no separate
-  // prefetch statement.
-  const targets = new Map<string, string[]>();
-  for (const op of frame.operations) {
-    // A rowId holding U+0000 is rejected per operation (§6.1) before any
-    // store reads it.
-    if (!schema.tables.has(op.table) || op.rowId.includes('\u0000')) continue;
-    const ids = targets.get(op.table) ?? [];
-    ids.push(op.rowId);
-    targets.set(op.table, ids);
-  }
-  return processPushOperationsWithTrace(
-    ctx,
-    schema,
-    resolved,
-    clientId,
-    frame.clientCommitId,
-    async () => frame.operations,
-    wireSchema,
-    targets.size === 0
-      ? undefined
-      : [...targets].map(([table, rowIds]) => ({ table, rowIds })),
-    outbox,
-  );
-}
-
-/**
- * Shared serialized apply path for SSP2 commits and authoritative commands.
- * The builder runs after the partition lock and idempotency re-check, so its
- * reads and the returned operations share the transaction that is committed.
+ * The serialized apply of one commit outside an SSP2 request: an
+ * authoritative command or an erasure.
  */
 export async function processPushOperationsWithTrace(
   ctx: SyncRequestContext,
@@ -1881,18 +1825,41 @@ export async function processPushOperationsWithTrace(
   resolved: ResolvedScopes,
   clientId: string,
   clientCommitId: string,
-  buildOperations: (
-    tx: StorageTransaction,
-  ) => Promise<readonly ApplyOperation[]>,
+  buildOperations: PushRequestCommit['buildOperations'],
   wireSchema: CompiledSchema = schema,
-  prefetchTargets?: readonly {
-    readonly table: string;
-    readonly rowIds: readonly string[];
-  }[],
-  outbox?: PushOutbox,
 ): Promise<ProcessedPushCommit> {
+  const [processed] = await processPushCommitsWithTrace(
+    ctx,
+    schema,
+    resolved,
+    clientId,
+    [{ clientCommitId, buildOperations }],
+    wireSchema,
+  );
+  return processed!;
+}
+
+/**
+ * Apply one push request (§6.4): one storage transaction under one partition
+ * lock, one serve-gate and idempotency read for every commit, each commit
+ * inside its own savepoint in frame order. A commit's rejection rolls back
+ * only that commit; any other failure rolls back the whole request and
+ * throws. Reaction events and realtime notifications leave after the
+ * transaction commits, once per applied commit in `commitSeq` order.
+ *
+ * `outbox` lists every commit of the request in the same order as
+ * `commits`; it carries the §6.3.2 sequences and the §9 settlement.
+ */
+export async function processPushCommitsWithTrace(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  resolved: ResolvedScopes,
+  clientId: string,
+  commits: readonly PushRequestCommit[],
+  wireSchema: CompiledSchema = schema,
+  outbox?: OutboxSettlement,
+): Promise<ProcessedPushCommit[]> {
   const { partition } = ctx;
-  const createdAtMs = clockOf(ctx)();
   const blobCtx: BlobApplyContext = {
     store: ctx.blobs,
     partition,
@@ -1902,14 +1869,15 @@ export async function processPushOperationsWithTrace(
   const validators = ctx.validators;
   const commitValidator = ctx.commitValidator;
   const reactionPlanner = ctx.reactionPlanner;
+  const processed: ProcessedPushCommit[] = [];
+  const applied: {
+    readonly clientCommitId: string;
+    readonly commitSeq: number;
+    readonly createdAtMs: number;
+    readonly changes: readonly NewChange[];
+    readonly reactions: readonly NewReaction[];
+  }[] = [];
   const tx = await ctx.storage.begin(partition);
-  // §6.3.2: the settlement's writes commit whatever the commit's outcome.
-  const release = (): Promise<void> =>
-    outbox?.settlement !== undefined ? tx.commit() : tx.rollback();
-  const sequence =
-    outbox === undefined
-      ? undefined
-      : { outboxId: outbox.outboxId, clientSeq: outbox.clientSeq };
   try {
     if (reactionPlanner !== undefined && tx.enqueueReactions === undefined) {
       throw new Error(
@@ -1918,36 +1886,21 @@ export async function processPushOperationsWithTrace(
     }
     // The storage takes the partition lock and then reads the admission token
     // on the transaction's own connection: the RFC 0007 serve gate and the
-    // §2.3 idempotency record, plus any read-ahead the caller already knows.
-    // A racing duplicate's result commits before the lock releases, so the
-    // later read is exact and a duplicate never reruns an operation,
-    // validator, or merge.
-    let prepared: PreparedPushApply;
-    try {
-      prepared = await tx.preparePushApply(
-        clientId,
-        clientCommitId,
-        schema.version,
-        prefetchTargets,
-        outbox?.settlement,
-      );
-    } catch (error) {
-      if (
-        error instanceof SyncError &&
-        error.code === 'sync.idempotency_cache_miss'
-      ) {
-        // §6.3: answer the retryable cache-miss for this commit rather than
-        // re-applying. Not persisted — a retry may find a readable record.
-        await release();
-        return {
-          frame: idempotencyCacheMissFrame(clientCommitId, error),
-          replayed: false,
-        };
-      }
-      throw error;
-    }
+    // §2.3 idempotency record of every commit, plus any read-ahead the
+    // commits already name. A racing duplicate's result commits before the
+    // lock releases, so the later read is exact and a duplicate never reruns
+    // an operation, validator, or merge.
+    const prepared = await tx.preparePushApply(
+      clientId,
+      commits.map((commit) => ({
+        clientCommitId: commit.clientCommitId,
+        ...(commit.targets === undefined ? {} : { targets: commit.targets }),
+      })),
+      schema.version,
+      outbox,
+    );
     // RFC 0007: the gate is evaluated while the partition lock is held, so
-    // the migration check and the write share one transaction and no
+    // the migration check and the writes share one transaction and no
     // migration can interleave in between.
     const refusal = serveGateRefusal(
       prepared.gate,
@@ -1955,336 +1908,396 @@ export async function processPushOperationsWithTrace(
       ctx.checkpoints,
     );
     if (refusal !== undefined) {
-      await release();
+      // §6.3.2: the settlement commits whatever the request's outcome.
+      await tx.commit();
       throw serveNotReadyError(refusal);
     }
-    const watermark = prepared.watermark ?? outbox?.watermark;
-    if (prepared.persisted !== undefined) {
-      const conflict = prepared.persisted.results.find(
-        (result) => result.status === 'conflict',
-      );
-      const authorization = prepared.persisted.conflictAuthorization;
-      const table = authorization && schema.tables.get(authorization.table);
-      if (
-        conflict !== undefined &&
-        (authorization === undefined ||
-          authorization.schemaVersion !== schema.version ||
-          table === undefined ||
-          !authorizeWrite(table, authorization.scopes, resolved))
-      ) {
-        await release();
-        return processedPushCommit(
-          clientCommitId,
-          {
-            ...prepared.persisted,
-            results: [
-              {
-                opIndex: conflict.opIndex,
-                status: 'error',
-                code: 'sync.forbidden',
-                message: 'conflict replay denied by scope authorization (§3.4)',
-                retryable: false,
-              },
-            ],
-          },
-          true,
-          watermark,
-        );
-      }
-      await release();
-      return processedPushCommit(
-        clientCommitId,
-        prepared.persisted,
-        true,
-        watermark,
-      );
-    }
-    // §6.3.2 step 3: below the watermark without a retained result.
-    if (
-      outbox !== undefined &&
-      watermark !== undefined &&
-      outbox.clientSeq < watermark
-    ) {
-      await release();
-      return {
-        frame: commitExpiredFrame(clientCommitId),
-        replayed: false,
-        watermark,
-      };
-    }
-    const results: PushOperationResult[] = [];
-    const changes: NewChange[] = [];
-    const validatedOperations: ValidateCommitOperation[] = [];
-    const stagedWrites: StagedWrite[] = [];
-    let terminated: PushOperationResult | undefined;
-    const operations = await buildOperations(tx);
-    if (tx.prefetchRows !== undefined) {
-      const targets = new Map<string, string[]>();
-      for (const op of operations) {
-        if (!schema.tables.has(op.table) || op.rowId.includes('\u0000'))
-          continue;
-        const ids = targets.get(op.table) ?? [];
-        ids.push(op.rowId);
-        targets.set(op.table, ids);
-      }
-      if (targets.size > 0) {
-        await tx.prefetchRows(
-          [...targets].map(([table, rowIds]) => ({ table, rowIds })),
-        );
-      }
-    }
-    // §6.6: the blobIds the commit pushes are checked once, concurrently,
-    // before the operation loop. A payload that fails decode is skipped here
-    // and rejected by its operation.
-    const pushedBlobIds: string[] = [];
-    for (const op of operations) {
-      const table = schema.tables.get(op.table);
-      const wireTable = wireSchema.tables.get(op.table);
-      if (
-        op.payload === undefined ||
-        table === undefined ||
-        wireTable === undefined ||
-        table.blobRefColumnIndices.length === 0
-      ) {
-        continue;
-      }
-      let sparse: SparseRowValue[];
+    const watermark = prepared.watermark;
+    // §2.2: inserts start above the floor, which applied deletes raise.
+    let requestDeleteFloor = prepared.deleteFloor;
+    // §6.3: a clientCommitId repeated within the request replays the outcome
+    // its first occurrence recorded in this transaction.
+    const recorded = new Map<string, StoredPushResult>();
+    for (const [index, commit] of commits.entries()) {
+      const { clientCommitId } = commit;
+      const sequence =
+        outbox === undefined
+          ? undefined
+          : {
+              outboxId: outbox.outboxId,
+              clientSeq: outbox.commits[index]!.clientSeq,
+            };
+      let persisted: StoredPushResult | undefined;
       try {
-        sparse = decodeSparseRow(
-          wireTable.columns,
-          wireTable.primaryKeyIndex,
-          op.payload,
+        persisted =
+          recorded.get(clientCommitId) ?? prepared.persisted(clientCommitId);
+      } catch (error) {
+        if (
+          error instanceof SyncError &&
+          error.code === 'sync.idempotency_cache_miss'
+        ) {
+          // §6.3: answer the retryable cache-miss for this commit rather than
+          // re-applying. Not persisted: a retry may find a readable record.
+          processed.push({
+            frame: idempotencyCacheMissFrame(clientCommitId, error),
+            replayed: false,
+          });
+          continue;
+        }
+        throw error;
+      }
+      if (persisted !== undefined) {
+        const conflict = persisted.results.find(
+          (result) => result.status === 'conflict',
         );
-      } catch {
+        const authorization = persisted.conflictAuthorization;
+        const table = authorization && schema.tables.get(authorization.table);
+        processed.push(
+          processedPushCommit(
+            clientCommitId,
+            conflict !== undefined &&
+              (authorization === undefined ||
+                authorization.schemaVersion !== schema.version ||
+                table === undefined ||
+                !authorizeWrite(table, authorization.scopes, resolved))
+              ? {
+                  ...persisted,
+                  results: [
+                    {
+                      opIndex: conflict.opIndex,
+                      status: 'error',
+                      code: 'sync.forbidden',
+                      message:
+                        'conflict replay denied by scope authorization (§3.4)',
+                      retryable: false,
+                    },
+                  ],
+                }
+              : persisted,
+            true,
+          ),
+        );
         continue;
       }
-      for (const index of table.blobRefColumnIndices) {
-        const value = sparse[index];
-        if (typeof value === 'string') {
-          pushedBlobIds.push(parseBlobRef(value).blobId);
+      // §6.3.2 step 3: below the watermark without a retained result.
+      if (
+        sequence !== undefined &&
+        watermark !== undefined &&
+        sequence.clientSeq < watermark
+      ) {
+        processed.push({
+          frame: commitExpiredFrame(clientCommitId),
+          replayed: false,
+        });
+        continue;
+      }
+      const createdAtMs = clockOf(ctx)();
+      let stored: StoredPushResult;
+      try {
+        const results: PushOperationResult[] = [];
+        const changes: NewChange[] = [];
+        const validatedOperations: ValidateCommitOperation[] = [];
+        const stagedWrites: StagedWrite[] = [];
+        let terminated: PushOperationResult | undefined;
+        const operations = await commit.buildOperations(tx);
+        if (tx.prefetchRows !== undefined) {
+          const targets = new Map<string, string[]>();
+          for (const op of operations) {
+            if (!schema.tables.has(op.table) || op.rowId.includes('\u0000'))
+              continue;
+            const ids = targets.get(op.table) ?? [];
+            ids.push(op.rowId);
+            targets.set(op.table, ids);
+          }
+          if (targets.size > 0) {
+            await tx.prefetchRows(
+              [...targets].map(([table, rowIds]) => ({ table, rowIds })),
+            );
+          }
         }
-      }
-    }
-    await resolveBlobPresence(blobCtx, pushedBlobIds);
-    // §6.4: the row each touched (table, rowId) held before this commit, so a
-    // conflict reports the row as stored once the commit rolls back.
-    const storedBeforeCommit = new Map<string, StoredRow | undefined>();
-    // §2.2: inserts start above the floor, which this commit's deletes raise
-    // as they stage.
-    let deleteFloor = prepared.deleteFloor;
-    for (let opIndex = 0; opIndex < operations.length; opIndex++) {
-      const op = operations[opIndex];
-      if (op === undefined) continue;
-      const outcome = await applyOperation(
-        tx,
-        schema,
-        wireSchema,
-        resolved,
-        op,
-        opIndex,
-        blobCtx,
-        crdtMergers,
-        validators,
-        partition,
-        ctx.actorId,
-        ctx.context,
-        deleteFloor,
-      );
-      if (outcome.kind === 'terminate') {
-        terminated = outcome.record;
-        break;
-      }
-      for (const change of outcome.changes) {
-        if (change.op === 'delete') {
-          deleteFloor = Math.max(deleteFloor, change.rowVersion);
-        }
-      }
-      const rowKey = `${op.table}\u0000${op.rowId}`;
-      if (!storedBeforeCommit.has(rowKey)) {
-        storedBeforeCommit.set(rowKey, outcome.staged.stored);
-      }
-      results.push({ opIndex, status: 'applied' });
-      validatedOperations.push(...outcome.operations);
-      stagedWrites.push(outcome.staged);
-      changes.push(...outcome.changes);
-    }
-
-    // §6.11: reference enforcement runs after every client operation is
-    // staged (so the candidate state is final for the client's own writes)
-    // and before whole-commit validation.
-    let appendedOrigin: readonly number[] = [];
-    if (terminated === undefined) {
-      const referencePass = await enforceReferences(
-        tx,
-        schema,
-        resolved,
-        stagedWrites,
-        operations.length,
-        limitsOf(ctx).maxCascadeOperationsPerCommit,
-        validators,
-        partition,
-        ctx.actorId,
-        ctx.context,
-      );
-      if (referencePass.kind === 'terminate') {
-        terminated = referencePass.record;
-      } else {
-        changes.push(...referencePass.changes);
-        validatedOperations.push(...referencePass.operations);
-        appendedOrigin = referencePass.originByIndex;
-      }
-    }
-
-    if (terminated === undefined) {
-      const commitReject = await runCommitValidator(
-        commitValidator,
-        ctx.onError,
-        tx,
-        schema,
-        clientId,
-        clientCommitId,
-        ctx.actorId,
-        partition,
-        validatedOperations,
-        ctx.context,
-      );
-      if (commitReject?.kind === 'terminate') {
-        // An appended §6.11 cascade operation carries a synthetic opIndex;
-        // surface the originating client operation instead.
-        const rejected = commitReject.record;
-        terminated =
-          rejected.opIndex >= operations.length
-            ? {
-                ...rejected,
-                opIndex:
-                  appendedOrigin[rejected.opIndex - operations.length] ?? 0,
-              }
-            : rejected;
-      }
-    }
-
-    let preparedReactions: PreparedReaction[] = [];
-    if (terminated === undefined && reactionPlanner !== undefined) {
-      preparedReactions = await prepareReactions(reactionPlanner, {
-        clientId,
-        clientCommitId,
-        actorId: ctx.actorId,
-        partition,
-        operations: validatedOperations,
-        read: commitValidationReader(tx, schema),
-      });
-    }
-
-    if (terminated !== undefined) {
-      // §6.3 rejected: only the terminating operation's record; §6.4:
-      // every write of the commit rolls back.
-      const conflictOperation =
-        terminated.status === 'conflict'
-          ? operations[terminated.opIndex]
-          : undefined;
-      // §6.4: a conflict only arises in the operation loop, so a row no
-      // earlier operation touched still reads as stored before the commit.
-      const conflictKey =
-        conflictOperation === undefined
-          ? undefined
-          : `${conflictOperation.table}\u0000${conflictOperation.rowId}`;
-      const conflictRow =
-        conflictOperation === undefined || conflictKey === undefined
-          ? undefined
-          : storedBeforeCommit.has(conflictKey)
-            ? storedBeforeCommit.get(conflictKey)
-            : await tx.getRow(conflictOperation.table, conflictOperation.rowId);
-      if (terminated.status === 'conflict') {
-        terminated =
-          conflictRow === undefined
-            ? errorRecord(
-                terminated.opIndex,
-                'sync.row_missing',
-                'the conflicting row exists only through an earlier operation of the same commit (§6.4)',
-              ).record
-            : {
-                ...terminated,
-                serverVersion: conflictRow.serverVersion,
-                serverRow: conflictRow.payload,
-              };
-      }
-      const stored = newStoredPushResult(createdAtMs, {
-        status: 'rejected',
-        ...(terminated.status === 'conflict' &&
-        conflictOperation !== undefined &&
-        conflictRow !== undefined
-          ? {
-              conflictAuthorization: {
-                table: conflictOperation.table,
-                schemaVersion: schema.version,
-                scopes: conflictRow.scopes,
-              },
+        // §6.6: the blobIds the commit pushes are checked once, concurrently,
+        // before the operation loop. A payload that fails decode is skipped
+        // here and rejected by its operation.
+        const pushedBlobIds: string[] = [];
+        for (const op of operations) {
+          const table = schema.tables.get(op.table);
+          const wireTable = wireSchema.tables.get(op.table);
+          if (
+            op.payload === undefined ||
+            table === undefined ||
+            wireTable === undefined ||
+            table.blobRefColumnIndices.length === 0
+          ) {
+            continue;
+          }
+          let sparse: SparseRowValue[];
+          try {
+            sparse = decodeSparseRow(
+              wireTable.columns,
+              wireTable.primaryKeyIndex,
+              op.payload,
+            );
+          } catch {
+            continue;
+          }
+          for (const index of table.blobRefColumnIndices) {
+            const value = sparse[index];
+            if (typeof value === 'string') {
+              pushedBlobIds.push(parseBlobRef(value).blobId);
             }
-          : {}),
-        results: [terminated],
-      });
-      // Discard candidates and persist the rejection while retaining the same
-      // partition lock. There is no unlock gap in which a duplicate can rerun,
-      // and the finalization returns the canonical outcome it persisted.
-      const canonical = await tx.commitRejectedPushResult(
-        clientId,
-        clientCommitId,
-        stored,
-        sequence,
-      );
-      return processedPushCommit(
-        clientCommitId,
-        canonical,
-        canonical.cacheIdentity !== stored.cacheIdentity,
-        watermark,
-      );
-    }
+          }
+        }
+        await resolveBlobPresence(blobCtx, pushedBlobIds);
+        // §6.4: the row each touched (table, rowId) held before this commit,
+        // so a conflict reports the row as stored once the commit rolls back.
+        const storedBeforeCommit = new Map<string, StoredRow | undefined>();
+        // §2.2: this commit's deletes raise the floor as they stage.
+        let deleteFloor = requestDeleteFloor;
+        for (let opIndex = 0; opIndex < operations.length; opIndex++) {
+          const op = operations[opIndex];
+          if (op === undefined) continue;
+          const outcome = await applyOperation(
+            tx,
+            schema,
+            wireSchema,
+            resolved,
+            op,
+            opIndex,
+            blobCtx,
+            crdtMergers,
+            validators,
+            partition,
+            ctx.actorId,
+            ctx.context,
+            deleteFloor,
+          );
+          if (outcome.kind === 'terminate') {
+            terminated = outcome.record;
+            break;
+          }
+          for (const change of outcome.changes) {
+            if (change.op === 'delete') {
+              deleteFloor = Math.max(deleteFloor, change.rowVersion);
+            }
+          }
+          const rowKey = `${op.table}\u0000${op.rowId}`;
+          if (!storedBeforeCommit.has(rowKey)) {
+            storedBeforeCommit.set(rowKey, outcome.staged.stored);
+          }
+          results.push({ opIndex, status: 'applied' });
+          validatedOperations.push(...outcome.operations);
+          stagedWrites.push(outcome.staged);
+          changes.push(...outcome.changes);
+        }
 
-    const commitSeq = await tx.appendCommit({
-      clientId,
-      clientCommitId,
-      actorId: ctx.actorId,
-      createdAtMs,
-      changes,
-    });
-    const newReactions = toNewReactions(preparedReactions, {
-      clientId,
-      clientCommitId,
-      commitSeq,
-      createdAtMs,
-    });
-    if (newReactions.length > 0) {
-      const enqueueReactions = tx.enqueueReactions;
-      if (enqueueReactions === undefined) {
-        throw new Error('storage lost durable reaction enqueue support');
+        // §6.11: reference enforcement runs after every client operation is
+        // staged (so the candidate state is final for the client's own
+        // writes) and before whole-commit validation.
+        let appendedOrigin: readonly number[] = [];
+        if (terminated === undefined) {
+          const referencePass = await enforceReferences(
+            tx,
+            schema,
+            resolved,
+            stagedWrites,
+            operations.length,
+            limitsOf(ctx).maxCascadeOperationsPerCommit,
+            validators,
+            partition,
+            ctx.actorId,
+            ctx.context,
+          );
+          if (referencePass.kind === 'terminate') {
+            terminated = referencePass.record;
+          } else {
+            changes.push(...referencePass.changes);
+            validatedOperations.push(...referencePass.operations);
+            appendedOrigin = referencePass.originByIndex;
+          }
+        }
+
+        if (terminated === undefined) {
+          const commitReject = await runCommitValidator(
+            commitValidator,
+            ctx.onError,
+            tx,
+            schema,
+            clientId,
+            clientCommitId,
+            ctx.actorId,
+            partition,
+            validatedOperations,
+            ctx.context,
+          );
+          if (commitReject?.kind === 'terminate') {
+            // An appended §6.11 cascade operation carries a synthetic
+            // opIndex; surface the originating client operation instead.
+            const rejected = commitReject.record;
+            terminated =
+              rejected.opIndex >= operations.length
+                ? {
+                    ...rejected,
+                    opIndex:
+                      appendedOrigin[rejected.opIndex - operations.length] ?? 0,
+                  }
+                : rejected;
+          }
+        }
+
+        let preparedReactions: PreparedReaction[] = [];
+        if (terminated === undefined && reactionPlanner !== undefined) {
+          preparedReactions = await prepareReactions(reactionPlanner, {
+            clientId,
+            clientCommitId,
+            actorId: ctx.actorId,
+            partition,
+            operations: validatedOperations,
+            read: commitValidationReader(tx, schema),
+          });
+        }
+
+        if (terminated !== undefined) {
+          // §6.3 rejected: only the terminating operation's record; §6.4:
+          // every write of the commit rolls back.
+          const conflictOperation =
+            terminated.status === 'conflict'
+              ? operations[terminated.opIndex]
+              : undefined;
+          // §6.4: a conflict only arises in the operation loop, so a row no
+          // earlier operation touched still reads as stored before the commit.
+          const conflictKey =
+            conflictOperation === undefined
+              ? undefined
+              : `${conflictOperation.table}\u0000${conflictOperation.rowId}`;
+          const conflictRow =
+            conflictOperation === undefined || conflictKey === undefined
+              ? undefined
+              : storedBeforeCommit.has(conflictKey)
+                ? storedBeforeCommit.get(conflictKey)
+                : await tx.getRow(
+                    conflictOperation.table,
+                    conflictOperation.rowId,
+                  );
+          if (terminated.status === 'conflict') {
+            terminated =
+              conflictRow === undefined
+                ? errorRecord(
+                    terminated.opIndex,
+                    'sync.row_missing',
+                    'the conflicting row exists only through an earlier operation of the same commit (§6.4)',
+                  ).record
+                : {
+                    ...terminated,
+                    serverVersion: conflictRow.serverVersion,
+                    serverRow: conflictRow.payload,
+                  };
+          }
+          stored = newStoredPushResult(createdAtMs, {
+            status: 'rejected',
+            ...(terminated.status === 'conflict' &&
+            conflictOperation !== undefined &&
+            conflictRow !== undefined
+              ? {
+                  conflictAuthorization: {
+                    table: conflictOperation.table,
+                    schemaVersion: schema.version,
+                    scopes: conflictRow.scopes,
+                  },
+                }
+              : {}),
+            results: [terminated],
+          });
+        } else {
+          const commitSeq = await tx.appendCommit({
+            clientId,
+            clientCommitId,
+            actorId: ctx.actorId,
+            createdAtMs,
+            changes,
+          });
+          const reactions = toNewReactions(preparedReactions, {
+            clientId,
+            clientCommitId,
+            commitSeq,
+            createdAtMs,
+          });
+          if (reactions.length > 0) {
+            const enqueueReactions = tx.enqueueReactions;
+            if (enqueueReactions === undefined) {
+              throw new Error('storage lost durable reaction enqueue support');
+            }
+            await enqueueReactions.call(tx, reactions);
+          }
+          stored = newStoredPushResult(createdAtMs, {
+            status: 'applied',
+            commitSeq,
+            results,
+          });
+          // Closes the commit; D1 writes the commit's batch here.
+          await tx.putPushResult(clientId, clientCommitId, stored, sequence);
+          applied.push({
+            clientCommitId,
+            commitSeq,
+            createdAtMs,
+            changes,
+            reactions,
+          });
+          requestDeleteFloor = Math.max(
+            requestDeleteFloor,
+            commitDeleteFloor(changes),
+          );
+        }
+      } catch (error) {
+        if (!(error instanceof StorageConstraintError)) throw error;
+        stored = newStoredPushResult(createdAtMs, {
+          status: 'rejected',
+          results: [
+            {
+              opIndex: error.opIndex ?? 0,
+              status: 'error',
+              code: 'sync.constraint_violation',
+              message: 'write violates a relational constraint',
+              retryable: false,
+            },
+          ],
+        });
       }
-      await enqueueReactions.call(tx, newReactions);
+      if (stored.status === 'rejected') {
+        // Discard the commit's candidates and record the rejection while the
+        // partition lock is retained: no unlock gap lets a duplicate rerun.
+        await tx.rejectPushCommit(clientId, clientCommitId, stored, sequence);
+      }
+      recorded.set(clientCommitId, stored);
+      processed.push(processedPushCommit(clientCommitId, stored, false));
     }
-    const stored = newStoredPushResult(createdAtMs, {
-      status: 'applied',
-      commitSeq,
-      results,
-    });
-    await tx.putPushResult(clientId, clientCommitId, stored, sequence);
     await tx.commit();
+  } catch (error) {
+    try {
+      await tx.rollback();
+    } catch (rollbackError) {
+      retainRollbackFailure(error, rollbackError);
+    }
+    throw error;
+  }
+  for (const commit of applied) {
     if (ctx.events !== undefined) {
       const atMs = clockOf(ctx)();
-      for (const reaction of newReactions) {
+      for (const reaction of commit.reactions) {
         emitEvent(ctx.events, {
           type: 'reaction.queued',
           atMs,
           partition,
           actorId: ctx.actorId,
           clientId,
-          clientCommitId,
-          commitSeq,
+          clientCommitId: commit.clientCommitId,
+          commitSeq: commit.commitSeq,
           idempotencyKey: reaction.idempotencyKey,
           reactionType: reaction.type,
           version: reaction.version,
         });
       }
     }
-    if (ctx.realtime !== undefined && changes.length > 0) {
+    if (ctx.realtime !== undefined && commit.changes.length > 0) {
       // RFC 0007 fanout decision: the notification carries the durable commit
       // entry itself (this commit's `changes`), not a projection read or a pull
       // window, so fanning it out before the request's buffered read-verify can
@@ -2293,57 +2306,12 @@ export async function processPushOperationsWithTrace(
       // durable and replayable under its commit id. This is commit-entry
       // durability, not gate inheritance.
       await ctx.realtime.notifyCommit(partition, {
-        commitSeq,
-        createdAtMs,
+        commitSeq: commit.commitSeq,
+        createdAtMs: commit.createdAtMs,
         actorId: ctx.actorId,
-        changes,
+        changes: commit.changes,
       });
     }
-    return processedPushCommit(clientCommitId, stored, false, watermark);
-  } catch (error) {
-    if (error instanceof StorageConstraintError) {
-      const stored = newStoredPushResult(createdAtMs, {
-        status: 'rejected',
-        results: [
-          {
-            opIndex: error.opIndex ?? 0,
-            status: 'error',
-            code: 'sync.constraint_violation',
-            message: 'write violates a relational constraint',
-            retryable: false,
-          },
-        ],
-      });
-      try {
-        const canonical = await tx.commitRejectedPushResult(
-          clientId,
-          clientCommitId,
-          stored,
-          sequence,
-        );
-        return processedPushCommit(
-          clientCommitId,
-          canonical,
-          canonical.cacheIdentity !== stored.cacheIdentity,
-        );
-      } catch (finalizationError) {
-        // A failed finalization must still release the transaction: on
-        // SQLite an unreleased BEGIN wedges the storage's global begin()
-        // queue, on Postgres it leaks the pinned pool client. rollback() is
-        // a no-op when the finalization already committed.
-        try {
-          await tx.rollback();
-        } catch (rollbackError) {
-          retainRollbackFailure(finalizationError, rollbackError);
-        }
-        throw finalizationError;
-      }
-    }
-    try {
-      await tx.rollback();
-    } catch (rollbackError) {
-      retainRollbackFailure(error, rollbackError);
-    }
-    throw error;
   }
+  return processed;
 }

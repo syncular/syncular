@@ -81,15 +81,19 @@ export interface ServeGate {
 }
 
 /**
- * The push apply's admission token: the partition lock, the serve gate, and
- * the idempotency record read in one round trip. A storage with per-statement
- * network cost answers all three with one statement (see
+ * One push request's admission token (§6.4): the partition lock, the serve
+ * gate, and the idempotency records of every commit of the request. A storage
+ * with per-statement network cost reads them in one statement (see
  * `PostgresServerStorage`); the lock is held from this call through commit.
  */
 export interface PreparedPushApply {
   readonly gate: ServeGate;
-  /** The already-persisted outcome for this key, or `undefined` on a miss. */
-  readonly persisted: StoredPushResult | undefined;
+  /**
+   * The already-persisted outcome for one of the request's keys, or
+   * `undefined` on a miss. Throws `SyncError sync.idempotency_cache_miss`
+   * when the stored record is unreadable (§6.3).
+   */
+  readonly persisted: (clientCommitId: string) => StoredPushResult | undefined;
   /**
    * The partition's delete floor (§2.2): the highest version any applied
    * delete recorded, `0` before the first. An insert starts one above it.
@@ -102,6 +106,16 @@ export interface PreparedPushApply {
    * expired (`sync.commit_expired`); at or above `W` it was never seen.
    */
   readonly watermark?: number;
+}
+
+/** One commit of a push request, as `preparePushApply` admits it. */
+export interface PushApplyCommit {
+  readonly clientCommitId: string;
+  /** The rows the commit is known to touch before its operations are built. */
+  readonly targets?: readonly {
+    readonly table: string;
+    readonly rowIds: readonly string[];
+  }[];
 }
 
 /** The outbox position of one pushed commit (§6.3.2). */
@@ -775,46 +789,41 @@ export interface StorageTransaction {
   lockPartition?(): Promise<void>;
   /**
    * Serialize every push apply for this partition before any operation read,
-   * validation, merge, or write, and read the admission token in the same
-   * round trip: the RFC 0007 serve gate and the §2.3 idempotency record for
-   * `clientCommitId`. The lock is retained through terminal-result commit,
-   * so the idempotency read is exact and a racing duplicate cannot rerun.
-   * `targets` are the rows the commit is known to touch before its operations
-   * are built; a storage with per-statement network cost folds that read-ahead
-   * into the admission read and answers the following `getRow` calls from it.
-   * Missing support fails closed before an app-row mutation.
+   * validation, merge, or write, and read the admission token once for the
+   * whole request (§6.4): the RFC 0007 serve gate and the §2.3 idempotency
+   * record of every commit in `commits`. The lock is retained until the
+   * transaction finishes, so the idempotency read is exact and a racing
+   * duplicate cannot rerun. A commit's `targets` are the rows it is known to
+   * touch before its operations are built; a storage with per-statement
+   * network cost folds that read-ahead into the admission read and answers
+   * the following `getRow` calls from it. Missing support fails closed
+   * before an app-row mutation.
    *
-   * `outbox`, passed with the first commit of a request that carries an
-   * `outboxId`, settles the client's results stored before wire version 4
-   * (§9) and runs §6.3.2 steps 1 and 2 under the same lock, before the read
-   * of `persisted`. Those writes survive `commitRejectedPushResult`; the
-   * caller commits this transaction whatever the commit's outcome, so the
-   * settlement runs exactly once per request.
+   * `outbox`, passed when the request carries an `outboxId`, settles the
+   * client's results stored before wire version 4 (§9) and runs §6.3.2 steps
+   * 1 and 2 under the same lock, before the read of `persisted`. Those
+   * writes precede every commit's savepoint, so no rejection discards them.
    */
   preparePushApply(
     clientId: string,
-    clientCommitId: string,
+    commits: readonly PushApplyCommit[],
     runningSchemaVersion: number,
-    targets?: readonly {
-      readonly table: string;
-      readonly rowIds: readonly string[];
-    }[],
     outbox?: OutboxSettlement,
   ): Promise<PreparedPushApply>;
   /**
-   * Rejection finalization while the push-apply serialization lock is still
-   * held: discard every candidate write, persist the rejected idempotency
-   * result, and finish the transaction atomically. Returns the persisted
-   * canonical outcome, so the caller never re-reads it. Required for every
-   * push so a concurrent duplicate cannot rerun operations, validators, or
-   * merges.
+   * Reject the request's current commit while the push-apply serialization
+   * lock is still held: discard every candidate write the commit staged since
+   * the previous commit closed (its savepoint), keep the request's earlier
+   * commits, and record the rejected idempotency result. Like
+   * `putPushResult`, it closes the commit; the transaction stays open for the
+   * request's next commit.
    */
-  commitRejectedPushResult(
+  rejectPushCommit(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
     sequence?: OutboxSequence,
-  ): Promise<StoredPushResult>;
+  ): Promise<void>;
   upsertRow(
     table: string,
     row: StoredRow,
@@ -834,6 +843,12 @@ export interface StorageTransaction {
    * first writer wins; callers read the canonical value after commit. A
    * result without `sequence` (no `outboxId`, §6.10, §12.3) is never deleted
    * by a watermark.
+   *
+   * The call closes the request's current push commit: the next write opens
+   * the next commit's savepoint. PostgreSQL writes the request's results as
+   * one statement at `commit()`. D1, whose transaction cannot read its own
+   * staged writes across commits, flushes the commit's writes and this
+   * result as one atomic batch here (§6.4).
    */
   putPushResult(
     clientId: string,

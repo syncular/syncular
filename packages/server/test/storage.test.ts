@@ -175,7 +175,11 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
       expect(await entries()).toEqual(before);
       for (const rejected of [false, true]) {
         const tx = await storage.begin('part');
-        await tx.preparePushApply('test-client', 'test-commit', 1);
+        await tx.preparePushApply(
+          'test-client',
+          [{ clientCommitId: 'test-commit' }],
+          1,
+        );
         await tx.upsertRow('docs', row('shared', 'rejected', 'rejected'));
         await tx.deleteRow('docs', 'sibling');
         if (rejected) {
@@ -185,7 +189,7 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
               payload: new Uint8Array([255]),
             }),
           ).rejects.toThrow();
-          await tx.commitRejectedPushResult?.('client', 'bad-row', {
+          await tx.rejectPushCommit('client', 'bad-row', {
             status: 'rejected',
             results: [
               {
@@ -197,6 +201,7 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
               },
             ],
           });
+          await tx.commit();
         } else await tx.rollback();
         expect(await entries()).toEqual(before);
         expect(
@@ -302,9 +307,10 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
       ['quiet', 0],
     ] as const) {
       const tx = await storage.begin(partition);
-      expect((await tx.preparePushApply('c', 'probe', 1)).deleteFloor).toBe(
-        floor,
-      );
+      expect(
+        (await tx.preparePushApply('c', [{ clientCommitId: 'probe' }], 1))
+          .deleteFloor,
+      ).toBe(floor);
       await tx.rollback();
     }
   });
@@ -424,7 +430,7 @@ test('SQLite authority reads and commands serialize with revocation', async () =
   try {
     await revoke.preparePushApply(
       'revoker',
-      'revoke-1',
+      [{ clientCommitId: 'revoke-1' }],
       CONTRACT_SCHEMA.version,
     );
     await revoke.upsertRow('tasks', row('membership', 0));
@@ -471,7 +477,7 @@ test('SQLite authority reads and commands serialize with revocation', async () =
         try {
           await writer.preparePushApply(
             'revoker',
-            'revoke-2',
+            [{ clientCommitId: 'revoke-2' }],
             CONTRACT_SCHEMA.version,
           );
           await writer.upsertRow('tasks', row('membership', 0));
@@ -794,14 +800,20 @@ for (const backend of [
         await migrated.storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
       }
       const tx = await migrated.storage.begin('part');
-      const prepared = await tx.preparePushApply('c1', 'k1', 1, [], {
-        outboxId: 'o1',
-        commits: [{ clientCommitId: 'k1', clientSeq: 3 }],
-      });
+      const prepared = await tx.preparePushApply(
+        'c1',
+        [{ clientCommitId: 'k1' }],
+        1,
+        {
+          outboxId: 'o1',
+          commits: [{ clientCommitId: 'k1', clientSeq: 3 }],
+        },
+      );
       await tx.commit();
-      expect(prepared).toMatchObject({
-        watermark: 3,
-        persisted: { status: 'applied', commitSeq: 1 },
+      expect(prepared.watermark).toBe(3);
+      expect(prepared.persisted('k1')).toMatchObject({
+        status: 'applied',
+        commitSeq: 1,
       });
       // §9: the horizon starts at the last commit before the upgrade, so a
       // cursor into that history is reset instead of reaching the delete
@@ -915,7 +927,7 @@ test('D1 push apply fails closed without external serialization', async () => {
   await prepareD1(storage);
   const tx = await storage.begin('partition');
   await expect(
-    tx.preparePushApply('test-client', 'test-commit', 1),
+    tx.preparePushApply('test-client', [{ clientCommitId: 'test-commit' }], 1),
   ).rejects.toThrow('requires externally serialized partition writes');
   await tx.rollback();
   await expect(
@@ -1035,7 +1047,11 @@ test('Postgres partition locking initializes once and survives an initial rollba
       statements.length = 0;
       const tx = await storage.begin('lock-partition');
       try {
-        await tx.preparePushApply('test-client', 'test-commit', 1);
+        await tx.preparePushApply(
+          'test-client',
+          [{ clientCommitId: 'test-commit' }],
+          1,
+        );
         const initialization = statements.filter((sql) =>
           sql.includes('INSERT INTO sync_partitions'),
         );
@@ -1431,7 +1447,7 @@ test('D1: a batch-commit constraint attributes the opIndex only when it is unamb
   // Several buffered application ops: the violating one is unknowable from
   // the batch error, so the rejection omits the opIndex.
   const ambiguous = await storage.begin('partition');
-  await ambiguous.preparePushApply('c', 'ambiguous', 1);
+  await ambiguous.preparePushApply('c', [{ clientCommitId: 'ambiguous' }], 1);
   await ambiguous.upsertRow('tasks', taskRow('t-0'), { opIndex: 0 });
   await ambiguous.upsertRow('tasks', taskRow('t-2'), { opIndex: 2 });
   db.failNextBatch = true;
@@ -1445,7 +1461,7 @@ test('D1: a batch-commit constraint attributes the opIndex only when it is unamb
 
   // One buffered application op: the attribution is exact.
   const exact = await storage.begin('partition');
-  await exact.preparePushApply('c', 'exact', 1);
+  await exact.preparePushApply('c', [{ clientCommitId: 'exact' }], 1);
   await exact.upsertRow('tasks', taskRow('t-solo'), { opIndex: 3 });
   db.failNextBatch = true;
   const exactError = await exact.commit().then(

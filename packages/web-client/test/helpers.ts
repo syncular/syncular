@@ -41,6 +41,7 @@ import {
   type ServerSchema,
   type ServerStorage,
   SqliteServerStorage,
+  type StorageTransaction,
   SyncError,
   type SyncRequestContext,
   type ValidatorRegistry,
@@ -132,15 +133,23 @@ function wrapStorage(
           return new Proxy(tx, {
             get(inner, name) {
               if (name === 'preparePushApply') {
-                return async (...args: [string, string, number]) => {
-                  if (faults.cacheMissOnce) {
-                    faults.cacheMissOnce = false;
-                    throw new SyncError(
-                      'sync.idempotency_cache_miss',
-                      'simulated unreadable idempotency record',
-                    );
-                  }
-                  return inner.preparePushApply(...args);
+                return async (
+                  ...args: Parameters<StorageTransaction['preparePushApply']>
+                ) => {
+                  const prepared = await inner.preparePushApply(...args);
+                  return {
+                    ...prepared,
+                    persisted: (clientCommitId: string) => {
+                      if (faults.cacheMissOnce) {
+                        faults.cacheMissOnce = false;
+                        throw new SyncError(
+                          'sync.idempotency_cache_miss',
+                          'simulated unreadable idempotency record',
+                        );
+                      }
+                      return prepared.persisted(clientCommitId);
+                    },
+                  };
                 };
               }
               const value = Reflect.get(inner, name, inner);

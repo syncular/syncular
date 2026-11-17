@@ -61,7 +61,7 @@ import {
   planUnit,
   type UnitPlan,
 } from './pull';
-import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
+import { type ProcessedPushCommit, processPushCommitsWithTrace } from './push';
 import { serveNotReadyError } from './readiness';
 import type { CompiledSchema, CompiledTable } from './schema';
 import { compileSchema } from './schema';
@@ -621,39 +621,61 @@ async function* streamResponse(
   }
   const { clientId, outboxId } = plan.header;
   try {
-    // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order.
+    // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order,
+    // sent after the request's one transaction commits (§6.4).
     const currentSchema = compileSchema(ctx.schema);
     let acceptedThrough = 0;
-    // §6.3.2: the request's first commit settles the outbox and reads `W`.
-    let watermark = 0;
-    for (const [index, push] of plan.pushes.entries()) {
-      const processed = await processPushCommitWithTrace(
-        ctx,
-        currentSchema,
-        plan.resolved,
-        clientId,
-        push,
-        schema,
-        outboxId === undefined
-          ? undefined
-          : {
-              outboxId,
-              clientSeq: push.clientSeq,
-              watermark,
-              ...(index === 0
-                ? {
-                    settlement: {
-                      outboxId,
-                      commits: plan.pushes.map((commit) => ({
-                        clientCommitId: commit.clientCommitId,
-                        clientSeq: commit.clientSeq,
+    const pushed =
+      plan.pushes.length === 0
+        ? []
+        : await processPushCommitsWithTrace(
+            ctx,
+            currentSchema,
+            plan.resolved,
+            clientId,
+            plan.pushes.map((push) => {
+              // The frame names its rows before the transaction opens, so the
+              // admission read carries the commit's read-ahead. A rowId
+              // holding U+0000 is rejected per operation (§6.1) before any
+              // store reads it.
+              const targets = new Map<string, string[]>();
+              for (const op of push.operations) {
+                if (
+                  !currentSchema.tables.has(op.table) ||
+                  op.rowId.includes('\u0000')
+                ) {
+                  continue;
+                }
+                const ids = targets.get(op.table) ?? [];
+                ids.push(op.rowId);
+                targets.set(op.table, ids);
+              }
+              return {
+                clientCommitId: push.clientCommitId,
+                buildOperations: async () => push.operations,
+                ...(targets.size === 0
+                  ? {}
+                  : {
+                      targets: [...targets].map(([table, rowIds]) => ({
+                        table,
+                        rowIds,
                       })),
-                    },
-                  }
-                : {}),
-            },
-      );
-      watermark = processed.watermark ?? watermark;
+                    }),
+              };
+            }),
+            schema,
+            outboxId === undefined
+              ? undefined
+              : {
+                  outboxId,
+                  commits: plan.pushes.map((commit) => ({
+                    clientCommitId: commit.clientCommitId,
+                    clientSeq: commit.clientSeq,
+                  })),
+                },
+          );
+    for (const [index, push] of plan.pushes.entries()) {
+      const processed = pushed[index]!;
       acceptedThrough = Math.max(
         acceptedThrough,
         processed.frame.commitSeq ?? 0,

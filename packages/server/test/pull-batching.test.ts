@@ -409,19 +409,20 @@ describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     expect(
       large.message.frames.filter((frame) => frame.type === 'SUB_START'),
     ).toHaveLength(68);
-    // Each PUSH_COMMIT is its own atomic transaction (§6.4); the pull half
+    // The request's PUSH_COMMITs share one transaction (§6.4); the pull half
     // of the round opens none and its statements do not depend on the
     // subscription count.
-    expect(small.counts.transactions).toBe(10);
-    expect(large.counts.transactions).toBe(10);
+    expect(small.counts.transactions).toBe(1);
+    expect(large.counts.transactions).toBe(1);
     expect(large.counts.statements).toBe(small.counts.statements);
-    // Per commit: 7 fixed statements (partition lock, the admission read
-    // carrying the serve gate, the idempotency record, and the read-ahead
-    // of both tables, savepoint, one write per table, the combined
-    // allocation + change log, push result); the pull half adds 11 for the
-    // round (the snapshot pages of both tables share one statement, and the
-    // completed bootstraps join the live section's read, §4.5).
-    expect(large.counts.statements).toBe(10 * 7 + 11);
+    // Once per request: the partition lock, the admission read (the serve
+    // gate, every idempotency record, and the read-ahead of every commit's
+    // rows) and the insert of all results. Per commit: the savepoint, one
+    // write per table, and the combined allocation + change log. The pull
+    // half adds 11 for the round (the snapshot pages of both tables share
+    // one statement, and the completed bootstraps join the live section's
+    // read, §4.5).
+    expect(large.counts.statements).toBe(3 + 10 * 4 + 11);
   }, 60_000);
 });
 

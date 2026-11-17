@@ -136,4 +136,4 @@ Consecutive `applied` or `cached` acknowledgements commit in one local transacti
 - A rejected result ends the run and keeps its own rollback and conflict-publication boundary.
 - Other frames also end the run, and a run never crosses a response boundary.
 - If a local write or commit fails, every acknowledgement in that run rolls back. A later response error keeps earlier completed runs.
-- Server transactions and their realtime notifications still run per commit.
+- The server applies a push request in one transaction with a savepoint per commit and sends realtime notifications per applied commit after it commits ([Storage reference](/server-storage-reference/#push-path)).

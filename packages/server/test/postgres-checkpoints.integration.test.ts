@@ -179,7 +179,11 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     // Connection 1 holds the partition lock in an open source-write
     // transaction: the source mutation is appended but not yet committed.
     const tx = await storage.begin(partition);
-    await tx.preparePushApply('test-client', 'test-commit', 1);
+    await tx.preparePushApply(
+      'test-client',
+      [{ clientCommitId: 'test-commit' }],
+      1,
+    );
     await tx.appendCommit({
       clientId: 'current',
       clientCommitId: 'current-11',
@@ -235,7 +239,11 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     // Create the partition row so the activation transaction locks it on its
     // first statement (no source change, so the coverage check stays clean).
     const seed = await storage.begin(partition);
-    await seed.preparePushApply('seed-client', 'seed-commit', 1);
+    await seed.preparePushApply(
+      'seed-client',
+      [{ clientCommitId: 'seed-commit' }],
+      1,
+    );
     await seed.commit();
     await storage.declareCheckpoint(
       partition,
@@ -369,7 +377,11 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     await seed.commit();
 
     const revoke = await storage.begin(partition);
-    await revoke.preparePushApply('revoker', 'revoke-1', SCHEMA.version);
+    await revoke.preparePushApply(
+      'revoker',
+      [{ clientCommitId: 'revoke-1' }],
+      SCHEMA.version,
+    );
     await revoke.upsertRow('tasks', row('membership', 'revoked'));
     const pendingRead = (async () => {
       const reader = await storage.begin(partition);
@@ -405,7 +417,11 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     const pendingRevoke = (async () => {
       const writer = await storage.begin(partition);
       try {
-        await writer.preparePushApply('revoker', 'revoke-2', SCHEMA.version);
+        await writer.preparePushApply(
+          'revoker',
+          [{ clientCommitId: 'revoke-2' }],
+          SCHEMA.version,
+        );
         await writer.upsertRow('tasks', row('membership', 'revoked'));
         await writer.commit();
       } finally {
