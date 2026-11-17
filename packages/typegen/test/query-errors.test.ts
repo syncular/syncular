@@ -497,7 +497,7 @@ describe('column fidelity', () => {
   test('requires a public alias for the hidden physical name', () => {
     expect(() =>
       analyze('q.sql', 'SELECT id, _sync_version FROM todos'),
-    ).toThrow(/explicitly aliased/);
+    ).toThrow(/alias it to a name without the prefix/);
   });
   test('the hidden version remains absent from star projections', () => {
     const q = analyze('q.sql', 'SELECT * FROM todos');

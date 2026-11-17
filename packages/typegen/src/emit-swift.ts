@@ -16,6 +16,7 @@
  */
 import {
   appColumnType,
+  readNullable,
   type IrColumnType,
   type IrDocument,
   type IrSubscription,
@@ -71,7 +72,7 @@ function emitStruct(table: IrTable): string[] {
   lines.push(`public struct ${type}: Sendable, Equatable {`);
   for (const column of table.columns) {
     const swift = SWIFT_TYPE[appColumnType(column)];
-    const opt = column.nullable ? '?' : '';
+    const opt = readNullable(column) ? '?' : '';
     lines.push(`    public let ${snakeToCamel(column.name)}: ${swift}${opt}`);
   }
   lines.push('');
@@ -79,7 +80,7 @@ function emitStruct(table: IrTable): string[] {
   const params = table.columns
     .map((c) => {
       const swift = SWIFT_TYPE[appColumnType(c)];
-      const opt = c.nullable ? '? = nil' : '';
+      const opt = readNullable(c) ? '? = nil' : '';
       return `${snakeToCamel(c.name)}: ${swift}${opt}`;
     })
     .join(', ');
@@ -100,7 +101,7 @@ function emitStruct(table: IrTable): string[] {
   for (const column of table.columns) {
     const name = snakeToCamel(column.name);
     const accessor = rowAccessor(column);
-    if (column.nullable) {
+    if (readNullable(column)) {
       lines.push(`        self.${name} = ${accessor}`);
     } else {
       lines.push(`        guard let ${name} = ${accessor} else { return nil }`);

@@ -1,0 +1,212 @@
+{
+  "queryIrVersion": 4,
+  "queries": [
+    {
+      "name": "clinicPatients",
+      "file": "clinic-patients.sql",
+      "sourceSql": "-- A sealed row reads NULL in given_names; the aliased marker names its key.\nSELECT p.id, p.given_names, p.ward, p._sync_sealed_key AS sealed_key\nFROM patients AS p\nWHERE p.clinic_id = :clinicId\nORDER BY p.id",
+      "sql": "-- A sealed row reads NULL in given_names; the aliased marker names its key.\nSELECT p.id, p.given_names AS \"givenNames\", p.ward, p._sync_sealed_key AS \"sealedKey\" FROM patients AS p\nWHERE p.clinic_id = :clinicId\nORDER BY p.id",
+      "positionalSql": "SELECT p.id, p.given_names AS \"givenNames\", p.ward, p._sync_sealed_key AS \"sealedKey\" FROM patients AS p WHERE p.clinic_id = ? ORDER BY p.id",
+      "relations": [
+        {
+          "table": "patients",
+          "start": 91,
+          "end": 99,
+          "alias": "p"
+        }
+      ],
+      "params": [
+        {
+          "name": "clinicId",
+          "langName": "clinicId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "id"
+          }
+        },
+        {
+          "name": "given_names",
+          "langName": "givenNames",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "given_names"
+          }
+        },
+        {
+          "name": "ward",
+          "langName": "ward",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "ward"
+          }
+        },
+        {
+          "name": "sealed_key",
+          "langName": "sealedKey",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "patients"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "patients",
+            "scopes": [
+              {
+                "variable": "clinic_id",
+                "pattern": "clinic:{clinic_id}",
+                "params": [
+                  "clinicId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "patients",
+            "variable": "clinic_id",
+            "units": [
+              "clinicId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "readablePatients",
+      "file": "readable-patients.syql",
+      "sourceSql": "select patients.id, patients.given_names AS \"givenNames\" from patients\n  where patients.clinic_id = :clinicId and patients._sync_sealed_key is null\n  order by patients.id",
+      "sql": "select patients.id, patients.given_names AS \"givenNames\" from patients\n  where patients.clinic_id = :clinicId and patients._sync_sealed_key is null\n  order by patients.id",
+      "positionalSql": "select patients.id, patients.given_names AS \"givenNames\" from patients where patients.clinic_id = ? and patients._sync_sealed_key is null order by patients.id",
+      "relations": [
+        {
+          "table": "patients",
+          "start": 62,
+          "end": 70
+        }
+      ],
+      "params": [
+        {
+          "name": "clinicId",
+          "langName": "clinicId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "id"
+          }
+        },
+        {
+          "name": "given_names",
+          "langName": "givenNames",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "given_names"
+          }
+        }
+      ],
+      "tables": [
+        "patients"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "patients",
+            "scopes": [
+              {
+                "variable": "clinic_id",
+                "pattern": "clinic:{clinic_id}",
+                "params": [
+                  "clinicId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "clinicId",
+            "langName": "clinicId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select patients.id, patients.given_names AS \"givenNames\" from patients\n  where patients.clinic_id = :clinicId and patients._sync_sealed_key is null\n  order by patients.id",
+              "positionalSql": "select patients.id, patients.given_names AS \"givenNames\" from patients where patients.clinic_id = ? and patients._sync_sealed_key is null order by patients.id",
+              "relations": [
+                {
+                  "table": "patients",
+                  "start": 62,
+                  "end": 70
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "clinicId",
+                  "type": "string",
+                  "input": "clinicId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "id"
+        ]
+      }
+    }
+  ]
+}

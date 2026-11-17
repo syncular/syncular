@@ -96,6 +96,9 @@ const DECLTYPE_MAP: Readonly<Record<string, IrColumnType>> = {
 
 /** Local client protocol column; query-only and never part of schema IR. */
 const SYNC_VERSION_COLUMN = '_sync_version';
+/** §5.11 sealed-apply marker: the missing key id of a sealed row, NULL on an
+ * unsealed one. Present only on a table with an encrypted column. */
+const SEALED_KEY_COLUMN = '_sync_sealed_key';
 /** Stable private identity shared by every declared local FTS5 projection. */
 const FTS_SOURCE_ID_COLUMN = '_syncular_source_id';
 
@@ -1440,22 +1443,27 @@ function resolveSource(
   return matches.length === 1 ? (matches[0] as ResolvedSource) : null;
 }
 
-/** Resolve the one supported query-only protocol column. SQLite still proves
- * qualifier/ambiguity against the synthesized local tables. */
-function syncVersionSourceNullability(
+/** Resolve the query-only protocol columns: `_sync_version` and the
+ * §5.11 `_sync_sealed_key` marker. SQLite still proves qualifier/ambiguity
+ * against the synthesized local tables. */
+function protocolColumnSource(
   item: SelectItem,
   refs: readonly TableRef[],
-): boolean | null {
+): { readonly type: IrColumnType; readonly nullable: boolean } | null {
   const match = PLAIN_REF_RE.exec(item.expr);
+  if (match?.[2] === SEALED_KEY_COLUMN)
+    return { type: 'string', nullable: true };
   if (match === null || match[2] !== SYNC_VERSION_COLUMN) return null;
   const qualifier = match[1];
-  if (qualifier === undefined) {
-    return refs.length === 1 ? (refs[0]?.nullable ?? null) : null;
-  }
-  const matches = refs.filter(
-    (ref) => ref.alias.toLowerCase() === qualifier.toLowerCase(),
-  );
-  return matches.length === 1 ? (matches[0]?.nullable ?? null) : null;
+  const matches =
+    qualifier === undefined
+      ? refs
+      : refs.filter(
+          (ref) => ref.alias.toLowerCase() === qualifier.toLowerCase(),
+        );
+  return matches.length === 1 && matches[0] !== undefined
+    ? { type: 'integer', nullable: matches[0].nullable }
+    : null;
 }
 
 // -- param type inference -----------------------------------------------------
@@ -1726,6 +1734,9 @@ export function synthesizeDdl(ir: IrDocument): string {
     // token. It is absent from IR mutation types but may be explicitly aliased
     // by a named read query for optimistic concurrency.
     cols.push(`  ${SYNC_VERSION_COLUMN} INTEGER NOT NULL DEFAULT -1`);
+    if (table.columns.some((column) => column.encrypted === true)) {
+      cols.push(`  ${SEALED_KEY_COLUMN} TEXT`);
+    }
     lines.push(`CREATE TABLE ${table.name} (\n${cols.join(',\n')}\n);`);
     // Create the declared indexes too — harmless for prepare()/decltype, and
     // keeps the type-check DB's shape honest with what the client materializes.
@@ -2006,6 +2017,17 @@ export function analyzeStatement(
       return db.analyze(candidate);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.startsWith('no such column:') &&
+        message.endsWith(SEALED_KEY_COLUMN)
+      ) {
+        throw new TypegenError(
+          file,
+          `${SEALED_KEY_COLUMN} exists only on a table with an encrypted column (SPEC §5.11)`,
+          'typegen.sealed_key_unencrypted',
+          { query: name },
+        );
+      }
       throw new TypegenError(file, `SQL rejected by SQLite: ${message}`);
     }
   };
@@ -2147,7 +2169,12 @@ export function analyzeStatement(
               ),
               ir,
             );
-      return source === null || source.column.nullable || source.nullableByJoin;
+      return (
+        source === null ||
+        source.column.nullable ||
+        source.column.encrypted === true ||
+        source.nullableByJoin
+      );
     });
   const columns: QueryColumn[] = described.columnNames.map((colName, index) => {
     const decl = described.declaredTypes[index];
@@ -2155,33 +2182,42 @@ export function analyzeStatement(
     const source = item !== undefined ? resolveInScope(item, 'main') : null;
     const sqlName = sqlNames[index] ?? colName;
     const langName = langNames[index] ?? colName;
-    const syncVersionNullable =
-      item !== undefined ? syncVersionSourceNullability(item, refs) : null;
-    if (syncVersionNullable !== null) {
-      if (sqlName === SYNC_VERSION_COLUMN) {
-        throw new TypegenError(
-          file,
-          `${SYNC_VERSION_COLUMN} is stripped from app-facing query rows unless explicitly aliased (for example \`${SYNC_VERSION_COLUMN} AS server_version\`)`,
-        );
-      }
+    // Clients strip every `_sync_` result key from query rows (§7.5).
+    if (
+      sqlName.toLowerCase().startsWith('_sync_') ||
+      langName.toLowerCase().startsWith('_sync_')
+    ) {
+      throw new TypegenError(
+        file,
+        'a result column named with the _sync_ prefix is stripped from query rows; alias it to a name without the prefix (for example `_sync_version AS server_version`)',
+        'typegen.reserved_result_column',
+        { query: name, column: sqlName },
+      );
+    }
+    const protocol =
+      item !== undefined ? protocolColumnSource(item, refs) : null;
+    if (protocol !== null) {
       return {
         name: sqlName,
         langName,
-        type: 'integer',
-        nullable: syncVersionNullable || branchNullable(index),
+        type: protocol.type,
+        nullable: protocol.nullable || branchNullable(index),
         fidelity: 'exact',
       };
     }
     if (source !== null) {
       // Exact: app-facing queries read the decrypted local mirror. Encrypted
       // columns therefore expose their pre-wire declaredType, while the schema
-      // IR and mutation codec continue to carry the bytes wire type.
+      // IR and mutation codec continue to carry the bytes wire type. A sealed
+      // row (§5.11) holds NULL in every encrypted column, so an encrypted
+      // column reads nullable whatever its declared nullability.
       return {
         name: sqlName,
         langName,
         type: applicationColumnType(source.column),
         nullable:
           source.column.nullable ||
+          source.column.encrypted === true ||
           source.nullableByJoin ||
           branchNullable(index),
         fidelity: 'exact',

@@ -1039,6 +1039,18 @@ class Validator {
     if (noColumn !== null) {
       const first = noColumn[1] as string;
       const second = noColumn[2];
+      if ((second ?? first) === '_sync_sealed_key') {
+        return {
+          span:
+            this.#sqlSubjectSpan(
+              logical,
+              second === undefined ? first : `${first}.${second}`,
+              'column',
+            ) ?? fallback,
+          message:
+            '`_sync_sealed_key` exists only on a table with an encrypted column (SPEC §5.11)',
+        };
+      }
       if (second !== undefined) {
         const qualifier = first;
         const ref = refs.find(

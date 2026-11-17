@@ -282,6 +282,12 @@ from `select *`, so applications cannot accidentally write engine-owned state.
 Use a positive observed value as the mutation `baseVersion`; omit it for a
 local row that has not yet received a server version.
 
+A table with an [encrypted column](/concepts-encryption/) also carries
+`_sync_sealed_key`, the missing key id of a sealed row. Project it with an
+alias (`_sync_sealed_key as sealed_key`) to get a nullable string, or filter
+with `where patients._sync_sealed_key is null` to read only rows the device can
+decrypt.
+
 ## Sort and limit
 
 Dynamic sorting is a closed enum of named profiles; every runtime sort

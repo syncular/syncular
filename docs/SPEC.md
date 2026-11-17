@@ -3967,6 +3967,9 @@ sealed row fail at once with `client.encryption_key_missing` and the details
 otherwise send NULL over ciphertext the device cannot see. The local mirror
 declares encrypted columns nullable; a replica created with `NOT NULL`
 encrypted columns or without the reserved columns is rebuilt once at open.
+Generated read types (table rows, query results) type every encrypted column
+nullable for the same reason, and generated write shapes keep its declared
+nullability (SYQL.md §14.1, §14.6).
 
 **Nonce discipline.** The 12-byte nonce **MUST** be from a cryptographically
 secure RNG on every production encrypt (never reused with the same key —

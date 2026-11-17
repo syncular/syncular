@@ -115,6 +115,15 @@ as nullable: SQLite returns one row with `NULL` in that column when no row
 matches. A column of a compound `SELECT` (`UNION`, `INTERSECT`, `EXCEPT`) is
 nullable when any branch can yield `NULL` there.
 
+An [encrypted column](/concepts-encryption/) generates as nullable in every
+query result and table row type, even when the migration declares it
+`NOT NULL`: a sealed row holds `NULL` there until the device holds its key.
+Insert and update shapes keep the declared nullability, so a write still
+provides the value. A result column whose name starts with `_sync_` fails
+with `typegen.reserved_result_column`, because the client strips such keys
+from every row; alias a protocol column such as `_sync_version` or
+`_sync_sealed_key` ([SYQL §14.6](/syql/)).
+
 SQLite reports no type for a computed column, so typegen takes the type from
 the query text. Wrap the expression in `CAST(... AS <type>)`; the column
 takes the mapped type of the target and is nullable. A whole-expression

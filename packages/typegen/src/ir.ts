@@ -51,6 +51,13 @@ export function appColumnType(column: IrColumn): IrColumnType {
     : column.type;
 }
 
+/** §5.11 sealed apply: a sealed row holds NULL in every encrypted column of
+ * the local mirror, so a read sees an encrypted column as nullable whatever
+ * its declared nullability. Write shapes keep `nullable`. */
+export function readNullable(column: IrColumn): boolean {
+  return column.nullable || column.encrypted === true;
+}
+
 /** One §3.1 scope pattern, fully resolved (no re-parsing downstream). */
 export interface IrScope {
   readonly pattern: string;

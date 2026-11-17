@@ -14,6 +14,7 @@
  */
 import {
   appColumnType,
+  readNullable,
   type IrColumnType,
   type IrDocument,
   type IrSubscription,
@@ -61,7 +62,7 @@ function emitRowInterfaces(table: IrTable, naming: NamingMode): string {
   for (const column of table.columns) {
     const ts = TS_TYPE[appColumnType(column)];
     lines.push(
-      `  ${key(column.name)}: ${ts}${column.nullable ? ' | null' : ''};`,
+      `  ${key(column.name)}: ${ts}${readNullable(column) ? ' | null' : ''};`,
     );
   }
   lines.push('}');

@@ -202,6 +202,8 @@ Under `'seal'`, a delivered row with an envelope under a key the keyring does no
 SELECT id, name, _sync_sealed_key AS sealed_key FROM patients
 ```
 
+Typegen types `sealedKey` as a nullable string. Filter with `WHERE _sync_sealed_key IS NULL` to list only readable rows. Only a table with an encrypted column has the marker; a query that names it on another table fails with `typegen.sealed_key_unencrypted`, and a result column whose name starts with `_sync_` fails with `typegen.reserved_result_column`. Generated row and query result types make every encrypted column nullable, including one declared `NOT NULL`, because a sealed row holds NULL there. Insert and update shapes keep the declared nullability.
+
 A sealed row is read-only. `mutate`, `patch` and delete of it fail at once with `client.encryption_key_missing`, because a write would send NULL over ciphertext the device cannot see. The client keeps the row's envelopes locally. When `activateSecurity()` installs a keyring that holds the key, or the next sync round starts with the key available, the client decrypts the row, clears `_sync_sealed_key` and publishes the change. A wrong key or a corrupt envelope still fails the round with `client.decrypt_failed`.
 
 Render a NULL encrypted column of a sealed row as locked, never as empty: NULL there means the value is unknown on this device.

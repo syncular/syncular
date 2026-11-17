@@ -1,0 +1,69 @@
+{
+  "irVersion": 1,
+  "schemaVersion": 1,
+  "schemaVersions": [
+    {
+      "version": 1,
+      "migrations": [
+        "0001_initial"
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "name": "patients",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "clinic_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "given_names",
+          "type": "bytes",
+          "nullable": false,
+          "encrypted": true,
+          "declaredType": "string"
+        },
+        {
+          "name": "notes",
+          "type": "bytes",
+          "nullable": true,
+          "encrypted": true,
+          "declaredType": "string"
+        },
+        {
+          "name": "ward",
+          "type": "string",
+          "nullable": false
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "clinic:{clinic_id}",
+          "variable": "clinic_id",
+          "column": "clinic_id"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_patients_clinic",
+          "columns": [
+            "clinic_id",
+            "id"
+          ],
+          "unique": false
+        }
+      ],
+      "extensions": {}
+    }
+  ],
+  "subscriptions": [],
+  "extensions": {}
+}

@@ -543,6 +543,11 @@ nullable (§14.4) or fail compilation; it MUST NOT be emitted as required.
 Unqualified columns coalesced by `USING` or `NATURAL JOIN` MUST NOT be assigned
 an arbitrary single-table origin.
 
+A projected column that the schema encrypts (SPEC §5.11) MUST be nullable in
+every generated target whatever its declared nullability, because a sealed row
+holds `NULL` in it. The same rule applies to the generated table row types.
+Generated insert and update shapes keep the declared nullability.
+
 ### 14.2 Result identity
 
 The compiler infers result identity conservatively from schema primary keys,
@@ -775,6 +780,27 @@ does not parse, a second acknowledgement of the same kind and table on one
 statement, and `plan` beside another acknowledgement fail with
 `typegen.query_acknowledgement_invalid`, whose details
 carry `file` and `comment`.
+
+### 14.6 Protocol columns
+
+A query reads two reserved local columns; every other `_sync_` column is
+unknown to the compiler.
+
+- `_sync_version`: the row's local server version, an exact non-null
+  `integer` (outer joins make it nullable per §14.1).
+- `_sync_sealed_key`: the missing key id of a sealed row (SPEC §5.11), an
+  exact nullable `string`, `NULL` on an unsealed row. Only a table with an
+  encrypted column has it. A reference to it on another table fails with
+  `typegen.sealed_key_unencrypted` in a `.sql` file and
+  `SYQL6002_INVALID_SQL` in a `.syql` file.
+
+Both columns are valid wherever a plain column is, including `WHERE` (for
+example `where p._sync_sealed_key is null`). A projected protocol column MUST
+carry an alias without the `_sync_` prefix, because the client strips every
+result key that starts with `_sync_` from a row. A result column whose name
+starts with `_sync_` fails with `typegen.reserved_result_column` (inside
+`SYQL6002_INVALID_SQL` for a `.syql` file). A protocol column reads the row of
+its table and changes neither the dependencies nor the coverage of the query.
 
 ## 15. Lowering and execution
 

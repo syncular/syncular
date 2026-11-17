@@ -1,0 +1,45 @@
+{
+  "formatVersion": 3,
+  "migrations": [
+    {
+      "name": "0001_initial",
+      "sha256": "a5dba235d33c821cac31954f1cf3baa713c7b9ce5ad4f7b6afc550dd2b5b885d",
+      "schemaVersion": 1
+    }
+  ],
+  "head": {
+    "tables": [
+      {
+        "name": "patients",
+        "primaryKey": "id",
+        "columns": [
+          {
+            "name": "id",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "clinic_id",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "given_names",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "notes",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "ward",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    ]
+  }
+}

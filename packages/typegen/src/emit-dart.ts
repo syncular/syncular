@@ -16,6 +16,7 @@
  */
 import {
   appColumnType,
+  readNullable,
   type IrColumnType,
   type IrDocument,
   type IrSubscription,
@@ -64,12 +65,15 @@ function emitClass(table: IrTable): string[] {
   lines.push(`class ${type} {`);
   for (const column of table.columns) {
     const dart = DART_TYPE[appColumnType(column)];
-    const opt = column.nullable ? '?' : '';
+    const opt = readNullable(column) ? '?' : '';
     lines.push(`  final ${dart}${opt} ${snakeToCamel(column.name)};`);
   }
   lines.push('');
   const ctorParams = table.columns
-    .map((c) => `${c.nullable ? '' : 'required '}this.${snakeToCamel(c.name)}`)
+    .map(
+      (c) =>
+        `${readNullable(c) ? '' : 'required '}this.${snakeToCamel(c.name)}`,
+    )
     .join(', ');
   lines.push(`  const ${type}({${ctorParams}});`);
   lines.push('');
@@ -79,7 +83,7 @@ function emitClass(table: IrTable): string[] {
   lines.push(`  /// non-nullable column is missing or mistyped.`);
   lines.push(`  static ${type}? fromRow(Map<String, Object?> row) {`);
   for (const column of table.columns) {
-    if (!column.nullable) {
+    if (!readNullable(column)) {
       const name = snakeToCamel(column.name);
       lines.push(`    final ${name} = ${rowAccessor(column)};`);
       lines.push(`    if (${name} == null) return null;`);
@@ -88,7 +92,9 @@ function emitClass(table: IrTable): string[] {
   const args = table.columns
     .map((c) => {
       const name = snakeToCamel(c.name);
-      return c.nullable ? `${name}: ${rowAccessor(c)}` : `${name}: ${name}`;
+      return readNullable(c)
+        ? `${name}: ${rowAccessor(c)}`
+        : `${name}: ${name}`;
     })
     .join(', ');
   lines.push(`    return ${type}(${args});`);

@@ -1,0 +1,6 @@
+query readablePatients(clinicId) {
+  select patients.id, patients.given_names
+  from patients
+  where patients.clinic_id = :clinicId and patients._sync_sealed_key is null
+  order by patients.id;
+}

@@ -1,0 +1,46 @@
+{
+  "manifestVersion": 1,
+  "migrations": "./migrations",
+  "output": {
+    "ir": "./syncular.ir.json",
+    "module": "./syncular.generated.ts",
+    "queryIr": "./syncular.queries.ir.json",
+    "queries": "./syncular.queries.ts",
+    "swift": {
+      "path": "./Syncular.generated.swift",
+      "enumName": "SealedSchema",
+      "queriesPath": "./Syncular.queries.swift"
+    },
+    "kotlin": {
+      "path": "./Syncular.generated.kt",
+      "package": "dev.syncular.sealed",
+      "objectName": "SealedSchema",
+      "queriesPath": "./Syncular.queries.kt"
+    },
+    "dart": {
+      "path": "./syncular.generated.dart",
+      "queriesPath": "./syncular.queries.dart"
+    },
+    "rust": {
+      "queriesPath": "./syncular.queries.rs"
+    }
+  },
+  "schemaVersions": [
+    {
+      "version": 1,
+      "through": "0001_initial"
+    }
+  ],
+  "tables": [
+    {
+      "name": "patients",
+      "scopes": [
+        "clinic:{clinic_id}"
+      ],
+      "encryptedColumns": [
+        "given_names",
+        "notes"
+      ]
+    }
+  ]
+}

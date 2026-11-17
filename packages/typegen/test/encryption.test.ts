@@ -4,9 +4,12 @@
  * errors (encrypted scope/crdt/pk/unknown column) fire.
  */
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
 import {
   analyzeQueries,
   buildIr,
+  checkOutputs,
+  generate,
   type Manifest,
   type MigrationInput,
   parseManifest,
@@ -77,7 +80,7 @@ describe('§5.11 encryptedColumns → IR', () => {
     expect(body?.declaredType).toBeUndefined();
   });
 
-  test('named queries expose decrypted app types instead of ciphertext bytes', () => {
+  test('named queries expose decrypted app types, nullable for a sealed row', () => {
     const ir = buildIr(manifest(['body', 'amount']), MIGRATIONS);
     const [query] = analyzeQueries(ir, [
       {
@@ -87,7 +90,7 @@ describe('§5.11 encryptedColumns → IR', () => {
     ]);
     expect(query?.columns).toMatchObject([
       { name: 'id', type: 'string', nullable: false, fidelity: 'exact' },
-      { name: 'body', type: 'string', nullable: false, fidelity: 'exact' },
+      { name: 'body', type: 'string', nullable: true, fidelity: 'exact' },
       { name: 'amount', type: 'integer', nullable: true, fidelity: 'exact' },
     ]);
   });
@@ -175,6 +178,110 @@ SELECT id FROM notes WHERE body = :body AND amount = :amount`,
     expectFail(
       () => buildIr(manifest(['doc']), MIGRATIONS),
       /crdt column "doc" cannot be encrypted/,
+    );
+  });
+});
+
+describe('§5.11 sealed apply in generated read types', () => {
+  const SEALED = join(import.meta.dir, 'fixtures', 'sealed');
+  const output = (basename: string): string => {
+    const found = generate(SEALED).outputs.find((candidate) =>
+      candidate.path.endsWith(`/${basename}`),
+    );
+    if (found === undefined) throw new Error(`no output ${basename}`);
+    return found.content;
+  };
+
+  test('the sealed fixture goldens are fresh', () => {
+    expect(checkOutputs(generate(SEALED))).toEqual([]);
+  });
+
+  test('a NOT NULL encrypted column reads nullable and writes required', () => {
+    const module = output('syncular.generated.ts');
+    expect(module).toContain(
+      'export interface PatientsRow {\n  id: string;\n  clinicId: string;\n  givenNames: string | null;',
+    );
+    expect(module).toContain(
+      'export interface PatientsInsert {\n  id: string;\n  clinicId: string;\n  givenNames: string;',
+    );
+    expect(module).toContain('  ward: string;\n}');
+    expect(output('syncular.queries.ts')).toContain(
+      "{ name: 'givenNames', type: 'string', nullable: true }, { name: 'ward', type: 'string', nullable: false }, { name: 'sealedKey', type: 'string', nullable: true }",
+    );
+    expect(output('syncular.queries.rs')).toContain(
+      '        pub given_names: Option<String>,\n        pub ward: String,\n        pub sealed_key: Option<String>,',
+    );
+    expect(output('Syncular.generated.kt')).toContain(
+      '    val givenNames: String?,\n    val notes: String?,\n    val ward: String,',
+    );
+    expect(output('Syncular.queries.kt')).toContain(
+      '    val givenNames: String?,\n    val ward: String,\n    val sealedKey: String?,',
+    );
+  });
+
+  test('an aliased _sync_sealed_key reads as a nullable string', () => {
+    const ir = buildIr(manifest(['body']), MIGRATIONS);
+    const [query] = analyzeQueries(ir, [
+      {
+        file: 'sealed-notes.sql',
+        sql: `SELECT id, _sync_sealed_key AS sealed_key FROM notes WHERE _sync_sealed_key IS NOT NULL`,
+      },
+    ]);
+    expect(query?.columns[1]).toMatchObject({
+      name: 'sealed_key',
+      langName: 'sealedKey',
+      type: 'string',
+      nullable: true,
+      fidelity: 'exact',
+    });
+    expect(query?.tables).toEqual(['notes']);
+  });
+
+  for (const [label, select] of [
+    ['un-aliased', '_sync_sealed_key'],
+    ['aliased to a _sync_ name', '_sync_sealed_key AS _sync_key'],
+  ] as const) {
+    test(`an ${label} marker is a reserved result column`, () => {
+      const ir = buildIr(manifest(['body']), MIGRATIONS);
+      let error: unknown;
+      try {
+        analyzeQueries(ir, [
+          { file: 'q.sql', sql: `SELECT id, ${select} FROM notes` },
+        ]);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TypegenError);
+      expect(error).toMatchObject({ code: 'typegen.reserved_result_column' });
+    });
+  }
+
+  test('the marker on a table without encrypted columns fails', () => {
+    const ir = buildIr(manifest([]), MIGRATIONS);
+    let error: unknown;
+    try {
+      analyzeQueries(ir, [
+        {
+          file: 'q.sql',
+          sql: 'SELECT n.id FROM notes AS n WHERE n._sync_sealed_key IS NULL',
+        },
+      ]);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      code: 'typegen.sealed_key_unencrypted',
+      details: { query: 'q' },
+    });
+    expect(() =>
+      analyzeQueries(ir, [
+        {
+          file: 'q.syql',
+          sql: 'query q() { select id, _sync_sealed_key as sealed_key from notes; }',
+        },
+      ]),
+    ).toThrow(
+      /_sync_sealed_key` exists only on a table with an encrypted column/,
     );
   });
 });

@@ -14,6 +14,7 @@
  */
 import {
   appColumnType,
+  readNullable,
   type IrColumnType,
   type IrDocument,
   type IrSubscription,
@@ -62,7 +63,7 @@ function emitDataClass(table: IrTable): string[] {
   lines.push(`data class ${type}(`);
   for (const column of table.columns) {
     const kotlin = KOTLIN_TYPE[appColumnType(column)];
-    const opt = column.nullable ? '?' : '';
+    const opt = readNullable(column) ? '?' : '';
     lines.push(`    val ${snakeToCamel(column.name)}: ${kotlin}${opt},`);
   }
   lines.push(') {');
@@ -74,7 +75,7 @@ function emitDataClass(table: IrTable): string[] {
   for (const column of table.columns) {
     const name = snakeToCamel(column.name);
     const accessor = rowAccessor(column);
-    if (column.nullable) {
+    if (readNullable(column)) {
       lines.push(`            val ${name} = ${accessor}`);
     } else {
       lines.push(`            val ${name} = ${accessor} ?: return null`);
