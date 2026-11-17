@@ -2,7 +2,8 @@
  * `SyncularRealtimeHost` over a caller-built `PostgresServerStorage` (PGlite
  * stands in for PostgreSQL behind Hyperdrive): the host coordinates the
  * storage it was given, and a fresh host over the same database (a Durable
- * Object wake) serves the committed rows.
+ * Object wake) serves the committed rows. The partition's object relays
+ * commits to the shard objects registered with it (§8.9).
  */
 import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
@@ -24,12 +25,20 @@ import {
   SSP2_CONTENT_TYPE,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import { D1DatabaseDouble } from '../../server/test/d1-double';
 import {
+  createWorkersFetchHandler,
+  D1ServerStorage,
+  type DurableObjectNamespaceLike,
+  type DurableObjectStubLike,
+  durableObjectRealtimeNotifier,
+  REALTIME_DO_SHARDS_PATH,
   type RealtimeDOConfig,
   SYNC_DO_REQUEST_PATH,
   SyncularRealtimeHost,
   writeRequestIdentityHeaders,
 } from '../src/index';
+import { FakeDurableObjectState } from './do-double';
 
 const COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -48,11 +57,7 @@ const SCHEMA: ServerSchema = {
   ],
 };
 
-const STATE = {
-  acceptWebSocket: () => {},
-  getWebSockets: () => [],
-  storage: { getAlarm: async () => null, setAlarm: async () => {} },
-};
+const STATE = new FakeDurableObjectState();
 
 const PULL: RequestFrame[] = [
   {
@@ -184,4 +189,106 @@ test('a pull-only round runs beside the partition FIFO; a push waits for it', as
     expect.objectContaining({ type: 'PUSH_RESULT', status: 'applied' }),
   );
   await db.close();
+});
+
+test('the partition object drops a shard without sockets unless it registered again', async () => {
+  const db = await PGlite.create();
+  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.ensureSchema(compileSchema(SCHEMA));
+  const stubs = new Map<string, DurableObjectStubLike>();
+  const namespace: DurableObjectNamespaceLike = {
+    idFromName: (name) => ({ toString: () => name }),
+    get: (id) => stubs.get(id.toString())!,
+  };
+  const state = new FakeDurableObjectState();
+  const relay = new SyncularRealtimeHost(state, storage, {
+    syncConfig: (coordinated) => ({
+      schema: SCHEMA,
+      storage: coordinated,
+      resolveScopes: () => ({ list_id: ['L'] }),
+      segments: new MemorySegmentStore(),
+    }),
+    namespace,
+  });
+  stubs.set('part-1', relay);
+  const register = (shard: string, token: string) =>
+    relay.fetch(
+      new Request(new URL(REALTIME_DO_SHARDS_PATH, 'https://do'), {
+        method: 'POST',
+        body: JSON.stringify({ shard, token }),
+      }),
+    );
+  const received: string[] = [];
+  // A shard without sockets, and one that registers again before it answers.
+  stubs.set('empty', {
+    fetch: async () => {
+      received.push('empty');
+      return new Response(null, { status: 404 });
+    },
+  });
+  stubs.set('returning', {
+    fetch: async () => {
+      received.push('returning');
+      await register('returning', 'second');
+      return new Response(null, { status: 404 });
+    },
+  });
+  expect((await register('empty', 'first')).status).toBe(204);
+  expect((await register('returning', 'first')).status).toBe(204);
+  await durableObjectRealtimeNotifier(namespace).notifyCommit('part-1', {
+    commitSeq: 1,
+    createdAtMs: 0,
+    actorId: 'actor-1',
+    changes: [
+      {
+        table: 'tasks',
+        rowId: 't1',
+        op: 'upsert',
+        rowVersion: 1,
+        scopes: { list_id: 'L' },
+        payload: encodeSparseRow(COLUMNS, 0, ['t1', 'L']),
+      },
+    ],
+  });
+  expect(received.sort()).toEqual(['empty', 'returning']);
+  expect([...state.values]).toEqual([['shard:returning', 'second']]);
+  await db.close();
+});
+
+test('sharded realtime refuses D1 and a Worker without the relay notifier', async () => {
+  const namespace: DurableObjectNamespaceLike = {
+    idFromName: () => ({}),
+    get: () => ({ fetch: async () => new Response() }),
+  };
+  const syncConfig: RealtimeDOConfig['syncConfig'] = (storage) => ({
+    schema: SCHEMA,
+    storage,
+    resolveScopes: () => ({ list_id: ['L'] }),
+    segments: new MemorySegmentStore(),
+  });
+  expect(
+    () =>
+      new SyncularRealtimeHost(STATE, new D1DatabaseDouble(), {
+        syncConfig,
+        namespace,
+      }),
+  ).toThrow('RealtimeDOConfig.namespace needs a storage');
+  const handler = createWorkersFetchHandler({
+    config: () => ({
+      config: syncConfig(new D1ServerStorage(new D1DatabaseDouble())),
+      authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+    }),
+    realtime: () => ({
+      namespace,
+      authenticate: () => undefined,
+      shard: () => 'facility-a',
+    }),
+  });
+  await expect(
+    handler(
+      new Request('https://worker/sync', { method: 'POST' }),
+      {},
+      { waitUntil: () => {} },
+    ),
+  ).rejects.toThrow('sharded realtime runs /sync in the Worker');
 });

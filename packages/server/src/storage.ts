@@ -795,6 +795,15 @@ export interface StorageTransaction {
    */
   lockPartition?(): Promise<void>;
   /**
+   * Make this transaction read one snapshot of committed state without the
+   * push-serialization lock, so a concurrent push neither waits for it nor
+   * becomes visible halfway through it (§6.8 host-owned read transactions).
+   * Must precede the transaction's first read. PostgreSQL sets
+   * `REPEATABLE READ READ ONLY`; SQLite's `BEGIN IMMEDIATE` already reads one
+   * snapshot. Host-owned paths call `prepareReadTransaction`.
+   */
+  pinSnapshot?(): Promise<void>;
+  /**
    * Serialize every push apply for this partition before any operation read,
    * validation, merge, or write, and read the admission token once for the
    * whole request (§6.4): the RFC 0007 serve gate and the §2.3 idempotency

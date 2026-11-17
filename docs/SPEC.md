@@ -1408,6 +1408,9 @@ On every pull (and on realtime connect), per (unit, covered table) pair:
    with `sync.invalid_subscription` (fail loud, do not guess). Keys
    declared only by *other* tables are legal in the result; they simply
    do not participate in this table's intersection (rule 4).
+   A resolver that reads its authority from the sync storage reads it in a
+   host-owned read transaction (§6.8): one snapshot, no partition lock, so
+   resolving a pull's scopes never waits on a push.
 4. **Effective = requested ∩ allowed**, computed per requested key —
    the intersection therefore runs over this table's declared variables
    only, since requested keys were validated in rule 2 (a key present
@@ -4889,6 +4892,34 @@ transaction or pinned snapshot and MUST reject this preparation. Its push
 serialization assertion does not establish the separate schema and read
 boundary an authority transaction requires.
 
+**Host-owned read transactions.** A host that only reads, such as a
+`resolveScopes` callback that reads its authority graph, MAY call
+`prepareReadTransaction(tx, schemaVersion, checkpoints)` before the
+transaction's first read. The call pins the transaction to one snapshot of
+committed state without the partition serialization lock, then evaluates the
+RFC 0007 serve gate on that transaction. A concurrent push neither waits for
+the transaction nor becomes visible halfway through it. The schema version
+rule and the closed-gate failure are those of an authority transaction. The
+caller MUST NOT write in the transaction and rolls it back. PostgreSQL sets
+`REPEATABLE READ READ ONLY` as the transaction's first statement, so a write
+fails and a call after another statement fails. SQLite's `BEGIN IMMEDIATE`
+already reads one snapshot. D1 has no pinned snapshot and MUST reject the
+preparation with `sync.storage.snapshot_unsupported`; a custom storage without
+the capability fails the same way.
+
+The snapshot answers a read whose result the round uses at once. It is no
+authority decision for a write: the push path authorizes writes under its own
+lock (§3.4), and a §6.8 validator reads candidate state there.
+
+DECISION (2026-11-17): a scope resolver reads under a snapshot instead of the
+partition lock. Diego's resolver read its authority graph in an authority
+transaction, so every round, pull-only rounds included, took the lock that
+pushes hold through validation; its rounds queued behind pushes on one
+partition. A resolver needs a consistent graph (several statements that agree
+with each other), which `REPEATABLE READ` gives without the lock. Its answer
+can be stale by the commits that land during the round, which the lock did not
+prevent either once the transaction ended.
+
 **Rejection attribution.** Throw
 `CommitValidationRejection(opIndex, code, message?, details?)` to attribute the
 aggregate failure to a chosen operation. `opIndex` MUST name an operation in
@@ -7754,6 +7785,75 @@ response is `transport.redirect`. The handshake never follows a redirect, so a
 transport configured with `redirects: "follow"` fails `realtime_connect` with
 `transport.redirect` instead of ignoring the policy. The deadline adds no retry
 and no HTTP fallback.
+
+### 8.9 Several hosts of one partition
+
+A partition's rounds and sockets MAY be served by several hosts (processes,
+Worker isolates, Durable Objects) over one storage, under these rules.
+
+**Rounds.** Push serialization (§6.3) is a storage property. A storage that
+locks partitions in the database (PostgreSQL takes a row lock on the
+partition, §6.3) lets any host apply pushes, and a pull-only round takes no
+lock at all, so every stateless host MAY run HTTP rounds, segment downloads
+(§5.5), blob routes and scope resolution. A storage without such a lock (D1, a
+SQLite connection per process) MUST route every round that carries
+`PUSH_COMMIT`, and every command, through the one serialization point of its
+partition; on Workers that is the partition's Durable Object FIFO. A host's
+scope resolver reads under §6.8 read transactions, so a pull on any host
+never waits on a push.
+
+**Commit delivery.** Every host that holds sockets of a partition MUST receive
+every commit of the partition, from whichever host applied it, and every
+registration change a round makes (§8.1). A host delivers a received commit
+exactly like a local one (§8.2): matching sessions get a delta, a non-adjacent
+commit gets a `catchup-required` wake. A bridge that sends a wake in place of
+the commit (`PostgresFanout` over LISTEN/NOTIFY) is conformant; its sessions
+then pull. A bridge MAY lose a message; the next commit then reaches the
+session non-adjacent, and the client's next round catches up. A bridge whose
+listener reconnects wakes every local session with `catchup-required`, because
+the database dropped the notifications of the gap.
+
+**Presence.** Presence (§8.6) is per host: a peer's `join`, `update` and
+`leave` reach only sessions on the same host. A host that spreads one
+partition's sockets chooses its spread so that peers sharing a presence key
+connect to the same host.
+
+**The Workers form.** The Worker runs every round, segment and blob request
+itself against PostgreSQL. Sockets live in shard objects, one per value of a
+key the host chooses at upgrade, named `JSON.stringify([partition, shard])`.
+The partition's object (named by the partition) holds no socket: it keeps
+the names of the shards that registered with it in its durable storage and
+relays every message to each of them. A message carries one commit (or one
+client's changed registrations) as a u32 header length, the commit as UTF-8
+JSON with each change payload replaced by its byte length, and the payloads in
+change order. A shard registers with a fresh random token after it accepts a
+socket and before its hub reads the partition's latest sequence, so a commit
+relayed after that read reaches the session and one relayed before it lies at
+or below the session's starting sequence. A shard that holds no socket answers
+a relay with 404, and the partition's object then removes it unless its stored
+token changed meanwhile (the shard registered again). A shard's own socket
+rounds send their commits through the partition's object too (the hub's
+`fanout`), so every shard, the applying one included, receives each
+commit once. Each commit costs the applying host one request to the partition's
+object and that object one request per registered shard.
+
+DECISION (2026-11-17): on PostgreSQL the Worker applies pushes under the
+database lock instead of forwarding rounds that carry pushes to the
+partition's object. Diego's production object served 1,172 requests in three
+hours on one thread; private segment downloads waited 3.3 s on average (27 s
+at most) and `/sync` rounds 1.0 s (13 s at most). The object's FIFO adds
+nothing on PostgreSQL: `preparePushApply` takes the partition row lock whether
+the round runs in the object or in a Worker, so a forwarded push would pay a
+second hop and still queue in the database. A round that carries both pushes
+and pulls therefore needs no routing decision either.
+
+DECISION (2026-11-17): the partition's object relays the commit itself to the
+shards instead of a wake. A wake makes every socket of the partition run a
+round per commit; the commit lets each shard's hub deliver deltas to the
+matching sessions only, with no database read. The relay lives in the
+partition's object because shards come and go with their sockets and the
+registry must survive eviction: Durable Object storage keeps it, and the
+object's single thread orders a registration before or after each relay.
 
 ---
 

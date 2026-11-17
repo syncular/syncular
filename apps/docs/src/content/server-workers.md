@@ -29,7 +29,7 @@ Deploy the sync server on Cloudflare: D1 for storage, R2 for segment and blob by
 
 `@syncular/server-workers` is thin. The server core is runtime-neutral TypeScript (Web `Request`, `Response`, `fetch`, and Web Crypto only, enforced by a static import-graph test), so the Workers lane runs the same HTTP handler as Bun and Node, wired to `env` bindings. The routes match [Server setup](/guide-server/#the-route-surface): `POST /sync`, `GET /segments/:id`, `PUT` and `GET /blobs/:id`, plus `GET /realtime` when you enable the Durable Object.
 
-When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on the binding that sync storage, authentication, and scope resolution use. A serialized coordinator cannot make a cached SELECT fresh ([Read freshness](/server-storage-reference/#read-freshness)). The Durable Object host takes that storage in place of the D1 binding ([PostgreSQL behind Hyperdrive](#postgresql-behind-hyperdrive)).
+When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on the binding that sync storage, authentication, and scope resolution use. A serialized coordinator cannot make a cached SELECT fresh ([Read freshness](/server-storage-reference/#read-freshness)). The Durable Object host takes that storage in place of the D1 binding ([PostgreSQL behind Hyperdrive](#postgresql-behind-hyperdrive)), or the Worker runs every round itself and Durable Objects hold only sockets ([PostgreSQL: rounds in the Worker, sockets in shards](#postgresql-rounds-in-the-worker-sockets-in-shards)).
 
 ## Steps
 
@@ -201,6 +201,8 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
 
 Every statement a round issues is a network round trip from the Durable Object to the database. A new storage instance on a ready database costs two statements, and a catch-up pull costs the same statement count for any number of covered tables ([Postgres storage](/server-storage-reference/#postgres)).
 
+This shape puts every round of a partition on one object's thread. To run rounds in the Worker and spread sockets over several objects, use [PostgreSQL: rounds in the Worker, sockets in shards](#postgresql-rounds-in-the-worker-sockets-in-shards).
+
 The package declares the platform types (`DurableObjectState`, `WebSocket`, `D1Database`) structurally, so it takes no `@cloudflare/workers-types` dependency. Your Worker's own types are structurally compatible.
 
 ::checkpoint[`wrangler dev` answers `POST /sync` through the Durable Object, and a WebSocket client connects to `/realtime`.]
@@ -276,6 +278,134 @@ Retention windows, eligibility rules, and what to alert on are in [Operations an
 ::checkpoint[A cron run logs `prune.completed` for each partition.]
 ::::
 :::::
+
+## PostgreSQL: rounds in the Worker, sockets in shards
+
+On PostgreSQL the database serializes pushes: `preparePushApply` takes a row lock on the partition before it reads anything, in whichever process runs the round, and a pull-only round takes no lock ([SPEC §6.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#63-push_result-frame), [§8.9](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#89-several-hosts-of-one-partition)). The Worker therefore runs every `POST /sync` round, pushes included, every `POST /operations` request, every segment and blob download, and every scope resolution itself. No round enters a Durable Object, so a long bootstrap or a slow push of one client does not hold up another client's pull.
+
+Sockets still need a Durable Object. `shard` in the `realtime` options names the object a socket goes to, for example the Facility the session works in, so one partition's sockets spread over several objects. The partition's own object (`idFromName(partition)`) then holds no socket: it keeps the names of the shard objects that registered with it and relays every commit to each of them. A commit applied in the Worker reaches the partition's object through `durableObjectRealtimeNotifier`, which you set as the Worker config's `realtime`. A commit applied in a socket round inside a shard reaches it through the shard's own hub, because `RealtimeDOConfig.namespace` is set. Each shard's hub delivers the commit to its matching sockets as a delta, with no database read.
+
+```ts title="src/worker.ts"
+import {
+  PostgresServerStorage,
+  prepareReadTransaction,
+  type RealtimeHubConfig,
+} from '@syncular/server';
+import {
+  createWorkersFetchHandler,
+  durableObjectRealtimeNotifier,
+  R2BlobStore,
+  R2SegmentStore,
+  SyncularRealtimeHost,
+} from '@syncular/server-workers';
+import { DurableObject } from 'cloudflare:workers';
+import { schema } from './syncular.generated';
+
+interface Env {
+  HYPERDRIVE: Hyperdrive;
+  BUCKET: R2Bucket;
+  REALTIME: DurableObjectNamespace<SyncularRealtimeDO>;
+}
+
+// `pgExecutor` is your `PgExecutor` over `pg` and the Hyperdrive connection
+// string (see Driver wiring on the storage reference).
+const storageFor = (env: Env) =>
+  new PostgresServerStorage(pgExecutor(env.HYPERDRIVE.connectionString));
+
+const canonicalSyncConfig = (
+  env: Env,
+  storage: PostgresServerStorage,
+): RealtimeHubConfig => ({
+  schema,
+  storage,
+  segments: new R2SegmentStore(env.BUCKET),
+  blobs: new R2BlobStore(env.BUCKET),
+  resolveScopes: async ({ actorId, partition }) => {
+    const tx = await storage.begin(partition);
+    try {
+      await prepareReadTransaction(tx, schema.version);
+      return await readGrants(tx, actorId);
+    } finally {
+      await tx.rollback();
+    }
+  },
+});
+
+export class SyncularRealtimeDO extends DurableObject<Env> {
+  #host = new SyncularRealtimeHost(this.ctx, storageFor(this.env), {
+    syncConfig: (storage) => canonicalSyncConfig(this.env, storage),
+    namespace: this.env.REALTIME,
+  });
+  fetch(request: Request) { return this.#host.fetch(request); }
+  webSocketMessage(ws: WebSocket, msg: ArrayBuffer | string) {
+    return this.#host.webSocketMessage(ws, msg);
+  }
+  webSocketClose(ws: WebSocket) { return this.#host.webSocketClose(ws); }
+  webSocketError(ws: WebSocket) { return this.#host.webSocketError(ws); }
+  alarm() { return this.#host.alarm(); }
+}
+
+export default {
+  fetch: createWorkersFetchHandler<Env>({
+    config: (env) => ({
+      config: {
+        ...canonicalSyncConfig(env, storageFor(env)),
+        realtime: durableObjectRealtimeNotifier(env.REALTIME),
+      },
+      authenticate: (request) => authenticate(request, env),
+    }),
+    realtime: (env) => ({
+      namespace: env.REALTIME,
+      allowedOrigins: ['https://app.example.com'],
+      authenticate: (request) => authenticateRealtime(request, env),
+      shard: (identity, request) => facilityOf(identity, request),
+    }),
+  }),
+};
+```
+
+`shard` receives the authenticated identity and the upgrade request and returns a string; the object's name is `JSON.stringify([partition, shard])`. With `shard` set, the handler throws on a request when the Worker config has no `realtime` notifier or when a `coordinator` is also passed, and `SyncularRealtimeHost` throws at construction when it gets a D1 binding together with `namespace`: D1 has no database lock and needs the partition's FIFO for every push.
+
+### Read authority without the push lock
+
+A resolver that reads its grants from the sync database reads them in one transaction prepared by `prepareReadTransaction(tx, schema.version)`, as above. The transaction reads one snapshot of committed state (`REPEATABLE READ READ ONLY` on PostgreSQL) and takes no partition lock, so a pull never waits on a push and never sees a commit halfway through its own reads. Call it before the transaction's first statement, never write in the transaction, and roll it back. `prepareAuthorityTransaction` takes the push lock instead; a resolver that uses it makes every round, pull-only rounds included, wait for the push that holds the partition. D1 has no pinned snapshot and refuses the call with `sync.storage.snapshot_unsupported`.
+
+### What a commit costs, and what stays per object
+
+A commit applied anywhere costs one request to the partition's object, plus one request from that object to each shard that holds sockets. A shard registers with the partition's object when it accepts a socket. When a relay finds a shard without sockets, the shard answers 404 and the partition's object removes it, so idle shards stop receiving commits. Choose the shard key with that count in mind: one object per Facility sends a commit to every Facility with an open socket.
+
+Delivery is best effort. A failed relay request never fails the push, whose commit is already durable. A socket that missed a commit receives the next one non-adjacent and gets a `catchup-required` wake, and the client's next round catches up.
+
+Presence stays inside one object: a peer's `join`, `update` and `leave` reach only sockets in the same shard. Choose a shard key that keeps peers who share a presence key together. The admin console has no Durable Object to forward to in this shape; the Worker serves it without an event ring.
+
+### Wrangler configuration
+
+```toml title="wrangler.toml"
+name = "syncular-sync"
+main = "src/worker.ts"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]   # pg
+
+[[hyperdrive]]
+binding = "HYPERDRIVE"        # env.HYPERDRIVE.connectionString -> PgExecutor
+id = "..."                    # wrangler hyperdrive create syncular --connection-string=... --caching-disabled
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "syncular"
+
+[[durable_objects.bindings]]
+name = "REALTIME"             # the partition's relay object and every shard
+class_name = "SyncularRealtimeDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SyncularRealtimeDO"]
+```
+
+Create the Hyperdrive configuration with caching disabled: sync storage, authentication and scope resolution read rows that a commit has just changed ([Read freshness](/server-storage-reference/#read-freshness)). Point it at the database's direct hostname, because Hyperdrive pools connections itself. The partition's object and the shards are instances of one class, so one binding and one migration cover both. The class keeps the shard registry in its Durable Object storage; a deployment that already declares the class with `new_classes` needs no further migration.
+
+`packages/server-workers/test/sharded-topology.workerd.test.ts` runs this setup under workerd. A commit pushed through the Worker reaches sockets in two shard objects, and a commit pushed in a socket round of one shard reaches the socket of the other. Against a real PostgreSQL server (`SYNCULAR_PG_URL`), a pull-only round whose resolver reads under `prepareReadTransaction` completes while a push holds the partition lock inside its commit validator, and a second push waits until the first one commits.
 
 ## Transport compression
 

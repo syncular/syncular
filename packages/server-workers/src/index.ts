@@ -28,6 +28,10 @@
  * `realtime` option to mount `/realtime`; its namespace also coordinates D1
  * `/sync`. An HTTP-only D1 deployment uses the `coordinator` option instead:
  * WebSockets are optional, the per-partition push queue is not.
+ *
+ * On PostgreSQL, `WorkersRealtimeOptions.shard` spreads sockets over several
+ * objects and leaves every HTTP round, segment and blob download to the
+ * Worker; the database lock serializes pushes (§6.3, §8.9).
  */
 import {
   acceptsEncoding,
@@ -35,7 +39,6 @@ import {
   D1ServerStorage,
   errorBody,
   SSP2_CONTENT_TYPE,
-  type StoredCommit,
   SyncError,
   SyncularAdmin,
   type SyncServerConfig,
@@ -49,9 +52,9 @@ import {
 } from '@syncular/server-hono';
 import {
   adminRequestForDurableObject,
+  type DurableObjectNamespaceLike,
   OPERATIONS_DO_REQUEST_PATH,
   REALTIME_DO_UPGRADE_PATH,
-  REALTIME_DO_WAKE_PATH,
   type RealtimeUpgradeIdentity,
   SYNC_DO_REQUEST_PATH,
   writeIdentityHeaders,
@@ -80,27 +83,10 @@ export interface ExecutionContextLike {
   passThroughOnException?(): void;
 }
 
-// -- Durable Object bindings (structural; no @cloudflare/workers-types dep) --
-
-/** A DO stub — the callable handle to one Durable Object instance. */
-export interface DurableObjectStubLike {
-  fetch(request: Request): Promise<Response>;
-}
-
-/** A DO namespace binding: `idFromName` → `get(id)` → a stub. */
-export interface DurableObjectNamespaceLike {
-  idFromName(name: string): DurableObjectIdLike;
-  get(id: DurableObjectIdLike): DurableObjectStubLike;
-}
-
-export interface DurableObjectIdLike {
-  toString(): string;
-}
-
 /**
  * Realtime wiring for `createWorkersFetchHandler`. Supplying it mounts the
- * `GET <mount>/realtime` upgrade route and uses the same namespace as the D1
- * `/sync` coordinator.
+ * `GET <mount>/realtime` upgrade route. Without `shard`, the same namespace
+ * is the `/sync` coordinator.
  */
 export interface WorkersRealtimeOptions {
   /** The DO namespace binding (wrangler `[[durable_objects.bindings]]`). */
@@ -127,6 +113,20 @@ export interface WorkersRealtimeOptions {
    * cookie.
    */
   readonly allowedOrigins?: readonly string[];
+  /**
+   * §8.9: hold the partition's sockets in several objects, one per value this
+   * returns for an authenticated upgrade (for example the Facility the
+   * session works in).
+   * The Worker then runs every `/sync` and `/operations` request itself, so
+   * the storage must lock partitions in the database (PostgreSQL), the
+   * Worker config's `realtime` must be `durableObjectRealtimeNotifier` over
+   * this namespace (or call it), and `RealtimeDOConfig.namespace` must be
+   * set. Presence reaches only peers in the same object.
+   */
+  readonly shard?: (
+    identity: RealtimeUpgradeIdentity,
+    request: Request,
+  ) => string;
 }
 
 /** Resolve the per-env realtime wiring for one Worker invocation. */
@@ -196,8 +196,8 @@ export interface WorkersFetchHandlerOptions<Env = unknown> {
  * ```
  *
  * With realtime over a Durable Object, pass the options form and thread the
- * `durableObjectRealtimeNotifier` into the config's `realtime` so HTTP pushes
- * wake the partition's DO:
+ * `durableObjectRealtimeNotifier` into the config's `realtime` so a commit the
+ * Worker applies reaches the partition's DO:
  *
  * ```ts
  * export default {
@@ -243,10 +243,21 @@ export function createWorkersFetchHandler<Env = unknown>(
       if (upgraded !== undefined) return upgraded;
     }
     const honoOptions = await options.config(env, ctx);
+    if (
+      realtime?.shard !== undefined &&
+      (options.coordinator !== undefined ||
+        honoOptions.config.realtime === undefined)
+    ) {
+      throw new Error(
+        'createWorkersFetchHandler: sharded realtime runs /sync in the Worker; pass no coordinator and set config.realtime to durableObjectRealtimeNotifier(namespace)',
+      );
+    }
     const coordinator =
       options.coordinator !== undefined
         ? await options.coordinator(env, ctx)
-        : realtime;
+        : realtime?.shard === undefined
+          ? realtime
+          : undefined;
     const partitionPath =
       coordinator !== undefined ? partitionRequestPath(request) : undefined;
     if (coordinator !== undefined && partitionPath !== undefined) {
@@ -421,63 +432,42 @@ async function handleRealtimeUpgrade(
   if (identity === undefined) {
     return new Response('unauthorized', { status: 401 });
   }
-  return forwardRealtimeUpgrade(request, realtime.namespace, identity);
+  return forwardRealtimeUpgrade(
+    request,
+    realtime.namespace,
+    identity,
+    realtime.shard?.(identity, request),
+  );
 }
 
 /**
- * Forward a `/realtime` upgrade to the partition's DO stub. The identity is
- * carried on internal headers to the DO's upgrade endpoint (the DO trusts the
- * Worker to have authenticated — the DO namespace is private to the Worker).
- * The DO is selected by `idFromName(partition)`: one DO per partition (§8.2).
+ * Forward a `/realtime` upgrade to the DO stub that holds the socket. The
+ * identity is carried on internal headers to the DO's upgrade endpoint (the DO
+ * trusts the Worker to have authenticated — the DO namespace is private to the
+ * Worker). Without `shard` the DO is `idFromName(partition)`, one per
+ * partition; with it, `idFromName(JSON.stringify([partition, shard]))` (§8.9).
  */
 export function forwardRealtimeUpgrade(
   request: Request,
   namespace: DurableObjectNamespaceLike,
   identity: RealtimeUpgradeIdentity,
+  shard?: string,
 ): Promise<Response> {
-  const stub = namespace.get(namespace.idFromName(identity.partition));
+  const name =
+    shard === undefined
+      ? identity.partition
+      : JSON.stringify([identity.partition, shard]);
+  const stub = namespace.get(namespace.idFromName(name));
   const forwarded = new Request(
     new URL(REALTIME_DO_UPGRADE_PATH, request.url),
     request,
   );
-  writeIdentityHeaders(forwarded.headers, identity);
+  writeIdentityHeaders(
+    forwarded.headers,
+    identity,
+    shard === undefined ? undefined : name,
+  );
   return stub.fetch(forwarded);
-}
-
-/**
- * A `RealtimeNotifier` (§8.2) for an external authoritative command host that
- * already serializes its D1 writes and must wake the partition's DO. The DO
- * calls `hub.wake(partition, 'catchup-required')` and its sockets re-pull the
- * delta from the shared D1 (§8.3) — the Workers in-platform analogue of the
- * Postgres LISTEN/NOTIFY fan-out. A wake, not a byte re-broadcast.
- *
- * Ordinary Workers `/sync` does not need this: it already lands on the DO and
- * fans out in-process. This wake is fire-and-forget:
- * a DO fetch failure never fails the push (the commit is already durable in
- * D1; the client's next pull or reconnect self-heals).
- */
-export function durableObjectRealtimeNotifier(
-  namespace: DurableObjectNamespaceLike,
-): {
-  notifyCommit: (partition: string, commit: StoredCommit) => Promise<void>;
-} {
-  return {
-    async notifyCommit(partition: string): Promise<void> {
-      try {
-        const stub = namespace.get(namespace.idFromName(partition));
-        // A synthetic origin — the DO only reads the path + JSON body.
-        await stub.fetch(
-          new Request(`https://do${REALTIME_DO_WAKE_PATH}`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ partition }),
-          }),
-        );
-      } catch {
-        // Fire-and-forget: the commit is durable; the DO wake is best-effort.
-      }
-    },
-  };
 }
 
 /**

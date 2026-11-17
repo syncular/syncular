@@ -26,7 +26,7 @@ Pick the database, segment store, and blob store your sync server runs on. This 
 | Backend | Adapter | Realtime fanout | Choose it for |
 |---|---|---|---|
 | SQLite (`bun:sqlite` or `node:sqlite`) | `SqliteServerStorage` from `@syncular/server/sqlite` | In-process hub | Development, demos, single-node deployments. The [quickstart](/quickstart/) and the load suite use it. |
-| Postgres | `PostgresServerStorage` plus your driver through `PgExecutor` | LISTEN/NOTIFY through `PostgresFanout` | Production on Bun or Node, especially with more than one instance |
+| Postgres | `PostgresServerStorage` plus your driver through `PgExecutor` | LISTEN/NOTIFY through `PostgresFanout`; on Workers, the partition's Durable Object relays to shard objects | Production on Bun, Node, or Workers behind Hyperdrive, especially with more than one instance |
 | Cloudflare D1 | `D1ServerStorage` | In-Durable-Object fanout | Cloudflare Workers ([Cloudflare Workers](/server-workers/)) |
 
 `SqliteServerStorage` runs on `bun:sqlite` under Bun and on built-in `node:sqlite` under Node 22.13 or newer. The server library imports no Postgres driver; you adapt Bun.sql or node-postgres in about 20 lines ([Postgres](/server-storage-reference/#postgres)).

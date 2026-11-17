@@ -115,8 +115,35 @@ export function serveNotReadyError(refusal: ServeGateRefusal): SyncError {
  * Lock and gate a host-owned non-push transaction (§6.8). The caller checks
  * actor authority under the lock and commits or rolls back the transaction.
  */
-export async function prepareAuthorityTransaction(
+export function prepareAuthorityTransaction(
   tx: StorageTransaction,
+  runningSchemaVersion: number,
+  checkpoints?: readonly CheckpointDeclaration[],
+): Promise<void> {
+  return prepareHostTransaction(tx, 'lock', runningSchemaVersion, checkpoints);
+}
+
+/**
+ * Pin a host-owned read transaction to one snapshot without the partition
+ * lock, then gate it (§6.8). A scope resolver reads its authority graph here,
+ * so a pull never waits on a push. The caller rolls the transaction back.
+ */
+export function prepareReadTransaction(
+  tx: StorageTransaction,
+  runningSchemaVersion: number,
+  checkpoints?: readonly CheckpointDeclaration[],
+): Promise<void> {
+  return prepareHostTransaction(
+    tx,
+    'snapshot',
+    runningSchemaVersion,
+    checkpoints,
+  );
+}
+
+async function prepareHostTransaction(
+  tx: StorageTransaction,
+  boundary: 'lock' | 'snapshot',
   runningSchemaVersion: number,
   checkpoints?: readonly CheckpointDeclaration[],
 ): Promise<void> {
@@ -129,9 +156,15 @@ export async function prepareAuthorityTransaction(
       'sync.invalid_request',
       'schema version must be a positive 32-bit integer',
     );
-  if (typeof tx.lockPartition !== 'function')
-    throw new StorageQueryError('sync.storage.partition_lock_unsupported');
-  await tx.lockPartition();
+  if (boundary === 'lock') {
+    if (typeof tx.lockPartition !== 'function')
+      throw new StorageQueryError('sync.storage.partition_lock_unsupported');
+    await tx.lockPartition();
+  } else {
+    if (typeof tx.pinSnapshot !== 'function')
+      throw new StorageQueryError('sync.storage.snapshot_unsupported');
+    await tx.pinSnapshot();
+  }
   const gate = await tx.readServeGate(runningSchemaVersion);
   const refusal = serveGateRefusal(gate, runningSchemaVersion, checkpoints);
   if (refusal !== undefined) throw serveNotReadyError(refusal);

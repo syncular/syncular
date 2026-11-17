@@ -37,6 +37,7 @@ export type StorageQueryErrorCode =
   | 'sync.storage.physical_layout_mismatch'
   | 'sync.storage.transaction_query_unsupported'
   | 'sync.storage.partition_lock_unsupported'
+  | 'sync.storage.snapshot_unsupported'
   | 'sync.storage.query_over_staged_writes'
   | 'sync.storage.erase_unsupported'
   | 'sync.storage.invalid_erase_query';
@@ -77,6 +78,8 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'this storage transaction cannot run registered queries',
     'sync.storage.partition_lock_unsupported':
       'this storage transaction cannot serialize partition authority',
+    'sync.storage.snapshot_unsupported':
+      'this storage transaction cannot read one snapshot without the partition lock',
     'sync.storage.query_over_staged_writes':
       'registered query reads a table this transaction has buffered writes for',
     'sync.storage.scan_requires_scope':

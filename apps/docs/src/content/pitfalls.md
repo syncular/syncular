@@ -298,7 +298,7 @@ See [Read freshness](/server-storage-reference/#read-freshness) and [PostgreSQL 
 
 ### Do give the Postgres fanout a direct Neon connection
 
-`PostgresFanout` uses `LISTEN`, which needs a session-mode connection. Neon's pooled endpoint (the hostname with `-pooler`) runs PgBouncer in transaction mode and does not support it. Build the fanout connection from the direct hostname. Storage can keep the pooled one. A single server instance installs no fanout, and neither does a Durable Object host, where every commit of a partition goes through one object.
+`PostgresFanout` uses `LISTEN`, which needs a session-mode connection. Neon's pooled endpoint (the hostname with `-pooler`) runs PgBouncer in transaction mode and does not support it. Build the fanout connection from the direct hostname. Storage can keep the pooled one. A single server instance installs no fanout, and neither does a Workers deployment: its Durable Objects relay commits between themselves ([Cloudflare Workers](/server-workers/#postgresql-rounds-in-the-worker-sockets-in-shards)).
 
 See [Neon](/server-storage-reference/#neon).
 

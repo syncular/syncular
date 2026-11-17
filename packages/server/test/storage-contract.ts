@@ -25,6 +25,7 @@ import {
   type NewReaction,
   PARTITION_TOUCH_INTERVAL_MS,
   prepareAuthorityTransaction,
+  prepareReadTransaction,
   type ServerSchema,
   type ServerStorage,
   StorageQueryError,
@@ -201,6 +202,37 @@ export function runStorageContract(
       expect(
         await storage.getRow(PARTITION, 'tasks', 'authority-row'),
       ).toBeDefined();
+    });
+
+    test('prepares a read transaction on one snapshot without the partition lock', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      const guarded = new Proxy(tx, {
+        get(target, property) {
+          if (property === 'lockPartition')
+            throw new Error('unexpected partition lock');
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      try {
+        if (name === 'd1/double') {
+          await expect(
+            prepareReadTransaction(guarded, CONTRACT_SCHEMA.version),
+          ).rejects.toMatchObject({
+            code: 'sync.storage.snapshot_unsupported',
+          });
+          return;
+        }
+        await prepareReadTransaction(guarded, CONTRACT_SCHEMA.version);
+        expect(await tx.getRow('tasks', 'absent-row')).toBeUndefined();
+        if (name.startsWith('postgres')) {
+          await tx.upsertRow('tasks', taskRow('snapshot-row', 'p1'));
+          await expect(tx.commit()).rejects.toThrow('read-only transaction');
+        }
+      } finally {
+        await tx.rollback();
+      }
     });
 
     test('a missing partition-lock capability fails before a gate read', async () => {

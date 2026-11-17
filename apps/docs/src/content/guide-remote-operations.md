@@ -567,3 +567,10 @@ same transaction. Custom storage adapters implement `lockPartition()` to hold
 the same serialization boundary as push apply through commit or rollback.
 Keep external calls after the commit in an idempotent worker or durable
 reaction.
+
+A read that decides nothing for a write, such as a `resolveScopes` callback
+that reads the actor's grants, calls `prepareReadTransaction` in place of
+`prepareAuthorityTransaction`. It pins the transaction to one snapshot without
+the partition lock, so a pull never waits on a push; never write in it, and
+roll it back. D1 refuses it with `sync.storage.snapshot_unsupported`
+([Cloudflare Workers](/server-workers/#read-authority-without-the-push-lock)).

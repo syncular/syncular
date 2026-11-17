@@ -154,6 +154,11 @@ jobs:
         env:
           SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
         run: bun test packages/server/test/postgres-checkpoints.integration.test.ts
+      - name: Real Postgres Workers topology (pulls beside a held push, fanout between objects)
+        if: matrix.core == 'ts'
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: bun test --timeout 60000 packages/server-workers/test/sharded-topology.workerd.test.ts
       - name: Real Postgres commit above the bind-parameter limit
         if: matrix.core == 'ts'
         env:

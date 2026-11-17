@@ -1774,6 +1774,14 @@ class PostgresTransaction implements StorageTransaction {
     await lockPartitionOn(this.#client, this.#partition);
   }
 
+  async pinSnapshot(): Promise<void> {
+    this.#assertOpen();
+    // PostgreSQL refuses this after the transaction's first statement.
+    await this.#client.query(
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+    );
+  }
+
   async advanceCheckpoint(
     name: string,
     ownerEpoch: number,

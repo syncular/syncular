@@ -116,16 +116,27 @@ export class FakeWebSocketPair implements WebSocketPairLike {
   }
 }
 
-/** The `DurableObjectState` double: the accepted-socket registry and the
- * alarm slot. A test fires the alarm by calling the host's `alarm()`. */
-class FakeDurableObjectState implements DurableObjectStateLike {
+/** The `DurableObjectState` double: the accepted-socket registry, the
+ * alarm slot and a key-value map. A test fires the alarm by calling the
+ * host's `alarm()`. */
+export class FakeDurableObjectState implements DurableObjectStateLike {
   readonly #sockets: WebSocketLike[] = [];
   alarmAt: number | null = null;
+  readonly values = new Map<string, string>();
   readonly storage = {
     getAlarm: async (): Promise<number | null> => this.alarmAt,
     setAlarm: async (scheduledTime: number): Promise<void> => {
       this.alarmAt = scheduledTime;
     },
+    get: async (key: string): Promise<unknown> => this.values.get(key),
+    put: async (key: string, value: string): Promise<void> => {
+      this.values.set(key, value);
+    },
+    delete: async (key: string): Promise<boolean> => this.values.delete(key),
+    list: async ({ prefix }: { prefix: string }) =>
+      new Map<string, unknown>(
+        [...this.values].filter(([key]) => key.startsWith(prefix)),
+      ),
   };
   acceptWebSocket(ws: WebSocketLike): void {
     this.#sockets.push(ws);

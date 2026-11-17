@@ -384,6 +384,12 @@ lock; D1 and custom adapters without `lockPartition()` fail with
 `sync.storage.partition_lock_unsupported`. See
 [host-owned authority transactions](https://syncular.dev/guide-remote-operations/#host-owned-authority-transactions).
 
+A host that only reads, such as a `resolveScopes` callback that reads its
+grants, calls `prepareReadTransaction(tx, schema.version, checkpoints)`
+instead. It pins the transaction to one snapshot (`REPEATABLE READ READ ONLY`
+on PostgreSQL) without the partition lock, so a pull never waits on a push.
+D1 fails with `sync.storage.snapshot_unsupported` (SPEC §6.8).
+
 `scanRows` is a Syncular scope-index scan, never an unscoped administrative
 query. Passing an empty or omitted `scopeFilter` throws the exported
 `StorageQueryError` with `code: 'sync.storage.scan_requires_scope'` on

@@ -234,10 +234,21 @@ authoritative.
 
 Authenticated HTTP `/sync` rounds are forwarded into the same partition DO as
 socket rounds. Applied commits therefore fan out through the in-DO hub without
-a post-commit wake race. `durableObjectRealtimeNotifier` remains available for
-an external authoritative command host that already provides equally strong
-partition serialization and needs to wake the DO after its own commit; it is
-not a substitute for the `/sync` coordinator.
+a post-commit wake race. `durableObjectRealtimeNotifier` sends a commit that
+another host applied to the partition's DO, which delivers it to its sockets
+as a delta; it is not a substitute for the `/sync` coordinator on D1.
+
+### PostgreSQL: rounds in the Worker, sockets in shards (SPEC §8.9)
+
+On PostgreSQL the database lock serializes pushes, so the Worker can run every
+round itself. Set `shard` in the `realtime` options to place each socket in an
+object named `JSON.stringify([partition, shard])`, set the Worker config's
+`realtime` to `durableObjectRealtimeNotifier(env.REALTIME)`, and pass
+`namespace: env.REALTIME` in `RealtimeDOConfig`. The partition's object then
+holds no socket: shards register with it and it relays every commit to them.
+A scope resolver reads its grants under `prepareReadTransaction`, so a pull
+never waits on a push. The setup, its costs and its Wrangler configuration are
+on the docs page (`apps/docs/src/content/server-workers.md`).
 
 ### Wiring
 

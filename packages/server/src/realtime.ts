@@ -33,6 +33,7 @@ import {
   type WakeReason,
 } from '@syncular/core';
 import type {
+  RealtimeNotifier,
   ServerLimits,
   SyncRequestContext,
   SyncServerConfig,
@@ -95,6 +96,13 @@ export interface RealtimeHubConfig extends Omit<SyncServerConfig, 'realtime'> {
    * error, never a stale or lost latest document).
    */
   readonly presenceMinIntervalMs?: number;
+  /**
+   * §8.9: the bridge to the hubs of other hosts that hold sockets of the same
+   * partition. When set, the commits and registration changes of this hub's
+   * own rounds go to `fanout` in place of this hub, and `fanout` delivers
+   * them to every hub of the partition, this one included.
+   */
+  readonly fanout?: RealtimeNotifier;
 }
 
 export interface RealtimeConnectOptions {
@@ -1301,7 +1309,7 @@ export class RealtimeHub {
       partition: identity.partition,
       actorId: identity.actorId,
       ...(identity.context !== undefined ? { context: identity.context } : {}),
-      realtime: this,
+      realtime: this.#config.fanout ?? this,
     };
   }
 

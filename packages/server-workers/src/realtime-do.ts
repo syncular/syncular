@@ -88,13 +88,24 @@
  * sessions, and re-arms while sockets remain. The host owns the alarm: a
  * subclass that needs another alarm schedule cannot share it.
  *
- * ## The wake path (external-command fan-out)
+ * ## Fanout between objects (§8.9)
  *
  * Ordinary HTTP `/sync` and `/operations` (with `RealtimeDOConfig.operations`)
- * are forwarded into this DO and fan out in-process. An
- * external authoritative command host that already provides equivalent D1
- * partition serialization may call `/__wake` after its own commit so sockets
- * re-pull. See `durableObjectRealtimeNotifier` for that caller side.
+ * are forwarded into this DO and fan out in-process. A commit applied
+ * elsewhere reaches the partition's object through
+ * `durableObjectRealtimeNotifier`: a POST to the fanout path carrying the
+ * commit, which the object delivers to its hub as a delta.
+ *
+ * On PostgreSQL the Worker may shard sockets over several objects
+ * (`WorkersRealtimeOptions.shard`) and run every round itself. The
+ * partition's object (`idFromName(partition)`) then holds no socket: it keeps
+ * the names of the shard objects that registered with it in its storage and
+ * relays every fanout message to each of them. A shard registers when it
+ * accepts a socket, before its hub connects it; a shard that answers a relay with 404 (no socket
+ * left) is removed unless it registered again meanwhile. A shard's hub
+ * (`RealtimeHubConfig.fanout`) sends the commits of its own rounds through the
+ * partition's object too, so every shard, the shard itself included, receives
+ * each commit exactly once.
  */
 import {
   adapterSyncError,
@@ -118,8 +129,10 @@ import {
   type RemoteOperationRegistry,
   type RemoteOperationResolver,
   RingBufferEvents,
+  type RealtimeNotifier,
   type ServerStorage,
   SSP2_CONTENT_TYPE,
+  type StoredCommit,
   SyncError,
   SyncularAdmin,
   type SyncularErrorRoute,
@@ -136,12 +149,31 @@ import { decodeRequest } from '@syncular/core';
 export interface DurableObjectStateLike {
   acceptWebSocket(ws: WebSocketLike, tags?: string[]): void;
   getWebSockets(tag?: string): WebSocketLike[];
-  /** The alarm half of the DO storage API; the host owns the alarm and
-   * drives §8.5 heartbeats with it. */
+  /** The DO storage API the host uses: the alarm drives §8.5 heartbeats, and
+   * the partition's object keeps its registered shards as keys. */
   readonly storage: {
     getAlarm(): Promise<number | null>;
     setAlarm(scheduledTime: number): Promise<void>;
+    get(key: string): Promise<unknown>;
+    put(key: string, value: string): Promise<void>;
+    delete(key: string): Promise<boolean>;
+    list(options: { prefix: string }): Promise<Map<string, unknown>>;
   };
+}
+
+/** A DO stub: the callable handle to one Durable Object instance. */
+export interface DurableObjectStubLike {
+  fetch(request: Request): Promise<Response>;
+}
+
+/** A DO namespace binding: `idFromName` → `get(id)` → a stub. */
+export interface DurableObjectNamespaceLike {
+  idFromName(name: string): DurableObjectIdLike;
+  get(id: DurableObjectIdLike): DurableObjectStubLike;
+}
+
+export interface DurableObjectIdLike {
+  toString(): string;
 }
 
 export interface WebSocketLike {
@@ -211,6 +243,15 @@ export type RealtimeDOConfig<S extends RealtimeHostStorage = D1ServerStorage> =
      * the scope resolver per request (REMOTE.md §5.1).
      */
     readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
+    /**
+     * The namespace this class is bound to. Required when the Worker shards
+     * sockets (`WorkersRealtimeOptions.shard`, §8.9): a shard registers with
+     * the partition's object through it, the partition's object relays every
+     * commit to the registered shards, and a shard's own rounds send their
+     * commits through the partition's object. The storage must lock
+     * partitions in the database (PostgreSQL); a D1 host refuses it.
+     */
+    readonly namespace?: DurableObjectNamespaceLike;
   };
 
 /**
@@ -271,6 +312,109 @@ function encodeAttachment(
   return Uint8Array.from(bytes);
 }
 
+/** A commit, or a client's changed registrations, on its way between objects. */
+type FanoutMessage =
+  | { readonly partition: string; readonly commit: StoredCommit }
+  | { readonly partition: string; readonly clientId: string };
+
+/**
+ * Fanout body: a u32 length, the message as UTF-8 JSON with each change
+ * payload replaced by its byte length, then the payloads in change order.
+ */
+function encodeFanout(message: FanoutMessage): Uint8Array<ArrayBuffer> {
+  const payloads: Uint8Array[] = [];
+  const head = new TextEncoder().encode(
+    JSON.stringify(
+      'commit' in message
+        ? {
+            ...message,
+            commit: {
+              ...message.commit,
+              changes: message.commit.changes.map(({ payload, ...change }) => {
+                if (payload === undefined) return change;
+                payloads.push(payload);
+                return { ...change, payloadBytes: payload.byteLength };
+              }),
+            },
+          }
+        : message,
+    ),
+  );
+  const bytes = new Uint8Array(
+    payloads.reduce((total, p) => total + p.byteLength, 4 + head.byteLength),
+  );
+  new DataView(bytes.buffer).setUint32(0, head.byteLength);
+  bytes.set(head, 4);
+  let at = 4 + head.byteLength;
+  for (const payload of payloads) {
+    bytes.set(payload, at);
+    at += payload.byteLength;
+  }
+  return bytes;
+}
+
+function decodeFanout(bytes: Uint8Array): FanoutMessage {
+  const length = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0);
+  const message = JSON.parse(
+    new TextDecoder().decode(bytes.subarray(4, 4 + length)),
+  ) as
+    | {
+        readonly partition: string;
+        readonly commit: Omit<StoredCommit, 'changes'> & {
+          readonly changes: readonly (Omit<
+            StoredCommit['changes'][number],
+            'payload'
+          > & { readonly payloadBytes?: number })[];
+        };
+      }
+    | { readonly partition: string; readonly clientId: string };
+  if (!('commit' in message)) return message;
+  let at = 4 + length;
+  return {
+    partition: message.partition,
+    commit: {
+      ...message.commit,
+      changes: message.commit.changes.map(({ payloadBytes, ...change }) =>
+        payloadBytes === undefined
+          ? change
+          : { ...change, payload: bytes.slice(at, (at += payloadBytes)) },
+      ),
+    },
+  };
+}
+
+/**
+ * The `RealtimeNotifier` (§8.2, §8.9) that sends a commit, or a client's
+ * changed registrations, to the partition's Durable Object, which delivers it
+ * to its own sockets and relays it to every shard registered with it. Pass it
+ * as the Worker config's `realtime` whenever the Worker applies commits
+ * itself: sharded sockets, or an external command host. Delivery is best
+ * effort: a failed request never fails the push, whose commit is durable. A
+ * session that misses a commit sees the next one non-adjacent and receives a
+ * `catchup-required` wake (§8.2), and the client's next round catches up.
+ */
+export function durableObjectRealtimeNotifier(
+  namespace: DurableObjectNamespaceLike,
+): RealtimeNotifier {
+  const send = async (message: FanoutMessage): Promise<void> => {
+    try {
+      // A synthetic origin: the DO reads only the path and the body.
+      await namespace.get(namespace.idFromName(message.partition)).fetch(
+        new Request(`https://do${REALTIME_DO_FANOUT_PATH}`, {
+          method: 'POST',
+          body: encodeFanout(message),
+        }),
+      );
+    } catch {
+      // Best effort, see the doc above.
+    }
+  };
+  return {
+    notifyCommit: (partition, commit) => send({ partition, commit }),
+    notifySubscriptions: (partition, clientId) => send({ partition, clientId }),
+  };
+}
+
 /** The identity the upgrade request must carry (resolved by the Worker). */
 export interface RealtimeUpgradeIdentity {
   readonly partition: string;
@@ -281,7 +425,8 @@ export interface RealtimeUpgradeIdentity {
 }
 
 /** Internal control-request paths on the DO stub (never client-facing). */
-export const REALTIME_DO_WAKE_PATH = '/__syncular_realtime/wake';
+export const REALTIME_DO_FANOUT_PATH = '/__syncular_realtime/fanout';
+export const REALTIME_DO_SHARDS_PATH = '/__syncular_realtime/shards';
 export const REALTIME_DO_UPGRADE_PATH = '/__syncular_realtime/upgrade';
 export const SYNC_DO_REQUEST_PATH = '/__syncular_realtime/sync';
 export const OPERATIONS_DO_REQUEST_PATH = '/__syncular_realtime/operations';
@@ -348,6 +493,8 @@ export class SyncularRealtimeHost<
   #rehydration: Promise<void> | undefined;
   /** Explicit FIFO: Durable Object events may interleave at `await`. */
   #partitionTail: Promise<void> = Promise.resolve();
+  /** The shard name this instance registered with the partition's object. */
+  #registeredShard: string | undefined;
 
   /**
    * Host a partition over a D1 binding (the host builds the coordinated
@@ -372,6 +519,11 @@ export class SyncularRealtimeHost<
     config: RealtimeDOConfig<D1ServerStorage> | RealtimeDOConfig<S>,
   ) {
     this.#state = state;
+    if (config.namespace !== undefined && 'prepare' in storage) {
+      throw new Error(
+        'RealtimeDOConfig.namespace needs a storage that locks partitions in the database; D1 pushes need the partition FIFO',
+      );
+    }
     this.#storage =
       'prepare' in storage
         ? // One DO is selected per partition, and every round enters
@@ -402,6 +554,9 @@ export class SyncularRealtimeHost<
       );
       const withRing = {
         ...config,
+        ...(this.#config.namespace !== undefined
+          ? { fanout: durableObjectRealtimeNotifier(this.#config.namespace) }
+          : {}),
         events:
           config.events !== undefined
             ? composeEvents(ring, config.events)
@@ -434,10 +589,10 @@ export class SyncularRealtimeHost<
   }
 
   /**
-   * The DO `fetch` handler: routes the internal upgrade + wake control paths.
-   * The Worker forwards `GET <mount>/realtime` here as an upgrade with the
-   * resolved identity in headers (see `forwardRealtimeUpgrade` in `index.ts`),
-   * and accepts external-command wakes at `/__syncular_realtime/wake`.
+   * The DO `fetch` handler: routes the internal control paths. The Worker
+   * forwards `GET <mount>/realtime` here as an upgrade with the resolved
+   * identity in headers (see `forwardRealtimeUpgrade` in `index.ts`), and
+   * commits applied elsewhere arrive at the fanout path (§8.9).
    */
   async fetch(request: Request): Promise<Response> {
     await this.#rehydrateSockets();
@@ -470,8 +625,18 @@ export class SyncularRealtimeHost<
     if (url.pathname === OPERATIONS_DO_REQUEST_PATH) {
       return this.#serializePartition(() => this.#handleOperation(request));
     }
-    if (url.pathname === REALTIME_DO_WAKE_PATH) {
-      return this.#serializePartition(() => this.#handleWake(request));
+    if (url.pathname === REALTIME_DO_FANOUT_PATH) {
+      // Beside the FIFO: a round that applied this commit may be waiting on
+      // the relay that delivers it here.
+      return this.#handleFanout(request);
+    }
+    if (url.pathname === REALTIME_DO_SHARDS_PATH) {
+      const { shard, token } = (await request.json()) as {
+        shard: string;
+        token: string;
+      };
+      await this.#state.storage.put(`shard:${shard}`, token);
+      return new Response(null, { status: 204 });
     }
     if (url.pathname === REALTIME_DO_UPGRADE_PATH) {
       return this.#handleUpgrade(request);
@@ -721,20 +886,45 @@ export class SyncularRealtimeHost<
     });
   }
 
-  /** §8.3 wake: an external coordinated command landed; re-pull the delta. */
-  async #handleWake(request: Request): Promise<Response> {
-    const body = (await request.json().catch(() => null)) as {
-      partition?: unknown;
-    } | null;
-    const partition = body?.partition;
-    if (typeof partition !== 'string') {
-      return new Response('bad wake', { status: 400 });
+  /**
+   * §8.9: deliver a commit or a client's changed registrations to this
+   * object's sockets, then relay it to every shard registered here. A shard
+   * that answers 404 holds no socket and is removed, unless it registered
+   * again with a new token meanwhile. This object answers 404 itself when it
+   * holds no socket.
+   */
+  async #handleFanout(request: Request): Promise<Response> {
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const message = decodeFanout(bytes);
+    const hub = this.#getHub();
+    if ('commit' in message) {
+      await hub.notifyCommit(message.partition, message.commit);
+    } else {
+      await hub.notifySubscriptions(message.partition, message.clientId);
     }
-    // Wake only if this DO actually holds sockets (a cold DO has none — the
-    // socket that would care is on this DO by construction, so a wake to a
-    // DO with no sockets is simply a no-op, not an error).
-    this.#getHub().wake(partition, 'catchup-required');
-    return new Response(null, { status: 204 });
+    const namespace = this.#config.namespace;
+    if (namespace !== undefined) {
+      const shards = await this.#state.storage.list({ prefix: 'shard:' });
+      // Best effort per shard (§8.9): one failed request skips only that shard.
+      await Promise.allSettled(
+        [...shards].map(async ([key, token]) => {
+          const response = await namespace
+            .get(namespace.idFromName(key.slice('shard:'.length)))
+            .fetch(new Request(request.url, { method: 'POST', body: bytes }));
+          if (
+            response.status === 404 &&
+            (await this.#state.storage.get(key)) === token
+          ) {
+            await this.#state.storage.delete(key);
+          }
+        }),
+      );
+    }
+    if (this.#state.getWebSockets().length > 0) {
+      return new Response(null, { status: 204 });
+    }
+    this.#registeredShard = undefined;
+    return new Response(null, { status: 404 });
   }
 
   /** The WebSocket upgrade: accept a hibernatable socket, connect the hub. */
@@ -769,6 +959,31 @@ export class SyncularRealtimeHost<
             max: ATTACHMENT_LIMIT_BYTES,
           }),
         );
+      }
+      // §8.9: a shard registers with the partition's object after it accepts
+      // the socket (so a relay meanwhile does not find it empty and drop it)
+      // and before the hub reads the latest sequence, so a commit relayed
+      // after that read reaches the session.
+      const shard = request.headers.get(REALTIME_SHARD_HEADER);
+      if (shard !== null && this.#registeredShard !== shard) {
+        const namespace = this.#config.namespace;
+        if (namespace === undefined) {
+          throw new Error(
+            'a sharded realtime upgrade needs RealtimeDOConfig.namespace',
+          );
+        }
+        const registered = await namespace
+          .get(namespace.idFromName(identity.partition))
+          .fetch(
+            new Request(new URL(REALTIME_DO_SHARDS_PATH, request.url), {
+              method: 'POST',
+              body: JSON.stringify({ shard, token: crypto.randomUUID() }),
+            }),
+          );
+        if (registered.status !== 204) {
+          throw new Error('shard registration failed');
+        }
+        this.#registeredShard = shard;
       }
       const session = await hub.connect(this.#connectOptions(server, identity));
       this.#sessions.set(server, session);
@@ -935,6 +1150,8 @@ const REALTIME_ID_HEADER = {
 } as const;
 
 const ADMIN_ACTIONS_HEADER = 'x-syncular-admin-actions';
+/** The object name of the shard a sharded upgrade goes to (§8.9). */
+const REALTIME_SHARD_HEADER = 'x-syncular-shard';
 
 /** Address a Worker-authorized admin request to the DO (Worker side). */
 export function adminRequestForDurableObject(
@@ -978,13 +1195,20 @@ export function writeRequestIdentityHeaders(
   }
 }
 
-/** Write the resolved identity onto an upgrade request's headers (Worker side). */
+/**
+ * Write the resolved identity, and the object name of a sharded upgrade's
+ * shard (§8.9), onto an upgrade request's headers (Worker side). A shard
+ * header the client sent is removed when the upgrade is not sharded.
+ */
 export function writeIdentityHeaders(
   headers: Headers,
   identity: RealtimeUpgradeIdentity,
+  shard?: string,
 ): void {
   writeRequestIdentityHeaders(headers, identity);
   headers.set(REALTIME_ID_HEADER.clientId, identity.clientId);
+  if (shard === undefined) headers.delete(REALTIME_SHARD_HEADER);
+  else headers.set(REALTIME_SHARD_HEADER, shard);
 }
 
 function readIdentityHeaders(

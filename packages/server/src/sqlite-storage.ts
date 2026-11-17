@@ -197,6 +197,11 @@ class SqliteTransaction
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
   }
 
+  async pinSnapshot(): Promise<void> {
+    this.assertOpen();
+    // The one connection's BEGIN IMMEDIATE already reads one snapshot.
+  }
+
   async advanceCheckpoint(
     name: string,
     ownerEpoch: number,
