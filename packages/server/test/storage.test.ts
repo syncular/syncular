@@ -245,7 +245,21 @@ runStorageContract('sqlite', () => new SqliteServerStorage());
 
 runStorageContract('postgres/pglite', async () => {
   const db = await PGlite.create();
-  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  const inner = pgliteExecutor(db);
+  // PGlite binds a JS array as text[], but drivers differ: Bun.SQL 1.4.0
+  // sends ['a', 'b'] as 'a,b'. Every list parameter binds as JSON text.
+  const scalar = (params: readonly unknown[] | undefined) => {
+    const list = params?.find(Array.isArray);
+    if (list !== undefined) throw new Error('JS array bound as a parameter');
+    return params;
+  };
+  const storage = new PostgresServerStorage({
+    query: (text, params) => inner.query(text, scalar(params)),
+    transaction: (fn) =>
+      inner.transaction((client) =>
+        fn({ query: (text, params) => client.query(text, scalar(params)) }),
+      ),
+  });
   await storage.migrate();
   return storage;
 });

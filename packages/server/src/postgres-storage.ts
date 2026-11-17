@@ -578,11 +578,11 @@ async function readAdmissionOn(
     partition,
     runningSchemaVersion,
     clientId,
-    [...clientCommitIds],
+    JSON.stringify(clientCommitIds),
   ];
   let statement = `SELECT ${SERVE_GATE_PROJECTION},
             (SELECT jsonb_object_agg(client_commit_id, result) FROM sync_push_results
-              WHERE partition=$1 AND client_id=$3 AND client_commit_id = ANY($4::text[])) AS results,
+              WHERE partition=$1 AND client_id=$3 AND client_commit_id IN (SELECT jsonb_array_elements_text($4::text::jsonb))) AS results,
             (SELECT delete_floor FROM sync_partitions WHERE partition=$1) AS delete_floor`;
   if (prefetch !== undefined && prefetch.specs.length > 0) {
     params.push(JSON.stringify(prefetch.specs));
@@ -1491,7 +1491,7 @@ class PostgresTransaction implements StorageTransaction {
     // are the final candidate state.
     const { rows: records } = await this.#client.query<RowRecord>(
       selectRowsSql(this.#resolveTable(table), 'postgres'),
-      [this.#partition, missing],
+      [this.#partition, JSON.stringify(missing)],
     );
     for (const record of records) rows.set(record.row_id, toStoredRow(record));
     return rows;
@@ -3814,9 +3814,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             n: unknown;
           }>(
             `SELECT commit_seq, tbl, count(*) AS n FROM sync_changes
-             WHERE partition=$1 AND commit_seq=ANY($2::bigint[])
+             WHERE partition=$1 AND commit_seq IN (SELECT jsonb_array_elements_text($2::text::jsonb)::bigint)
              GROUP BY commit_seq, tbl ORDER BY commit_seq, tbl`,
-            [partition, seqs],
+            [partition, JSON.stringify(seqs)],
           )
         ).rows) {
       const seq = asNumber(count.commit_seq);
@@ -3833,9 +3833,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             op: unknown;
           }>(
             `SELECT commit_seq, tbl, row_id, op FROM sync_changes
-             WHERE partition=$1 AND commit_seq=ANY($2::bigint[]) AND idx<$3
+             WHERE partition=$1 AND commit_seq IN (SELECT jsonb_array_elements_text($2::text::jsonb)::bigint) AND idx<$3
              ORDER BY commit_seq, idx`,
-            [partition, seqs, sampleCount],
+            [partition, JSON.stringify(seqs), sampleCount],
           )
         ).rows) {
       const seq = asNumber(change.commit_seq);

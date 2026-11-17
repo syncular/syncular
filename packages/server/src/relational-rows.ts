@@ -610,7 +610,7 @@ export function selectRowSql(
 
 /**
  * SELECT many stored rows of one table by primary key in one statement.
- * The ids bind as one parameter (Postgres `text[]` with `= ANY($2)`, SQLite
+ * The ids bind as one JSON array parameter (Postgres `jsonb_array_elements_text`, SQLite
  * a JSON array through `json_each`), so the statement count does not grow
  * with the id count. Params: [partition, rowIds]; absent ids contribute no
  * row.
@@ -622,7 +622,7 @@ export function selectRowsSql(
   const [partition, rowIds] =
     dialect === 'sqlite'
       ? ['?', 'IN (SELECT value FROM json_each(?))']
-      : ['$1', '=ANY($2::text[])'];
+      : ['$1', ' IN (SELECT jsonb_array_elements_text($2::text::jsonb))'];
   return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${partition} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}${rowIds}`;
 }
 
