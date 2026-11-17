@@ -5,6 +5,7 @@
   "scripts": {
     "load": "bun run src/index.ts",
     "load:smoke": "bun run src/index.ts --smoke-sweep",
+    "load:ceiling": "bun run src/ceiling.ts",
     "test": "bun test src"
   },
   "dependencies": {

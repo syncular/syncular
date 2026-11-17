@@ -16,7 +16,9 @@ a real deployment. **Not in CI by default** (see [What this is not](#what-this-i
   (rows/sec, bundle size, propagation p95). This suite is
   **stability/scale verification**: does the server stay up, correct, and
   memory-flat under many concurrent clients, storms, churn, and soak? The
-  numbers here are pass/fail against thresholds, not a leaderboard.
+  scenario numbers are pass/fail against thresholds. The one measurement
+  here is the [partition ceiling](#partition-ceiling), because it needs the
+  same spawned server and protocol clients.
 - **Not a per-VU real client.** Virtual clients speak the protocol directly
   and keep no local SQLite; they verify bootstrap completion by counting
   applied rows out of the response and draining `bootstrapState`. Client-side
@@ -65,6 +67,68 @@ The server process wires `Bun.SQL` as the `PgExecutor` (the same
 production-shape adapter the bench PG lane uses) and clears its partition
 before each run. Everything else is identical, so the scope-fanout index and
 the storm reuse rule are exercised end to end against real Postgres.
+
+## Partition ceiling
+
+`bun run load:ceiling` measures how many commits one partition applies per
+second on PostgreSQL, and how many pull-only rounds the server answers
+meanwhile. It reports numbers and has no thresholds. The method and the
+published results are on
+[Partitions & multi-tenancy](../apps/docs/src/content/server-partitions.md#throughput-of-one-partition).
+
+```bash
+docker run -d --name ceiling-pg -e POSTGRES_PASSWORD=ceiling -p 55432:5432 \
+  postgres:17 -c max_connections=400
+bun run load:ceiling --pg-url postgres://postgres:ceiling@127.0.0.1:55432/postgres
+```
+
+Flags (lists are comma-separated; every combination is one point):
+
+- `--rtt 0,13`: round-trip time to PostgreSQL in ms. Above 0, `rtt-proxy.ts`
+  holds every chunk for half of it in each direction.
+- `--rows 1,10`: rows per commit.
+- `--commits 1,10`: commits per push request.
+- `--pushers 1,10,50,200`: clients that push back to back.
+- `--readers 20`: clients that send pull-only rounds back to back.
+- `--servers 4`: server processes; client `n` talks to process `n mod 4`.
+- `--pool N`: connections per server process; by default one per client the
+  process serves.
+- `--warmup 5`, `--max-warmup 120`, `--duration 30`: seconds. The window
+  opens after the warm-up once every pusher has finished a request, or after
+  `--max-warmup`, and stays open for `--duration`.
+- `--app ./path/to/app.ts`: the app under test (absolute path, or relative
+  to `load/`); `ceiling-app.ts` by default.
+
+For each point the runner recreates the database `syncular_ceiling` on the
+server `--pg-url` names, so point it at a disposable instance. It prints a
+Markdown table and writes `load/results/ceiling-<timestamp>.json`.
+
+### Measuring your own app
+
+An app module default-exports a `CeilingApp` (`src/ceiling.ts`):
+
+- `schema`: the schema version and the tables commits write, with columns
+  and primary key.
+- `createServer({ executor, rowsPerCommit })`: runs in every server process
+  on the runner's PostgreSQL executor (through the delay proxy). Migrate,
+  seed what the validator reads, and return the handler for `POST /sync`
+  with the app's own `commitValidator` and validators. The first process
+  starts alone on an empty database; the others start after it.
+- `headers(client)`: request headers, such as a session token.
+- `scopes(client)`: the scopes pusher `client` subscribes; reader `n` reads
+  pusher `n`'s scopes.
+- `commit({ client, seq, rows })`: the operations of one commit, as
+  `{ table, rowId, op, values }` with values keyed by column name. `seq` is
+  unique across the run.
+
+`src/ceiling-app.ts` is the reference app: the `tasks` table, one project
+per pusher, and a `commitValidator` that reads four rows one after another.
+
+The server executor counts, per transaction, the statements from the
+partition row lock (`SELECT … FROM sync_partitions … FOR UPDATE`) to the end
+of COMMIT, and how long the lock is held and waited for. Each point reports
+them with the CPU share of the busiest server process and of the client
+process, so a result limited by a process's CPU shows as such.
 
 ## Scenarios & thresholds
 
@@ -140,6 +204,11 @@ src/
   metrics.ts          histograms + percentiles
   scenario.ts         scenario contract, threshold evaluation, summary line
   scenarios/*.ts      the five scenarios
+  ceiling.ts          partition ceiling runner and the CeilingApp contract
+  ceiling-server.ts   the ceiling's server process (lock and CPU counters)
+  ceiling-app.ts      the reference CeilingApp
+  rtt-proxy.ts        TCP proxy that delays each direction
+  pg.ts               Bun.SQL as the PgExecutor
   *.test.ts           sub-second unit tests (ramp math, histograms)
 results/              JSON run artifacts (gitignored except .gitkeep)
 ```

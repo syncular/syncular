@@ -45,6 +45,7 @@
     "bench:ci": "bun run rust:clean && bun run --cwd bench bench:ci",
     "load": "bun run --cwd load load",
     "load:smoke": "bun run --cwd load load:smoke",
+    "load:ceiling": "bun run --cwd load load:ceiling",
     "typecheck": "tsrs --noEmit",
     "lint": "oxlint && oxfmt --check",
     "lint:fix": "oxlint --fix && oxfmt",

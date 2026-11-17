@@ -27,6 +27,7 @@ import {
   type RequestFrame,
   type ResponseFrame,
   type ResponseMessage,
+  type RowColumn,
   type RowValue,
   registrationDigest,
   type UnitScopes,
@@ -96,6 +97,7 @@ function requestBytes(
   clientId: string,
   frames: readonly RequestFrame[],
   logEpoch?: string,
+  schemaVersion = SCHEMA.version,
 ): Uint8Array {
   return encodeMessage({
     wireVersion: PROTOCOL_WIRE_VERSION,
@@ -104,7 +106,7 @@ function requestBytes(
       {
         type: 'REQ_HEADER',
         clientId,
-        schemaVersion: SCHEMA.version,
+        schemaVersion,
         ...(logEpoch !== undefined ? { logEpoch } : {}),
         outboxId: clientId,
       },
@@ -316,18 +318,41 @@ class UnitRegistry {
 export interface VClientOptions {
   readonly baseUrl: string;
   readonly clientId: string;
+  /** The schema version the request header names; the load fixture's by default. */
+  readonly schemaVersion?: number;
+  /** Extra request headers, such as the app's authorization. */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** The columns an app table encodes an operation against. */
+export interface VClientTable {
+  readonly name: string;
+  readonly columns: readonly RowColumn[];
+  readonly primaryKey: string;
+}
+
+/** One operation of an app-defined commit; an upsert names its column values. */
+export interface VClientOperation {
+  readonly table: string;
+  readonly rowId: string;
+  readonly op: 'upsert' | 'delete';
+  readonly values?: Readonly<Record<string, RowValue>>;
 }
 
 export class HttpVClient {
   readonly clientId: string;
   readonly #baseUrl: string;
   readonly #units = new UnitRegistry();
+  readonly #schemaVersion: number | undefined;
+  readonly #headers: Readonly<Record<string, string>>;
   #pushSeq = 0;
   #logEpoch: string | undefined;
 
   constructor(options: VClientOptions) {
     this.clientId = options.clientId;
     this.#baseUrl = options.baseUrl;
+    this.#schemaVersion = options.schemaVersion;
+    this.#headers = options.headers ?? {};
   }
 
   subscribe(scopes: UnitScopes): void {
@@ -339,11 +364,19 @@ export class HttpVClient {
     frames: readonly RequestFrame[],
     logEpoch?: string,
   ): Promise<RoundResult> {
-    const body = requestBytes(this.clientId, frames, logEpoch);
+    const body = requestBytes(
+      this.clientId,
+      frames,
+      logEpoch,
+      this.#schemaVersion,
+    );
     const t0 = performance.now();
     const response = await fetch(`${this.#baseUrl}/sync`, {
       method: 'POST',
-      headers: { 'Content-Type': SSP2_CONTENT_TYPE },
+      // A saturated partition queues a request for minutes; Bun aborts a
+      // fetch after 300 s by default.
+      timeout: false,
+      headers: { ...this.#headers, 'Content-Type': SSP2_CONTENT_TYPE },
       body: body.slice() as unknown as BodyInit,
     });
     if (!response.ok) {
@@ -403,6 +436,54 @@ export class HttpVClient {
     this.#pushSeq += 1;
     return this.#round([
       upsertOp(id, project, this.#pushSeq),
+      ...this.#units.pullFrames({
+        limitCommits: 100,
+        limitSnapshotRows: 5_000,
+        maxSnapshotPages: 1,
+        accept: ACCEPT_ROWS,
+      }),
+    ]);
+  }
+
+  /**
+   * One round that pushes app-defined commits ahead of the pull frames, as a
+   * client sends its outbox. Each commit takes the next client sequence.
+   */
+  push(
+    tables: readonly VClientTable[],
+    commits: readonly (readonly VClientOperation[])[],
+  ): Promise<RoundResult> {
+    const frames: RequestFrame[] = commits.map((operations) => {
+      this.#pushSeq += 1;
+      return {
+        type: 'PUSH_COMMIT',
+        clientCommitId: `${this.clientId}-c${this.#pushSeq}`,
+        clientSeq: this.#pushSeq,
+        operations: operations.map((operation) => {
+          const table = tables.find((entry) => entry.name === operation.table);
+          if (table === undefined) {
+            throw new VClientError(`unknown table ${operation.table}`);
+          }
+          const values = operation.values ?? {};
+          return operation.op === 'delete'
+            ? { table: operation.table, rowId: operation.rowId, op: 'delete' }
+            : {
+                table: operation.table,
+                rowId: operation.rowId,
+                op: 'upsert',
+                payload: encodeSparseRow(
+                  table.columns,
+                  table.columns.findIndex(
+                    (column) => column.name === table.primaryKey,
+                  ),
+                  table.columns.map((column) => values[column.name]),
+                ),
+              };
+        }),
+      };
+    });
+    return this.#round([
+      ...frames,
       ...this.#units.pullFrames({
         limitCommits: 100,
         limitSnapshotRows: 5_000,

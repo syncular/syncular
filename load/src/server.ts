@@ -25,8 +25,6 @@ import {
   consoleJsonEvents,
   createRealtimeHub,
   MemorySegmentStore,
-  type PgExecutor,
-  type PgQueryable,
   PostgresServerStorage,
   pruneCommitLog,
   type RealtimeSession,
@@ -48,6 +46,7 @@ import {
   seededRandom,
   TABLE,
 } from './fixture';
+import { bunSqlExecutor } from './pg';
 
 const PORT = Number(process.env.SYNCULAR_LOAD_PORT ?? 0);
 const PG_URL = process.env.SYNCULAR_PG_URL;
@@ -185,51 +184,18 @@ class MetricsEvents implements SyncularServerEvents {
 // Storage: sqlite by default, Postgres when SYNCULAR_PG_URL is set
 // ---------------------------------------------------------------------------
 
-// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
-const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
-
-// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
-function queryableOver(handle: any): PgQueryable {
-  return {
-    async query<Row = Record<string, unknown>>(
-      text: string,
-      params?: readonly unknown[],
-    ) {
-      const rows = (await handle.unsafe(
-        text,
-        params ? [...params] : [],
-      )) as Row[];
-      return { rows };
-    },
-  };
-}
-
 async function buildStorage(): Promise<{
   storage: ServerStorage;
   close: () => Promise<void>;
 }> {
   if (PG_URL !== undefined && PG_URL.length > 0) {
-    if (BunSQL === undefined) {
-      throw new Error('SYNCULAR_PG_URL set but Bun.SQL is unavailable');
-    }
-    const sql = new BunSQL(PG_URL);
-    const executor: PgExecutor = {
-      query: queryableOver(sql).query,
-      async transaction<T>(fn: (client: PgQueryable) => Promise<T>) {
-        // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
-        return sql.begin(async (tx: any) => fn(queryableOver(tx)));
-      },
-      async close() {
-        await sql.end();
-      },
-    };
+    const { executor, sql } = bunSqlExecutor(PG_URL);
     const storage = new PostgresServerStorage(executor);
     await storage.migrate();
     // Start each PG run from a clean partition.
     // The relational row store: the app table is partitioned by
     // _sync_partition (it may not exist yet on a fresh database).
-    // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
-    await (sql as any).unsafe(
+    await sql.unsafe(
       `DO $$ BEGIN
          IF to_regclass('tasks') IS NOT NULL THEN
            DELETE FROM tasks WHERE _sync_partition = '${PARTITION}';
@@ -245,10 +211,7 @@ async function buildStorage(): Promise<{
       'sync_clients',
       'sync_partitions',
     ]) {
-      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
-      await (sql as any).unsafe(`DELETE FROM ${table} WHERE partition=$1`, [
-        PARTITION,
-      ]);
+      await sql.unsafe(`DELETE FROM ${table} WHERE partition=$1`, [PARTITION]);
     }
     return { storage, close: async () => void (await executor.close?.()) };
   }

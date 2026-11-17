@@ -40,18 +40,23 @@ export interface SpawnOptions {
   readonly seedRows?: number;
   /** Forward SYNCULAR_LOAD_LOG_EVENTS=1 (server logs JSON events to stderr). */
   readonly logEvents?: boolean;
+  /** Another server entry; it prints the same ready line and serves the shutdown route. */
+  readonly entry?: string;
+  /** Extra environment for the server process. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Spawn the load server as its own process and wait for the ready line. */
 export async function spawnServer(
   options: SpawnOptions = {},
 ): Promise<LoadServer> {
-  const proc = Bun.spawn(['bun', 'run', SERVER_ENTRY], {
+  const proc = Bun.spawn(['bun', 'run', options.entry ?? SERVER_ENTRY], {
     env: {
       ...process.env,
       SYNCULAR_LOAD_PORT: '0',
       SYNCULAR_LOAD_SEED_ROWS: String(options.seedRows ?? 0),
       ...(options.logEvents ? { SYNCULAR_LOAD_LOG_EVENTS: '1' } : {}),
+      ...options.env,
     },
     stdout: 'pipe',
     stderr: 'inherit',
@@ -92,7 +97,7 @@ export async function spawnServer(
   return server;
 }
 
-async function readReadyPort(proc: Bun.Subprocess): Promise<number> {
+export async function readReadyPort(proc: Bun.Subprocess): Promise<number> {
   const stdout = proc.stdout as ReadableStream<Uint8Array>;
   const reader = stdout.getReader();
   const decoder = new TextDecoder();
