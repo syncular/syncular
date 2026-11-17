@@ -1,5 +1,31 @@
 # Syncular release notes
 
+## 0.74.0 release notes
+
+Generated read types now carry the sealed state of encrypted columns
+(SYNCULAR-TYPEGEN-SEALED-COLUMNS-001, SPEC §5.11, SYQL §14). Under
+`missingKey: 'seal'` a sealed row holds NULL in every encrypted column, while
+typegen typed a non-null encrypted column as present, so a reader got `null`
+where its type promised a value.
+
+- Every encrypted column reads nullable in generated table row types, query
+  result types, `resultColumns` and `mapRow` output, in TypeScript, Rust,
+  Kotlin, Swift and Dart. Insert and update types keep the declared
+  nullability: a write still provides the value.
+- A `.sql` or SYQL query can select `_sync_sealed_key` from a table with an
+  encrypted column, aliased to a name without the `_sync_` prefix
+  (`p._sync_sealed_key AS sealed_key`); it types as a nullable string and
+  can filter (`where p._sync_sealed_key is null`). On a table without an
+  encrypted column the reference fails with `typegen.sealed_key_unencrypted`.
+- A result column whose name starts with `_sync_` fails with
+  `typegen.reserved_result_column`; clients strip such keys from query rows,
+  so the column read as missing before.
+
+**Upgrade notes.** Regenerate. Code that reads an encrypted column from a
+generated row now sees `T | null` (`Option<T>`, `T?`) and handles the
+sealed case, typically by selecting `_sync_sealed_key` and rendering the row
+as locked. A query that aliased a column to a `_sync_` name renames it.
+
 ## 0.73.0 release notes
 
 A keyring can seal rows under a key it does not hold instead of failing the

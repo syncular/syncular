@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-17',
+    title: 'Generated read types name sealed encrypted columns',
+    body: "A sealed row (`missingKey: 'seal'`) holds NULL in every encrypted column, but typegen still typed a non-null encrypted column as present in row types, query results and `resultColumns`. Typegen now reads every encrypted column as nullable in all languages; insert and update types keep the declared nullability. A query can select the sealed marker with an alias (`p._sync_sealed_key AS sealed_key`) on a table with an encrypted column. A result column named with the `_sync_` prefix now fails with `typegen.reserved_result_column`, because clients strip such keys from query rows.",
+    links: [
+      {
+        href: '/concepts-encryption/#rows-under-a-key-the-device-lacks',
+        label: 'Rows under a key the device lacks',
+      },
+    ],
+  },
+  {
     date: '2026-11-16',
     title: 'Sealed apply for rows under a missing key',
     body: "A row whose envelope named a key the keyring did not hold failed the whole round with `client.encryption_key_missing`, so one row under another practice's key stopped sync for every table. With `missingKey: 'seal'` on the keyring, both cores land such a row with its encrypted columns NULL and the key id in the reserved column `_sync_sealed_key`, and the round continues. A sealed row refuses local writes. Installing the key through `activateSecurity()`, or the next round with the key available, decrypts it in place. The default stays `'fail'`.",
