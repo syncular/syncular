@@ -167,7 +167,7 @@ function makeHttpHandler(
     storage: new D1ServerStorage(db),
     segments: new MemorySegmentStore(),
     resolveScopes: () => ({ list_id: ['*'] }),
-    realtime: durableObjectRealtimeNotifier(namespace),
+    realtime: durableObjectRealtimeNotifier(namespace, { waitUntil: () => {} }),
   };
   const handler = createWorkersFetchHandler<unknown>({
     config: () => ({

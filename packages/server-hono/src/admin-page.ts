@@ -484,7 +484,7 @@ main{overflow:visible;padding:16px}
   // Pages without a sidebar entry highlight the section they belong to.
   var SECTION = { client: 'people', table: 'data', row: 'data' };
   var EVENT_TYPES = ['request.handled', 'push.applied', 'push.rejected', 'push.conflicted', 'pull.served',
-    'realtime.opened', 'realtime.closed', 'realtime.delta', 'realtime.wake', 'reaction.queued', 'reaction.started',
+    'realtime.opened', 'realtime.closed', 'realtime.delta', 'realtime.wake', 'realtime.relay_failed', 'reaction.queued', 'reaction.started',
     'reaction.retried', 'reaction.completed', 'reaction.dead_lettered', 'reaction.prune_completed',
     'segment.downloaded', 'blob.uploaded', 'blob.downloaded', 'blob.swept', 'prune.completed',
     'scopes.resolve_failed', 'lease.issued', 'lease.revoked'];
@@ -653,6 +653,7 @@ main{overflow:visible;padding:16px}
   function level(e) {
     var t = e.type;
     if (t === 'push.rejected' || t === 'reaction.dead_lettered' || t === 'scopes.resolve_failed' ||
+      t === 'realtime.relay_failed' ||
       (t === 'request.handled' && (e.outcome === 'error' || e.outcome === 'rejected')) ||
       ((t === 'segment.downloaded' || t === 'blob.downloaded') && e.outcome === 'error')) return 'err';
     if (t === 'push.conflicted' || t === 'reaction.retried' || t === 'lease.revoked' ||

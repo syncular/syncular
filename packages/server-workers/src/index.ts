@@ -202,10 +202,12 @@ export interface WorkersFetchHandlerOptions<Env = unknown> {
  * ```ts
  * export default {
  *   fetch: createWorkersFetchHandler<Env>({
- *     config: (env) => ({
+ *     config: (env, ctx) => ({
  *       config: {
  *         ...syncConfig(env),
- *         realtime: durableObjectRealtimeNotifier(env.REALTIME),
+ *         realtime: durableObjectRealtimeNotifier(env.REALTIME, {
+ *           waitUntil: (promise) => ctx.waitUntil(promise),
+ *         }),
  *       },
  *       authenticate: (req) => authenticate(req, env),
  *     }),

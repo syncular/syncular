@@ -7670,6 +7670,12 @@ send that session a `catchup-required` wake-up (§8.3), so its client runs
 the round whose §3.3 revocation purge drops the rows it lost. Sessions
 whose registrations kept or widened their scopes receive no wake-up.
 
+The same wake-up is due when a round-end reload, or the reload after an
+HTTP pull (§8.1), removes or narrows a registration of a unit the client
+record still lists as live: the round may have answered the unit active
+before the grant changed, and the client purges only in a later round. A
+unit the client dropped from its own list wakes nothing.
+
 ### 8.8 Realtime policy and connectivity state
 
 **Transport gate.** Both client cores expose `setTransportEnabled(enabled)`
@@ -7810,10 +7816,12 @@ commit gets a `catchup-required` wake. A bridge that sends a wake in place of
 the commit (`PostgresFanout` over LISTEN/NOTIFY) is conformant; its sessions
 then pull. A bridge whose listener reconnects wakes every local session with
 `catchup-required`, because the database dropped the notifications of the gap.
-A bridge that keeps the hosts it delivers to MUST repair a failed delivery to
-one of them without waiting for a later commit: it retries until the host answers or no longer holds sockets,
-and the retry wakes with `catchup-required` every session that has not
-observed the lost commit.
+A bridge MUST repair a failed delivery without waiting for a later commit. A
+bridge that keeps the hosts it delivers to retries until the host answers or
+no longer holds sockets, and the retry wakes with `catchup-required` every
+session that has not observed the lost commit. A bridge that cannot keep a
+retry record retries a bounded number of times and then reports the loss to
+the host's events.
 
 **Host refresh.** A host-initiated registration refresh (`refreshScopes`,
 §8.7) after a grant changes MUST reach every host that holds sockets of the
@@ -7857,9 +7865,14 @@ fail-closed refresh of every session for an owed refresh, wakes every session
 with `catchup-required` for owed registrations (the client's round reloads
 them), and wakes every session whose last observed sequence lies below the
 owed one. A delivered record that no failure changed meanwhile is deleted; a
-shard that answers 404 is removed with its record. The request from the
-applying host to the partition's object stays best effort: it never fails the
-push, and a session that misses the commit sees the next one non-adjacent.
+shard that answers 404 is removed with its record.
+
+The request from the applying host to the partition's object never fails the
+push, whose commit is durable. When it throws or answers anything but 204 or
+404, the notifier retries it in the host's `waitUntil` after 250 ms, 1 s and
+4 s. After the third failed retry it emits `realtime.relay_failed` (partition,
+the commit's sequence, 4 attempts) to the events it was given; a session that
+missed the commit then sees the next one non-adjacent.
 
 DECISION (2026-11-17): on PostgreSQL the Worker applies pushes under the
 database lock instead of forwarding rounds that carry pushes to the

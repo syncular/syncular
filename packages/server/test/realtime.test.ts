@@ -1089,6 +1089,66 @@ describe('host-initiated scope refresh (§8.7)', () => {
     expect(b.session.registrations).toHaveLength(0);
   });
 
+  test('a reload that loses a listed unit to authorization wakes the session', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-b', { project_id: ['p1'] }],
+    ]);
+    let revokeAfterNext = false;
+    Object.assign(t.ctx, {
+      resolveScopes: async ({ actorId }: { actorId: string }) => {
+        const scopes = allowed.get(actorId) ?? {};
+        // The host revokes right after the round resolved its scopes.
+        if (revokeAfterNext && actorId === 'actor-b') {
+          revokeAfterNext = false;
+          allowed.set('actor-b', {});
+        }
+        return scopes;
+      },
+    });
+    const hub = makeHub(t);
+    const wakes = (wire: Wire) =>
+      wire.texts.flatMap((text) => {
+        const parsed = parseRealtimeServerEvent(text);
+        return parsed.known && parsed.event.event === 'sync'
+          ? [parsed.event.data.reason]
+          : [];
+      });
+
+    // Round end: the round answered the unit active; the reload after it
+    // finds the grant gone, so the client must pull to learn of it (§8.7).
+    const b = await connectedClient(t, hub, 'actor-b', 'client-b');
+    revokeAfterNext = true;
+    await runRound(b.session, 'client-b');
+    expect(b.session.registrations).toHaveLength(0);
+    expect(wakes(b.wire)).toEqual(['catchup-required']);
+
+    // After an HTTP pull (notifySubscriptions): the same rule.
+    allowed.set('actor-c', { project_id: ['p1'] });
+    const c = await connectedClient(t, hub, 'actor-c', 'client-c');
+    allowed.set('actor-c', {});
+    await hub.notifySubscriptions('part-1', 'client-c');
+    expect(c.session.registrations).toHaveLength(0);
+    expect(wakes(c.wire)).toEqual(['catchup-required']);
+
+    // A unit the client dropped from its own list wakes no one.
+    allowed.set('actor-d', { project_id: ['p1'] });
+    const d = await connectedClient(t, hub, 'actor-d', 'client-d');
+    await t.storage.putClientRecord('part-1', {
+      clientId: 'client-d',
+      actorId: 'actor-d',
+      wireVersion: 4,
+      schemaVersion: 1,
+      cursor: 0,
+      updatedAtMs: t.now.ms,
+      registration: { units: [], digest: registrationDigest([]) },
+      catchingUp: [],
+    });
+    await hub.notifySubscriptions('part-1', 'client-d');
+    expect(d.session.registrations).toHaveLength(0);
+    expect(wakes(d.wire)).toEqual([]);
+  });
+
   test('a resolver failure on the host refresh fails closed', async () => {
     const t = makeContext();
     const allowed = new Map<string, ScopeMap>([

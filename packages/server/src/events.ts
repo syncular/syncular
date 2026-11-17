@@ -299,6 +299,20 @@ export interface RealtimeWakeEvent extends RealtimeEventBase {
   readonly reason: WakeReason;
 }
 
+/**
+ * §8.9: a bridge gave up delivering a commit, or a client's changed
+ * registrations, to the partition's other hosts after its retries. Sessions
+ * there learn of the commit from the next one, which arrives non-adjacent.
+ */
+export interface RealtimeRelayFailedEvent {
+  readonly type: 'realtime.relay_failed';
+  readonly atMs: number;
+  readonly partition: string;
+  /** The commit the message carried; absent for changed registrations. */
+  readonly commitSeq?: number;
+  readonly attempts: number;
+}
+
 /** A §4.6 prune pass finished (whether or not the horizon moved). */
 export interface PruneCompletedEvent {
   readonly type: 'prune.completed';
@@ -367,6 +381,7 @@ export type SyncularServerEvent = (
   | RealtimeClosedEvent
   | RealtimeDeltaEvent
   | RealtimeWakeEvent
+  | RealtimeRelayFailedEvent
   | PruneCompletedEvent
   | ScopesResolveFailedEvent
   | LeaseIssuedEvent

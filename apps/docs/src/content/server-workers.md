@@ -347,10 +347,12 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
 
 export default {
   fetch: createWorkersFetchHandler<Env>({
-    config: (env) => ({
+    config: (env, ctx) => ({
       config: {
         ...canonicalSyncConfig(env, storageFor(env)),
-        realtime: durableObjectRealtimeNotifier(env.REALTIME),
+        realtime: durableObjectRealtimeNotifier(env.REALTIME, {
+          waitUntil: (promise) => ctx.waitUntil(promise),
+        }),
       },
       authenticate: (request) => authenticate(request, env),
     }),
@@ -374,14 +376,16 @@ A resolver that reads its grants from the sync database reads them in one transa
 
 A commit applied anywhere costs one request to the partition's object, plus one request from that object to each shard that holds sockets. A shard registers with the partition's object when it accepts a socket. When a relay finds a shard without sockets, the shard answers 404 and the partition's object removes it, so idle shards stop receiving commits. Choose the shard key with that count in mind: one object per Facility sends a commit to every Facility with an open socket.
 
-When a relay to a shard fails (a thrown request, or any status but 2xx and 404), the partition's object records what the shard owes in its storage and retries from its alarm every second until the shard answers or is removed. The retry wakes, with `catchup-required`, every socket of the shard that has not seen the missed commit, and the client's round catches up. The request from the Worker to the partition's object never fails the push, whose commit is already durable; when that request fails, a socket learns of the missed commit when the next commit reaches it non-adjacent.
+When a relay to a shard fails (a thrown request, or any status but 2xx and 404), the partition's object records what the shard owes in its storage and retries from its alarm every second until the shard answers or is removed. The retry wakes, with `catchup-required`, every socket of the shard that has not seen the missed commit, and the client's round catches up. The request from the Worker to the partition's object never fails the push, whose commit is already durable. When it fails, the notifier retries it in `ctx.waitUntil` after 250 ms, 1 s and 4 s. After the third failed retry it emits a `realtime.relay_failed` event to the `events` in its options (pass your sync config's sink), and a socket then learns of the missed commit when the next commit reaches it non-adjacent. `retryDelay` in the options replaces the waits in tests.
 
 ### Refresh scopes after a grant changes
 
 A session caches its registrations between rounds. After you revoke or narrow an actor's grants, call `refreshScopes` on the notifier, which reaches the sessions in every shard:
 
 ```ts
-await durableObjectRealtimeNotifier(env.REALTIME).refreshScopes(partition, actorId);
+await durableObjectRealtimeNotifier(env.REALTIME, {
+  waitUntil: (promise) => ctx.waitUntil(promise),
+}).refreshScopes(partition, actorId);
 ```
 
 Every object runs `RealtimeHub.refreshScopes`: each of the actor's sessions resolves its scopes again, fails closed when the resolver throws, and stops receiving deltas for the scopes it lost; a session that lost a registration gets a `catchup-required` wake, so its client runs the round that purges the rows. Omit `actorId` to refresh every session of the partition. The call throws `sync.internal_error` when the partition's object did not take the refresh; a shard that fails it is retried like a commit.

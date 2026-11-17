@@ -137,6 +137,8 @@ import {
   SSP2_CONTENT_TYPE,
   type StoredCommit,
   SyncError,
+  type SyncularServerEvents,
+  emitEvent,
   SyncularAdmin,
   type SyncularErrorRoute,
   type SyncRequestContext,
@@ -151,6 +153,8 @@ import { decodeRequest } from '@syncular/core';
 
 export interface DurableObjectStateLike {
   acceptWebSocket(ws: WebSocketLike, tags?: string[]): void;
+  /** Keeps work alive after a response: the notifier's retries (§8.9). */
+  waitUntil(promise: Promise<unknown>): void;
   getWebSockets(tag?: string): WebSocketLike[];
   /** The DO storage API the host uses: the alarm drives §8.5 heartbeats, and
    * the partition's object keeps its registered shards as keys. */
@@ -404,6 +408,22 @@ function decodeFanout(bytes: Uint8Array): FanoutMessage {
   };
 }
 
+/** Options of `durableObjectRealtimeNotifier`. */
+export interface DurableObjectRealtimeNotifierOptions {
+  /**
+   * Keeps the retries of a failed request alive after the response: the
+   * Worker's `ctx.waitUntil`, or the Durable Object state's.
+   */
+  readonly waitUntil: (promise: Promise<unknown>) => void;
+  /** Receives `realtime.relay_failed` when the retries give up. */
+  readonly events?: SyncularServerEvents;
+  /**
+   * Resolves when retry `attempt` (1 to 3) may start. Default: after 250 ms,
+   * 1 s and 4 s.
+   */
+  readonly retryDelay?: (attempt: number) => Promise<void>;
+}
+
 /**
  * The `RealtimeNotifier` (§8.2, §8.9) that sends a commit, or a client's
  * changed registrations, to the partition's Durable Object, which delivers it
@@ -411,9 +431,8 @@ function decodeFanout(bytes: Uint8Array): FanoutMessage {
  * a shard whose relay failed. Pass it as the Worker config's `realtime`
  * whenever the Worker applies commits itself: sharded sockets, or an external
  * command host. A failed request to the partition's object never fails the
- * push, whose commit is durable: a session that misses the commit sees the next
- * one non-adjacent and receives a `catchup-required` wake (§8.2), and the
- * client's next round catches up.
+ * push, whose commit is durable: the notifier retries it three times in
+ * `waitUntil` and emits `realtime.relay_failed` when the last one fails.
  *
  * `refreshScopes(partition, actorId?)` is `RealtimeHub.refreshScopes` for
  * every object of the partition: call it after a grant changes. It throws when
@@ -421,39 +440,72 @@ function decodeFanout(bytes: Uint8Array): FanoutMessage {
  */
 export function durableObjectRealtimeNotifier(
   namespace: DurableObjectNamespaceLike,
+  options: DurableObjectRealtimeNotifierOptions,
 ): RealtimeNotifier & {
   refreshScopes(partition: string, actorId?: string): Promise<void>;
 } {
-  // A synthetic origin: the DO reads only the path and the body.
-  const send = (message: FanoutMessage) =>
-    namespace.get(namespace.idFromName(message.partition)).fetch(
-      new Request(`https://do${REALTIME_DO_FANOUT_PATH}`, {
-        method: 'POST',
-        body: encodeFanout(message),
-      }),
-    );
-  const bestEffort = async (message: FanoutMessage): Promise<void> => {
+  // A synthetic origin: the DO reads only the path and the body. The partition
+  // object answers 204, or 404 when no object of the partition holds a socket.
+  const send = async (
+    message: FanoutMessage,
+    body = encodeFanout(message),
+  ): Promise<number> => {
     try {
-      await send(message);
+      const response = await namespace
+        .get(namespace.idFromName(message.partition))
+        .fetch(
+          new Request(`https://do${REALTIME_DO_FANOUT_PATH}`, {
+            method: 'POST',
+            body,
+          }),
+        );
+      return response.status;
     } catch {
-      // The commit is durable; see the doc above.
+      return 0;
     }
   };
+  const deliver = async (message: FanoutMessage): Promise<void> => {
+    const body = encodeFanout(message);
+    const status = await send(message, body);
+    if (status === 204 || status === 404) return;
+    options.waitUntil(
+      (async () => {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          await (options.retryDelay?.(attempt) ??
+            new Promise((resolve) =>
+              setTimeout(resolve, 250 * 4 ** (attempt - 1)),
+            ));
+          const retried = await send(message, body);
+          if (retried === 204 || retried === 404) return;
+        }
+        if (options.events !== undefined) {
+          emitEvent(options.events, {
+            type: 'realtime.relay_failed',
+            atMs: Date.now(),
+            partition: message.partition,
+            ...('commit' in message
+              ? { commitSeq: message.commit.commitSeq }
+              : {}),
+            attempts: 4,
+          });
+        }
+      })(),
+    );
+  };
   return {
-    notifyCommit: (partition, commit) => bestEffort({ partition, commit }),
+    notifyCommit: (partition, commit) => deliver({ partition, commit }),
     notifySubscriptions: (partition, clientId) =>
-      bestEffort({ partition, clientId }),
+      deliver({ partition, clientId }),
     async refreshScopes(partition, actorId) {
-      const response = await send({
+      const status = await send({
         partition,
         refresh: actorId === undefined ? {} : { actorId },
       });
-      // 404: no object of the partition holds a socket.
-      if (response.status !== 204 && response.status !== 404) {
+      if (status !== 204 && status !== 404) {
         throw new SyncError(
           'sync.internal_error',
           'realtime scope refresh failed',
-          JSON.stringify({ status: response.status }),
+          JSON.stringify({ status }),
         );
       }
     },
@@ -599,14 +651,20 @@ export class SyncularRealtimeHost<
       );
       const withRing = {
         ...config,
-        ...(this.#config.namespace !== undefined
-          ? { fanout: durableObjectRealtimeNotifier(this.#config.namespace) }
-          : {}),
         events:
           config.events !== undefined
             ? composeEvents(ring, config.events)
             : ring,
       };
+      if (this.#config.namespace !== undefined) {
+        withRing.fanout = durableObjectRealtimeNotifier(
+          this.#config.namespace,
+          {
+            waitUntil: (promise) => this.#state.waitUntil(promise),
+            events: withRing.events,
+          },
+        );
+      }
       const hub = createRealtimeHub(withRing);
       const cap = hub.maxPresenceBytes;
       this.#presenceReserve =

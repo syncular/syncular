@@ -23,6 +23,7 @@ import {
   PostgresServerStorage,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
+  type SyncularServerEvent,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
@@ -235,7 +236,9 @@ test('the partition object drops a shard without sockets unless it registered ag
   });
   expect((await register('empty', 'first')).status).toBe(204);
   expect((await register('returning', 'first')).status).toBe(204);
-  await durableObjectRealtimeNotifier(namespace).notifyCommit('part-1', {
+  await durableObjectRealtimeNotifier(namespace, {
+    waitUntil: () => {},
+  }).notifyCommit('part-1', {
     commitSeq: 1,
     createdAtMs: 0,
     actorId: 'actor-1',
@@ -323,7 +326,9 @@ test('a failed relay is owed to the shard and retried from the alarm until it an
       body: JSON.stringify({ shard: 'flaky', token: 'first' }),
     }),
   );
-  const notifier = durableObjectRealtimeNotifier(namespace);
+  const notifier = durableObjectRealtimeNotifier(namespace, {
+    waitUntil: () => {},
+  });
   for (const commitSeq of [4, 7]) {
     if (commitSeq === 7) statuses.unshift(503);
     await notifier.notifyCommit('part-1', {
@@ -343,4 +348,61 @@ test('a failed relay is owed to the shard and retried from the alarm until it an
   expect(state.values.has('owed:flaky')).toBe(false);
   expect(statuses).toEqual([]);
   await db.close();
+});
+
+test('the notifier retries a failed request to the partition object, then reports it', async () => {
+  const commit = {
+    commitSeq: 9,
+    createdAtMs: 0,
+    actorId: 'actor-1',
+    changes: [],
+  };
+  const run = async (statuses: number[]) => {
+    const pending: Promise<unknown>[] = [];
+    const events: SyncularServerEvent[] = [];
+    const delays: number[] = [];
+    let requests = 0;
+    const notifier = durableObjectRealtimeNotifier(
+      {
+        idFromName: (name) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            requests += 1;
+            return new Response(null, { status: statuses.shift() ?? 503 });
+          },
+        }),
+      },
+      {
+        waitUntil: (promise) => pending.push(promise),
+        events: { emit: (event) => events.push(event) },
+        retryDelay: async (attempt) => {
+          delays.push(attempt);
+        },
+      },
+    );
+    // The push sees no failure: the first attempt fails, the retries run
+    // in waitUntil.
+    await notifier.notifyCommit('part-1', commit);
+    await Promise.all(pending);
+    return { requests, events, delays };
+  };
+  // Fails twice, then the partition object takes it: no event.
+  expect(await run([503, 500, 204])).toEqual({
+    requests: 3,
+    events: [],
+    delays: [1, 2],
+  });
+  // Every attempt fails: one event after the third retry.
+  expect(await run([])).toEqual({
+    requests: 4,
+    events: [
+      expect.objectContaining({
+        type: 'realtime.relay_failed',
+        partition: 'part-1',
+        commitSeq: 9,
+        attempts: 4,
+      }),
+    ],
+    delays: [1, 2, 3],
+  });
 });

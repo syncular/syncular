@@ -839,10 +839,18 @@ export class RealtimeSession {
   async refreshRegistrations(failClosed: boolean): Promise<void> {
     const generation = ++this.#registrationGeneration;
     let registrations: Registration[];
+    /** The live units of the reloaded record: a unit the client still lists. */
+    let listed = new Set<string>();
     try {
-      registrations = await this.#hub.loadRegistrations(
-        this,
-        await this.#storage.getClientRecord(this.partition, this.clientId),
+      const record = await this.#storage.getClientRecord(
+        this.partition,
+        this.clientId,
+      );
+      registrations = await this.#hub.loadRegistrations(this, record);
+      listed = new Set(
+        (record?.registration?.units ?? [])
+          .map((scopes) => unitId(scopes))
+          .filter((id) => !record?.catchingUp.some((unit) => unit.id === id)),
       );
     } catch {
       if (!failClosed) {
@@ -866,12 +874,14 @@ export class RealtimeSession {
     this.reconcilePresence(previousKeys);
     // §8.7: a host refresh that removes or narrows a registration wakes the
     // session, so its client runs the round whose §3.3 revocation purge
-    // drops the rows it lost. A registration survives when the same unit
-    // and table come back with every previous scope value still allowed.
+    // drops the rows it lost. A round-end or post-pull reload wakes it when a
+    // unit the client still lists lost scopes: the round may have answered
+    // the unit active before the grant went. A registration survives when the
+    // same unit and table come back with every previous scope value allowed.
     if (
-      failClosed &&
       previous.some(
         (old) =>
+          (failClosed || listed.has(old.id)) &&
           !registrations.some(
             (next) =>
               next.id === old.id &&

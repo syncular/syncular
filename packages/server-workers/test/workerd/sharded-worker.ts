@@ -150,10 +150,12 @@ function syncConfig(
 }
 
 const handler = createWorkersFetchHandler<Env>({
-  config: (env) => ({
+  config: (env, ctx) => ({
     config: {
       ...syncConfig(env, new PostgresServerStorage(serviceExecutor(env.PG))),
-      realtime: durableObjectRealtimeNotifier(env.REALTIME),
+      realtime: durableObjectRealtimeNotifier(env.REALTIME, {
+        waitUntil: (promise) => ctx.waitUntil(promise),
+      }),
     },
     authenticate: async () => ({ actorId: 'actor-1', partition: PARTITION }),
   }),
@@ -183,10 +185,9 @@ export default {
       return new Response(null, { status: 204 });
     }
     if (url.pathname === '/refresh') {
-      await durableObjectRealtimeNotifier(env.REALTIME).refreshScopes(
-        PARTITION,
-        url.searchParams.get('actor') ?? '',
-      );
+      await durableObjectRealtimeNotifier(env.REALTIME, {
+        waitUntil: (promise) => ctx.waitUntil(promise),
+      }).refreshScopes(PARTITION, url.searchParams.get('actor') ?? '');
       return new Response(null, { status: 204 });
     }
     if (url.pathname === '/fail-next') {

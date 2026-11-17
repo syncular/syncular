@@ -138,6 +138,11 @@ export class FakeDurableObjectState implements DurableObjectStateLike {
         [...this.values].filter(([key]) => key.startsWith(prefix)),
       ),
   };
+  /** Promises handed to `waitUntil`, for a test to await. */
+  readonly pending: Promise<unknown>[] = [];
+  waitUntil(promise: Promise<unknown>): void {
+    this.pending.push(promise);
+  }
   acceptWebSocket(ws: WebSocketLike): void {
     this.#sockets.push(ws);
   }
