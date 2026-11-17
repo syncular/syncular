@@ -2786,6 +2786,33 @@ took more than 140 s in chunks of 22 to 98 rows, and the 250 ms rule took
 64 s with transactions of up to 881 ms. The floor bounds the commit count at
 one per 1,024 rows on any storage.
 
+A client whose replica lives in OPFS creates a new database with 64 KiB pages:
+the TypeScript client in `openPersistentWasmDatabase`, the Rust client when it
+opens a file replica on `wasm32-unknown-unknown`. A database that already
+holds tables keeps its page size; neither client converts it, because SQLite
+changes the page size of a populated database only with `VACUUM`. Native file
+replicas keep SQLite's default.
+
+DECISION (2026-11-17): new OPFS replicas use 64 KiB pages. The `opfs-sahpool`
+VFS writes one page per `FileSystemSyncAccessHandle` call. A web app measured
+a call at about 0.27 ms in a private Chromium window (OPFS in memory) and
+0.007 ms on disk, whatever its size, and 92 % of the worker's time inside
+`write` while it applied an image. A Playwright lane bootstrapped 60,572
+catalogue codes of about 2 KB and 78,540 relations, in 32 MiB range images,
+through the reference server and the TypeScript client into a new replica at
+each page size (Apple M5 Pro, Playwright 1.65.1 Chromium, two runs each). In an
+ephemeral context (OPFS in memory) the import took 88.4 and 105.6 s at 4 KiB,
+14.7 and 30.1 s at 16 KiB, 4.6 and 9.6 s at 32 KiB and 3.7 and 4.7 s at
+64 KiB; on a persistent profile 4.9 and 4.2 s, 3.0 and 3.4 s, 2.9 and 2.7 s,
+and 2.5 and 2.6 s. Small commits showed no consistent cost of the larger page:
+the median 1-row local write with its outbox entry took 3.3 to 3.4 ms at
+4 KiB and 3.3 to 6.5 ms at 64 KiB on disk, 12.8 to 13.7 and 10.7 to 16.2 ms in
+memory; a pull that applies one commit took 8.6 to 9.9 and 8.5 to 9.6 ms on
+disk, 18.8 to 21.4 and 16.3 to 25.7 ms in memory. The chunk rule stays: at
+4 KiB in memory the 250 ms budget shrank the import to 136 to 139 commits, and
+at 64 KiB it committed 27 to 28, the count on disk, so a read waits at most one
+chunk on either storage.
+
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version
 detail that no cross-implementation canon can reasonably pin. The

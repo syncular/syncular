@@ -1832,20 +1832,25 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
     Ok(Some(version))
 }
 
-/// A file replica on a browser worker must recover a hot journal before any
-/// statement reads it. `wasm_vfs` replaces the installed OPFS VFS's reserved
-/// lock callback, so install it before the connection opens its file.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn prepare_wasm_replica(path: &str) -> Result<(), String> {
-    if path.is_empty() || path == ":memory:" {
-        return Ok(());
+/// Open a replica file. On a browser worker the file must recover a hot
+/// journal before any statement reads it: `wasm_vfs` replaces the installed
+/// OPFS VFS's reserved lock callback before the connection opens its file. A
+/// new browser replica uses 64 KiB pages (§5.3), because every OPFS call costs
+/// the same whatever its size; a database with tables keeps its page size.
+fn open_replica(path: &str) -> Result<Connection, String> {
+    let browser = cfg!(all(target_arch = "wasm32", target_os = "unknown"))
+        && !path.is_empty()
+        && path != ":memory:";
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if browser {
+        crate::wasm_vfs::disable_foreign_lock_check()?;
     }
-    crate::wasm_vfs::disable_foreign_lock_check()
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn prepare_wasm_replica(_path: &str) -> Result<(), String> {
-    Ok(())
+    let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+    if browser {
+        conn.execute_batch("PRAGMA page_size = 65536")
+            .map_err(|e| format!("open db {path:?}: {e}"))?;
+    }
+    Ok(conn)
 }
 
 impl SyncClient {
@@ -1881,8 +1886,7 @@ impl SyncClient {
     ) -> Result<Self, String> {
         validate_client_limits(&limits)?;
         parse_schema_json(schema_json)?;
-        prepare_wasm_replica(path)?;
-        let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+        let conn = open_replica(path)?;
         Self::with_connection(client_id, schema_json, limits, conn)
     }
 
@@ -1915,8 +1919,7 @@ impl SyncClient {
         // §7.4.2: an invalid requested version is refused before the replica is
         // even created, so a rejected constructor leaves no file behind.
         parse_schema_json(schema_json)?;
-        prepare_wasm_replica(path)?;
-        let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+        let conn = open_replica(path)?;
         // A file-backed native client uses an independent read connection for
         // latency-critical snapshots. WAL is SQLite's intended reader/writer
         // concurrency mode: a view read never holds a rollback-journal lock

@@ -70,6 +70,7 @@ export interface OpfsProbe {
   integrity: unknown;
   sqliteVersion: string;
   journal: unknown;
+  pageSize: unknown;
   synchronous: unknown;
   ftsCount: number;
   ftsIntegrity: string;

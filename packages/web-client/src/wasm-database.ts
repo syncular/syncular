@@ -561,12 +561,17 @@ export async function openPersistentWasmDatabase(
     await util.unpauseVfs();
     db = new util.OpfsSAHPoolDb(`/${name}.db`);
     configureSahCrashRecovery(db, sqlite3);
-    return new WasmClientDatabase(
+    const database = new WasmClientDatabase(
       db,
       sqlite3,
       { util, lease },
       { fenced: false, siblings: new Set() },
     );
+    // §5.3: a new replica uses 64 KiB pages, because every sync-access-handle
+    // call costs the same whatever its size. A database with tables keeps its
+    // page size.
+    database.exec('PRAGMA page_size=65536');
+    return database;
   } catch (error) {
     db?.close();
     util?.pauseVfs();

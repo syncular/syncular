@@ -294,6 +294,7 @@ coordinator releases it after `close`.
 | Property | Behavior |
 |---|---|
 | Persistence | OPFS through `opfs-sahpool`. It needs no COOP/COEP headers and no `SharedArrayBuffer`. |
+| Page size | A new database gets 64 KiB pages. The VFS writes one page per access-handle call, and a call costs about 0.27 ms in a private window whatever its size: a 60,572-row catalogue imports in 3.7 to 4.7 s there against 88 to 106 s with 4 KiB pages ([SPEC §5.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#53-sqlite-segments-mediatype--sqlite--premier-path)). A database created by an earlier release keeps its page size. |
 | Browsers without OPFS | Unsupported. `openPersistentWasmDatabase` throws immediately. |
 | Other storage | The client does not use IndexedDB. No wa-sqlite or absurd-sql style fallback is planned. |
 | Storage class | OPFS starts in the best-effort bucket. Use the persistence calls above to establish and surface the browser's decision. |

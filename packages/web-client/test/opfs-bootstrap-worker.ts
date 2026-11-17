@@ -94,6 +94,7 @@ scope.addEventListener('message', (event: MessageEvent) => {
           database.query('SELECT sqlite_version() AS version')[0]?.version,
         ),
         journal: database.query('PRAGMA journal_mode'),
+        pageSize: database.query('PRAGMA page_size'),
         synchronous: database.query('PRAGMA synchronous'),
         ftsCount: Number(
           database.query(
