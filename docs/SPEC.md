@@ -6737,6 +6737,27 @@ An in-flight removal or reset MUST NOT be acknowledged as retained ownership.
 A failed window edit can have committed a prefix. The ownership coordinator MUST
 invalidate its cached acknowledgement and reconcile later claims through the core.
 
+A client core that yields to local reads during a sync round (the TypeScript
+client) MUST NOT hold a widening window change until the round ends. The widen
+registers its units the way `subscribe` does (§4.1), each value in its own
+transaction, so a claim that adds a unit whose bootstrap finished reads complete
+coverage before the import's next chunk. A shrink waits for the round, because
+eviction yields between its chunks (§4.8). A later change of the same base
+supersedes a shrink that has not started. The Rust client runs window changes on
+its serialized owner, which holds the whole round, so a native claim that widens
+waits for the round.
+
+DECISION (2026-11-17): a widen does not wait for the round. A web app's reader
+whose claim added an already complete unit stayed `loading` until the round
+importing another unit's 36 MB range image ended. In headless Chromium with an
+ephemeral profile (OPFS in memory), a query over 2,000 complete rows whose claim
+widened the window became `ready` after 7,147 ms and 29 import chunks while the
+TypeScript client held the widen behind the round, and after 178 ms and 2 chunks
+with the widen applied at once. With OPFS on disk it took 504 ms and 10 chunks
+against 64 ms and 2 chunks. A query whose units the window already held was
+`ready` after one chunk either way (274 and 299 ms in memory, 45 and 47 ms on
+disk).
+
 The reference clients use the same automatic import behavior for rows segments
 and SQLite images. Each rows block or image chunk commits before the host yields
 to local reads. Pending optimistic edits MUST be reapplied before the chunk's

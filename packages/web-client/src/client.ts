@@ -127,7 +127,6 @@ import {
   ChangeAccumulator,
   ChangeEmitter,
   type ClientChangeListener,
-  type CommandEffects,
   type CommandResult,
   InvalidationEmitter,
   type InvalidationListener,
@@ -957,6 +956,8 @@ export class SyncClient {
   #transportEnabled: boolean;
   #transportEpoch = 0;
   #registrationEpoch = 0;
+  /** The units of each window base's latest `setWindow` (§4.8). */
+  readonly #windowTargets = new Map<string, ReadonlySet<string>>();
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
   readonly #retainFailedCommits: boolean;
@@ -1151,8 +1152,7 @@ export class SyncClient {
           ? 'unsupported'
           : 'disconnected';
     this.#encryption = config.encryption;
-    this.#securityLifecycle =
-      config.securityPreflight === true ? 'preflight' : 'active';
+    this.#securityLifecycle = config.securityPreflight ? 'preflight' : 'active';
     this.#now = config.now ?? Date.now;
     const outcomeRetentionMaxEntries =
       config.limits?.outcomeRetentionMaxEntries ?? 1_000;
@@ -3242,46 +3242,47 @@ export class SyncClient {
   ): Promise<CommandResult<void>> {
     this.#requireActive();
     let changed = false;
-    // Serialize the whole edit: a shrink yields between eviction chunks, so
-    // without the chain a delta apply or another setWindow could interleave.
-    await this.#serialize(async () => {
-      const baseKey = windowBaseKey(base);
-      const wanted = new Set(units);
-      const live = loadWindowUnits(this.#db, baseKey);
-      const held = new Set(live.map((entry) => entry.value));
-      for (const value of wanted) {
-        if (held.has(value)) continue;
-        this.#applyBatch((batch) => {
-          const { id, changed: registered } = this.#holdUnit(
-            windowUnitScopes(base, value),
-            false,
-          );
-          this.#db.exec(
-            `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
-            [baseKey, value, id],
-          );
-          if (registered) this.#needsPull = true;
-          batch.window(baseKey, value);
-          batch.status();
-        });
-        changed = true;
-        this.#registrationEpoch += 1;
-      }
-      for (const { value, unitId: id } of live) {
-        if (wanted.has(value)) continue;
-        await this.#releaseWindowUnit(baseKey, value, id);
-        changed = true;
-        this.#registrationEpoch += 1;
-      }
-    });
-    const effects: CommandEffects = {
-      sync:
-        this.#transportEnabled && changed
-          ? { kind: 'interactive' }
-          : { kind: 'none' },
+    const baseKey = windowBaseKey(base);
+    const wanted = new Set(units);
+    const live = loadWindowUnits(this.#db, baseKey);
+    // §7.8: a widen registers like `subscribe` and never waits for a
+    // running round.
+    for (const value of wanted) {
+      if (live.some((entry) => entry.value === value)) continue;
+      this.#applyBatch((batch) => {
+        const { id, changed: registered } = this.#holdUnit(
+          windowUnitScopes(base, value),
+          false,
+        );
+        this.#db.exec(
+          `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
+          [baseKey, value, id],
+        );
+        this.#needsPull ||= registered;
+        batch.window(baseKey, value);
+        batch.status();
+      });
+      changed = true;
+      this.#registrationEpoch += 1;
+    }
+    this.#windowTargets.set(baseKey, wanted);
+    // A shrink yields between eviction chunks, so it runs on the chain; a
+    // later change of the base supersedes a release that has not run.
+    const leaving = live.filter((entry) => !wanted.has(entry.value));
+    if (leaving.length > 0)
+      await this.#serialize(async () => {
+        for (const { value, unitId: id } of leaving) {
+          if (this.#windowTargets.get(baseKey) !== wanted) return;
+          await this.#releaseWindowUnit(baseKey, value, id);
+          changed = true;
+          this.#registrationEpoch += 1;
+        }
+      });
+    const sync: SyncIntent = {
+      kind: this.#transportEnabled && changed ? 'interactive' : 'none',
     };
-    if (effects.sync.kind === 'interactive') this.#emitSyncIntent(effects.sync);
-    return { value: undefined, effects };
+    if (sync.kind !== 'none') this.#emitSyncIntent(sync);
+    return { value: undefined, effects: { sync } };
   }
 
   /**
@@ -4673,7 +4674,7 @@ export class SyncClient {
       if (unseen !== undefined) this.#roundFailureCode = unseen;
       // §7.8: a round the drive deadline aborted ends with the deadline's
       // error, whichever transport call observed the abort.
-      const error: unknown = signal?.aborted === true ? signal.reason : caught;
+      const error: unknown = signal?.aborted ? signal.reason : caught;
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
       // in leaseState (no local-data purge, §7.3.4) and re-throw. Not a
       // silent retry: the app drives recovery to a live resolver. The

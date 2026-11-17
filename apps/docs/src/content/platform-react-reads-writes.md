@@ -103,6 +103,9 @@ A query hook requests a local snapshot while its window claim registers. A
 complete cached window renders at once, and incomplete coverage stays `partial`.
 A registration failure stays visible even when the snapshot holds rows, so
 handle the query `error` and `useRetainedWindow().error` in the owning view.
+A claim that adds a unit registers without waiting for a running sync round,
+so a query over a unit that already finished its bootstrap turns `ready`
+within about one import chunk. A released claim evicts after the running round.
 Imports and cache eviction yield between committed chunks automatically. See
 [Windowed sync](/concepts-windowing/) for coverage semantics.
 

@@ -1,22 +1,16 @@
 /**
- * Operation-serialization (the core owns one loop): every transaction-entering
- * ASYNC operation — a pull round and `setWindow` — runs serialized on one
- * chain so no two interleave their SQLite transactions (or share the `#batch`
- * accumulator) at an `await` point.
+ * Operation serialization (the core owns one loop): a pull round and the
+ * shrink half of `setWindow` run on one chain, so no two interleave their
+ * SQLite transactions (or share the `#batch` accumulator) at an `await`
+ * point. A widen commits in one synchronous transaction, so it runs between a
+ * round's transactions without waiting for the round (§7.8).
  *
- * This is a DETERMINISTIC interleaving test: it forces the collision through
- * promise-ordering on the injectable segment-download seam, never sleeps. A
- * bootstrap `sync()` suspends inside `#processResponse` at
+ * A bootstrap `sync()` suspends inside `#processResponse` at
  * `await this.#downloadSegment` (a real await BETWEEN the segment-apply
- * transactions); while it is suspended a `setWindow` is driven, whose widen
- * transaction — absent the `#opChain` serialization — would interleave with
- * the pull's apply transactions and corrupt the shared apply state. The probe
- * is a `ClientDatabase` wrapper that COUNTS any moment two top-level
- * transactions are open at once on the connection (the single-threaded,
- * deterministic analogue of "cannot start a transaction within a
- * transaction"). Before the fix the interleave wedges both operations (and,
- * when it does not wedge, records a violation); after it, they serialize and
- * both settle promptly with zero violations.
+ * transactions); while it is suspended a widen is driven. The probe is a
+ * `ClientDatabase` wrapper that COUNTS any moment two top-level transactions
+ * are open at once on the connection (the single-threaded, deterministic
+ * analogue of "cannot start a transaction within a transaction").
  */
 
 import { afterEach, expect, test } from 'bun:test';
@@ -165,10 +159,7 @@ function makeProbeClient(
   return { client, db };
 }
 
-test('setWindow does not interleave with a bootstrap pull (§4.8, §8.2, one loop)', async () => {
-  // Without SyncClient's #opChain the interleave corrupts the shared apply
-  // state and WEDGES both operations — a regression surfaces as this bounded
-  // timeout (and, when it does not wedge, as a nonzero `violations` count).
+test('a widen settles while a bootstrap pull is suspended and never interleaves with it (§4.8, §7.8)', async () => {
   const server = makeServer();
   server.limits.inlineSegmentMaxBytes = 0; // force SEGMENT_REF → download await
 
@@ -206,30 +197,12 @@ test('setWindow does not interleave with a bootstrap pull (§4.8, §8.2, one loo
   // The pull is now suspended at the gated segment download, mid-apply.
   await gate.started;
 
-  // Drive a window widen while the pull is suspended. Its widen transaction
-  // must NOT interleave with the pull's segment-apply transactions. Without
-  // #opChain it would, tripping the overlap probe.
-  const widen = reader.client.setWindow({ variable: 'project_id' }, [
-    'winA',
-    'winB',
-  ]);
-  await new Promise((r) => setTimeout(r, 5));
+  // The widen settles while the pull is still suspended at the gate.
+  await reader.client.setWindow({ variable: 'project_id' }, ['winA', 'winB']);
   gate.passthrough();
-
-  // Bound the settle: without serialization the interleave corrupts the
-  // shared apply state and wedges the operations, so surface that as an
-  // explicit assertion (a `false` completion) rather than the harness
-  // timeout. With serialization both settle promptly.
-  const settled = await Promise.race([
-    Promise.allSettled([firstPull, widen]).then(() => true),
-    new Promise<boolean>((r) => setTimeout(() => r(false), 1500)),
-  ]);
-  expect(settled).toBe(true); // both operations completed — no wedge
-  await new Promise((r) => setTimeout(r, 5));
-
-  // And the transactions never interleaved.
+  await firstPull;
   expect(reader.db.violations).toBe(0);
   await reader.client.syncUntilIdle();
   const rows = reader.client.query('SELECT id FROM tasks ORDER BY id', []);
   expect(rows.map((row) => row.id)).toEqual(['a1', 'b1']);
-}, 3000);
+});

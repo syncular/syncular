@@ -232,7 +232,10 @@ async function scripted(db = new BunClientDatabase()) {
     client
       .query(`SELECT id FROM ${table} ORDER BY id`)
       .map((row) => String(row.id));
-  /** Deliver one delta (§8.2) and wait for its serialized apply. */
+  /**
+   * Deliver one delta (§8.2) and wait for its serialized apply: a delta
+   * carries no segment, so it applies without a host yield.
+   */
   const delta = async (frames: ResponseFrame[] | Uint8Array) => {
     handlers[handlers.length - 1]!.onBinary(
       new Uint8Array([
@@ -241,8 +244,6 @@ async function scripted(db = new BunClientDatabase()) {
       ]),
     );
     await settle();
-    // The window edit runs after the delta on the operation chain.
-    await client.setWindow({ variable: 'project_id' }, []);
   };
   return { client, db, requests, last, round, ids, delta, acks };
 }
@@ -908,6 +909,81 @@ describe('§4.8 windows as sets of units', () => {
       ...live(4),
     );
     expect(ids('notes')).toEqual(['n1', 'n2']);
+  });
+
+  /** p2's bootstrap with one committed chunk per tasks block. */
+  const p2Chunks = () => [
+    start(unitId(P2), { bootstrap: true }),
+    rows('notes'),
+    {
+      type: 'SEGMENT_INLINE' as const,
+      payload: encodeRowsSegment({
+        table: 'tasks',
+        schemaVersion: 1,
+        columns: TASKS,
+        blocks: ['a', 'b', 'c'].map((id) => [
+          { serverVersion: 1, values: [`t2${id}`, 'p2', id] },
+        ]),
+      }),
+    },
+    { type: 'SUB_END' as const, nextCursor: 3 },
+    ...live(3),
+  ];
+
+  test('§7.8: a widen during a segment apply lands before the next chunk', async () => {
+    const { client, round } = await scripted();
+    const base = { variable: 'project_id' };
+    client.subscribe(P1);
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks')]),
+      ...live(3),
+    );
+    await client.setWindow(base, ['p2']);
+    let chunks = 0;
+    let widened: number | undefined;
+    client.onChange((batch) => {
+      if (!batch.tables.some((entry) => entry.table === 'tasks')) return;
+      chunks += 1;
+      if (chunks === 1)
+        void client.setWindow(base, ['p1', 'p2']).then(() => {
+          widened = chunks;
+        });
+    });
+    await round(...p2Chunks());
+    expect(chunks).toBe(3);
+    // p1 finished its bootstrap before: the widen alone makes it complete.
+    expect(widened).toBe(1);
+    expect(client.windowState(base)).toEqual({
+      units: ['p1', 'p2'],
+      pending: [],
+    });
+  });
+
+  test('§7.8: a later window change supersedes a shrink that waits for the round', async () => {
+    const { client, round, ids } = await scripted();
+    const base = { variable: 'project_id' };
+    await client.setWindow(base, ['p1', 'p2']);
+    await round(...bootstrap(P1, 3, [rows('notes'), rows('tasks')]));
+    let chunks = 0;
+    const settled: string[] = [];
+    client.onChange((batch) => {
+      if (!batch.tables.some((entry) => entry.table === 'tasks')) return;
+      chunks += 1;
+      if (chunks !== 1) return;
+      void client.setWindow(base, ['p1']).then(() => settled.push('shrink'));
+      void client
+        .setWindow(base, ['p1', 'p2'])
+        .then(() => settled.push('widen'));
+    });
+    await round(...p2Chunks());
+    await settle();
+    expect(settled).toEqual(['widen', 'shrink']);
+    // p2 stayed: no eviction, no fresh bootstrap.
+    expect(client.windowState(base)).toEqual({
+      units: ['p1', 'p2'],
+      pending: [],
+    });
+    expect(ids('tasks')).toEqual(['t2a', 't2b', 't2c']);
   });
 });
 
