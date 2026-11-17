@@ -1,5 +1,29 @@
 # Syncular release notes
 
+## 0.77.4 release notes
+
+A claim that widens a window no longer waits for the running sync round
+(SYNCULAR-READ-DURING-APPLY-001, SPEC §7.8). Local reads in the browser worker
+already ran between import chunks. `setWindow` did not: it ran on the operation
+chain that `#runSync` holds for the whole round, segment downloads and image
+imports included. A reactive claim that added an already complete unit
+therefore left its query `loading` until another unit's 36 MB range image
+finished importing.
+
+- A widen registers its units at once, each value in its own transaction, the
+  way `subscribe` does. A shrink still waits for the round, because eviction
+  yields between its chunks. A later change of the same base supersedes a
+  shrink that has not started, so a unit removed and re-added keeps its rows.
+- Headless Chromium, 32 MiB range images, 60,000 rows importing for another
+  unit, a new query over 2,000 complete rows: ephemeral profile 7,147 ms and
+  29 chunks before, 178 ms and 2 chunks after; persistent profile 504 ms
+  before, 64 ms after.
+- The Rust client runs window changes on its serialized owner, which holds
+  the whole round; a native claim that widens still waits for the round.
+  Native reads go through the snapshot reader and do not wait.
+
+**Upgrade notes.** None.
+
 ## 0.77.3 release notes
 
 `scanRows` seeks the scope variable with the fewest index entries

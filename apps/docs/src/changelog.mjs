@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A claim that widens the window does not wait for the round',
+    body: "The TypeScript client ran every `setWindow` on the operation chain that a sync round holds for its whole length, segment downloads and image imports included. A live query whose claim added an already complete unit stayed `loading` until another unit's range image finished importing: 7.1 s in an ephemeral Chromium profile. A widen now registers its units at once, like `subscribe`; only a shrink waits for the round. The same query is `ready` after 178 ms, two import chunks.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/#cached-reads-during-sync',
+        label: 'Cached reads during sync',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'A scan seeks the scope variable with the fewest index entries',
     body: "A `scanRows` with two or more scope variables sought the scope index with the alphabetically first one, so the bootstrap of one release among 20 read every row of the shared availability: 100,000 index entries in 101 statements, and a release without rows cost 1,563 statements. Every shipped storage now counts each variable's entries in one bounded statement, seeks the variable with the fewest and remembers the choice per filter. The same bootstrap reads 57,000 entries in 9 statements, and a release without rows costs one statement.",
     links: [
