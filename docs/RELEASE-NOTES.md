@@ -1,5 +1,32 @@
 # Syncular release notes
 
+## 0.77.2 release notes
+
+A drive deadline that elapses across completed rounds ends the drive as budget
+exhaustion (SYNCULAR-DRIVE-DEADLINE-001, SPEC §7.8). A bootstrap whose rounds
+each took 40 % of the 60 s deadline failed in its third round with
+`sync.idle_timeout`, a failed `lastRound` and failed progress, although every
+round had applied rows.
+
+- Both cores check the deadline on the client clock before each round after
+  the first. A drive past it resolves with `budgetExhausted: true` and the
+  aggregate report, records no failed round and leaves progress at its last
+  completed round.
+- Each round is bounded by `timeoutMs` from its own start. A round that
+  reaches the bound fails with the retryable `sync.idle_timeout` (details
+  `timeoutMs`, `rounds`), so a transport that never answers still ends the
+  drive. A drive therefore ends at most one round bound after its deadline.
+- The Tauri plugin's owner thread and the React Native auto-sync loop now
+  start the next drive at once after an exhausted drive, as
+  `installSyncScheduler` and the worker core already did. The Tauri
+  `syncUntilIdle` command accepts `timeoutMs`.
+- Rust: `PreparedSyncRound::set_idle_deadline` sets the bound for a host that
+  drives rounds itself; Rust now emits the 250 ms background intent after
+  `sync.idle_timeout` like TypeScript.
+
+**Upgrade notes.** A caller that treated `sync.idle_timeout` as the signal
+to drive again receives `budgetExhausted` in the progress case instead.
+
 ## 0.77.1 release notes
 
 Row and commit validators receive the authentication context

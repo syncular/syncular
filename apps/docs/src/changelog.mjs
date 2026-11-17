@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A drive deadline after completed rounds is not a failure',
+    body: 'A `syncUntilIdle` drive whose rounds each made progress but together passed the 60 s deadline rejected with `sync.idle_timeout`, recorded a failed round and turned progress `failed` in the middle of a healthy bootstrap. Both cores now check the deadline before each round after the first: a drive past it resolves with `budgetExhausted` and the aggregate report, and every host loop starts the next drive at once. Each round keeps its own bound of `timeoutMs`, so a transport that never answers still ends in `sync.idle_timeout`.',
+    links: [
+      {
+        href: '/troubleshooting/',
+        label: 'Troubleshooting',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'Validators see the authentication context',
     body: "The context `authenticate` returns now reaches the row validators' ambient context and the commit validator's input, over HTTP and the socket, so a host can refuse every push of a read-only session while the same person pushes from their own device.",
     links: [
