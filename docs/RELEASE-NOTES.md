@@ -1,5 +1,47 @@
 # Syncular release notes
 
+## 0.79.0 release notes
+
+A Workers topology on PostgreSQL that keeps rounds out of the partition's
+Durable Object (SYNCULAR-WORKERS-PULL-TOPOLOGY-001, SPEC §6.8, §8.7, §8.9). The
+documented setup forwarded every `/sync` request to the partition's object,
+which also held every realtime socket; in Diego's production one object
+carried 1,172 requests in three hours, and private segment downloads waited
+3.3 s on average.
+
+- `WorkersRealtimeOptions.shard(identity, request)`: with it, `/sync` and
+  `/operations` run in the stateless Worker. Pushes stay serialized by the
+  PostgreSQL partition lock (§6.3) wherever the round runs. Realtime sockets
+  live in shard objects named by the partition and the shard key; the
+  partition's object holds no socket, keeps the registered shards in its
+  storage and relays each commit to them. Each commit costs one request plus
+  one per shard that holds sockets. D1 together with sharding is refused.
+- Delivery: a relay to a shard that fails with anything other than the shard's
+  404 is retried by the partition's object on its alarm, and the shard wakes
+  the affected sessions with `catchup-required`. The hop from the applying
+  Worker to the partition's object runs inline and is retried three times in
+  `waitUntil` (250 ms, 1 s, 4 s); after the last failure the server emits
+  `realtime.relay_failed`, and the push stays successful.
+- `refreshScopes(partition, actorId?)` on the notifier reaches every shard,
+  so a revoked grant stops deltas to sessions in every object.
+- `prepareReadTransaction(tx, version, checkpoints)` and the optional
+  `StorageTransaction.pinSnapshot`: one consistent read without the push
+  lock (PostgreSQL `REPEATABLE READ READ ONLY`). A scope resolver should read
+  its authority graph this way, so a pull never waits on a push. D1 answers
+  `sync.storage.snapshot_unsupported`.
+- §8.7 fix, all realtime hosts: a registration reload at the end of a round or
+  after an HTTP pull that removes or narrows a unit the client still lists now
+  wakes the session with `catchup-required`. Before, the session kept the
+  rows until some later pull.
+
+**Upgrade notes.** `durableObjectRealtimeNotifier(namespace, { waitUntil,
+events?, retryDelay? })` requires `waitUntil` (pass `ctx.waitUntil` bound
+to the request context, or the Durable Object state's). The
+`/__syncular_realtime/wake` path is gone; a Worker deployed with this
+release must deploy its Durable Object classes from the same release.
+`DurableObjectStateLike` gains `waitUntil` and storage
+`get`/`put`/`delete`/`list`, which real Durable Object state already has.
+
 ## 0.78.3 release notes
 
 A reapplied image keeps the FTS entries of the rows it does not replace
