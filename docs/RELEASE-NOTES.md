@@ -1,5 +1,29 @@
 # Syncular release notes
 
+## 0.78.3 release notes
+
+A reapplied image keeps the FTS entries of the rows it does not replace
+(SYNCULAR-FTS-IMAGE-REAPPLY-001, SPEC §2.4, §5.3). The TypeScript client copied
+image rows with `ON CONFLICT DO UPDATE ... WHERE excluded version > held`.
+The projection's BEFORE INSERT guard fires before conflict resolution and
+removed the entry of every held row; for a row at the same version the update
+was skipped, so no AFTER trigger wrote the entry back. Any range received again
+for held rows lost their search: a changed range size, a re-bootstrap whose
+rows another unit keeps, overlapping units.
+
+- The image copy filters out rows the replica holds at the same or a newer
+  version, and the upsert for the remaining rows is unconditional. Only rows
+  that land reach the table write, and the existing triggers keep their
+  entries. The Rust client was not affected: its triggers sit on the visible
+  table, which the image path writes only for rows that landed.
+- Both cores compare the entry count of each FTS projection's mapping table
+  with the row count of its table on open and rebuild the projection when they
+  differ. On Diego's damaged replica (114,007 rows, 74,737 entries) the
+  rebuild restored all 114,007 entries in 4.2 s once; the check costs about
+  7 ms per open for a 114k-row table.
+
+**Upgrade notes.** None. Affected replicas repair on their first open.
+
 ## 0.78.2 release notes
 
 A bootstrap round cut between the chunks of a range image resumes after them

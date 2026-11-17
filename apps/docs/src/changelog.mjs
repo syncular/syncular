@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A reapplied image keeps every row findable',
+    body: "The TypeScript client copied image rows with a conditional upsert. The FTS projection's BEFORE INSERT guard removed the entry of every held row, and a row at the same version skipped the update, so nothing wrote the entry back: one returning profile lost search for all 39,270 rows of a release after its ranges arrived again. The image copy now filters out rows held at the same or a newer version. On open, both cores rebuild a projection whose entry count differs from its table's row count, so damaged replicas repair themselves.",
+    links: [
+      {
+        href: '/tooling-local-search/',
+        label: 'Local search',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'A cut bootstrap round resumes after its committed chunks',
     body: 'A bootstrap round cut in the middle of a range image downloaded that range again and applied it from its first row, because the record of applied segments lived in memory and named only completed ones; a private Chromium window stuck at 71 % for ten minutes. Both cores now persist, with each chunk, how many rows of each segment the unit applied at its current position, so a cut round, a recreated client or a restarted worker continues after the last committed chunk. In the TypeScript client the round bound now restarts whenever rows apply, so a round that keeps importing is never cut.',
     links: [
