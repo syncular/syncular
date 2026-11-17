@@ -1,5 +1,41 @@
 # Syncular release notes
 
+## 0.78.0 release notes
+
+One push request applies in one storage transaction (SYNCULAR-PUSH-ROUNDTRIPS-001,
+SPEC §6.4). Each commit of a request ran its own transaction with its own
+partition lock, serve-gate read and idempotency read. Over Hyperdrive at about
+13 ms a statement, a 10-commit request held the lock for over a second.
+
+- PostgreSQL and SQLite: one transaction and one partition lock per request.
+  One statement reads the serve gate, the idempotency record of every commit
+  and the row read-ahead of every commit. Each commit runs behind its own
+  savepoint (savepoint, row upsert, commit append), so a rejected commit rolls
+  back only itself and keeps its stored result; the other commits keep their
+  order and consecutive commit sequences. The results reach `sync_push_results`
+  in one statement before `COMMIT`.
+- PGlite, 10 one-row commits: 82 statements in 10 transactions before, 37 in
+  one after. An idempotent replay of the request: 22 statements before, 4 after.
+- PUSH_RESULT frames, realtime notifications and `reaction.queued` events
+  leave after the request commits, in commitSeq order, and never for a
+  rolled-back commit. The first PUSH_RESULT used to arrive after the first
+  commit.
+- A failure that is not a commit's own rejection (lost connection, storage
+  error other than a constraint violation, hook exception) rolls back the whole
+  request without a PUSH_RESULT; the client retries it.
+- D1 cannot read its own staged writes across commits, so it keeps one
+  `db.batch` per commit under the request's single serialization, gate read
+  and idempotency read. After a later failure the server notifies realtime of
+  the commits already persisted, and the retry replays them as cached.
+
+**Upgrade notes.** Custom storage adapters: `StorageTransaction.preparePushApply`
+takes every commit of the request (`PushApplyCommit[]`) and returns
+`persisted` as a function of the client commit id;
+`commitRejectedPushResult` is replaced by `rejectPushCommit`, which rolls
+back to the commit's savepoint and leaves the transaction open;
+`putPushResult` closes a commit. A storage that persists each commit when it
+closes sets `persistsCommitsOnClose`. The shipped storages need no change.
+
 ## 0.77.4 release notes
 
 A claim that widens a window no longer waits for the running sync round

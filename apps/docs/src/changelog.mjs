@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'One push request applies in one transaction',
+    body: 'Every commit of a push request ran its own transaction, so a request of 10 commits took the partition lock and read the serve gate 10 times: 82 statements on PostgreSQL, each a round trip under the lock. The server now applies a request in one transaction with one lock, one gate and idempotency read and one batched result insert; each commit writes behind its own savepoint and costs 3 statements. The same request takes 37 statements, and its idempotent replay 4 instead of 22.',
+    links: [
+      {
+        href: '/server-storage-reference/#push-path',
+        label: 'Push path',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'A claim that widens the window does not wait for the round',
     body: "The TypeScript client ran every `setWindow` on the operation chain that a sync round holds for its whole length, segment downloads and image imports included. A live query whose claim added an already complete unit stayed `loading` until another unit's range image finished importing: 7.1 s in an ephemeral Chromium profile. A widen now registers its units at once, like `subscribe`; only a shrink waits for the round. The same query is `ready` after 178 ms, two import chunks.",
     links: [
