@@ -329,6 +329,7 @@ async function constructClient(
 }> {
   const endpoints = options.endpoints;
   const nowMs = options.nowMs;
+  let clockMs = nowMs ?? 0;
   const fetchSegmentUrl = endpoints.fetchSegmentUrl?.bind(endpoints);
   const segments = Object.assign(
     (request: {
@@ -411,10 +412,11 @@ async function constructClient(
       : {}),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
-    ...(nowMs !== undefined ? { now: () => nowMs } : {}),
+    ...(nowMs !== undefined ? { now: () => clockMs } : {}),
     ...(encryption !== undefined ? { encryption } : {}),
     ...(previousVersionContext !== undefined ? { previousVersionContext } : {}),
     transport: async (bytes) => {
+      clockMs += options.syncClockStepMs ?? 0;
       const response = await endpoints.sync(bytes);
       const barrier = held;
       if (barrier !== undefined) {
@@ -847,9 +849,16 @@ class TsClientInstance implements ClientInstance {
     }
   }
 
-  async syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult> {
+  async syncUntilIdle(
+    maxRounds?: number,
+    timeoutMs?: number,
+  ): Promise<ClientSyncResult> {
     try {
-      const summary = await this.#client.syncUntilIdle(maxRounds);
+      const summary = await this.#client.syncUntilIdle(
+        timeoutMs === undefined
+          ? maxRounds
+          : { ...(maxRounds !== undefined ? { maxRounds } : {}), timeoutMs },
+      );
       const result = toReport(summary, summary.budgetExhausted);
       if (result.ok && result.report.schemaFloor === undefined) {
         this.#epochEstablished = true;

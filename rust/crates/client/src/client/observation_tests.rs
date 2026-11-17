@@ -1903,7 +1903,7 @@ fn a_subscription_holding_a_resume_token_raises_sync_needed() {
 }
 
 #[test]
-fn sync_until_idle_reports_its_total_deadline() {
+fn sync_until_idle_validates_its_total_deadline() {
     assert_eq!(SyncClient::SYNC_IDLE_TIMEOUT_MS, 60_000);
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
@@ -1915,25 +1915,201 @@ fn sync_until_idle_reports_its_total_deadline() {
         matches!(invalid, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.invalid_request"),
         "{invalid:?}"
     );
+}
 
-    // The expired deadline stops before the first round and reports how
-    // many rounds ran.
-    let now = client.clock_now_ms();
-    let outcome = client.sync_until_idle_bounded(&mut transport, None, now, Some(now));
+/// One response per round carrying one commit, so every round leaves more to
+/// pull; the client clock advances `step` per round.
+fn commit_rounds(client: &SyncClient, count: i64, step: i64) -> ScriptedSyncTransport {
+    let responses = (1..=count)
+        .map(|seq| {
+            let id = format!("row-{seq}");
+            let row = encode_row_json(
+                client.schema.table("tasks").unwrap(),
+                &id,
+                &Map::from_iter([("id".into(), json!(id)), ("project_id".into(), json!("p1"))]),
+                &client.encryption,
+            )
+            .unwrap();
+            Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames: vec![
+                    Frame::RespHeader {
+                        required_schema_version: None,
+                        latest_schema_version: None,
+                        log_epoch: "epoch-1".into(),
+                        reset_required: false,
+                    },
+                    Frame::LiveStart {
+                        status: LiveStatus::Active,
+                        reason_code: String::new(),
+                    },
+                    Frame::Commit {
+                        commit_seq: seq,
+                        created_at_ms: 1,
+                        actor_id: "writer".into(),
+                        tables: vec!["tasks".into()],
+                        changes: vec![ssp2::model::Change {
+                            table_index: 0,
+                            row_id: id,
+                            op: Op::Upsert,
+                            row_version: 1,
+                            scopes: vec![("project_id".into(), "p1".into())],
+                            row: Some(row),
+                        }],
+                    },
+                    Frame::LiveEnd {
+                        through_seq: seq,
+                        echo_digest: None,
+                    },
+                ],
+            }
+        })
+        .collect();
+    ScriptedSyncTransport {
+        responses,
+        calls: 0,
+        clock_step: client.pinned_clock().map(|clock| (clock, step)),
+    }
+}
+
+#[test]
+fn a_deadline_across_completed_rounds_ends_as_budget_exhaustion() {
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    live_unit(&client, &[("project_id", "p1")]);
+    client.set_now_ms(1_000_000);
+    // Every round takes 40 % of the deadline on the client clock.
+    let mut transport = commit_rounds(&client, 5, 24_000);
+
+    let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
+
+    // Rounds end at 24 s, 48 s and 72 s; the check before a fourth round ends
+    // the drive.
+    let SyncOutcome::BudgetExhausted(report) = outcome else {
+        panic!("expected budget exhaustion, got {outcome:?}");
+    };
+    assert_eq!(transport.calls, 3);
+    assert_eq!(report.commits_applied, 3);
+    let last_round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
+    assert_eq!(last_round.status, "succeeded");
+    assert_eq!(
+        client.progress().snapshot().unwrap().state,
+        ProgressState::Complete
+    );
+
+    // The next drive resumes where this one ended and reaches idle.
+    transport.responses.push_back(Message {
+        wire_version: WIRE_VERSION,
+        msg_kind: MsgKind::Response,
+        frames: vec![
+            Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: "epoch-1".into(),
+                reset_required: false,
+            },
+            Frame::LiveStart {
+                status: LiveStatus::Active,
+                reason_code: String::new(),
+            },
+            Frame::LiveEnd {
+                through_seq: 5,
+                echo_digest: None,
+            },
+        ],
+    });
+    let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
+    assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+    assert_eq!(transport.calls, 6);
+}
+
+/// A transport that never answers: it honors the scoped round deadline by
+/// failing with `round_deadline` once it would elapse.
+struct SilentTransport {
+    budget: Option<std::time::Duration>,
+    scoped: Option<std::time::Instant>,
+}
+
+impl Transport for SilentTransport {
+    fn round_deadline(&self) -> Option<std::time::Duration> {
+        self.budget
+    }
+    fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        self.scoped = self.scoped.or(deadline);
+    }
+    fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+        let mut error = TransportError::new("transport.timeout", "sync round deadline exceeded");
+        error.details = Some(json!({ "causeKind": "round_deadline" }));
+        Err(error)
+    }
+    fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        self.sync(request)
+    }
+    fn download_segment(
+        &mut self,
+        _: &SegmentRequest,
+        _: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
+        unreachable!("no segment in a silent round")
+    }
+    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        Ok(())
+    }
+    fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+        Ok(())
+    }
+    fn realtime_close(&mut self) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_round_that_reaches_the_drive_bound_fails_with_the_idle_timeout() {
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    let mut transport = SilentTransport {
+        budget: None,
+        scoped: None,
+    };
+    let before = std::time::Instant::now();
+
+    let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
+
     let SyncOutcome::Failed {
         error_code,
         details,
-        recommended_action,
         ..
     } = outcome
     else {
         panic!("expected the idle deadline, got {outcome:?}");
     };
     assert_eq!(error_code, "sync.idle_timeout");
-    assert_eq!(recommended_action.as_deref(), Some("retryLater"));
-    let details = details.expect("deadline details");
-    assert_eq!(details["timeoutMs"], json!(0));
-    assert_eq!(details["rounds"], json!(0));
+    assert_eq!(details, Some(json!({ "timeoutMs": 60_000, "rounds": 0 })));
+    let scoped = transport.scoped.expect("the drive bound scopes the round");
+    assert!(scoped >= before + std::time::Duration::from_secs(60));
+    let last_round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
+    assert_eq!(last_round.status, "failed");
+    assert_eq!(last_round.error_code.as_deref(), Some("sync.idle_timeout"));
+    let progress = client.progress().snapshot().unwrap();
+    assert_eq!(progress.state, ProgressState::Failed);
+    assert_eq!(progress.error_code.as_deref(), Some("sync.idle_timeout"));
+    assert_eq!(client.round_failure, None, "the drive timeout stays local");
+    assert!(matches!(
+        client.drain_sync_intents().as_slice(),
+        [SyncIntent::Background { delay_ms: 250 }]
+    ));
+
+    // A tighter transport deadline keeps the transport's own error.
+    let mut transport = SilentTransport {
+        budget: Some(std::time::Duration::from_secs(30)),
+        scoped: None,
+    };
+    let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
+    assert!(
+        matches!(outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.timeout"),
+        "{outcome:?}"
+    );
 }
 
 /// Returns one pre-built response per round so a test can pin a successful
@@ -1941,11 +2117,16 @@ fn sync_until_idle_reports_its_total_deadline() {
 struct ScriptedSyncTransport {
     responses: std::collections::VecDeque<Message>,
     calls: usize,
+    /// The pinned client clock and the ms one round advances it.
+    clock_step: Option<(std::sync::Arc<std::sync::atomic::AtomicI64>, i64)>,
 }
 
 impl Transport for ScriptedSyncTransport {
     fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
         self.calls += 1;
+        if let Some((clock, step)) = &self.clock_step {
+            clock.fetch_add(*step, std::sync::atomic::Ordering::Relaxed);
+        }
         let response = self.responses.pop_front().expect("scripted response");
         Ok(encode_message(&response))
     }
@@ -2063,6 +2244,7 @@ fn sync_until_idle_success_then_failure_keeps_earlier_work() {
     let mut transport = ScriptedSyncTransport {
         responses: std::collections::VecDeque::from([success, failure]),
         calls: 0,
+        clock_step: None,
     };
     let outcome = client.sync_until_idle(&mut transport, Some(2));
     let SyncOutcome::Failed {
@@ -2105,6 +2287,7 @@ fn sync_until_idle_stops_on_a_schema_floor() {
     let mut transport = ScriptedSyncTransport {
         responses: std::collections::VecDeque::from([floor.clone(), floor]),
         calls: 0,
+        clock_step: None,
     };
     let outcome = client.sync_until_idle(&mut transport, Some(3));
     match outcome {

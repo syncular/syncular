@@ -275,7 +275,16 @@ export class NativeSyncClient extends NativeBridgeClient {
     if (this.closed || this.#paused || this.#syncRunning) return;
     this.#syncRunning = true;
     try {
-      await this.syncUntilIdle();
+      const outcome = await this.syncUntilIdle();
+      // §7.8: a drive that exhausted its round budget or deadline resumes
+      // in the next drive at once.
+      if (
+        typeof outcome === 'object' &&
+        outcome !== null &&
+        'budgetExhausted' in outcome &&
+        outcome.budgetExhausted === true
+      )
+        this.#syncAgain = true;
     } catch {
       // The core emits an explicit background intent for retryable failures;
       // non-retryable outcomes remain visible through status/change state.

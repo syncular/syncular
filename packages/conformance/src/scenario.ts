@@ -364,6 +364,8 @@ export interface NewClientOptions {
   /** Pin the client clock (epoch ms) — required by §5.4 expiry checks
    * against the server's virtual clock. */
   readonly nowMs?: number;
+  /** Advance the pinned client clock by this many ms per sync request. */
+  readonly syncClockStepMs?: number;
   /** §5.11 client-side encryption keys; absent ⇒ E2EE off. */
   readonly encryption?: DriverEncryptionConfig;
   /** RFC 0005 previous-version context; absent ⇒ feature off. */
@@ -562,6 +564,9 @@ export class ScenarioContext {
       schema: options.schema ?? this.schema,
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      ...(options.syncClockStepMs !== undefined
+        ? { syncClockStepMs: options.syncClockStepMs }
+        : {}),
       ...(options.encryption !== undefined
         ? { encryption: options.encryption }
         : {}),

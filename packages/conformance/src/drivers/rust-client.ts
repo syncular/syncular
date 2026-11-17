@@ -1493,9 +1493,13 @@ class RustClientInstance implements ClientInstance {
     return first;
   }
 
-  async syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult> {
+  async syncUntilIdle(
+    maxRounds?: number,
+    timeoutMs?: number,
+  ): Promise<ClientSyncResult> {
     const result = await this.#shim.call('syncUntilIdle', {
       ...(maxRounds !== undefined ? { maxRounds } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
     const typed = parseClientSyncResult(result);
     if (typed.ok && typed.report.schemaFloor === undefined) {
@@ -2027,6 +2031,9 @@ export const rustClientDriver: ClientDriver = {
       // client clock for the urlExpiresAtMs check.
       signedUrls: options.endpoints.fetchSegmentUrl !== undefined,
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      ...(options.syncClockStepMs !== undefined
+        ? { syncClockStepMs: options.syncClockStepMs }
+        : {}),
       // §5.11: forward the encryption keys ({ keys: { keyId: {$bytes} } }).
       ...(options.encryption !== undefined
         ? { encryption: options.encryption as unknown as JsonValue }

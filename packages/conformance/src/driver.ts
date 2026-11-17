@@ -1121,6 +1121,12 @@ export interface ClientCreateOptions {
    * wall-clock client would misjudge virtual-clock expiries.
    */
   readonly nowMs?: number;
+  /**
+   * Advance the pinned client clock (`nowMs`) by this many ms on every sync
+   * request the client sends: each round takes that long on the client clock
+   * (§7.8 drive deadline scenarios).
+   */
+  readonly syncClockStepMs?: number;
   /** §5.11 client-side encryption keys; absent ⇒ E2EE off. */
   readonly encryption?: DriverEncryptionConfig;
   /** RFC 0005 previous-version context; absent ⇒ feature off. */
@@ -1326,8 +1332,12 @@ export interface ClientInstance {
   /** One combined push+pull round (§1.5, §7.2). Never throws: transport
    * and protocol failures come back as `{ ok: false }`. */
   sync(): Promise<ClientSyncResult>;
-  /** Pull until quiescent (bootstrap pages, resets, delivered commits). */
-  syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult>;
+  /** Pull until quiescent (bootstrap pages, resets, delivered commits).
+   * `timeoutMs` is the §7.8 drive deadline; absent ⇒ the core default. */
+  syncUntilIdle(
+    maxRounds?: number,
+    timeoutMs?: number,
+  ): Promise<ClientSyncResult>;
   proveCurrentBase(
     clientCommitId: string,
     maxRounds?: number,

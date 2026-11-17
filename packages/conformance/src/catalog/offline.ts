@@ -1221,6 +1221,63 @@ export const offlineScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §7.8: the drive deadline elapses across completed rounds. Each round
+    // takes 40 % of it on the client clock, so the check before a fourth round
+    // ends the drive like an exhausted round budget: no failed round, no
+    // failed progress, and the next drive resumes the bootstrap.
+    name: 'offline/idle-deadline-across-rounds-ends-as-budget-exhaustion',
+    specRefs: ['§7.8', '§7.7'],
+    async run(ctx) {
+      await seedTasks(
+        ctx,
+        Array.from({ length: 6 }, (_, i) => task(`deadline-${i}`, 'p1')),
+      );
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        limits: { accept: 1, limitSnapshotRows: 1, maxSnapshotPages: 1 },
+        nowMs: await ctx.server.nowMs(),
+        syncClockStepMs: 24_000,
+      });
+      await a.api.subscribe({ project_id: 'p1' });
+      const drive = await a.api.syncUntilIdle(undefined, 60_000);
+      check(drive.ok, 'a deadline after completed rounds is not a failure');
+      if (drive.ok) {
+        checkEqual(drive.budgetExhausted, true, 'the drive reports exhaustion');
+        checkEqual(
+          drive.report.segmentRowsApplied,
+          2,
+          'the drive keeps the rows of the rounds it completed',
+        );
+        checkEqual(
+          drive.report.bootstrapping.length,
+          1,
+          'the exhausted drive is explicitly not idle',
+        );
+      }
+      checkEqual(
+        (await a.api.diagnosticsSnapshot?.())?.lastRound?.status,
+        'succeeded',
+        'no failed round is recorded',
+      );
+      checkEqual(
+        (await a.api.progressSnapshot?.())?.state,
+        'complete',
+        'progress ends complete',
+      );
+      const next = await a.api.syncUntilIdle(undefined, 1_000_000);
+      check(
+        next.ok && !next.budgetExhausted,
+        'the next drive resumes from persisted state and reaches idle',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
     name: 'offline/push-request-byte-cap-defers-a-later-commit',
     specRefs: ['§7.1'],
     async run(ctx) {

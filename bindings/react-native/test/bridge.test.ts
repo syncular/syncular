@@ -1393,6 +1393,31 @@ describe('createNativeSyncClient', () => {
     await client.close();
   });
 
+  test('auto-sync runs the next drive at once after budget exhaustion', async () => {
+    let drives = 0;
+    const { nativeModule, eventEmitter, calls, emit } = makeNative(
+      (method, params) =>
+        method === 'syncUntilIdle'
+          ? OK({ ok: true, budgetExhausted: ++drives === 1, report: {} })
+          : defaultResponder(method, params),
+    );
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    emit({ type: 'sync-intent', intent: { kind: 'interactive' } });
+    await settle();
+    expect(
+      calls.filter(
+        (call) =>
+          call.fn === 'command' &&
+          (call.arg as { method: string }).method === 'syncUntilIdle',
+      ),
+    ).toHaveLength(2);
+    await client.close();
+  });
+
   test('pause stops the pump; resume restarts it', async () => {
     const { client, pump } = await build();
     expect(pump.started).toBe(1);

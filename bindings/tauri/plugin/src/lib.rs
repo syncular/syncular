@@ -531,6 +531,9 @@ struct RoundRun {
     reply: Option<Sender<Value>>,
     until_idle: bool,
     max_rounds: Option<u32>,
+    /// §7.8 drive bound of an until-idle run: total deadline and per-round bound.
+    timeout_ms: u64,
+    started_at: Instant,
     spent: u32,
     aggregate: syncular_client::SyncReport,
     proof: Option<syncular_client::CurrentBasePreparation>,
@@ -625,6 +628,8 @@ where
                             reply: None,
                             until_idle: true,
                             max_rounds: None,
+                            timeout_ms: syncular_client::SyncClient::SYNC_IDLE_TIMEOUT_MS,
+                            started_at: Instant::now(),
                             spent: 0,
                             aggregate: Default::default(),
                             proof: None,
@@ -643,8 +648,12 @@ where
             }
             if active.is_some() {
                 match core.prepare_round() {
-                    Ok((prepared, transport)) => {
-                        active.as_mut().expect("active run").spent += 1;
+                    Ok((mut prepared, transport)) => {
+                        let run = active.as_mut().expect("active run");
+                        if run.until_idle {
+                            prepared.set_idle_deadline(run.timeout_ms, run.spent);
+                        }
+                        run.spent += 1;
                         if network_tx
                             .send(NetworkWork::Round(Box::new(prepared), transport))
                             .is_err()
@@ -680,6 +689,8 @@ where
                             reply: None,
                             until_idle: true,
                             max_rounds: None,
+                            timeout_ms: syncular_client::SyncClient::SYNC_IDLE_TIMEOUT_MS,
+                            started_at: Instant::now(),
                             spent: 0,
                             aggregate: Default::default(),
                             proof: None,
@@ -733,7 +744,13 @@ where
                             run.spent = 0;
                         }
                         keep_running = more && core.transport_enabled();
-                        if keep_running && run.spent >= run.max_rounds.unwrap_or(20) {
+                        // §7.8: an elapsed round budget or drive deadline
+                        // ends the drive with the aggregate report.
+                        if keep_running
+                            && (run.spent >= run.max_rounds.unwrap_or(20)
+                                || run.started_at.elapsed()
+                                    >= Duration::from_millis(run.timeout_ms))
+                        {
                             keep_running = false;
                             outcome = syncular_client::SyncOutcome::BudgetExhausted(
                                 run.aggregate.clone(),
@@ -751,6 +768,14 @@ where
                         None => outcome.to_json(),
                     };
                     let _ = reply.send(json!({ "result": result }));
+                } else if matches!(outcome, syncular_client::SyncOutcome::BudgetExhausted(_)) {
+                    // §7.8: an exhausted host drive queues the next drive at once.
+                    queued.push_back(RoundRun {
+                        started_at: Instant::now(),
+                        spent: 0,
+                        aggregate: Default::default(),
+                        ..run
+                    });
                 }
                 pump_events(&mut core, &*emit);
             }
@@ -808,10 +833,32 @@ where
                     } else {
                         None
                     };
+                    // `sync` carries no drive bound either.
+                    let timeout_ms = match command.pointer("/params/timeoutMs") {
+                        Some(value) if until_idle && !value.is_null() => match value
+                            .as_u64()
+                            .filter(|ms| *ms >= 1 && i64::try_from(*ms).is_ok())
+                        {
+                            Some(ms) => ms,
+                            None => {
+                                let _ = reply.send(json!({
+                                    "error": {
+                                        "code": "sync.invalid_request",
+                                        "message": "timeoutMs must be a positive integer",
+                                        "retryable": false
+                                    }
+                                }));
+                                continue;
+                            }
+                        },
+                        _ => syncular_client::SyncClient::SYNC_IDLE_TIMEOUT_MS,
+                    };
                     queued.push_back(RoundRun {
                         reply: Some(reply),
                         until_idle,
                         max_rounds,
+                        timeout_ms,
+                        started_at: Instant::now(),
                         spent: 0,
                         aggregate: Default::default(),
                         proof,
@@ -2874,17 +2921,24 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// A server that answers every pull with one new commit, so an until-idle
+    /// drive never idles. It reports each request number on `rounds`.
     #[cfg(feature = "native-transport")]
-    #[test]
-    fn owner_thread_sync_until_idle_reports_budget_exhaustion_with_the_report() {
+    fn endless_commit_server() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<usize>,
+    ) {
         use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus};
         use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
         use std::io::{ErrorKind, Read, Write};
         use std::net::TcpListener;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use std::sync::mpsc::channel;
         use std::sync::Arc;
 
+        let (rounds_tx, rounds) = std::sync::mpsc::channel();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -2998,8 +3052,19 @@ mod tests {
                 )
                 .unwrap();
                 socket.write_all(&response).unwrap();
+                let _ = rounds_tx.send(round);
             }
         });
+        (address, requests, stop, server, rounds)
+    }
+
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn owner_thread_sync_until_idle_reports_budget_exhaustion_with_the_report() {
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::channel;
+
+        let (address, requests, stop, server, _rounds) = endless_commit_server();
 
         let (tx, rx) = channel::<Request>();
         let owner_tx = tx.clone();
@@ -3050,6 +3115,23 @@ mod tests {
             before,
             "an invalid budget performs no round"
         );
+        for timeout in [json!(0), json!(-1), json!(1.5), json!("60000")] {
+            let invalid =
+                call(json!({ "method": "syncUntilIdle", "params": { "timeoutMs": timeout } }));
+            assert_eq!(
+                invalid["error"]["code"], "sync.invalid_request",
+                "{invalid}"
+            );
+            assert_eq!(
+                invalid["error"]["message"], "timeoutMs must be a positive integer",
+                "{invalid}"
+            );
+        }
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            before,
+            "an invalid timeoutMs performs no round"
+        );
 
         // `sync` ignores an irrelevant maxRounds (0 would be invalid for the
         // capped command) and performs one round.
@@ -3096,6 +3178,60 @@ mod tests {
             "{proof}"
         );
         assert_eq!(requests.load(Ordering::SeqCst) - before_proof, 1);
+
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+    }
+
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn owner_thread_queues_the_next_host_drive_after_budget_exhaustion() {
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::channel;
+
+        let (address, _requests, stop, server, rounds) = endless_commit_server();
+        let (tx, rx) = channel::<Request>();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    auto_sync: true,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                |_| {},
+            )
+        });
+        let call = |command: Value| -> Value {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result.recv().unwrap()
+        };
+        let created = call(json!({ "method": "create", "params": {
+            "clientId": "host-budget-tauri", "transportEnabled": true, "schema": { "version": 1, "tables": [{
+                "name": "todo", "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "todo:{id}" }]
+            }] }
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+        // `create` starts the first host drive; the subscription arriving
+        // during it leaves one coalesced intent for a second. The server
+        // never idles, so each drive exhausts its 20-round budget, and round
+        // 41 belongs to a drive no intent started.
+        call(json!({ "method": "subscribe", "params": { "scopes": { "id": "one" } } }));
+        for _ in 0..41 {
+            rounds
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the host drive continues after budget exhaustion");
+        }
 
         tx.send(Request::Shutdown).unwrap();
         owner.join().unwrap();

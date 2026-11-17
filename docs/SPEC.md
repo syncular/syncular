@@ -6783,25 +6783,44 @@ count while bounding stalled responses.
 
 One drive also has a total deadline across every round, because the round
 budget does not bound elapsed time. `syncUntilIdle` takes an optional
-`timeoutMs` (default 60,000 ms; `Infinity` disables the bound). When the
-deadline elapses the drive rejects with the client-local `sync.idle_timeout`,
-aborts the round in flight, and schedules no further rounds. The TypeScript
-client hands every transport call of the drive's rounds one abort signal (the
-`signal` argument of `SyncTransport`, `SegmentDownloader` and the
-`BlobTransport` upload calls); the deadline aborts it and a socket round, and
-the aborted round fails with the same retryable `sync.idle_timeout`. A
-transport that ignores the signal keeps its round outstanding until it
-answers. The TypeScript host loops (`installSyncScheduler` and the worker core)
-answer a retryable drive rejection that left no background intent pending with
-one background intent of their own: 250 ms, doubling per further rejection up
-to 30,000 ms, and back to 250 ms after a drive resolves. A rejection whose
-`causeKind` is `network` or `connect` is excluded (§1.8). A round after which a
-unit is still catching up keeps sync-needed raised. A
-caller-supplied deadline MUST be a positive finite number or `Infinity`;
-anything else is `sync.invalid_request`. The Rust client exposes the same
-bound as `sync_until_idle_with_deadline` (`sync_until_idle` defaults to 60 s)
-and checks it between rounds, so one blocking transport call stays bounded by
-the transport's whole-round deadline (§1.8).
+`timeoutMs` (default 60,000 ms; `Infinity` disables the bound). The client
+checks the deadline against its clock before each round after the first. A
+drive whose deadline elapsed after at least one of its rounds completed ends
+like an exhausted round budget: it resolves with `budgetExhausted: true` and
+the aggregate report, records no failed round, leaves progress at the state of
+its last completed round, and schedules no further rounds. Each round is also
+bounded by `timeoutMs` on its own, measured from the round's start, so a drive
+ends at the latest one round bound after its deadline. A round that reaches
+that bound fails with the client-local, retryable `sync.idle_timeout` (details
+`timeoutMs`, and `rounds`: the rounds the drive ran before it). The drive
+rejects with it, `lastRound` records the failed round, progress turns `failed`
+with it, and the client emits its retryable-failure background intent (§7.7).
+A transport that never answers therefore ends in `sync.idle_timeout`. The code
+never goes on the wire and is never a §1.5 round failure code.
+
+The TypeScript client hands every transport call of a round one abort signal
+(the `signal` argument of `SyncTransport`, `SegmentDownloader` and the
+`BlobTransport` upload calls); the round bound aborts it and a socket round,
+and the aborted round fails with `sync.idle_timeout`. A transport that ignores
+the signal keeps its round outstanding until it answers. The Rust client
+exposes the same bound as `sync_until_idle_with_deadline` (`sync_until_idle`
+defaults to 60 s) and scopes it onto the transport as the round deadline
+(§1.8). The tighter of `timeoutMs` and the transport's own whole-round deadline
+applies; a round deadline that the drive bound set fails the round with
+`sync.idle_timeout`, and one the transport's tighter deadline set keeps the
+transport's error. A host that drives rounds itself sets the bound with
+`PreparedSyncRound::set_idle_deadline`.
+
+Every host loop (`installSyncScheduler`, the worker core, the Tauri plugin's
+owner thread and the React Native auto-sync loop) queues its next drive at once
+after one of its drives resolves with `budgetExhausted`; that drive resumes
+from persisted state. The TypeScript host loops answer a retryable drive
+rejection that left no background intent pending with one background intent of
+their own: 250 ms, doubling per further rejection up to 30,000 ms, and back to
+250 ms after a drive resolves. A rejection whose `causeKind` is `network` or
+`connect` is excluded (§1.8). A round after which a unit is still catching up
+keeps sync-needed raised. A caller-supplied deadline MUST be a positive finite
+number or `Infinity`; anything else is `sync.invalid_request`.
 
 Client FTS projections address deletion through an indexed source-identity to
 FTS-rowid mapping. TS and Rust maintain that mapping in the same transaction as
@@ -7835,8 +7854,8 @@ carried no transport code; the diagnostics reason for state `lost`],
 `sync.realtime_unavailable` [§8.8 — a round under the `required` realtime
 policy was refused because the socket is not connected; client-local,
 retryable, and never on the wire],
-`sync.idle_timeout` [§7.8 — one idle drive exceeded its total deadline;
-client-local, retryable, and never on the wire],
+`sync.idle_timeout` [§7.8 — one round of an idle drive reached the drive's
+round bound; client-local, retryable, and never on the wire],
 `client.worker_failed` [a browser worker failed outside wire semantics],
 `client.push_request_too_large` [§7.1: the first queued commit alone
 exceeds the configured operation or encoded byte budget, or the fixed

@@ -77,6 +77,9 @@ struct HostIo {
     deferred: VecDeque<(Value, String, Value)>,
     /// §5.4 capability of the harness endpoints (create `signedUrls`).
     signed_urls: bool,
+    /// The pinned client clock and create `syncClockStepMs`: every sync
+    /// request advances it by the step (§7.8 drive deadline scenarios).
+    clock_step: Option<(Arc<AtomicI64>, i64)>,
 }
 
 impl HostIo {
@@ -88,6 +91,7 @@ impl HostIo {
             rt_queue: VecDeque::new(),
             deferred: VecDeque::new(),
             signed_urls: false,
+            clock_step: None,
         }
     }
 
@@ -226,6 +230,9 @@ impl HostIo {
 
 impl Transport for HostIo {
     fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        if let Some((clock, step)) = &self.clock_step {
+            clock.fetch_add(*step, Ordering::Relaxed);
+        }
         let result = self.call_host("sync", json!({ "request": bytes_value(request) }))?;
         value_bytes(result.get("response")).map_err(|m| TransportError::new("transport.failed", m))
     }
@@ -641,6 +648,10 @@ fn main() {
                 }
                 if method == "create" {
                     io.signed_urls = effects.signed_urls;
+                    io.clock_step = client
+                        .as_ref()
+                        .and_then(SyncClient::pinned_clock)
+                        .zip(params.get("syncClockStepMs").and_then(Value::as_i64));
                 }
                 drain_realtime(&mut io, &mut client);
                 io.respond(&id, result);

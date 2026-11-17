@@ -541,9 +541,10 @@ pub struct SyncClient {
     realtime_retry_delay_ms: Option<u64>,
     /// §8.6 presence: scopeKey → (`actorId clientId` peer key → peer).
     presence: HashMap<String, HashMap<String, PresencePeer>>,
-    /// Client clock (epoch ms) for the §5.4 `urlExpiresAtMs` check; the
-    /// host may pin it (conformance runs on a virtual clock).
-    now_ms: Option<i64>,
+    /// Client clock (epoch ms) for the §5.4 `urlExpiresAtMs` check and the
+    /// §7.8 drive deadline; the host may pin it and move the pinned value
+    /// (conformance runs on a virtual clock).
+    now_ms: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
     /// §5.11 client-side encryption keys (`keyId → key bytes`). Empty ⇒ E2EE
     /// off. The encrypt/decrypt seam (`values.rs`) is compiled only under the
     /// `e2ee` feature; without it, a schema with encrypted columns fails loud.
@@ -2193,7 +2194,13 @@ impl SyncClient {
     /// Pin the client clock (epoch ms) — the §5.4 expiry check runs
     /// against this instead of system time (conformance virtual clock).
     pub fn set_now_ms(&mut self, now_ms: i64) {
-        self.now_ms = Some(now_ms);
+        self.now_ms = Some(std::sync::Arc::new(now_ms.into()));
+    }
+
+    /// The pinned clock, shared: a host that stores into it moves the client
+    /// clock while a call runs (a virtual clock that advances per request).
+    pub fn pinned_clock(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicI64>> {
+        self.now_ms.clone()
     }
 
     /// §5.11: install the client-side encryption keys (`keyId → key bytes`).
@@ -2309,7 +2316,11 @@ impl SyncClient {
     }
 
     fn clock_now_ms(&self) -> i64 {
-        self.now_ms.unwrap_or_else(crate::wall_clock_ms)
+        self.now_ms
+            .as_ref()
+            .map_or_else(crate::wall_clock_ms, |clock| {
+                clock.load(std::sync::atomic::Ordering::Relaxed)
+            })
     }
 
     fn create_bookkeeping_tables(&self) -> Result<(), String> {
@@ -3170,6 +3181,7 @@ impl SyncClient {
                     | "sync.segment_expired"
                     | "sync.rate_limited"
                     | "sync.websocket_connection_limit"
+                    | "sync.idle_timeout"
             )
     }
 
@@ -7680,10 +7692,20 @@ impl SyncClient {
     }
 
     pub fn sync(&mut self, transport: &mut dyn Transport) -> SyncOutcome {
-        let prepared = match self.prepare_sync_round(transport.supports_url_fetch()) {
+        self.sync_bounded(transport, None)
+    }
+
+    /// One round; `idle_bound` is the idle drive's round bound (§7.8).
+    fn sync_bounded(
+        &mut self,
+        transport: &mut dyn Transport,
+        idle_bound: Option<(u64, u32)>,
+    ) -> SyncOutcome {
+        let mut prepared = match self.prepare_sync_round(transport.supports_url_fetch()) {
             Ok(prepared) => prepared,
             Err(outcome) => return *outcome,
         };
+        prepared.idle_bound = idle_bound;
         // The round's network deadline rides `PreparedSyncRound` and is scoped
         // to each exchange, so uploads, continuations, the main request, and
         // every segment fetch share one monotonic anchor without leaving
@@ -7987,8 +8009,12 @@ impl SyncClient {
                 #[cfg(feature = "bench-internals")]
                 benchmark_phases: self.benchmark_phases.clone(),
                 progress: self.progress.clone(),
-                fixed_now: self.now_ms,
+                fixed_now: self
+                    .now_ms
+                    .as_ref()
+                    .map(|clock| clock.load(std::sync::atomic::Ordering::Relaxed)),
                 round_deadline_at: None,
+                idle_bound: None,
             })
         })();
         prepared.map_err(|outcome| Box::new(self.finish_sync_round(started_at_ms, *outcome)))
@@ -8139,8 +8165,9 @@ impl SyncClient {
                     // §1.5: the server cannot see a round whose transport
                     // failed or whose response never decoded, so its code rides
                     // the following requests. A code the frame grammar rejects
-                    // is not reportable, and the previous code stays.
-                    if ssp2::model::valid_round_failure_code(&code) {
+                    // is not reportable, and the previous code stays; the
+                    // client-local drive timeout never goes on the wire (§7.8).
+                    if code != "sync.idle_timeout" && ssp2::model::valid_round_failure_code(&code) {
                         self.round_failure = Some(code.clone());
                     }
                     if transport_failed {
@@ -8261,9 +8288,11 @@ impl SyncClient {
     }
 
     /// As [`SyncClient::sync_until_idle`], with an explicit total deadline in
-    /// milliseconds (`None` disables it). The deadline is checked between
-    /// rounds; one blocking transport call is bounded by the transport's own
-    /// whole-round deadline (§1.8).
+    /// milliseconds (`None` disables it). The deadline is checked against the
+    /// client clock between rounds: a drive past it after a completed round
+    /// ends as `BudgetExhausted`. Each round is bounded by `timeout_ms` on its
+    /// own, or the transport's tighter whole-round deadline (§1.8); a round
+    /// that reaches the drive bound fails with `sync.idle_timeout`.
     pub fn sync_until_idle_with_deadline(
         &mut self,
         transport: &mut dyn Transport,
@@ -8289,38 +8318,24 @@ impl SyncClient {
             };
         }
         let started_at_ms = self.clock_now_ms();
-        let deadline_ms = timeout_ms.map(|ms| started_at_ms.saturating_add(ms as i64));
-        self.sync_until_idle_bounded(transport, max_rounds, started_at_ms, deadline_ms)
-    }
-
-    fn sync_until_idle_bounded(
-        &mut self,
-        transport: &mut dyn Transport,
-        max_rounds: Option<u32>,
-        started_at_ms: i64,
-        deadline_ms: Option<i64>,
-    ) -> SyncOutcome {
         let rounds = max_rounds.unwrap_or(20);
         let mut aggregate = SyncReport::default();
         let mut spent = 0;
+        let mut completed = false;
         while spent < rounds {
-            if let Some(deadline_ms) = deadline_ms {
-                if self.clock_now_ms() >= deadline_ms {
-                    return SyncOutcome::Failed {
-                        error_code: "sync.idle_timeout".into(),
-                        message: "sync_until_idle exceeded its deadline".into(),
-                        details: Some(serde_json::json!({
-                            "timeoutMs": deadline_ms
-                                .saturating_sub(started_at_ms) as u64,
-                            "rounds": spent,
-                        })),
-                        recommended_action: Some("retryLater".into()),
-                    };
-                }
+            // §7.8: a deadline that elapsed across completed rounds ends the
+            // drive like an exhausted round budget; the next drive resumes.
+            if completed
+                && timeout_ms.is_some_and(|ms| {
+                    self.clock_now_ms() >= started_at_ms.saturating_add(ms as i64)
+                })
+            {
+                return SyncOutcome::BudgetExhausted(aggregate);
             }
+            let idle_bound = timeout_ms.map(|ms| (ms, spent));
             spent += 1;
             let before = self.resume_tokens();
-            match self.sync(transport) {
+            match self.sync_bounded(transport, idle_bound) {
                 SyncOutcome::Failed {
                     error_code,
                     message,
@@ -8339,6 +8354,7 @@ impl SyncClient {
                     unreachable!("sync() never exhausts a round budget")
                 }
                 SyncOutcome::Ok(report) => {
+                    completed = true;
                     if max_rounds.is_none()
                         && report.segment_rows_applied > 0
                         && !report.bootstrapping.is_empty()

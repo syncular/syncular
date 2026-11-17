@@ -3,12 +3,13 @@
  * §1.8: a refused or unreachable endpoint stops without another backoff.
  */
 import { expect, test } from 'bun:test';
-import { httpSyncTransport } from '@syncular/client';
+import { httpSyncTransport, installSyncScheduler } from '@syncular/client';
 import { handleSyncRequest } from '@syncular/server';
 import {
   makeClient,
   makeServer,
   responseGate,
+  tableRows,
   taskValues,
   waitFor,
 } from './helpers';
@@ -36,6 +37,69 @@ test('a transport that never answers rejects with sync.idle_timeout', async () =
   // The round was parked, not lost: releasing it lets the drive settle.
   gate.release();
   await completed;
+  off();
+  await local.client.close();
+  local.db.close();
+});
+
+test('a deadline that elapses across completed rounds ends the drive as an exhausted budget', async () => {
+  const server = makeServer();
+  const seeder = await makeClient(server, { clientId: 'idle-seeder' });
+  seeder.client.mutate(
+    Array.from({ length: 12 }, (_, i) => ({
+      table: 'tasks',
+      op: 'upsert' as const,
+      values: taskValues(`t${i}`, 'p1', `task ${i}`),
+    })),
+  );
+  await seeder.client.sync();
+  let rounds = 0;
+  const local = await makeClient(server, {
+    clientId: 'idle-progress',
+    // One row per round: a unit that bootstraps page by page.
+    limits: { limitSnapshotRows: 1, maxSnapshotPages: 1, accept: 0b0011 },
+    // Every round takes 40 % of the deadline on the client clock.
+    transport: async (bytes) => {
+      rounds += 1;
+      server.now.ms += 24_000;
+      return handleSyncRequest(bytes, server.ctxFor('actor-1'));
+    },
+  });
+  local.client.subscribe({ project_id: 'p1' });
+  const failed: unknown[] = [];
+  const off = local.client.onProgress((progress) => {
+    if (progress.state === 'failed') failed.push(progress);
+  });
+
+  const drive = await local.client.syncUntilIdle({ timeoutMs: 60_000 });
+  // Rounds end at 24 s, 48 s and 72 s; the check before a fourth round ends
+  // the drive.
+  expect(rounds).toBe(3);
+  expect(drive.budgetExhausted).toBe(true);
+  expect(drive.segmentRowsApplied).toBe(3);
+  expect(drive.bootstrapping).toHaveLength(1);
+  expect(local.client.diagnosticsSnapshot().lastRound?.status).toBe(
+    'succeeded',
+  );
+  expect(failed).toEqual([]);
+
+  // The scheduler queues the next drive at once; it resumes the bootstrap.
+  const queued: Array<() => void> = [];
+  let requeued = Promise.withResolvers<void>();
+  const scheduler = installSyncScheduler(local.client, {
+    queueMicrotask: (callback) => {
+      queued.push(callback);
+      requeued.resolve();
+    },
+  });
+  await requeued.promise;
+  requeued = Promise.withResolvers<void>();
+  queued.shift()?.();
+  await requeued.promise;
+  expect(rounds).toBe(6);
+  expect(tableRows(local.db, 'tasks')).toHaveLength(6);
+  expect(failed).toEqual([]);
+  scheduler.stop();
   off();
   await local.client.close();
   local.db.close();
