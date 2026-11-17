@@ -318,7 +318,8 @@ names what this session was authenticated for. One actor can hold several
 sessions of different reach, and `clientId` is client-chosen, so it cannot
 carry that binding. The server never interprets the context. It passes it
 unchanged to every `resolveScopes` call made for the request (§3.2 step 3,
-§5.5, §5.9.5, §8.1), binds signed grants (§5.4) and leases (§7.3.1) to it, and
+§5.5, §5.9.5, §8.1) and to the row and commit validators of its pushes, over
+HTTP and the socket (§6.7), binds signed grants (§5.4) and leases (§7.3.1) to it, and
 keys any resolved-scope state it holds per actor by actor and context. A
 context longer than 256 bytes is a host bug: the server refuses the request
 before any resolver runs, reports an error coded

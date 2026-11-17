@@ -165,6 +165,8 @@ export interface ValidateCommitInput {
   readonly clientCommitId: string;
   readonly actorId: string;
   readonly partition: string;
+  /** The context `authenticate` returned for this request (§1.1); absent without one. */
+  readonly context?: string;
   readonly operations: readonly ValidateCommitOperation[];
   readonly read: CommitValidationReader;
 }
@@ -193,6 +195,8 @@ export interface ValidateContext {
   readonly actorId: string;
   /** The partition (§1.1) the commit targets. */
   readonly partition: string;
+  /** The context `authenticate` returned for this request (§1.1); absent without one. */
+  readonly context?: string;
   /**
    * Run a generated registered query on the push transaction (§6.7). The
    * request has the shape `ServerStorage.queryAuthoritative` takes; the

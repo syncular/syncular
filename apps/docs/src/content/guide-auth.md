@@ -84,7 +84,9 @@ resolveScopes: async ({ actorId, context }) => ({
 
 The server passes the context unchanged to `resolveScopes` on every path:
 sync rounds over HTTP and the socket, remote operations, segment and blob
-downloads, and the realtime registrations of a socket. A segment URL signed for
+downloads, and the realtime registrations of a socket. Row validators find it on
+their ambient context and the commit validator on its input, so a push under a
+read-only session can be refused (`input.context?.startsWith('kiosk:')`). A segment URL signed for
 a pull under one context carries it in its token, and
 `verifySegmentToken(key, token, { …, context })` refuses it under another. An
 [auth lease](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#73-auth-leases) records the context it was issued under and

@@ -226,6 +226,54 @@ describe('authentication context (§1.1)', () => {
     }
   });
 
+  test('commit and row validators see the context of HTTP and socket pushes (§6.7)', async () => {
+    const t = makeContext();
+    contextScopes(t);
+    const seen: {
+      commit: (string | undefined)[];
+      row: (string | undefined)[];
+    } = { commit: [], row: [] };
+    Object.assign(t.ctx, {
+      commitValidator: (input: { context?: string }) => {
+        seen.commit.push(input.context);
+      },
+      validators: {
+        tasks: (_op: unknown, ambient: { context?: string }) => {
+          seen.row.push(ambient.context);
+        },
+      },
+    });
+    const push = (id: string) =>
+      requestBytes(
+        [pushCommit(id, [upsert('tasks', id, taskRow(id, 'pa'))])],
+        'kiosk',
+      );
+    await handleSyncRequest(push('http-a'), under(t, A));
+    await handleSyncRequest(push('http-none'), t.ctx);
+
+    const hub = createRealtimeHub({
+      ...t.ctx,
+      segments: t.segments,
+      limits: { inlineSegmentMaxBytes: 1 },
+    });
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'kiosk',
+      context: A,
+      send: () => {},
+    });
+    const bytes = push('socket-a');
+    const tagged = new Uint8Array(bytes.length + 1);
+    tagged[0] = REALTIME_TAG_ROUND;
+    tagged.set(bytes, 1);
+    await session.handleBinary(tagged);
+    session.close();
+
+    expect(seen.commit).toEqual([A, undefined, A]);
+    expect(seen.row).toEqual([A, undefined, A]);
+  });
+
   test('socket rounds, registrations and deltas resolve under the connect context (§8.1)', async () => {
     const t = makeContext();
     const seen = contextScopes(t);

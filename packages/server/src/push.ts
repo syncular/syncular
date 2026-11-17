@@ -234,6 +234,7 @@ async function runValidator(
   tx: StorageTransaction,
   partition: string,
   actorId: string,
+  context: string | undefined,
 ): Promise<TerminatingOutcome | undefined> {
   const validator = validators?.[table.name];
   if (validator === undefined) return undefined;
@@ -255,6 +256,7 @@ async function runValidator(
       {
         actorId,
         partition,
+        ...(context !== undefined ? { context } : {}),
         queryAuthoritative: (query) => transactionQuery(tx, query),
       },
     );
@@ -346,6 +348,7 @@ async function applyOperation(
   validators: ValidatorRegistry | undefined,
   partition: string,
   actorId: string,
+  context: string | undefined,
   /** §2.2: the partition's delete floor, raised by this commit's deletes. */
   deleteFloor: number,
 ): Promise<OperationOutcome> {
@@ -482,6 +485,7 @@ async function applyOperation(
       tx,
       partition,
       actorId,
+      context,
     );
     if (deleteReject !== undefined) return deleteReject;
     const upsertReject = await runValidator(
@@ -495,6 +499,7 @@ async function applyOperation(
       tx,
       partition,
       actorId,
+      context,
     );
     if (upsertReject !== undefined) return upsertReject;
     const blobCheck = await checkAndRecordBlobs(
@@ -645,6 +650,7 @@ async function applyOperation(
       tx,
       partition,
       actorId,
+      context,
     );
     if (deleteReject !== undefined) return deleteReject;
     await tx.deleteRow(op.table, op.rowId);
@@ -850,6 +856,7 @@ async function applyOperation(
       tx,
       partition,
       actorId,
+      context,
     );
     if (updateReject !== undefined) return updateReject;
     const columnVersions = encodeColumnVersions(nextVersions);
@@ -1005,6 +1012,7 @@ async function applyOperation(
     tx,
     partition,
     actorId,
+    context,
   );
   if (insertReject !== undefined) return insertReject;
   // §2.2, §6.2: every insert starts one above the delete floor, over a
@@ -1224,6 +1232,7 @@ async function runCommitValidator(
   actorId: string,
   partition: string,
   operations: readonly ValidateCommitOperation[],
+  context: string | undefined,
 ): Promise<OperationOutcome | undefined> {
   if (validator === undefined) return undefined;
   try {
@@ -1232,6 +1241,7 @@ async function runCommitValidator(
       clientCommitId,
       actorId,
       partition,
+      ...(context !== undefined ? { context } : {}),
       operations,
       read: commitValidationReader(tx, schema),
     });
@@ -1352,6 +1362,7 @@ async function enforceReferences(
   validators: ValidatorRegistry | undefined,
   partition: string,
   actorId: string,
+  context: string | undefined,
 ): Promise<
   | {
       readonly kind: 'ok';
@@ -1592,6 +1603,7 @@ async function enforceReferences(
               tx,
               partition,
               actorId,
+              context,
             );
             if (reject !== undefined) {
               return { kind: 'terminate', record: reject.record };
@@ -1627,6 +1639,7 @@ async function enforceReferences(
               tx,
               partition,
               actorId,
+              context,
             );
             if (reject !== undefined) {
               return { kind: 'terminate', record: reject.record };
@@ -2074,6 +2087,7 @@ export async function processPushOperationsWithTrace(
         validators,
         partition,
         ctx.actorId,
+        ctx.context,
         deleteFloor,
       );
       if (outcome.kind === 'terminate') {
@@ -2110,6 +2124,7 @@ export async function processPushOperationsWithTrace(
         validators,
         partition,
         ctx.actorId,
+        ctx.context,
       );
       if (referencePass.kind === 'terminate') {
         terminated = referencePass.record;
@@ -2131,6 +2146,7 @@ export async function processPushOperationsWithTrace(
         ctx.actorId,
         partition,
         validatedOperations,
+        ctx.context,
       );
       if (commitReject?.kind === 'terminate') {
         // An appended §6.11 cascade operation carries a synthetic opIndex;
