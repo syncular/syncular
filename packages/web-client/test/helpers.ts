@@ -331,6 +331,8 @@ export interface MakeClientOptions {
   readonly realtime?: RealtimeConnector;
   /** Replace the loopback round transport (faults and counters bypassed). */
   readonly transport?: SyncTransport;
+  /** The client's timer seam; defaults to `setTimeout`. */
+  readonly schedule?: SyncClientConfig['schedule'];
   /** SPEC §8.8 realtime policy; absent ⇒ `optional`. */
   readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
   /** RFC 0005 previous-version context config. */
@@ -368,6 +370,7 @@ export async function makeClient(
       ? { realtimePolicy: options.realtimePolicy }
       : {}),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
     ...(options.retainFailedCommits !== undefined
       ? { retainFailedCommits: options.retainFailedCommits }
       : {}),

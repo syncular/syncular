@@ -371,9 +371,9 @@ pub(crate) struct RequestMeta {
     /// the running operation count reached the push cap — the next round
     /// pushes them (`sync_needed` stays set while any remain).
     deferred_commits: usize,
-    /// §5.6 applied-segment rule: per unit presenting its recorded cursor
-    /// and token, the segment ids neither downloaded nor applied again.
-    pub(crate) applied: BTreeMap<String, BTreeSet<String>>,
+    /// §5.6 applied-segment record per unit: segment id → rows applied at
+    /// the unit's current cursor and token.
+    pub(crate) applied: BTreeMap<String, BTreeMap<String, i64>>,
     /// §5.3 client memory: (unit, segment id) of the first image whose body
     /// the round did not fetch because the batch already holds two images.
     /// That unit's section stops there without persisting `SUB_END`.
@@ -594,11 +594,6 @@ pub struct SyncClient {
     retry_delay_ms: u64,
     /// §7.7: the background retry the current round scheduled, if any.
     round_retry_delay_ms: Option<u64>,
-    /// §5.6 applied-segment rule: per unit, the cursor and resume token it
-    /// presented and the `SEGMENT_REF`s applied completely in sections whose
-    /// `SUB_END` did not persist.
-    #[allow(clippy::type_complexity)]
-    applied_segments: HashMap<String, (Option<i64>, Option<String>, BTreeSet<String>)>,
     /// §5.3: a table's next image chunk size, carried from one range image
     /// of the table to the next.
     image_chunk_rows: HashMap<String, u32>,
@@ -977,13 +972,16 @@ fn get_unit(conn: &Connection, id: &str) -> rusqlite::Result<Option<UnitRecord>>
     .optional()
 }
 
-/// Insert or update in place: an update keeps the registration order.
+/// Insert or update in place: an update keeps the registration order. The
+/// §5.6 applied-segment record ends when the cursor or the token changes.
 fn save_unit(conn: &Connection, unit: &UnitRecord) -> rusqlite::Result<()> {
     conn.prepare_cached(&format!(
         "INSERT INTO _syncular_units({UNIT_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(id) DO UPDATE SET explicit=excluded.explicit, status=excluded.status,
            reason_code=excluded.reason_code, cursor=excluded.cursor,
-           bootstrap_state=excluded.bootstrap_state, seeded=excluded.seeded, echo=excluded.echo"
+           bootstrap_state=excluded.bootstrap_state, seeded=excluded.seeded, echo=excluded.echo,
+           applied=CASE WHEN cursor IS excluded.cursor
+             AND bootstrap_state IS excluded.bootstrap_state THEN applied END"
     ))?
     .execute(rusqlite::params![
         unit.id,
@@ -997,6 +995,45 @@ fn save_unit(conn: &Connection, unit: &UnitRecord) -> rusqlite::Result<()> {
         unit.echo
             .as_ref()
             .map(|echo| serde_json::to_string(echo).expect("echo serializes")),
+    ])
+    .map(|_| ())
+}
+
+/// §5.6 applied-segment record of unit `id`: segment id → rows applied at
+/// its current cursor and token.
+fn applied_rows(conn: &Connection, id: &str) -> rusqlite::Result<BTreeMap<String, i64>> {
+    conn.query_row(
+        "SELECT applied FROM _syncular_units WHERE id = ?1",
+        [id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()?
+    .flatten()
+    .map_or(Ok(BTreeMap::new()), |raw| {
+        serde_json::from_str(&raw).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    })
+}
+
+/// §5.6: `rows` rows of `segment_id` applied at unit `id`'s position. Runs
+/// in the transaction that commits them.
+fn record_applied_rows(
+    conn: &Connection,
+    id: &str,
+    segment_id: &str,
+    rows: i64,
+) -> rusqlite::Result<()> {
+    conn.prepare_cached(
+        "UPDATE _syncular_units SET applied=json_patch(coalesce(applied,'{}'),?1) WHERE id=?2",
+    )?
+    .execute(rusqlite::params![
+        serde_json::json!({ segment_id: rows }).to_string(),
+        id
     ])
     .map(|_| ())
 }
@@ -1016,7 +1053,7 @@ fn window_refs(conn: &Connection, unit_id: &str) -> rusqlite::Result<Vec<(String
 fn reset_units(conn: &Connection, keep: &BTreeSet<String>) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE _syncular_units SET status='active', reason_code=NULL, cursor=-1,
-           bootstrap_state=NULL, seeded='[]', echo=NULL
+           bootstrap_state=NULL, seeded='[]', echo=NULL, applied=NULL
          WHERE id NOT IN (SELECT value FROM json_each(?1))",
         [serde_json::to_string(keep).expect("unit ids serialize")],
     )?;
@@ -2062,7 +2099,6 @@ impl SyncClient {
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
             round_retry_delay_ms: None,
-            applied_segments: HashMap::new(),
             image_chunk_rows: HashMap::new(),
             round_failure: None,
             active_round: None,
@@ -2369,7 +2405,7 @@ impl SyncClient {
                    explicit INTEGER NOT NULL DEFAULT 0,
                    status TEXT NOT NULL DEFAULT 'active', reason_code TEXT,
                    cursor INTEGER DEFAULT -1, bootstrap_state TEXT,
-                   seeded TEXT NOT NULL DEFAULT '[]', echo TEXT);
+                   seeded TEXT NOT NULL DEFAULT '[]', echo TEXT, applied TEXT);
                  CREATE TABLE IF NOT EXISTS _syncular_meta (
                    key TEXT PRIMARY KEY, value TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS _syncular_windows (
@@ -2386,6 +2422,17 @@ impl SyncClient {
                    ON _syncular_blob_commit_refs(blob_id);",
             )
             .map_err(|e| e.to_string())?;
+        // §5.6 applied-segment record, added after the units table shipped.
+        if !self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('_syncular_units') WHERE name = 'applied'")
+            .and_then(|mut stmt| stmt.exists([]))
+            .map_err(|e| e.to_string())?
+        {
+            self.conn
+                .execute_batch("ALTER TABLE _syncular_units ADD COLUMN applied TEXT")
+                .map_err(|e| e.to_string())?;
+        }
         // Migrate an outcome journal created before failed aggregate
         // envelopes were retained. Historical rows intentionally stay NULL.
         let _ = self
@@ -7970,14 +8017,21 @@ impl SyncClient {
                     recommended_action: None,
                 })
             })?;
-            meta.applied = units
-                .iter()
-                .filter_map(|unit| {
-                    let (cursor, token, ids) = self.applied_segments.get(&unit.id)?;
-                    (*cursor == unit.cursor && *token == unit.bootstrap_state)
-                        .then(|| (unit.id.clone(), ids.clone()))
-                })
-                .collect();
+            for unit in &units {
+                let applied =
+                    self.stored(applied_rows(&self.conn, &unit.id))
+                        .map_err(|message| {
+                            Box::new(SyncOutcome::Failed {
+                                error_code: "storage.failed".into(),
+                                message,
+                                details: None,
+                                recommended_action: None,
+                            })
+                        })?;
+                if !applied.is_empty() {
+                    meta.applied.insert(unit.id.clone(), applied);
+                }
+            }
             let id = uuid::Uuid::new_v4();
             self.active_round = Some(id);
             let phase = if uploads.is_empty() {
@@ -8258,22 +8312,20 @@ impl SyncClient {
         }
     }
 
-    /// Every unit's resume token and applied-segment count: a bootstrap that
-    /// advanced changes one (§4.7), also when it applied images of a section
-    /// it deferred (§5.3, §5.6).
-    fn resume_tokens(&self) -> Option<Vec<(String, Option<String>, usize)>> {
-        load_units(&self.conn).ok().map(|units| {
-            units
-                .into_iter()
-                .map(|unit| {
-                    let applied = self
-                        .applied_segments
-                        .get(&unit.id)
-                        .map_or(0, |(_, _, ids)| ids.len());
-                    (unit.id, unit.bootstrap_state, applied)
-                })
-                .collect()
-        })
+    /// Every unit's resume token and applied-segment record: a bootstrap
+    /// that advanced changes one (§4.7), also when it applied images of a
+    /// section it deferred (§5.3, §5.6).
+    #[allow(clippy::type_complexity)]
+    fn resume_tokens(&self) -> Option<Vec<(String, Option<String>, Option<String>)>> {
+        self.conn
+            .prepare_cached(
+                "SELECT id, bootstrap_state, applied FROM _syncular_units ORDER BY rowid",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect()
+            })
+            .ok()
     }
 
     /// §7.8: one idle drive's default total deadline, the TS client's value.
@@ -9340,17 +9392,10 @@ impl SyncClient {
                 scopes: record.scopes.iter().cloned().collect(),
             })
             .collect();
-        // §5.6: the applied-segment record ends when the presented cursor or
-        // token changes.
-        if self
-            .applied_segments
-            .get(&unit.id)
-            .is_some_and(|(cursor, token, _)| {
-                (*cursor, token) != (unit.cursor, &unit.bootstrap_state)
-            })
-        {
-            self.applied_segments.remove(&unit.id);
-        }
+        // §5.6: rows earlier attempts at this position applied.
+        let applied_record = self
+            .stored(applied_rows(&self.conn, &unit.id))
+            .map_err(storage)?;
         // §5.6: a resumed bootstrap keeps the tables it already seeded.
         let mut seeded: BTreeSet<String> = if unit.bootstrap_state.is_none() {
             BTreeSet::new()
@@ -9415,13 +9460,13 @@ impl SyncClient {
                                 ),
                             ));
                         }
-                        // §5.6 applied-segment rule.
-                        if meta
-                            .applied
-                            .get(&unit.id)
-                            .is_some_and(|ids| ids.contains(&segment_id))
-                        {
-                            seeded.insert(table);
+                        // §5.6 applied-segment rule: a partly applied image
+                        // already ran its table's first-page clear.
+                        let resumed = applied_record.get(&segment_id).copied();
+                        if resumed.is_some() {
+                            seeded.insert(table.clone());
+                        }
+                        if resumed == Some(row_count) {
                             continue;
                         }
                         if meta
@@ -9542,6 +9587,8 @@ impl SyncClient {
                                 clear,
                                 &effective,
                                 &unit.id,
+                                &segment_id,
+                                resumed.unwrap_or(0),
                                 row_count,
                                 as_of_commit_seq,
                                 &scope_digest,
@@ -9556,14 +9603,15 @@ impl SyncClient {
                             report.segment_rows_applied +=
                                 self.apply_segment(&pair, &segment, clear, &effective, &unit.id)?;
                             seeded.insert(segment.table);
+                            // An image records its rows with each chunk.
+                            self.stored(record_applied_rows(
+                                &self.conn,
+                                &unit.id,
+                                &segment_id,
+                                row_count,
+                            ))
+                            .map_err(storage)?;
                         }
-                        self.applied_segments
-                            .entry(unit.id.clone())
-                            .or_insert_with(|| {
-                                (unit.cursor, unit.bootstrap_state.clone(), BTreeSet::new())
-                            })
-                            .2
-                            .insert(segment_id);
                     }
                     _ => {
                         return Err(SectionError::Abort(
@@ -9634,7 +9682,6 @@ impl SyncClient {
             report.failed.truncate(counts.2);
             return Err(storage(message));
         }
-        self.applied_segments.remove(&unit.id);
         Ok(())
     }
 
@@ -10340,6 +10387,8 @@ impl SyncClient {
         first_page: bool,
         effective: &[(String, Vec<String>)],
         unit_id: &str,
+        segment_id: &str,
+        resumed: i64,
         row_count: i64,
         as_of_commit_seq: i64,
         scope_digest: &str,
@@ -10387,6 +10436,8 @@ impl SyncClient {
                 first_page,
                 effective,
                 unit_id,
+                segment_id,
+                resumed,
                 row_count,
                 as_of_commit_seq,
                 scope_digest,
@@ -10404,6 +10455,8 @@ impl SyncClient {
         first_fresh_page: bool,
         effective: &[(String, Vec<String>)],
         unit_id: &str,
+        segment_id: &str,
+        resumed: i64,
         row_count: i64,
         as_of_commit_seq: i64,
         scope_digest: &str,
@@ -10525,17 +10578,23 @@ impl SyncClient {
             .map(|n| quote_ident(n))
             .collect::<Vec<_>>()
             .join(", ");
+        // §5.6: an earlier attempt at this position committed the first
+        // `resumed` rows in primary-key order; the content address pins them.
         let mut stmt = img
             .prepare(&format!(
-                "SELECT {column_list} FROM {} ORDER BY {}",
+                "SELECT {column_list} FROM {} ORDER BY {} LIMIT -1 OFFSET ?1",
                 quote_ident(&table.name),
                 quote_ident(&table.primary_key)
             ))
             .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
         let mut rows = stmt
-            .query([])
+            .query([resumed])
             .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
-        let mut applied = 0u32;
+        let resumed = u32::try_from(resumed)
+            .ok()
+            .filter(|rows| i64::from(*rows) <= actual_count)
+            .ok_or_else(|| invalid("applied-segment record exceeds the image".into()))?;
+        let mut applied = resumed;
         let mut limit = if first_fresh_page {
             1024
         } else {
@@ -10654,6 +10713,13 @@ impl SyncClient {
                     batch.table(&table.name);
                     self.overlay_dirty.table(&table.name);
                 }
+                self.stored(record_applied_rows(
+                    &self.conn,
+                    unit_id,
+                    segment_id,
+                    i64::from(applied + processed),
+                ))
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 self.reconcile_import(table, &mut changed_keys, protected, reconcile_pending)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 let written = std::time::Instant::now();
@@ -10713,7 +10779,7 @@ impl SyncClient {
                 "image yielded {applied} rows, expected {actual_count}"
             )));
         }
-        Ok(applied)
+        Ok(applied - resumed)
     }
 
     /// §7.1 keyed reconciliation of the rows `drained` commits touch: restore

@@ -417,12 +417,14 @@ impl PreparedSyncRound {
                                 if !advertised || (url.is_some() && self.meta.accept & 8 == 0) {
                                     break;
                                 }
-                                // §5.6 applied-segment rule: no second download.
+                                // §5.6 applied-segment rule: a complete segment
+                                // is not downloaded again.
                                 if self
                                     .meta
                                     .applied
                                     .get(id)
-                                    .is_some_and(|ids| ids.contains(segment_id))
+                                    .and_then(|record| record.get(segment_id))
+                                    == Some(row_count)
                                 {
                                     continue;
                                 }

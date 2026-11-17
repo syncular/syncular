@@ -228,7 +228,7 @@ fn range_images_of_one_table_clear_once_across_responses() {
     let mut expected = ids_of(&server, &(-1, None));
     expected.extend(ids_of(&server, &resumed));
     assert_eq!(server.downloads, expected);
-    assert!(client.applied_segments.is_empty());
+    assert!(applied_rows(&client.conn, &unit).unwrap().is_empty());
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn a_batch_fetches_two_images_and_the_next_pull_skips_the_applied_ones() {
     assert_eq!(server.presented[3..], [None]);
     assert_eq!(ids(&client), ["a", "b", "c", "d", "e"]);
     assert_eq!(client.unit(&unit).unwrap().unwrap().cursor, None);
-    assert!(client.applied_segments.is_empty());
+    assert!(applied_rows(&client.conn, &unit).unwrap().is_empty());
 }
 
 #[test]
@@ -327,17 +327,22 @@ fn the_record_ends_when_the_presented_token_changes() {
     let SyncOutcome::Ok(_) = client.sync(&mut server) else {
         panic!("the deferred round succeeds")
     };
-    assert_eq!(client.applied_segments[&unit].2.len(), 2);
+    let record = applied_rows(&client.conn, &unit).unwrap();
+    assert_eq!(record.values().collect::<Vec<_>>(), [&1, &1]);
 
     // §4.6: a reset re-arms the unit; the next pull presents another position
     // and downloads every image again.
-    client
-        .conn
-        .execute(
-            "UPDATE _syncular_units SET bootstrap_state = '{\"restart\":1}', cursor = 3 WHERE id = ?1",
-            [&unit],
-        )
-        .unwrap();
+    let stored = client.unit(&unit).unwrap().unwrap();
+    save_unit(
+        &client.conn,
+        &UnitRecord {
+            cursor: Some(3),
+            bootstrap_state: Some(r#"{"restart":1}"#.to_owned()),
+            ..stored
+        },
+    )
+    .unwrap();
+    assert!(applied_rows(&client.conn, &unit).unwrap().is_empty());
     let restarted = (3, Some(r#"{"restart":1}"#.to_owned()));
     server
         .sections
@@ -348,4 +353,106 @@ fn the_record_ends_when_the_presented_token_changes() {
     };
     assert_eq!(server.presented.last(), Some(&Some(restarted)));
     assert_eq!(server.downloads, ids_of(&server, &(-1, None))[..2]);
+}
+
+#[test]
+fn a_round_cut_between_the_chunks_of_a_range_resumes_after_them_in_a_new_client() {
+    let path = std::env::temp_dir().join(format!("syncular-range-cut-{}.db", uuid::Uuid::new_v4()));
+    let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+        {"name":"id","type":"string","nullable":false},
+        {"name":"project_id","type":"string","nullable":false}],
+        "scopes":[{"pattern":"project:{project_id}"}]}]});
+    let open = || {
+        SyncClient::open_path(
+            "range-cut".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap()
+    };
+    let mut client = open();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    let unit = client
+        .subscribe(UnitScopes::from([("project_id".into(), "p1".into())]))
+        .unwrap();
+    let rows: Vec<String> = (0..3000).map(|n| format!("t{n:04}")).collect();
+    let mut server = RangeServer::new(&unit);
+    let row_refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    server.section((-1, None), &[&row_refs], None);
+    let image = ids_of(&server, &(-1, None)).remove(0);
+    // A table's first chunk holds 1,024 rows; the next one is cut.
+    client
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER cut_import BEFORE INSERT ON tasks WHEN (SELECT count(*) FROM tasks)>=1024
+             BEGIN SELECT RAISE(ABORT,'cut'); END",
+        )
+        .unwrap();
+
+    let outcome = client.sync(&mut server);
+
+    assert!(matches!(outcome, SyncOutcome::Failed { .. }), "{outcome:?}");
+    assert_eq!(ids(&client).len(), 1024);
+    assert_eq!(
+        applied_rows(&client.conn, &unit).unwrap(),
+        BTreeMap::from([(image.clone(), 1024)])
+    );
+    client
+        .conn
+        .execute_batch("DROP TRIGGER cut_import")
+        .unwrap();
+    drop(client);
+
+    let mut client = open();
+    let outcome = client.sync_until_idle(&mut server, None);
+
+    let SyncOutcome::Ok(report) = outcome else {
+        panic!("the resumed drive succeeds: {outcome:?}")
+    };
+    assert_eq!(report.segment_rows_applied, 3000 - 1024);
+    assert_eq!(server.downloads, [&*image, &*image]);
+    assert_eq!(ids(&client), rows);
+    assert!(applied_rows(&client.conn, &unit).unwrap().is_empty());
+    drop(client);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+#[test]
+fn a_units_table_without_the_applied_record_gains_it_on_open() {
+    let path = std::env::temp_dir().join(format!("syncular-units-{}.db", uuid::Uuid::new_v4()));
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE _syncular_units (id TEXT PRIMARY KEY, scopes TEXT NOT NULL,
+               explicit INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active',
+               reason_code TEXT, cursor INTEGER DEFAULT -1, bootstrap_state TEXT,
+               seeded TEXT NOT NULL DEFAULT '[]', echo TEXT);
+             INSERT INTO _syncular_units(id, scopes) VALUES ('u', '{}');",
+        )
+        .unwrap();
+    let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+        {"name":"id","type":"string","nullable":false},
+        {"name":"project_id","type":"string","nullable":false}],
+        "scopes":[{"pattern":"project:{project_id}"}]}]});
+    let client = SyncClient::open_path(
+        "units".into(),
+        &schema,
+        ClientLimits::default(),
+        path.to_str().unwrap(),
+    )
+    .unwrap();
+
+    record_applied_rows(&client.conn, "u", "sha256:a", 3).unwrap();
+
+    assert_eq!(
+        applied_rows(&client.conn, "u").unwrap(),
+        BTreeMap::from([("sha256:a".to_owned(), 3)])
+    );
+    drop(client);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
 }

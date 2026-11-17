@@ -101,7 +101,7 @@ A batch job skips this step. A `SyncClient` never starts a round itself, and a l
 
 `syncUntilIdle()` is safe to call concurrently. A call that arrives while one drive is running waits for it and then runs one follow-up drive, and every call that arrives during the same drive shares that follow-up. The follow-up runs because a caller may have written to the outbox after the running drive captured it. Only `sync()` rejects a concurrent `sync()` with `sync.invalid_request`.
 
-One drive is bounded by a total deadline: `timeoutMs` defaults to 60,000 ms. A drive past it after a completed round resolves with `budgetExhausted: true`; call `syncUntilIdle()` again to continue. One round that alone reaches `timeoutMs` rejects the drive with `sync.idle_timeout`, so a dead endpoint surfaces after 60 s instead of holding the caller for the whole backoff schedule. A service that accepts long batches sets a larger value or `Infinity`.
+One drive is bounded by a total deadline: `timeoutMs` defaults to 60,000 ms. A drive past it after a completed round resolves with `budgetExhausted: true`; call `syncUntilIdle()` again to continue. One round that waits `timeoutMs` with no answer and no applied rows rejects the drive with `sync.idle_timeout`, so a dead endpoint surfaces after 60 s instead of holding the caller for the whole backoff schedule. A service that accepts long batches sets a larger value or `Infinity`.
 
 ```ts title="src/worker.ts"
 import {

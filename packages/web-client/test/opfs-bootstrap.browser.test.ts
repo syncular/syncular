@@ -608,8 +608,12 @@ for (const point of [
         },
         unitId({ project_id: 'p1' }),
       );
-      if (point !== 'after-checkpoint') {
-        const updates = await page.evaluate(() => window.opfsTest.progress);
+      const updates = await page.evaluate(() => window.opfsTest.progress);
+      // §5.6: the image's last chunk recorded all its rows, so the reload
+      // neither downloads nor applies it again.
+      if (point === 'after-import')
+        expect(updates.some((p) => p.phase === 'download')).toBe(false);
+      else if (point !== 'after-checkpoint') {
         expect(
           updates.some(
             (p) =>
@@ -644,7 +648,7 @@ for (const point of [
       expect(complete.probe.ftsIntegrity).toBe('ok');
       expect(complete.pending).toEqual([]);
       expect(downloads - beforeDownloads).toBe(
-        point === 'after-checkpoint' ? 1 : 2,
+        point === 'after-checkpoint' || point === 'after-import' ? 1 : 2,
       );
       expect(images - beforeImages).toBe(point === 'after-checkpoint' ? 1 : 2);
       expect(errors).toEqual([]);

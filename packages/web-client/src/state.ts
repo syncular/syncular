@@ -45,6 +45,9 @@ export interface UnitRecord {
   readonly seeded: readonly string[];
   /** The echo persisted at the last `SUB_END` (§4.4). */
   readonly echo?: readonly FencedRecord[] | undefined;
+  /** §5.6 applied-segment record: segment id → rows applied at the unit's
+   * current cursor and token. */
+  readonly applied?: Readonly<Record<string, number>> | undefined;
 }
 
 /** §4.1: a catching-up unit holding cursor `-1` or a resume token. */
@@ -138,6 +141,7 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
   const scopes = json(row.scopes);
   const seeded = json(row.seeded);
   const echo = row.echo === null ? undefined : json(row.echo);
+  const applied = row.applied === null ? undefined : json(row.applied);
   const { id, status, cursor } = row;
   if (
     typeof id !== 'string' ||
@@ -146,6 +150,7 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
     (status !== 'active' && status !== 'revoked' && status !== 'failed') ||
     (cursor !== null && !Number.isInteger(cursor)) ||
     !isStrings(seeded) ||
+    (applied !== undefined && !isMap(applied)) ||
     (echo !== undefined &&
       !(
         Array.isArray(echo) &&
@@ -173,6 +178,7 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
   const bootstrapState = optionalText(row.bootstrap_state);
   if (bootstrapState !== undefined) record.bootstrapState = bootstrapState;
   if (echo !== undefined) record.echo = echo as FencedRecord[];
+  if (applied !== undefined) record.applied = applied as Record<string, number>;
   return record;
 }
 
@@ -191,10 +197,11 @@ export function getUnit(
   return row === undefined ? undefined : rowToRecord(row);
 }
 
-/** Insert or update in place: an update keeps the registration order. */
+/** Insert or update in place: an update keeps the registration order. The
+ * §5.6 applied-segment record ends when the cursor or the token changes. */
 export function saveUnit(db: ClientDatabase, record: UnitRecord): void {
   db.exec(
-    `INSERT INTO ${UNITS_TABLE}(id,scopes,explicit,status,reason_code,cursor,bootstrap_state,seeded,echo)VALUES(?,?,?,?,?,?,?,?,?)ON CONFLICT(id)DO UPDATE SET explicit=excluded.explicit,status=excluded.status,reason_code=excluded.reason_code,cursor=excluded.cursor,bootstrap_state=excluded.bootstrap_state,seeded=excluded.seeded,echo=excluded.echo`,
+    `INSERT INTO ${UNITS_TABLE}(id,scopes,explicit,status,reason_code,cursor,bootstrap_state,seeded,echo)VALUES(?,?,?,?,?,?,?,?,?)ON CONFLICT(id)DO UPDATE SET explicit=excluded.explicit,status=excluded.status,reason_code=excluded.reason_code,cursor=excluded.cursor,bootstrap_state=excluded.bootstrap_state,seeded=excluded.seeded,echo=excluded.echo,applied=iif((cursor,bootstrap_state)IS(excluded.cursor,excluded.bootstrap_state),applied,NULL)`,
     [
       record.id,
       JSON.stringify(record.scopes),
@@ -206,6 +213,20 @@ export function saveUnit(db: ClientDatabase, record: UnitRecord): void {
       JSON.stringify(record.seeded),
       record.echo === undefined ? null : JSON.stringify(record.echo),
     ],
+  );
+}
+
+/** §5.6: `rows` rows of `segmentId` applied at the unit's position. Runs
+ * in the transaction that commits them. */
+export function recordAppliedRows(
+  db: ClientDatabase,
+  id: string,
+  segmentId: string,
+  rows: number,
+): void {
+  db.exec(
+    `UPDATE ${UNITS_TABLE} SET applied=json_patch(coalesce(applied,'{}'),?) WHERE id=?`,
+    [JSON.stringify({ [segmentId]: rows }), id],
   );
 }
 
@@ -225,7 +246,7 @@ export function resetUnits(
   keep: readonly string[] = [],
 ): void {
   db.exec(
-    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',echo=NULL WHERE id NOT IN(${keep.map(() => '?').join(',')})`,
+    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',echo=NULL,applied=NULL WHERE id NOT IN(${keep.map(() => '?').join(',')})`,
     [...keep],
   );
   db.exec(

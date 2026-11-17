@@ -16,6 +16,7 @@ import { compileSchema, type SqliteValue } from '@syncular/server';
 import { SyncClient, type SegmentFetchRequest } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { upsertSql, upsertValues } from '../../server/src/relational-rows';
+import { getUnit } from '../src/state';
 import {
   CLIENT_SCHEMA,
   makeClient,
@@ -441,6 +442,84 @@ describe('range images (§5.3)', () => {
     expect(b.downloads.filter((id) => id === second)).toHaveLength(1);
     expect(b.downloads.filter((id) => id === third)).toHaveLength(2);
     expect(new Set(b.downloads).size).toBeGreaterThanOrEqual(3);
+  });
+
+  test('a round cut between the chunks of a range resumes after them, in a new client too (§5.6)', async () => {
+    const server = makeServer();
+    // Ranges of 1,337 rows: a range a client starts cold applies a chunk of
+    // 1,024 rows, then the rest.
+    server.limits.maxImageSegmentBytes = 200_000;
+    const ids = Array.from(
+      { length: 6000 },
+      (_, i) => `t${String(i).padStart(4, '0')}`,
+    );
+    const seeder = await makeClient(server, { clientId: 'seeder' });
+    for (let at = 0; at < ids.length; at += 500) {
+      seeder.client.mutate(
+        ids.slice(at, at + 500).map((id) => ({
+          table: 'tasks',
+          op: 'upsert' as const,
+          values: taskValues(id, 'p1', id.repeat(10)),
+        })),
+      );
+      await seeder.client.sync();
+    }
+    // Each import statement copies at most 1,024 rows; the cut fails one.
+    class CutDatabase extends BunClientDatabase {
+      inserts = 0;
+      cutAt = 0;
+      override exec(sql: string, params?: readonly SqliteValue[]): void {
+        if (
+          sql.startsWith('INSERT INTO "tasks"') &&
+          ++this.inserts === this.cutAt
+        )
+          throw new Error('cut');
+        super.exec(sql, params);
+      }
+    }
+    const db = new CutDatabase();
+    const limits = {
+      limitSnapshotRows: 100,
+      maxSnapshotPages: 3,
+      accept: 0b0111,
+    };
+    const attempt = async (cutAt: number) => {
+      db.inserts = 0;
+      db.cutAt = cutAt;
+      return makeClient(server, { clientId: 'client-b', database: db, limits });
+    };
+    const record = () =>
+      getUnit(db, unitId({ project_id: 'p1' }))?.applied ?? {};
+
+    // The first client commits the first chunk of range 1, then is cut.
+    const first = await attempt(2);
+    first.client.subscribe({ project_id: 'p1' });
+    await expect(first.client.sync()).rejects.toThrow('cut');
+    const [range1, range2] = first.downloads;
+    expect(record()).toEqual({ [range1!]: 1024 });
+    expect(tableRows(db, 'tasks')).toHaveLength(1024);
+    await first.client.close();
+
+    // A new client applies the rest of range 1 without its first-page clear,
+    // then commits the first chunk of range 2 and is cut.
+    const second = await attempt(3);
+    await expect(second.client.sync()).rejects.toThrow('cut');
+    expect(record()).toEqual({ [range1!]: 1337, [range2!]: 1024 });
+    expect(tableRows(db, 'tasks').map((row) => row.id)).toEqual(
+      ids.slice(0, 1337 + 1024),
+    );
+    await second.client.close();
+
+    // The third applies only the rows no attempt committed.
+    const third = await attempt(0);
+    const drive = await third.client.syncUntilIdle();
+    expect(drive.segmentRowsApplied).toBe(ids.length - 1337 - 1024);
+    expect(third.downloads).not.toContain(range1);
+    expect(third.downloads.filter((id) => id === range2)).toHaveLength(1);
+    expect(tableRows(db, 'tasks').map((row) => row.id)).toEqual(ids);
+    expect(getUnit(db, unitId({ project_id: 'p1' }))?.applied).toBeUndefined();
+    await third.client.close();
+    db.close();
   });
 });
 

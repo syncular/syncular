@@ -526,6 +526,10 @@ export async function applySqliteSegment(
      * to the next (§5.3).
      */
     readonly chunkRows?: Map<string, number>;
+    /** Rows of this image an earlier attempt committed (§5.6). */
+    readonly appliedRows?: number | undefined;
+    /** Runs inside each chunk's transaction with the rows applied so far. */
+    readonly onChunk?: (appliedRows: number) => void;
   },
 ): Promise<number> {
   const now = options.now ?? (() => performance.now());
@@ -619,8 +623,12 @@ export async function applySqliteSegment(
       }
       return [boundary, predicates.join(' AND ') || 'true', params] as const;
     };
-    let [boundary, where, params] = range(undefined, 1024);
-    let applied = 0;
+    const resumed = options.appliedRows ?? 0;
+    let [boundary, where, params] = range(
+      resumed > 0 ? range(undefined, resumed)[0] : undefined,
+      1024,
+    );
+    let applied = resumed;
     // §5.3: a table's first chunk holds 1,024 rows; a later range image
     // starts at the size its previous range reached. A later chunk holds at least
     // 1,024 rows, at most twice the rows of the one before, at most 65,536,
@@ -631,7 +639,7 @@ export async function applySqliteSegment(
         (!options.clearFirst && options.chunkRows?.get(table.name)) || 1024;
       ;
     ) {
-      if (options.isCurrent?.() === false) return applied;
+      if (options.isCurrent?.() === false) return applied - resumed;
       const started = now();
       let chunk = 0;
       const first = applied === 0;
@@ -711,6 +719,7 @@ export async function applySqliteSegment(
               Number(row._syncular_version),
             );
           }
+        options.onChunk?.(applied);
         return rebaseScope(scope, kept, skipped);
       });
       const duration = now() - started;
@@ -727,7 +736,7 @@ export async function applySqliteSegment(
       imageInvalid('image applied row count does not match descriptor');
     // A file replica's WAL keeps its high-water size until truncated.
     db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    return applied;
+    return applied - resumed;
   });
 }
 

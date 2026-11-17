@@ -4,7 +4,8 @@
  */
 import { expect, test } from 'bun:test';
 import { httpSyncTransport, installSyncScheduler } from '@syncular/client';
-import { handleSyncRequest } from '@syncular/server';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { handleSyncRequest, type SqliteValue } from '@syncular/server';
 import {
   makeClient,
   makeServer,
@@ -101,6 +102,63 @@ test('a deadline that elapses across completed rounds ends the drive as an exhau
   expect(failed).toEqual([]);
   scheduler.stop();
   off();
+  await local.client.close();
+  local.db.close();
+});
+
+test('a round that keeps applying rows is not cut: each applied chunk restarts its bound', async () => {
+  const server = makeServer();
+  server.limits.maxImageSegmentBytes = 200_000;
+  const seeder = await makeClient(server, { clientId: 'idle-apply-seeder' });
+  for (let at = 0; at < 3000; at += 500) {
+    seeder.client.mutate(
+      Array.from({ length: 500 }, (_, i) => {
+        const id = `t${String(at + i).padStart(4, '0')}`;
+        return {
+          table: 'tasks',
+          op: 'upsert' as const,
+          values: taskValues(id, 'p1', id.repeat(10)),
+        };
+      }),
+    );
+    await seeder.client.sync();
+  }
+  // A manual clock: every import statement takes 60 % of the bound.
+  let now = 0;
+  const timers = new Set<{ readonly due: number; readonly fire: () => void }>();
+  const advance = (ms: number) => {
+    now += ms;
+    for (const timer of [...timers])
+      if (timer.due <= now) {
+        timers.delete(timer);
+        timer.fire();
+      }
+  };
+  class SlowImport extends BunClientDatabase {
+    override exec(sql: string, params?: readonly SqliteValue[]): void {
+      if (sql.startsWith('INSERT INTO "tasks"')) advance(600);
+      super.exec(sql, params);
+    }
+  }
+  const local = await makeClient(server, {
+    clientId: 'idle-apply',
+    database: new SlowImport(),
+    realtimePolicy: 'off',
+    limits: { limitSnapshotRows: 100, maxSnapshotPages: 3, accept: 0b0111 },
+    schedule: (fire, delayMs) => {
+      const timer = { due: now + delayMs, fire };
+      timers.add(timer);
+      return () => timers.delete(timer);
+    },
+  });
+  local.client.subscribe({ project_id: 'p1' });
+
+  const drive = await local.client.syncUntilIdle({ timeoutMs: 1000 });
+  // The import ran for more than 1.8 times the bound.
+  expect(now).toBeGreaterThan(1800);
+  expect(drive.segmentRowsApplied).toBe(3000);
+  expect(tableRows(local.db, 'tasks')).toHaveLength(3000);
+  expect(timers.size).toBe(0);
   await local.client.close();
   local.db.close();
 });

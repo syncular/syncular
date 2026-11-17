@@ -11,7 +11,7 @@
 import { Database } from 'bun:sqlite';
 import { canonicalScopeJson, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
-import { task } from '../fixture';
+import { FIXTURE_SCHEMA, task } from '../fixture';
 import { rawPull, responseSection } from '../raw';
 import type { Scenario } from '../scenario';
 import {
@@ -460,6 +460,71 @@ export const sqliteImageScenarios: readonly Scenario[] = [
         'the broken range image is downloaded once more',
       );
       checkEqual(await localIds(), ids, 'the client holds every row');
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    // B.10(g): a round cut between the chunks of a range image keeps the
+    // committed chunks, and a restarted client continues after them without
+    // the first-page clear (§5.6 applied-segment rule).
+    name: 'sqlite-image/range-cut-between-chunks-resumes-after-restart',
+    specRefs: ['§5.3', '§5.6', 'B.10'],
+    requires: ['sqlite-image'],
+    server: { limits: { maxImageSegmentBytes: 200_000 } },
+    async run(ctx) {
+      const ids = Array.from(
+        { length: 3000 },
+        (_, i) => `t${String(i).padStart(4, '0')}`,
+      );
+      for (let at = 0; at < ids.length; at += 500)
+        await seedTasks(
+          ctx,
+          ids.slice(at, at + 500).map((id) => task(id, 'p1', id.repeat(10))),
+        );
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+        limits: {
+          limitSnapshotRows: 100,
+          maxSnapshotPages: 2,
+          accept: WITH_SQLITE,
+        },
+      });
+      await a.api.subscribe(U1);
+      // A table's first chunk holds 1,024 rows; the next one is cut.
+      await a.api.executeStorageSql?.(
+        "CREATE TRIGGER cut_import BEFORE INSERT ON tasks WHEN (SELECT count(*) FROM tasks)>=1024 BEGIN SELECT RAISE(ABORT,'cut'); END",
+      );
+      const failed = await a.api.sync();
+      check(!failed.ok, 'the cut failed the round');
+      const [first] = a.directDownloads;
+      check(first !== undefined, 'the round downloaded a range image');
+      const local = await a.api.readRows('tasks');
+      checkEqual(local.length, 1024, 'the first chunk committed');
+
+      await a.api.executeStorageSql?.('DROP TRIGGER cut_import');
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      const report = await syncIdle(a);
+      checkEqual(
+        report.segmentRowsApplied,
+        ids.length - 1024,
+        'the restarted client applies only the rows no chunk committed',
+      );
+      check(
+        a.directDownloads.every(
+          (id) => a.directDownloads.filter((other) => other === id).length <= 2,
+        ),
+        'no range image is downloaded more than once after the cut',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ids,
+        'the resumed range kept its committed chunk',
+      );
       await expectConverged(ctx, 'tasks', [a], {
         variable: 'project_id',
         values: ['p1'],

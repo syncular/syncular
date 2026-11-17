@@ -258,6 +258,7 @@ import {
   owning,
   pairScopes,
   pruneUnknownUnits,
+  recordAppliedRows,
   REGISTERED_DIGEST_KEY,
   REPLICA_CURSOR_KEY,
   replicaCursor,
@@ -476,7 +477,8 @@ export interface SyncClientConfig {
    * `transport.timeout` (`causeKind` `heartbeat`).
    */
   readonly realtimeHeartbeatMs?: number;
-  /** Timer seam for the heartbeat watchdog; defaults to `setTimeout`. */
+  /** Timer seam for the heartbeat watchdog and the `syncUntilIdle` round
+   * bound; defaults to `setTimeout`. */
   readonly schedule?: (callback: () => void, delayMs: number) => () => void;
   /** Stable per-device id (§1.5); defaults to a persisted random UUID. */
   readonly clientId?: string;
@@ -748,10 +750,6 @@ const outcomeNotFound = () =>
     'no durable outcome exists for the commit',
   );
 
-/** The position a unit presents in a pull (§5.6 applied-segment rule). */
-const position = (unit: UnitRecord) =>
-  JSON.stringify([unit.id, unit.cursor, unit.bootstrapState]);
-
 interface OpenSection {
   readonly start: SubStartFrame;
   readonly unit: UnitRecord;
@@ -986,13 +984,10 @@ export class SyncClient {
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   readonly #progress = new ProgressEmitter();
-  /**
-   * §5.6 applied-segment rule: unit position → the segments applied in
-   * sections whose SUB_END did not persist.
-   */
-  readonly #appliedSegments = new Map<string, Set<string>>();
   /** §5.3: a table's next image chunk size, carried across its ranges. */
   readonly #chunkRows = new Map<string, number>();
+  /** §7.8: restarts the running drive's round bound when rows apply. */
+  #roundProgressed: (() => void) | undefined;
   #progressAttempt = 0;
   /**
    * True from the synchronous entry of `sync()` until its serialized round
@@ -4806,26 +4801,19 @@ export class SyncClient {
       deferredCommits: 0,
       schemaFloor: undefined as SchemaFloor | undefined,
     };
-    const result = (budgetExhausted: boolean): SyncIdleResult => ({
-      pushed: aggregate.pushed,
-      applied: aggregate.applied,
-      rejected: aggregate.rejected,
-      retryable: aggregate.retryable,
-      conflicts: aggregate.conflicts,
-      commitsApplied: aggregate.commitsApplied,
-      segmentRowsApplied: aggregate.segmentRowsApplied,
-      bootstrapping: aggregate.bootstrapping,
-      resets: aggregate.resets,
-      revoked: aggregate.revoked,
-      failed: aggregate.failed,
-      ...(aggregate.deferredCommits > 0
-        ? { deferredCommits: aggregate.deferredCommits }
-        : {}),
-      ...(aggregate.schemaFloor !== undefined
-        ? { schemaFloor: aggregate.schemaFloor }
-        : {}),
-      budgetExhausted,
-    });
+    const result = (budgetExhausted: boolean): SyncIdleResult => {
+      const { deferredCommits, schemaFloor, ...summary } = aggregate;
+      return {
+        ...summary,
+        ...(deferredCommits > 0 ? { deferredCommits } : {}),
+        ...(schemaFloor !== undefined ? { schemaFloor } : {}),
+        budgetExhausted,
+      };
+    };
+    const states = () =>
+      JSON.stringify(
+        loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
+      );
     const startedAtMs = this.#now();
     let completed = false;
     for (let round = 0; round < budget; round++) {
@@ -4833,13 +4821,11 @@ export class SyncClient {
       // like an exhausted round budget; the next drive resumes.
       if (completed && this.#now() - startedAtMs >= timeoutMs)
         return result(true);
-      const before = JSON.stringify(
-        loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
-      );
-      // Each round is bounded by `timeoutMs` on its own. One signal reaches
-      // every transport call of the round.
+      const before = states();
+      // Each round is bounded by `timeoutMs` from its start or its last
+      // applied rows. One signal reaches every transport call of the round.
       const controller = new AbortController();
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancel: (() => void) | undefined;
       const sync = this.#sync(controller.signal);
       const last = await (
         timeoutMs === Number.POSITIVE_INFINITY
@@ -4847,49 +4833,59 @@ export class SyncClient {
           : Promise.race([
               sync,
               new Promise<never>((_, reject) => {
-                timer = setTimeout(() => {
-                  const error = new ClientSyncError(
-                    'sync.idle_timeout',
-                    'syncUntilIdle exceeded its deadline',
-                    true,
-                    { timeoutMs, rounds: round },
-                  );
-                  // The transport may never answer; release the round so the
-                  // client can run another one after the caller sees the error.
-                  controller.abort(error);
-                  this.#abortPendingRound('syncUntilIdle deadline exceeded');
-                  reject(error);
-                }, timeoutMs);
+                this.#roundProgressed = () => {
+                  cancel?.();
+                  cancel = this.#schedule(() => {
+                    const error = new ClientSyncError(
+                      'sync.idle_timeout',
+                      'syncUntilIdle exceeded its deadline',
+                      true,
+                      { timeoutMs, rounds: round },
+                    );
+                    // The transport may never answer; release the round so the
+                    // client can run another one after the caller sees the error.
+                    controller.abort(error);
+                    this.#abortPendingRound(error);
+                    reject(error);
+                  }, timeoutMs);
+                };
+                this.#roundProgressed();
               }),
             ])
-      ).finally(() => clearTimeout(timer));
+      ).finally(() => {
+        cancel?.();
+        this.#roundProgressed = undefined;
+      });
       completed = true;
       // Historical counters accumulate; current readiness (`bootstrapping`,
       // `deferredCommits`, `schemaFloor`) describes the latest round.
-      aggregate.pushed += last.pushed;
-      aggregate.applied.push(...last.applied);
-      aggregate.rejected.push(...last.rejected);
-      aggregate.retryable.push(...last.retryable);
+      for (const key of [
+        'pushed',
+        'commitsApplied',
+        'segmentRowsApplied',
+      ] as const)
+        aggregate[key] += last[key];
+      for (const key of [
+        'applied',
+        'rejected',
+        'retryable',
+        'resets',
+        'revoked',
+        'failed',
+      ] as const)
+        aggregate[key].push(...last[key]);
       aggregate.conflicts.push(...last.conflicts);
-      aggregate.commitsApplied += last.commitsApplied;
-      aggregate.segmentRowsApplied += last.segmentRowsApplied;
       aggregate.bootstrapping = [...last.bootstrapping];
-      aggregate.resets.push(...last.resets);
-      aggregate.revoked.push(...last.revoked);
-      aggregate.failed.push(...last.failed);
       aggregate.deferredCommits = last.deferredCommits ?? 0;
       aggregate.schemaFloor = last.schemaFloor;
       // A disabled transport or a schema floor ends the loop, not the budget.
-      if (!this.#transportEnabled || last.schemaFloor !== undefined)
+      if (!this.#transportEnabled || aggregate.schemaFloor)
         return result(false);
       if (
         maxRounds === undefined &&
         last.segmentRowsApplied > 0 &&
         last.bootstrapping.length > 0 &&
-        before !==
-          JSON.stringify(
-            loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
-          )
+        before !== states()
       )
         round = -1;
       if (
@@ -4897,7 +4893,7 @@ export class SyncClient {
         last.segmentRowsApplied === 0 &&
         last.bootstrapping.length === 0 &&
         last.resets.length === 0 &&
-        (last.deferredCommits ?? 0) === 0 &&
+        !aggregate.deferredCommits &&
         !this.#needsPull
       ) {
         return result(false);
@@ -5465,7 +5461,7 @@ export class SyncClient {
           frame.type === 'SEGMENT_REF' &&
           open !== undefined &&
           this.#config.segments !== undefined &&
-          !this.#appliedSegments.get(position(open))?.has(frame.segmentId)
+          open.applied?.[frame.segmentId] !== frame.rowCount
         ) {
           queued.push([frame, open.scopes]);
         }
@@ -5597,16 +5593,16 @@ export class SyncClient {
               throw invalidRequest(
                 'unadvertised or paged sqlite segment (§4.2, §5.3)',
               );
-            const applied =
-              this.#appliedSegments.get(position(section.unit)) ??
-              new Set<string>();
-            if (frame.type === 'SEGMENT_REF' && applied.has(frame.segmentId)) {
-              // §5.6: applied in an earlier attempt at this position.
-              section.seeded.add(frame.table);
-              break;
-            }
             let bytes: Uint8Array;
+            let appliedRows: number | undefined;
             if (frame.type === 'SEGMENT_REF') {
+              // §5.6: rows an earlier attempt at this position applied. A
+              // partly applied image already ran its table's first-page clear.
+              appliedRows = section.unit.applied?.[frame.segmentId];
+              if (appliedRows !== undefined) {
+                section.seeded.add(frame.table);
+                if (appliedRows === frame.rowCount) break;
+              }
               this.#progress.update({
                 ...NO_PAYLOAD,
                 phase: 'download',
@@ -5685,7 +5681,17 @@ export class SyncClient {
                       table,
                       bytes,
                       image,
-                      options,
+                      {
+                        ...options,
+                        appliedRows,
+                        onChunk: (rows) =>
+                          recordAppliedRows(
+                            this.#db,
+                            unitId,
+                            image.segmentId,
+                            rows,
+                          ),
+                      },
                     )
                   : applyRowsSegment(
                       this.#db,
@@ -5698,9 +5704,11 @@ export class SyncClient {
               },
             );
             if (frame.type === 'SEGMENT_REF' && !section.skip)
-              this.#appliedSegments.set(
-                position(section.unit),
-                applied.add(frame.segmentId),
+              recordAppliedRows(
+                this.#db,
+                unitId,
+                frame.segmentId,
+                frame.rowCount,
               );
             break;
           }
@@ -5714,7 +5722,6 @@ export class SyncClient {
               this.#localResetEpoch === resetEpoch
             ) {
               this.#finishSection(section, frame, summary);
-              this.#appliedSegments.delete(position(section.unit));
             }
             section = undefined;
             // The counters stay: `complete` and `failed` report them.
@@ -6207,7 +6214,10 @@ export class SyncClient {
       effective,
       owners,
       isCurrent: () => this.#localResetEpoch === resetEpoch,
-      onProgress: (rowsProcessed) => this.#progress.update({ rowsProcessed }),
+      onProgress: (rowsProcessed) => {
+        this.#progress.update({ rowsProcessed });
+        this.#roundProgressed?.();
+      },
       transaction: (fn) => {
         const started = performance.now();
         let written = started;

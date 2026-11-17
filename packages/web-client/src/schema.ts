@@ -697,6 +697,12 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       UNITS_TABLE,
       "id TEXT PRIMARY KEY,scopes TEXT NOT NULL,explicit INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',reason_code TEXT,cursor INTEGER DEFAULT -1,bootstrap_state TEXT,seeded TEXT NOT NULL DEFAULT '[]',echo TEXT",
     );
+    // §5.6 applied-segment record, added after the table shipped.
+    try {
+      db.exec(`ALTER TABLE ${UNITS_TABLE} ADD COLUMN applied TEXT`);
+    } catch {
+      // column already exists
+    }
     // §4.8 window registry: base + value → the unit it holds, the
     // completeness oracle and one of a unit's references (§4.1).
     createTable(

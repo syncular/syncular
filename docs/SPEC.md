@@ -2680,9 +2680,10 @@ first-page clear in the first transaction of a table's first range (§5.6).
 Each range image applies in its own chunks. Within a chunk, copy at most
 1,024 rows per statement and report progress after each statement (§7.7).
 Publish a revision after each committed chunk, preserving optimistic writes.
-Yield between chunks; persist the unit's checkpoint only at `SUB_END`. Failure
-rolls back the whole current chunk and leaves the committed prefix for safe
-retry (§7.8). Empty images still apply a required first-page clear. NULL
+Each chunk records the image's applied rows in its own transaction (§5.6
+applied-segment record). Yield between chunks; persist the unit's checkpoint
+only at `SUB_END`. Failure rolls back the whole current chunk and leaves the
+committed prefix, which a retry at the same position continues (§5.6, §7.8). Empty images still apply a required first-page clear. NULL
 primary keys MUST NOT be skipped by statement or chunk boundaries, and the
 applied row count MUST equal the descriptor before a unit's checkpoint can
 advance. After the last chunk commits outside any open transaction, the client
@@ -3002,18 +3003,34 @@ for clients without signed-URL support.
   exactly when it is the first segment of its table in the bootstrap. A
   later range image of a table also has `rowCursor` absent and is not a
   first page.
-- **Applied-segment rule.** A client records the `segmentId` of every
-  `SEGMENT_REF` it applied completely in a unit section whose `SUB_END` it
-  has not persisted, together with the cursor and resume token the unit
-  presented. When the unit's next pull presents the same cursor and token, a
-  `SEGMENT_REF` whose `segmentId` the record holds is neither downloaded
-  nor applied again, and its table counts as having received a segment. The
-  record ends when the unit's `SUB_END` persists or its cursor or token
-  changes. A failed download therefore repeats only that segment and the
-  segments after it: a server serves the same stored images for the same
-  position (§5.3 reuse). The record MAY live in memory; a client that loses
-  it applies the segments again, which the version guard and the first-page
-  clear keep correct.
+- **Applied-segment rule.** A client records, with the unit in its replica
+  database, how many rows of each `SEGMENT_REF` it applied at the unit's
+  current cursor and resume token. A sqlite image records its applied row
+  count in the transaction of each chunk (§5.3); a rows segment records its
+  `rowCount` in the transaction of its last block. The record ends when the
+  unit's cursor or token changes and when a reset rewinds the unit (§7.4.3).
+  When the unit's next pull presents the same cursor and token, a
+  `SEGMENT_REF` whose record holds its `rowCount` is neither downloaded nor
+  applied again; an image whose record holds fewer rows is downloaded and
+  applied from the row after that count in primary-key order. In both cases
+  its table counts as having received a segment, so no first-page clear runs.
+  A failed download, a round cut between chunks, a closed client and a
+  restarted process therefore repeat only rows no transaction committed: a
+  server serves the same stored images for the same position (§5.3 reuse),
+  and the content address pins the bytes, so a row count names the same
+  primary key on every attempt. A segment the record does not name applies
+  in full; the version guard and the first-page clear keep that correct.
+
+  DECISION (2026-11-17): the record counts rows and persists with each chunk.
+  It held whole segments in memory until 0.78.0. A cold private Chromium
+  window applied 32 MiB range images of a 114,007-row catalogue at about
+  0.27 ms per OPFS call, and the drive's 60 s round bound (§7.8) cut rounds
+  in the middle of a range. The record held only completed ranges, so each
+  next round downloaded the cut range again and applied it from its first
+  row: one range was fetched 117 s and 150 s into the load and cut both
+  times. A record lost with the worker, or with the client an app recreates
+  after a failure, sent the unit back to every range since its last
+  `SUB_END`.
 - **Fail closed at the clear too.** The first-page delete uses the §3.3
   matching rule *including its fail-closed clause*: with no local
   scope-column mapping for an effective key, the client MUST NOT clear
@@ -3024,8 +3041,9 @@ for clients without signed-URL support.
   failed unit leaves the registration list.
 - Rows-segment blocks are applied transactionally per §1.4/§5.2; a
   SQLite image applies in committed chunks (§5.3). The resume token is
-  persisted only at `SUB_END`, so a crash mid-segment resumes
-  conservatively (the version guard skips every row of a re-applied block).
+  persisted only at `SUB_END`; a crash mid-image resumes after the image's
+  last committed chunk, and a crash mid rows segment applies the segment
+  again (the version guard skips every row of a re-applied block).
 - **Segment rows carry their server version** (per-row `serverVersion`
   in SSG2, §5.2; the `_syncular_version` column in sqlite images, §5.3).
   A client MUST store it as the row's last-known `server_version`,
@@ -6839,9 +6857,10 @@ reset invalidates the remaining chunks of the older response. Image attachment l
 chunks, with no write transaction held across a yield.
 
 An interrupted import retains its committed prefix and the unit's previous
-checkpoint. A fresh retry clears that table's unit scope with its
-first chunk and reapplies the snapshot; a checkpointed rows-page retry resumes
-through the existing token. A failing chunk rolls back its rows, FTS maintenance,
+checkpoint. A retry at the same position continues after the committed prefix
+(§5.6 applied-segment rule); a retry that receives other segments clears that
+table's unit scope with its first chunk and reapplies the snapshot; a
+checkpointed rows-page retry resumes through the existing token. A failing chunk rolls back its rows, FTS maintenance,
 and revision. Metadata and total image row count are validated before any writes.
 The existing content address, authentication, scope checks, and server-version
 rules remain mandatory.
@@ -6878,10 +6897,12 @@ drive whose deadline elapsed after at least one of its rounds completed ends
 like an exhausted round budget: it resolves with `budgetExhausted: true` and
 the aggregate report, records no failed round, leaves progress at the state of
 its last completed round, and schedules no further rounds. Each round is also
-bounded by `timeoutMs` on its own, measured from the round's start, so a drive
-ends at the latest one round bound after its deadline. A round that reaches
-that bound fails with the client-local, retryable `sync.idle_timeout` (details
-`timeoutMs`, and `rounds`: the rounds the drive ran before it). The drive
+bounded by `timeoutMs` on its own. The bound runs from the round's start and
+restarts whenever the round applies segment rows, so it measures time without
+progress: a round that keeps importing is never cut, and a round that waits
+`timeoutMs` on its transport with no rows applied reaches it. A round that
+reaches the bound fails with the client-local, retryable `sync.idle_timeout`
+(details `timeoutMs`, and `rounds`: the rounds the drive ran before it). The drive
 rejects with it, `lastRound` records the failed round, progress turns `failed`
 with it, and the client emits its retryable-failure background intent (§7.7).
 A transport that never answers therefore ends in `sync.idle_timeout`. The code
@@ -6890,15 +6911,30 @@ never goes on the wire and is never a §1.5 round failure code.
 The TypeScript client hands every transport call of a round one abort signal
 (the `signal` argument of `SyncTransport`, `SegmentDownloader` and the
 `BlobTransport` upload calls); the round bound aborts it and a socket round,
-and the aborted round fails with `sync.idle_timeout`. A transport that ignores
+and the aborted round fails with `sync.idle_timeout`. It restarts the bound
+after each image statement (at most 1,024 rows) and every 1,024 rows of a rows
+segment. A transport that ignores
 the signal keeps its round outstanding until it answers. The Rust client
 exposes the same bound as `sync_until_idle_with_deadline` (`sync_until_idle`
 defaults to 60 s) and scopes it onto the transport as the round deadline
-(§1.8). The tighter of `timeoutMs` and the transport's own whole-round deadline
-applies; a round deadline that the drive bound set fails the round with
+(§1.8). It applies a round's segments after the round's network calls end, so
+the bound covers those calls and never the import. The tighter of `timeoutMs`
+and the transport's own whole-round deadline applies; a round deadline that the drive bound set fails the round with
 `sync.idle_timeout`, and one the transport's tighter deadline set keeps the
 transport's error. A host that drives rounds itself sets the bound with
 `PreparedSyncRound::set_idle_deadline`.
+
+DECISION (2026-11-17): the round bound measures time without progress. Until
+0.78.0 the TypeScript client measured it from the round's start, and an app's
+host loops drive with the default 60 s. A round that imports several 32 MiB
+range images in a private Chromium window (0.27 ms per OPFS call) runs longer
+than that while it commits a chunk every few hundred milliseconds; every such
+round failed with `sync.idle_timeout`, showed a failed load and waited for the
+retry backoff. Removing the bound from a round that applies rows keeps both
+properties the bound exists for: a transport that never answers still fails
+after `timeoutMs`, and the drive deadline still ends a drive between rounds.
+It also matches the Rust client, whose import runs outside its network bound. A
+round cut anyway loses only its uncommitted chunk (§5.6).
 
 Every host loop (`installSyncScheduler`, the worker core, the Tauri plugin's
 owner thread and the React Native auto-sync loop) queues its next drive at once

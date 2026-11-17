@@ -8192,7 +8192,7 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
     let table = client.schema.table("tasks").unwrap().clone();
     let scopes = vec![("project_id".into(), vec!["p1".into()])];
     assert!(client
-        .apply_sqlite_image(&image, &table, true, &scopes, "", 2050, 7, "digest")
+        .apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, 2050, 7, "digest")
         .is_err());
     assert!(client.conn.is_autocommit());
     assert_eq!(
@@ -8206,7 +8206,7 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
         .execute("UPDATE tasks SET project_id='p1' WHERE id='01500'", [])
         .unwrap();
     assert!(matches!(
-        client.apply_sqlite_image(&image, &table, true, &scopes, "", 2050, 7, "digest"),
+        client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, 2050, 7, "digest"),
         Ok(2050)
     ));
     assert_eq!(
@@ -8244,7 +8244,7 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
             .clone()
     };
     assert!(client
-        .apply_sqlite_image(&image, &table, true, &scopes, "", 7268, 7, "digest")
+        .apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, 7268, 7, "digest")
         .is_err());
     assert!(client.conn.is_autocommit());
     assert_eq!(count(&client), 3072);
@@ -8255,7 +8255,7 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
         .unwrap();
     seen.lock().unwrap().clear();
     assert!(matches!(
-        client.apply_sqlite_image(&image, &table, true, &scopes, "", 7268, 7, "digest"),
+        client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, 7268, 7, "digest"),
         Ok(7268)
     ));
     assert_eq!(count(&client), 7268);
@@ -8297,7 +8297,7 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
             .progress
             .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
         assert!(matches!(
-            client.apply_sqlite_image(&image, &table, true, &scopes, "", total, 7, "digest"),
+            client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, total, 7, "digest"),
             Ok(applied) if i64::from(applied) == total
         ));
         assert_eq!(*seen.lock().unwrap(), expected);
@@ -8442,6 +8442,8 @@ fn image_chunks_reject_null_primary_keys() {
             true,
             &[("project_id".into(), vec!["p1".into()])],
             "",
+            "",
+            0,
             1025,
             7,
             "digest"
@@ -8499,7 +8501,7 @@ fn segment_column_mismatches_carry_the_table_and_column() {
             INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',0);",
         )
         .unwrap();
-    match client.apply_sqlite_image(&image, &table, true, &scopes, "", 0, 7, "digest") {
+    match client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, 0, 7, "digest") {
         Err(SectionError::Transport(error)) => {
             assert_eq!(error.code, "sync.schema_mismatch");
             assert_eq!(
@@ -8616,7 +8618,9 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                     )
                     .unwrap();
                 assert!(matches!(
-                    actual.apply_sqlite_image(&image, &table, false, &scopes, "", 1, 7, "digest"),
+                    actual.apply_sqlite_image(
+                        &image, &table, false, &scopes, "", "", 0, 1, 7, "digest"
+                    ),
                     Ok(1)
                 ));
             } else {
@@ -8757,6 +8761,8 @@ fn import_reconciliation_preserves_typed_pending_primary_keys() {
                                 false,
                                 &[],
                                 "",
+                                "",
+                                0,
                                 1,
                                 7,
                                 "digest"
@@ -8847,7 +8853,7 @@ fn sqlite_full_image_import_retains_the_first_code_and_recovers() {
         .unwrap();
     let effective = [("project_id".into(), vec!["p1".into()])];
     assert!(client
-        .apply_sqlite_image(&image, &table, true, &effective, "", 1, 7, "digest")
+        .apply_sqlite_image(&image, &table, true, &effective, "", "", 0, 1, 7, "digest")
         .is_err());
     let failure = client.storage_failure.borrow().clone().unwrap();
     assert_eq!(failure.code, Some("client.storage_full"));
@@ -8859,7 +8865,7 @@ fn sqlite_full_image_import_retains_the_first_code_and_recovers() {
         .execute_batch("PRAGMA max_page_count = 1073741823")
         .unwrap();
     assert!(matches!(
-        client.apply_sqlite_image(&image, &table, true, &effective, "", 1, 7, "digest"),
+        client.apply_sqlite_image(&image, &table, true, &effective, "", "", 0, 1, 7, "digest"),
         Ok(1)
     ));
     assert!(client.conn.is_autocommit());
@@ -10275,6 +10281,8 @@ fn large_unique_import_copies_no_unrelated_tables() {
             true,
             &[("project_id".into(), vec!["p1".into()])],
             "",
+            "",
+            0,
             10240,
             7,
             "digest"
@@ -10312,7 +10320,7 @@ fn benchmark_unique_image_import() {
             let (mut client, image, table) = unique_import_fixture(rows);
             let start = std::time::Instant::now();
             assert!(
-                matches!(client.apply_sqlite_image(&image,&table,true,&[("project_id".into(),vec!["p1".into()])], "",rows as i64,7,"digest"),Ok(n) if n as usize == rows)
+                matches!(client.apply_sqlite_image(&image,&table,true,&[("project_id".into(),vec!["p1".into()])], "", "", 0,rows as i64,7,"digest"),Ok(n) if n as usize == rows)
             );
             let elapsed = start.elapsed().as_secs_f64() * 1000.0;
             assert_eq!(
@@ -11863,7 +11871,7 @@ fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
             INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',{total});")).unwrap();
         seen.lock().unwrap().clear();
         assert!(matches!(
-            client.apply_sqlite_image(&image, &table, first, &scopes, "", total, 7, "digest"),
+            client.apply_sqlite_image(&image, &table, first, &scopes, "", "", 0, total, 7, "digest"),
             Ok(applied) if i64::from(applied) == total
         ));
     }

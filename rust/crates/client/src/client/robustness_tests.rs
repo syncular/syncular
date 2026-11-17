@@ -178,7 +178,7 @@ fn an_image_scan_that_disagrees_with_its_count_aborts() {
     let mut client = client();
     let table = client.schema.table("tasks").unwrap().clone();
     let error = client
-        .apply_sqlite_image(&image, &table, true, &scopes(), "", 2, 7, "digest")
+        .apply_sqlite_image(&image, &table, true, &scopes(), "", "", 0, 2, 7, "digest")
         .expect_err("a scan longer than the declared count aborts");
     let SectionError::Abort(code, message) = error else {
         panic!("expected an abort");
@@ -257,7 +257,18 @@ fn the_image_temp_file_sits_beside_the_replica_owner_only_and_is_removed() {
     let table = client.schema.table("tasks").unwrap().clone();
     let seen = watch_image_files(&mut client, directory.clone());
     let applied = client
-        .apply_sqlite_segment(&table, &image_bytes(), true, &scopes(), "", 2, 7, "digest")
+        .apply_sqlite_segment(
+            &table,
+            &image_bytes(),
+            true,
+            &scopes(),
+            "",
+            "",
+            0,
+            2,
+            7,
+            "digest",
+        )
         .unwrap_or_else(|_| panic!("image applies"));
     assert_eq!(applied, 2);
     let seen = seen.lock().unwrap();
@@ -274,6 +285,8 @@ fn the_image_temp_file_sits_beside_the_replica_owner_only_and_is_removed() {
             true,
             &scopes(),
             "",
+            "",
+            0,
             2,
             7,
             "digest"
@@ -306,9 +319,18 @@ fn an_image_for_a_table_with_encrypted_columns_is_rejected() {
     let mut client =
         SyncClient::new("robust".into(), &schema, ClientLimits::default()).expect("client");
     let table = client.schema.table("tasks").unwrap().clone();
-    let Err(SectionError::Abort(code, message)) =
-        client.apply_sqlite_segment(&table, &image_bytes(), true, &scopes(), "", 2, 7, "digest")
-    else {
+    let Err(SectionError::Abort(code, message)) = client.apply_sqlite_segment(
+        &table,
+        &image_bytes(),
+        true,
+        &scopes(),
+        "",
+        "",
+        0,
+        2,
+        7,
+        "digest",
+    ) else {
         panic!("an encrypted table refuses the image");
     };
     assert_eq!(code, "sync.invalid_request");
@@ -324,7 +346,18 @@ fn an_in_memory_replica_stages_the_image_owner_only_in_the_system_temp_dir() {
     let table = client.schema.table("tasks").unwrap().clone();
     let seen = watch_image_files(&mut client, std::env::temp_dir());
     let applied = client
-        .apply_sqlite_segment(&table, &image_bytes(), true, &scopes(), "", 2, 7, "digest")
+        .apply_sqlite_segment(
+            &table,
+            &image_bytes(),
+            true,
+            &scopes(),
+            "",
+            "",
+            0,
+            2,
+            7,
+            "digest",
+        )
         .unwrap_or_else(|_| panic!("image applies"));
     assert_eq!(applied, 2);
     let seen = seen.lock().unwrap();
