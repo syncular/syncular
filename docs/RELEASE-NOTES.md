@@ -1,5 +1,30 @@
 # Syncular release notes
 
+## 0.77.3 release notes
+
+`scanRows` seeks the scope variable with the fewest index entries
+(SYNCULAR-SCAN-SELECTIVE-VARIABLE-001). A scan whose filter carries two or more
+scope variables sought `sync_row_scopes` with the alphabetically first one and
+checked the others per row. For a catalogue with one availability and 20
+releases, the bootstrap of one release therefore read the index entries of all
+100,000 rows.
+
+- Every shipped storage (PostgreSQL, its batched pull path, SQLite on Bun and
+  Node, D1) counts each variable's index entries for its values in one
+  statement, capped at max(64, `limit`) and growing fourfold up to 65,536 while
+  several variables tie at the cap. It seeks the variable with the fewest;
+  ties go alphabetically.
+- A variable with no entry for its values ends the scan after that statement
+  with no rows. A single-variable filter needs no count.
+- The storage remembers the choice for up to 1,024 filters, so the later pages
+  of a bootstrap count nothing. The choice changes which index range a scan
+  reads, never its rows or their order.
+- PostgreSQL 17, 100,000 rows in 20 releases: one release's bootstrap went from
+  100,000 index entries in 101 statements (1,525 ms) to 57,000 in 9 (117 ms);
+  a release without rows from 1,563 statements (75.7 s) to one (0.8 ms).
+
+**Upgrade notes.** None; results and paging are unchanged.
+
 ## 0.77.2 release notes
 
 A drive deadline that elapses across completed rounds ends the drive as budget

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A scan seeks the scope variable with the fewest index entries',
+    body: "A `scanRows` with two or more scope variables sought the scope index with the alphabetically first one, so the bootstrap of one release among 20 read every row of the shared availability: 100,000 index entries in 101 statements, and a release without rows cost 1,563 statements. Every shipped storage now counts each variable's entries in one bounded statement, seeks the variable with the fewest and remembers the choice per filter. The same bootstrap reads 57,000 entries in 9 statements, and a release without rows costs one statement.",
+    links: [
+      {
+        href: '/server-storage-reference/#pull-path',
+        label: 'Pull path',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'A drive deadline after completed rounds is not a failure',
     body: 'A `syncUntilIdle` drive whose rounds each made progress but together passed the 60 s deadline rejected with `sync.idle_timeout`, recorded a failed round and turned progress `failed` in the middle of a healthy bootstrap. Both cores now check the deadline before each round after the first: a drive past it resolves with `budgetExhausted` and the aggregate report, and every host loop starts the next drive at once. Each round keeps its own bound of `timeoutMs`, so a transport that never answers still ends in `sync.idle_timeout`.',
     links: [
