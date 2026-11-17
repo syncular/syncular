@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'Measured throughput of one partition on PostgreSQL',
+    body: 'The partitions page publishes the push and pull ceiling of one partition on PostgreSQL 17 with its method. With a 13 ms round trip to the database, one-commit requests reach 6 to 7 commits a second and ten-commit requests 10 to 11, because each commit holds the partition lock for its statements times the round trip; below 1 ms, 85 commits a second with one pusher and 162 with ten. Pull-only rounds take no lock and kept 165 to 190 rounds a second while pushes saturated the partition. `bun run load:ceiling` reruns the matrix against an app with its own validator.',
+    links: [
+      {
+        href: '/server-partitions/#throughput-of-one-partition',
+        label: 'Throughput of one partition',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'A new OPFS replica uses 64 KiB pages',
     body: 'An ephemeral browser profile keeps OPFS in memory, where each sync access handle call costs about 0.27 ms whatever its size, and SQLite wrote one 4 KiB page per call. A new OPFS replica now uses 64 KiB pages. Importing 60,572 catalogue codes and 78,540 relations took 88 to 106 s in an ephemeral Chromium context and now takes 3.7 to 4.7 s; a persistent profile went from about 4.5 s to 2.5 s, and single-row writes cost the same. Existing replicas keep their page size.',
     links: [

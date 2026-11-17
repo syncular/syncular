@@ -1,5 +1,28 @@
 # Syncular release notes
 
+## 0.79.2 release notes
+
+Concurrent `PostgresServerStorage.migrate()` calls are safe. Several server
+processes migrating an empty database at once failed with `type
+sync_partitions already exists`, because concurrent `CREATE TABLE IF NOT
+EXISTS` races in `pg_type`. When the fingerprint probe finds the schema
+stale, `migrate()` now applies the DDL in a transaction that first takes
+`pg_advisory_xact_lock(hashtext('syncular.migrate'))` and probes again under
+the lock; the processes that lose find the schema current and return. A
+current schema still costs one probe and no lock.
+
+The partitions page publishes measured ceilings of one partition on
+PostgreSQL (SYNCULAR-PARTITION-CEILINGS-001): PostgreSQL 17.12, Apple M5 Pro,
+a one-row commit with a commit validator doing four reads, round trips below
+1 ms and of 13 ms, 1 to 200 pushers and 20 pull-only readers. At 13 ms a
+one-commit request holds the partition lock for 12 statements, about 150 ms,
+so one partition applies 6 to 7 commits a second; ten-commit requests reach 10
+to 11. Pull-only rounds take no lock and are unaffected by saturated pushes.
+`bun run load:ceiling --app <module>` reruns the matrix with an app's own
+server and validator (`load/README.md`).
+
+**Upgrade notes.** None.
+
 ## 0.79.1 release notes
 
 A new OPFS replica uses 64 KiB pages (SYNCULAR-OPFS-WRITE-CALLS-001, SPEC §5.3).
