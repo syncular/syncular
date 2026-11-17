@@ -7808,10 +7808,17 @@ registration change a round makes (§8.1). A host delivers a received commit
 exactly like a local one (§8.2): matching sessions get a delta, a non-adjacent
 commit gets a `catchup-required` wake. A bridge that sends a wake in place of
 the commit (`PostgresFanout` over LISTEN/NOTIFY) is conformant; its sessions
-then pull. A bridge MAY lose a message; the next commit then reaches the
-session non-adjacent, and the client's next round catches up. A bridge whose
-listener reconnects wakes every local session with `catchup-required`, because
-the database dropped the notifications of the gap.
+then pull. A bridge whose listener reconnects wakes every local session with
+`catchup-required`, because the database dropped the notifications of the gap.
+A bridge that keeps the hosts it delivers to MUST repair a failed delivery to
+one of them without waiting for a later commit: it retries until the host answers or no longer holds sockets,
+and the retry wakes with `catchup-required` every session that has not
+observed the lost commit.
+
+**Host refresh.** A host-initiated registration refresh (`refreshScopes`,
+§8.7) after a grant changes MUST reach every host that holds sockets of the
+partition, through the same bridge and with the same retry, so a session on
+another host stops receiving deltas for scopes its actor lost.
 
 **Presence.** Presence (§8.6) is per host: a peer's `join`, `update` and
 `leave` reach only sessions on the same host. A host that spreads one
@@ -7836,6 +7843,23 @@ rounds send their commits through the partition's object too (the hub's
 `fanout`), so every shard, the applying one included, receives each
 commit once. Each commit costs the applying host one request to the partition's
 object and that object one request per registered shard.
+
+`refreshScopes(partition, actorId?)` on the Worker's notifier sends a refresh
+message the same way; every object runs `RealtimeHub.refreshScopes` on its
+sessions. The call fails when the partition's object did not take it.
+
+A relay to a shard that fails (a thrown request, any status but 2xx and 404)
+leaves a record in the partition object's storage of what the shard owes: the
+highest commit sequence it missed, a refresh, or changed registrations. Later
+failures merge into the record. The object's alarm retries each record every
+second and sends the shard one message carrying it. The shard then runs a
+fail-closed refresh of every session for an owed refresh, wakes every session
+with `catchup-required` for owed registrations (the client's round reloads
+them), and wakes every session whose last observed sequence lies below the
+owed one. A delivered record that no failure changed meanwhile is deleted; a
+shard that answers 404 is removed with its record. The request from the
+applying host to the partition's object stays best effort: it never fails the
+push, and a session that misses the commit sees the next one non-adjacent.
 
 DECISION (2026-11-17): on PostgreSQL the Worker applies pushes under the
 database lock instead of forwarding rounds that carry pushes to the

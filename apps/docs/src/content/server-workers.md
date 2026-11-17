@@ -374,7 +374,17 @@ A resolver that reads its grants from the sync database reads them in one transa
 
 A commit applied anywhere costs one request to the partition's object, plus one request from that object to each shard that holds sockets. A shard registers with the partition's object when it accepts a socket. When a relay finds a shard without sockets, the shard answers 404 and the partition's object removes it, so idle shards stop receiving commits. Choose the shard key with that count in mind: one object per Facility sends a commit to every Facility with an open socket.
 
-Delivery is best effort. A failed relay request never fails the push, whose commit is already durable. A socket that missed a commit receives the next one non-adjacent and gets a `catchup-required` wake, and the client's next round catches up.
+When a relay to a shard fails (a thrown request, or any status but 2xx and 404), the partition's object records what the shard owes in its storage and retries from its alarm every second until the shard answers or is removed. The retry wakes, with `catchup-required`, every socket of the shard that has not seen the missed commit, and the client's round catches up. The request from the Worker to the partition's object never fails the push, whose commit is already durable; when that request fails, a socket learns of the missed commit when the next commit reaches it non-adjacent.
+
+### Refresh scopes after a grant changes
+
+A session caches its registrations between rounds. After you revoke or narrow an actor's grants, call `refreshScopes` on the notifier, which reaches the sessions in every shard:
+
+```ts
+await durableObjectRealtimeNotifier(env.REALTIME).refreshScopes(partition, actorId);
+```
+
+Every object runs `RealtimeHub.refreshScopes`: each of the actor's sessions resolves its scopes again, fails closed when the resolver throws, and stops receiving deltas for the scopes it lost; a session that lost a registration gets a `catchup-required` wake, so its client runs the round that purges the rows. Omit `actorId` to refresh every session of the partition. The call throws `sync.internal_error` when the partition's object did not take the refresh; a shard that fails it is retried like a commit.
 
 Presence stays inside one object: a peer's `join`, `update` and `leave` reach only sockets in the same shard. Choose a shard key that keeps peers who share a presence key together. The admin console has no Durable Object to forward to in this shape; the Worker serves it without an event ring.
 

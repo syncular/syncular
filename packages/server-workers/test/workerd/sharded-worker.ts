@@ -6,8 +6,12 @@
  * them. PostgreSQL is reached through the `PG` service binding, which the
  * test process answers with a `PgExecutor` (a real server or PGlite). A
  * commit whose id is `held` waits in the commit validator, under the
- * partition lock, until the test answers the `GATE` service binding.
- * `POST /setup` creates the schema and pins the partition log epoch.
+ * partition lock, until the test answers the `GATE` service binding. The
+ * resolver reads each actor's lists from the `GRANTS` service binding, so the
+ * test can revoke them. `POST /setup` creates the schema and pins the
+ * partition log epoch; `POST /refresh?actor=` refreshes that actor's scopes
+ * in every object; `POST /fail-next?shard=` makes that shard object answer
+ * its next relay with 503.
  */
 import {
   compileSchema,
@@ -26,6 +30,7 @@ import {
   type DurableObjectStateLike,
   durableObjectRealtimeNotifier,
   type ExecutionContextLike,
+  REALTIME_DO_FANOUT_PATH,
   SyncularRealtimeHost,
   type WebSocketLike,
 } from '../../src/index';
@@ -55,6 +60,7 @@ interface ServiceBinding {
 interface Env {
   readonly PG: ServiceBinding;
   readonly GATE: ServiceBinding;
+  readonly GRANTS: ServiceBinding;
   readonly REALTIME: DurableObjectNamespaceLike;
 }
 
@@ -124,7 +130,7 @@ function syncConfig(
     segments,
     // §6.8: the resolver reads its authority in one snapshot without the
     // partition lock, so a pull never waits on a push.
-    resolveScopes: async ({ partition }) => {
+    resolveScopes: async ({ partition, actorId }) => {
       const tx = await storage.begin(partition);
       try {
         await prepareReadTransaction(tx, SCHEMA.version);
@@ -132,7 +138,10 @@ function syncConfig(
       } finally {
         await tx.rollback();
       }
-      return { list_id: ['L'] };
+      const lists = (await (
+        await env.GRANTS.fetch(`https://grants/${actorId}`)
+      ).json()) as string[];
+      return { list_id: lists };
     },
     commitValidator: async ({ clientCommitId }) => {
       if (clientCommitId === 'held') await env.GATE.fetch('https://gate/');
@@ -152,7 +161,7 @@ const handler = createWorkersFetchHandler<Env>({
     namespace: env.REALTIME,
     authenticate: (request) => ({
       partition: PARTITION,
-      actorId: 'actor-1',
+      actorId: new URL(request.url).searchParams.get('actor') ?? '',
       clientId: new URL(request.url).searchParams.get('client') ?? '',
     }),
     shard: (_identity, request) =>
@@ -166,11 +175,25 @@ export default {
     env: Env,
     ctx: ExecutionContextLike,
   ): Promise<Response> {
-    if (new URL(request.url).pathname === '/setup') {
+    const url = new URL(request.url);
+    if (url.pathname === '/setup') {
       const storage = new PostgresServerStorage(serviceExecutor(env.PG));
       await storage.ensureSchema(compileSchema(SCHEMA));
       await storage.touchPartition(PARTITION, 0, LOG_EPOCH);
       return new Response(null, { status: 204 });
+    }
+    if (url.pathname === '/refresh') {
+      await durableObjectRealtimeNotifier(env.REALTIME).refreshScopes(
+        PARTITION,
+        url.searchParams.get('actor') ?? '',
+      );
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === '/fail-next') {
+      const shard = JSON.stringify([PARTITION, url.searchParams.get('shard')]);
+      return env.REALTIME.get(env.REALTIME.idFromName(shard)).fetch(
+        new Request('https://do/fail-next', { method: 'POST' }),
+      );
     }
     return handler(request, env, ctx);
   },
@@ -179,6 +202,7 @@ export default {
 /** The partition's object (the relay) and every shard object. */
 export class RealtimeDO {
   readonly #host: SyncularRealtimeHost<PostgresServerStorage>;
+  #failNext = false;
 
   constructor(state: DurableObjectStateLike, env: Env) {
     this.#host = new SyncularRealtimeHost(
@@ -191,7 +215,16 @@ export class RealtimeDO {
     );
   }
 
-  fetch(request: Request): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path === '/fail-next') {
+      this.#failNext = true;
+      return new Response(null, { status: 204 });
+    }
+    if (path === REALTIME_DO_FANOUT_PATH && this.#failNext) {
+      this.#failNext = false;
+      return new Response(null, { status: 503 });
+    }
     return this.#host.fetch(request);
   }
 

@@ -1582,6 +1582,19 @@ export class RealtimeHub {
   }
 
   /**
+   * §8.9: a bridge lost commits up to `commitSeq`. Wake every session of the
+   * partition that has not observed that sequence with `catchup-required`; a
+   * session that observed a later commit was already woken by the gap (§8.2).
+   */
+  wakeBehind(partition: string, commitSeq: number): void {
+    for (const session of this.#sessions) {
+      if (session.partition !== partition) continue;
+      if (session.lastKnownSeq >= commitSeq) continue;
+      session.sendWake('catchup-required');
+    }
+  }
+
+  /**
    * §8.5: send `heartbeat` to every session. The host calls this on its
    * heartbeat interval (suggested 30 s); a client that hears nothing for twice
    * the interval treats the socket as lost.

@@ -6,7 +6,10 @@
  *     shard object, reaches a socket held by another shard object;
  *   - a pull-only round, with a scope resolver that reads under
  *     `prepareReadTransaction`, completes while a push holds the partition
- *     lock, and a second push waits for it.
+ *     lock, and a second push waits for it;
+ *   - a scope refresh called once reaches a socket in another shard object;
+ *   - a relay that a shard object fails is retried from the partition
+ *     object's alarm until the shard answers.
  *
  * The Worker reaches PostgreSQL through a service binding this process
  * answers. With `SYNCULAR_PG_URL` it is a real server; without it PGlite,
@@ -65,6 +68,8 @@ const transactions = new Map<
 >();
 /** The `GATE` service: a held commit waits here until `release`. */
 let gate: { reached: () => void; release: Promise<void> } | undefined;
+/** Actors whose grants the `GRANTS` service has revoked. */
+const revoked = new Set<string>();
 
 const ROLLBACK = new Error('rollback');
 
@@ -172,6 +177,12 @@ beforeAll(async () => {
         await held.release;
         return new MiniflareResponse(null, { status: 204 });
       },
+      GRANTS: (request: { url: string }) =>
+        new MiniflareResponse(
+          JSON.stringify(
+            revoked.has(new URL(request.url).pathname.slice(1)) ? [] : ['L'],
+          ),
+        ),
     },
   });
   const url = await mf.ready;
@@ -236,24 +247,25 @@ async function httpRound(clientId: string, frames: RequestFrame[]) {
   return decodeMessage(new Uint8Array(await response.arrayBuffer())).frames;
 }
 
-/** A socket in shard object `shard`; `next` resolves with the first
- * received message `match` accepts, waiting for it if needed. */
+/** A socket of actor `clientId` in shard object `shard`; `next` resolves
+ * with the first received message `match` accepts, waiting for it if needed. */
 async function openSocket(clientId: string, shard: string) {
   const url = new URL('/realtime', await mf.ready);
   url.protocol = 'ws:';
   url.searchParams.set('client', clientId);
+  url.searchParams.set('actor', clientId);
   url.searchParams.set('shard', shard);
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   const inbox: (string | Uint8Array)[] = [];
-  let wake: (() => void) | undefined;
+  let arrived: (() => void) | undefined;
   ws.onmessage = (event) => {
     inbox.push(
       typeof event.data === 'string'
         ? event.data
         : new Uint8Array(event.data as ArrayBuffer),
     );
-    wake?.();
+    arrived?.();
   };
   await new Promise((resolve) => {
     ws.onopen = resolve;
@@ -263,7 +275,7 @@ async function openSocket(clientId: string, shard: string) {
       const at = inbox.findIndex(match);
       if (at >= 0) return inbox.splice(at, 1)[0]!;
       await new Promise<void>((resolve) => {
-        wake = resolve;
+        arrived = resolve;
       });
     }
   };
@@ -306,7 +318,18 @@ async function openSocket(clientId: string, shard: string) {
         : [],
     );
   };
-  return { ws, round, subscribe, delta };
+  /** The reason of the next `sync` wake-up (§8.3). */
+  const wake = async () => {
+    const text = (await next(
+      (m) => typeof m === 'string' && JSON.parse(m).event === 'sync',
+    )) as string;
+    return (JSON.parse(text) as { data: { reason: string } }).data.reason;
+  };
+  /** Deltas received and not yet taken. */
+  const deltas = () =>
+    inbox.filter((m) => typeof m !== 'string' && m[0] === REALTIME_TAG_DELTA)
+      .length;
+  return { ws, round, subscribe, delta, wake, deltas };
 }
 
 test('a commit accepted through one object reaches a socket in another', async () => {
@@ -329,6 +352,53 @@ test('a commit accepted through one object reaches a socket in another', async (
   expect(await b.delta()).toEqual(['from-shard-a']);
   a.ws.close();
   b.ws.close();
+}, 60_000);
+
+test('a scope refresh called once reaches a socket in another object', async () => {
+  const a = await openSocket('refresh-a', 'facility-a');
+  const b = await openSocket('refresh-b', 'facility-b');
+  await a.subscribe();
+  await b.subscribe();
+  // A delta waits while a round reloads registrations (§8.7), so B receiving
+  // one proves its last round-end reload finished before the revocation.
+  await httpRound('writer', [push('before-revoke', 'before-revoke')]);
+  expect(await a.delta()).toEqual(['before-revoke']);
+  expect(await b.delta()).toEqual(['before-revoke']);
+  revoked.add('refresh-b');
+  const url = await mf.ready;
+  const refreshed = await fetch(new URL('/refresh?actor=refresh-b', url), {
+    method: 'POST',
+  });
+  expect(refreshed.status).toBe(204);
+  // §8.3: a refresh that removed a registration wakes the socket.
+  expect(await b.wake()).toBe('catchup-required');
+  // The relay answers the push only after every shard delivered it, and a
+  // socket round answers after every delta sent before it.
+  await httpRound('writer', [push('after-revoke', 'after-revoke')]);
+  expect(await a.delta()).toEqual(['after-revoke']);
+  await b.round(PULL);
+  expect(b.deltas()).toBe(0);
+  a.ws.close();
+  b.ws.close();
+}, 60_000);
+
+test('a relay that a shard fails is retried until the shard answers', async () => {
+  const c = await openSocket('retry-c', 'facility-c');
+  const d = await openSocket('retry-d', 'facility-d');
+  await c.subscribe();
+  await d.subscribe();
+  const url = await mf.ready;
+  const failing = await fetch(new URL('/fail-next?shard=facility-d', url), {
+    method: 'POST',
+  });
+  expect(failing.status).toBe(204);
+  await httpRound('writer', [push('missed', 'missed-by-d')]);
+  expect(await c.delta()).toEqual(['missed-by-d']);
+  // The partition object's alarm retries the relay; D learns it is behind.
+  expect(await d.wake()).toBe('catchup-required');
+  expect(d.deltas()).toBe(0);
+  c.ws.close();
+  d.ws.close();
 }, 60_000);
 
 test.skipIf(!realPg)(

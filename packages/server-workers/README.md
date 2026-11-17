@@ -245,7 +245,10 @@ round itself. Set `shard` in the `realtime` options to place each socket in an
 object named `JSON.stringify([partition, shard])`, set the Worker config's
 `realtime` to `durableObjectRealtimeNotifier(env.REALTIME)`, and pass
 `namespace: env.REALTIME` in `RealtimeDOConfig`. The partition's object then
-holds no socket: shards register with it and it relays every commit to them.
+holds no socket: shards register with it and it relays every commit to them,
+retrying a shard whose relay failed from its alarm. Call
+`durableObjectRealtimeNotifier(env.REALTIME).refreshScopes(partition, actorId)`
+after a grant changes; it reaches the sessions in every shard.
 A scope resolver reads its grants under `prepareReadTransaction`, so a pull
 never waits on a push. The setup, its costs and its Wrangler configuration are
 on the docs page (`apps/docs/src/content/server-workers.md`).

@@ -105,7 +105,10 @@
  * left) is removed unless it registered again meanwhile. A shard's hub
  * (`RealtimeHubConfig.fanout`) sends the commits of its own rounds through the
  * partition's object too, so every shard, the shard itself included, receives
- * each commit exactly once.
+ * each commit once. A host scope refresh (`refreshScopes` on the notifier)
+ * takes the same path. A relay that fails leaves a record of what the shard
+ * owes in the partition object's storage, and the alarm retries it every
+ * second until the shard answers or is removed.
  */
 import {
   adapterSyncError,
@@ -312,10 +315,28 @@ function encodeAttachment(
   return Uint8Array.from(bytes);
 }
 
-/** A commit, or a client's changed registrations, on its way between objects. */
+/**
+ * §8.9: what a shard missed when a relay to it failed, delivered from the
+ * partition object's alarm: the highest commit sequence (sessions behind it get
+ * a `catchup-required` wake), a fail-closed refresh of every session's scopes,
+ * and changed registrations (a wake, whose round reloads them).
+ */
+interface Owed {
+  readonly commitSeq?: number;
+  readonly refresh?: true;
+  readonly registrations?: true;
+}
+
+/** A message between objects (§8.9): a commit, a client's changed
+ * registrations, a host refresh of scopes, or what a failed relay owes. */
 type FanoutMessage =
   | { readonly partition: string; readonly commit: StoredCommit }
-  | { readonly partition: string; readonly clientId: string };
+  | { readonly partition: string; readonly clientId: string }
+  | {
+      readonly partition: string;
+      readonly refresh: { readonly actorId?: string };
+    }
+  | { readonly partition: string; readonly owed: Owed };
 
 /**
  * Fanout body: a u32 length, the message as UTF-8 JSON with each change
@@ -367,7 +388,7 @@ function decodeFanout(bytes: Uint8Array): FanoutMessage {
           > & { readonly payloadBytes?: number })[];
         };
       }
-    | { readonly partition: string; readonly clientId: string };
+    | Exclude<FanoutMessage, { readonly commit: StoredCommit }>;
   if (!('commit' in message)) return message;
   let at = 4 + length;
   return {
@@ -386,32 +407,56 @@ function decodeFanout(bytes: Uint8Array): FanoutMessage {
 /**
  * The `RealtimeNotifier` (§8.2, §8.9) that sends a commit, or a client's
  * changed registrations, to the partition's Durable Object, which delivers it
- * to its own sockets and relays it to every shard registered with it. Pass it
- * as the Worker config's `realtime` whenever the Worker applies commits
- * itself: sharded sockets, or an external command host. Delivery is best
- * effort: a failed request never fails the push, whose commit is durable. A
- * session that misses a commit sees the next one non-adjacent and receives a
- * `catchup-required` wake (§8.2), and the client's next round catches up.
+ * to its own sockets and relays it to every shard registered with it, retrying
+ * a shard whose relay failed. Pass it as the Worker config's `realtime`
+ * whenever the Worker applies commits itself: sharded sockets, or an external
+ * command host. A failed request to the partition's object never fails the
+ * push, whose commit is durable: a session that misses the commit sees the next
+ * one non-adjacent and receives a `catchup-required` wake (§8.2), and the
+ * client's next round catches up.
+ *
+ * `refreshScopes(partition, actorId?)` is `RealtimeHub.refreshScopes` for
+ * every object of the partition: call it after a grant changes. It throws when
+ * the partition's object did not take the refresh.
  */
 export function durableObjectRealtimeNotifier(
   namespace: DurableObjectNamespaceLike,
-): RealtimeNotifier {
-  const send = async (message: FanoutMessage): Promise<void> => {
+): RealtimeNotifier & {
+  refreshScopes(partition: string, actorId?: string): Promise<void>;
+} {
+  // A synthetic origin: the DO reads only the path and the body.
+  const send = (message: FanoutMessage) =>
+    namespace.get(namespace.idFromName(message.partition)).fetch(
+      new Request(`https://do${REALTIME_DO_FANOUT_PATH}`, {
+        method: 'POST',
+        body: encodeFanout(message),
+      }),
+    );
+  const bestEffort = async (message: FanoutMessage): Promise<void> => {
     try {
-      // A synthetic origin: the DO reads only the path and the body.
-      await namespace.get(namespace.idFromName(message.partition)).fetch(
-        new Request(`https://do${REALTIME_DO_FANOUT_PATH}`, {
-          method: 'POST',
-          body: encodeFanout(message),
-        }),
-      );
+      await send(message);
     } catch {
-      // Best effort, see the doc above.
+      // The commit is durable; see the doc above.
     }
   };
   return {
-    notifyCommit: (partition, commit) => send({ partition, commit }),
-    notifySubscriptions: (partition, clientId) => send({ partition, clientId }),
+    notifyCommit: (partition, commit) => bestEffort({ partition, commit }),
+    notifySubscriptions: (partition, clientId) =>
+      bestEffort({ partition, clientId }),
+    async refreshScopes(partition, actorId) {
+      const response = await send({
+        partition,
+        refresh: actorId === undefined ? {} : { actorId },
+      });
+      // 404: no object of the partition holds a socket.
+      if (response.status !== 204 && response.status !== 404) {
+        throw new SyncError(
+          'sync.internal_error',
+          'realtime scope refresh failed',
+          JSON.stringify({ status: response.status }),
+        );
+      }
+    },
   };
 }
 
@@ -887,11 +932,11 @@ export class SyncularRealtimeHost<
   }
 
   /**
-   * §8.9: deliver a commit or a client's changed registrations to this
-   * object's sockets, then relay it to every shard registered here. A shard
-   * that answers 404 holds no socket and is removed, unless it registered
-   * again with a new token meanwhile. This object answers 404 itself when it
-   * holds no socket.
+   * §8.9: deliver a message to this object's sockets, then relay it to every
+   * shard registered here. A relay that fails (a thrown request, any status
+   * but 2xx and 404) leaves the shard owing what the message carried, and the
+   * alarm retries it. This object answers 404 when it holds no socket and no
+   * shard.
    */
   async #handleFanout(request: Request): Promise<Response> {
     const bytes = new Uint8Array(await request.arrayBuffer());
@@ -899,32 +944,100 @@ export class SyncularRealtimeHost<
     const hub = this.#getHub();
     if ('commit' in message) {
       await hub.notifyCommit(message.partition, message.commit);
-    } else {
+    } else if ('clientId' in message) {
       await hub.notifySubscriptions(message.partition, message.clientId);
+    } else if ('refresh' in message) {
+      await hub.refreshScopes(message.partition, message.refresh.actorId);
+    } else {
+      if (message.owed.refresh) await hub.refreshScopes(message.partition);
+      if (message.owed.registrations) {
+        hub.wake(message.partition, 'catchup-required');
+      }
+      if (message.owed.commitSeq !== undefined) {
+        hub.wakeBehind(message.partition, message.owed.commitSeq);
+      }
     }
-    const namespace = this.#config.namespace;
-    if (namespace !== undefined) {
-      const shards = await this.#state.storage.list({ prefix: 'shard:' });
-      // Best effort per shard (§8.9): one failed request skips only that shard.
-      await Promise.allSettled(
-        [...shards].map(async ([key, token]) => {
-          const response = await namespace
-            .get(namespace.idFromName(key.slice('shard:'.length)))
-            .fetch(new Request(request.url, { method: 'POST', body: bytes }));
-          if (
-            response.status === 404 &&
-            (await this.#state.storage.get(key)) === token
-          ) {
-            await this.#state.storage.delete(key);
-          }
-        }),
-      );
-    }
-    if (this.#state.getWebSockets().length > 0) {
+    const shards = await this.#state.storage.list({ prefix: 'shard:' });
+    const owes: Owed =
+      'commit' in message
+        ? { commitSeq: message.commit.commitSeq }
+        : 'clientId' in message
+          ? { registrations: true }
+          : 'refresh' in message
+            ? { refresh: true }
+            : message.owed;
+    await Promise.all(
+      [...shards].map(async ([key, token]) => {
+        const shard = key.slice('shard:'.length);
+        const status = await this.#relay(shard, token, bytes);
+        if (status !== 'failed') return;
+        const stored = await this.#state.storage.get(`owed:${shard}`);
+        const before =
+          typeof stored === 'string'
+            ? (JSON.parse(stored) as { readonly owed: Owed }).owed
+            : {};
+        const commitSeq = Math.max(
+          before.commitSeq ?? -1,
+          owes.commitSeq ?? -1,
+        );
+        const owed: Owed = {
+          ...(commitSeq >= 0 ? { commitSeq } : {}),
+          ...(before.refresh || owes.refresh ? { refresh: true } : {}),
+          ...(before.registrations || owes.registrations
+            ? { registrations: true }
+            : {}),
+        };
+        await this.#state.storage.put(
+          `owed:${shard}`,
+          JSON.stringify({ partition: message.partition, owed }),
+        );
+        const at = await this.#state.storage.getAlarm();
+        if (at === null || at > Date.now() + 1_000) {
+          await this.#state.storage.setAlarm(Date.now() + 1_000);
+        }
+      }),
+    );
+    if (this.#state.getWebSockets().length > 0 || shards.size > 0) {
       return new Response(null, { status: 204 });
     }
     this.#registeredShard = undefined;
     return new Response(null, { status: 404 });
+  }
+
+  /**
+   * Send a fanout body to a registered shard. A shard that answers 404 holds
+   * no socket: it is removed with what it owes, unless it registered again
+   * with a new token meanwhile.
+   */
+  async #relay(
+    shard: string,
+    token: unknown,
+    body: Uint8Array<ArrayBuffer>,
+  ): Promise<'delivered' | 'gone' | 'failed'> {
+    const namespace = this.#config.namespace;
+    if (namespace === undefined) {
+      throw new Error('a registered shard needs RealtimeDOConfig.namespace');
+    }
+    let status = 0;
+    try {
+      const response = await namespace.get(namespace.idFromName(shard)).fetch(
+        new Request(`https://do${REALTIME_DO_FANOUT_PATH}`, {
+          method: 'POST',
+          body,
+        }),
+      );
+      status = response.status;
+    } catch {
+      return 'failed';
+    }
+    if (status === 404) {
+      if ((await this.#state.storage.get(`shard:${shard}`)) === token) {
+        await this.#state.storage.delete(`shard:${shard}`);
+        await this.#state.storage.delete(`owed:${shard}`);
+      }
+      return 'gone';
+    }
+    return status >= 200 && status < 300 ? 'delivered' : 'failed';
   }
 
   /** The WebSocket upgrade: accept a hibernatable socket, connect the hub. */
@@ -1024,9 +1137,11 @@ export class SyncularRealtimeHost<
   }
 
   /**
-   * The Durable Object alarm: send a §8.5 heartbeat to every socket and re-arm
-   * while sockets remain. The frame goes straight to the hibernatable sockets,
-   * so a heartbeat rebuilds no session.
+   * The Durable Object alarm: send a §8.5 heartbeat to every socket, retry
+   * every shard that owes a failed relay (§8.9), and re-arm: after the
+   * heartbeat interval while sockets remain, after one second while a shard
+   * still owes. The heartbeat goes straight to the hibernatable sockets, so it
+   * rebuilds no session.
    */
   async alarm(): Promise<void> {
     const sockets = this.#state.getWebSockets();
@@ -1038,9 +1153,28 @@ export class SyncularRealtimeHost<
         // A closing socket; its close callback cleans up.
       }
     }
-    if (sockets.length > 0) {
-      await this.#state.storage.setAlarm(
-        Date.now() + (this.#config.heartbeatIntervalMs ?? 30_000),
+    const storage = this.#state.storage;
+    for (const [key, value] of await storage.list({ prefix: 'owed:' })) {
+      const shard = key.slice('owed:'.length);
+      const token = await storage.get(`shard:${shard}`);
+      const message = JSON.parse(String(value)) as {
+        readonly partition: string;
+        readonly owed: Owed;
+      };
+      // A newer failure may have merged into the record during the retry.
+      if (
+        (await this.#relay(shard, token, encodeFanout(message))) ===
+          'delivered' &&
+        (await storage.get(key)) === value
+      ) {
+        await storage.delete(key);
+      }
+    }
+    const owing = (await storage.list({ prefix: 'owed:' })).size > 0;
+    if (sockets.length > 0 || owing) {
+      await storage.setAlarm(
+        Date.now() +
+          (owing ? 1_000 : (this.#config.heartbeatIntervalMs ?? 30_000)),
       );
     }
   }

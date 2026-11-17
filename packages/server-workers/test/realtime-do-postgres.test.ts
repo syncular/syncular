@@ -292,3 +292,55 @@ test('sharded realtime refuses D1 and a Worker without the relay notifier', asyn
     ),
   ).rejects.toThrow('sharded realtime runs /sync in the Worker');
 });
+
+test('a failed relay is owed to the shard and retried from the alarm until it answers', async () => {
+  const db = await PGlite.create();
+  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.ensureSchema(compileSchema(SCHEMA));
+  const statuses = [503, 204];
+  const stubs = new Map<string, DurableObjectStubLike>();
+  const namespace: DurableObjectNamespaceLike = {
+    idFromName: (name) => ({ toString: () => name }),
+    get: (id) => stubs.get(id.toString())!,
+  };
+  stubs.set('flaky', {
+    fetch: async () => new Response(null, { status: statuses.shift() ?? 500 }),
+  });
+  const state = new FakeDurableObjectState();
+  const relay = new SyncularRealtimeHost(state, storage, {
+    syncConfig: (coordinated) => ({
+      schema: SCHEMA,
+      storage: coordinated,
+      resolveScopes: () => ({ list_id: ['L'] }),
+      segments: new MemorySegmentStore(),
+    }),
+    namespace,
+  });
+  stubs.set('part-1', relay);
+  await relay.fetch(
+    new Request(new URL(REALTIME_DO_SHARDS_PATH, 'https://do'), {
+      method: 'POST',
+      body: JSON.stringify({ shard: 'flaky', token: 'first' }),
+    }),
+  );
+  const notifier = durableObjectRealtimeNotifier(namespace);
+  for (const commitSeq of [4, 7]) {
+    if (commitSeq === 7) statuses.unshift(503);
+    await notifier.notifyCommit('part-1', {
+      commitSeq,
+      createdAtMs: 0,
+      actorId: 'actor-1',
+      changes: [],
+    });
+  }
+  // Two failures merge into one record that owes the higher sequence.
+  expect(JSON.parse(state.values.get('owed:flaky')!)).toEqual({
+    partition: 'part-1',
+    owed: { commitSeq: 7 },
+  });
+  expect(state.alarmAt).not.toBeNull();
+  await relay.alarm();
+  expect(state.values.has('owed:flaky')).toBe(false);
+  expect(statuses).toEqual([]);
+  await db.close();
+});
