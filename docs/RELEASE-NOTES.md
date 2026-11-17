@@ -1,5 +1,35 @@
 # Syncular release notes
 
+## 0.78.2 release notes
+
+A bootstrap round cut between the chunks of a range image resumes after them
+(SYNCULAR-BOOTSTRAP-DEADLINE-RESUME-001, SPEC §5.3, §5.6, §7.8). The §5.6
+applied-segment record lived in memory and named only segments applied
+completely. A cold private Chromium window applies 32 MiB ranges at about
+0.27 ms per OPFS call; the 60 s round bound cut rounds in the middle of a
+range, and each next round fetched and applied that range from its first row
+again. A recreated client or worker lost the record and reapplied every range
+since the last `SUB_END`.
+
+- Both cores keep the record in `_syncular_units.applied`, added on open: per
+  segment, the rows the unit applied at its current cursor and resume token.
+  An image records its count in the transaction of each chunk; a rows segment
+  records its `rowCount` with its last block.
+- When the next pull presents the same cursor and token, a segment whose
+  record holds its `rowCount` is neither downloaded nor applied, and an image
+  whose record holds fewer rows continues after that count in primary-key
+  order without a first-page clear. A cursor or token change and a local reset
+  end the record; the in-memory record used to survive a local reset.
+- TypeScript: the per-round bound of `syncUntilIdle` restarts after each image
+  statement (at most 1,024 rows) and every 1,024 rows of a rows segment, so it
+  measures time without progress. A round that keeps importing is never cut; a
+  transport that never answers still ends in `sync.idle_timeout` after
+  `timeoutMs`. The Rust client applies after a round's network calls and
+  needed no change there.
+
+**Upgrade notes.** Drop a `maxSnapshotPages: 1` that only kept rounds under
+the deadline.
+
 ## 0.78.1 release notes
 
 A reload never evicts a held window unit before the app could claim it
