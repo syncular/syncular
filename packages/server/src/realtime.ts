@@ -102,6 +102,12 @@ export interface RealtimeConnectOptions {
   readonly actorId: string;
   readonly clientId: string;
   /**
+   * The authentication context the upgrade authenticated (§1.1, §8.1). The
+   * connection resolves scopes under it for its lifetime: registrations,
+   * presence grants and socket rounds.
+   */
+  readonly context?: string;
+  /**
    * Socket send: JSON control messages as text, tagged binary otherwise
    * (§8.7). A host MAY return a promise that resolves when the socket
    * has drained — the session awaits it between round-response chunks
@@ -210,6 +216,7 @@ export class RealtimeSession {
   readonly partition: string;
   readonly actorId: string;
   readonly clientId: string;
+  readonly context: string | undefined;
   readonly logEpoch: string;
   /** Response/delta layout selected by the most recent socket round. */
   wireVersion: number;
@@ -291,6 +298,7 @@ export class RealtimeSession {
     this.partition = options.partition;
     this.actorId = options.actorId;
     this.clientId = options.clientId;
+    this.context = options.context;
     this.logEpoch = logEpoch;
     this.wireVersion = wireVersion;
     this.cursor = cursor;
@@ -825,9 +833,7 @@ export class RealtimeSession {
     let registrations: Registration[];
     try {
       registrations = await this.#hub.loadRegistrations(
-        this.partition,
-        this.actorId,
-        this.clientId,
+        this,
         await this.#storage.getClientRecord(this.partition, this.clientId),
       );
     } catch {
@@ -1198,17 +1204,22 @@ export class RealtimeHub {
    * registrations (§8.1 at upgrade; §8.7 at socket-round end).
    */
   async loadRegistrations(
-    partition: string,
-    actorId: string,
-    clientId: string,
+    identity: {
+      readonly partition: string;
+      readonly actorId: string;
+      readonly clientId: string;
+      readonly context?: string | undefined;
+    },
     record: ClientRecord | undefined,
   ): Promise<Registration[]> {
+    const { partition, actorId, clientId, context } = identity;
     let resolved: ResolvedScopes;
     try {
       const allowed = await this.#config.resolveScopes({
         partition,
         actorId,
         clientId,
+        ...(context !== undefined ? { context } : {}),
       });
       // §7.3.3: delta-fanout registration needs live scopes — an outage
       // registers nothing (the client's next socket round, §8.7, is
@@ -1271,6 +1282,7 @@ export class RealtimeHub {
   requestContextFor(identity: {
     readonly partition: string;
     readonly actorId: string;
+    readonly context?: string | undefined;
   }): SyncRequestContext {
     const segments = this.#config.segments;
     if (segments === undefined) {
@@ -1288,6 +1300,7 @@ export class RealtimeHub {
       segments,
       partition: identity.partition,
       actorId: identity.actorId,
+      ...(identity.context !== undefined ? { context: identity.context } : {}),
       realtime: this,
     };
   }
@@ -1345,6 +1358,9 @@ export class RealtimeHub {
             ...this.#config,
             partition: options.partition,
             actorId: options.actorId,
+            ...(options.context !== undefined
+              ? { context: options.context }
+              : {}),
           });
           shared = {
             logEpoch,
@@ -1389,6 +1405,9 @@ export class RealtimeHub {
           ...this.#config,
           partition: options.partition,
           actorId: options.actorId,
+          ...(options.context !== undefined
+            ? { context: options.context }
+            : {}),
         })
       ).logEpoch;
     if (options.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
@@ -1407,12 +1426,7 @@ export class RealtimeHub {
         'clientId is bound to a different actor in this partition (§1.5)',
       );
     }
-    const registrations = await this.loadRegistrations(
-      options.partition,
-      options.actorId,
-      options.clientId,
-      record,
-    );
+    const registrations = await this.loadRegistrations(options, record);
     const latestSeq =
       restored?.latestSeq ?? (await storage.getMaxCommitSeq(options.partition));
     const cursor = record?.cursor ?? -1;

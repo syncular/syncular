@@ -110,6 +110,33 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
     ]);
   });
 
+  test('authorizes under the authentication context of the request (§1.1)', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const bytes = new Uint8Array([7, 8, 9]);
+    const blobId = await blobIdFor(bytes);
+    await blobs.put(PARTITION, blobId, bytes, NOW);
+    await seedReferencedBlob(storage, blobId, 'pa');
+    const seen: (string | undefined)[] = [];
+    const resolveScopes = ({ context }: { context?: string }) => {
+      seen.push(context);
+      return { project_id: [context === 'facility:a' ? 'pa' : 'pb'] };
+    };
+    const served = await handleBlobDownload(
+      baseCtx(storage, blobs, { resolveScopes, context: 'facility:a' }),
+      blobId,
+    );
+    if ('url' in served) throw new Error('expected inline delivery');
+    await served.body.cancel();
+    await expect(
+      handleBlobDownload(
+        baseCtx(storage, blobs, { resolveScopes, context: 'facility:b' }),
+        blobId,
+      ),
+    ).rejects.toMatchObject({ code: 'blob.forbidden' });
+    expect(seen).toEqual(['facility:a', 'facility:b']);
+  });
+
   test('serves JSON and untyped blobs as octet-stream', async () => {
     for (const mediaType of ['application/json; charset=utf-8', undefined]) {
       const storage = new SqliteServerStorage();

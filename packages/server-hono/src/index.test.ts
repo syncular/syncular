@@ -1103,3 +1103,70 @@ describe('request body limit (§1.7 maxRequestBytes)', () => {
     ).toThrow('ServerLimits.maxRequestBytes is out of range');
   });
 });
+
+describe('authentication context (§1.1)', () => {
+  test('the authenticated context reaches every resolver call and an oversized one fails loud', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
+    const seen: (string | undefined)[] = [];
+    const reported: unknown[] = [];
+    const app = createSyncularHono({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: ({ context }) => {
+          seen.push(context);
+          return { project_id: ['p1'] };
+        },
+        limits: { inlineSegmentMaxBytes: 1 },
+        onError: (error) => {
+          reported.push(error);
+        },
+      },
+      authenticate: async (request) => {
+        const context = request.headers.get('x-test-context');
+        return {
+          actorId: 'actor-1',
+          partition: 'part-1',
+          ...(context !== null ? { context } : {}),
+        };
+      },
+    });
+    const sync = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        'x-test-context': 'kiosk:facility-a',
+      },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    const message = decodeMessage(new Uint8Array(await sync.arrayBuffer()));
+    const ref = message.frames.find((frame) => frame.type === 'SEGMENT_REF');
+    if (ref?.type !== 'SEGMENT_REF') throw new Error('expected SEGMENT_REF');
+    const download = await app.request(`/segments/${ref.segmentId}`, {
+      headers: {
+        'x-syncular-scopes': canonicalScopeJson({ project_id: ['p1'] }),
+        'x-test-context': 'kiosk:facility-a',
+      },
+    });
+    expect(download.status).toBe(200);
+    expect(seen).toEqual(['kiosk:facility-a', 'kiosk:facility-a']);
+    const oversized = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        'x-test-context': 'x'.repeat(257),
+      },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    expect(oversized.status).toBe(500);
+    expect(await oversized.json()).toMatchObject({
+      code: 'sync.internal_error',
+    });
+    expect(reported).toEqual([
+      expect.objectContaining({ code: 'sync.auth_context_too_large' }),
+    ]);
+    expect(seen).toHaveLength(2);
+  });
+});

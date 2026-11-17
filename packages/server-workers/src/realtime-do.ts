@@ -69,7 +69,9 @@
  * is re-derived from storage, which is authoritative.
  *
  * The attachment is one `Uint8Array`, so its structured-clone size is its
- * byte length plus fixed framing: the identity as UTF-8 JSON and a newline,
+ * byte length plus fixed framing: the identity as UTF-8 JSON (`[partition,
+ * actorId, clientId]`, plus the authentication context as a fourth element
+ * when the upgrade had one) and a newline,
  * then per presence key a varint key length, the key's UTF-8 bytes, the
  * document's UTF-8 JSON and a newline (a JSON text holds no raw newline).
  * Each key costs at least 3 counted bytes (a non-empty key and `{}`) and at
@@ -251,7 +253,12 @@ function encodeAttachment(
   const utf8 = new TextEncoder();
   const bytes = [
     ...utf8.encode(
-      JSON.stringify([identity.partition, identity.actorId, identity.clientId]),
+      JSON.stringify([
+        identity.partition,
+        identity.actorId,
+        identity.clientId,
+        ...(identity.context !== undefined ? [identity.context] : []),
+      ]),
     ),
     0x0a,
   ];
@@ -269,6 +276,8 @@ export interface RealtimeUpgradeIdentity {
   readonly partition: string;
   readonly actorId: string;
   readonly clientId: string;
+  /** The authentication context (§1.1) the connection resolves scopes under. */
+  readonly context?: string;
 }
 
 /** Internal control-request paths on the DO stub (never client-facing). */
@@ -485,6 +494,7 @@ export class SyncularRealtimeHost<
       contextFor: (identity: {
         readonly partition: string;
         readonly actorId: string;
+        readonly context?: string;
       }) => SyncRequestContext,
     ) => Promise<T>,
   ): Promise<T> {
@@ -546,9 +556,9 @@ export class SyncularRealtimeHost<
         if (!(bytes instanceof Uint8Array)) return [];
         const utf8 = new TextDecoder();
         let end = bytes.indexOf(0x0a);
-        const [partition, actorId, clientId] = JSON.parse(
+        const [partition, actorId, clientId, context] = JSON.parse(
           utf8.decode(bytes.subarray(0, end)),
-        ) as [string, string, string];
+        ) as [string, string, string, string?];
         const presence = new Map<string, string>();
         for (let at = end + 1; at < bytes.length; at = end + 1) {
           let length = 0;
@@ -563,7 +573,13 @@ export class SyncularRealtimeHost<
             utf8.decode(bytes.subarray(at + length, end)),
           );
         }
-        return [{ ws, identity: { partition, actorId, clientId }, presence }];
+        const identity: RealtimeUpgradeIdentity = {
+          partition,
+          actorId,
+          clientId,
+          ...(context !== undefined ? { context } : {}),
+        };
+        return [{ ws, identity, presence }];
       });
       if (sockets.length === 0) return;
       const results = await this.#getHub().restore(
@@ -783,6 +799,7 @@ export class SyncularRealtimeHost<
       partition: identity.partition,
       actorId: identity.actorId,
       clientId: identity.clientId,
+      ...(identity.context !== undefined ? { context: identity.context } : {}),
       send: (data) => sendOverSocket(ws, data),
       closeSocket: () => ws.close(1008, 'protocol violation (§8.7)'),
       // §8.6.1: presence survives a hibernation in the socket's attachment.
@@ -913,6 +930,8 @@ const REALTIME_ID_HEADER = {
   partition: 'x-syncular-partition',
   actorId: 'x-syncular-actor',
   clientId: 'x-syncular-client',
+  // URI-encoded: a header value carries no arbitrary UTF-8.
+  context: 'x-syncular-context',
 } as const;
 
 const ADMIN_ACTIONS_HEADER = 'x-syncular-admin-actions';
@@ -934,12 +953,29 @@ export function adminRequestForDurableObject(
   return forwarded;
 }
 
+/**
+ * Write the authenticated identity onto a forwarded request's headers (Worker
+ * side). The forwarded request copies the client's headers, so a context
+ * header the client sent is removed when authentication yielded none.
+ */
 export function writeRequestIdentityHeaders(
   headers: Headers,
-  identity: { readonly partition: string; readonly actorId: string },
+  identity: {
+    readonly partition: string;
+    readonly actorId: string;
+    readonly context?: string;
+  },
 ): void {
   headers.set(REALTIME_ID_HEADER.partition, identity.partition);
   headers.set(REALTIME_ID_HEADER.actorId, identity.actorId);
+  if (identity.context === undefined) {
+    headers.delete(REALTIME_ID_HEADER.context);
+  } else {
+    headers.set(
+      REALTIME_ID_HEADER.context,
+      encodeURIComponent(identity.context),
+    );
+  }
 }
 
 /** Write the resolved identity onto an upgrade request's headers (Worker side). */
@@ -947,8 +983,7 @@ export function writeIdentityHeaders(
   headers: Headers,
   identity: RealtimeUpgradeIdentity,
 ): void {
-  headers.set(REALTIME_ID_HEADER.partition, identity.partition);
-  headers.set(REALTIME_ID_HEADER.actorId, identity.actorId);
+  writeRequestIdentityHeaders(headers, identity);
   headers.set(REALTIME_ID_HEADER.clientId, identity.clientId);
 }
 
@@ -967,12 +1002,22 @@ function readIdentityHeaders(
   ) {
     return undefined;
   }
-  return { partition, actorId, clientId };
+  const context = request.headers.get(REALTIME_ID_HEADER.context);
+  return {
+    partition,
+    actorId,
+    clientId,
+    ...(context !== null ? { context: decodeURIComponent(context) } : {}),
+  };
 }
 
-function readRequestIdentityHeaders(
-  request: Request,
-): { readonly partition: string; readonly actorId: string } | undefined {
+function readRequestIdentityHeaders(request: Request):
+  | {
+      readonly partition: string;
+      readonly actorId: string;
+      readonly context?: string;
+    }
+  | undefined {
   const partition = request.headers.get(REALTIME_ID_HEADER.partition);
   const actorId = request.headers.get(REALTIME_ID_HEADER.actorId);
   if (
@@ -983,7 +1028,12 @@ function readRequestIdentityHeaders(
   ) {
     return undefined;
   }
-  return { partition, actorId };
+  const context = request.headers.get(REALTIME_ID_HEADER.context);
+  return {
+    partition,
+    actorId,
+    ...(context !== null ? { context: decodeURIComponent(context) } : {}),
+  };
 }
 
 // -- Minimal ambient types (structural; not the real workers-types) ---------

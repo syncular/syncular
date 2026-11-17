@@ -280,6 +280,7 @@ async function signedUrlFields(
     partition: ctx.partition,
     scopeDigest: digest,
     nowMs: now,
+    ...(ctx.context !== undefined ? { context: ctx.context } : {}),
   });
 }
 

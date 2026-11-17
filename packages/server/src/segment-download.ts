@@ -249,6 +249,7 @@ async function authorizePublication(
     const allowed = await ctx.resolveScopes({
       partition: ctx.partition,
       actorId: ctx.actorId,
+      ...(ctx.context !== undefined ? { context: ctx.context } : {}),
     });
     // §7.3.3: leases authorize sync rounds, never downloads — an outage
     // signal here denies (re-authorization needs live scopes, §5.5).

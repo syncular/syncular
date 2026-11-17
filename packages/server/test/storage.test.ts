@@ -1891,6 +1891,41 @@ test('sqlite lease revocation is read from the revocation record (§7.3.4)', asy
   });
 });
 
+test('a sqlite lease table from before authentication contexts gains the column (§7.3.1)', async () => {
+  const db = new BunSqliteDatabase();
+  db.exec(`
+    CREATE TABLE sync_leases(
+      partition TEXT NOT NULL, client_id TEXT NOT NULL,
+      lease_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+      allowed_scopes TEXT NOT NULL,
+      issued_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (partition, client_id)
+    );
+    INSERT INTO sync_leases VALUES ('part','client','lease-old','actor','{}',0,100);
+  `);
+  const leases = new SqliteLeaseStore(db);
+  const stored = await leases.get('part', 'client');
+  expect(stored?.leaseId).toBe('lease-old');
+  expect(stored !== undefined && 'context' in stored).toBe(false);
+  const issued = await leases.issue(
+    'part',
+    'client',
+    'actor',
+    {},
+    1,
+    100,
+    'kiosk:a',
+  );
+  expect(issued.leaseId).not.toBe('lease-old');
+  expect(await leases.get('part', 'client')).toMatchObject({
+    context: 'kiosk:a',
+  });
+  // Reopening an upgraded table adds nothing.
+  expect((await new SqliteLeaseStore(db).get('part', 'client'))?.context).toBe(
+    'kiosk:a',
+  );
+});
+
 test('pglite pool statements wait behind an open transaction (§6.4)', async () => {
   const executor = pgliteExecutor(await PGlite.create());
   await executor.query('CREATE TABLE probe(id TEXT PRIMARY KEY)');

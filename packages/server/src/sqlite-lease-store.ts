@@ -31,6 +31,7 @@ export class SqliteLeaseStore implements LeaseStore {
         lease_id TEXT NOT NULL, actor_id TEXT NOT NULL,
         allowed_scopes TEXT NOT NULL,
         issued_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
+        context TEXT,
         PRIMARY KEY (partition, client_id)
       );
       CREATE TABLE IF NOT EXISTS sync_lease_revocations(
@@ -38,6 +39,16 @@ export class SqliteLeaseStore implements LeaseStore {
         PRIMARY KEY (partition, lease_id)
       );
     `);
+    // §7.3.1: a lease table created before leases recorded their
+    // authentication context gains the column; its rows carry none.
+    if (
+      !this.db
+        .query<{ name: string }, []>(`PRAGMA table_info(sync_leases)`)
+        .all()
+        .some((column) => column.name === 'context')
+    ) {
+      this.db.exec(`ALTER TABLE sync_leases ADD COLUMN context TEXT`);
+    }
   }
 
   async get(
@@ -49,6 +60,7 @@ export class SqliteLeaseStore implements LeaseStore {
         {
           lease_id: string;
           actor_id: string;
+          context: string | null;
           allowed_scopes: string;
           issued_at_ms: number;
           expires_at_ms: number;
@@ -58,7 +70,7 @@ export class SqliteLeaseStore implements LeaseStore {
       >(
         // §7.3.4: the revocation table is the only record of a revocation, so
         // a revoked id stays revoked whatever its lease row says.
-        `SELECT l.lease_id, l.actor_id, l.allowed_scopes, l.issued_at_ms,
+        `SELECT l.lease_id, l.actor_id, l.context, l.allowed_scopes, l.issued_at_ms,
                 l.expires_at_ms,
                 EXISTS (SELECT 1 FROM sync_lease_revocations r
                          WHERE r.partition=l.partition
@@ -70,6 +82,7 @@ export class SqliteLeaseStore implements LeaseStore {
     return {
       leaseId: row.lease_id,
       actorId: row.actor_id,
+      ...(row.context !== null ? { context: row.context } : {}),
       allowedScopes: JSON.parse(row.allowed_scopes) as ScopeMap,
       issuedAtMs: row.issued_at_ms,
       expiresAtMs: row.expires_at_ms,
@@ -84,16 +97,19 @@ export class SqliteLeaseStore implements LeaseStore {
     allowedScopes: ScopeMap,
     nowMs: number,
     ttlMs: number,
+    context?: string,
   ): Promise<LeaseRecord> {
     const existing = await this.get(partition, clientId);
     const reuse =
       existing !== undefined &&
       existing.actorId === actorId &&
+      existing.context === context &&
       !existing.revoked;
     const leaseId = reuse ? existing.leaseId : this.#newId();
     const record: LeaseRecord = {
       leaseId,
       actorId,
+      ...(context !== undefined ? { context } : {}),
       allowedScopes,
       issuedAtMs: nowMs,
       expiresAtMs: nowMs + ttlMs,
@@ -103,13 +119,14 @@ export class SqliteLeaseStore implements LeaseStore {
       .query(
         `INSERT INTO sync_leases(
           partition, client_id, lease_id, actor_id, allowed_scopes,
-          issued_at_ms, expires_at_ms
-        ) VALUES (?,?,?,?,?,?,?)
+          issued_at_ms, expires_at_ms, context
+        ) VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(partition, client_id) DO UPDATE SET
           lease_id=excluded.lease_id, actor_id=excluded.actor_id,
           allowed_scopes=excluded.allowed_scopes,
           issued_at_ms=excluded.issued_at_ms,
-          expires_at_ms=excluded.expires_at_ms`,
+          expires_at_ms=excluded.expires_at_ms,
+          context=excluded.context`,
       )
       .run(
         partition,
@@ -119,6 +136,7 @@ export class SqliteLeaseStore implements LeaseStore {
         JSON.stringify(allowedScopes),
         nowMs,
         record.expiresAtMs,
+        context ?? null,
       );
     return record;
   }

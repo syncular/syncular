@@ -376,7 +376,11 @@ function partitionRequestPath(request: Request): string | undefined {
 export function forwardSyncRequest(
   request: Request,
   namespace: DurableObjectNamespaceLike,
-  identity: { readonly partition: string; readonly actorId: string },
+  identity: {
+    readonly partition: string;
+    readonly actorId: string;
+    readonly context?: string;
+  },
   path: string = SYNC_DO_REQUEST_PATH,
 ): Promise<Response> {
   const stub = namespace.get(namespace.idFromName(identity.partition));

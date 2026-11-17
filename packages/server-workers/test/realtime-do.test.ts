@@ -1782,3 +1782,95 @@ describe('heartbeat alarm (§8.5)', () => {
     expect(do_.state.alarmAt).toBeNull();
   });
 });
+
+describe('authentication context through the Worker and the DO (§1.1)', () => {
+  test('HTTP, upgrade and rehydrated socket rounds resolve under the authenticated context', async () => {
+    const db = await makeDb();
+    const seen: (string | undefined)[] = [];
+    const ns = new FakeDurableObjectNamespace(db, {
+      syncConfig: (storage) => ({
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: ({ context }) => {
+          seen.push(context);
+          return { list_id: ['*'] };
+        },
+      }),
+    });
+    // The host authenticates the context from its own credential header; a
+    // client cannot set the internal identity header itself.
+    const contextOf = (request: Request) =>
+      request.headers.get('x-test-session') ?? undefined;
+    const handler = createWorkersFetchHandler<unknown>({
+      config: () => ({
+        config: {
+          schema: SCHEMA,
+          storage: new D1ServerStorage(db),
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+        },
+        authenticate: async (request) => {
+          const context = contextOf(request);
+          return {
+            actorId: ACTOR_ID,
+            partition: PARTITION,
+            ...(context !== undefined ? { context } : {}),
+          };
+        },
+      }),
+      realtime: () => ({
+        namespace: ns,
+        authenticate: (request) => {
+          const context = contextOf(request);
+          return {
+            partition: PARTITION,
+            actorId: ACTOR_ID,
+            clientId: 'kiosk',
+            ...(context !== undefined ? { context } : {}),
+          };
+        },
+      }),
+    });
+    const ctx = { waitUntil: () => {}, passThroughOnException: () => {} };
+    const pull: RequestFrame[] = [
+      {
+        type: 'PULL_HEADER',
+        limitCommits: 0,
+        limitSnapshotRows: 0,
+        maxSnapshotPages: 0,
+        accept: 0b0011,
+        cursor: -1,
+        registrationDigest: registrationDigest([{ list_id: 'L' }]),
+        echoDigest: new Uint8Array(),
+      },
+      { type: 'UNIT', scopes: { list_id: 'L' } },
+      { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
+    ];
+    const kiosk = httpSyncRequest(pull, 'kiosk');
+    kiosk.headers.set('x-test-session', 'kiosk:é');
+    await decodeHttpSync(handler(kiosk, {}, ctx));
+    const forged = httpSyncRequest(pull, 'device');
+    forged.headers.set('x-syncular-context', 'kiosk%3Aforged');
+    await decodeHttpSync(handler(forged, {}, ctx));
+    expect(seen).toEqual(['kiosk:é', undefined]);
+
+    seen.length = 0;
+    const upgrade = await handler(
+      new Request('https://worker.example/realtime', {
+        headers: { upgrade: 'websocket', 'x-test-session': 'kiosk:é' },
+      }),
+      {},
+      ctx,
+    );
+    expect(upgrade.status).toBe(101);
+    const do_ = ns.get(ns.idFromName(PARTITION));
+    const server = createdPairs.at(-1)![1];
+    // A hibernation rebuilds the session from the socket attachment, which
+    // keeps the context.
+    do_.simulateHibernation();
+    await sendRound(do_, server, pull, 'kiosk');
+    expect(seen.length).toBeGreaterThan(1);
+    expect(new Set(seen)).toEqual(new Set(['kiosk:é']));
+  });
+});

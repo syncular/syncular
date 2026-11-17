@@ -16,6 +16,7 @@ its URL.
 - **`authenticate`**: The server callback that returns `{ actorId, partition }` for a request, or `null` to reject it.
 - **Actor**: The authenticated user or service. The server records it as the author of every commit it pushes.
 - **Partition**: The tenant whose data a request touches.
+- **Context**: An optional opaque string `authenticate` returns beside the actor, naming what this session was signed in for.
 - **Header set**: The full record of host headers a client attaches to sync, segment, and blob requests.
 - **Ticket**: A short-lived signed value on the realtime socket URL, minted from a normal bearer.
 :::
@@ -53,6 +54,47 @@ treats as retryable.
 
 Signed segment and blob URLs skip `authenticate`: the URL is the grant, and the
 client attaches no host headers to it (SPEC §5.4, §5.9.5).
+
+## Sessions of different reach
+
+One person can hold sessions that may see different rows: a kiosk signed in for
+one facility, and their own phone signed in for every facility. `actorId` is
+the same for both, and `clientId` is chosen by the client, so neither tells
+`resolveScopes` which session is asking. Return a `context` from
+`authenticate` for that:
+
+```ts title="src/auth.ts"
+return {
+  actorId: payload.sub,
+  partition: payload.org_id,
+  // Present only on kiosk tokens.
+  ...(payload.kiosk_facility !== undefined
+    ? { context: `kiosk:${payload.kiosk_facility}` }
+    : {}),
+};
+```
+
+```ts title="src/server.ts"
+resolveScopes: async ({ actorId, context }) => ({
+  facility_id: context?.startsWith('kiosk:')
+    ? [context.slice('kiosk:'.length)]
+    : await db.facilityIdsForMember(actorId),
+}),
+```
+
+The server passes the context unchanged to `resolveScopes` on every path:
+sync rounds over HTTP and the socket, remote operations, segment and blob
+downloads, and the realtime registrations of a socket. A segment URL signed for
+a pull under one context carries it in its token, and
+`verifySegmentToken(key, token, { …, context })` refuses it under another. An
+[auth lease](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#73-auth-leases) records the context it was issued under and
+authorizes no request under a different one; that request fails with
+`sync.auth_lease_required`. Without a `context` every path behaves as before.
+
+The context is at most 256 UTF-8 bytes. A longer one is a host bug: the server
+rejects the request before calling `resolveScopes`, reports an error with the
+code `sync.auth_context_too_large` to `onError`, and answers the client
+`sync.internal_error`.
 
 ## Steps
 
@@ -377,6 +419,8 @@ if (identity === null) return new Response(null, { status: 401 });
 hub.connect({
   partition: identity.partition,
   actorId: identity.actorId,
+  // The socket resolves scopes under this context for its lifetime.
+  ...(identity.context !== undefined ? { context: identity.context } : {}),
   clientId,
   send,
   closeSocket,

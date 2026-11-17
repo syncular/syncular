@@ -159,7 +159,13 @@ async function authorizeFromLease(
     );
   }
   const lease = await leases.store.get(ctx.partition, clientId);
-  if (lease === undefined || lease.actorId !== ctx.actorId) {
+  // A lease binds the actor and the authentication context it was issued
+  // under (§7.3.1): another session of the same actor is not its holder.
+  if (
+    lease === undefined ||
+    lease.actorId !== ctx.actorId ||
+    lease.context !== ctx.context
+  ) {
     throw syncError(
       'sync.auth_lease_required',
       'no valid auth lease for this client during an authorization outage (§7.3.3)',
@@ -192,6 +198,7 @@ async function resolveOnce(
       partition: ctx.partition,
       actorId: ctx.actorId,
       clientId,
+      ...(ctx.context !== undefined ? { context: ctx.context } : {}),
     });
   } catch (error) {
     if (error instanceof SyncError) throw error;
@@ -231,6 +238,7 @@ async function resolveOnce(
       allowed,
       clockOf(ctx)(),
       ctx.leases.ttlMs,
+      ctx.context,
     );
   }
   return { resolved: { ok: true, allowed }, leaseToEmit };

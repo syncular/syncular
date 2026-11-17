@@ -5,9 +5,10 @@
  *
  * Native: `st = base64url(payloadJson) + "." +
  * base64url(HMAC-SHA256(key, payloadJson))` with claims
- * `{v, seg, sd, aud, exp}`; `exp` is unix seconds. Issuance happens inside
+ * `{v, seg, sd, aud, exp, ctx?}`; `exp` is unix seconds and `ctx` the
+ * authentication context of the issuing pull (§1.1). Issuance happens inside
  * the pull immediately after scope resolution; verification checks MAC,
- * expiry (≤ 60 s skew), and `seg`/`sd`/`aud` equality. Actual CDN serving
+ * expiry (≤ 60 s skew), and `seg`/`sd`/`aud`/`ctx` equality. Actual CDN serving
  * is out of scope.
  *
  * Delegated presign: the provider mints the URL (§5.4 equivalence rule —
@@ -45,6 +46,8 @@ export interface SegmentPresignArgs {
   readonly nowMs: number;
   /** Resolved TTL (config value or the 900 s default) — already applied. */
   readonly ttlSeconds: number;
+  /** The authentication context (§1.1) the pull resolved scopes under. */
+  readonly context?: string;
 }
 
 /**
@@ -78,6 +81,7 @@ export async function issueSegmentUrl(
     readonly partition: string;
     readonly scopeDigest: string;
     readonly nowMs: number;
+    readonly context?: string;
   },
 ): Promise<SegmentUrlIssue> {
   const ttlSeconds = config.ttlSeconds ?? 900;
@@ -91,6 +95,7 @@ export async function issueSegmentUrl(
     sd: args.scopeDigest,
     aud: config.audience(args.partition),
     exp,
+    ...(args.context !== undefined ? { ctx: args.context } : {}),
   });
   return {
     url: `${config.baseUrl}/${args.segmentId}?st=${token}`,
@@ -114,6 +119,8 @@ export interface BlobPresignArgs {
   readonly nowMs: number;
   /** Resolved TTL (config value or the 900 s default) — already applied. */
   readonly ttlSeconds: number;
+  /** The authentication context (§1.1) the download was authorized under. */
+  readonly context?: string;
 }
 
 export interface BlobPresignConfig {
@@ -135,6 +142,7 @@ export async function issueBlobUrl(
     readonly partition: string;
     readonly blobId: string;
     readonly nowMs: number;
+    readonly context?: string;
   },
 ): Promise<SegmentUrlIssue> {
   const ttlSeconds = config.ttlSeconds ?? 900;
@@ -194,6 +202,8 @@ export interface SegmentTokenClaims {
   readonly aud: string;
   /** Unix seconds — the sole non-millisecond timestamp in the spec. */
   readonly exp: number;
+  /** The issuing pull's authentication context (§1.1); absent without one. */
+  readonly ctx?: string;
 }
 
 const encoder = new TextEncoder();
@@ -253,6 +263,7 @@ export async function signSegmentToken(
     sd: claims.sd,
     aud: claims.aud,
     exp: claims.exp,
+    ...(claims.ctx !== undefined ? { ctx: claims.ctx } : {}),
   });
   const payload = encoder.encode(payloadJson);
   const mac = await hmac(key, payload);
@@ -280,6 +291,13 @@ export async function verifySegmentToken(
     readonly audience: string;
     readonly nowMs: number;
     readonly skewSeconds?: number;
+    /**
+     * The authentication context (§1.1) of a download that authenticated.
+     * When set, a token minted under another context, or without one, is
+     * refused. A headerless signed download (§5.4) passes none: the
+     * MAC-bound `seg`, `sd` and `ctx` claims are the grant.
+     */
+    readonly context?: string;
   },
 ): Promise<SegmentTokenClaims> {
   const forbidden = (reason: string) =>
@@ -320,5 +338,7 @@ export async function verifySegmentToken(
   if (!scopeDigests.includes(claims.sd))
     throw forbidden('scope-digest mismatch');
   if (claims.aud !== expected.audience) throw forbidden('audience mismatch');
+  if (expected.context !== undefined && claims.ctx !== expected.context)
+    throw forbidden('context mismatch');
   return claims;
 }

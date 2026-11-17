@@ -42,6 +42,12 @@ export interface ResolveScopesArgs {
    * actor + scopes only (§5.5, §5.9.5) and never consult a lease.
    */
   readonly clientId?: string;
+  /**
+   * The authentication context the host's `authenticate` returned for this
+   * request (§1.1), passed unchanged on every path that resolves scopes.
+   * Absent when the host returned none.
+   */
+  readonly context?: string;
 }
 
 /**
@@ -253,6 +259,20 @@ export interface SyncServerConfig {
 export interface SyncRequestContext extends SyncServerConfig {
   readonly partition: string;
   readonly actorId: string;
+  /** The host authentication context (§1.1), at most 256 UTF-8 bytes. */
+  readonly context?: string;
+}
+
+/** §1.1: `authenticate` returned a context longer than 256 UTF-8 bytes. */
+export class AuthContextTooLargeError extends Error {
+  override readonly name = 'AuthContextTooLargeError';
+  readonly code = 'sync.auth_context_too_large';
+  readonly details: { readonly byteLength: number; readonly max: 256 };
+
+  constructor(byteLength: number) {
+    super('authentication context exceeds 256 UTF-8 bytes');
+    this.details = { byteLength, max: 256 };
+  }
 }
 
 export function clockOf(ctx: SyncServerConfig): () => number {
@@ -275,10 +295,18 @@ export function limitsOf(ctx: SyncServerConfig): ServerLimits {
   return limits;
 }
 
-/** Refresh the registry after host authentication and return log continuity. */
-export function touchAuthenticatedPartition(
+/**
+ * Refresh the registry after host authentication and return log continuity.
+ * Every authenticated entry point runs this first, so it also refuses an
+ * oversized authentication context (§1.1) before any resolver sees it.
+ */
+export async function touchAuthenticatedPartition(
   ctx: SyncRequestContext,
 ): Promise<PartitionRegistryEntry> {
+  if (ctx.context !== undefined) {
+    const byteLength = new TextEncoder().encode(ctx.context).length;
+    if (byteLength > 256) throw new AuthContextTooLargeError(byteLength);
+  }
   return ctx.storage.touchPartition(
     ctx.partition,
     clockOf(ctx)(),

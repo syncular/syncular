@@ -215,6 +215,7 @@ async function downloadBlob(
     const allowed = await ctx.resolveScopes({
       partition: ctx.partition,
       actorId: ctx.actorId,
+      ...(ctx.context !== undefined ? { context: ctx.context } : {}),
     });
     // §7.3.3: leases never authorize a blob download — an outage denies.
     resolved =
@@ -267,6 +268,7 @@ async function downloadBlob(
       partition: ctx.partition,
       blobId,
       nowMs: clockOf(ctx)(),
+      ...(ctx.context !== undefined ? { context: ctx.context } : {}),
     });
     return {
       headers: {

@@ -894,7 +894,8 @@ export class SyncularAdmin {
    * Trace whether one client receives one row, combining the row's stored
    * scopes and newest change with the client's units, cursor, the
    * actor's allowed scopes, and its retained push failures. See
-   * `AdminTraceVerdict` for the verdict order.
+   * `AdminTraceVerdict` for the verdict order. `context` is the
+   * authentication context (§1.1) to resolve the actor's scopes under.
    */
   async traceRow(
     partition: string,
@@ -902,9 +903,10 @@ export class SyncularAdmin {
       readonly table: string;
       readonly rowId: string;
       readonly clientId: string;
+      readonly context?: string;
     },
   ): Promise<AdminRowTrace> {
-    const { table, rowId, clientId } = query;
+    const { table, rowId, clientId, context } = query;
     const row = await this.inspectRow(partition, table, rowId, {
       historyLimit: 1,
     });
@@ -927,7 +929,7 @@ export class SyncularAdmin {
     if (record === undefined) {
       return { ...base, verdict: 'client-unknown', units: [] };
     }
-    const allowed = await this.#allowedScopes(partition, record);
+    const allowed = await this.#allowedScopes(partition, record, context);
     return {
       ...base,
       client: (await this.#clientView(partition))(record),
@@ -945,12 +947,14 @@ export class SyncularAdmin {
 
   /**
    * Who has one row and who does not: the trace verdict for every known
-   * client in the partition, resolving each actor's allowed scopes once.
+   * client in the partition, resolving each actor's allowed scopes once
+   * under `context` (§1.1).
    */
   async rowDelivery(
     partition: string,
     table: string,
     rowId: string,
+    context?: string,
   ): Promise<AdminRowDelivery> {
     const list = required(
       this.#storage.listClientRecords?.bind(this.#storage),
@@ -970,7 +974,7 @@ export class SyncularAdmin {
       if (!allowedByActor.has(record.actorId)) {
         allowedByActor.set(
           record.actorId,
-          await this.#allowedScopes(partition, record),
+          await this.#allowedScopes(partition, record, context),
         );
       }
       clients.push({
@@ -1698,12 +1702,14 @@ export class SyncularAdmin {
   async #allowedScopes(
     partition: string,
     record: ClientRecord,
+    context: string | undefined,
   ): Promise<ScopeMap | 'outage' | undefined> {
     if (this.#resolveScopes === undefined) return undefined;
     const resolved = await this.#resolveScopes({
       partition,
       actorId: record.actorId,
       clientId: record.clientId,
+      ...(context !== undefined ? { context } : {}),
     });
     return resolved === RESOLVER_OUTAGE ? 'outage' : resolved;
   }

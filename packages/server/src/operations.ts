@@ -379,6 +379,7 @@ export function registerRemoteQuery<Params>(
           partition: ctx.partition,
           actorId: ctx.actorId,
           clientId,
+          ...(ctx.context !== undefined ? { context: ctx.context } : {}),
         });
         if (allowed === RESOLVER_OUTAGE) {
           throw syncError(
@@ -719,6 +720,7 @@ export function registerRemoteCommand<Input>(
         partition: ctx.partition,
         actorId: ctx.actorId,
         clientId,
+        ...(ctx.context !== undefined ? { context: ctx.context } : {}),
       });
       if (allowed === RESOLVER_OUTAGE) {
         throw syncError(

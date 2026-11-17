@@ -312,6 +312,20 @@ fallback.
 its result supplies `actorId` and the partition. The protocol carries no
 credential fields. (Auth-lease replay is a reserved extension, §7.3.)
 
+The result MAY also carry an **authentication context**: an opaque host
+string of at most 256 UTF-8 bytes (for example `kiosk:facility-a`) that
+names what this session was authenticated for. One actor can hold several
+sessions of different reach, and `clientId` is client-chosen, so it cannot
+carry that binding. The server never interprets the context. It passes it
+unchanged to every `resolveScopes` call made for the request (§3.2 step 3,
+§5.5, §5.9.5, §8.1), binds signed grants (§5.4) and leases (§7.3.1) to it, and
+keys any resolved-scope state it holds per actor by actor and context. A
+context longer than 256 bytes is a host bug: the server refuses the request
+before any resolver runs, reports an error coded
+`sync.auth_context_too_large` to the host, and answers the client
+`sync.internal_error` (§10.2). An absent context is
+a context of its own: it matches only grants and leases issued without one.
+
 **Errors at HTTP level** (auth failure, malformed envelope, rate limits —
 anything detected before a 200 status is committed) are returned as JSON
 (`application/json`) with the error shape of §10.1 and an appropriate HTTP
@@ -1374,8 +1388,9 @@ On every pull (and on realtime connect), per (unit, covered table) pair:
    reserved for allowed scopes (fail loud — a requested `'*'` that
    passed through would match only rows whose stored value is literally
    `*`, a silent-empty-data footgun).
-3. The host's `resolveScopes(actor)` returns **allowed scopes** for the
-   actor as one map covering every scope variable the actor holds,
+3. The host's `resolveScopes(actor, context)` returns **allowed scopes**
+   for the actor under the request's authentication context (§1.1) as one
+   map covering every scope variable the actor holds,
    across all tables: variable → list of values, where the value `'*'`
    means "any value for this variable". There is one resolver per
    server, not one per table; it is invoked **at most once per
@@ -2810,8 +2825,16 @@ token query parameter `st`:
 ```
 st = base64url(payloadJson) + "." + base64url(HMAC-SHA256(key, payloadJson))
 payloadJson = {"v":1,"seg":"<segmentId>","sd":"<scopeDigest>",
-               "aud":"<partition token>","exp":<unix seconds>}
+               "aud":"<partition token>","exp":<unix seconds>,
+               "ctx":"<authentication context>"}
 ```
+
+`ctx` is the authentication context (§1.1) the pull resolved scopes under,
+and is omitted when the pull had none. The MAC binds it to `seg` and `sd`,
+so the grant covers only what that context resolved. A verifier that serves
+an authenticated download MUST require `ctx` to equal that download's
+context (both absent counts as equal); a headerless signed download (§5.4)
+carries no context of its own and verifies the claims as minted.
 
 `exp` is unix **seconds** (JWT convention) — the sole non-millisecond
 timestamp in this spec. `aud` is an opaque host-chosen value that MUST
@@ -2856,7 +2879,8 @@ for clients without signed-URL support.
   `X-Syncular-Scopes`: the canonical JSON (§11.2) of the owning unit's
   scope map, each value as a one-element list.
 - The server MUST re-authorize on **every** download: run
-  `resolveScopes` for the actor, compute effective scopes against the
+  `resolveScopes` for the actor under the request's authentication
+  context (§1.1), compute effective scopes against the
   supplied requested scopes (§3.2), compute the scope digest (§3.5), and
   require that digest to belong to a stored publication whose partition
   equals the request's partition and whose `logEpoch` is the partition's
@@ -3239,7 +3263,8 @@ MUST verify the actor is authorized to see the blob, and authorization
 > The actor may download `blobId` iff **at least one row in the reference
 > index for (partition, blobId) is authorized for the actor** under the
 > write-path scope check (§3.4 steps 1–3): resolve the actor's allowed
-> scopes once (§3.2 step 3), and for each candidate referencing row, test
+> scopes once under the request's authentication context (§3.2 step 3,
+> §1.1), and for each candidate referencing row, test
 > the row's stored scope values against the allowed values for the write
 > variables of that row's table. The first row that passes
 > authorizes the download; if none pass (or the index is empty, or
@@ -5495,6 +5520,7 @@ A lease is the tuple:
 |---|---|---|
 | `leaseId` | `str` | Server-chosen unique id, non-empty. The revocation handle (§7.3.4) and the client's echo key |
 | `actorId` | `str` | The actor the lease authorizes |
+| `context` | `opt(str)` | The authentication context (§1.1) the round that issued the lease resolved scopes under; absent when it had none |
 | `allowedScopes` | `map` of `str` → `list(str)` | The actor's resolved allowed scopes at issuance (§3.2 step 3 shape; `'*'` means "any value"). This is what the server authorizes against during an outage |
 | `issuedAtMs` | `i64` | Server clock at issuance (epoch ms) |
 | `expiresAtMs` | `i64` | `issuedAtMs + ttlMs`; the lease is invalid at or after this instant |
@@ -5562,7 +5588,7 @@ discipline, the blob/segment-store pattern). When configured with a TTL:
   rather than throwing: a thrown resolver still fails loud and revokes
   (§3.2 rule 5, unchanged). On that signal the server loads the stored
   lease for `(partition, clientId)` and, if the lease is **valid**
-  (§7.3.1) and its `actorId` matches, uses its `allowedScopes` as the
+  (§7.3.1) and its `actorId` and `context` match the request's, uses its `allowedScopes` as the
   request's resolved allowed map — the request's pull filtering (§3.2)
   and write authorization (§3.4) then run **exactly as if the resolver
   had returned those scopes.** The lease is thus not a bypass: §3.4's
@@ -5574,7 +5600,8 @@ discipline, the blob/segment-store pattern). When configured with a TTL:
 
 - **No valid lease during an outage.** If the host signals the outage
   but there is no stored lease, or the stored lease is expired, or its
-  `actorId` does not match, the request fails **request-level** with
+  `actorId` or `context` does not match the request's (a lease issued
+  under one authentication context never authorizes another), the request fails **request-level** with
   `sync.auth_lease_required` (§10.2) — the "you need a lease and don't
   have a live one" surface. A revoked lease fails with
   `sync.auth_lease_revoked` (§7.3.4).
@@ -6638,8 +6665,9 @@ source-identity projection. Rebuild/reset keeps the mapping and projection align
 ### 8.1 Channel and handshake
 
 WebSocket at `GET <mount>/realtime?clientId=<id>`. Host authentication
-runs at upgrade; the server resolves the actor's effective scopes for the
-client's live units and registers the connection against the matching
+runs at upgrade; the connection keeps the authentication context (§1.1) it
+yields for its lifetime. The server resolves the actor's effective scopes
+under that context for the client's live units and registers the connection against the matching
 scope keys.
 
 **Registrations** come from the client record (§4.5): the stored

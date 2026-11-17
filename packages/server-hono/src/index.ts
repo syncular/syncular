@@ -38,10 +38,16 @@ export * from './admin';
 export interface SyncularHonoOptions {
   readonly config: SyncServerConfig;
   readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
-  /** Host authentication (§1.1); `null` ⇒ 401 `sync.auth_required`. */
-  readonly authenticate: (
-    request: Request,
-  ) => Promise<{ actorId: string; partition: string } | null>;
+  /**
+   * Host authentication (§1.1); `null` ⇒ 401 `sync.auth_required`.
+   * `context` is the opaque authentication context (at most 256 UTF-8
+   * bytes) every scope resolution for the request receives.
+   */
+  readonly authenticate: (request: Request) => Promise<{
+    actorId: string;
+    partition: string;
+    context?: string;
+  } | null>;
   /** Mount the admin console (see `SyncularHonoAdminOptions`). */
   readonly admin?: SyncularHonoAdminOptions;
 }

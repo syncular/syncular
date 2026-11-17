@@ -377,6 +377,7 @@ export function createSyncularAdminRoutes(
         c.get('partition'),
         c.req.param('table'),
         c.req.param('rowId'),
+        c.req.query('context'),
       ),
     }),
   );
@@ -402,10 +403,12 @@ export function createSyncularAdminRoutes(
         'table, rowId and clientId are required',
       );
     }
+    const context = c.req.query('context');
     const trace = await admin.traceRow(c.get('partition'), {
       table,
       rowId,
       clientId,
+      ...(context !== undefined ? { context } : {}),
     });
     return Response.json({ trace });
   });

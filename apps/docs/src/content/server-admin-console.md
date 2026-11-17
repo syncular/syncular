@@ -57,7 +57,7 @@ Search the `clientCommitId` of the write, which the device's outbox holds. The w
 
 ### A device does not see a row
 
-Search the row id, or open Data, pick the table, and open the row. The row page shows the row's values, scopes, and retained history, and lists every client of the partition with its delivery verdict. Open a client's verdict for the trace: the client's units that cover the table, the scope values each one requests, the scopes `resolveScopes` allows the actor, and the client's cursor against the row's last change.
+Search the row id, or open Data, pick the table, and open the row. The row page shows the row's values, scopes, and retained history, and lists every client of the partition with its delivery verdict. Open a client's verdict for the trace: the client's units that cover the table, the scope values each one requests, the scopes `resolveScopes` allows the actor, and the client's cursor against the row's last change. The console resolves those scopes without an authentication context; `traceRow` and `rowDelivery` take a `context` (the `context` query parameter on `/trace` and `/rows/:table/:rowId/delivery`) to trace what a session under that context receives.
 
 | Verdict | Meaning | Next step |
 |---|---|---|

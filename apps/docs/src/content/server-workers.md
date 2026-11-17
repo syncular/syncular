@@ -149,6 +149,8 @@ const handler = createWorkersFetchHandler<Env>({
 
 `allowedOrigins` lists the origins a browser upgrade may come from. An upgrade whose `Origin` header names another origin answers 403 `sync.forbidden` before `authenticate` runs; native clients send no `Origin` and pass. Set it when `authenticateRealtime` reads a cookie ([Cookie sessions](/guide-auth/#cookie-sessions)).
 
+Both `authenticate` functions may return a `context` ([Sessions of different reach](/guide-auth/#sessions-of-different-reach)). The Worker forwards it to the Durable Object in an internal header and removes that header from a request whose authentication returned none, so a client cannot set it. A socket keeps its context in its hibernation attachment.
+
 The host sends the §8.5 `heartbeat` from the Durable Object alarm: it arms the alarm when a socket connects, sends the event straight to every socket without rebuilding sessions, and re-arms while sockets remain. Forward `alarm()` as above. `heartbeatIntervalMs` in `RealtimeDOConfig` sets the interval (default 30 000). The host owns the object's alarm, so a subclass cannot schedule its own.
 
 `createWorkersFetchHandler(factory)` builds the Hono app per request from your factory. That keeps it stateless, which Workers requires because each invocation may run on a fresh isolate.
