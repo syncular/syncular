@@ -107,6 +107,25 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     await admin.end();
   });
 
+  test('concurrent migrate() on separate connections converges', async () => {
+    await resetPublicSchema(admin);
+    const pools = Array.from(
+      { length: 8 },
+      () => new (BunSQL as NonNullable<typeof BunSQL>)(PG_URL as string),
+    );
+    await Promise.all(
+      pools.map((sql) =>
+        new PostgresServerStorage(bunSqlExecutor(sql)).migrate(),
+      ),
+    );
+    await Promise.all(pools.map((sql) => sql.end()));
+    const rows = await admin.unsafe(
+      "SELECT to_regclass('sync_partitions') AS t",
+    );
+    expect(rows[0].t).toBe('sync_partitions');
+    await resetPublicSchema(admin);
+  });
+
   test('storage migrates and allocates commitSeq on real Postgres', async () => {
     const sql = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
     handles.push(sql);

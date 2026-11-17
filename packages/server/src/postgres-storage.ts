@@ -2299,32 +2299,43 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     // `obj_description` and `to_regclass` of a missing table are NULL, so
     // the probe never fails. A core table dropped out of band reapplies the
     // DDL even under the current fingerprint.
-    const { rows } = await this.#exec.query<{
-      storage: string | null;
-      missing: number;
-    }>(
-      `SELECT obj_description(to_regclass('sync_schema_meta'), 'pg_class') AS storage,
+    const current = async (db: PgQueryable): Promise<boolean> => {
+      const { rows } = await db.query<{
+        storage: string | null;
+        missing: number;
+      }>(
+        `SELECT obj_description(to_regclass('sync_schema_meta'), 'pg_class') AS storage,
               (SELECT count(*)::int
                  FROM jsonb_array_elements_text($1::text::jsonb) AS core(name)
                 WHERE to_regclass(core.name) IS NULL) AS missing`,
-      [
-        JSON.stringify(
-          statements.flatMap(
-            (statement) =>
-              /^CREATE TABLE IF NOT EXISTS (\w+)/.exec(statement)?.[1] ?? [],
+        [
+          JSON.stringify(
+            statements.flatMap(
+              (statement) =>
+                /^CREATE TABLE IF NOT EXISTS (\w+)/.exec(statement)?.[1] ?? [],
+            ),
           ),
-        ),
-      ],
-    );
-    if (rows[0]?.storage === fingerprint && rows[0].missing === 0) return;
-    for (const statement of statements) {
-      await this.#exec.query(statement);
-    }
-    // The fingerprint is lowercase hex, safe to inline (COMMENT takes no
-    // bound parameter).
-    await this.#exec.query(
-      `COMMENT ON TABLE sync_schema_meta IS '${fingerprint}'`,
-    );
+        ],
+      );
+      return rows[0]?.storage === fingerprint && rows[0].missing === 0;
+    };
+    if (await current(this.#exec)) return;
+    // Concurrent `CREATE TABLE IF NOT EXISTS` races in `pg_type` and fails
+    // with `type ... already exists`. A transaction-scoped advisory lock
+    // serializes the DDL across processes; the winner applies it and the
+    // others find the fingerprint current once the lock frees.
+    await this.#exec.transaction(async (tx) => {
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtext('syncular.migrate'))",
+      );
+      if (await current(tx)) return;
+      for (const statement of statements) {
+        await tx.query(statement);
+      }
+      // The fingerprint is lowercase hex, safe to inline (COMMENT takes no
+      // bound parameter).
+      await tx.query(`COMMENT ON TABLE sync_schema_meta IS '${fingerprint}'`);
+    });
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
