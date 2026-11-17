@@ -204,7 +204,7 @@ impl Harness {
         Frame::SegmentInline {
             payload: encode_rows_segment(&RowsSegment {
                 table: table.to_owned(),
-                schema_version: 1,
+                schema_version: self.client.schema.version,
                 columns: schema.wire_columns.clone(),
                 blocks: if rows.is_empty() {
                     Vec::new()
@@ -1722,4 +1722,234 @@ fn a_section_boundary_ends_the_previous_payload_without_inventing_totals() {
     let last = seen.last().unwrap();
     assert_eq!(last.state, crate::ProgressState::Complete);
     assert!(last.unit_id.is_none());
+}
+
+/// §7.4.3: the fixture schema at `version` with optional table generations.
+fn generated(version: i32, tasks: Option<&str>, notes: Option<&str>) -> Value {
+    let mut schema = schema();
+    schema["version"] = json!(version);
+    schema["tables"][1]["ftsIndexes"] =
+        json!([{"name": "notes_fts", "columns": ["body"], "tokenize": "unicode61"}]);
+    if let Some(generation) = tasks {
+        schema["tables"][0]["generation"] = json!(generation);
+    }
+    if let Some(generation) = notes {
+        schema["tables"][1]["generation"] = json!(generation);
+    }
+    schema
+}
+
+fn generation_db(name: &str) -> String {
+    std::env::temp_dir()
+        .join(format!("syncular-{name}-{}.db", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Bootstraps the notes-only unit `org` and the tasks+notes unit `p1` at pin 3
+/// under `schema`, leaves one pending notes write, and closes the replica.
+fn synced_replica(path: &str, schema: &Value) -> String {
+    let client =
+        SyncClient::open_path("units-client".into(), schema, ClientLimits::default(), path)
+            .unwrap();
+    let mut h = Harness::over(client);
+    h.client.subscribe(org()).unwrap();
+    h.client.subscribe(p1()).unwrap();
+    let note = h.rows("notes", &[&["n1", "p1", "o1", "a"]]);
+    let pages = vec![
+        h.rows("notes", &[&["n1", "p1", "o1", "a"]]),
+        h.rows("tasks", &[&["t1", "p1", "a"]]),
+    ];
+    h.round(concat(vec![
+        h.bootstrap(&org(), 3, vec![note], vec![]),
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    h.client
+        .mutate(vec![upsert(
+            "notes",
+            &[
+                ("id", "n2"),
+                ("project_id", "p1"),
+                ("org_id", "o1"),
+                ("body", "mine"),
+            ],
+        )])
+        .unwrap()
+}
+
+fn base_ids(client: &SyncClient, table: &str) -> Vec<String> {
+    client
+        .conn
+        .prepare(&format!(
+            "SELECT id FROM _syncular_base_{table} ORDER BY id"
+        ))
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_bump_keeps_a_table_with_an_unchanged_generation_and_the_units_covering_only_it() {
+    let path = generation_db("keep-generation");
+    let pending = synced_replica(&path, &generated(1, Some("t1"), Some("n1")));
+    // §7.4.3: `notes` keeps its generation; `tasks` changes it.
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &generated(2, Some("t2"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    let mut h = Harness::over(client);
+    assert_eq!(
+        h.ids("notes"),
+        vec!["n1", "n2"],
+        "the pending write stays visible"
+    );
+    assert_eq!(base_ids(&h.client, "notes"), vec!["n1"]);
+    assert!(h.ids("tasks").is_empty());
+    assert!(base_ids(&h.client, "tasks").is_empty());
+    let matches: i64 = h
+        .client
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'mine'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        matches, 1,
+        "the kept FTS projection still indexes the overlay"
+    );
+    let kept = h.unit(&org());
+    assert_eq!(kept.cursor, None, "the notes-only unit stays live");
+    assert_eq!(
+        h.unit(&p1()).cursor,
+        Some(-1),
+        "a unit covering tasks resets"
+    );
+    assert_eq!(replica_cursor(&h.client.conn).unwrap(), 3);
+    assert_eq!(
+        h.client.get_meta(TABLE_GENERATIONS_KEY).unwrap().as_deref(),
+        Some(r#"{"notes":"n1","tasks":"t2"}"#)
+    );
+
+    let note = h.rows("notes", &[&["n1", "p1", "o1", "a"]]);
+    let task = h.rows("tasks", &[&["t1", "p1", "a"]]);
+    let pushed = h.commit(4, &[("notes", Op::Upsert, &["n2", "p1", "o1", "mine"], 1)]);
+    h.round(concat(vec![
+        vec![applied(&pending, 4)],
+        h.bootstrap(&p1(), 4, vec![note, task], vec![]),
+        live(4, vec![pushed]),
+    ]));
+    let request = h.last();
+    assert!(request.iter().any(|frame| matches!(
+        frame,
+        Frame::PushCommit { client_commit_id, .. } if client_commit_id == &pending
+    )));
+    // The kept unit is live (no PROGRESS) under the kept replica cursor; only
+    // the reset unit bootstraps, and the list travels again.
+    assert_eq!(progress_of(request), vec![(id_of(&p1()), -1, None)]);
+    let (cursor, _, echo_digest) = pull_of(request);
+    assert_eq!(cursor, 3);
+    assert_eq!(echo_digest, None);
+    assert_eq!(units_of(request).len(), 2);
+    assert_eq!(h.ids("notes"), vec!["n1", "n2"]);
+    assert_eq!(h.ids("tasks"), vec!["t1"]);
+    assert!(h.client.pending_commit_ids().is_empty());
+    drop(h);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn a_bump_without_generations_resets_every_table_and_unit() {
+    for (old, new) in [
+        (generated(1, None, None), generated(2, None, None)),
+        (
+            generated(1, None, None),
+            generated(2, Some("t1"), Some("n1")),
+        ),
+        (
+            generated(1, Some("t1"), Some("n1")),
+            generated(2, None, None),
+        ),
+    ] {
+        let path = generation_db("no-generation");
+        synced_replica(&path, &old);
+        let client =
+            SyncClient::open_path("units-client".into(), &new, ClientLimits::default(), &path)
+                .unwrap();
+        let h = Harness::over(client);
+        assert_eq!(
+            h.ids("notes"),
+            vec!["n2"],
+            "only the outbox overlay remains"
+        );
+        assert!(base_ids(&h.client, "notes").is_empty());
+        assert!(h.ids("tasks").is_empty());
+        assert_eq!(h.unit(&org()).cursor, Some(-1));
+        assert_eq!(h.unit(&p1()).cursor, Some(-1));
+        assert_eq!(replica_cursor(&h.client.conn).unwrap(), -1);
+        drop(h);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn a_bump_keeps_every_unit_when_every_generation_is_unchanged() {
+    let path = generation_db("keep-all");
+    synced_replica(&path, &generated(1, Some("t1"), Some("n1")));
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &generated(2, Some("t1"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    let h = Harness::over(client);
+    assert_eq!(h.ids("tasks"), vec!["t1"]);
+    assert_eq!(h.unit(&org()).cursor, None);
+    assert_eq!(h.unit(&p1()).cursor, None);
+    assert_eq!(replica_cursor(&h.client.conn).unwrap(), 3);
+    drop(h);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn a_corrupt_generation_record_refuses_the_bump_before_mutation() {
+    let path = generation_db("corrupt-generation");
+    synced_replica(&path, &generated(1, Some("t1"), Some("n1")));
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE _syncular_meta SET value='[1]' WHERE key='localTableGenerations'",
+            [],
+        )
+        .unwrap();
+    }
+    let error = SyncClient::open_path(
+        "units-client".into(),
+        &generated(2, Some("t2"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .err()
+    .expect("a corrupt generation record refuses the bump");
+    assert!(error.starts_with("sync.local_corrupt"), "{error}");
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &generated(1, Some("t1"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    let h = Harness::over(client);
+    assert_eq!(h.ids("tasks"), vec!["t1"], "nothing was reset");
+    assert_eq!(h.unit(&p1()).cursor, None);
+    drop(h);
+    std::fs::remove_file(path).unwrap();
 }

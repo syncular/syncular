@@ -1001,6 +1001,7 @@ mod naming_tests {
                 index: 2,
                 declared_type: "string".to_owned(),
             }],
+            generation: None,
         };
         let mut config = EncryptionConfig::default();
         config
@@ -1054,6 +1055,7 @@ mod naming_tests {
             indexes: Vec::new(),
             fts_indexes: Vec::new(),
             encrypted_columns: Vec::new(),
+            generation: None,
         }
     }
 
@@ -1173,6 +1175,7 @@ mod sparse_key_tests {
                 index: 2,
                 declared_type: "string".to_owned(),
             }],
+            generation: None,
         }
     }
 

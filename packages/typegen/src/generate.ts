@@ -33,6 +33,7 @@ import {
   type IrTable,
   irHash,
   serializeIr,
+  tableGeneration,
 } from './ir';
 import {
   MANIFEST_FILENAME,
@@ -352,14 +353,17 @@ export function buildIr(
   }
   const parsedTables = new Map<string, ParsedTable>();
   const droppedTables = new Set<string>();
+  // §7.4.3: per table, the migrations that name it, in application order.
+  const namedBy = new Map<string, string[]>();
   for (const migration of migrations) {
-    applyMigrationSql(
+    for (const name of applyMigrationSql(
       parsedTables,
       migration.sql,
       `${migration.name}/up.sql`,
       droppedTables,
       { lockedHistory: lockedNames?.has(migration.name) === true },
-    );
+    ))
+      namedBy.set(name, [...(namedBy.get(name) ?? []), migration.name]);
   }
   validateFinalSchemaIdentifiers(parsedTables);
   const schemaVersions = buildSchemaVersions(
@@ -374,7 +378,14 @@ export function buildIr(
         `table ${JSON.stringify(manifestTable.name)} is not created by any migration`,
       );
     }
-    return buildTable(manifestTable, parsed);
+    const table = buildTable(manifestTable, parsed);
+    return {
+      ...table,
+      generation: tableGeneration(
+        table,
+        namedBy.get(table.name.toLowerCase()) ?? [],
+      ),
+    };
   });
   const listed = new Set(manifest.tables.map((t) => t.name));
   for (const name of parsedTables.keys()) {

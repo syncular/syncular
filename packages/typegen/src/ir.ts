@@ -101,6 +101,11 @@ export interface IrFtsIndex {
 
 export interface IrTable {
   readonly name: string;
+  /** §7.4.3 table generation: an opaque string that changes whenever the
+   * table's local shape or scopes change or a migration names the table.
+   * A client keeps a table across a schema bump only while it is equal.
+   * Absent in IR built without generations. */
+  readonly generation?: string;
   readonly primaryKey: string;
   /** Declaration order — this IS the §2.4 row-codec positional order. */
   readonly columns: readonly IrColumn[];
@@ -184,6 +189,7 @@ function serializeTableShape(
 ): Record<string, unknown> {
   return {
     name: table.name,
+    ...(table.generation !== undefined ? { generation: table.generation } : {}),
     primaryKey: table.primaryKey,
     columns: table.columns.map((column) => ({
       name: column.name,
@@ -217,6 +223,37 @@ function serializeTableShape(
         }
       : {}),
   };
+}
+
+/**
+ * §7.4.3: the table generation hashes the table's serialized shape (columns,
+ * primary key, scopes with variables, references, indexes, FTS projections,
+ * extensions) and the names of every migration that names the table, as the
+ * first 16 bytes of SHA-256 in lowercase hex. Locked migrations never change
+ * (§7.4), so the generation of a table no later migration names and whose
+ * declaration is unchanged stays equal across schema versions.
+ */
+export function tableGeneration(
+  table: IrTable,
+  migrations: readonly string[],
+): string {
+  const { generation, ...shape } = serializeTableShape(
+    table,
+    table.scopes.map((scope) => ({ ...scope })),
+  );
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        table: {
+          ...shape,
+          extensions: canonicalizeExtensions(table.extensions),
+        },
+        migrations,
+      }),
+      'utf8',
+    )
+    .digest('hex')
+    .slice(0, 32);
 }
 
 /** Serialize with a fixed key order — byte-deterministic for equal IRs. */

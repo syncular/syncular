@@ -3,8 +3,13 @@ import { PENDING_EVICTIONS } from './window';
 import { WINDOWS_TABLE } from './window';
 import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
 import { OUTCOMES_TABLE } from './outcomes';
-import { META_TABLE, resetUnits, UNITS_TABLE } from './state';
-import { ensureFailedOverlaySchema } from './failed-overlay';
+import {
+  META_TABLE,
+  pruneUnknownUnits,
+  resetUnits,
+  UNITS_TABLE,
+} from './state';
+import { ensureFailedOverlaySchema, RETAINED_ROWS } from './failed-overlay';
 /**
  * Client schema IR (SPEC.md §2.4, §3.1) — the same shape the server
  * compiles and is emitted by codegen. Drives local table
@@ -35,6 +40,10 @@ export interface ClientFtsIndexSpec {
 
 export interface ClientTableSchema {
   readonly name: string;
+  /** §7.4.3 table generation from `typegen`: a schema bump keeps the table
+   * while it equals the generation the replica persisted. Absent in a
+   * hand-written schema, whose bumps reset every table. */
+  readonly generation?: string;
   /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
   readonly columns: readonly RowColumn[];
   readonly primaryKey: string;
@@ -54,6 +63,7 @@ export interface ClientSchema {
 
 export interface CompiledClientTable {
   readonly name: string;
+  readonly generation?: string;
   readonly columns: readonly RowColumn[];
   readonly primaryKey: string;
   readonly primaryKeyIndex: number;
@@ -131,6 +141,11 @@ export function compileClientSchema(
       );
     }
     schemaObjectNames.add(table.name);
+    if (
+      table.generation !== undefined &&
+      (typeof table.generation !== 'string' || table.generation === '')
+    )
+      invalidSchema(`${tableLabel}: generation must be a non-empty string`);
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
@@ -235,6 +250,9 @@ export function compileClientSchema(
     }
     tables.set(table.name, {
       name: table.name,
+      ...(table.generation !== undefined
+        ? { generation: table.generation }
+        : {}),
       columns: table.columns,
       primaryKey: table.primaryKey,
       primaryKeyIndex,
@@ -736,44 +754,52 @@ export function ensureLocalSchema(
 const RESERVED_TABLE_PREFIX = '_syncular_';
 
 /**
- * §7.4.3 reset: drop every synced local table (whatever the *previous*
- * generated schema created — discovered from `sqlite_master`, since a
- * bump may add/remove tables) and recreate the synced tables from the
- * NEW schema. Bookkeeping tables (`_syncular_*`: outbox, meta,
- * units, blob cache) are preserved. RFC 0005's container is not
- * reachable from here: it lives in its own database file, so this reset cannot
- * see or destroy it. Caller owns the surrounding transaction and the
- * unit-state reset (state.ts).
+ * §7.4.3 reset, §2.1 log reset and local rebootstrap: drop every synced local
+ * table (whatever the *previous* generated schema created, discovered from
+ * `sqlite_master`, since a bump may add/remove tables) with its acknowledged
+ * retained rows, recreate the synced tables from the NEW schema, and reset
+ * every unit to a fresh bootstrap. A bump first prunes incompatible units and
+ * keeps each table whose generation is unchanged, with its rows and indexes
+ * (its FTS projections are rebuilt from the kept rows), and each unit that
+ * covers only kept tables. Bookkeeping
+ * tables (`_syncular_*`: outbox, meta, units, blob cache) are preserved; RFC
+ * 0005's container lives in its own database file. Returns the tables whose
+ * rows changed. Caller owns the surrounding transaction.
  */
-export function dropAndRecreateSyncedTables(
+export function resetLocalReplica(
   db: ClientDatabase,
   schema: CompiledClientSchema,
-): void {
+  bump = false,
+): string[] {
+  const kept = bump
+    ? pruneUnknownUnits(db, schema, true)
+    : { tables: new Set<string>(), units: [] };
+  const keptNames = [...kept.tables];
+  db.exec(
+    `DELETE FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL AND tbl NOT IN(${keptNames.map(() => '?')})`,
+    keptNames,
+  );
   // Drop virtual tables first. SQLite then removes their shadow tables as one
   // unit, so the generic discovery below never tears an FTS5 projection apart.
-  const virtualTables = db.query(
+  for (const row of db.query(
     `SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
-  );
-  for (const row of virtualTables) {
-    db.exec(
-      `DROP TABLE IF EXISTS ${quoteIdent(`_syncular_fts_${String(row.name)}`)}`,
-    );
-    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
+  )) {
+    const name = String(row.name);
+    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(`_syncular_fts_${name}`)}`);
+    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
-  const existing = db.query(
+  for (const row of db.query(
     `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%' AND name NOT LIKE 'sqlite_%'`,
-  );
-  for (const row of existing) {
-    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
+  )) {
+    const name = String(row.name);
+    if (!kept.tables.has(name))
+      db.exec(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
-  for (const table of schema.tables.values()) {
-    createSyncedTable(db, table);
-  }
-  for (const table of schema.tables.values()) {
-    for (const index of table.ftsIndexes) {
-      createFtsProjection(db, table, index);
-    }
-  }
+  for (const table of schema.tables.values()) createSyncedTable(db, table);
+  for (const table of schema.tables.values())
+    for (const index of table.ftsIndexes) createFtsProjection(db, table, index);
+  resetUnits(db, kept.units);
+  return [...schema.tables.keys()].filter((name) => !kept.tables.has(name));
 }
 
 // ---------------------------------------------------------------------------

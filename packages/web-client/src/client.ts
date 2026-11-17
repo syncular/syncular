@@ -225,7 +225,7 @@ import {
   compileClientSchema,
   hexToBytes,
   matchesLocalScopes,
-  dropAndRecreateSyncedTables,
+  resetLocalReplica,
   ensureLocalBookkeepingSchema,
   ensureLocalSyncedSchema,
   fromSqlValue,
@@ -262,7 +262,6 @@ import {
   REGISTERED_DIGEST_KEY,
   REPLICA_CURSOR_KEY,
   replicaCursor,
-  resetUnits,
   saveUnit,
   saveUnitScopeSchema,
   setMeta,
@@ -1385,8 +1384,9 @@ export class SyncClient {
 
   /**
    * §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,
-   * and leaseState. Drops/recreates every synced table from the new schema,
-   * resets subscription sync-state (keeping registrations), clears any
+   * leaseState, and the tables and units a bump keeps (equal generations).
+   * Drops/recreates every other synced table from the new schema, resets the
+   * other units' sync-state (keeping registrations), clears any
    * schema-floor stop state, rewrites the marker, and raises `upgrading`.
    * The bump is idempotent by the marker (rewritten last).
    */
@@ -1402,6 +1402,7 @@ export class SyncClient {
     // existing marker, with no cross-file transaction.
     this.#sweepPreviousVersionContainer();
     this.#capturePreviousVersion(previousVersion);
+    let changed: string[] = [];
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
         if (this.#previousVersion !== undefined) {
@@ -1416,10 +1417,7 @@ export class SyncClient {
             ),
           );
         }
-        pruneUnknownUnits(this.#db, this.#schema, true);
-        this.#discardAcknowledgedRows();
-        dropAndRecreateSyncedTables(this.#db, this.#schema);
-        resetUnits(this.#db);
+        changed = resetLocalReplica(this.#db, this.#schema, true);
         this.#replayOutbox();
         setMeta(
           this.#db,
@@ -1429,8 +1427,8 @@ export class SyncClient {
         setLocalSchemaDescriptor(this.#db, this.#schema);
         saveUnitScopeSchema(this.#db, this.#schema);
       });
-      // Whole-DB reset: every synced table's rows changed (I1 eviction-shaped).
-      for (const table of this.#schema.tables.values()) batch.table(table.name);
+      // Every table the reset dropped changed (I1 eviction-shaped).
+      for (const table of changed) batch.table(table);
     });
     // The stop state is over: this client now ships a servable schema.
     // The reset transaction already replayed pending intent before committing
@@ -1526,9 +1524,7 @@ export class SyncClient {
     this.#applyBatch(
       (batch) => {
         this.#db.transaction(() => {
-          this.#discardAcknowledgedRows();
-          dropAndRecreateSyncedTables(this.#db, this.#schema);
-          resetUnits(this.#db);
+          resetLocalReplica(this.#db, this.#schema);
           setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
           // §7.1/§7.4.4: recover codec-invalid persisted values in this reset
           // transaction before they replay, so the reset boundary never fails on
@@ -1538,8 +1534,7 @@ export class SyncClient {
             this.#applyOperationsLocally(commit.operations, batch);
           }
         });
-        for (const table of this.#schema.tables.values())
-          batch.table(table.name);
+        for (const table of this.#schema.tables.keys()) batch.table(table);
       },
       undefined,
       (error) => {
@@ -3940,12 +3935,8 @@ export class SyncClient {
         this.#upgrading = true;
         this.#needsPull = true;
         batch.status();
-        this.#discardAcknowledgedRows();
-        dropAndRecreateSyncedTables(this.#db, this.#schema);
-        resetUnits(this.#db);
-        for (const table of this.#schema.tables.values()) {
-          batch.table(table.name);
-        }
+        for (const table of resetLocalReplica(this.#db, this.#schema))
+          batch.table(table);
         for (const commit of pending) {
           this.#applyOperationsLocally(commit.operations, batch);
         }
@@ -6848,10 +6839,6 @@ export class SyncClient {
   }
 
   /** Re-apply every pending outbox commit on top of server state (§7.1). */
-  #discardAcknowledgedRows(): void {
-    this.#db.exec(`DELETE FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL`);
-  }
-
   #dropRetainedRows(
     batch: ChangeAccumulator,
     matches: (

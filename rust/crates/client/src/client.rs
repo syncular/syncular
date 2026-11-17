@@ -93,6 +93,8 @@ const REPLICA_CURSOR_KEY: &str = "replicaCursor";
 const ECHO_DIGEST_KEY: &str = "echoDigest";
 /// Hex of the registration digest of the list the server stores (§4.1).
 const REGISTERED_DIGEST_KEY: &str = "registrationDigest";
+/// §7.4.3: table name → generation, persisted with the declaration evidence.
+const TABLE_GENERATIONS_KEY: &str = "localTableGenerations";
 /// §7.1: the identity of the outbox sequence.
 const OUTBOX_ID_KEY: &str = "outboxId";
 const CLIENT_ID_KEY: &str = "clientId";
@@ -1006,13 +1008,21 @@ fn window_refs(conn: &Connection, unit_id: &str) -> rusqlite::Result<Vec<(String
 }
 
 /// §7.4.3 reset, §2.1 log reset and local rebootstrap: keep the unit
-/// registrations and discard every synced state, so the next round sends the
-/// list and fresh-bootstraps every unit. The caller owns the transaction.
-fn reset_units(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
+/// registrations and discard the synced state of every unit outside `keep`,
+/// so the next round sends the list and fresh-bootstraps those units. The
+/// replica cursor survives only while a kept unit is live. The caller owns
+/// the transaction.
+fn reset_units(conn: &Connection, keep: &BTreeSet<String>) -> rusqlite::Result<()> {
+    conn.execute(
         "UPDATE _syncular_units SET status='active', reason_code=NULL, cursor=-1,
-           bootstrap_state=NULL, seeded='[]', echo=NULL;
-         DELETE FROM _syncular_meta WHERE key IN ('replicaCursor','echoDigest','registrationDigest');",
+           bootstrap_state=NULL, seeded='[]', echo=NULL
+         WHERE id NOT IN (SELECT value FROM json_each(?1))",
+        [serde_json::to_string(keep).expect("unit ids serialize")],
+    )?;
+    conn.execute_batch(
+        "DELETE FROM _syncular_meta WHERE key IN ('echoDigest','registrationDigest');
+         DELETE FROM _syncular_meta WHERE key='replicaCursor'
+           AND NOT EXISTS (SELECT 1 FROM _syncular_units WHERE cursor IS NULL);",
     )
 }
 
@@ -2411,7 +2421,7 @@ impl SyncClient {
                      DROP TABLE IF EXISTS _syncular_subscriptions;
                      DELETE FROM _syncular_windows;",
                 )
-                .and_then(|()| reset_units(&self.conn))
+                .and_then(|()| reset_units(&self.conn, &BTreeSet::new()))
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         // §5.9.7 blob cache. Mutable upload state stays off the body row so
@@ -2620,6 +2630,16 @@ impl SyncClient {
         self.set_meta(
             "subscriptionScopeSchema",
             &serde_json::to_string(&declarations).expect("scope schema serialization"),
+        )?;
+        let generations: BTreeMap<_, _> = self
+            .schema
+            .tables
+            .iter()
+            .filter_map(|table| Some((&table.name, table.generation.as_ref()?)))
+            .collect();
+        self.set_meta(
+            TABLE_GENERATIONS_KEY,
+            &serde_json::to_string(&generations).expect("generations serialize"),
         )
     }
 
@@ -3879,11 +3899,61 @@ impl SyncClient {
         // meanwhile refuses here instead of being reset to this client's
         // older schema.
         read_local_schema_version(&self.conn, self.schema.version)?;
-        self.conn
-            .execute_batch(
-                "DELETE FROM _syncular_acked_rows; DELETE FROM _syncular_row_deliveries;",
-            )
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        // §7.4.3: a schema bump keeps every table whose generation equals the
+        // persisted one; the log-epoch reset keeps nothing. The previous
+        // declaration evidence decides which units cover only kept tables.
+        let mut kept = BTreeSet::new();
+        let mut previous_declarations: Option<BTreeMap<String, BTreeMap<String, Value>>> = None;
+        if capture {
+            let persisted: BTreeMap<String, String> = self
+                .get_meta(TABLE_GENERATIONS_KEY)?
+                .map(|raw| serde_json::from_str(&raw))
+                .transpose()
+                .map_err(|_| "sync.local_corrupt: invalid persisted table generations".to_owned())?
+                .unwrap_or_default();
+            kept = self
+                .schema
+                .tables
+                .iter()
+                .filter(|table| {
+                    table.generation.is_some()
+                        && table.generation.as_ref() == persisted.get(&table.name)
+                })
+                .map(|table| table.name.clone())
+                .collect();
+            previous_declarations = self
+                .get_meta("subscriptionScopeSchema")?
+                .map(|raw| serde_json::from_str(&raw))
+                .transpose()
+                .map_err(|_| "sync.local_corrupt: invalid persisted scope schema".to_owned())?;
+        }
+        // Kept tables keep both halves, their FTS projections with the FTS5
+        // shadow tables and id mapping, and their row-level bookkeeping.
+        let mut kept_objects = BTreeSet::new();
+        for table in self
+            .schema
+            .tables
+            .iter()
+            .filter(|table| kept.contains(&table.name))
+        {
+            kept_objects.insert(table.name.clone());
+            kept_objects.insert(format!("_syncular_base_{}", table.name));
+            for index in &table.fts_indexes {
+                kept_objects.insert(index.name.clone());
+                for shadow in ["data", "idx", "content", "docsize", "config"] {
+                    kept_objects.insert(format!("{}_{shadow}", index.name));
+                }
+            }
+        }
+        let kept_json = serde_json::to_string(&kept).expect("table names serialize");
+        for sql in [
+            "DELETE FROM _syncular_acked_rows WHERE tbl NOT IN (SELECT value FROM json_each(?1))",
+            "DELETE FROM _syncular_row_deliveries WHERE tbl NOT IN (SELECT value FROM json_each(?1))",
+        ] {
+            self.conn
+                .execute(sql, [&kept_json])
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        }
         self.cancel_sync_round();
         self.upgrading = true;
         batch.status = true;
@@ -3941,7 +4011,12 @@ impl SyncClient {
                 }
             }
         }
-        for table in &self.schema.tables {
+        for table in self
+            .schema
+            .tables
+            .iter()
+            .filter(|table| !kept.contains(&table.name))
+        {
             batch.table(&table.name);
         }
         for (base_key, value) in self.load_window_registry()? {
@@ -3971,7 +4046,7 @@ impl SyncClient {
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             rows.filter_map(Result::ok)
-                .filter(|name| is_synced_table_name(name))
+                .filter(|name| is_synced_table_name(name) && !kept_objects.contains(name))
                 .collect()
         };
         for name in virtual_tables {
@@ -3994,7 +4069,7 @@ impl SyncClient {
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             rows.filter_map(Result::ok)
-                .filter(|name| is_synced_table_name(name))
+                .filter(|name| is_synced_table_name(name) && !kept_objects.contains(name))
                 .collect()
         };
         for name in &existing {
@@ -4011,8 +4086,27 @@ impl SyncClient {
         }
         // Recreate the synced tables from the NEW schema.
         self.create_synced_tables()?;
-        // Reset every unit's sync state, keeping the registration.
-        reset_units(&self.conn)
+        // Reset the sync state of every unit that covers a table the reset
+        // did not keep, under the previous declarations or the new schema,
+        // keeping the registration.
+        let keep_units = match &previous_declarations {
+            Some(previous) if !kept.is_empty() => self
+                .stored(load_units(&self.conn))?
+                .into_iter()
+                .filter(|unit| {
+                    previous.iter().all(|(name, old)| {
+                        kept.contains(name) || !unit.scopes.keys().all(|v| old.contains_key(v))
+                    }) && self
+                        .schema
+                        .tables
+                        .iter()
+                        .all(|table| kept.contains(&table.name) || !covers(table, &unit.scopes))
+                })
+                .map(|unit| unit.id)
+                .collect(),
+            _ => BTreeSet::new(),
+        };
+        reset_units(&self.conn, &keep_units)
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         // The stop state is over: this client now ships a servable schema.
         self.stopped = false;

@@ -12,6 +12,7 @@
   "tables": [
     {
       "name": "notes",
+      "generation": "176c1b03696f4c900bd03c44e1fa3d5c",
       "primaryKey": "id",
       "columns": [
         {

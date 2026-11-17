@@ -1077,6 +1077,9 @@ function parseDrop(
 /**
  * Apply one migration file's SQL to the accumulated table map. Columns
  * accumulate in declaration order — the §2.4 row-codec positional order.
+ * Returns every table a statement names (an identifier or string literal
+ * equal to a table name, case-insensitive), the input to the §7.4.3 table
+ * generation.
  */
 export function applyMigrationSql(
   tables: Map<string, ParsedTable>,
@@ -1084,7 +1087,8 @@ export function applyMigrationSql(
   source: string,
   droppedTables: Set<string> = new Set<string>(),
   options: ApplyMigrationSqlOptions = {},
-): void {
+): Set<string> {
+  const named = new Set<string>();
   for (const tokens of tokenizeStatements(sql, source)) {
     const cursor = new Cursor(tokens, source);
     const head = cursor.next();
@@ -1101,5 +1105,12 @@ export function applyMigrationSql(
         `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, DROP INDEX, and DROP TABLE)`,
       );
     }
+    const names = new Set(
+      [...tables.keys(), ...droppedTables].map((name) => name.toLowerCase()),
+    );
+    for (const token of tokens)
+      if (token.kind !== 'punct' && names.has(token.text.toLowerCase()))
+        named.add(token.text.toLowerCase());
   }
+  return named;
 }

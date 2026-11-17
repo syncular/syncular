@@ -1,4 +1,4 @@
-import { unitId } from '@syncular/core';
+import { decodeMessage, unitId } from '@syncular/core';
 /**
  * Schema-bump flow (SPEC.md §7.4): NO client-side migration
  * engine. On a schema version increase the client keeps its (schema-agnostic)
@@ -32,6 +32,7 @@ import type { DriverSchema, DriverTable } from '../driver';
 import type { Scenario } from '../scenario';
 import {
   expectConverged,
+  seedRows,
   seedTasks,
   syncIdle,
   syncOk,
@@ -71,7 +72,147 @@ const TASKS_BY_TEAM: DriverSchema = {
   ],
 };
 
+/** §7.4.3: `tasks` keeps its generation across the bump; `docs` appends a
+ * nullable `note` and takes a new one. */
+const KEEP_V1: DriverSchema = {
+  version: 1,
+  tables: [
+    { ...(FIXTURE_SCHEMA.tables[0] as DriverTable), generation: 'tasks-1' },
+    { ...(FIXTURE_SCHEMA.tables[1] as DriverTable), generation: 'docs-1' },
+  ],
+};
+const KEEP_V2: DriverSchema = {
+  version: 2,
+  tables: [
+    KEEP_V1.tables[0] as DriverTable,
+    {
+      ...(FIXTURE_SCHEMA.tables[1] as DriverTable),
+      generation: 'docs-2',
+      columns: [
+        ...(FIXTURE_SCHEMA.tables[1] as DriverTable).columns,
+        { name: 'note', type: 'string', nullable: true },
+      ],
+    },
+  ],
+};
+
 export const schemaBumpScenarios: readonly Scenario[] = [
+  {
+    // §7.4.3: a bump keeps the table whose generation is unchanged, with its
+    // rows and the live unit that covers only it; the changed table is
+    // recreated and its unit bootstraps again.
+    name: 'schema-bump/unchanged-generation-keeps-table-and-unit',
+    specRefs: ['§7.4.3', '§7.4.4', '§4.5'],
+    requires: ['schema-window'],
+    server: { schema: KEEP_V2, schemaWindow: [KEEP_V2, KEEP_V1] },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'one'), task('t2', 'p1', 'two')]);
+      await seedRows(ctx, 'docs', [{ ...doc('d1', 'o1', 'p1'), note: 'n' }]);
+      const docsUnit = { org_id: 'o1' };
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: KEEP_V1,
+        allowed: { project_id: ['p1'], org_id: ['o1'] },
+      });
+      await a.api.subscribeMany([U1, docsUnit]);
+      await syncIdle(a);
+      const kept = await unitProgress(a, U1);
+      const replicaCursor = await a.api.replicaCursor();
+      check(replicaCursor > 0, 'both units are live before the bump');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t3', 'p1', 'offline') },
+      ]);
+
+      await ctx.recreateClient(a, KEEP_V2);
+      checkEqual(
+        await unitProgress(a, U1),
+        kept,
+        'the unit covering only the kept table keeps its state',
+      );
+      checkEqual(
+        (await a.api.unitState(unitId(docsUnit)))?.cursor,
+        -1,
+        'the unit covering the changed table bootstraps again',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2', 't3'],
+        'the kept table keeps its rows and the pending write',
+      );
+      checkEqual(
+        await a.api.readRows('docs'),
+        [],
+        'the changed table is recreated',
+      );
+
+      const sent = a.sentRequests.length;
+      await syncIdle(a);
+      const frames = decodeMessage(a.sentRequests[sent] as Uint8Array).frames;
+      checkEqual(
+        frames.flatMap((frame) =>
+          frame.type === 'PULL_HEADER'
+            ? [['cursor', frame.cursor]]
+            : frame.type === 'PROGRESS'
+              ? [[frame.id, frame.cursor]]
+              : [],
+        ),
+        [
+          ['cursor', replicaCursor],
+          [unitId(docsUnit), -1],
+        ],
+        'the next pull keeps the replica cursor and bootstraps only the changed unit',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the pending write drained',
+      );
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.values),
+        [{ ...doc('d1', 'o1', 'p1'), note: 'n' }],
+        'the changed table bootstraps under the new schema',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    // §7.4.3: without generations every table and unit resets.
+    name: 'schema-bump/no-generations-resets-every-table',
+    specRefs: ['§7.4.3'],
+    requires: ['schema-window'],
+    server: {
+      schema: TASKS_WITH_NOTE,
+      schemaWindow: [TASKS_WITH_NOTE, FIXTURE_SCHEMA],
+    },
+    async run(ctx) {
+      await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
+      const docsUnit = { org_id: 'o1' };
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'], org_id: ['o1'] },
+      });
+      await a.api.subscribeMany([U1, docsUnit]);
+      await syncIdle(a);
+      await ctx.recreateClient(a, TASKS_WITH_NOTE);
+      checkEqual(await a.api.replicaCursor(), -1, 'no unit stays live');
+      checkEqual(
+        await a.api.readRows('docs'),
+        [],
+        'the unchanged table resets too',
+      );
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['d1'],
+        'the reset table bootstraps again',
+      );
+    },
+  },
   {
     // §3.1 re-key: the server bump recomputes stored scopes from row columns,
     // so a unit of the new variable bootstraps every row with no data step;

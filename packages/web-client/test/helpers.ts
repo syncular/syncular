@@ -29,6 +29,7 @@ import {
   type ScopeMap,
 } from '@syncular/core';
 import {
+  compileSchema,
   createRealtimeHub,
   handleSegmentDownload,
   handleSyncRequest,
@@ -158,8 +159,16 @@ export function makeServer(
   options: {
     readonly validators?: ValidatorRegistry;
     readonly leases?: { readonly ttlMs: number };
+    /** Older schemas the server also serves, newest first (§9). */
+    readonly olderSchemas?: readonly ServerSchema[];
   } = {},
 ): TestServer {
+  const window =
+    options.olderSchemas === undefined
+      ? {}
+      : {
+          schemaWindow: [schema, ...options.olderSchemas].map(compileSchema),
+        };
   const storage = new SqliteServerStorage();
   const segments = new MemorySegmentStore();
   const allowed: Record<string, ScopeMap> = {};
@@ -203,6 +212,7 @@ export function makeServer(
     segments,
     limits,
     ...(leases !== undefined ? { leases } : {}),
+    ...window,
     ...(options.validators !== undefined
       ? { validators: options.validators }
       : {}),
@@ -228,6 +238,7 @@ export function makeServer(
       clock: () => now.ms,
       limits,
       ...(leases !== undefined ? { leases } : {}),
+      ...window,
       ...(options.validators !== undefined
         ? { validators: options.validators }
         : {}),

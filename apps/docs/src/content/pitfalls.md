@@ -248,7 +248,7 @@ See [Changing a table's scope patterns](/concepts-schema-upgrades/#changing-a-ta
 
 ### Don't remove a column or table that a pending commit may still reference
 
-A client that updates keeps its outbox, wipes its tables, and replays the outbox re-encoded at send time. A commit that references a column or table the new schema lacks gets `sync.outbox_incompatible`, leaves the outbox, and its optimistic rows are undone. The user's offline work is lost. Add columns as trailing nullable, move readers and writers, and drop the old column in a later version, after old clients have updated or left the compatibility window.
+A client that updates keeps its outbox, wipes the tables whose generation changed, and replays the outbox re-encoded at send time. A commit that references a column or table the new schema lacks gets `sync.outbox_incompatible`, leaves the outbox, and its optimistic rows are undone. The user's offline work is lost. Add columns as trailing nullable, move readers and writers, and drop the old column in a later version, after old clients have updated or left the compatibility window.
 
 See [Pending writes across the bump](/concepts-schema-upgrades/#pending-writes-across-the-bump) and [Serving a compatibility window](/concepts-schema-upgrades/#serving-a-compatibility-window).
 

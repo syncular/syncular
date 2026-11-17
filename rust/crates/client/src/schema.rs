@@ -29,6 +29,9 @@ pub struct TableIr {
     /// Client-local FTS5 projections; absent for tables without local search.
     #[serde(default, rename = "ftsIndexes")]
     pub fts_indexes: Vec<FtsIndexIr>,
+    /// §7.4.3 table generation (typegen); absent for hand-written schemas.
+    #[serde(default)]
+    pub generation: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +126,8 @@ pub struct TableSchema {
     pub fts_indexes: Vec<FtsIndexSchema>,
     /// §5.11: encrypted columns (index + declared type). Empty ⇒ no E2EE.
     pub encrypted_columns: Vec<EncryptedColumn>,
+    /// §7.4.3: a schema bump keeps the table while this equals the persisted one.
+    pub generation: Option<String>,
 }
 
 impl TableSchema {
@@ -378,7 +383,14 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                 tokenize: index.tokenize.clone(),
             });
         }
+        if table.generation.as_deref() == Some("") {
+            return Err(format!(
+                "table {:?}: generation must be a non-empty string (§7.4.3)",
+                table.name
+            ));
+        }
         tables.push(TableSchema {
+            generation: table.generation.clone(),
             name: table.name.clone(),
             columns,
             wire_columns,

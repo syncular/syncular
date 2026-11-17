@@ -259,8 +259,13 @@ the old column in a later version (the five steps under
 or scope column changes follows the same path through a successor table.
 
 There is no client-side migration engine. On a version change a client keeps its
-outbox, wipes its local tables, re-bootstraps at the new version, and replays the
-outbox on top. The triggers, what the reset preserves, dropped-column handling,
+outbox, wipes every local table whose generation changed, re-bootstraps those
+tables at the new version, and replays the outbox on top. `typegen` emits the
+`generation` of each table into the IR and every generated schema. It changes
+when the table's columns, primary key, scope patterns, references, indexes or
+FTS projections change, or when a migration has a statement that names the
+table, so add an index or a column to a large table only in the version that
+needs it. The triggers, what the reset preserves, dropped-column handling,
 the `upgrading` state, and the cost of a bump are on
 [Schema upgrades](/concepts-schema-upgrades/).
 
@@ -286,8 +291,8 @@ from the head schema. You may recreate the same name later with a new column or
 uniqueness definition. On a server schema bump, Syncular drops the indexes of
 its relational projection tables that the schema no longer declares or whose
 columns or uniqueness changed, and builds the missing ones; an unchanged index
-is left in place. Clients recreate their application tables during their normal
-re-bootstrap.
+is left in place. Clients recreate the tables whose generation changed during
+their normal re-bootstrap.
 
 A `CREATE INDEX` with a `WHERE` clause is a hard error, because both client
 mirrors and the server would have to agree on the predicate, and a partial

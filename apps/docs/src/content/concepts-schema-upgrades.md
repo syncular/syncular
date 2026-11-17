@@ -1,13 +1,14 @@
 # Schema upgrades
 
-When your schema changes, you bump `schemaVersions` in the manifest and regenerate. The client has no migration engine (SPEC §7.4): it does not transform its local tables from one version to the next. On a version change it keeps the outbox, wipes its local tables, bootstraps again at the new version, and replays the outbox on top. This page is for developers who ship schema changes to installed clients; it explains what that reset does to local data and pending writes. Authoring the change (migrations, the lock, backfills) is [Schema & typegen](/guide-schema/).
+When your schema changes, you bump `schemaVersions` in the manifest and regenerate. The client has no migration engine (SPEC §7.4): it does not transform its local tables from one version to the next. On a version change it keeps the outbox, wipes every local table whose `typegen` generation changed, bootstraps those tables again at the new version, and replays the outbox on top. A table whose generation is unchanged keeps its rows. This page is for developers who ship schema changes to installed clients; it explains what that reset does to local data and pending writes. Authoring the change (migrations, the lock, backfills) is [Schema & typegen](/guide-schema/).
 
 ::meta{for="App developers and server operators" time="10 minutes" first="concepts-bootstrap" spec="7.4"}
 
 :::terms
 - **Schema-version marker**: The schema version the client persists in its database.
 - **Schema floor**: The server's `requiredSchemaVersion`: the oldest schema version it serves.
-- **Reset**: Wipe local tables, bootstrap at the new version, replay the outbox.
+- **Reset**: Wipe the changed local tables, bootstrap them at the new version, replay the outbox.
+- **Table generation**: An opaque string `typegen` emits per table. It changes whenever the table's declaration changes or a migration names the table.
 - **`upgrading`**: The client state that is `true` from the reset until the first post-reset bootstrap round is idle.
 - **Compatibility window**: The set of older schema versions a server still serves.
 :::
@@ -16,13 +17,13 @@ When your schema changes, you bump `schemaVersions` in the manifest and regenera
 <div class="d-row">
 <div class="node"><span class="t">1 · Detect</span>Marker N, generated schema N+1</div>
 <span class="d-arrow"></span>
-<div class="node bad"><span class="t">2 · Wipe</span>Synced tables, indexes, FTS, cursors</div>
+<div class="node bad"><span class="t">2 · Wipe</span>Changed tables with their indexes, FTS and unit cursors</div>
 <span class="d-arrow"></span>
-<div class="node cool"><span class="t">3 · Bootstrap</span>The registered units at version N+1, from segments</div>
+<div class="node cool"><span class="t">3 · Bootstrap</span>The units of the changed tables at version N+1, from segments</div>
 <span class="d-arrow"></span>
 <div class="node ok"><span class="t">4 · Replay</span>Outbox commits re-encode with the N+1 codec</div>
 </div>
-<div class="node hot"><span class="t">Kept through the reset</span>The outbox, the client identity (<code>clientId</code>), and the auth lease (<code>leaseState</code>)</div>
+<div class="node hot"><span class="t">Kept through the reset</span>The outbox, the client identity (<code>clientId</code>), the auth lease (<code>leaseState</code>), unchanged tables, and the units that cover only unchanged tables</div>
 
 ::caption[The `upgrading` state is `true` from step 2 until step 3 reaches idle. The server sees an ordinary fresh bootstrapper at the new version.]
 :::
@@ -55,18 +56,26 @@ Schema validation refusals leave the replica's journal mode and contents untouch
 
 ## What the reset touches
 
-The reset touches the whole local database except three things.
-
 | Kept | Wiped and rebuilt |
 |---|---|
-| The outbox (schema-independent by design, §0 and §7.1) | Every synced table, secondary index, and FTS projection |
-| The client identity (`clientId`) | The replica cursor, unit cursors, resume tokens, echoes, unit status |
+| The outbox (schema-independent by design, §0 and §7.1) | Every synced table whose generation changed or is absent, with its secondary indexes and FTS projections |
+| The client identity (`clientId`) | The cursor, resume token, echo and status of every unit that covers a wiped table |
 | The auth lease (`leaseState`) | Incompatible units and their window bookkeeping |
-| Compatible units, each reset to cursor `-1` | |
+| Every table whose generation is unchanged, with its rows and indexes | |
+| The state of every unit that covers only unchanged tables | |
+| The registration of every other compatible unit, reset to cursor `-1` | |
+
+### Which tables the reset keeps
+
+`typegen` gives each table a `generation` in the generated schema (SPEC §7.4.3). It is a hash of the table's columns, primary key, scope patterns, references, indexes and FTS projections, and of the names of every migration with a statement that names the table. The client persists the generations beside its schema-version marker. At a bump it keeps a table whose generation is present and equal to the persisted one: its rows stay, and its FTS projections are rebuilt from those rows. Every other table is dropped and recreated.
+
+Migration SQL cannot change rows: `typegen` refuses `UPDATE`, `INSERT` and `DELETE` in a migration, so every data change reaches clients through the change log ([Data changes and backfills](/guide-schema/#data-changes-and-backfills)). A migration that names a table, even one that only adds an index or a column whose name matches the table, changes that table's generation and resets it. A schema written by hand has no generations, and a replica written before 0.77 persisted none: its next bump resets every table, as before. One open at the unchanged schema version on a build that writes generations records them, so the bump after that keeps unchanged tables.
+
+A unit keeps its cursor, echo and status only when every table it covers, under the old schema and the new one, is kept. A unit that covers a changed table bootstraps again and downloads every table it covers, unchanged ones included. Give a large table that rarely changes its own scope variable, so its unit covers no table that changes with every release. The replica cursor stays while at least one kept unit is live.
 
 A unit survives a bump when every one of its variables keeps its pattern prefix and mapped column on every table it covered, and the unit still covers at least one table. The client drops incompatible units, their windows, and their pending evictions before its first sync. The app registers units for its current schema, and the client never translates stored scope values. Changing `calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}`, for example, removes the units that use the old variable.
 
-A compatible unit resets to catching up with cursor `-1` and status `active`, because the bump wipes the local rows and needs a fresh bootstrap. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
+A compatible unit that covers a wiped table resets to catching up with cursor `-1` and status `active`, because its rows are gone and need a fresh bootstrap. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
 
 ### Changing a table's scope patterns
 
@@ -84,7 +93,7 @@ At the same schema version a changed pattern is refused with `sync.storage.scope
 
 ## Pending writes across the bump
 
-The outbox replays on top of the fresh bootstrap. Entries are stored in schema-independent form and encoded at send time with the current codec (§0), so a commit written under version N pushes under N+1 by re-encoding. The server never accepts a retired encoding, and pending offline writes stay visible across the bump.
+The outbox replays on top of the kept tables and the fresh bootstrap. Entries are stored in schema-independent form and encoded at send time with the current codec (§0), so a commit written under version N pushes under N+1 by re-encoding. The server never accepts a retired encoding, and pending offline writes stay visible across the bump.
 
 ### Appended columns
 
@@ -102,11 +111,11 @@ The client classifies incompatible commits before it collects their pending blob
 
 `upgrading` is a small, queryable client state. Show an "upgrading…" affordance while it is `true`, and re-run live queries against the rebuilt tables when it ends. The worker transport emits it as an `upgrading` event on the event channel. Nothing about the flow crosses the wire.
 
-Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, and image-lane re-bootstrap.
+Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, image-lane re-bootstrap, and a kept table with its unit beside a changed one.
 
 ## What a bump costs
 
-**Re-download volume.** The reset keeps each compatible unit, including the units a [window](/concepts-windowing/) maintains, and clears only their sync state. The bootstrap covers the registered units and nothing more. A phone holding a 3-list window of a 500-list workspace downloads those 3 lists again. Data outside the window was never local.
+**Re-download volume.** A unit that covers only unchanged tables downloads nothing; its next round continues from its cursor. The reset keeps every other compatible unit, including the units a [window](/concepts-windowing/) maintains, and clears only its sync state. The bootstrap covers those units and nothing more. A phone holding a 3-list window of a 500-list workspace downloads those 3 lists again. Data outside the window was never local.
 
 **Apply cost.** On the wire, a bump costs one segment download of the registered units' data at the new version: the same bytes as a fresh install, with [segment compression](/concepts-bootstrap/) applied. Apply rates on the sqlite-image and rows lanes are on [Benchmarks](/benchmarks/). The server builds an image once per scope set and pin, so a fleet of clients that bump after a release deploy shares one build. For cellular-sensitive apps, size the window to the user's working set.
 
@@ -120,7 +129,7 @@ The window permits added tables and appended nullable columns. It rejects remove
 
 ## Advanced: previous-version context
 
-A bump wipes the local tables, so for a moment the app can see that its own rows are gone while the bootstrap runs. **Previous-version context** is an opt-in feature that keeps a bounded, typed, read-only copy of the pre-bump rows so the app can answer "what did this look like before the upgrade" until the replacement data arrives ([SPEC §7.4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)).
+A bump wipes the changed local tables, so for a moment the app can see that its own rows are gone while the bootstrap runs. **Previous-version context** is an opt-in feature that keeps a bounded, typed, read-only copy of the pre-bump rows so the app can answer "what did this look like before the upgrade" until the replacement data arrives ([SPEC §7.4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)).
 
 The feature is off by default. With it absent or `enabled: false`, a bump behaves as described above, apart from two small bookkeeping writes that always run: the schema descriptor and the container sweep. It is a feature flag and not a security control.
 
@@ -141,7 +150,7 @@ const client = await createClient({
 });
 ```
 
-The capture happens during the reset, before the wipe. The client measures it against every bound before it materializes any row, and the capture is all-or-nothing. If any bound is exceeded, nothing is captured, no container file is left behind, and the read surface reports `reason: 'capture-exceeded-budget'` with the measured totals (counts only).
+The capture happens during the reset, before the wipe. It copies every table of the previous schema, unchanged tables included. The client measures it against every bound before it materializes any row, and the capture is all-or-nothing. If any bound is exceeded, nothing is captured, no container file is left behind, and the read surface reports `reason: 'capture-exceeded-budget'` with the measured totals (counts only).
 
 The **schema descriptor** the client persists beside its marker types the capture. The client never infers semantic types from SQLite column affinity: `boolean` and `integer` are both `INTEGER`, and `string`, `json`, and `blob_ref` are all `TEXT`. A replica with no stored descriptor refuses the capture with `reason: 'no-previous-descriptor'`. One boot on the new build at the unchanged schema version stores the descriptor, and the next bump captures.
 

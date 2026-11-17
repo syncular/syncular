@@ -52,7 +52,7 @@ without migrating storage.
 |---|---|
 | `mutate` always appends an outbox commit | `appendOutboxCommit` in `packages/web-client/src/outbox.ts:61`; `record_outbox_commit` in `rust/crates/client/src/client.rs:15779` |
 | A row reaches the base tables only through server delivery; acknowledged intent stays protected until a delivery covers it | SPEC §7.1 |
-| A schema-version reset drops every table outside `_syncular_*`, app-owned tables included | SPEC §7.4.3; `dropAndRecreateSyncedTables` in `packages/web-client/src/schema.ts:663`; `is_synced_table_name` in `rust/crates/client/src/client.rs:11111` |
+| A schema-version reset drops every table outside `_syncular_*`, app-owned tables included | SPEC §7.4.3; `resetLocalReplica` in `packages/web-client/src/schema.ts`; `is_synced_table_name` in `rust/crates/client/src/client.rs:11111` |
 | No code compacts the outbox or records whether a commit was sent | `_syncular_outbox` in both cores; SPEC §7.1 forbids coalescing after a possible send |
 | The transport gate refuses rounds with `sync.offline` and is not persisted | SPEC §8.8 |
 | Declared references are enforced by the server only; the replica DDL omits them | SPEC §6.11 |

@@ -5724,7 +5724,8 @@ the feature is invisible until a lease-issuing server sends one.
 A client never transforms its local tables from schema `N` to schema
 `N+1`. When the schema version increases, it **wipes its local tables,
 re-bootstraps from the server at the new version, and replays the
-outbox on top** (§7.1). Bootstrap-from-segment (§5, the image lane
+outbox on top** (§7.1). A table whose `typegen` generation is unchanged is
+kept instead of wiped (§7.4.3). Bootstrap-from-segment (§5, the image lane
 especially, §5.3) makes a fresh bootstrap cheap enough that carrying a
 migration subsystem — a rarely-exercised second apply path — is not
 worth its cost, and every upgrade drills the bootstrap path instead.
@@ -5843,19 +5844,22 @@ local reads. Applications may pause edits to avoid incompatible outbox replay.
 
 #### 7.4.3 The reset — scope and order
 
-The reset is a **whole-database local reset except three things**:
-the **outbox**, the **client identity** (`clientId`), and the **auth
-lease** (`leaseState`). Everything else is destroyed and rebuilt:
+The reset preserves three things: the **outbox**, the **client identity**
+(`clientId`), and the **auth lease** (`leaseState`). It also keeps every
+**kept table** and the state of every **kept unit** (both defined below).
+Everything else is destroyed and rebuilt:
 
-- **Dropped and recreated:** every synced table, and all
-  unit-derived state — the replica cursor, unit cursors, bootstrap resume
-  tokens (`bootstrapState`), the persisted echoes (§3.3), the echo digest,
-  and the `active`/`revoked`/`failed` status. The unit *registrations*
+- **Dropped and recreated:** every synced table that is not kept, and the
+  unit-derived state of every unit that is not kept: its cursor, bootstrap
+  resume token (`bootstrapState`), the tables that received a segment in its
+  current bootstrap (§5.6), its persisted echo (§3.3), and its
+  `active`/`revoked`/`failed` status. The unit *registrations*
   themselves (scope maps) are **kept only when compatible** — they are the
-  app's declared intent, not synced data — but each is reset to catching
-  up with cursor `-1`, no resume token, `status = active`, so the next
-  round is a fresh bootstrap of exactly the units the app still wants.
-  Compatibility requires every variable of the unit to exist with the same
+  app's declared intent, not synced data — and each unit that is not kept is
+  reset to catching up with cursor `-1`, no resume token,
+  `status = active`, so the next round is a fresh bootstrap of exactly the
+  units whose tables changed. Compatibility requires every variable of the
+  unit to exist with the same
   declared prefix and column mapping on every table it covered, and the
   unit to cover at least one table under the new schema. Incompatible
   units, their windows and pending evictions are deleted atomically; values
@@ -5877,30 +5881,91 @@ lease** (`leaseState`). Everything else is destroyed and rebuilt:
   `leaseState` (§7.3.5 — the grant's validity window is independent of
   the schema, distinct from §3.3 revocation which *does* purge).
 
-Whole-database-except-those-three is chosen over a per-table reset for
-correctness and simplicity: a schema bump MAY change table membership,
-foreign-key shape, or scope-column mapping table-wide, and a partial
-reset would have to reason about which tables a version delta touches —
-exactly the migration-engine reasoning rejected by this section.
-The blunt reset is always correct and the bootstrap that follows is the
-same path every fresh client runs.
+**Table generations.** A generated schema MAY give each table a
+`generation`: an opaque non-empty string. `typegen` derives it as the first
+16 bytes, in lowercase hex, of SHA-256 over the table's serialized
+declaration (columns with name, order, type, nullability, `crdtType`,
+encryption and `declaredType`; the primary key; every scope pattern with
+its variable and column; references; indexes; FTS projections; extensions)
+and the names of every migration with a statement that names the table.
+A statement names a table when one of its identifiers or string literals
+equals the table name, compared case-insensitively; the match is lexical,
+so a column that shares a table's name also names that table. Migration
+SQL is schema-only: `typegen` refuses `UPDATE`, `INSERT` and `DELETE` in a
+migration, so every data change reaches clients through the commit log.
+A locked migration never changes (§7.4), so a table whose declaration is
+unchanged and that no newer migration names keeps its generation across a
+version, and any change to the table, including a statement that names it
+and changes nothing, changes its generation.
+
+Clients persist the generation of every table that has one in the
+`_syncular_meta` key `localTableGenerations`, a JSON object from table name
+to generation, at every site that writes the declaration evidence (fresh
+creation, same-version open, the end of a reset). A same-version open
+therefore backfills the key for a replica created before generations
+existed. A value that is not a JSON object of strings MUST fail the reset
+with `sync.local_corrupt` before mutation.
+
+- **Kept table:** a table of the new schema whose generation is present and
+  equal to the generation the replica persisted for that name. Its rows,
+  its §4.5 version column, its base mirror where the client keeps one, its
+  indexes, and its row-level bookkeeping (acknowledged rows awaiting their
+  commit, delivery records) stay as they are. Its FTS projections hold the
+  kept rows after the reset; a client MAY rebuild them from those rows. A table
+  without a generation in either schema is never kept, so a hand-written
+  schema without generations, or a replica that persisted none, resets
+  every table.
+- **Kept unit:** a registration that remains compatible and covers only kept
+  tables, both under the declaration evidence the replica persisted and
+  under the new schema. It keeps its cursor, resume token, segment record,
+  echo, status and reason code. A unit that covers a table that is not kept
+  (changed, added, or removed) resets as above and its bootstrap downloads
+  every table it covers, kept tables included; the version guard (§4.5)
+  makes re-applying an unchanged row a no-op.
+- **Replica state:** the replica cursor is kept while at least one kept unit
+  is live, and becomes `-1` otherwise. C1 (§4.5) constrains live units only,
+  and a reset unit is bootstrapping, outside the scan. The persisted echo
+  digest and the stored registration digest are cleared at every reset, so
+  the next pull carries the registration list (§4.1) and the server answers
+  every unit's echo again.
+
+DECISION (2026-11-17): a reset keeps a table whose generation is unchanged.
+Before this, the reset dropped every synced table at every version
+increase, and two deploys that changed one table made every client of a
+public catalogue download 424 MB and 177 MB again. A per-table reset is
+safe only when no data change escapes the decision: a migration that
+backfilled rows with SQL, without touching the table's layout, would leave
+a client holding the old rows and a cursor that claims it holds the new
+ones. The generation closes that gap in `typegen`, which reads every
+migration: any statement that names the table changes the generation, and
+migration SQL cannot change data. Generations come only from `typegen`; a
+schema written by hand has none and keeps the full reset, because nothing
+proves its unchanged tables carry unchanged data. A unit resets as a whole,
+because a unit has one cursor across its tables; per-table cursors are out
+of scope. A table whose scope pattern or column mapping changed (a
+re-key) has a new generation and re-bootstraps; keeping its rows under the
+new stored scopes is out of scope.
 
 **Order (all in one durable step where the storage allows):**
 
 1. Detect (the boot-time marker check, §7.4.2 trigger 1). Clear any
    `schemaFloor` stop state carried over — the client now ships a schema
    the server serves.
-2. Drop every synced local table and recreate it from the *new*
-   generated schema; reset the replica cursor and each unit's cursor /
-   resume token / echo / status to the fresh-bootstrap defaults, keeping the
-   registration.
-3. Rewrite the persisted marker (§7.4.1) to the new generated version.
+2. Determine the kept tables and kept units. Drop every synced local table
+   that is not kept, with its FTS projections and row-level bookkeeping, and
+   recreate it from the *new* generated schema; reset the state of every
+   unit that is not kept to the fresh-bootstrap defaults, keeping the
+   registration; settle the replica cursor and clear the digests.
+3. Rewrite the persisted marker (§7.4.1) to the new generated version,
+   with the declaration evidence and table generations.
 4. Surface the `upgrading` state (§7.4.5) across steps 1–3; clear it
    when the first post-reset bootstrap round completes.
 
 The outbox is never touched by the reset. If the process dies mid-reset,
 the marker still reads the old version, so the next boot re-runs the
-reset — it is idempotent by the marker.
+reset — it is idempotent by the marker. A kept table stays kept on the
+re-run, because the generations persisted with the old marker are
+unchanged until step 3.
 
 #### 7.4.4 Outbox replay after the bump — encode at send time
 
@@ -5910,6 +5975,12 @@ off here: outbox commits are persisted in schema-agnostic local form and
 **encoded with the new generated codec at send time**, so a commit
 recorded under `vN` pushes under `vN+1` by re-encoding — the server
 never accepts a retired encoding.
+
+The replay covers kept tables (§7.4.3) too. A kept table holds the server
+rows and the optimistic overlay the outbox wrote before the bump, as it does
+at a same-version open, and the reset rebuilds its overlay from the outbox
+the way a same-version open does. A kept table's columns are unchanged, so
+its pending operations encode exactly as before the bump.
 
 A pending insert-intent operation (§7.1) encodes the columns the bump
 appended as NULL, so the server inserts it. A pending operation without
@@ -6103,6 +6174,16 @@ an uncommitted version is unavailable and discarded at the next read or
 boot. The
 §2.1 log-epoch reset is not a schema bump: it performs the orphan sweep
 and captures nothing.
+
+The capture reads every table of the stored descriptor, kept tables
+(§7.4.3) included, so the container's content and bounds do not depend on
+which tables the reset keeps. A kept table's rows also remain in the
+replica.
+
+The capture reads every table of the stored descriptor, kept tables
+(§7.4.3) included, so the container's content and bounds do not depend on
+which tables the reset keeps. A kept table's rows also remain in the
+replica.
 
 **7.4.6.4 Read surface.** `previousVersionSnapshot({ table, rowIds?,
 limit? })` returns `state: 'previousVersion'` — always, never
@@ -7899,7 +7980,7 @@ client's transport seam. No client rule in this specification distinguishes a
 local authority from a remote server. The authority's database MUST be
 separate from the client replica: it holds server tables named like the
 replica's synced tables, and the §7.4.3 reset drops every replica table
-outside `_syncular_*`.
+outside `_syncular_*` that it does not keep.
 
 A JavaScript host MAY select a remote-only worker or native bridge that omits
 local-authority commands. The remote-only worker MUST refuse an initialization

@@ -18,6 +18,7 @@
   "tables": [
     {
       "name": "todos",
+      "generation": "b058018bb2e661444a8f21c9e07a4dc4",
       "primaryKey": "id",
       "columns": [
         {

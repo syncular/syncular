@@ -12,6 +12,7 @@
   "tables": [
     {
       "name": "boards",
+      "generation": "b3b730b1314a235b257ddbf68e5cc786",
       "primaryKey": "id",
       "columns": [
         {
@@ -46,6 +47,7 @@
     },
     {
       "name": "members",
+      "generation": "90ecb8106cb0a1f3f18cd547b92a950e",
       "primaryKey": "id",
       "columns": [
         {
@@ -106,6 +108,7 @@
     },
     {
       "name": "labels",
+      "generation": "0ece9d4dd70648ae0f5a391c6306b8f0",
       "primaryKey": "id",
       "columns": [
         {
@@ -156,6 +159,7 @@
     },
     {
       "name": "cards",
+      "generation": "13984b4dab326b3cddee7e184d784bca",
       "primaryKey": "id",
       "columns": [
         {
@@ -252,6 +256,7 @@
     },
     {
       "name": "card_labels",
+      "generation": "91f18d7667a96369b5381f8bbd7a6bea",
       "primaryKey": "id",
       "columns": [
         {
@@ -326,6 +331,7 @@
     },
     {
       "name": "comments",
+      "generation": "7b7f39b8ea0fd180b099ad763d94a393",
       "primaryKey": "id",
       "columns": [
         {

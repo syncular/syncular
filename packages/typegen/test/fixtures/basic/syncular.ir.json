@@ -36,6 +36,7 @@
   "tables": [
     {
       "name": "tasks",
+      "generation": "243810361624f6ed9d828938a22f4429",
       "primaryKey": "id",
       "columns": [
         {
@@ -112,6 +113,7 @@
     },
     {
       "name": "docs",
+      "generation": "2f4330e829e02c3ed1df7586c5cda117",
       "primaryKey": "id",
       "columns": [
         {
@@ -172,6 +174,7 @@
     },
     {
       "name": "doc_revisions",
+      "generation": "d9a19878f3172c1072258fe4dd071a37",
       "primaryKey": "id",
       "columns": [
         {

@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
   compileClientSchema,
-  dropAndRecreateSyncedTables,
+  resetLocalReplica,
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
@@ -191,7 +191,7 @@ describe('client-local FTS5 projections', () => {
       `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
     );
     expect(search(db, 'cholera')).toEqual(['c1']);
-    db.transaction(() => dropAndRecreateSyncedTables(db, compiled));
+    db.transaction(() => resetLocalReplica(db, compiled));
     db.exec(
       `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c2', 'r1', 'B01', 'Typhoid')`,
     );

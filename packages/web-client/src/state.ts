@@ -215,19 +215,23 @@ export function deleteUnit(db: ClientDatabase, id: string): void {
 
 /**
  * §7.4.3 reset, §2.1 log reset and local rebootstrap: keep the unit
- * registrations (the app's declared intent) and discard every synced state,
- * so the next round sends the list and fresh-bootstraps every unit. Caller
- * owns the transaction.
+ * registrations (the app's declared intent) and discard the synced state of
+ * every unit outside `keep`, so the next round sends the list and
+ * fresh-bootstraps those units. The replica cursor survives only while a
+ * kept unit is live. Caller owns the transaction.
  */
-export function resetUnits(db: ClientDatabase): void {
+export function resetUnits(
+  db: ClientDatabase,
+  keep: readonly string[] = [],
+): void {
   db.exec(
-    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',echo=NULL`,
+    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',echo=NULL WHERE id NOT IN(${keep.map(() => '?').join(',')})`,
+    [...keep],
   );
-  db.exec(`DELETE FROM ${META_TABLE} WHERE key IN(?,?,?)`, [
-    REPLICA_CURSOR_KEY,
-    ECHO_DIGEST_KEY,
-    REGISTERED_DIGEST_KEY,
-  ]);
+  db.exec(
+    `DELETE FROM ${META_TABLE} WHERE key IN(?,?) OR key=? AND NOT EXISTS(SELECT 1 FROM ${UNITS_TABLE} WHERE cursor IS NULL)`,
+    [ECHO_DIGEST_KEY, REGISTERED_DIGEST_KEY, REPLICA_CURSOR_KEY],
+  );
 }
 
 /** §4.5: the replica cursor, `-1` while no unit is live. */
@@ -240,13 +244,17 @@ type ScopeDeclarations = Record<
   Record<string, readonly [string, string]>
 >;
 
-/** §7.4.3 declaration evidence, persisted beside the schema marker. */
+/** §7.4.3 declaration evidence and table generations, persisted beside the
+ * schema marker. */
 export function saveUnitScopeSchema(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
   const declarations: ScopeDeclarations = {};
+  const generations: Record<string, string> = {};
   for (const table of schema.tables.values()) {
+    if (table.generation !== undefined)
+      generations[table.name] = table.generation;
     declarations[table.name] = Object.fromEntries(
       [...table.scopeColumnByVariable].map(([variable, column]) => [
         variable,
@@ -255,24 +263,54 @@ export function saveUnitScopeSchema(
     );
   }
   setMeta(db, 'subscriptionScopeSchema', JSON.stringify(declarations));
+  setMeta(db, 'localTableGenerations', JSON.stringify(generations));
 }
 
 /**
  * Drop units that cover no table of the running schema, with their window
  * registry rows and pending evictions; never translate scopes. At a bump
  * (§7.4.3) a unit also needs every variable unchanged in prefix and column on
- * every table it covered before.
+ * every table it covered before, and the bump keeps each table whose
+ * generation is unchanged and each unit that covers only kept tables, before
+ * and after. Runs before the reset rewrites the evidence.
  */
 export function pruneUnknownUnits(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   bump = false,
-): void {
+): { readonly tables: ReadonlySet<string>; readonly units: string[] } {
   const stored = bump ? getMeta(db, 'subscriptionScopeSchema') : undefined;
   const previous =
     stored === undefined
       ? undefined
       : (JSON.parse(stored) as ScopeDeclarations);
+  let generations: unknown = {};
+  try {
+    if (bump)
+      generations = JSON.parse(getMeta(db, 'localTableGenerations') ?? '{}');
+  } catch {
+    generations = null;
+  }
+  if (
+    typeof generations !== 'object' ||
+    generations === null ||
+    Array.isArray(generations) ||
+    Object.values(generations).some((value) => typeof value !== 'string')
+  )
+    throw new ClientSyncError(
+      'sync.local_corrupt',
+      'invalid persisted table generations',
+    );
+  const kept = new Set(
+    [...schema.tables.values()]
+      .filter(
+        (table) =>
+          table.generation !== undefined &&
+          (generations as Record<string, unknown>)[table.name] ===
+            table.generation,
+      )
+      .map((table) => table.name),
+  );
   // A table keeps the variables' meaning when each has the same prefix and
   // column as before. An old binary stored no declaration evidence; matching
   // names cannot prove unchanged meaning, so the app registers again.
@@ -329,6 +367,22 @@ export function pruneUnknownUnits(
     db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE unit_id=?`, [id]);
     deleteUnit(db, id);
   }
+  return {
+    tables: kept,
+    units: loadUnits(db)
+      .filter(
+        ({ scopes }) =>
+          Object.entries(previous ?? {}).every(
+            ([name, old]) =>
+              kept.has(name) ||
+              !Object.keys(scopes).every((v) => old[v] !== undefined),
+          ) &&
+          [...schema.tables.values()].every(
+            (table) => kept.has(table.name) || !covers(table, scopes),
+          ),
+      )
+      .map((unit) => unit.id),
+  };
 }
 
 export function getMeta(db: ClientDatabase, key: string): string | undefined {

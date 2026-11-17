@@ -919,6 +919,7 @@ mod tests {
                 }],
                 indexes: Vec::new(),
                 fts_indexes: Vec::new(),
+                generation: None,
             }],
         })
         .expect("schema compiles")

@@ -14,7 +14,7 @@ import {
   type SqlRow,
   type SqlValue,
   compileClientSchema,
-  dropAndRecreateSyncedTables,
+  resetLocalReplica,
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
@@ -724,7 +724,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
     // The reset path drops every synced table (auto-dropping its indexes) and
     // recreates from the schema — indexes must come back.
     db.transaction(() => {
-      dropAndRecreateSyncedTables(db, compiled);
+      resetLocalReplica(db, compiled);
     });
     expect(indexNames(db)).toEqual([
       'idx_tasks_project',
