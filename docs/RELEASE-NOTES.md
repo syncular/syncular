@@ -1,5 +1,40 @@
 # Syncular release notes
 
+## 0.75.0 release notes
+
+`authenticate` can return an authentication `context` (SYNCULAR-SERVER-SCOPE-CONTEXT-001,
+SPEC §1.1, §5.4, §7.3, §8.1). `resolveScopes` received only `partition`,
+`actorId` and `clientId`, so a person's kiosk session, signed in for one
+facility, and their own device session resolved the same scopes. The host now
+returns `context`, an opaque string of at most 256 UTF-8 bytes, beside
+`actorId` and `partition`, and the server passes it unchanged to
+`resolveScopes` on HTTP and socket rounds, remote operations, segment and
+blob downloads, realtime registrations (`hub.connect` takes it) and admin
+reads. A signed segment URL carries it as the `ctx` claim; a verifier that
+serves an authenticated download passes its context to `verifySegmentToken`
+and refuses a token minted under another one, while a headerless signed
+download verifies the claims as minted. An auth lease records its context and
+authorizes no request under another; that request fails with
+`sync.auth_lease_required`. A context over 256 bytes is reported to
+`onError` as `sync.auth_context_too_large`. Without a context every path
+behaves as before.
+
+A window claim made during security preflight now waits for activation
+(SYNCULAR-WINDOW-PREFLIGHT-001). `retainWindow`, `setWindowClaim`,
+`useRetainedWindow` and `useWindow` called `setWindow` at once; the client
+refused it with `client.security_preflight_required`, the claim rejected, and
+`useRetainedWindow` kept the error after a later round applied the claim. The
+reactive store keeps the claim's `ready` promise pending and applies the edit
+on the status change that ends the preflight.
+
+**Upgrade notes.** Return `context` from `authenticate` where a session's
+reach differs from its actor's, and read it in `resolveScopes`. A host that
+opens its own realtime door passes the context to `hub.connect`. A host that
+verifies signed segment URLs on an authenticated route passes that route's
+context to `verifySegmentToken`. The SQLite lease store adds a `context`
+column on open. A hold or retry that an app built around a refused window
+claim in preflight can go.
+
 ## 0.74.0 release notes
 
 Generated read types now carry the sealed state of encrypted columns

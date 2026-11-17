@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'Sessions of different reach resolve their own scopes',
+    body: "`authenticate` can return a `context` string beside `actorId` and `partition`, for example `kiosk:facility-a`. The server passes it unchanged to `resolveScopes` on HTTP and socket rounds, remote operations, segment and blob downloads, realtime registrations and admin reads, so one person's kiosk session and own device session resolve different scopes. Signed segment URLs carry the context in their token, and an auth lease authorizes only the context it was issued under.",
+    links: [
+      {
+        href: '/guide-auth/#sessions-of-different-reach',
+        label: 'Sessions of different reach',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
+    title: 'Window claims wait through security preflight',
+    body: 'A window claim made while the client was in security preflight called `setWindow` at once, was refused with `client.security_preflight_required`, and `useRetainedWindow` kept that error after a later round applied the claim. The reactive store now holds the edit: its `ready` promise stays pending, and the store applies it when the client turns active.',
+    links: [
+      {
+        href: '/concepts-local-data-purge/#race-free-security-bootstrap',
+        label: 'Security preflight',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'Generated read types name sealed encrypted columns',
     body: "A sealed row (`missingKey: 'seal'`) holds NULL in every encrypted column, but typegen still typed a non-null encrypted column as present in row types, query results and `resultColumns`. Typegen now reads every encrypted column as nullable in all languages; insert and update types keep the declared nullability. A query can select the sealed marker with an alias (`p._sync_sealed_key AS sealed_key`) on a table with an encrypted column. A result column named with the `_sync_` prefix now fails with `typegen.reserved_result_column`, because clients strip such keys from query rows.",
     links: [
