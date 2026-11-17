@@ -1809,6 +1809,31 @@ describe('observation ownership', () => {
 });
 
 describe('security preflight gate (SPEC §5.11)', () => {
+  test('a window claim made in preflight waits and applies on activation', async () => {
+    const { makeClient, makeServer } = await import('./helpers');
+    const local = await makeClient(makeServer(), { clientId: 'gate-window' });
+    const store = new ReactiveClientStore(local.client);
+    store.start();
+    await drainMicrotasks(24);
+    await local.client.beginSecurityPreflight();
+    await drainMicrotasks(24);
+    let settled: string | undefined;
+    const retention = store.retainWindow(BASE, ['p1']);
+    retention.ready.then(
+      () => (settled = 'ready'),
+      (error: { code?: string }) => (settled = error.code),
+    );
+    await drainMicrotasks(24);
+    expect(settled).toBeUndefined();
+
+    await local.client.activateSecurity();
+    await drainMicrotasks(48);
+    expect(settled).toBe('ready');
+    expect(local.client.windowState(BASE).units).toEqual(['p1']);
+    await retention.release();
+    store.dispose();
+  });
+
   test('a refused read keeps its snapshot and reads again on activation', async () => {
     const { makeClient, makeServer, taskValues } = await import('./helpers');
     const local = await makeClient(makeServer(), { clientId: 'gate-client' });

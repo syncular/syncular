@@ -1251,6 +1251,9 @@ export class ReactiveClientStore {
       }
       for (const waiter of group.waiters.splice(0)) waiter.resolve();
     } catch (error) {
+      // §5.11: the gate refused the edit before it changed anything. The
+      // claim waits; activation applies it again.
+      if (refusedByPreflight(error)) return;
       // A failed window edit may already have committed its first eviction chunk.
       // Reconcile through the core before acknowledging any later claim.
       group.appliedKey = '';
@@ -1289,12 +1292,17 @@ export class ReactiveClientStore {
       this.#queries.onChange(batch);
       this.#windows.onChange(batch);
       if (batch.status !== undefined) {
+        const held =
+          this.status.getSnapshot().status?.securityLifecycle === 'preflight';
         (this.status as ValueEntry<StatusStoreSnapshot>).set({
           status: batch.status,
           leadership: this.client.leadershipSnapshot?.(),
           error: undefined,
           isLoading: false,
         });
+        // Window edits held through the preflight apply on activation.
+        if (held && batch.status.securityLifecycle === 'active')
+          this.#reclaimWindows();
       }
       if (batch.conflictsChanged || batch.rejectionsChanged) {
         this.conflicts.refresh();
