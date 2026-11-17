@@ -1,5 +1,30 @@
 # Syncular release notes
 
+## 0.79.1 release notes
+
+A new OPFS replica uses 64 KiB pages (SYNCULAR-OPFS-WRITE-CALLS-001, SPEC §5.3).
+In a private window each `FileSystemSyncAccessHandle` call costs about 0.27 ms
+(0.007 ms on disk) whatever its size, and `opfs-sahpool` writes one page per
+call, so an image import spent 92 % of the worker's time in `write`.
+
+- `openPersistentWasmDatabase` sets `PRAGMA page_size=65536` on open. SQLite
+  applies it only to a database without tables, so existing replicas keep
+  their page size; there is no migration. The Rust wasm32 file replica, also on
+  `opfs-sahpool`, does the same. Native Rust storages keep SQLite's default.
+- Apple M5 Pro, Chromium, 60,572 codes of about 2 KB and 78,540 relations in
+  32 MiB range images, two runs each. Ephemeral context: 4 KiB 88.4 and
+  105.6 s, 16 KiB 14.7 and 30.1 s, 32 KiB 4.6 and 9.6 s, 64 KiB 3.7 and 4.7 s.
+  Persistent context: 4 KiB 4.9 and 4.2 s, 64 KiB 2.5 and 2.6 s.
+- Small writes show no consistent amplification at 64 KiB: a one-row mutation
+  with its outbox entry took 3.3 to 3.4 ms at 4 KiB and 3.3 to 6.5 ms at
+  64 KiB on disk; a pull applying one commit 8.6 to 9.9 ms against 8.5 to
+  9.6 ms.
+- The 250 ms chunk rule is unchanged: at 64 KiB the import commits in 27 to 28
+  chunks in both contexts, where 4 KiB in memory shrank it to 136 to 139.
+
+**Upgrade notes.** An app that set `page_size` itself in an `openDatabase`
+override can drop it; replicas it created keep their page size.
+
 ## 0.79.0 release notes
 
 A Workers topology on PostgreSQL that keeps rounds out of the partition's

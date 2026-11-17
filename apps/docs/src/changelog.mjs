@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-17',
+    title: 'A new OPFS replica uses 64 KiB pages',
+    body: 'An ephemeral browser profile keeps OPFS in memory, where each sync access handle call costs about 0.27 ms whatever its size, and SQLite wrote one 4 KiB page per call. A new OPFS replica now uses 64 KiB pages. Importing 60,572 catalogue codes and 78,540 relations took 88 to 106 s in an ephemeral Chromium context and now takes 3.7 to 4.7 s; a persistent profile went from about 4.5 s to 2.5 s, and single-row writes cost the same. Existing replicas keep their page size.',
+    links: [
+      {
+        href: '/platform-web-specifics/#support-floor',
+        label: 'Web specifics',
+      },
+    ],
+  },
+  {
+    date: '2026-11-17',
     title: 'Workers on PostgreSQL: rounds in the Worker, sockets in shards',
     body: "The documented Workers setup forwarded every `/sync` request to the partition's Durable Object, which also held every socket, so pulls and segment downloads queued on one thread behind pushes. With PostgreSQL, `shard` keeps every round in the stateless Worker under the database's partition lock, sockets live in Durable Objects sharded by a key the app chooses, and the partition's object relays each commit to every shard that holds sockets, retrying failed relays. `prepareReadTransaction` gives a scope resolver one consistent read without the push lock.",
     links: [
