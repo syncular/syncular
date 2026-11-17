@@ -10473,6 +10473,88 @@ fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
 }
 
 #[test]
+fn a_reapplied_image_keeps_every_row_findable_and_an_open_repairs_a_damaged_projection() {
+    let schema = json!({
+        "version": 1,
+        "tables": [{
+            "name": "catalogue_codes",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "release_id", "type": "string", "nullable": false },
+                { "name": "title", "type": "string", "nullable": false }
+            ],
+            "scopes": [{ "pattern": "release:{release_id}" }],
+            "ftsIndexes": [{
+                "name": "catalogue_codes_fts",
+                "columns": ["title"],
+                "tokenize": "unicode61 remove_diacritics 2"
+            }]
+        }]
+    });
+    let mut client = SyncClient::new("fts-image".to_owned(), &schema, ClientLimits::default())
+        .expect("FTS5 client");
+    let table = client.schema.table("catalogue_codes").unwrap().clone();
+    let scopes = vec![("release_id".to_owned(), vec!["r1".to_owned()])];
+    let apply = |client: &mut SyncClient, title: &str, version: i64| {
+        let image = Connection::open_in_memory().unwrap();
+        image
+            .execute_batch(&format!(
+                "CREATE TABLE catalogue_codes(id TEXT PRIMARY KEY, release_id TEXT NOT NULL, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL);
+                 WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1500)
+                 INSERT INTO catalogue_codes SELECT printf('c%05d',x),'r1','{title}',{version} FROM n;
+                 CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+                 INSERT INTO _syncular_segment VALUES (1,'catalogue_codes',1,7,'digest',1500);"
+            ))
+            .unwrap();
+        assert!(matches!(
+            client.apply_sqlite_image(&image, &table, false, &scopes, "", "", 0, 1500, 7, "digest"),
+            Ok(1500)
+        ));
+    };
+    let hits = |client: &SyncClient, query: &str| {
+        client
+            .query(
+                "SELECT count(*) AS n FROM catalogue_codes_fts f JOIN catalogue_codes c ON CAST(c.id AS TEXT) = f._syncular_source_id WHERE catalogue_codes_fts MATCH ?1",
+                &[Value::from(query)],
+            )
+            .expect("FTS query")[0]["n"]
+            .clone()
+    };
+    apply(&mut client, "meniscus", 3);
+    assert_eq!(hits(&client, "meniscus"), 1500);
+    // The same versions again, then older ones: no row lands.
+    apply(&mut client, "meniscus", 3);
+    apply(&mut client, "meniscus", 2);
+    assert_eq!(hits(&client, "meniscus"), 1500);
+    // Newer versions replace every row and its projection entry.
+    apply(&mut client, "cartilage", 4);
+    assert_eq!(hits(&client, "meniscus"), 0);
+    assert_eq!(hits(&client, "cartilage"), 1500);
+
+    // A projection an earlier release left without some entries.
+    client
+        .conn
+        .execute_batch(
+            "DELETE FROM catalogue_codes_fts WHERE _syncular_source_id > 'c01000';
+             DELETE FROM _syncular_fts_catalogue_codes_fts WHERE source_id > 'c01000';",
+        )
+        .unwrap();
+    assert_eq!(hits(&client, "cartilage"), 1000);
+    client.create_synced_tables().unwrap();
+    assert_eq!(hits(&client, "cartilage"), 1500);
+    assert_eq!(
+        client
+            .query(
+                "SELECT count(*) AS n FROM _syncular_fts_catalogue_codes_fts",
+                &[]
+            )
+            .unwrap()[0]["n"],
+        1500
+    );
+}
+
+#[test]
 fn application_authorized_local_purge_is_exact_atomic_and_idempotent() {
     let schema = json!({
         "version": 1,

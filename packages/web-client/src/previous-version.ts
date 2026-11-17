@@ -41,6 +41,7 @@ import {
   localColumnType,
   quoteIdent,
   rowValueToJson,
+  tableExists,
 } from './schema';
 import { getMeta, setMeta, META_TABLE } from './state';
 
@@ -449,11 +450,7 @@ export function withPreviousVersionContainer<T>(
 export function readPreviousVersionContainer(
   db: ClientDatabase,
 ): PreviousVersionRecord | undefined {
-  const meta = db.query(
-    "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
-    [CONTAINER_META_TABLE],
-  );
-  if (meta.length === 0) return undefined;
+  if (!tableExists(db, CONTAINER_META_TABLE)) return undefined;
   const raw = db.query(
     `SELECT record FROM ${quoteIdent(CONTAINER_META_TABLE)} WHERE id=1`,
   )[0]?.record;

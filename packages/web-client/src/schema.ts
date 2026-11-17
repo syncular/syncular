@@ -356,6 +356,14 @@ export function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
+export function tableExists(db: ClientDatabase, name: string): boolean {
+  return (
+    db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [
+      name,
+    ]).length > 0
+  );
+}
+
 /**
  * §5.11: the app-side type of a column for local (plaintext) storage. For an
  * encrypted column this is `declaredType` — the local mirror stays plaintext,
@@ -445,8 +453,11 @@ const FTS_SOURCE_ID_COLUMN = '_syncular_source_id';
  * Limitation: because a BEFORE trigger runs before SQLite resolves the
  * conflict, an `OR IGNORE` write whose row is dropped still executes these
  * displacement DELETEs, transiently removing the surviving row's projection
- * entry. Syncular's mirror writes never use `OR IGNORE`; see the guard-block
- * comment below for the full rationale.
+ * entry. The same holds for an upsert whose `DO UPDATE ... WHERE` skips the
+ * row, so Syncular's mirror writes never offer a row that will not replace
+ * (§5.3); see the guard-block comment below for the full rationale. An open
+ * rebuilds a projection whose mapping holds a different row count than its
+ * source table.
  */
 function createFtsProjection(
   db: ClientDatabase,
@@ -456,11 +467,7 @@ function createFtsProjection(
   const projection = quoteIdent(index.name);
   const sourceTable = quoteIdent(table.name);
   const primaryKey = quoteIdent(table.primaryKey);
-  const existed =
-    db.query(
-      "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
-      [index.name],
-    ).length > 0;
+  const existed = tableExists(db, index.name);
   const indexedColumns = index.columns.map(quoteIdent);
   const tokenizer = index.tokenize.replaceAll("'", "''");
   db.exec(
@@ -468,10 +475,7 @@ function createFtsProjection(
   );
 
   const mapping = quoteIdent(`_syncular_fts_${index.name}`);
-  const mapped =
-    db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [
-      `_syncular_fts_${index.name}`,
-    ]).length > 0;
+  const mapped = tableExists(db, `_syncular_fts_${index.name}`);
   db.exec(
     `CREATE TABLE IF NOT EXISTS ${mapping}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
   );
@@ -506,16 +510,19 @@ function createFtsProjection(
   // `UPDATE OR REPLACE` needs no BEFORE guard: the new pk equals the displaced
   // row's pk, so the AFTER UPDATE delete of the new source id already clears it.
   //
-  // Known limitation — `OR IGNORE`: a BEFORE trigger fires before SQLite
-  // resolves the conflict, and SQLite exposes no signal for the eventual
-  // resolution. So an `INSERT OR IGNORE` / `UPDATE OR IGNORE` whose row is
-  // dropped on conflict still runs these displacement DELETEs, removing the
-  // SURVIVING row's projection entry (a false negative until that row is next
-  // rewritten). Moving cleanup to AFTER triggers would dodge the no-op but
-  // reintroduce the REPLACE-doesn't-fire-DELETE gap and a full-projection scan
-  // per write, so the guards stay BEFORE. Syncular's own mirror writes use
-  // `INSERT … ON CONFLICT (pk) DO UPDATE` (apply.ts), which never takes the
-  // IGNORE path; only hand-written `OR IGNORE` against a mirror table is exposed.
+  // Known limitation: a BEFORE trigger fires before SQLite resolves the
+  // conflict, and SQLite exposes no signal for the eventual resolution. So an
+  // `INSERT OR IGNORE` / `UPDATE OR IGNORE` whose row is dropped on conflict,
+  // and an upsert whose `DO UPDATE ... WHERE` skips the row, still run these
+  // displacement DELETEs, removing the SURVIVING row's projection entry (a
+  // false negative until that row is next rewritten). Moving cleanup to AFTER
+  // triggers would dodge the no-op but reintroduce the REPLACE-doesn't-fire-
+  // DELETE gap and a full-projection scan per write, so the guards stay
+  // BEFORE. Syncular's own mirror writes use an unconditional
+  // `INSERT … ON CONFLICT (pk) DO UPDATE` (apply.ts); the image copy filters
+  // held rows at the same or a newer version out of its SELECT instead of a
+  // `DO UPDATE ... WHERE`. Only hand-written `OR IGNORE` against a mirror
+  // table is exposed.
   for (const suffix of ['bi', 'ai', 'ad', 'au', 'bu']) {
     db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${index.name}_${suffix}`)}`);
   }
@@ -568,12 +575,23 @@ function createFtsProjection(
     createTrigger('bu', 'BEFORE UPDATE', updateGuardBody, updateGuardCondition);
   }
 
-  if (!existed) {
+  // Every source row has exactly one mapping row, so a count mismatch marks a
+  // projection an earlier release damaged; the open rebuilds it.
+  const stale =
+    !existed ||
+    (mapped &&
+      Number(
+        db.query(
+          `SELECT (SELECT count(*) FROM ${mapping})=(SELECT count(*) FROM ${sourceTable}) AS whole`,
+        )[0]?.whole,
+      ) !== 1);
+  if (stale) {
+    db.exec(`DELETE FROM ${projection}`);
     db.exec(
       `INSERT INTO ${projection}(${projectionColumns})SELECT ${sourceId},${indexedColumns.join(', ')} FROM ${sourceTable}`,
     );
   }
-  if (!mapped || !existed) {
+  if (!mapped || stale) {
     db.exec(`DELETE FROM ${mapping}`);
     db.exec(
       `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${projection}`,
@@ -649,10 +667,7 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
     db.exec(
       `INSERT OR IGNORE INTO ${META_TABLE}(key,value)VALUES('localRevision','0')`,
     );
-    const outboxExisted =
-      db.query(
-        `SELECT 1 FROM sqlite_master WHERE type='table' AND name='${OUTBOX_TABLE}'`,
-      ).length > 0;
+    const outboxExisted = tableExists(db, OUTBOX_TABLE);
     createTable(
       OUTBOX_TABLE,
       'seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,created_at_ms INTEGER NOT NULL,operations TEXT NOT NULL',
@@ -722,11 +737,7 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
     // rows and pending evictions and registers its units fresh. Its
     // subscriptions, cursors, echoes, resume tokens and window entries go.
     const legacyEvictions = '_syncular_window_pending_evict';
-    if (
-      db.query(
-        `SELECT 1 FROM sqlite_master WHERE type='table' AND name='${legacyEvictions}'`,
-      ).length > 0
-    ) {
+    if (tableExists(db, legacyEvictions)) {
       if (
         db.query(
           `SELECT 1 FROM ${legacyEvictions} WHERE NOT json_valid(effective_scopes) OR json_type(effective_scopes)<>'object' OR EXISTS(SELECT 1 FROM json_each(effective_scopes) WHERE json_type(value)<>'array' OR EXISTS(SELECT 1 FROM json_each(value) v WHERE v.type<>'text'))`,

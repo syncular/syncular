@@ -1,4 +1,5 @@
 /** Client-local FTS5 projections. */
+import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
@@ -7,6 +8,7 @@ import {
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { applySqliteSegment } from '../src/apply';
 
 const SCHEMA: ClientSchema = {
   version: 1,
@@ -58,7 +60,106 @@ function rawFtsHits(db: BunClientDatabase, query: string): string[] {
     .map((row) => String(row.sid));
 }
 
+function catalogueImage(
+  titles: readonly string[],
+  version: number,
+): Uint8Array {
+  const image = new Database(':memory:');
+  try {
+    image.exec(`
+      CREATE TABLE catalogue_codes (id TEXT PRIMARY KEY, release_id TEXT NOT NULL,
+        code TEXT NOT NULL, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL);
+      CREATE TABLE _syncular_segment (format INTEGER NOT NULL, "table" TEXT NOT NULL,
+        "schemaVersion" INTEGER NOT NULL, "asOfCommitSeq" INTEGER NOT NULL,
+        "scopeDigest" TEXT NOT NULL, "rowCount" INTEGER NOT NULL);
+    `);
+    image
+      .query('INSERT INTO _syncular_segment VALUES (1, ?, 1, 7, ?, ?)')
+      .run('catalogue_codes', 'digest', titles.length);
+    const insert = image.query(
+      "INSERT INTO catalogue_codes VALUES (?, 'r1', ?, ?, ?)",
+    );
+    titles.forEach((title, index) =>
+      insert.run(`c${index}`, `A${index}`, title, version),
+    );
+    return new Uint8Array(image.serialize());
+  } finally {
+    image.close();
+  }
+}
+
 describe('client-local FTS5 projections', () => {
+  test('an image range applied again keeps every held row findable', async () => {
+    const db = new BunClientDatabase();
+    try {
+      const compiled = compileClientSchema(SCHEMA);
+      ensureLocalSchema(db, compiled);
+      const apply = (titles: readonly string[], version: number) =>
+        applySqliteSegment(
+          db,
+          compiled,
+          compiled.tables.get('catalogue_codes')!,
+          catalogueImage(titles, version),
+          {
+            table: 'catalogue_codes',
+            rowCount: titles.length,
+            asOfCommitSeq: 7,
+            scopeDigest: 'digest',
+          },
+          {
+            clearFirst: false,
+            effective: { release_id: ['r1'] },
+            owners: () => [],
+          },
+        );
+      const titles = Array.from({ length: 1500 }, () => 'meniscus');
+      await apply(titles, 3);
+      expect(search(db, 'meniscus')).toHaveLength(1500);
+      // The same versions again, then older ones: no row lands.
+      await apply(titles, 3);
+      await apply(titles, 2);
+      expect(search(db, 'meniscus')).toHaveLength(1500);
+      // Newer versions replace every row and its projection entry.
+      await apply(
+        titles.map(() => 'cartilage'),
+        4,
+      );
+      expect(search(db, 'meniscus')).toEqual([]);
+      expect(search(db, 'cartilage')).toHaveLength(1500);
+      expect(
+        db.query('SELECT count(*) AS n FROM _syncular_fts_catalogue_codes_fts'),
+      ).toEqual([{ n: 1500 }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('an open rebuilds a projection missing entries for held rows', () => {
+    const db = new BunClientDatabase();
+    try {
+      const compiled = compileClientSchema(SCHEMA);
+      ensureLocalSchema(db, compiled);
+      db.exec(
+        "INSERT INTO catalogue_codes VALUES ('c1','r1','A01','Cholera',1),('c2','r1','B01','Typhoid',1)",
+      );
+      // A guard that deletes without a replacement, as releases before
+      // 0.78.2 did for an image row held at its own version.
+      db.exec("DELETE FROM catalogue_codes_fts WHERE _syncular_source_id='c2'");
+      db.exec(
+        "DELETE FROM _syncular_fts_catalogue_codes_fts WHERE source_id='c2'",
+      );
+      expect(search(db, 'typhoid')).toEqual([]);
+      ensureLocalSchema(db, compiled);
+      expect(search(db, 'typhoid')).toEqual(['c2']);
+      expect(search(db, 'cholera')).toEqual(['c1']);
+      expect(rawFtsHits(db, 'cholera OR typhoid')).toEqual(['c1', 'c2']);
+      db.exec("DELETE FROM catalogue_codes WHERE id='c2'");
+      expect(rawFtsHits(db, 'cholera OR typhoid')).toEqual(['c1']);
+    } finally {
+      db.close();
+    }
+  });
+
   test('an existing projection gains an indexed identity map without rebuilding rows', () => {
     const db = new BunClientDatabase();
     try {

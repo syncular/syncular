@@ -105,7 +105,7 @@ Arbitrary virtual-table modules, options, tokenizers, prefix definitions, and ha
 
 ## Lifecycle and encryption
 
-The client creates a contentful FTS table with a private stable source-id column and deterministic maintenance triggers. When a projection first appears, the client bulk-indexes the existing owner rows.
+The client creates a contentful FTS table with a private stable source-id column and deterministic maintenance triggers. When a projection first appears, the client bulk-indexes the existing owner rows. Every open compares the projection's mapping row count with the owner table's row count and rebuilds a projection whose counts differ. Replicas the TypeScript client wrote with releases up to 0.78.1 lost the entries of rows that a SQLite image delivered again at their held version; the first open after an upgrade restores them. Rebuilding a 114,007-row projection took 4.2 s once; the check on later opens takes 7 ms (Apple M5 Pro, Bun).
 
 An [encrypted column](/concepts-encryption/) is eligible when its declared application type is `string`, so `patient_notes.body` above can be encrypted and still searched. Encryption applies at the wire boundary: FTS indexes the decrypted value already in the protected local mirror, while the server and the commit log keep ciphertext. Revoking that local plaintext needs the same subscription gating and [authorized local purge](/concepts-local-data-purge/) as the owner row, and the purge removes both in one transaction.
 

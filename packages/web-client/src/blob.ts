@@ -10,7 +10,7 @@ import { type BlobRef, parseBlobRef, serializeBlobRef } from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import type { CompiledClientSchema } from './schema';
-import { quoteIdent } from './schema';
+import { quoteIdent, tableExists } from './schema';
 
 /**
  * A blob download result (§5.9.5). The authorized endpoint either serves the
@@ -121,10 +121,7 @@ export async function computeBlobId(bytes: Uint8Array): Promise<string> {
 }
 
 export function ensureBlobSchema(db: ClientDatabase): void {
-  const existing = db.query(
-    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_syncular_blobs'",
-  );
-  if (existing.length > 0) {
+  if (tableExists(db, '_syncular_blobs')) {
     const columns = db
       .query('PRAGMA table_info(_syncular_blobs)')
       .map((row) => row.name)

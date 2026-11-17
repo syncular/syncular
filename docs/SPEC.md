@@ -1166,7 +1166,12 @@ table; the projection never claims independent scope coverage.
 Clean primary-key inserts MUST NOT perform a source-ID scan of the existing FTS
 projection. Replacement-safe cleanup MAY use an indexed source-table existence
 guard before insert; `INSERT OR REPLACE` correctness MUST NOT depend on SQLite
-firing a delete trigger for the displaced row.
+firing a delete trigger for the displaced row. Such a guard runs before SQLite
+resolves the conflict, so a client MUST NOT offer a row to an insert that keeps
+the held row (`OR IGNORE`, or `ON CONFLICT … DO UPDATE … WHERE` whose
+condition fails): the guard would remove the entry of a row that stays. Every
+open compares each projection's mapping row count with its visible table's row
+count and rebuilds a projection whose counts differ.
 
 **App-facing row versions.** Every client query surface MUST expose the
 protocol-owned per-row version through the public pseudo-column
@@ -2683,7 +2688,12 @@ Publish a revision after each committed chunk, preserving optimistic writes.
 Each chunk records the image's applied rows in its own transaction (§5.6
 applied-segment record). Yield between chunks; persist the unit's checkpoint
 only at `SUB_END`. Failure rolls back the whole current chunk and leaves the
-committed prefix, which a retry at the same position continues (§5.6, §7.8). Empty images still apply a required first-page clear. NULL
+committed prefix, which a retry at the same position continues (§5.6, §7.8). An
+image row whose primary key the client already holds at the same or a newer
+`server_version` does not reach the table write; the copy filters it out
+instead of a conditional upsert, so the client-local FTS projection guards
+(§2.4) run only for rows that land. Empty images still apply a required
+first-page clear. NULL
 primary keys MUST NOT be skipped by statement or chunk boundaries, and the
 applied row count MUST equal the descriptor before a unit's checkpoint can
 advance. After the last chunk commits outside any open transaction, the client
@@ -2697,6 +2707,24 @@ batch, applies them, and stops the unit section before the next image
 without persisting its `SUB_END`; the next pull presents the same resume
 token and continues with the §5.6 applied-segment rule. Peak memory then
 follows `maxImageSegmentBytes`, never the table size.
+
+DECISION (2026-11-17): an image copy filters held rows out of its `SELECT`.
+The TypeScript client up to 0.78.1 copied with `ON CONFLICT … DO UPDATE … WHERE`
+the image version is newer than the held one. For a row held at its own
+version, the FTS projection's
+`BEFORE INSERT` guard deleted the entry, the `WHERE` skipped the update, and
+no `AFTER` trigger wrote the entry back. A Chromium replica that received one
+release's two range images again after the server's range bound changed held
+114,007 `catalogue_codes` rows and 74,737 projection entries; all 39,270 rows
+of that release had none. The guard cannot see the upsert's outcome, so the
+copy gives it only absent or newer rows. The Rust core writes its visible table
+only for rows that landed in the base table, so it never took this path. The
+open-time repair compares two
+`count(*)` results: on that replica (Apple M5 Pro, Bun, warm file cache) the
+check takes 7 ms, the whole same-version schema open 10 to 14 ms against 3 ms
+before, and the one-time rebuild of the 114,007-row projection 4.2 s. Every
+source row has one mapping row and every write path keeps both in one
+transaction, so a lost entry always lowers the mapping count.
 
 DECISION (2026-11-17): images are cut into ranges because a client holds an
 image body whole. The TypeScript client reads the body into one buffer and

@@ -11,11 +11,12 @@
 import { Database } from 'bun:sqlite';
 import { canonicalScopeJson, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
-import { FIXTURE_SCHEMA, task } from '../fixture';
+import { doc, FIXTURE_SCHEMA, task } from '../fixture';
 import { rawPull, responseSection } from '../raw';
 import type { Scenario } from '../scenario';
 import {
   expectConverged,
+  seedRows,
   seedTasks,
   syncIdle,
   syncOk,
@@ -528,6 +529,75 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       await expectConverged(ctx, 'tasks', [a], {
         variable: 'project_id',
         values: ['p1'],
+      });
+    },
+  },
+  {
+    // A second unit's image delivers rows the replica already holds: at
+    // their own version, and at a newer one the first unit has not pulled
+    // yet. Every held row stays in the local FTS projection (§5.3).
+    name: 'sqlite-image/reapplied-image-keeps-fts-entries',
+    specRefs: ['§5.3', '§7.8'],
+    requires: ['sqlite-image'],
+    async run(ctx) {
+      const ids = Array.from({ length: 40 }, (_, i) => `d${i}`);
+      await seedRows(
+        ctx,
+        'docs',
+        ids.map((id) => doc(id, 'o1', 'p1', 'meniscus')),
+      );
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1'], projectId: ['p1'] },
+        limits: { limitSnapshotRows: 2, accept: WITH_SQLITE },
+        schema: {
+          ...FIXTURE_SCHEMA,
+          tables: FIXTURE_SCHEMA.tables.map((table) =>
+            table.name === 'docs'
+              ? {
+                  ...table,
+                  ftsIndexes: [
+                    {
+                      name: 'docs_fts',
+                      columns: ['body'],
+                      tokenize: 'unicode61',
+                    },
+                  ],
+                }
+              : table,
+          ),
+        },
+      });
+      await a.api.subscribe({ org_id: 'o1' });
+      await syncIdle(a);
+      await seedRows(
+        ctx,
+        'docs',
+        ids.slice(0, 10).map((id) => doc(id, 'o1', 'p1', 'cartilage')),
+      );
+      await a.api.subscribe({ projectId: 'p1' });
+      const second = await syncOk(a);
+      check(
+        second.segmentRowsApplied >= ids.length,
+        'the project unit bootstrapped from an image of held rows',
+      );
+      await syncIdle(a);
+      const hits = async (word: string) =>
+        (
+          await a.api.querySnapshot?.(
+            'SELECT count(*) AS n FROM docs_fts WHERE docs_fts MATCH ?',
+            [word],
+          )
+        )?.rows[0]?.n;
+      checkEqual(
+        [await hits('meniscus'), await hits('cartilage')],
+        [30, 10],
+        'every held row stays findable after the second image',
+      );
+      await expectConverged(ctx, 'docs', [a], {
+        variable: 'org_id',
+        values: ['o1'],
       });
     },
   },

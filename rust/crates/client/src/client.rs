@@ -4553,7 +4553,22 @@ impl SyncClient {
                     .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
             self.create_fts_triggers(table, index)?;
-            if !existed {
+            // Every visible row has exactly one mapping row, so a count
+            // mismatch marks a projection an earlier release damaged; the
+            // open rebuilds it.
+            let stale: bool = !existed
+                || self
+                    .conn
+                    .query_row(
+                        &format!(
+                            "SELECT (SELECT count(*) FROM {mapping}) != (SELECT count(*) FROM {})",
+                            visible_table(&table.name)
+                        ),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            if stale {
                 self.rebuild_fts_projection(table, index)?;
             }
             Ok(())

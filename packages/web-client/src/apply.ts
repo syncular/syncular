@@ -680,7 +680,7 @@ export async function applySqliteSegment(
         );
         for (;;) {
           db.exec(
-            `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${where} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates} WHERE excluded.${version}>${quoteIdent(table.name)}.${version}`,
+            `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} AS image WHERE ${where} AND NOT EXISTS(SELECT 1 FROM ${quoteIdent(table.name)} AS held WHERE held.${primaryKey}=image.${primaryKey} AND held.${version}>=image._syncular_version) ON CONFLICT(${primaryKey})DO UPDATE SET ${updates}`,
             params,
           );
           const copied = Number(
