@@ -96,6 +96,7 @@ pub(crate) enum RoundPhase {
 pub struct PreparedSyncRound {
     pub(crate) id: uuid::Uuid,
     pub(crate) started_at_ms: i64,
+    pub(crate) attempt: u64,
     pub(crate) meta: RequestMeta,
     pub(crate) message: Message,
     pub(crate) realtime: bool,

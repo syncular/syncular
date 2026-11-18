@@ -337,6 +337,8 @@ export interface MakeClientOptions {
   readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
   /** RFC 0005 previous-version context config. */
   readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+  /** The client clock; defaults to `Date.now`. */
+  readonly now?: SyncClientConfig['now'];
 }
 
 export async function makeClient(
@@ -371,6 +373,7 @@ export async function makeClient(
       : {}),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
     ...(options.retainFailedCommits !== undefined
       ? { retainFailedCommits: options.retainFailedCommits }
       : {}),

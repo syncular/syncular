@@ -301,6 +301,81 @@ export const observationScenarios: readonly Scenario[] = [
     },
   },
   {
+    name: 'observation/round-identity',
+    specRefs: ['§7.6', '§7.7'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'round-identity',
+        allowed: { project_id: ['p1'] },
+      });
+      const diagnostics = handle.api.diagnosticsSnapshot?.bind(handle.api);
+      const progress = handle.api.progressSnapshot?.bind(handle.api);
+      check(
+        diagnostics !== undefined && progress !== undefined,
+        'diagnostics and progress are available',
+      );
+      if (diagnostics === undefined || progress === undefined) return;
+      await syncOk(handle);
+      const first = (await diagnostics()).lastRound;
+      const epoch = first?.epoch;
+      check(
+        typeof epoch === 'string' && epoch.length > 0,
+        'a round carries its core epoch',
+      );
+      const attempt = first?.attempt ?? 0;
+      check(attempt > 0, 'a round carries its progress attempt');
+      checkEqual(
+        (await diagnostics()).lastRound,
+        first,
+        'repeated snapshots carry one identity',
+      );
+      checkEqual(
+        [(await progress())?.epoch, (await progress())?.attempt],
+        [epoch, attempt],
+        'progress names the same attempt',
+      );
+
+      handle.faults.dropNextResponses = 1;
+      await syncFails(handle, 'transport.lost', 'dropped response');
+      const failed = (await diagnostics()).lastRound;
+      checkEqual(
+        [failed?.status, failed?.epoch, failed?.attempt],
+        ['failed', epoch, attempt + 1],
+        'a failed round is the next attempt',
+      );
+      const current = await progress();
+      checkEqual(
+        [current?.epoch, current?.attempt],
+        [epoch, attempt + 1],
+        'progress names the same attempt',
+      );
+
+      await handle.api.setTransportEnabled(false);
+      await syncFails(handle, 'sync.offline', 'closed gate');
+      checkEqual(
+        (await diagnostics()).lastRound,
+        failed,
+        'a refused call records no round',
+      );
+      checkEqual(await progress(), current, 'a refused call starts no attempt');
+
+      const other = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'round-identity-2',
+        allowed: { project_id: ['p1'] },
+      });
+      await syncOk(other);
+      const next = (await other.api.diagnosticsSnapshot?.())?.lastRound;
+      checkEqual(
+        next?.attempt,
+        attempt,
+        'a new core counts its attempts from 1 again',
+      );
+      check(next?.epoch !== epoch, 'a new core has a new epoch');
+    },
+  },
+  {
     // SYQL §15: typegen reads `_syncular_source_id` through the mapping table
     // on the projection rowid. Both cores keep every projection row's mapping
     // id equal to its rowid and its source_id equal to its source id.

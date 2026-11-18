@@ -78,6 +78,7 @@ fn finishing_a_round_tolerates_an_unclassified_storage_failure() {
         Some(QueryReadFailure::from(rusqlite::Error::QueryReturnedNoRows));
     let outcome = client.finish_sync_round(
         0,
+        1,
         SyncOutcome::Failed {
             error_code: "sync.invalid_request".into(),
             message: "original".into(),

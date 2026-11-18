@@ -1091,9 +1091,9 @@ fn releasing_a_window_unit_keeps_the_prepared_round() {
     h.client
         .set_window(&project_window(), &["p1".into()])
         .unwrap();
-    h.client.active_round = Some(uuid::Uuid::nil());
+    h.client.active_round = Some((uuid::Uuid::nil(), 0, 1));
     h.client.set_window(&project_window(), &[]).unwrap();
-    assert_eq!(h.client.active_round, Some(uuid::Uuid::nil()));
+    assert_eq!(h.client.active_round, Some((uuid::Uuid::nil(), 0, 1)));
 }
 
 #[test]
@@ -1101,9 +1101,9 @@ fn unsubscribing_keeps_the_prepared_round() {
     // §4.4: the released unit's section is skipped; the round completes.
     let mut h = Harness::new();
     let id = h.client.subscribe(p1()).unwrap();
-    h.client.active_round = Some(uuid::Uuid::nil());
+    h.client.active_round = Some((uuid::Uuid::nil(), 0, 1));
     h.client.unsubscribe(&id).unwrap();
-    assert_eq!(h.client.active_round, Some(uuid::Uuid::nil()));
+    assert_eq!(h.client.active_round, Some((uuid::Uuid::nil(), 0, 1)));
 }
 
 // -- §6.3.2 push sequence -------------------------------------------------------

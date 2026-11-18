@@ -708,6 +708,14 @@ test('leader close → follower promotes, keeps the DB, continues syncing', asyn
     { table: 'tasks', op: 'upsert', values: taskValues('before', 'pp', 'A') },
   ]);
   await leader.syncUntilIdle();
+  // §7.6: the follower sees the leader core's round identity unchanged.
+  const leaderRound = (await leader.diagnosticsSnapshot()).lastRound;
+  expect(leaderRound?.attempt).toBeGreaterThan(0);
+  expect((await follower.diagnosticsSnapshot()).lastRound).toEqual(leaderRound);
+  expect(leader.progressSnapshot()).toMatchObject({
+    epoch: leaderRound?.epoch,
+    attempt: leaderRound?.attempt,
+  });
 
   const roles: string[] = [];
   follower.onRoleChange((r) => roles.push(r));
@@ -726,6 +734,10 @@ test('leader close → follower promotes, keeps the DB, continues syncing', asyn
   ]);
   expect(promotedCommit.length).toBeGreaterThan(0);
   await follower.syncUntilIdle();
+  // The promoted core is a new core: a new epoch, attempts from 1.
+  const promotedRound = (await follower.diagnosticsSnapshot()).lastRound;
+  expect(promotedRound?.epoch).not.toBe(leaderRound?.epoch);
+  expect(follower.progressSnapshot()?.epoch).toBe(promotedRound?.epoch);
 
   // A brand-new tab joining now follows the PROMOTED leader.
   const late = await group.make();

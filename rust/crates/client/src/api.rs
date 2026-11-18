@@ -337,6 +337,9 @@ pub enum TransportCauseKind {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticLastRound {
+    /// §7.6: (`epoch`, `attempt`) identifies the round; it equals its §7.7 progress pair.
+    pub epoch: String,
+    pub attempt: u64,
     pub status: String,
     pub started_at_ms: i64,
     pub completed_at_ms: i64,

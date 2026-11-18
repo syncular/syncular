@@ -989,6 +989,8 @@ export class SyncClient {
   /** §7.8: restarts the running drive's round bound when rows apply. */
   #roundProgressed: (() => void) | undefined;
   #progressAttempt = 0;
+  /** §7.6: scopes `#progressAttempt`; a new core gets a new epoch. */
+  readonly #epoch = crypto.randomUUID();
   /**
    * True from the synchronous entry of `sync()` until its serialized round
    * settles — the "one loop owns the database" guard that rejects a
@@ -4375,15 +4377,24 @@ export class SyncClient {
     this.#syncOutstanding = true;
     this.#beginDiagnosticsDeferral();
     const startedAtMs = this.#now();
+    // `#syncOutstanding` keeps this the attempt `#runSync` starts (§7.6).
+    const attempt = this.#progressAttempt + 1;
+    const round = () => {
+      const completedAtMs = this.#now();
+      return {
+        epoch: this.#epoch,
+        attempt,
+        startedAtMs,
+        completedAtMs,
+        durationMs: Math.max(0, completedAtMs - startedAtMs),
+      };
+    };
     return this.#serialize(() => this.#runSync(signal))
       .then(
         (summary) => {
-          const completedAtMs = this.#now();
           this.#lastRound = {
             status: 'succeeded',
-            startedAtMs,
-            completedAtMs,
-            durationMs: Math.max(0, completedAtMs - startedAtMs),
+            ...round(),
             counters: this.#diagnosticRoundCounters(summary),
           };
           this.#emitDiagnostics();
@@ -4391,8 +4402,13 @@ export class SyncClient {
         },
         (caught: unknown) => {
           const error = classifySqliteFailure(caught).error;
-          const completedAtMs = this.#now();
+          // A gate refusal starts no attempt and records no round.
+          if (this.#progressAttempt !== attempt) throw error;
           const code = (error as { code?: unknown }).code;
+          const errorCode =
+            typeof code === 'string'
+              ? this.#diagnosticCode(code)
+              : 'client.unknown_failure';
           const details =
             typeof error === 'object' && error !== null && 'details' in error
               ? error.details
@@ -4439,27 +4455,19 @@ export class SyncClient {
           this.#progress.update(
             definedObject({
               state: 'failed',
-              errorCode:
-                typeof code === 'string'
-                  ? this.#diagnosticCode(code)
-                  : 'client.unknown_failure',
+              errorCode,
               retryDelayMs: this.#roundRetryDelayMs,
               causeKind,
               httpStatus,
             }),
           );
-          this.#lastRound = {
+          this.#lastRound = definedObject({
             status: 'failed',
-            startedAtMs,
-            completedAtMs,
-            durationMs: Math.max(0, completedAtMs - startedAtMs),
-            errorCode:
-              typeof code === 'string'
-                ? this.#diagnosticCode(code)
-                : 'client.unknown_failure',
-            ...(causeKind !== undefined ? { causeKind } : {}),
-            ...(httpStatus !== undefined ? { httpStatus } : {}),
-          };
+            ...round(),
+            errorCode,
+            causeKind,
+            httpStatus,
+          });
           this.#emitDiagnostics();
           throw error;
         },
@@ -4496,6 +4504,7 @@ export class SyncClient {
     this.#requireTransport();
     this.#roundRetryDelayMs = undefined;
     this.#progress.emit({
+      epoch: this.#epoch,
       attempt: ++this.#progressAttempt,
       state: 'running',
       phase: 'request',

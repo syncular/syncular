@@ -1974,6 +1974,37 @@ fn commit_rounds(client: &SyncClient, count: i64, step: i64) -> ScriptedSyncTran
 }
 
 #[test]
+fn an_idle_drive_ends_every_progress_attempt_in_its_own_last_round() {
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    live_unit(&client, &[("project_id", "p1")]);
+    client.set_now_ms(1_000_000);
+    let mut transport = commit_rounds(&client, 3, 0);
+    let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = ended.clone();
+    let _subscription = client.progress().subscribe(move |progress| {
+        if progress.state != ProgressState::Running {
+            sink.lock()
+                .unwrap()
+                .push((progress.epoch.clone(), progress.attempt));
+        }
+    });
+
+    let outcome = client.sync_until_idle(&mut transport, Some(3));
+
+    assert!(matches!(outcome, SyncOutcome::BudgetExhausted(_)));
+    let round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
+    let ended = ended.lock().unwrap().clone();
+    assert_eq!(
+        ended,
+        (1..=3)
+            .map(|attempt| (round.epoch.clone(), attempt))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(round.attempt, 3);
+}
+
+#[test]
 fn a_deadline_across_completed_rounds_ends_as_budget_exhaustion() {
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
@@ -2487,6 +2518,147 @@ fn transport_diagnostics_bound_evidence_and_clear_it_after_recovery() {
         assert_eq!(last_round.cause_kind, None);
         assert_eq!(last_round.http_status, None);
     }
+}
+
+#[test]
+fn last_round_carries_the_epoch_and_attempt_of_its_progress_attempt() {
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    client.set_now_ms(1_000);
+    let mut transport = failure_transport([
+        Err(TransportError::new("transport.failed", "down")),
+        Ok(completed_response(vec![])),
+    ]);
+    let identity = |client: &SyncClient| {
+        let round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
+        (round.epoch, round.attempt, round.completed_at_ms)
+    };
+    let progress = |client: &SyncClient| {
+        let progress = client.progress().snapshot().unwrap();
+        (progress.epoch, progress.attempt)
+    };
+
+    assert!(matches!(
+        client.sync(&mut transport),
+        SyncOutcome::Failed { .. }
+    ));
+    let first = identity(&client);
+    assert_eq!(identity(&client), first);
+    assert_eq!((first.0.clone(), first.1), progress(&client));
+    assert_eq!(first.1, 1);
+    assert!(uuid::Uuid::parse_str(&first.0).is_ok());
+
+    // Attempt 2 in flight: the snapshot still shows attempt 1's round, and a
+    // refused round changes neither.
+    let prepared = client.prepare_sync_round(false).unwrap();
+    assert_eq!(progress(&client), (first.0.clone(), 2));
+    assert_eq!(identity(&client), first);
+    assert!(client.prepare_sync_round(false).is_err());
+    assert_eq!(progress(&client), (first.0.clone(), 2));
+    assert_eq!(identity(&client), first);
+
+    // The frozen clock gives both rounds one completedAtMs; the pair differs.
+    let applied = client.apply_sync_round(prepared.exchange(&mut transport));
+    assert!(matches!(
+        applied,
+        crate::AppliedSyncRound::Complete {
+            outcome: SyncOutcome::Ok(_),
+            ..
+        }
+    ));
+    let second = identity(&client);
+    assert_eq!(second, (first.0.clone(), 2, first.2));
+    assert_eq!((second.0, second.1), progress(&client));
+}
+
+#[test]
+fn an_abandoned_round_ends_its_attempt_once_as_cancelled() {
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    let mut transport = failure_transport([Ok(completed_response(vec![]))]);
+    let prepared = client.prepare_sync_round(false).unwrap();
+    let attempt = client.progress().snapshot().unwrap().attempt;
+
+    client.disconnect_realtime(&mut transport);
+
+    let progress = client.progress().snapshot().unwrap();
+    assert_eq!(progress.state, ProgressState::Failed);
+    assert_eq!(
+        progress.error_code.as_deref(),
+        Some("client.round_cancelled")
+    );
+    let round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
+    assert_eq!(round.status, "failed");
+    assert_eq!(round.error_code.as_deref(), Some("client.round_cancelled"));
+    assert_eq!(
+        (round.epoch.clone(), round.attempt),
+        (progress.epoch.clone(), attempt)
+    );
+    assert!(matches!(
+        client.apply_sync_round(prepared.exchange(&mut transport)),
+        crate::AppliedSyncRound::Complete {
+            outcome: SyncOutcome::Failed { error_code, .. },
+            ..
+        } if error_code == "client.round_cancelled"
+    ));
+    assert_eq!(client.progress().snapshot().unwrap(), progress);
+    assert_eq!(
+        client.diagnostics_snapshot().unwrap().last_round.unwrap(),
+        round
+    );
+    client.disconnect_realtime(&mut transport);
+    assert_eq!(
+        client.diagnostics_snapshot().unwrap().last_round.unwrap(),
+        round
+    );
+}
+
+#[test]
+fn a_refused_offline_round_changes_neither_progress_nor_last_round() {
+    let mut client = client();
+    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+    let mut transport = failure_transport([Ok(completed_response(vec![]))]);
+    assert!(matches!(client.sync(&mut transport), SyncOutcome::Ok(_)));
+    let progress = client.progress().snapshot();
+    let last_round = client.diagnostics_snapshot().unwrap().last_round;
+    client.set_transport_enabled(&mut transport, false);
+    assert!(matches!(
+        client.sync(&mut transport),
+        SyncOutcome::Failed { error_code, .. } if error_code == "sync.offline"
+    ));
+    assert_eq!(client.progress().snapshot(), progress);
+    assert_eq!(
+        client.diagnostics_snapshot().unwrap().last_round,
+        last_round
+    );
+}
+
+#[test]
+fn a_new_core_on_the_same_database_restarts_attempts_under_a_new_epoch() {
+    let path = std::env::temp_dir().join(format!("syncular-epoch-{}.db", uuid::Uuid::new_v4()));
+    let schema = json!({"version": 1, "tables": [{"name": "tasks", "primaryKey": "id",
+        "scopes": [{"pattern": "project:{project_id}"}], "columns": [
+        {"name": "id", "type": "string", "nullable": false},
+        {"name": "project_id", "type": "string", "nullable": false}]}]});
+    let mut epochs = Vec::new();
+    for _ in 0..2 {
+        let mut client = SyncClient::open_path(
+            "epoch".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        let mut transport = failure_transport([Ok(completed_response(vec![]))]);
+        assert!(matches!(client.sync(&mut transport), SyncOutcome::Ok(_)));
+        let round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
+        assert_eq!(round.attempt, 1);
+        assert_eq!(client.progress().snapshot().unwrap().epoch, round.epoch);
+        epochs.push(round.epoch);
+    }
+    assert_ne!(epochs[0], epochs[1]);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -4166,7 +4338,7 @@ fn failed_log_epoch_resets_restore_memory_and_durable_state() {
                 base_version: None,
             }])
             .unwrap();
-        client.active_round = Some(uuid::Uuid::new_v4());
+        client.active_round = Some((uuid::Uuid::new_v4(), 0, 1));
         client.overlay_dirty.set(false);
         let round = client.active_round;
         let needed = client.sync_needed;
@@ -8233,7 +8405,7 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
     let scopes = vec![("project_id".into(), vec!["p1".into()])];
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = seen.clone();
-    client.progress.start();
+    client.progress.start(&client.epoch);
     let _subscription = client
         .progress
         .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
@@ -8292,7 +8464,7 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
         let scopes = vec![("project_id".into(), vec!["p1".into()])];
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
-        client.progress.start();
+        client.progress.start(&client.epoch);
         let _subscription = client
             .progress
             .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
@@ -11939,7 +12111,7 @@ fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
     let scopes = vec![("project_id".into(), vec!["p1".into()])];
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = seen.clone();
-    client.progress.start();
+    client.progress.start(&client.epoch);
     let _subscription = client
         .progress
         .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));

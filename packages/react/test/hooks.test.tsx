@@ -231,6 +231,7 @@ describe('useRawSql', () => {
     expect(view.result.current.phase).toBe('loading');
 
     const running = (attempt: number) => ({
+      epoch: 'e1',
       attempt,
       state: 'running' as const,
       phase: 'download' as const,
@@ -836,6 +837,7 @@ test('useSyncProgress updates directly and switches subscriptions with the clien
   expect(result.current).toBeUndefined();
   act(() =>
     first.emit({
+      epoch: 'e1',
       attempt: 1,
       state: 'running',
       phase: 'import',
@@ -851,6 +853,7 @@ test('useSyncProgress updates directly and switches subscriptions with the clien
   expect(result.current).toBeUndefined();
   act(() =>
     second.emit({
+      epoch: 'e1',
       attempt: 1,
       state: 'complete',
       phase: 'request',

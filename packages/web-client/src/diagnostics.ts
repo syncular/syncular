@@ -91,9 +91,12 @@ export interface DiagnosticRoundCounters {
   readonly deferredCommits: number;
 }
 
+/** One completed sync round. `(epoch, attempt)` identifies it (SPEC §7.6). */
 export type DiagnosticLastRound =
   | {
       readonly status: 'succeeded';
+      readonly epoch: string;
+      readonly attempt: number;
       readonly startedAtMs: number;
       readonly completedAtMs: number;
       readonly durationMs: number;
@@ -101,6 +104,8 @@ export type DiagnosticLastRound =
     }
   | {
       readonly status: 'failed';
+      readonly epoch: string;
+      readonly attempt: number;
       readonly startedAtMs: number;
       readonly completedAtMs: number;
       readonly durationMs: number;

@@ -73,6 +73,7 @@ function stubClient(rows: () => readonly SqlRow[], async = false) {
     progress: (event: Partial<SyncProgress>) => {
       for (const listener of progress)
         listener({
+          epoch: 'e1',
           attempt: 1,
           state: 'running',
           phase: 'download',

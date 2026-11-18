@@ -26,6 +26,8 @@ For protocol-level failures (`sync.*` codes, revoked units, conflicts) see [Trou
 Failed progress and `lastRound` diagnostics expose the transport's bounded
 `causeKind` and, for an HTTP response, `httpStatus`. Native bridges forward
 these fields with their progress and diagnostics events. A successful round
-replaces the failed evidence. `host.connectivity` reports the endpoint
-observation: an HTTP response reports `online` even when its status is an
-error. It does not establish the device's network state or server health.
+replaces the failed evidence. Identify a round by `last_round.epoch` and
+`last_round.attempt`, which match the progress snapshot of that round;
+`completed_at_ms` can repeat under an equal or backward clock.
+`host.connectivity` reports the endpoint observation: an HTTP response reports
+`online` even when its status is an error. It does not establish the device's network state or server health.

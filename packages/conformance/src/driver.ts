@@ -1191,6 +1191,7 @@ export interface DriverQueryFailure {
 }
 
 export interface DriverSyncProgress {
+  readonly epoch: string;
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
   readonly phase: 'request' | 'download' | 'import';
@@ -1288,6 +1289,8 @@ export interface ClientInstance {
     readonly host: DriverRealtimeAvailability;
     readonly lastRound?: {
       readonly status: string;
+      readonly epoch: string;
+      readonly attempt: number;
       readonly errorCode?: string;
       readonly causeKind?: string;
       readonly httpStatus?: number;

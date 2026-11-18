@@ -1293,6 +1293,7 @@ describe('createNativeSyncClient', () => {
       emit({
         type: 'progress',
         progress: {
+          epoch: 'e1',
           attempt: 1,
           state: 'failed',
           phase: 'request',
@@ -1308,6 +1309,8 @@ describe('createNativeSyncClient', () => {
           ...DIAGNOSTICS,
           lastRound: {
             status: 'failed',
+            epoch: 'e1',
+            attempt: 1,
             startedAtMs: 1,
             completedAtMs: 2,
             durationMs: 1,
@@ -1316,8 +1319,16 @@ describe('createNativeSyncClient', () => {
           },
         },
       });
-      expect(progress.at(-1)).toMatchObject(evidence);
-      expect(rounds.at(-1)).toMatchObject(evidence);
+      expect(progress.at(-1)).toMatchObject({
+        epoch: 'e1',
+        attempt: 1,
+        ...evidence,
+      });
+      expect(rounds.at(-1)).toMatchObject({
+        epoch: 'e1',
+        attempt: 1,
+        ...evidence,
+      });
     }
     emit({
       type: 'progress',
@@ -1581,6 +1592,7 @@ test('progress arrives as an event and listener removal does not issue a command
     received.push(progress.rowsProcessed),
   );
   const progress = {
+    epoch: 'e1',
     attempt: 1,
     state: 'running',
     phase: 'import',

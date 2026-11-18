@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'Each sync round carries an identity',
+    body: 'Diagnostics `lastRound` now carries `epoch` and `attempt`, and every progress snapshot carries the same `epoch`. `attempt` is the progress attempt that ran the round; `epoch` is a random string each client core generates when it starts, so a Worker handover or a process restart counts attempts from 1 under a new `epoch`. Observers count rounds by `(epoch, attempt)`, which stays distinct when two rounds complete in the same millisecond or the clock stands still. A `sync()` call refused with `sync.offline` before it starts an attempt no longer records a failed `lastRound` in the TypeScript client, matching the Rust client. A round the Rust client abandons mid-flight (realtime loss, security teardown) now ends its attempt as failed instead of leaving progress `running`, matching the TypeScript client.',
+    links: [
+      {
+        href: '/platform-web-troubleshooting/#transport-failures',
+        label: 'Transport failures',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A patch can follow an upsert of its row in one commit',
     body: "`mutate` resolved each sparse patch against the local row as it stood before the batch, so `mutate([upsert, patch])` of one new row threw `sync.row_missing`. A patch now reads its row as the batch's earlier operations leave it, in the TS and Rust clients: the overlay shows the merged row, and the server applies the operations in order to the same result. A patch after a delete of its row in the same batch still raises `sync.row_missing`.",
     links: [

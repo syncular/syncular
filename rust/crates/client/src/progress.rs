@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex, Weak};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncProgress {
+    /// §7.6: the core's random epoch; (`epoch`, `attempt`) identifies the attempt.
+    pub epoch: String,
     pub attempt: u64,
     pub state: ProgressState,
     pub phase: ProgressPhase,
@@ -126,9 +128,10 @@ impl ProgressObserver {
             id,
         }
     }
-    pub(crate) fn start(&self) {
+    pub(crate) fn start(&self, epoch: &str) -> u64 {
         let attempt = self.snapshot().map_or(1, |s| s.attempt + 1);
         self.emit(SyncProgress {
+            epoch: epoch.to_owned(),
             attempt,
             state: ProgressState::Running,
             phase: ProgressPhase::Request,
@@ -146,6 +149,7 @@ impl ProgressObserver {
             http_status: None,
             retry_delay_ms: None,
         });
+        attempt
     }
     pub(crate) fn update(&self, update: impl FnOnce(&mut SyncProgress)) {
         if let Some(mut snapshot) = self.snapshot() {
@@ -178,7 +182,7 @@ mod tests {
     #[test]
     fn observes_running_work_and_unsubscribes_without_affecting_sync() {
         let observer = ProgressObserver::default();
-        observer.start();
+        observer.start("e");
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         let reader = observer.clone();
@@ -198,7 +202,7 @@ mod tests {
             p.error_code = Some("sync.transport_failed".into());
         });
         assert_eq!(events.lock().unwrap().len(), 2);
-        observer.start();
+        observer.start("e");
         let snapshot = observer.snapshot().unwrap();
         assert_eq!(snapshot.attempt, 2);
         assert_eq!(snapshot.rows_processed, 0);
@@ -207,7 +211,7 @@ mod tests {
     #[test]
     fn late_subscription_replay_cannot_move_progress_backwards() {
         let observer = ProgressObserver::default();
-        observer.start();
+        observer.start("e");
         let before = observer.snapshot().unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();

@@ -830,6 +830,8 @@ mod tests {
         );
         assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 3000);
         assert_eq!(diagnostics[0]["snapshot"]["lastRound"]["status"], "failed");
+        assert_eq!(diagnostics[0]["snapshot"]["lastRound"]["attempt"], 1);
+        assert!(diagnostics[0]["snapshot"]["lastRound"]["epoch"].is_string());
 
         let preflight = core.command(&json!({"method": "beginSecurityPreflight", "params": {}}));
         assert!(preflight.get("error").is_none(), "{preflight}");

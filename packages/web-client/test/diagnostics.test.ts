@@ -12,7 +12,13 @@ import {
 import { BunClientDatabase } from '@syncular/client/bun';
 import { encodeMessage, PROTOCOL_WIRE_VERSION, unitId } from '@syncular/core';
 import { errorBody, handleSyncRequest, SyncError } from '@syncular/server';
-import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
+import {
+  CLIENT_SCHEMA,
+  makeClient,
+  makeServer,
+  responseGate,
+  taskValues,
+} from './helpers';
 
 describe('privacy-safe client diagnostics', () => {
   test('publishes bounded transport evidence and clears it on recovery', async () => {
@@ -477,5 +483,101 @@ describe('privacy-safe client diagnostics', () => {
       status: 'failed',
       errorCode: 'sync.limit_exceeded',
     });
+  });
+
+  test('identifies each round by (epoch, attempt), whatever the clock', async () => {
+    const server = makeServer();
+    const seeder = await makeClient(server, { clientId: 'seeder' });
+    seeder.client.mutate(
+      Array.from({ length: 5 }, (_, i) => ({
+        table: 'tasks',
+        op: 'upsert' as const,
+        values: taskValues(`t${i}`, 'p1', `task ${i}`),
+      })),
+    );
+    await seeder.client.sync();
+    // A frozen clock: every round starts and completes at the same time.
+    const fixture = await makeClient(server, {
+      clientId: 'round-identity',
+      now: () => 1_000,
+      limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
+    });
+    const { client } = fixture;
+    const progress: SyncProgress[] = [];
+    const rounds: NonNullable<ClientDiagnosticsSnapshot['lastRound']>[] = [];
+    client.onProgress((value) => progress.push(value));
+    client.onDiagnostics((value) => {
+      if (value.lastRound !== undefined && value.lastRound !== rounds.at(-1))
+        rounds.push(value.lastRound);
+    });
+    expect(client.progressSnapshot()).toBeUndefined();
+
+    fixture.faults.dropResponseOnce = true;
+    await expect(client.sync()).rejects.toThrow();
+    const failed = client.diagnosticsSnapshot().lastRound;
+    expect(failed).toMatchObject({ status: 'failed', attempt: 1 });
+    expect(client.diagnosticsSnapshot().lastRound).toEqual(failed);
+    expect(client.progressSnapshot()).toMatchObject({
+      epoch: failed?.epoch,
+      attempt: 1,
+      state: 'failed',
+    });
+
+    await client.sync();
+    const succeeded = client.diagnosticsSnapshot().lastRound;
+    expect(succeeded).toMatchObject({
+      status: 'succeeded',
+      epoch: failed?.epoch,
+      attempt: 2,
+      completedAtMs: failed?.completedAtMs,
+    });
+
+    // While attempt 3 runs, diagnostics still name attempt 2.
+    const gate = responseGate();
+    fixture.faults.holdResponseOnce = gate.fault;
+    client.subscribe({ project_id: 'p1' });
+    const running = client.sync();
+    await gate.held;
+    expect(client.diagnosticsSnapshot().lastRound).toEqual(succeeded);
+    expect(client.progressSnapshot()).toMatchObject({
+      epoch: failed?.epoch,
+      attempt: 3,
+      state: 'running',
+    });
+    gate.release();
+    await running;
+
+    // Every drive round records its own identity, matching its progress.
+    await client.syncUntilIdle();
+    const terminal = progress.filter((value) => value.state !== 'running');
+    expect(terminal.length).toBeGreaterThan(4);
+    expect(
+      rounds.map((round) => [round.epoch, round.attempt, round.status]),
+    ).toEqual(
+      terminal.map((value) => [
+        value.epoch,
+        value.attempt,
+        value.state === 'complete' ? 'succeeded' : 'failed',
+      ]),
+    );
+    expect(rounds.map((round) => round.attempt)).toEqual(
+      rounds.map((_, index) => index + 1),
+    );
+
+    // A refused call starts no attempt and records no round.
+    const before = client.diagnosticsSnapshot().lastRound;
+    const latest = client.progressSnapshot();
+    client.setTransportEnabled(false);
+    await expect(client.sync()).rejects.toMatchObject({ code: 'sync.offline' });
+    expect(client.diagnosticsSnapshot().lastRound).toEqual(before);
+    expect(client.progressSnapshot()).toEqual(latest);
+
+    // A new core restarts attempts under a new epoch.
+    const next = await makeClient(server, { clientId: 'round-identity-2' });
+    await next.client.sync();
+    const nextRound = next.client.diagnosticsSnapshot().lastRound;
+    expect(nextRound?.attempt).toBe(1);
+    expect(nextRound?.epoch).not.toBe(failed?.epoch);
+    expect(next.client.progressSnapshot()?.epoch).toBe(nextRound?.epoch);
   });
 });

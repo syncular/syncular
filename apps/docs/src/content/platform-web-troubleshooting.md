@@ -63,6 +63,31 @@ the last-round evidence to each worker leader and follower. Tauri and React
 Native forward the native core's evidence. A new progress attempt clears its
 failure fields, and a successful round replaces the failed `lastRound`.
 
+Each `lastRound` carries `epoch` and `attempt`, and each progress event carries
+`epoch` and `attempt`. `attempt` is the progress attempt that ran the round;
+`epoch` is a random string the client core generates when it starts. The pair
+identifies one round: repeated snapshots of a round return the same pair, and
+the round that a progress event describes has the same pair. A Worker leader
+taking over, a reload, or a restarted native process starts a new core, which
+counts attempts from 1 under a new `epoch`. Count rounds by the pair. Two
+rounds can complete in the same millisecond, and the clock can stand still or
+move back, so `completedAtMs` does not tell rounds apart.
+
+```ts
+let lastSeen: string | undefined;
+client.onDiagnostics(({ lastRound }) => {
+  if (lastRound === undefined) return;
+  const id = `${lastRound.epoch}:${lastRound.attempt}`;
+  if (id === lastSeen) return;
+  lastSeen = id;
+  recordRound(lastRound);
+});
+```
+
+A `sync()` call the core refuses before it starts an attempt (the transport
+gate is closed and the call rejects with `sync.offline`, or a round is already
+running) leaves progress and `lastRound` unchanged.
+
 `host.connectivity` describes the latest endpoint observation. A `network` or
 `connect` failure reports `offline`; an HTTP response reports `online`, even
 when the response is an error. Other failed rounds report `unknown`. These

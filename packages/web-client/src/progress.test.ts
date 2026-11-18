@@ -8,6 +8,7 @@ test('progress listeners replay the snapshot, isolate errors and unsubscribe', (
     throw new Error('observer');
   });
   emitter.emit({
+    epoch: 'e1',
     attempt: 1,
     state: 'running',
     phase: 'request',

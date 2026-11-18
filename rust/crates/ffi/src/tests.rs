@@ -376,6 +376,8 @@ fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_ev
     );
     assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 3000);
     assert_eq!(diagnostics[0]["snapshot"]["lastRound"]["status"], "failed");
+    assert_eq!(diagnostics[0]["snapshot"]["lastRound"]["attempt"], 1);
+    assert!(diagnostics[0]["snapshot"]["lastRound"]["epoch"].is_string());
 
     let preflight = handle.command(&json!({"method": "beginSecurityPreflight", "params": {}}));
     assert!(preflight.get("error").is_none(), "{preflight}");
@@ -421,6 +423,18 @@ fn ffi_progress_and_diagnostics_distinguish_connection_and_http_failure() {
     assert!(events.iter().any(|event| event["type"] == "diagnostics"
         && event["snapshot"]["lastRound"]["causeKind"] == "connect"
         && event["snapshot"]["host"]["connectivity"] == "offline"));
+    // §7.6: the round's (epoch, attempt) equals its progress attempt's pair.
+    let progress = events
+        .iter()
+        .rfind(|event| event["type"] == "progress")
+        .unwrap();
+    let round = &events
+        .iter()
+        .rfind(|event| event["type"] == "diagnostics")
+        .unwrap()["snapshot"]["lastRound"];
+    assert!(progress["progress"]["epoch"].is_string());
+    assert_eq!(round["epoch"], progress["progress"]["epoch"]);
+    assert_eq!(round["attempt"], progress["progress"]["attempt"]);
     let listener = TcpListener::bind(address).unwrap();
     let server = std::thread::spawn(move || {
         for round in 0..2 {

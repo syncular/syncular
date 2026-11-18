@@ -543,6 +543,7 @@ describe('rejected claim recovery (SPEC §7.8)', () => {
     const { client, store, entry, off } = await rejected();
     client.setWindowFailure = failure();
     const running = (attempt: number) => ({
+      epoch: 'e1',
       attempt,
       state: 'running' as const,
       phase: 'request' as const,
@@ -718,6 +719,7 @@ describe('failed sync rounds', () => {
       ],
     });
   const running = (attempt: number) => ({
+    epoch: 'e1',
     attempt,
     state: 'running' as const,
     phase: 'request' as const,

@@ -2807,6 +2807,19 @@ mod tests {
                     && event["progress"]["causeKind"] == "connect"));
             assert!(events.iter().any(|event| event["type"] == "diagnostics"
                 && event["snapshot"]["lastRound"]["causeKind"] == "connect"));
+            let progress = events
+                .iter()
+                .rfind(|event| event["type"] == "progress")
+                .unwrap();
+            assert!(progress["progress"]["epoch"].is_string());
+            assert_eq!(
+                snapshot["result"]["lastRound"]["epoch"],
+                progress["progress"]["epoch"]
+            );
+            assert_eq!(
+                snapshot["result"]["lastRound"]["attempt"],
+                progress["progress"]["attempt"]
+            );
         }
         tx.send(Request::Shutdown).unwrap();
         owner.join().unwrap();

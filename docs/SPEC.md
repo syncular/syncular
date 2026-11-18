@@ -6909,6 +6909,40 @@ the failed `lastRound`. These fields report the transport's classification,
 including a custom transport's declared classification; they do not prove
 device connectivity or server health.
 
+`lastRound` carries the round's identity in two fields. `epoch` is an opaque
+random string the client core generates once when it is constructed; it
+carries no client, actor, or device data, is not persisted, and never goes on
+the wire. `attempt` is the §7.7 progress attempt that ran the round. Every
+progress snapshot of the core carries the same `epoch`. The pair (`epoch`,
+`attempt`) is the round's identity: repeated snapshots of one round carry an
+equal pair, and no two rounds share a pair. Observers dedupe rounds and
+correlate `lastRound` with progress by this pair; `startedAtMs` and
+`completedAtMs` are clock readings, and two rounds can share them. Each new
+core gets a new `epoch`: a Worker leader's core after a handover, a reopened
+client, a native client in a restarted process. Worker and native bridges
+forward both fields from the core.
+
+Every progress attempt ends in exactly one `lastRound` carrying that attempt,
+including an attempt that fails before its request is sent (security
+preflight, local storage, realtime required but unavailable). A round the core
+abandons mid-flight (realtime loss or disconnect, security teardown, a schema
+upgrade, a local purge) ends its attempt as failed: progress turns `failed`
+and `lastRound` records the round. A late reply to an abandoned round changes
+neither. A call the core refuses before it starts an attempt (a closed
+transport gate, `sync.offline`; a round already in flight) changes neither
+progress nor `lastRound`.
+
+DECISION (2026-11-18): rounds are identified by (`epoch`, `attempt`) instead of
+by time. An app counted rounds by `completedAtMs`; two rounds that completed in
+the same millisecond, or under a frozen clock, counted as one, and a snapshot
+taken while attempt 2 ran showed attempt 1's round with nothing tying it to
+progress. The attempt alone restarts at 1 with every new core, so the epoch
+scopes it. Until this decision the TypeScript core recorded a `sync.offline`
+refusal as a failed `lastRound` without an attempt, while the Rust core
+recorded nothing; both now record nothing. The Rust core left the attempt of an
+abandoned round `running` without a `lastRound`; it now ends it as failed, as
+the TypeScript core did.
+
 The core reports host connectivity as `offline` when the transport is disabled
 or the last failed round has cause `network` or `connect`. It reports `online`
 after a successful round or a failure with a valid HTTP status. It reports
@@ -6929,7 +6963,10 @@ Bridges forward progress while the operation is running, without waiting for
 its command response. Unsubscribing stops observation and does not cancel sync.
 
 Each `sync` round starts a new monotonically increasing `attempt` scoped to the
-client instance. `syncUntilIdle` starts an attempt for each round. `state` is
+client core, starting at 1. `syncUntilIdle` starts an attempt for each round.
+Every snapshot carries the core's `epoch` (§7.6); a new core restarts
+`attempt` at 1 under a new `epoch`, so (`epoch`, `attempt`) identifies one
+attempt across a Worker handover or a process restart. `state` is
 `running`, `complete`, or `failed`; `phase` is `request`, `download`, or `import`.
 A new attempt resets counters and failure state. `unitId`, `table`, and
 `segmentId` identify the current payload when present. Payload counters reset

@@ -505,7 +505,7 @@ struct Rollback {
     stopped: bool,
     upgrading: bool,
     sync_needed: bool,
-    active_round: Option<uuid::Uuid>,
+    active_round: Option<(uuid::Uuid, i64, u64)>,
     overlay_dirty: Option<BTreeSet<String>>,
     change_queue: usize,
     sync_intent_queue: usize,
@@ -588,6 +588,8 @@ pub struct SyncClient {
     image_chunk_ms: Cell<Option<f64>>,
     /// Exact observer-transaction output drained by command/FFI hosts.
     progress: ProgressObserver,
+    /// §7.6: random per core instance, never persisted or sent.
+    epoch: String,
     change_queue: VecDeque<ClientChangeBatch>,
     sync_intent_queue: VecDeque<SyncIntent>,
     /// §8.7 `scopes` events received since the last drain.
@@ -604,7 +606,8 @@ pub struct SyncClient {
     /// complete, decodable response. The server already recorded the round, so
     /// nothing else can tell it the round failed on this side.
     round_failure: Option<String>,
-    active_round: Option<uuid::Uuid>,
+    /// The in-flight round: its id, `started_at_ms` and progress attempt.
+    active_round: Option<(uuid::Uuid, i64, u64)>,
     last_round: Option<DiagnosticLastRound>,
     last_change: Option<DiagnosticLastChange>,
     /// §7.6: latest failed owned snapshot read per owner id, oldest first.
@@ -2102,6 +2105,7 @@ impl SyncClient {
             #[cfg(test)]
             image_chunk_ms: Cell::new(None),
             progress: ProgressObserver::default(),
+            epoch: uuid::Uuid::new_v4().to_string(),
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
             scopes_changed: 0,
@@ -3905,6 +3909,8 @@ impl SyncClient {
             self.restore(rollback);
             return Err(error);
         }
+        // After the commit: a rolled-back reset keeps the in-flight round.
+        self.cancel_sync_round();
         Ok(())
     }
 
@@ -3958,6 +3964,7 @@ impl SyncClient {
             self.restore(rollback);
             return Err(error);
         }
+        self.cancel_sync_round();
         self.sync_intent_queue.push_back(SyncIntent::Interactive);
         Ok(resets)
     }
@@ -4028,7 +4035,6 @@ impl SyncClient {
                 .execute(sql, [&kept_json])
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
-        self.cancel_sync_round();
         self.upgrading = true;
         batch.status = true;
         // RFC 0005 D6: classify the pending outbox against the NEW compiled
@@ -7835,7 +7841,12 @@ impl SyncClient {
         }
     }
 
-    fn finish_sync_round(&mut self, started_at_ms: i64, mut outcome: SyncOutcome) -> SyncOutcome {
+    fn finish_sync_round(
+        &mut self,
+        started_at_ms: i64,
+        attempt: u64,
+        mut outcome: SyncOutcome,
+    ) -> SyncOutcome {
         if let SyncOutcome::Failed {
             error_code,
             message,
@@ -7927,6 +7938,8 @@ impl SyncClient {
         let completed_at_ms = self.clock_now_ms();
         self.last_round = Some(match &outcome {
             SyncOutcome::Ok(report) | SyncOutcome::BudgetExhausted(report) => DiagnosticLastRound {
+                epoch: self.epoch.clone(),
+                attempt,
                 status: "succeeded".to_owned(),
                 started_at_ms,
                 completed_at_ms,
@@ -7950,6 +7963,8 @@ impl SyncClient {
                 http_status: None,
             },
             SyncOutcome::Failed { error_code, .. } => DiagnosticLastRound {
+                epoch: self.epoch.clone(),
+                attempt,
                 status: "failed".to_owned(),
                 started_at_ms,
                 completed_at_ms,
@@ -7960,6 +7975,8 @@ impl SyncClient {
                 http_status,
             },
             SyncOutcome::RealtimeUnavailable { .. } => DiagnosticLastRound {
+                epoch: self.epoch.clone(),
+                attempt,
                 status: "failed".to_owned(),
                 started_at_ms,
                 completed_at_ms,
@@ -7996,7 +8013,7 @@ impl SyncClient {
             }));
         }
         self.storage_failure.borrow_mut().take();
-        self.progress.start();
+        let attempt = self.progress.start(&self.epoch);
         self.round_retry_delay_ms = None;
         let started_at_ms = self.clock_now_ms();
         let prepared = (|| {
@@ -8091,7 +8108,7 @@ impl SyncClient {
                 }
             }
             let id = uuid::Uuid::new_v4();
-            self.active_round = Some(id);
+            self.active_round = Some((id, started_at_ms, attempt));
             let phase = if uploads.is_empty() {
                 crate::round::RoundPhase::Sync
             } else {
@@ -8100,6 +8117,7 @@ impl SyncClient {
             Ok(crate::PreparedSyncRound {
                 id,
                 started_at_ms,
+                attempt,
                 message,
                 meta,
                 uploads: uploads.into(),
@@ -8129,13 +8147,28 @@ impl SyncClient {
                 idle_bound: None,
             })
         })();
-        prepared.map_err(|outcome| Box::new(self.finish_sync_round(started_at_ms, *outcome)))
+        prepared
+            .map_err(|outcome| Box::new(self.finish_sync_round(started_at_ms, attempt, *outcome)))
     }
 
     /// Discard the reply of an old authorization or registration context. Its
     /// submitted commits stay durable and can be retried with the same ids.
+    /// §7.6: an abandoned in-flight round ends its attempt as failed.
     pub fn cancel_sync_round(&mut self) {
-        self.active_round = None;
+        if let Some((_, started_at_ms, attempt)) = self.active_round.take() {
+            // A storage failure recorded since the round started is not its cause.
+            self.storage_failure.borrow_mut().take();
+            self.finish_sync_round(
+                started_at_ms,
+                attempt,
+                SyncOutcome::Failed {
+                    error_code: "client.round_cancelled".into(),
+                    message: "sync round belongs to a released client context".into(),
+                    details: None,
+                    recommended_action: None,
+                },
+            );
+        }
     }
 
     /// Apply captured network results on the owner, preserving all normal
@@ -8145,7 +8178,7 @@ impl SyncClient {
         completed: crate::CompletedSyncRound,
     ) -> crate::AppliedSyncRound {
         let mut prepared = completed.prepared;
-        if self.active_round != Some(prepared.id) || self.security_preflight {
+        if self.active_round.map(|(id, ..)| id) != Some(prepared.id) || self.security_preflight {
             return crate::AppliedSyncRound::Complete {
                 outcome: SyncOutcome::Failed {
                     error_code: "client.round_cancelled".into(),
@@ -8237,6 +8270,7 @@ impl SyncClient {
                         let recommended_action = recommended_action_of(&details);
                         let outcome = self.finish_sync_round(
                             prepared.started_at_ms,
+                            prepared.attempt,
                             SyncOutcome::Failed {
                                 error_code: code,
                                 message,
@@ -8359,7 +8393,7 @@ impl SyncClient {
         let bootstrap_advanced = matches!(&outcome, SyncOutcome::Ok(report) if report.segment_rows_applied > 0 && !report.bootstrapping.is_empty())
             && before != self.resume_tokens();
         crate::AppliedSyncRound::Complete {
-            outcome: self.finish_sync_round(prepared.started_at_ms, outcome),
+            outcome: self.finish_sync_round(prepared.started_at_ms, prepared.attempt, outcome),
             controls: if self.transport_enabled {
                 downloads.controls
             } else {
@@ -11494,6 +11528,7 @@ impl SyncClient {
             self.restore(rollback);
             return Err(error);
         }
+        self.cancel_sync_round();
 
         Ok(LocalDataRebootstrapResult {
             already_applied: false,

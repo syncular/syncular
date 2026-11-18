@@ -409,7 +409,9 @@ stop, pending outbox, offline transport, and storage pressure/unreadability.
 Failed progress and `lastRound` diagnostics expose an optional bounded
 `causeKind` and HTTP status. Worker leaders and followers receive the same
 evidence. A new progress attempt clears its failure fields; a successful round
-replaces the failed last round. `host.connectivity` describes the latest
+replaces the failed last round. `lastRound.epoch` and `lastRound.attempt`
+identify the round and match its progress events; count rounds by that pair
+instead of `completedAtMs`. `host.connectivity` describes the latest
 endpoint observation and does not prove the device's network state.
 `queryFailures` retains at most 256 failed owned snapshot reads until each query
 reads successfully. An entry contains only its stable PHI-free owner id,
@@ -836,9 +838,11 @@ const stop = client.onProgress((progress) => {
 stop();
 ```
 
-Each snapshot identifies the round with `attempt`, and the current payload with
+Each snapshot identifies the round with `epoch` and `attempt`, and the current payload with
 `unitId`, `table`, and optional `segmentId`. Counters reset for each
-payload; `syncUntilIdle` starts a new attempt for each round. `phase` is `request`,
+payload; `syncUntilIdle` starts a new attempt for each round. `epoch` is random per
+client core; a new core (a Worker handover, a reload) counts attempts from 1
+under a new `epoch`. `phase` is `request`,
 `download`, or `import`; `state` is `running`, `complete`, or `failed`. Unknown
 totals remain absent. A new attempt clears prior errors and counters.
 

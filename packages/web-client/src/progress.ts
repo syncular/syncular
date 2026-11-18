@@ -2,6 +2,8 @@ import type { TransportCauseKind } from './diagnostics';
 
 /** Ephemeral sync work, independent of committed change notifications (SPEC §7.7). */
 export interface SyncProgress {
+  /** Random per client core; `(epoch, attempt)` identifies the attempt (SPEC §7.6). */
+  readonly epoch: string;
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
   readonly phase: 'request' | 'download' | 'import';

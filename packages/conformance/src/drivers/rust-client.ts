@@ -690,6 +690,7 @@ function progressValue(value: JsonValue): DriverSyncProgress {
     (object.phase !== 'request' &&
       object.phase !== 'download' &&
       object.phase !== 'import') ||
+    typeof object.epoch !== 'string' ||
     typeof object.attempt !== 'number' ||
     typeof object.bytesReceived !== 'number' ||
     typeof object.rowsProcessed !== 'number'
@@ -697,6 +698,7 @@ function progressValue(value: JsonValue): DriverSyncProgress {
     throw new Error('invalid progress snapshot');
   }
   return {
+    epoch: object.epoch,
     attempt: object.attempt,
     state: object.state,
     phase: object.phase,
@@ -1443,6 +1445,8 @@ class RustClientInstance implements ClientInstance {
       readonly host: DriverRealtimeAvailability;
       readonly lastRound?: {
         readonly status: string;
+        readonly epoch: string;
+        readonly attempt: number;
         readonly errorCode?: string;
         readonly causeKind?: string;
         readonly httpStatus?: number;
