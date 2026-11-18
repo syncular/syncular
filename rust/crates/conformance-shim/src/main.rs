@@ -42,7 +42,9 @@ use syncular_authority::{AuthorityError, AuthorityState, LocalAuthority, Retenti
 use syncular_client::{
     BlobDownload, BlobUploadGrant, SegmentRequest, SyncClient, Transport, TransportError,
 };
-use syncular_command::{bytes_value, dispatch, value_bytes, CommandError, CreateEffects};
+use syncular_command::{
+    bytes_value, dispatch, error_envelope, value_bytes, CommandError, CreateEffects,
+};
 
 enum Incoming {
     Request {
@@ -212,17 +214,7 @@ impl HostIo {
     fn respond(&mut self, id: &Value, result: Result<Value, CommandError>) {
         let line = match result {
             Ok(value) => json!({ "id": id, "result": value }),
-            Err(error) => {
-                let mut envelope = json!({
-                    "code": error.code,
-                    "message": error.message,
-                    "retryable": error.retryable
-                });
-                if let Some(details) = error.details {
-                    envelope["details"] = details;
-                }
-                json!({ "id": id, "error": envelope })
-            }
+            Err(error) => json!({ "id": id, "error": error_envelope(error) }),
         };
         self.write_line(&line);
     }
@@ -367,7 +359,7 @@ impl Transport for HostIo {
             .map(|_| ())
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         self.call_host("realtimeConnect", json!({})).map(|_| ())
     }
 

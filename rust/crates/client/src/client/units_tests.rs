@@ -118,7 +118,7 @@ impl Transport for Script {
         ))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 

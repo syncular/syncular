@@ -878,7 +878,7 @@ mod tests {
             Err(TransportError::new("unused", "unused"))
         }
 
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Err(TransportError::new("unused", "unused"))
         }
 

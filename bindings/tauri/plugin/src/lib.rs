@@ -1270,10 +1270,16 @@ async fn syncular_query_snapshot<R: Runtime>(
             Err(message) => return Ok(invalid_request(&message)),
         };
         // §7.5 owner: the same `{id, tables}` contract the command router parses.
-        let parsed_owner = match parse_owner(owner.as_ref()) {
-            Ok(value) => value,
-            Err(reply) => return Ok(reply),
-        };
+        let parsed_owner =
+            match syncular_command::parse_query_owner(owner.as_ref(), "querySnapshot") {
+                Ok(value) => value.map(|(id, tables)| {
+                    (
+                        id.to_owned(),
+                        tables.into_iter().map(str::to_owned).collect(),
+                    )
+                }),
+                Err(error) => return Ok(syncular_command::reply(Err(error))),
+            };
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         reader
             .send(ReadRequest::QuerySnapshot {
@@ -1307,47 +1313,6 @@ async fn syncular_query_snapshot<R: Runtime>(
         .map_err(|_| "the syncular core dropped the reply".to_owned())
 }
 
-/// §7.5 owner `{id, tables}`, both required when present. Shared by the
-/// `querySnapshot` and `snapshotRead` commands.
-fn parse_owner(value: Option<&Value>) -> Result<Option<(String, Vec<String>)>, Value> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => {
-            let id = value
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty());
-            let tables = value
-                .get("tables")
-                .and_then(Value::as_array)
-                .and_then(|list| {
-                    list.iter()
-                        .map(|table| table.as_str().map(str::to_owned))
-                        .collect::<Option<Vec<String>>>()
-                });
-            match (id, tables) {
-                (Some(id), Some(tables)) => Ok(Some((id.to_owned(), tables))),
-                _ => Err(json!({ "error": {
-                    "code": "sync.invalid_request",
-                    "message": "sync.invalid_request: owner must be {id: non-empty string, tables: string[]}",
-                } })),
-            }
-        }
-    }
-}
-
-fn parse_string_list(value: Option<&Value>) -> Result<Vec<String>, String> {
-    match value {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| item.as_str().map(str::to_owned))
-            .collect::<Option<Vec<String>>>()
-            .ok_or_else(|| "expected a list of strings".to_owned()),
-        Some(_) => Err("expected a list of strings".to_owned()),
-    }
-}
-
 /// §7.5: one atomic read over the file-backed sidecar, or the owner command
 /// for an in-memory replica (SQLite cannot share an anonymous database across
 /// connections). `statements` is a list of `{sql, params?}`; `units` and
@@ -1367,57 +1332,27 @@ async fn syncular_snapshot_read<R: Runtime>(
         Ok(guard) => guard,
         Err(reply) => return Ok(reply),
     };
-    let Some(items) = statements.as_array() else {
-        return Ok(invalid_request(
-            "sync.invalid_request: snapshotRead statements must be a list",
-        ));
-    };
-    let mut parsed_statements = Vec::with_capacity(items.len());
-    for item in items {
-        let Some(sql) = item.get("sql").and_then(Value::as_str) else {
-            return Ok(invalid_request(
-                "sync.invalid_request: each snapshotRead statement needs a sql string",
-            ));
-        };
-        // A present `params` must be a list; never fabricate an empty bind set.
-        let params = match item.get("params") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(values)) => values.clone(),
-            Some(_) => {
-                return Ok(invalid_request(
-                    "sync.invalid_request: snapshotRead statement params must be a list",
-                ))
-            }
-        };
-        parsed_statements.push((sql.to_owned(), params));
-    }
-    let coverage_value = coverage.clone().unwrap_or(Value::Null);
-    let parsed_coverage = match syncular_command::parse_window_coverage(coverage.as_ref()) {
-        Ok(value) => value,
-        Err(message) => return Ok(invalid_request(&message)),
-    };
-    let parsed_units = match parse_string_list(units.as_ref()) {
-        Ok(value) => value,
-        Err(message) => return Ok(invalid_request(&format!("sync.invalid_request: {message}"))),
-    };
-    let parsed_commit_ids = match parse_string_list(commit_ids.as_ref()) {
-        Ok(value) => value,
-        Err(message) => return Ok(invalid_request(&format!("sync.invalid_request: {message}"))),
-    };
-    let parsed_owner = match parse_owner(owner.as_ref()) {
-        Ok(value) => value,
-        Err(reply) => return Ok(reply),
+    let params = json!({
+        "statements": statements,
+        "coverage": coverage,
+        "units": units,
+        "commitIds": commit_ids,
+        "owner": owner,
+    });
+    let parsed = match syncular_command::parse_snapshot_read(&params) {
+        Ok(parsed) => parsed,
+        Err(error) => return Ok(syncular_command::reply(Err(error))),
     };
 
     if let Some(reader) = state.reader()? {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         reader
             .send(ReadRequest::SnapshotRead {
-                statements: parsed_statements,
-                coverage: parsed_coverage,
-                units: parsed_units,
-                commit_ids: parsed_commit_ids,
-                owner: parsed_owner,
+                statements: parsed.statements,
+                coverage: parsed.coverage,
+                units: parsed.units,
+                commit_ids: parsed.commit_ids,
+                owner: parsed.owner,
                 reply: reply_tx,
             })
             .map_err(|_| "the syncular read thread has stopped".to_owned())?;
@@ -1428,22 +1363,7 @@ async fn syncular_snapshot_read<R: Runtime>(
 
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     state.send(Request::Command {
-        command: json!({
-            "method": "snapshotRead",
-            "params": {
-                "statements": parsed_statements
-                    .into_iter()
-                    .map(|(sql, params)| json!({ "sql": sql, "params": params }))
-                    .collect::<Vec<_>>(),
-                "coverage": coverage_value,
-                "units": parsed_units,
-                "commitIds": parsed_commit_ids,
-                "owner": parsed_owner.map_or(Value::Null, |(id, tables)| json!({
-                    "id": id,
-                    "tables": tables,
-                })),
-            }
-        }),
+        command: json!({ "method": "snapshotRead", "params": params }),
         reply: reply_tx,
     })?;
     reply_rx

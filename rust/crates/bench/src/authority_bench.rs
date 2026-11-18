@@ -40,7 +40,7 @@ impl Transport for AuthorityServer {
     ) -> Result<Vec<u8>, TransportError> {
         Err(TransportError::new("sync.transport_failed", "no segments"))
     }
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Err(TransportError::new("sync.transport_failed", "no socket"))
     }
     fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {

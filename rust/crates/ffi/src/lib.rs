@@ -58,11 +58,11 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use serde_json::{json, Value};
 use syncular_client::{ClientDiagnosticsSnapshot, SyncClient};
-use syncular_command::{dispatch, parse_headers, CreateEffects};
+use syncular_command::{
+    diagnostics_event, dispatch, parse_headers, presence_event, reply, CreateEffects,
+};
 
-pub mod transport;
-
-use transport::HostTransport;
+use syncular_client::native_transport::{HostTransport, Inbound};
 
 /// One client-observable event (§8 realtime signals + §6 conflicts + §1.6
 /// schema floor + §7.3 lease). JSON-able; delivered by `poll_event`.
@@ -283,28 +283,7 @@ impl Core {
         self.drain_realtime();
         self.drain_core_outputs();
         self.emit_diagnostics_if_changed();
-        match result {
-            Ok(mut value) => {
-                // The router's effects have already been converted to native
-                // events; do not leak host-private scheduling metadata through
-                // the application-facing command result.
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("effects");
-                }
-                Value::Object(serde_json::Map::from_iter([("result".to_owned(), value)]))
-            }
-            Err(error) => {
-                let mut envelope = json!({
-                    "code": error.code,
-                    "message": error.message,
-                    "retryable": error.retryable
-                });
-                if let Some(details) = error.details {
-                    envelope["details"] = details;
-                }
-                json!({ "error": envelope })
-            }
-        }
+        reply(result)
     }
 
     /// Feed buffered inbound WS frames to the client (which may send acks back
@@ -316,7 +295,7 @@ impl Core {
         self.queue.clear_wake();
         for frame in self.transport.take_inbound() {
             match frame {
-                transport::Inbound::Text(text) => {
+                Inbound::Text(text) => {
                     // A presence frame is the client-observable event a native
                     // host wants pushed; detect it on the wire (the core has no
                     // presence callback) before handing the control frame off.
@@ -325,12 +304,8 @@ impl Core {
                     }
                     client.on_realtime_text(&text);
                 }
-                transport::Inbound::Binary(bytes) => {
-                    client.on_realtime_binary(&mut self.transport, &bytes)
-                }
-                transport::Inbound::Disconnected(error) => {
-                    client.realtime_lost(&mut self.transport, &error)
-                }
+                Inbound::Binary(bytes) => client.on_realtime_binary(&mut self.transport, &bytes),
+                Inbound::Disconnected(error) => client.realtime_lost(&mut self.transport, &error),
             }
         }
     }
@@ -366,40 +341,10 @@ impl Core {
         let Some(client) = self.client.as_ref() else {
             return;
         };
-        if client.security_preflight() {
-            return;
+        if let Some(json) = diagnostics_event(client, &mut self.last_diagnostics_snapshot) {
+            self.queue.push(Event { json });
         }
-        let Ok(snapshot) = client.diagnostics_snapshot() else {
-            return;
-        };
-        if let Some(previous) = &mut self.last_diagnostics_snapshot {
-            // Capture time is observation metadata, excluded from evidence equality.
-            previous.captured_at_ms = snapshot.captured_at_ms;
-            if previous == &snapshot {
-                return;
-            }
-        }
-        let event = json!({ "type": "diagnostics", "snapshot": snapshot });
-        self.last_diagnostics_snapshot = Some(snapshot);
-        self.queue.push(Event { json: event });
     }
-}
-
-/// A well-formed presence control frame (§8.6.2), the one inbound realtime
-/// event a native host surfaces as an event: a fanout, or the server's refusal
-/// of this client's own publish, which carries the server's `error` code.
-fn presence_event(text: &str) -> Option<Value> {
-    let Ok(ssp2::ControlMessage::Presence {
-        scope_key, error, ..
-    }) = ssp2::parse_control(text)
-    else {
-        return None;
-    };
-    let mut event = json!({ "type": "presence", "scopeKey": scope_key });
-    if let Some(error) = error {
-        event["error"] = Value::from(error);
-    }
-    Some(event)
 }
 
 // -- C-ABI surface (the 5 functions kept exactly in sync with rust/ffi.h) ----

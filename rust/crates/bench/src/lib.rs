@@ -43,7 +43,7 @@ use syncular_client::{
 };
 use syncular_command::{dispatch, CommandError, CreateEffects};
 // The FFI crate's lib name is `syncular` (see crates/ffi/Cargo.toml [lib]).
-use syncular::transport::{HostTransport, Inbound};
+use syncular_client::native_transport::{HostTransport, Inbound};
 
 /// Benchmark host for the exported C ABI. Commands own their returned strings;
 /// copy before release, parse the owned copy, and close the handle once on drop.
@@ -484,12 +484,8 @@ impl Transport for BenchTransport {
         result
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
-        self.inner.realtime_connect()
-    }
-
-    fn realtime_connect_for_client(&mut self, client_id: &str) -> Result<(), TransportError> {
-        self.inner.realtime_connect_for_client(client_id)
+    fn realtime_connect(&mut self, client_id: &str) -> Result<(), TransportError> {
+        self.inner.realtime_connect(client_id)
     }
 
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {

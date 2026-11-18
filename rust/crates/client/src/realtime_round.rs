@@ -149,8 +149,8 @@ impl RealtimeRound {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ssp2::encode_message;
     use ssp2::model::{Frame, Message, MsgKind};
-    use ssp2::{encode_message, MessageStreamScanner as _Scanner};
 
     fn response_bytes() -> Vec<u8> {
         // A minimal but real response envelope: RESP_HEADER + END.
@@ -281,9 +281,4 @@ mod tests {
         ));
         assert!(round.in_flight());
     }
-
-    // Silence the unused-import lint for the aliased scanner (kept to document
-    // the reassembly primitive the round drives).
-    #[allow(dead_code)]
-    fn _uses_scanner(_: _Scanner) {}
 }

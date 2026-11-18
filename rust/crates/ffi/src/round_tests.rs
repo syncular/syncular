@@ -37,7 +37,7 @@ fn assert_client_identity(
     Ok(response)
 }
 
-use crate::transport::{HostTransport, Inbound};
+use syncular_client::native_transport::{HostTransport, Inbound};
 
 /// A minimal SSP2 response envelope (RESP_HEADER + END) — the reference
 /// server's answer to a bare round.
@@ -118,9 +118,7 @@ fn connect_native(port: u16) -> HostTransport {
         "wsUrl": format!("ws://127.0.0.1:{port}?transport=round&clientId=stale"),
     });
     let mut transport = HostTransport::from_config(&config).expect("native transport");
-    transport
-        .realtime_connect_for_client("c1")
-        .expect("realtime connect");
+    transport.realtime_connect("c1").expect("realtime connect");
     transport
 }
 
@@ -350,7 +348,7 @@ fn native_socket_flushes_large_messages_and_handles_ping_between_sends() {
         })),
     )
     .unwrap();
-    transport.realtime_connect_for_client("c1").unwrap();
+    transport.realtime_connect("c1").unwrap();
     transport
         .realtime_send(&payload)
         .expect("large write flushed");

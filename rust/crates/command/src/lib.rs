@@ -20,22 +20,15 @@ use ssp2::{
     ControlMessage,
 };
 use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
+use syncular_client::values::{bytes_to_hex, hex_to_bytes};
 use syncular_client::{
-    ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery, LocalDataPurgeInput,
-    LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure, RealtimePolicy,
-    ResolveCommitOutcomeInput, SyncClient, Transport, TransportError, UnitScopes, WindowBase,
-    WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+    ClientDiagnosticsSnapshot, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
+    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure,
+    RealtimePolicy, ResolveCommitOutcomeInput, SyncClient, Transport, TransportError, UnitScopes,
+    WindowBase, WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
-
-pub fn bytes_to_hex(bytes: &[u8]) -> String {
-    syncular_client::values::bytes_to_hex(bytes)
-}
-
-pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    syncular_client::values::hex_to_bytes(hex)
-}
 
 pub fn bytes_value(bytes: &[u8]) -> Value {
     Value::Object(serde_json::Map::from_iter([(
@@ -93,6 +86,75 @@ impl From<(String, String)> for CommandError {
             retryable: false,
         }
     }
+}
+
+/// The `{"code","message","retryable"[,"details"]}` object every host sends
+/// as the `error` of a failed command.
+pub fn error_envelope(error: CommandError) -> Value {
+    let mut envelope = json!({
+        "code": error.code,
+        "message": error.message,
+        "retryable": error.retryable
+    });
+    if let Some(details) = error.details {
+        envelope["details"] = details;
+    }
+    envelope
+}
+
+/// The application-facing `{"result"}` / `{"error"}` reply of a native host.
+/// The router's `effects` are consumed by the host and never leave it.
+pub fn reply(result: Result<Value, CommandError>) -> Value {
+    match result {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("effects");
+            }
+            // Moved, never serialized through `json!`: payloads can be megabytes.
+            Value::Object(serde_json::Map::from_iter([("result".to_owned(), value)]))
+        }
+        Err(error) => json!({ "error": error_envelope(error) }),
+    }
+}
+
+/// A well-formed presence control frame (§8.6.2), the one inbound realtime
+/// event a native host surfaces as an event: a fanout, or the server's refusal
+/// of this client's own publish, which carries the server's `error` code.
+pub fn presence_event(text: &str) -> Option<Value> {
+    let Ok(ControlMessage::Presence {
+        scope_key, error, ..
+    }) = parse_control(text)
+    else {
+        return None;
+    };
+    let mut event = json!({ "type": "presence", "scopeKey": scope_key });
+    if let Some(error) = error {
+        event["error"] = Value::from(error);
+    }
+    Some(event)
+}
+
+/// The privacy-safe diagnostics event for `client`, or `None` while a security
+/// preflight is pending, the snapshot fails, or its state (excluding capture
+/// time) equals `last`. Stores the emitted snapshot in `last`.
+pub fn diagnostics_event(
+    client: &SyncClient,
+    last: &mut Option<ClientDiagnosticsSnapshot>,
+) -> Option<Value> {
+    if client.security_preflight() {
+        return None;
+    }
+    let snapshot = client.diagnostics_snapshot().ok()?;
+    if let Some(previous) = last {
+        // Capture time is observation metadata, excluded from evidence equality.
+        previous.captured_at_ms = snapshot.captured_at_ms;
+        if previous == &snapshot {
+            return None;
+        }
+    }
+    let event = json!({ "type": "diagnostics", "snapshot": snapshot });
+    *last = Some(snapshot);
+    Some(event)
 }
 
 /// Parsed side effects of a `create` command that the host must apply to its
@@ -185,7 +247,7 @@ fn need_client(client: &mut Option<SyncClient>) -> Result<&mut SyncClient, Comma
 /// TS keys and defaults: `enabled` (default false), `maxBytes` 8 MiB,
 /// `maxRows` 20000, `maxTables` 32, `maxRowBytes` 1 MiB, `maxAgeMs` 24h.
 /// Invalid values fail the request loudly rather than silently defaulting.
-pub fn parse_previous_version_context(
+fn parse_previous_version_context(
     value: Option<&Value>,
 ) -> Result<Option<PreviousVersionContextConfig>, CommandError> {
     let Some(value) = value else {
@@ -269,7 +331,7 @@ fn parse_previous_version_snapshot_spec(
     })
 }
 
-pub fn parse_limits(value: Option<&Value>) -> Result<ClientLimits, CommandError> {
+fn parse_limits(value: Option<&Value>) -> Result<ClientLimits, CommandError> {
     let mut limits = ClientLimits::default();
     let Some(object) = optional(value, "limits", Value::as_object).map_err(client_err)? else {
         return Ok(limits);
@@ -350,9 +412,7 @@ fn parse_realtime_policy(value: Option<&Value>) -> Result<RealtimePolicy, Comman
 /// Shape: `{ keys: { "<keyId>": {"$bytes": "<hex>"} },
 /// keyIdColumns: { "<table>": "<column>" }, missingKey: "fail" | "seal" }`.
 /// Keys are 32 bytes.
-pub fn parse_encryption(
-    value: &Value,
-) -> Result<syncular_client::values::EncryptionConfig, String> {
+fn parse_encryption(value: &Value) -> Result<syncular_client::values::EncryptionConfig, String> {
     let mut config = syncular_client::values::EncryptionConfig::default();
     let keys = optional(value.get("keys"), "encryption.keys", Value::as_object)?;
     for (key_id, key_val) in keys.into_iter().flatten() {
@@ -544,11 +604,11 @@ pub fn parse_window_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage
 
 /// §7.5 owner: `{id, tables}`, both required when present. Shared by
 /// `querySnapshot` and `snapshotRead`.
-fn parse_query_owner<'a>(
-    params: &'a Value,
+pub fn parse_query_owner<'a>(
+    owner: Option<&'a Value>,
     method: &str,
 ) -> Result<Option<(&'a str, Vec<&'a str>)>, CommandError> {
-    match params.get("owner") {
+    match owner {
         None | Some(Value::Null) => Ok(None),
         Some(value) => {
             let id = value
@@ -591,6 +651,62 @@ fn snapshot_string_list(value: Option<&Value>) -> Result<Vec<String>, CommandErr
             "sync.invalid_request: snapshotRead list must be a list of strings".to_owned(),
         )),
     }
+}
+
+/// The parsed `snapshotRead` params (§7.5), owned so a host can move them to
+/// its read thread.
+pub struct SnapshotReadParams {
+    pub statements: Vec<(String, Vec<Value>)>,
+    pub coverage: Vec<WindowCoverage>,
+    pub units: Vec<String>,
+    pub commit_ids: Vec<String>,
+    pub owner: Option<(String, Vec<String>)>,
+}
+
+/// Parse and validate the params of `snapshotRead`; shared by the router and
+/// the Tauri read sidecar.
+pub fn parse_snapshot_read(params: &Value) -> Result<SnapshotReadParams, CommandError> {
+    let mut statements = Vec::new();
+    match params.get("statements") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for item in items {
+                let Some(sql) = item.get("sql").and_then(Value::as_str) else {
+                    return Err(client_err(
+                        "sync.invalid_request: snapshotRead statements need a sql string"
+                            .to_owned(),
+                    ));
+                };
+                let bind =
+                    match item.get("params") {
+                        None | Some(Value::Null) => Vec::new(),
+                        Some(Value::Array(values)) => values.clone(),
+                        Some(_) => return Err(client_err(
+                            "sync.invalid_request: snapshotRead statement params must be a list"
+                                .to_owned(),
+                        )),
+                    };
+                statements.push((sql.to_owned(), bind));
+            }
+        }
+        Some(_) => {
+            return Err(client_err(
+                "sync.invalid_request: snapshotRead statements must be a list".to_owned(),
+            ))
+        }
+    }
+    Ok(SnapshotReadParams {
+        statements,
+        units: snapshot_string_list(params.get("units"))?,
+        commit_ids: snapshot_string_list(params.get("commitIds"))?,
+        coverage: parse_window_coverage(params.get("coverage")).map_err(client_err)?,
+        owner: parse_query_owner(params.get("owner"), "snapshotRead")?.map(|(id, tables)| {
+            (
+                id.to_owned(),
+                tables.into_iter().map(str::to_owned).collect(),
+            )
+        }),
+    })
 }
 
 /// §5.10.5: parse the common `(table, rowId, column, name)` target of a crdt
@@ -1161,7 +1277,7 @@ pub fn dispatch<T: Transport>(
                 }
             };
             let coverage = parse_window_coverage(params.get("coverage")).map_err(client_err)?;
-            let owner = parse_query_owner(params, "querySnapshot")?;
+            let owner = parse_query_owner(params.get("owner"), "querySnapshot")?;
             let mut snapshot = need_client(client)?
                 .query_snapshot(
                     sql,
@@ -1185,56 +1301,26 @@ pub fn dispatch<T: Transport>(
             Ok(json!({ "revision": read.revision }))
         }
         "snapshotRead" => {
-            let mut statement_sql: Vec<String> = Vec::new();
-            let mut statement_params: Vec<Vec<Value>> = Vec::new();
-            match params.get("statements") {
-                None | Some(Value::Null) => {}
-                Some(Value::Array(items)) => {
-                    for item in items {
-                        let Some(sql) = item.get("sql").and_then(Value::as_str) else {
-                            return Err(client_err(
-                                "sync.invalid_request: snapshotRead statements need a sql string"
-                                    .to_owned(),
-                            ));
-                        };
-                        let bind = match item.get("params") {
-                            None | Some(Value::Null) => Vec::new(),
-                            Some(Value::Array(values)) => values.clone(),
-                            Some(_) => {
-                                return Err(client_err(
-                                    "sync.invalid_request: snapshotRead statement params must be a list"
-                                        .to_owned(),
-                                ))
-                            }
-                        };
-                        statement_sql.push(sql.to_owned());
-                        statement_params.push(bind);
-                    }
-                }
-                Some(_) => {
-                    return Err(client_err(
-                        "sync.invalid_request: snapshotRead statements must be a list".to_owned(),
-                    ))
-                }
-            }
-            let units = snapshot_string_list(params.get("units"))?;
-            let commit_ids = snapshot_string_list(params.get("commitIds"))?;
-            let coverage = parse_window_coverage(params.get("coverage")).map_err(client_err)?;
-            let owner = parse_query_owner(params, "snapshotRead")?;
-            let statements: Vec<syncular_client::SnapshotStatement<'_>> = statement_sql
-                .iter()
-                .zip(&statement_params)
-                .map(|(sql, params)| syncular_client::SnapshotStatement { sql, params })
-                .collect();
+            let parsed = parse_snapshot_read(params)?;
+            let tables: Vec<&str> = parsed.owner.as_ref().map_or_else(Vec::new, |(_, tables)| {
+                tables.iter().map(String::as_str).collect()
+            });
             let read = need_client(client)?
                 .snapshot_read(
                     &syncular_client::SnapshotReadRequest {
-                        statements,
-                        coverage: &coverage,
-                        units,
-                        commit_ids,
+                        statements: parsed
+                            .statements
+                            .iter()
+                            .map(|(sql, params)| syncular_client::SnapshotStatement { sql, params })
+                            .collect(),
+                        coverage: &parsed.coverage,
+                        units: parsed.units,
+                        commit_ids: parsed.commit_ids,
                     },
-                    owner.as_ref().map(|(id, tables)| QueryOwner { id, tables }),
+                    parsed.owner.as_ref().map(|(id, _)| QueryOwner {
+                        id,
+                        tables: &tables,
+                    }),
                 )
                 .map_err(read_command_error)?;
             serde_json::to_value(read).map_err(|error| client_err(error.to_string()))
@@ -1639,7 +1725,7 @@ mod tests {
             Err(TransportError::new("sync.transport_failed", "offline"))
         }
 
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             self.realtime_connects += 1;
             Ok(())
         }
@@ -1786,7 +1872,7 @@ mod tests {
         ) -> Result<Vec<u8>, TransportError> {
             Err(TransportError::new("sync.transport_failed", "offline"))
         }
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Ok(())
         }
         fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
@@ -3541,5 +3627,37 @@ mod tests {
         assert!(!std::path::Path::new(&container_path(&path)).exists());
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn presence_event_carries_the_fanout_scope_and_the_publish_refusal() {
+        assert_eq!(
+            super::presence_event(
+                r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"leave","actorId":"a","clientId":"c","doc":null,"timestamp":1}}"#
+            ),
+            Some(json!({ "type": "presence", "scopeKey": "room:42" }))
+        );
+        for code in ["presence.too_large", "presence.forbidden"] {
+            let frame = format!(
+                r#"{{"event":"presence","data":{{"scopeKey":"room:42","error":"{code}"}}}}"#
+            );
+            assert_eq!(
+                super::presence_event(&frame),
+                Some(json!({ "type": "presence", "scopeKey": "room:42", "error": code }))
+            );
+        }
+    }
+
+    #[test]
+    fn presence_event_ignores_malformed_frames_and_unknown_codes() {
+        for frame in [
+            r#"{"event":"presence","data":{}}"#,
+            r#"{"event":"presence","data":{"scopeKey":"room:42","error":"presence.nope"}}"#,
+            r#"{"event":"presence","data":{"scopeKey":"room:42","error":7}}"#,
+            r#"{"event":"sync","data":{}}"#,
+            "not json",
+        ] {
+            assert_eq!(super::presence_event(frame), None, "{frame}");
+        }
     }
 }

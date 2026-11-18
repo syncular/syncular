@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use syncular_client::{
     ClientDiagnosticsSnapshot, QueryOwner, QueryReadFailure, SyncClient, SyncIntent,
 };
-use syncular_command::{dispatch, CreateEffects};
+use syncular_command::{diagnostics_event, dispatch, presence_event, reply, CreateEffects};
 
 use crate::transport::{self, HostTransport, HostTransportPolicy};
 
@@ -177,27 +177,7 @@ impl SyncularCore {
         self.drain_realtime();
         self.drain_core_outputs();
         self.emit_diagnostics_if_changed();
-        match result {
-            Ok(mut value) => {
-                // The router's effects are consumed by this native host above;
-                // they are not part of the public command acknowledgement.
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("effects");
-                }
-                json!({ "result": value })
-            }
-            Err(error) => {
-                let mut envelope = json!({
-                    "code": error.code,
-                    "message": error.message,
-                    "retryable": error.retryable
-                });
-                if let Some(details) = error.details {
-                    envelope["details"] = details;
-                }
-                json!({ "error": envelope })
-            }
-        }
+        reply(result)
     }
 
     /// The `syncular_query` fast path: arbitrary read-only SQL over the local
@@ -492,77 +472,15 @@ impl SyncularCore {
         let Some(client) = self.client.as_ref() else {
             return;
         };
-        if client.security_preflight() {
-            return;
+        if let Some(event) = diagnostics_event(client, &mut self.last_diagnostics_snapshot) {
+            self.push(event);
         }
-        let Ok(snapshot) = client.diagnostics_snapshot() else {
-            return;
-        };
-        if let Some(previous) = &mut self.last_diagnostics_snapshot {
-            // Capture time is observation metadata, excluded from evidence equality.
-            previous.captured_at_ms = snapshot.captured_at_ms;
-            if previous == &snapshot {
-                return;
-            }
-        }
-        let event = json!({ "type": "diagnostics", "snapshot": snapshot });
-        self.last_diagnostics_snapshot = Some(snapshot);
-        self.push(event);
     }
-}
-
-/// A well-formed presence control frame (§8.6.2), the one inbound realtime
-/// event a native host surfaces as an event: a fanout, or the server's refusal
-/// of this client's own publish, which carries the server's `error` code.
-fn presence_event(text: &str) -> Option<Value> {
-    let Ok(ssp2::ControlMessage::Presence {
-        scope_key, error, ..
-    }) = ssp2::parse_control(text)
-    else {
-        return None;
-    };
-    let mut event = json!({ "type": "presence", "scopeKey": scope_key });
-    if let Some(error) = error {
-        event["error"] = Value::from(error);
-    }
-    Some(event)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn presence_event_carries_the_fanout_scope_and_the_publish_refusal() {
-        assert_eq!(
-            presence_event(
-                r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"leave","actorId":"a","clientId":"c","doc":null,"timestamp":1}}"#
-            ),
-            Some(json!({ "type": "presence", "scopeKey": "room:42" }))
-        );
-        for code in ["presence.too_large", "presence.forbidden"] {
-            let frame = format!(
-                r#"{{"event":"presence","data":{{"scopeKey":"room:42","error":"{code}"}}}}"#
-            );
-            assert_eq!(
-                presence_event(&frame),
-                Some(json!({ "type": "presence", "scopeKey": "room:42", "error": code }))
-            );
-        }
-    }
-
-    #[test]
-    fn presence_event_ignores_malformed_frames_and_unknown_codes() {
-        for frame in [
-            r#"{"event":"presence","data":{}}"#,
-            r#"{"event":"presence","data":{"scopeKey":"room:42","error":"presence.nope"}}"#,
-            r#"{"event":"presence","data":{"scopeKey":"room:42","error":7}}"#,
-            r#"{"event":"sync","data":{}}"#,
-            "not json",
-        ] {
-            assert_eq!(presence_event(frame), None, "{frame}");
-        }
-    }
 
     fn simple_schema() -> Value {
         json!({

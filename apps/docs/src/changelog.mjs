@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'The Rust transport has one realtime connect method',
+    body: 'Breaking. `Transport::realtime_connect` takes the client id: `fn realtime_connect(&mut self, client_id: &str)`. `realtime_connect_for_client` is removed. A transport that implemented it renames it; a transport that implemented only `realtime_connect` adds the parameter and ignores it. `HostTransport::new_from_config` is removed; call `HostTransport::from_config`. `syncular-command` no longer exports `bytes_to_hex`, `hex_to_bytes`, `parse_limits`, `parse_encryption` and `parse_previous_version_context`, and `syncular-ffi` no longer re-exports the native transport as `transport`. These TypeScript exports had no caller and are removed: `SyncClient.leaseRemainingMs`, `isBlobRef` in `@syncular/core`, `d1Storage` in `@syncular/server-workers` (construct `new D1ServerStorage(binding)`), and `queryNameFromFile` in `@syncular/typegen` (call `queryNameFromPath`). On SQLite and Postgres, `ensureSchema` against a database whose stored schema version is newer than the configured schema now fails with `sync.storage.schema_changed` and both versions in `details`, as D1 does; it threw an uncoded `Error` before.',
+    links: [
+      {
+        href: '/platform-rust-specifics/',
+        label: 'Rust specifics',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Each sync round carries an identity',
     body: 'Diagnostics `lastRound` now carries `epoch` and `attempt`, and every progress snapshot carries the same `epoch`. `attempt` is the progress attempt that ran the round; `epoch` is a random string each client core generates when it starts, so a Worker handover or a process restart counts attempts from 1 under a new `epoch`. Observers count rounds by `(epoch, attempt)`, which stays distinct when two rounds complete in the same millisecond or the clock stands still. A `sync()` call refused with `sync.offline` before it starts an attempt no longer records a failed `lastRound` in the TypeScript client, matching the Rust client. A round the Rust client abandons mid-flight (realtime loss, security teardown) now ends its attempt as failed instead of leaving progress `running`, matching the TypeScript client.',
     links: [

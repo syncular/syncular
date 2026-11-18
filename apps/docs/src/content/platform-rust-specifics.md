@@ -18,11 +18,11 @@ Most Rust hosts use `HostTransport` and never touch this page. Read it when you 
 | `realtime_sync(&mut self, request: &[u8])` | yes | The same round over the connected socket (SPEC §8.7); the host owns WebSocket framing |
 | `download_segment(&mut self, request, on_progress)` | yes | Bootstrap segment fetch (SPEC §5.5) |
 | `download_segments(&mut self, fetches, on_progress)` | no | Every eligible segment body of one response, in wire order; the default calls the single fetches in order and stops after the first error |
-| `realtime_connect`, `realtime_send`, `realtime_close` | yes | Socket lifecycle and client-to-server control messages |
+| `realtime_connect(&mut self, client_id: &str)`, `realtime_send`, `realtime_close` | yes | Socket lifecycle and client-to-server control messages; `realtime_connect` receives the persisted client id, which native socket servers bind at the URL before any frame |
 | `supports_url_fetch`, `fetch_url(url, byte_length, on_progress)` | no | Signed-URL fetches; reading stops once the body exceeds `byte_length`; the default returns an error |
 | `blob_upload`, `blob_download`, `blob_upload_grant`, `blob_put_url`, `fetch_blob_url` | no | Blob endpoints; the defaults return an error |
 | `remote_operation` | no | The remote operation endpoint; the default returns `client.remote_operations_unconfigured` |
-| `realtime_connect_for_client`, `round_deadline`, `set_round_deadline` | no | Per-client connect and the round deadline hooks |
+| `round_deadline`, `set_round_deadline` | no | The round deadline hooks |
 
 `download_segment` and `fetch_url` receive `&mut dyn FnMut(u64)` as their last argument. Report cumulative decoded body bytes through it. A buffered transport can leave it unused; the core then reports the final count. `HostTransport` reports intermediate download bytes.
 

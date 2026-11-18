@@ -88,14 +88,7 @@ impl Transport for EngineBackend {
         )
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
-        Err(TransportError::new(
-            "bench.invalid_host_call",
-            "Engine realtime requires a client identity",
-        ))
-    }
-
-    fn realtime_connect_for_client(&mut self, client_id: &str) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, client_id: &str) -> Result<(), TransportError> {
         self.0.call(4, client_id.as_bytes()).map(|_| ())
     }
 

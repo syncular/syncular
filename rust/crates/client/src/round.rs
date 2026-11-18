@@ -878,7 +878,7 @@ impl Transport for DownloadResults {
             .iter()
             .find_map(|(key, time, _)| (*key == DownloadKey::Url(url.to_owned())).then_some(*time))
     }
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Err(TransportError::new(
             "client.round_network_on_owner",
             "network connections must execute outside the client owner",
@@ -1000,7 +1000,7 @@ mod tests {
                 "direct upload timed out",
             ))
         }
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Ok(())
         }
         fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
@@ -1132,7 +1132,7 @@ mod tests {
         ) -> Result<Vec<u8>, TransportError> {
             Ok(self.body.clone())
         }
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Ok(())
         }
         fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
@@ -1217,7 +1217,7 @@ mod tests {
                 Ok(request.segment_id.clone().into_bytes())
             }
         }
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Ok(())
         }
         fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {

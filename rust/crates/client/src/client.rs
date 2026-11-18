@@ -12717,7 +12717,7 @@ impl SyncClient {
             return Ok(());
         }
         self.realtime_state = RealtimeState::Connecting;
-        match transport.realtime_connect_for_client(&self.client_id) {
+        match transport.realtime_connect(&self.client_id) {
             Ok(()) => {
                 self.set_realtime_state(RealtimeState::Connected, None);
                 Ok(())

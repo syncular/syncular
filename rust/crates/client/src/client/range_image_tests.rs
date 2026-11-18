@@ -171,7 +171,7 @@ impl Transport for RangeServer {
         Ok(self.bodies[&request.segment_id].clone())
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 

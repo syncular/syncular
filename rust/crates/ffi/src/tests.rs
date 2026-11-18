@@ -912,32 +912,6 @@ fn baseurl_without_native_feature_is_rejected() {
 }
 
 #[test]
-fn presence_event_carries_the_fanout_key_and_the_publish_rejection() {
-    assert_eq!(
-        crate::presence_event(
-            r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"join","actorId":"a","clientId":"c","doc":{},"timestamp":1}}"#
-        ),
-        Some(json!({ "type": "presence", "scopeKey": "room:42" }))
-    );
-    for code in ["presence.too_large", "presence.forbidden"] {
-        assert_eq!(
-            crate::presence_event(&format!(
-                r#"{{"event":"presence","data":{{"scopeKey":"room:42","error":"{code}","timestamp":1}}}}"#
-            )),
-            Some(json!({ "type": "presence", "scopeKey": "room:42", "error": code }))
-        );
-    }
-    // The core rejects a malformed frame, so the host hears nothing of it.
-    for text in [
-        r#"{"event":"presence","data":{"scopeKey":"room:42","error":"presence.other"}}"#,
-        r#"{"event":"presence","data":{}}"#,
-        r#"{"event":"sync","data":{}}"#,
-    ] {
-        assert_eq!(crate::presence_event(text), None, "{text}");
-    }
-}
-
-#[test]
 fn local_authority_config_serves_rounds_in_process_and_reports_its_state() {
     let invalid = CString::new(r#"{"localAuthorityPath": 7}"#).unwrap();
     assert!(syncular_client_new(invalid.as_ptr()).is_null());

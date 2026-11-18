@@ -54,7 +54,7 @@ impl Transport for RefusalTransport {
         Err(TransportError::new("sync.transport_failed", "offline"))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -96,7 +96,7 @@ fn reset_client_id_persists_and_changes_the_request_identity() {
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
     let previous = client.client_id().to_owned();
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     let next = client.reset_client_id(&mut transport).unwrap();
     assert_ne!(next, previous);
     assert_eq!(client.client_id(), next);

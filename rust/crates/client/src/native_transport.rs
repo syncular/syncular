@@ -304,12 +304,6 @@ impl HostTransport {
     /// Build the transport from the `new` config. `{}` (or no `baseUrl`) →
     /// `Null`; a `baseUrl` under the `native-transport` feature → `Native`.
     pub fn from_config(config: &serde_json::Value) -> Result<Self, String> {
-        Self::new_from_config(config)
-    }
-
-    /// [`Self::from_config`] for hosts outside this crate (the bench driver)
-    /// that own their inbound-frame drain and need no FFI event queue.
-    pub fn new_from_config(config: &serde_json::Value) -> Result<Self, String> {
         Self::from_config_with_notify(config, None)
     }
 
@@ -668,29 +662,13 @@ impl Transport for HostTransport {
         }
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, client_id: &str) -> Result<(), TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("realtimeConnect")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => {
-                t.set_realtime_client_id(None);
-                t.realtime_connect()
-            }
+            HostTransport::Native(t) => t.realtime_connect(client_id),
             #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.realtime_connect(),
-        }
-    }
-
-    fn realtime_connect_for_client(&mut self, client_id: &str) -> Result<(), TransportError> {
-        match self {
-            HostTransport::Null { .. } => Err(unavailable("realtimeConnect")),
-            #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => {
-                t.set_realtime_client_id(Some(client_id));
-                t.realtime_connect()
-            }
-            #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.realtime_connect_for_client(client_id),
+            HostTransport::Local(t) => t.realtime_connect(client_id),
         }
     }
 
@@ -982,18 +960,11 @@ mod local {
             self.remote.blob_put_url(blob_id, url, bytes, media_type)
         }
 
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, client_id: &str) -> Result<(), TransportError> {
             if self.local_active() {
                 return Err(refused("the local authority has no realtime channel"));
             }
-            self.remote.realtime_connect()
-        }
-
-        fn realtime_connect_for_client(&mut self, client_id: &str) -> Result<(), TransportError> {
-            if self.local_active() {
-                return Err(refused("the local authority has no realtime channel"));
-            }
-            self.remote.realtime_connect_for_client(client_id)
+            self.remote.realtime_connect(client_id)
         }
 
         fn round_deadline(&self) -> Option<std::time::Duration> {
@@ -1765,7 +1736,6 @@ mod native {
         reader_stop: Arc<AtomicBool>,
         /// §8.7 round rendezvous, shared with the reader thread.
         round: Arc<RoundChannel>,
-        realtime_client_id: Option<String>,
     }
 
     /// Enforces `request_timeout` as a silence bound. ureq measures each
@@ -1889,7 +1859,6 @@ mod native {
                 reader: None,
                 reader_stop: self.reader_stop.clone(),
                 round: self.round.clone(),
-                realtime_client_id: self.realtime_client_id.clone(),
             }
         }
 
@@ -1944,7 +1913,6 @@ mod native {
                 reader: None,
                 reader_stop: Arc::new(AtomicBool::new(false)),
                 round: Arc::new(RoundChannel::default()),
-                realtime_client_id: None,
             })
         }
 
@@ -2061,10 +2029,6 @@ mod native {
 
         pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
             self.headers = headers;
-        }
-
-        pub fn set_realtime_client_id(&mut self, client_id: Option<&str>) {
-            self.realtime_client_id = client_id.map(str::to_owned);
         }
 
         pub fn shutdown(&mut self) {
@@ -2635,7 +2599,7 @@ mod native {
             Ok(())
         }
 
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, client_id: &str) -> Result<(), TransportError> {
             if self.outgoing.is_some() {
                 if self.reader_stop.load(Ordering::SeqCst)
                     || self
@@ -2656,17 +2620,15 @@ mod native {
             use tungstenite::client::IntoClientRequest;
             let mut url = url::Url::parse(&self.ws_url)
                 .map_err(|_| transfer_error("realtime URL invalid", "request", None))?;
-            if let Some(client_id) = self.realtime_client_id.as_deref() {
-                let retained_query: Vec<(String, String)> = url
-                    .query_pairs()
-                    .filter(|(key, _)| key != "clientId")
-                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                    .collect();
-                url.set_query(None);
-                url.query_pairs_mut()
-                    .extend_pairs(retained_query)
-                    .append_pair("clientId", client_id);
-            }
+            let retained_query: Vec<(String, String)> = url
+                .query_pairs()
+                .filter(|(key, _)| key != "clientId")
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            url.set_query(None);
+            url.query_pairs_mut()
+                .extend_pairs(retained_query)
+                .append_pair("clientId", client_id);
             let mut request = url
                 .as_str()
                 .into_client_request()
@@ -3436,7 +3398,7 @@ mod tests {
             })),
         )
         .unwrap();
-        transport.realtime_connect().unwrap();
+        transport.realtime_connect("c1").unwrap();
         // One wake per buffered frame: every delta, then the loss.
         for _ in 0..=deltas {
             wakes.recv().unwrap();
@@ -3484,7 +3446,7 @@ mod tests {
             })),
         )
         .unwrap();
-        transport.realtime_connect().unwrap();
+        transport.realtime_connect("c1").unwrap();
         wakes.recv_timeout(Duration::from_secs(10)).unwrap();
         // §8.5: before the first heartbeat no silence bound applies, so five
         // intervals of silence keep the socket.
@@ -3580,7 +3542,7 @@ mod tests {
         });
         let mut transport =
             HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
-        transport.realtime_connect().unwrap();
+        transport.realtime_connect("c1").unwrap();
         transport.set_round_deadline(Some(std::time::Instant::now() + Duration::from_millis(200)));
         let error = transport
             .realtime_sync(&vec![0u8; 32 * 1024 * 1024])
@@ -3651,7 +3613,7 @@ mod tests {
         let (small_sender, small_receiver) = mpsc::sync_channel(1);
         transport.set_realtime_receipt_observer(Some(sender));
         for round in 0..2 {
-            transport.realtime_connect().unwrap();
+            transport.realtime_connect("c1").unwrap();
             let before = SystemTime::now();
             assert_eq!(transport.realtime_sync(b"request").unwrap(), response);
             let after = SystemTime::now();
@@ -3730,7 +3692,7 @@ mod tests {
             HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
         let (sender, receiver) = mpsc::sync_channel(2);
         transport.set_realtime_receipt_observer(Some(sender));
-        transport.realtime_connect().unwrap();
+        transport.realtime_connect("c1").unwrap();
         assert!(transport.realtime_sync(b"request").is_err());
         assert_eq!(receiver.recv().unwrap().kind, RealtimeReceiptKind::Round);
         let close = receiver.recv().unwrap();
@@ -3780,8 +3742,8 @@ mod tests {
                 }
             });
             let mut owner =
-                HostTransport::new_from_config(&serde_json::json!({"baseUrl":base})).unwrap();
-            owner.realtime_connect_for_client("detached-round").unwrap();
+                HostTransport::from_config(&serde_json::json!({"baseUrl":base})).unwrap();
+            owner.realtime_connect("detached-round").unwrap();
             let mut detached = owner.fork_round();
             let network = std::thread::spawn(move || {
                 let request = ssp2::encode_message(&Message {
@@ -3865,7 +3827,7 @@ mod tests {
             head
         });
         let mut transport =
-            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
         let url = format!("{base}/bucket/key?X-Amz-Signature=x");
         // A blob id that is not a sha256 id is refused before any request.
         let error = transport
@@ -3905,7 +3867,7 @@ mod tests {
             let mut rest = Vec::new();
             let _ = std::io::Read::read_to_end(&mut reader, &mut rest);
         });
-        let mut transport = HostTransport::new_from_config(
+        let mut transport = HostTransport::from_config(
             &serde_json::json!({"baseUrl": base, "requestTimeoutMs": 200}),
         )
         .unwrap();
@@ -3955,8 +3917,8 @@ mod tests {
             closed_tx.send(()).unwrap();
         });
         let mut transport =
-            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
-        transport.realtime_connect_for_client("slow").unwrap();
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        transport.realtime_connect("slow").unwrap();
         transport.set_round_deadline(Some(
             std::time::Instant::now() + std::time::Duration::from_millis(300),
         ));
@@ -3998,8 +3960,8 @@ mod tests {
                 .unwrap();
         });
         let mut transport =
-            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
-        transport.realtime_connect_for_client("chunked").unwrap();
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        transport.realtime_connect("chunked").unwrap();
         let response = transport.realtime_sync(&request).unwrap();
         assert_eq!(response, minimal_response());
         transport.shutdown();
@@ -4030,7 +3992,7 @@ mod tests {
                     }).unwrap();
                 });
                 let mut transport =
-                    HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+                    HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
                 let mut progress = |_| {};
                 let error = if signed {
                     transport.fetch_url(
@@ -4090,7 +4052,7 @@ mod tests {
                 write!(socket, "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             });
             let mut transport =
-                HostTransport::new_from_config(&serde_json::json!({"baseUrl":base})).unwrap();
+                HostTransport::from_config(&serde_json::json!({"baseUrl":base})).unwrap();
             let error = transport.blob_download("sha256:test", None).unwrap_err();
             assert_eq!(error.code, expected);
             assert_eq!(
@@ -4114,7 +4076,7 @@ mod tests {
             let base = format!("http://{}", listener.local_addr().unwrap());
             drop(listener);
             let mut transport =
-                HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+                HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
             let mut progress = |_| {};
             let error = if signed {
                 transport.fetch_url(
@@ -4358,7 +4320,7 @@ mod tests {
                 config["wsUrl"] = serde_json::json!(ws_url);
             }
             let mut transport = HostTransport::from_config(&config).unwrap();
-            let result = transport.realtime_connect();
+            let result = transport.realtime_connect("c1");
             // Stop the responder even when the redirect was refused; the
             // sentinel is the only connection it may have seen.
             let mut sentinel = std::net::TcpStream::connect(destination_addr).unwrap();
@@ -4500,7 +4462,7 @@ mod tests {
             );
         });
         let mut transport =
-            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
         let error = transport.sync(&[]).unwrap_err();
         assert_eq!(error.code, "sync.invalid_client_id");
         assert_eq!(
@@ -4600,7 +4562,7 @@ mod local_authority_tests {
             ) -> Result<Vec<u8>, TransportError> {
                 Err(TransportError::new("sync.transport_failed", "no segments"))
             }
-            fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
                 Err(TransportError::new("sync.transport_failed", "no socket"))
             }
             fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
@@ -4625,10 +4587,7 @@ mod local_authority_tests {
                 "client.local_authority_unconfigured"
             );
             assert_eq!(
-                transport
-                    .realtime_connect_for_client("device-1")
-                    .unwrap_err()
-                    .code,
+                transport.realtime_connect("device-1").unwrap_err().code,
                 "sync.invalid_request"
             );
             let refused = transport.download_segments(

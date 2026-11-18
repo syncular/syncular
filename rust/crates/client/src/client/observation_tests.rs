@@ -974,7 +974,7 @@ fn a_response_of_many_small_sections_commits_once() {
 fn a_response_past_the_row_bound_commits_per_bound() {
     // 3 frames of 600 rows: no two fit one 1,024-row transaction.
     let (mut client, response) = coalesced_fixture(1, 3, 600);
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     let (_, meta) = client.build_request(false).unwrap();
     let commits = count_commits(&mut client);
     assert!(matches!(
@@ -1001,7 +1001,7 @@ fn a_failed_coalesced_commit_restores_memory_and_publishes_nothing() {
             "PRAGMA foreign_keys = ON; CREATE TABLE fail_parent(id INTEGER PRIMARY KEY); CREATE TABLE fail_child(id INTEGER REFERENCES fail_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_commit AFTER INSERT ON _syncular_base_tasks WHEN NEW.id = 'p0-1-0' BEGIN INSERT INTO fail_child VALUES(1); END",
         )
         .unwrap();
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     let (_, meta) = client.build_request(false).unwrap();
     let revision = client.local_revision().unwrap();
     let outcome = client.process_response(&mut transport, response.clone(), &meta);
@@ -1446,7 +1446,7 @@ impl Transport for SegmentBatchTransport {
             .collect()
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -1691,7 +1691,7 @@ impl Transport for ServerErrorTransport {
         Err(TransportError::new("sync.transport_failed", "offline"))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -1781,7 +1781,7 @@ fn sync_until_idle_reports_budget_exhaustion_or_failure() {
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
     // Zero explicit budget is a caller error, not an exhaustion.
-    let mut idle_transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut idle_transport = HostTransport::from_config(&json!({})).unwrap();
     let zero = client.sync_until_idle(&mut idle_transport, Some(0));
     assert!(
         matches!(zero, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.invalid_request"),
@@ -1821,7 +1821,7 @@ impl Transport for CauseTransport {
         Err(TransportError::new("sync.transport_failed", "offline"))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -1907,7 +1907,7 @@ fn sync_until_idle_validates_its_total_deadline() {
     assert_eq!(SyncClient::SYNC_IDLE_TIMEOUT_MS, 60_000);
     let mut client = client();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
 
     // A zero deadline is a caller error, like a zero round budget.
     let invalid = client.sync_until_idle_with_deadline(&mut transport, None, Some(0));
@@ -2084,7 +2084,7 @@ impl Transport for SilentTransport {
     ) -> Result<Vec<u8>, TransportError> {
         unreachable!("no segment in a silent round")
     }
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
     fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
@@ -2174,7 +2174,7 @@ impl Transport for ScriptedSyncTransport {
         Err(TransportError::new("sync.transport_failed", "offline"))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -2368,7 +2368,7 @@ impl Transport for FailureScriptTransport {
             .unwrap_or_else(|| TransportError::new("transport.timeout", "segment stalled")))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -3193,7 +3193,7 @@ impl Transport for CountingRealtimeTransport {
         Err(TransportError::new("sync.transport_failed", "offline"))
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         self.connects += 1;
         if self.refuse_connect {
             return Err(TransportError::new("transport.failed", "refused"));
@@ -4085,7 +4085,7 @@ fn an_edit_authored_before_the_previous_own_acknowledgement_rebases_on_it() {
             }],
         }],
     ));
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     let outcome = client.process_response(
         &mut transport,
         Message {
@@ -4156,7 +4156,7 @@ fn diego_applied_sparse_moves_stay_visible_until_pull_image_arrives() {
             None,
         )
         .unwrap();
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     for (id, seq, meta) in [
         (first, 2, first_request),
         (second, 3, client.build_request(false).unwrap().1),
@@ -4239,7 +4239,7 @@ fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
                 reset_required: true,
             }],
         };
-        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let mut transport = HostTransport::from_config(&json!({})).unwrap();
         let outcome = client.process_response(&mut transport, response, &meta);
         let SyncOutcome::Ok(report) = outcome else {
             panic!("epoch round failed: {outcome:?}");
@@ -4420,7 +4420,7 @@ fn acknowledged_restore_and_replay_ignore_unrelated_subscription_count() {
                     results: vec![OpResult::Applied { op_index: 0 }],
                 }),
         );
-        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let mut transport = HostTransport::from_config(&json!({})).unwrap();
         client.acknowledged_replay_count.set(0);
         client.conn.execute("DELETE FROM ack_writes", []).unwrap();
         assert!(matches!(
@@ -4550,8 +4550,7 @@ fn batched_push_acknowledgements_reconcile_rows_without_a_table_rebuild() {
         msg_kind: MsgKind::Response,
         frames,
     };
-    let mut transport =
-        HostTransport::new_from_config(&json!({})).expect("no-network host transport");
+    let mut transport = HostTransport::from_config(&json!({})).expect("no-network host transport");
 
     client.overlay_rebuild_count.set(0);
     client.outcome_prune_count.set(0);
@@ -5459,7 +5458,7 @@ fn sync_round_deadline_is_anchored_once_per_round_and_carried_across_continues()
         ) -> Result<crate::BlobUploadGrant, TransportError> {
             Ok(crate::BlobUploadGrant::Present)
         }
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Ok(())
         }
         fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
@@ -5576,7 +5575,7 @@ impl Transport for RoundDeadlineProbe {
     ) -> Result<crate::BlobUploadGrant, TransportError> {
         Ok(crate::BlobUploadGrant::Present)
     }
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
     fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
@@ -5644,7 +5643,7 @@ fn a_transport_budget_the_clock_cannot_represent_fails_before_network() {
         ) -> Result<Vec<u8>, TransportError> {
             panic!("no network for an invalid budget")
         }
-        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
             Ok(())
         }
         fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
@@ -6006,7 +6005,7 @@ fn successful_acknowledgement_runs_are_atomic_and_preserve_completed_runs() {
                 details: None,
             });
         }
-        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let mut transport = HostTransport::from_config(&json!({})).unwrap();
         let outcome = client.process_response(&mut transport, response.clone(), &meta);
         // §1.4 rule 4: the deferred foreign key of "commit" fails the
         // response's coalesced COMMIT instead of the run's RELEASE.
@@ -6158,7 +6157,7 @@ fn failed_push_result_preserves_memory_disk_and_retry_identity() {
                 "revision" => "CREATE TRIGGER fail_ack BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END",
                 _ => "PRAGMA foreign_keys = ON; CREATE TABLE ack_parent(id INTEGER PRIMARY KEY); CREATE TABLE ack_child(id INTEGER REFERENCES ack_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_ack AFTER INSERT ON _syncular_commit_outcomes BEGIN INSERT INTO ack_child VALUES (1); END",
             }).unwrap();
-            let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+            let mut transport = HostTransport::from_config(&json!({})).unwrap();
             let outcome = client.process_response(&mut transport, response.clone(), &meta);
             assert_eq!(
                 client.pending_commit_ids(),
@@ -6269,8 +6268,7 @@ fn mixed_push_results_reconcile_each_boundary_and_prune_once_per_response() {
             },
         ],
     };
-    let mut transport =
-        HostTransport::new_from_config(&json!({})).expect("no-network host transport");
+    let mut transport = HostTransport::from_config(&json!({})).expect("no-network host transport");
 
     client.overlay_rebuild_count.set(0);
     client.outcome_prune_count.set(0);
@@ -6610,7 +6608,7 @@ fn overlay_replay_failure_rolls_back_push_and_pull_apply_boundaries() {
         ],
     };
     let (_, meta) = client.build_request(false).unwrap();
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     assert!(
         matches!(client.process_response(&mut transport,response.clone(),&meta),SyncOutcome::Failed { error_code,.. } if error_code=="client.outcome_persistence_failed")
     );
@@ -11058,7 +11056,7 @@ impl Transport for SplitParityTransport {
         }
     }
 
-    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+    fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
         Ok(())
     }
 
@@ -11508,7 +11506,7 @@ fn answer_pushes(
             }],
         }
     }));
-    let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+    let mut transport = HostTransport::from_config(&json!({})).unwrap();
     client.process_response(
         &mut transport,
         Message {
