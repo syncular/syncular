@@ -355,6 +355,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     (scopeKey: string, error?: PresenceErrorCode) => void
   >;
   readonly #diagnostics: ClientDiagnosticsEmitter;
+  readonly #scopesChanged = new ChangeEmitter<void>();
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
   readonly #unreachableListeners: Set<(event: LeaderUnreachableEvent) => void>;
@@ -464,6 +465,8 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
           /* a UI listener must never break event dispatch */
         }
       }
+    } else if (event.kind === 'scopes-changed') {
+      this.#scopesChanged.emit();
     } else if (event.kind === 'change') {
       this.#changes.emit(event.batch);
       const legacy = invalidationFromChange(event.batch);
@@ -534,6 +537,15 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return () => {
       this.#presence.delete(listener);
     };
+  }
+
+  /**
+   * §8.7: subscribe to the server's announcement that the actor gained
+   * scopes — the identical surface as `SyncClient.onScopesChanged`. Every
+   * tab's handle receives it. Returns an unsubscribe function.
+   */
+  onScopesChanged(listener: () => void): () => void {
+    return this.#scopesChanged.on(listener);
   }
 
   /**

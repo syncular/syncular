@@ -63,6 +63,9 @@ char *syncular_client_command(void *handle, const char *command_json);
  *   sync-intent     a sync round the host should schedule
  *   presence        a presence fanout for one scope key; "error" carries
  *                   the server's code when it refused this client's publish
+ *   scopes-changed  {"type":"scopes-changed"}: the server announced that
+ *                   the actor's grant widened (SPEC §8.7). Run the app's
+ *                   unit discovery; no sync state changed
  *   progress        the latest sync progress (only the newest is queued)
  *   diagnostics     a changed diagnostics snapshot
  *   realtime-wake   {"type":"realtime-wake"}: the socket reader buffered a

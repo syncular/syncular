@@ -122,8 +122,9 @@ void main() {
     client.events.listen((event) => delivered.add(event.type));
     client.handleEvent('{"type":"realtime-wake"}');
     client.handleEvent('{"type":"presence","scopeKey":"room:1"}');
+    client.handleEvent('{"type":"scopes-changed"}');
     await pumpEventQueue();
-    expect(delivered, equals(['presence']));
+    expect(delivered, equals(['presence', 'scopes-changed']));
     client.close();
     expect(
       () => client.handleEvent('{"type":"realtime-wake"}'),

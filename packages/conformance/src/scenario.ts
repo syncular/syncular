@@ -127,6 +127,8 @@ export class RealtimeObservations {
   readonly wakeReasons: string[] = [];
   /** §8.6 server→client presence events observed at the seam, in order. */
   readonly presenceEvents: Array<Record<string, unknown>> = [];
+  /** §8.7 server→client `scopes` announcements observed at the seam. */
+  scopesEvents = 0;
   deltasDelivered = 0;
   readonly ackCursors: number[] = [];
   /** Completed §8.7 socket sync rounds (response END observed). */
@@ -147,6 +149,7 @@ export class RealtimeObservations {
   readonly #deltaWaiters: Waiter[] = [];
   readonly #roundWaiters: Waiter[] = [];
   readonly #presenceWaiters: Waiter[] = [];
+  readonly #scopesWaiters: Waiter[] = [];
   readonly #helloWaiters: Waiter[] = [];
   readonly #closeWaiters: Array<() => void> = [];
 
@@ -197,6 +200,14 @@ export class RealtimeObservations {
     });
   }
 
+  /** Resolves once at least `count` `scopes` announcements arrived (§8.7). */
+  waitForScopes(count: number): Promise<void> {
+    if (this.scopesEvents >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#scopesWaiters.push({ threshold: count, resolve });
+    });
+  }
+
   /** Resolves once at least `count` `hello` handshakes arrived (§8.1) — the
    * reconnect readiness signal across a churn. */
   waitForHelloCount(count: number): Promise<void> {
@@ -240,6 +251,9 @@ export class RealtimeObservations {
     } else if (event.event === 'presence' && typeof event.data === 'object') {
       this.presenceEvents.push((event.data ?? {}) as Record<string, unknown>);
       drain(this.#presenceWaiters, this.presenceEvents.length);
+    } else if (event.event === 'scopes') {
+      this.scopesEvents += 1;
+      drain(this.#scopesWaiters, this.scopesEvents);
     }
   }
 

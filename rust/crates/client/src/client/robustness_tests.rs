@@ -397,6 +397,20 @@ fn subscribe_and_unsubscribe_raise_sync_needed() {
     assert!(client.sync_intent_queue.is_empty());
 }
 
+#[test]
+fn a_scopes_event_is_counted_once_and_raises_no_sync_needed() {
+    let mut client = client();
+    client.sync_needed = false;
+    client.on_realtime_text(r#"{"event":"scopes","data":{"timestamp":1}}"#);
+    client.on_realtime_text(r#"{"event":"scopes","data":{"timestamp":2}}"#);
+    // A malformed event (§8.7) is not counted.
+    client.on_realtime_text(r#"{"event":"scopes","data":{}}"#);
+    assert!(!client.sync_needed);
+    assert!(client.sync_intent_queue.is_empty());
+    assert_eq!(client.drain_scopes_changed(), 2);
+    assert_eq!(client.drain_scopes_changed(), 0);
+}
+
 #[cfg(feature = "e2ee")]
 fn encrypted_client() -> SyncClient {
     let schema = json!({

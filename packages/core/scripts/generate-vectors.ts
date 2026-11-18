@@ -942,6 +942,9 @@ const realtimeWake = {
   },
 };
 
+// §8.7 host announcement: a grant widened, no scope values.
+const realtimeScopes = { event: 'scopes', data: { timestamp: FIXED_TIME_MS } };
+
 // §8.6.2 presence: client→server publish and server→client join fanout.
 const realtimePresencePublish = {
   event: 'presence',
@@ -2363,6 +2366,11 @@ total += emitKind(
       covers: 'Wake-up control message (SPEC.md §8.3)',
     },
     {
+      name: 'scopes',
+      value: realtimeScopes,
+      covers: 'Host announcement that an actor gained scopes (SPEC.md §8.7)',
+    },
+    {
       name: 'presence-publish',
       value: realtimePresencePublish,
       covers: 'Client→server presence publish control message (SPEC.md §8.6.2)',
@@ -2382,6 +2390,13 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers:
         'sync event with requiresPull !== literal true is malformed (SPEC.md §8.3)',
+    },
+    {
+      name: 'scopes-missing-timestamp',
+      value: { event: 'scopes', data: {} },
+      error: 'sync.invalid_request',
+      covers:
+        'scopes event without an integer timestamp is malformed (SPEC.md §8.7)',
     },
     {
       name: 'hello-fractional-cursor',

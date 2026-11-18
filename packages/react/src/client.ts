@@ -32,6 +32,8 @@ export interface SyncClientLike extends ClientSnapshotReader {
   onDiagnostics(listener: ClientDiagnosticsListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
+  /** §8.7: the server announced that the actor gained scopes. */
+  onScopesChanged(listener: () => void): () => void;
   onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
   leadershipSnapshot?(): LeadershipState | undefined;
   securityLifecycle(): SecurityLifecycle | Promise<SecurityLifecycle>;

@@ -1034,6 +1034,8 @@ export class SyncClient {
   readonly #presenceListeners = new Set<
     (scopeKey: string, error?: PresenceErrorCode) => void
   >();
+  /** §8.7: listeners for the server's `scopes` announcement. */
+  readonly #scopesChanged = new ChangeEmitter<void>();
   readonly #syncNeededListeners = new Set<
     (reason: 'startup' | 'hello' | WakeReason) => void
   >();
@@ -3073,6 +3075,16 @@ export class SyncClient {
     return () => {
       this.#presenceListeners.delete(listener);
     };
+  }
+
+  /**
+   * §8.7: subscribe to the server's announcement that this client's actor
+   * gained scopes. The event carries no scope values and starts no round: the
+   * app runs its own discovery and subscribes the units it did not know.
+   * Returns an unsubscribe function.
+   */
+  onScopesChanged(listener: () => void): () => void {
+    return this.#scopesChanged.on(listener);
   }
 
   /**
@@ -5235,6 +5247,7 @@ export class SyncClient {
       return;
     }
     if (event.event === 'presence') this.#applyPresence(event.data);
+    if (event.event === 'scopes') this.#scopesChanged.emit();
     return event.event === 'heartbeat';
   }
 

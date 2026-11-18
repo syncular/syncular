@@ -57,6 +57,8 @@ pub enum ControlMessage {
     },
     /// §8.5 heartbeat.
     Heartbeat { timestamp: i64 },
+    /// §8.7 host announcement: the actor's grant widened.
+    Scopes { timestamp: i64 },
     /// §8.2 client ack — the sole client→server control message.
     Ack { cursor: i64 },
     /// §8.6.2 presence fanout (server→client) or a publisher-directed error.
@@ -202,6 +204,12 @@ pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {
         "heartbeat" => {
             let d = data("heartbeat")?;
             Ok(ControlMessage::Heartbeat {
+                timestamp: as_i64(d, "timestamp")?,
+            })
+        }
+        "scopes" => {
+            let d = data("scopes")?;
+            Ok(ControlMessage::Scopes {
                 timestamp: as_i64(d, "timestamp")?,
             })
         }
@@ -363,6 +371,9 @@ pub fn render_control(msg: &ControlMessage) -> Value {
         ),
         ControlMessage::Heartbeat { timestamp } => {
             envelope("heartbeat", vec![("timestamp", Value::from(*timestamp))])
+        }
+        ControlMessage::Scopes { timestamp } => {
+            envelope("scopes", vec![("timestamp", Value::from(*timestamp))])
         }
         ControlMessage::Ack { cursor } => {
             let mut root = Map::new();

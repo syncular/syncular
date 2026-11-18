@@ -22,7 +22,7 @@
 //!   on an independent read-only SQLite connection for file-backed clients.
 //! - the `events` IPC channel the creating webview passes in `create` — exact
 //!   revisioned `change` batches plus ephemeral
-//!   `presence`; command/realtime sync intents stay inside the event-driven
+//!   `presence` and `scopes-changed` (§8.7); command/realtime sync intents stay inside the event-driven
 //!   owner loop.
 //!
 //! ## Thread-safety, honestly

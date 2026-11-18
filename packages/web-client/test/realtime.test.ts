@@ -416,6 +416,35 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
   });
 });
 
+describe('scope announcements (§8.7)', () => {
+  test('an announcement reaches the named actor once and starts no pull', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    const b = await makeClient(server, {
+      clientId: 'client-b',
+      actorId: 'actor-2',
+    });
+    const heard = { a: 0, b: 0 };
+    a.client.onScopesChanged(() => {
+      heard.a += 1;
+    });
+    const off = b.client.onScopesChanged(() => {
+      heard.b += 1;
+    });
+    for (const local of [a, b]) {
+      local.client.subscribe({ project_id: 'p1' });
+      await local.client.syncUntilIdle();
+      await local.client.connectRealtime();
+    }
+    server.hub.announceScopes(PARTITION, ['actor-2']);
+    expect(heard).toEqual({ a: 0, b: 1 });
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
+    off();
+    server.hub.announceScopes(PARTITION, ['actor-2']);
+    expect(heard).toEqual({ a: 0, b: 1 });
+  });
+});
+
 test('migrated readiness helpers and callers use completion signals without wall-clock waits', async () => {
   for (const file of [
     'helpers.ts',

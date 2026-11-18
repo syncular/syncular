@@ -555,6 +555,38 @@ fn poll_event_forwards_exact_change_batches_and_sync_intents() {
 }
 
 #[test]
+fn poll_event_forwards_one_scopes_changed_event_per_scopes_notice() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    command(
+        handle,
+        "create",
+        json!({ "clientId": "c1", "schema": simple_schema() }),
+    );
+    while poll_event(handle).is_some() {}
+    {
+        let mut core = unsafe { &*handle }.core.lock().unwrap();
+        let client = core.client.as_mut().unwrap();
+        client.on_realtime_text(r#"{"event":"scopes","data":{"timestamp":1}}"#);
+        client.on_realtime_text(r#"{"event":"scopes","data":{"timestamp":2}}"#);
+        core.drain_core_outputs();
+    }
+    let mut events = Vec::new();
+    while let Some(event) = poll_event(handle) {
+        events.push(event);
+    }
+    assert_eq!(
+        events,
+        vec![
+            json!({ "type": "scopes-changed" }),
+            json!({ "type": "scopes-changed" })
+        ]
+    );
+
+    syncular_client_close(handle);
+}
+
+#[test]
 fn diagnostics_command_reports_unit_counts_without_private_payloads() {
     let config = CString::new("{}").unwrap();
     let handle = syncular_client_new(config.as_ptr());

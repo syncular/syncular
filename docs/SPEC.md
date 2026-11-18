@@ -190,7 +190,8 @@ rationale; the referenced sections carry the normative detail.
       are ordinary SSP2 response messages pushed over the socket (no
       separate delta format); the only other data-plane server message is
       the JSON `sync` wake-up with exactly three reason codes (§8.3):
-      `delta-too-large`, `catchup-required`, `reset-required`.
+      `delta-too-large`, `catchup-required`, `reset-required`. The
+      `scopes` notice (§8.7) carries no data and asks for no pull.
 
 - [x] **WebSocket-native sync loop.** The realtime channel is a full transport
       binding for sync rounds: request/response SSP2 messages travel over
@@ -7234,7 +7235,8 @@ The three reason strings are a **closed set**: a `sync` event whose
 `reason` is not one of them is malformed (a parse error under §8.1's
 known-event rule), not an unknown-event case. Forward compatibility for
 the realtime channel means new *event* names (tolerated per §8.1),
-never new reason strings on an existing event.
+never new reason strings on an existing event. The `scopes` notice
+(§8.7) is such an event.
 
 `requiresPull` MUST be the literal `true`; a `sync` event carrying
 anything else is malformed (a parse error). The field is redundancy,
@@ -7734,6 +7736,44 @@ record still lists as live: the round may have answered the unit active
 before the grant changed, and the client purges only in a later round. A
 unit the client dropped from its own list wakes nothing.
 
+**Host announcement.** A refresh re-resolves the units a client already
+registered; it cannot tell the client that units it does not know became
+readable. A host that widens an actor's grant MAY call the hub's
+`announceScopes(partition, actorIds)`. The hub sends every connected session
+of the partition whose actor is in `actorIds` one `scopes` event:
+
+```json
+{"event":"scopes","data":{"timestamp":<ms>}}
+```
+
+The event carries no scope values, no units and no cursor. The client
+surfaces it to the app as a scopes-changed event (TypeScript
+`onScopesChanged`, Rust `drain_scopes_changed`, a `scopes-changed` event
+on the native bindings) and changes no sync state: it raises no
+sync-needed signal and runs no round. The app asks its own discovery which
+units the actor may read and registers the new ones; their first round
+delivers their rows. An announcement does not re-resolve registrations; a
+host whose change also narrows a grant calls `refreshScopes` as well.
+
+Delivery is best effort per connected session. A session on the hub when
+the call runs receives the event once per call; a client that is
+disconnected receives nothing and gets no replay on connect, so an app that
+discovers units runs its discovery when its realtime connection becomes
+`connected` (§8.8). Several hosts of one partition deliver it per §8.9. A
+`scopes` event whose `data` is missing or whose `timestamp` is not an
+integer is malformed (§8.1). A client that predates the event ignores it as
+an unknown event name (§8.1) and keeps its own discovery triggers.
+
+DECISION (2026-11-18): the announcement is a new event name instead of a
+fourth wake-up reason. The reason set of §8.3 is closed, so a client that
+predates a new reason fails to parse the `sync` event, while every client
+ignores an unknown event name (§8.1). A wake also means "run a pull", and a
+pull cannot deliver units the client has not registered: the app's
+discovery has to run first, and the round that registers the new units
+follows from it. Diego's schedule saw a new theatre created on another
+device only at its next five-minute discovery; the one-minute discovery
+poll it replaced took half of production's coordinator time.
+
 ### 8.8 Realtime policy and connectivity state
 
 **Transport gate.** Both client cores expose `setTransportEnabled(enabled)`
@@ -7884,7 +7924,10 @@ the host's events.
 **Host refresh.** A host-initiated registration refresh (`refreshScopes`,
 §8.7) after a grant changes MUST reach every host that holds sockets of the
 partition, through the same bridge and with the same retry, so a session on
-another host stops receiving deltas for scopes its actor lost.
+another host stops receiving deltas for scopes its actor lost. A host
+announcement (`announceScopes`, §8.7) takes the same bridge and retry, so a
+session on another host receives its `scopes` event. A retried announcement
+reaches the sessions connected when the retry lands.
 
 **Presence.** Presence (§8.6) is per host: a peer's `join`, `update` and
 `leave` reach only sessions on the same host. A host that spreads one
@@ -7912,14 +7955,17 @@ object and that object one request per registered shard.
 
 `refreshScopes(partition, actorId?)` on the Worker's notifier sends a refresh
 message the same way; every object runs `RealtimeHub.refreshScopes` on its
-sessions. The call fails when the partition's object did not take it.
+sessions. `announceScopes(partition, actorIds)` sends an announcement message,
+and every object runs `RealtimeHub.announceScopes`. Either call fails when the
+partition's object did not take it.
 
 A relay to a shard that fails (a thrown request, any status but 2xx and 404)
 leaves a record in the partition object's storage of what the shard owes: the
-highest commit sequence it missed, a refresh, or changed registrations. Later
-failures merge into the record. The object's alarm retries each record every
+highest commit sequence it missed, a refresh, changed registrations, or the
+actors of missed announcements. Later failures merge into the record. The object's alarm retries each record every
 second and sends the shard one message carrying it. The shard then runs a
-fail-closed refresh of every session for an owed refresh, wakes every session
+fail-closed refresh of every session for an owed refresh, sends the `scopes`
+event to the sessions of the owed actors, wakes every session
 with `catchup-required` for owed registrations (the client's round reloads
 them), and wakes every session whose last observed sequence lies below the
 owed one. A delivered record that no failure changed meanwhile is deleted; a

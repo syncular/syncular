@@ -473,6 +473,9 @@ export interface ServerInstance {
   /** Set the actor's allowed scopes (§3.2 step 3). `'*'` = any value. */
   setAllowedScopes(actorId: string, allowed: DriverScopeMap): Promise<void>;
 
+  /** `realtime`: the host announcement (§8.7) to these actors' sessions. */
+  announceScopes?(actorIds: readonly string[]): Promise<void>;
+
   /**
    * `§2.2`: move one stored row to new scope values through a registered
    * command's `rescope` mutation. Present when the server implements the
@@ -1464,6 +1467,8 @@ export interface ClientInstance {
   ): Promise<void>;
   /** §8.6: the peers currently present on a scope key. */
   presence?(scopeKey: string): Promise<readonly ClientPresencePeer[]>;
+  /** §8.7: scopes-changed events the client surfaced since creation. */
+  scopesChanged?(): Promise<number>;
 
   /**
    * §5.10.4/§5.10.5 native CRDT convenience: a client that can AUTHOR crdt

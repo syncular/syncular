@@ -53,6 +53,18 @@ describe('realtime control messages (SPEC.md §8)', () => {
     ).toThrow(DecodeError);
   });
 
+  it('parses the scopes announcement and rejects one without a timestamp', () => {
+    expect(
+      parseRealtimeServerEvent('{"event":"scopes","data":{"timestamp":7}}'),
+    ).toEqual({
+      known: true,
+      event: { event: 'scopes', data: { timestamp: 7 } },
+    });
+    expect(() =>
+      parseRealtimeServerEvent('{"event":"scopes","data":{}}'),
+    ).toThrow(DecodeError);
+  });
+
   it('applies the JSON validity rule to the whole text', () => {
     expect(() =>
       parseRealtimeServerEvent(

@@ -449,15 +449,20 @@ impl SyncularCore {
         }
     }
 
-    /// Drain exact observer batches and sync intents produced by the Rust core.
+    /// Drain exact observer batches, sync intents and §8.7 `scopes` notices
+    /// produced by the Rust core.
     fn drain_core_outputs(&mut self) {
         let Some(client) = self.client.as_mut() else {
             return;
         };
         let batches = client.drain_change_batches();
         let intents = client.drain_sync_intents();
+        let scopes_changed = client.drain_scopes_changed();
         for batch in batches {
             self.push(json!({ "type": "change", "batch": batch }));
+        }
+        for _ in 0..scopes_changed {
+            self.push(json!({ "type": "scopes-changed" }));
         }
         for intent in intents {
             match intent {
@@ -695,6 +700,22 @@ mod tests {
         let list = rows["result"]["rows"].as_array().expect("rows");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["id"], "b");
+    }
+
+    #[test]
+    fn a_scopes_notice_becomes_one_scopes_changed_event_without_a_sync_intent() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        create(&mut core);
+        let _ = core.drain_events();
+        let _ = core.take_sync_intent();
+        core.client
+            .as_mut()
+            .unwrap()
+            .on_realtime_text(r#"{"event":"scopes","data":{"timestamp":1}}"#);
+        core.drain_core_outputs();
+        let events: Vec<Value> = core.drain_events().into_iter().map(|e| e.json).collect();
+        assert_eq!(events, vec![json!({ "type": "scopes-changed" })]);
+        assert!(matches!(core.take_sync_intent(), SyncIntent::None));
     }
 
     #[test]

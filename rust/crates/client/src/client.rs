@@ -590,6 +590,8 @@ pub struct SyncClient {
     progress: ProgressObserver,
     change_queue: VecDeque<ClientChangeBatch>,
     sync_intent_queue: VecDeque<SyncIntent>,
+    /// §8.7 `scopes` events received since the last drain.
+    scopes_changed: usize,
     /// Explicit exponential retry policy for transient transport failures.
     retry_delay_ms: u64,
     /// §7.7: the background retry the current round scheduled, if any.
@@ -2102,6 +2104,7 @@ impl SyncClient {
             progress: ProgressObserver::default(),
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
+            scopes_changed: 0,
             retry_delay_ms: 250,
             round_retry_delay_ms: None,
             image_chunk_rows: HashMap::new(),
@@ -3169,6 +3172,13 @@ impl SyncClient {
         } else {
             vec![SyncIntent::None]
         }
+    }
+
+    /// §8.7 host announcement: the number of `scopes` events received since
+    /// the last drain. The event changes no sync state; the host surfaces each
+    /// one to the app, whose discovery registers the newly readable units.
+    pub fn drain_scopes_changed(&mut self) -> usize {
+        std::mem::take(&mut self.scopes_changed)
     }
 
     fn schedule_background_retry(&mut self) -> u64 {
@@ -12795,6 +12805,10 @@ impl SyncClient {
             Ok(ControlMessage::Wake { .. }) => {
                 // §8.3: any wake-up means "run a pull soon", never data.
                 self.set_sync_needed(true, true);
+            }
+            Ok(ControlMessage::Scopes { .. }) => {
+                // §8.7: surfaced to the app; no sync-needed, no round.
+                self.scopes_changed += 1;
             }
             _ => {}
         }

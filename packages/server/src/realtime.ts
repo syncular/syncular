@@ -945,6 +945,13 @@ export class RealtimeSession {
     this.#sendSafe(encodeHeartbeat(this.#clock()));
   }
 
+  /** §8.7: the `scopes` announcement, which changes no session state. */
+  sendScopes(): void {
+    this.#sendSafe(
+      JSON.stringify({ event: 'scopes', data: { timestamp: this.#clock() } }),
+    );
+  }
+
   sendWake(reason: WakeReason): void {
     this.#deferredDeltas = [];
     this.#deferredBytes = 0;
@@ -1575,6 +1582,20 @@ export class RealtimeHub {
       // every grant on the connection. The session's generation guard keeps
       // this revocation from being overwritten by a slower round-end reload.
       await session.refreshRegistrations(true);
+    }
+  }
+
+  /**
+   * Host announcement (§8.7): tell the connected sessions of `actorIds` on
+   * the partition that their grant widened, so each client's app runs its
+   * discovery and registers the units it did not know. Sends one `scopes`
+   * event per session and changes no registration; a narrowed grant needs
+   * `refreshScopes`.
+   */
+  announceScopes(partition: string, actorIds: readonly string[]): void {
+    for (const session of this.#sessions) {
+      if (session.partition !== partition) continue;
+      if (actorIds.includes(session.actorId)) session.sendScopes();
     }
   }
 

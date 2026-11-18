@@ -27,6 +27,53 @@ async function connectedClient(
 
 export const realtimeScenarios: readonly Scenario[] = [
   {
+    name: 'realtime/scope-announcement-reaches-the-widened-actor-only',
+    specRefs: ['§8.1', '§8.7'],
+    requires: ['realtime', 'scope-authorization', 'multi-actor'],
+    async run(ctx) {
+      const announce = ctx.server.announceScopes?.bind(ctx.server);
+      if (announce === undefined) {
+        throw new ScenarioSkip('the server driver cannot announce scopes');
+      }
+      await seedTasks(ctx, [task('t1', 'p1', 'one'), task('t2', 'p2', 'two')]);
+      const a = await connectedClient(ctx, 'actor-a', 'client-a');
+      const b = await connectedClient(ctx, 'actor-b', 'client-b');
+      if (a.api.scopesChanged === undefined) {
+        throw new ScenarioSkip(
+          'the client driver cannot observe scopes events',
+        );
+      }
+      await a.api.connectRealtime();
+      await b.api.connectRealtime();
+
+      await ctx.server.setAllowedScopes('actor-b', {
+        project_id: ['p1', 'p2'],
+      });
+      await announce(['actor-b']);
+      await b.realtime.waitForScopes(1);
+      checkEqual(await b.api.scopesChanged?.(), 1, 'B surfaces one event');
+      check(
+        !(await b.api.syncNeeded()),
+        'the announcement raises no sync-needed signal (§8.7)',
+      );
+      // A's socket delivers in order: its first announcement is the second
+      // call, so the first one never reached it.
+      await announce(['actor-a']);
+      await a.realtime.waitForScopes(1);
+      checkEqual(a.realtime.scopesEvents, 1, 'A received only its own');
+      checkEqual(await a.api.scopesChanged(), 1, 'A surfaces only its own');
+
+      // The app's discovery registers the unit it did not know.
+      await b.api.subscribe({ project_id: 'p2' });
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2'],
+        "the new unit's rows arrive in the next round",
+      );
+    },
+  },
+  {
     name: 'realtime/reversed-notifications-recover-before-resuming-deltas',
     specRefs: ['§8.2', '§8.3', '§8.4'],
     requires: ['concurrent-storage-faults'],

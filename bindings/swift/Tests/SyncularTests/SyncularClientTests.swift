@@ -403,10 +403,12 @@ private final class StubbedReplyClient: SyncularClient {
     client.onEvent = { delivered.append($0.type) }
     try client.handleEvent(#"{"type":"realtime-wake"}"#)
     try client.handleEvent(#"{"type":"presence","scopeKey":"room:1"}"#)
+    try client.handleEvent(#"{"type":"scopes-changed"}"#)
     client.close()
     queue.sync {}
     // The running poll loop may also deliver the core's own events.
     #expect(delivered.contains("presence"))
+    #expect(delivered.contains("scopes-changed"))
     #expect(!delivered.contains("realtime-wake"))
     #expect(throws: SyncularError.self) {
         try client.handleEvent(#"{"type":"realtime-wake"}"#)

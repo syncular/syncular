@@ -1229,6 +1229,21 @@ describe('createNativeSyncClient', () => {
     ]);
   });
 
+  test('scopes-changed events reach onScopesChanged listeners and issue no command', async () => {
+    const { client, calls, emit } = await build();
+    let heard = 0;
+    const unsubscribe = client.onScopesChanged(() => {
+      heard += 1;
+    });
+    const before = calls.length;
+    emit({ type: 'scopes-changed' });
+    emit({ type: 'scopes-changed' });
+    unsubscribe();
+    emit({ type: 'scopes-changed' });
+    expect(heard).toBe(2);
+    expect(calls.length).toBe(before);
+  });
+
   test('native modules deliver events as JSON strings', async () => {
     const { client, emit } = await build();
     const scopeKeys: string[] = [];

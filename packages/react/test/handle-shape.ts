@@ -17,6 +17,7 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     onDiagnostics: (listener) => client.onDiagnostics(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),
+    onScopesChanged: (listener) => client.onScopesChanged(listener),
     // query is async on the handle (RPC round-trip).
     query: (sql: string, params?: readonly SqlValue[]) =>
       Promise.resolve(client.query(sql, params)),

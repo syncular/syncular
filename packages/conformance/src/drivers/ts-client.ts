@@ -527,6 +527,7 @@ class TsClientInstance implements ClientInstance {
   readonly #progress: SyncProgress[] = [];
   readonly #intents: SyncIntent[] = [];
   #epochEstablished = false;
+  #scopesChanged = 0;
 
   constructor(
     client: SyncClient,
@@ -549,6 +550,9 @@ class TsClientInstance implements ClientInstance {
     this.#deferredRound = deferredRound;
     client.onChange((batch) => this.#changes.push(batch));
     client.onProgress((progress) => this.#progress.push(progress));
+    client.onScopesChanged(() => {
+      this.#scopesChanged += 1;
+    });
     this.#recordBackgroundIntents(client);
   }
 
@@ -1173,6 +1177,10 @@ class TsClientInstance implements ClientInstance {
 
   async presence(scopeKey: string): Promise<readonly ClientPresencePeer[]> {
     return this.#client.presence(scopeKey);
+  }
+
+  async scopesChanged(): Promise<number> {
+    return this.#scopesChanged;
   }
 
   async executeStorageSql(sql: string): Promise<void> {

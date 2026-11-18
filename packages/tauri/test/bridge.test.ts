@@ -265,10 +265,13 @@ describe('createTauriSyncClient', () => {
     expect(create.params.events?.toJSON()).toBe('__CHANNEL__:1');
     const seen: string[] = [];
     client.onPresence((scopeKey) => seen.push(scopeKey));
+    client.onScopesChanged(() => seen.push('scopes-changed'));
     emit({ type: 'presence', scopeKey: 'room:1' });
+    emit({ type: 'scopes-changed' });
     await client.close();
     emit({ type: 'presence', scopeKey: 'room:2' });
-    expect(seen).toEqual(['room:1']);
+    emit({ type: 'scopes-changed' });
+    expect(seen).toEqual(['room:1', 'scopes-changed']);
   });
 
   test('forwards retained failure policy and mixed sparse aggregate unchanged', async () => {
@@ -505,6 +508,7 @@ describe('createTauriSyncClient', () => {
         () => client.onChange(() => {}),
         () => client.onDiagnostics(() => {}),
         () => client.onPresence(() => {}),
+        () => client.onScopesChanged(() => {}),
         () => client.progressSnapshot(),
       ])
         expect(call).toThrow('the native sync client is closed');

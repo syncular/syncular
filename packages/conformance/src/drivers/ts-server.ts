@@ -1029,6 +1029,10 @@ class TsServerInstance implements ServerInstance {
     this.#allowed.set(actorId, allowed as ScopeMap);
   }
 
+  async announceScopes(actorIds: readonly string[]): Promise<void> {
+    this.#hub.announceScopes(this.#partition, actorIds);
+  }
+
   async installValidators(
     specs: readonly ValidatorInstallSpec[],
   ): Promise<void> {

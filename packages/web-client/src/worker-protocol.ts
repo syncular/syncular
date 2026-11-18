@@ -311,6 +311,10 @@ export type SyncWorkerEvent =
       readonly error?: PresenceErrorCode | undefined;
     }
   | {
+      /** §8.7: the server announced that the actor gained scopes. */
+      readonly kind: 'scopes-changed';
+    }
+  | {
       /** Exact revisioned core transaction; Sets and bigint clone directly. */
       readonly kind: 'change';
       readonly batch: ClientChangeBatch;

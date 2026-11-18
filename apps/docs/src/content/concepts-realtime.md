@@ -106,7 +106,7 @@ During a socket round the server queues matching deltas until the response ends 
 
 Change batches for applied `COMMIT` frames carry `appliedCommits` entries with `table`, `commitSeq`, and `source` (`delta` or `pull`). Snapshot imports, cursor advances, and wake-ups do not create these entries. An entry confirms a local transaction committed; a later frame can still fail the round. Inspect progress or the round result for the round outcome.
 
-The protocol has one delta kind and one wake-up kind. The wake-up tells the client to run a pull soon and carries no data. It has three reason codes: `catchup-required`, `delta-too-large`, and `reset-required` ([SPEC §8.2 and §8.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime)). Realtime propagation latency is on [Benchmarks](/benchmarks/).
+The protocol has one delta kind and one wake-up kind. The wake-up tells the client to run a pull soon and carries no data. It has three reason codes: `catchup-required`, `delta-too-large`, and `reset-required` ([SPEC §8.2 and §8.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime)). The `scopes` event, described under [Grown grants](#grown-grants), asks for no pull. Realtime propagation latency is on [Benchmarks](/benchmarks/).
 
 ## The host supervisor
 
@@ -164,3 +164,21 @@ await hub.refreshScopes(partition);          // after a connection change
 `refreshScopes` re-resolves the matching sessions through the hub's scope resolver and reconciles presence as a round end does. It fails closed: a session whose resolver call fails, or whose client record cannot be read, loses every registration and receives no further deltas until it registers again. The round-end path keeps the previous registrations when a round fails, because a failed round must change nothing. The host-initiated path has the opposite job.
 
 A session whose registrations `refreshScopes` removed or narrowed also receives a `catchup-required` wake-up. Its client runs a round, and that round's revocation purge ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract)) deletes the rows of the revoked scope from local storage. Sessions whose scopes stayed the same or widened receive no wake-up.
+
+### Grown grants
+
+`refreshScopes` re-resolves the units a client already registered. A client registers only units it knows, so a grant that makes new units readable (a new project, a new membership) stays invisible until the app's own discovery runs again. After such a change, call `announceScopes` on the hub with the actors whose grants grew:
+
+```ts title="src/host.ts"
+hub.announceScopes(partition, [actorId]); // after a grant grew
+```
+
+Each connected session of those actors receives one `{"event":"scopes","data":{"timestamp":…}}` message. It carries no scope values and changes no registration. The client surfaces it and starts no round; the app runs its discovery and subscribes the new units, whose first round delivers their rows:
+
+```ts title="src/app.ts"
+client.onScopesChanged(() => {
+  void discoverUnits(); // your app's own lookup, then client.subscribeMany(...)
+});
+```
+
+The worker handle and the React `SyncClientLike` expose the same `onScopesChanged`, and the handle fires it in every tab. The Rust core counts the events for `drain_scopes_changed()`, and the native bindings deliver them as a `scopes-changed` event. Delivery is per connected session: a client that is disconnected during the call receives nothing and gets no replay on connect, so run discovery when the realtime state becomes `connected` as well. A client older than this event ignores it as an unknown event name ([SPEC §8.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#81-channel-and-handshake)) and keeps its own discovery triggers. A change that narrows one grant and widens another needs both calls.

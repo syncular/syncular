@@ -309,6 +309,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
   readonly #presenceListeners = new Set<
     (scopeKey: string, error?: PresenceErrorCode) => void
   >();
+  readonly #scopesChangedListeners = new Set<() => void>();
   #closed = false;
   #closing: Promise<void> | undefined;
   #host: object | undefined;
@@ -591,6 +592,9 @@ export abstract class NativeBridgeClient implements PromiseMethods<
           event.error as PresenceErrorCode | undefined,
         );
         break;
+      case 'scopes-changed':
+        fanOut(this.#scopesChangedListeners);
+        break;
       case 'diagnostics': {
         const snapshot = event.snapshot as ClientDiagnosticsSnapshot | null;
         if (
@@ -707,6 +711,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     this.requireOpen();
     this.#presenceListeners.add(listener);
     return () => this.#presenceListeners.delete(listener);
+  }
+
+  /** §8.7: the server announced that the actor gained scopes. */
+  onScopesChanged(listener: () => void): () => void {
+    this.requireOpen();
+    this.#scopesChangedListeners.add(listener);
+    return () => this.#scopesChangedListeners.delete(listener);
   }
 
   async query(

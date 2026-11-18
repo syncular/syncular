@@ -106,7 +106,7 @@
  * (`RealtimeHubConfig.fanout`) sends the commits of its own rounds through the
  * partition's object too, so every shard, the shard itself included, receives
  * each commit once. A host scope refresh (`refreshScopes` on the notifier)
- * takes the same path. A relay that fails leaves a record of what the shard
+ * and a host announcement (`announceScopes`) take the same path. A relay that fails leaves a record of what the shard
  * owes in the partition object's storage, and the alarm retries it every
  * second until the shard answers or is removed.
  */
@@ -323,16 +323,19 @@ function encodeAttachment(
  * §8.9: what a shard missed when a relay to it failed, delivered from the
  * partition object's alarm: the highest commit sequence (sessions behind it get
  * a `catchup-required` wake), a fail-closed refresh of every session's scopes,
- * and changed registrations (a wake, whose round reloads them).
+ * changed registrations (a wake, whose round reloads them), and the actors of
+ * missed announcements (a `scopes` event, §8.7).
  */
 interface Owed {
   readonly commitSeq?: number;
   readonly refresh?: true;
   readonly registrations?: true;
+  readonly announce?: readonly string[];
 }
 
 /** A message between objects (§8.9): a commit, a client's changed
- * registrations, a host refresh of scopes, or what a failed relay owes. */
+ * registrations, a host refresh of scopes, a host announcement, or what a
+ * failed relay owes. */
 type FanoutMessage =
   | { readonly partition: string; readonly commit: StoredCommit }
   | { readonly partition: string; readonly clientId: string }
@@ -340,6 +343,7 @@ type FanoutMessage =
       readonly partition: string;
       readonly refresh: { readonly actorId?: string };
     }
+  | { readonly partition: string; readonly announce: readonly string[] }
   | { readonly partition: string; readonly owed: Owed };
 
 /**
@@ -437,12 +441,17 @@ export interface DurableObjectRealtimeNotifierOptions {
  * `refreshScopes(partition, actorId?)` is `RealtimeHub.refreshScopes` for
  * every object of the partition: call it after a grant changes. It throws when
  * the partition's object did not take the refresh.
+ *
+ * `announceScopes(partition, actorIds)` is `RealtimeHub.announceScopes` for
+ * every object of the partition: call it after a grant widened. It throws when
+ * the partition's object did not take the announcement.
  */
 export function durableObjectRealtimeNotifier(
   namespace: DurableObjectNamespaceLike,
   options: DurableObjectRealtimeNotifierOptions,
 ): RealtimeNotifier & {
   refreshScopes(partition: string, actorId?: string): Promise<void>;
+  announceScopes(partition: string, actorIds: readonly string[]): Promise<void>;
 } {
   // A synthetic origin: the DO reads only the path and the body. The partition
   // object answers 204, or 404 when no object of the partition holds a socket.
@@ -505,6 +514,16 @@ export function durableObjectRealtimeNotifier(
         throw new SyncError(
           'sync.internal_error',
           'realtime scope refresh failed',
+          JSON.stringify({ status }),
+        );
+      }
+    },
+    async announceScopes(partition, actorIds) {
+      const status = await send({ partition, announce: actorIds });
+      if (status !== 204 && status !== 404) {
+        throw new SyncError(
+          'sync.internal_error',
+          'realtime scope announcement failed',
           JSON.stringify({ status }),
         );
       }
@@ -1006,8 +1025,13 @@ export class SyncularRealtimeHost<
       await hub.notifySubscriptions(message.partition, message.clientId);
     } else if ('refresh' in message) {
       await hub.refreshScopes(message.partition, message.refresh.actorId);
+    } else if ('announce' in message) {
+      hub.announceScopes(message.partition, message.announce);
     } else {
       if (message.owed.refresh) await hub.refreshScopes(message.partition);
+      if (message.owed.announce !== undefined) {
+        hub.announceScopes(message.partition, message.owed.announce);
+      }
       if (message.owed.registrations) {
         hub.wake(message.partition, 'catchup-required');
       }
@@ -1023,7 +1047,9 @@ export class SyncularRealtimeHost<
           ? { registrations: true }
           : 'refresh' in message
             ? { refresh: true }
-            : message.owed;
+            : 'announce' in message
+              ? { announce: message.announce }
+              : message.owed;
     await Promise.all(
       [...shards].map(async ([key, token]) => {
         const shard = key.slice('shard:'.length);
@@ -1038,8 +1064,13 @@ export class SyncularRealtimeHost<
           before.commitSeq ?? -1,
           owes.commitSeq ?? -1,
         );
+        const announce = new Set([
+          ...(before.announce ?? []),
+          ...(owes.announce ?? []),
+        ]);
         const owed: Owed = {
           ...(commitSeq >= 0 ? { commitSeq } : {}),
+          ...(announce.size > 0 ? { announce: [...announce] } : {}),
           ...(before.refresh || owes.refresh ? { refresh: true } : {}),
           ...(before.registrations || owes.registrations
             ? { registrations: true }

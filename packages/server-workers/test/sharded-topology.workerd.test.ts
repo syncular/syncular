@@ -8,6 +8,8 @@
  *     `prepareReadTransaction`, completes while a push holds the partition
  *     lock, and a second push waits for it;
  *   - a scope refresh called once reaches a socket in another shard object;
+ *   - a scope announcement reaches only its actor's socket, in another shard
+ *     object, and again through the alarm's retry when the relay failed;
  *   - a relay that a shard object fails is retried from the partition
  *     object's alarm until the shard answers.
  *
@@ -325,11 +327,19 @@ async function openSocket(clientId: string, shard: string) {
     )) as string;
     return (JSON.parse(text) as { data: { reason: string } }).data.reason;
   };
+  /** Waits for the next `scopes` announcement (§8.7). */
+  const scopes = () =>
+    next((m) => typeof m === 'string' && JSON.parse(m).event === 'scopes');
+  /** `scopes` announcements received and not yet taken. */
+  const announced = () =>
+    inbox.filter(
+      (m) => typeof m === 'string' && JSON.parse(m).event === 'scopes',
+    ).length;
   /** Deltas received and not yet taken. */
   const deltas = () =>
     inbox.filter((m) => typeof m !== 'string' && m[0] === REALTIME_TAG_DELTA)
       .length;
-  return { ws, round, subscribe, delta, wake, deltas };
+  return { ws, round, subscribe, delta, wake, deltas, scopes, announced };
 }
 
 test('a commit accepted through one object reaches a socket in another', async () => {
@@ -380,6 +390,45 @@ test('a scope refresh called once reaches a socket in another object', async () 
   expect(b.deltas()).toBe(0);
   a.ws.close();
   b.ws.close();
+}, 60_000);
+
+test('a scope announcement reaches only its actor, in another object', async () => {
+  const a = await openSocket('announce-a', 'facility-a');
+  const b = await openSocket('announce-b', 'facility-b');
+  await a.subscribe();
+  await b.subscribe();
+  const url = await mf.ready;
+  const announced = await fetch(new URL('/announce?actor=announce-b', url), {
+    method: 'POST',
+  });
+  expect(announced.status).toBe(204);
+  await b.scopes();
+  // The relay answered after every shard delivered the announcement, and a
+  // socket delivers in order: A's next delta follows anything sent before.
+  await httpRound('writer', [push('after-announce', 'after-announce')]);
+  expect(await a.delta()).toEqual(['after-announce']);
+  expect(await b.delta()).toEqual(['after-announce']);
+  expect(a.announced()).toBe(0);
+  expect(b.announced()).toBe(0);
+  a.ws.close();
+  b.ws.close();
+}, 60_000);
+
+test('an announcement a shard fails is retried until the shard answers', async () => {
+  const e = await openSocket('announce-e', 'facility-e');
+  await e.subscribe();
+  const url = await mf.ready;
+  const failing = await fetch(new URL('/fail-next?shard=facility-e', url), {
+    method: 'POST',
+  });
+  expect(failing.status).toBe(204);
+  const announced = await fetch(new URL('/announce?actor=announce-e', url), {
+    method: 'POST',
+  });
+  expect(announced.status).toBe(204);
+  // The partition object's alarm retries the owed announcement.
+  await e.scopes();
+  e.ws.close();
 }, 60_000);
 
 test('a relay that a shard fails is retried until the shard answers', async () => {

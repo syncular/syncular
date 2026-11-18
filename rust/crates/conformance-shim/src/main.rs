@@ -395,7 +395,9 @@ fn attach_result(outcome: Result<(), AuthorityError>) -> Value {
     }
 }
 
-fn drain_realtime(io: &mut HostIo, client: &mut Option<SyncClient>) {
+/// Applies buffered realtime traffic and adds the §8.7 `scopes` events the
+/// client surfaced to `scopes_changed`.
+fn drain_realtime(io: &mut HostIo, client: &mut Option<SyncClient>, scopes_changed: &mut usize) {
     while let Some(event) = io.rt_queue.pop_front() {
         let Some(instance) = client.as_mut() else {
             continue;
@@ -404,6 +406,9 @@ fn drain_realtime(io: &mut HostIo, client: &mut Option<SyncClient>) {
             RtEvent::Text(text) => instance.on_realtime_text(&text),
             RtEvent::Binary(bytes) => instance.on_realtime_binary(io, &bytes),
         }
+    }
+    if let Some(instance) = client.as_mut() {
+        *scopes_changed += instance.drain_scopes_changed();
     }
 }
 
@@ -419,6 +424,7 @@ fn main() {
         syncular_client::SyncProgress,
     >::new()));
     let mut progress_subscription = None;
+    let mut scopes_changed = 0;
     // Runs until stdin EOF (the host is gone) or an explicit `close`.
     loop {
         let incoming = if let Some((id, method, params)) = io.deferred.pop_front() {
@@ -432,7 +438,7 @@ fn main() {
         match incoming {
             Incoming::Notification { method, params } => {
                 io.queue_notification(&method, &params);
-                drain_realtime(&mut io, &mut client);
+                drain_realtime(&mut io, &mut client, &mut scopes_changed);
             }
             Incoming::Request { id, method, params } => {
                 if method == "close" {
@@ -440,7 +446,9 @@ fn main() {
                     io.respond(&id, Ok(json!({})));
                     break;
                 }
-                let result = if method == "drainProgress" {
+                let result = if method == "scopesChanged" {
+                    Ok(json!(scopes_changed))
+                } else if method == "drainProgress" {
                     Ok(json!(std::mem::take(
                         &mut *progress_events.lock().expect("progress events")
                     )))
@@ -653,7 +661,7 @@ fn main() {
                         .and_then(SyncClient::pinned_clock)
                         .zip(params.get("syncClockStepMs").and_then(Value::as_i64));
                 }
-                drain_realtime(&mut io, &mut client);
+                drain_realtime(&mut io, &mut client, &mut scopes_changed);
                 io.respond(&id, result);
             }
             Incoming::Response { .. } => {}

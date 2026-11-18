@@ -54,6 +54,8 @@ client.syncUntilIdle();
 // Client-observable events → a broadcast Stream.
 client.events.listen((e) {
   if (e.type == 'sync-intent') client.sync();
+  // SPEC §8.7: the actor's grant widened; register the new units.
+  if (e.type == 'scopes-changed') discoverUnits();
 });
 
 client.pause();   // stop poll + disconnect realtime (e.g. app backgrounded)
@@ -87,7 +89,7 @@ reachable via the raw `command(method, params)`.
 ### Event delivery — the honest simple choice
 
 The core is **callback-free**: exact `change` batches, `sync-intent`,
-`presence`, and privacy-safe `diagnostics` snapshots are drained via
+`presence`, `scopes-changed` notices, and privacy-safe `diagnostics` snapshots are drained via
 `poll_event`. This wrapper
 runs a `Timer.periodic` on the **owning isolate** doing **non-blocking** polls
 (`timeout_ms = 0`) that drain everything currently queued, then return

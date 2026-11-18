@@ -18,7 +18,8 @@ import Foundation
 import CSyncularFFI
 
 /// An event surfaced by the native core's `poll_event`: exact revisioned
-/// `change` batches, explicit `sync-intent`, ephemeral `presence`, or a
+/// `change` batches, explicit `sync-intent`, ephemeral `presence`, a
+/// `scopes-changed` notice (SPEC §8.7: run the app's unit discovery), or a
 /// privacy-safe `diagnostics` snapshot. The raw JSON is preserved for
 /// forward-compatibility; `type` is lifted for switching.
 public struct SyncularEvent: Sendable {

@@ -1456,6 +1456,13 @@ class RustClientInstance implements ClientInstance {
     return result.map(progressValue);
   }
 
+  async scopesChanged(): Promise<number> {
+    const result = await this.#shim.call('scopesChanged', {});
+    if (typeof result !== 'number')
+      throw new Error('invalid scopesChanged count');
+    return result;
+  }
+
   async progressSnapshot(): Promise<DriverSyncProgress | undefined> {
     const result = await this.#shim.call('progressSnapshot', {});
     return result === null ? undefined : progressValue(result);

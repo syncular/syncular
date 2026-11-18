@@ -33,6 +33,7 @@ import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries'
 import {
   CLIENT_SCHEMA,
   makeServer,
+  PARTITION,
   type TestServer,
   taskValues,
   waitFor,
@@ -1039,6 +1040,26 @@ test('a refused presence publish crosses the worker to both presence surfaces (ย
   expect(subscribed).toEqual([['project:unheld', 'presence.forbidden']]);
   expect(configured).toEqual(subscribed);
   expect(await handle.presence('project:unheld')).toEqual([]);
+  off();
+  await handle.disconnectRealtime();
+});
+
+test('a scope announcement crosses the worker to the handle (ยง8.7)', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-scopes',
+    autoSync: false,
+  });
+  let heard = 0;
+  const off = handle.onScopesChanged(() => {
+    heard += 1;
+  });
+  await handle.connectRealtime();
+  server.hub.announceScopes(PARTITION, ['actor-1']);
+  await waitFor(
+    () => heard === 1,
+    (notify) => handle.onScopesChanged(notify),
+    'scope announcement over the worker RPC',
+  );
   off();
   await handle.disconnectRealtime();
 });

@@ -126,9 +126,11 @@ class SyncularClientTest {
         client.listener = SyncularEventListener { delivered.add(it.type) }
         client.handleEvent("""{"type":"realtime-wake"}""")
         client.handleEvent("""{"type":"presence","scopeKey":"room:1"}""")
+        client.handleEvent("""{"type":"scopes-changed"}""")
         client.close()
         // The running poll loop may also deliver the core's own events.
         assertTrue("presence" in delivered)
+        assertTrue("scopes-changed" in delivered)
         assertTrue("realtime-wake" !in delivered)
         val error = assertFailsWith<SyncularException> { client.handleEvent("""{"type":"realtime-wake"}""") }
         assertEquals("client.closed", error.code)

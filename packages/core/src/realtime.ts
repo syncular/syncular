@@ -51,6 +51,13 @@ export interface RealtimeHeartbeatEvent {
   data: { timestamp: number };
 }
 
+/** §8.7 host announcement: the actor's grant widened. It carries no scope
+ * values and asks for no pull. */
+export interface RealtimeScopesEvent {
+  event: 'scopes';
+  data: { timestamp: number };
+}
+
 /** §8.6.2 presence fanout kind — a closed set of three. */
 export type PresenceKind = 'join' | 'update' | 'leave';
 
@@ -83,6 +90,7 @@ export type RealtimeServerEvent =
   | RealtimeHelloEvent
   | RealtimeSyncEvent
   | RealtimeHeartbeatEvent
+  | RealtimeScopesEvent
   | RealtimePresenceEvent;
 
 /** Client → server delta acknowledgement (§8.2). */
@@ -226,14 +234,14 @@ export function parseRealtimeServerEvent(text: string): ParsedRealtimeEvent {
       },
     };
   }
-  if (event === 'heartbeat') {
-    const data = requireObject(root.data, 'heartbeat.data');
+  if (event === 'heartbeat' || event === 'scopes') {
+    const data = requireObject(root.data, `${event}.data`);
     return {
       known: true,
       event: {
-        event: 'heartbeat',
+        event,
         data: {
-          timestamp: requireNumber(data.timestamp, 'heartbeat.data.timestamp'),
+          timestamp: requireNumber(data.timestamp, `${event}.data.timestamp`),
         },
       },
     };

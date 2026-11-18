@@ -947,6 +947,30 @@ describe('host-initiated scope refresh (§8.7)', () => {
     expect(b.wire.binaries).toHaveLength(1);
   });
 
+  test('an announcement sends one scopes event to the named actors only', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-a', { project_id: ['p1'] }],
+      ['actor-b', { project_id: ['p1'] }],
+    ]);
+    const hub = hubWithScopes(t, allowed);
+    const a = await connectedClient(t, hub, 'actor-a', 'client-a');
+    const b = await connectedClient(t, hub, 'actor-b', 'client-b');
+    const before = { a: a.wire.texts.length, b: b.wire.texts.length };
+
+    allowed.set('actor-b', { project_id: ['p1', 'p2'] });
+    hub.announceScopes('part-1', ['actor-b']);
+    hub.announceScopes('part-2', ['actor-a', 'actor-b']);
+
+    expect(a.wire.texts.slice(before.a)).toEqual([]);
+    expect(
+      b.wire.texts.slice(before.b).map((text) => JSON.parse(text)),
+    ).toEqual([{ event: 'scopes', data: { timestamp: t.now.ms } }]);
+    // No registration changes and no wake: the client's discovery acts on it.
+    expect(b.session.registrations).toHaveLength(1);
+    expect(b.session.wakePending).toBe(false);
+  });
+
   test('a refresh that removes a registration wakes only that session', async () => {
     const t = makeContext();
     const allowed = new Map<string, ScopeMap>([

@@ -41,7 +41,9 @@ void   syncular_free_string(char* ptr);
   `sync-intent` effects, and ephemeral `presence` events with a timeout (`<0`
   blocks, `0` non-blocking, `>0` waits N ms). A `presence` event carries the
   server's `error` code (`presence.too_large`, `presence.forbidden`) when the
-  server refused this client's own publish on `scopeKey` (SPEC §8.6.2). The
+  server refused this client's own publish on `scopeKey` (SPEC §8.6.2). A
+  `scopes-changed` event reports a server `scopes` notice (SPEC §8.7): the
+  actor's grant widened, so the app runs its unit discovery. The
   client core has no callbacks;
   the FFI forwards committed core output after each command and after draining
   inbound realtime traffic. It never reconstructs changes from counters.

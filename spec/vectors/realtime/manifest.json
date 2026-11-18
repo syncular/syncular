@@ -13,6 +13,11 @@
       "covers": "Wake-up control message (SPEC.md §8.3)"
     },
     {
+      "name": "scopes",
+      "json": "scopes.json",
+      "covers": "Host announcement that an actor gained scopes (SPEC.md §8.7)"
+    },
+    {
       "name": "presence-publish",
       "json": "presence-publish.json",
       "covers": "Client→server presence publish control message (SPEC.md §8.6.2)"
@@ -29,6 +34,12 @@
       "json": "invalid/wake-requires-pull-false.json",
       "error": "sync.invalid_request",
       "covers": "sync event with requiresPull !== literal true is malformed (SPEC.md §8.3)"
+    },
+    {
+      "name": "scopes-missing-timestamp",
+      "json": "invalid/scopes-missing-timestamp.json",
+      "error": "sync.invalid_request",
+      "covers": "scopes event without an integer timestamp is malformed (SPEC.md §8.7)"
     },
     {
       "name": "hello-fractional-cursor",

@@ -502,6 +502,9 @@ export function startSyncWorkerCore(
     started.onProgress((progress) => {
       emit({ kind: 'progress', progress });
     });
+    started.onScopesChanged(() => {
+      emit({ kind: 'scopes-changed' });
+    });
     started.onChange((batch) => {
       emit({ kind: 'change', batch });
     });

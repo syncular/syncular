@@ -35,7 +35,8 @@
 //! commits an exact revisioned change batch, and commands which create network
 //! work emit an explicit sync intent. After every command — and after draining
 //! inbound realtime traffic — the FFI forwards those outputs verbatim as
-//! `change` and `sync-intent` events. `poll_event` drains them. Native hosts do
+//! `change` and `sync-intent` events, and each §8.7 `scopes` notice as a
+//! `scopes-changed` event. `poll_event` drains them. Native hosts do
 //! not infer changes by diffing counters or method names.
 //!
 //! Inbound realtime traffic (a delta, a presence fanout, a socket loss) is
@@ -349,6 +350,11 @@ impl Core {
         for intent in client.drain_sync_intents() {
             self.queue.push(Event {
                 json: json!({ "type": "sync-intent", "intent": intent }),
+            });
+        }
+        for _ in 0..client.drain_scopes_changed() {
+            self.queue.push(Event {
+                json: json!({ "type": "scopes-changed" }),
             });
         }
     }

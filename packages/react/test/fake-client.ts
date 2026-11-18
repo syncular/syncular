@@ -259,6 +259,10 @@ export class FakeClient implements SyncClientLike {
     return () => this.#presenceListeners.delete(listener);
   }
 
+  onScopesChanged(_listener: () => void): () => void {
+    return () => undefined;
+  }
+
   query(sql: string, _params?: readonly unknown[]): SqlRow[] {
     this.queryCount += 1;
     // Return rows for whichever known table name appears in the SQL text.

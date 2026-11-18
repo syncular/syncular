@@ -1582,6 +1582,7 @@ pub fn dispatch<T: Transport>(
                 Ok(ControlMessage::Hello { .. })
                     | Ok(ControlMessage::Wake { .. })
                     | Ok(ControlMessage::Heartbeat { .. })
+                    | Ok(ControlMessage::Scopes { .. })
                     | Ok(ControlMessage::Presence { .. })
             );
             Ok(json!({ "value": known }))
