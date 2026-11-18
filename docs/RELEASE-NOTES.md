@@ -1,5 +1,31 @@
 # Syncular release notes
 
+## 0.87.0 release notes
+
+0.87.0 re-bootstraps only a unit's changed tables after a schema bump
+(SYNCULAR-BUMP-UNIT-GRANULARITY-001). The wire version stays 4; SSP2 gains one
+optional request frame.
+
+A unit that covers tables a bump changed and tables it kept used to reset as a
+whole: it dropped its cursor and downloaded every covered table again. SPEC
+§7.4.3 records the new decision (2026-11-18). The client keeps the unit's
+cursor `C` and its kept tables' rows, and sends the new `RESTRICT` request
+frame (`0x07`, `{cursor, tables}`) right after the unit's `PROGRESS`. The
+server bootstraps only the listed tables at its snapshot `S`; the unit then
+joins live at `C`, and the row-version guard turns the changes in `(C, S]`
+into no-ops for rows it already holds. A cursor below the pruning horizon gets
+`SUB_START` reset with `sync.cursor_expired`, and the unit bootstraps whole.
+
+A server that predates `RESTRICT` skips it as an unknown frame (SPEC §1.2
+rule 2) and serves the whole unit. The client drops the restriction at the
+first segment of a table it kept and applies the bootstrap by the ordinary
+rules. Upgrade servers before clients to get the restricted bootstrap.
+Replicas gain a `restriction` column in `_syncular_units`, added on open.
+
+A bump reset now keeps every unit's echo, so a revocation answered before the
+re-bootstrap still purges the kept tables' rows. 0.86.0 dropped the echo and
+could leave those rows in place.
+
 ## 0.86.0 release notes
 
 0.86.0 reports a whole unit bootstrap in progress
