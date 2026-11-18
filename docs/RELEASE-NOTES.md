@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## 0.85.0 release notes
+
+0.85.0 adds alternative write sets (SYNCULAR-ALTERNATIVE-SCOPE-WRITE-001) and
+lets a scope column outside the owner set be NULL (SYNCULAR-SCOPE-NULL-001).
+SSP2 and the wire version are unchanged.
+
+`writeScopeVariables` accepts a list of alternative sets, such as
+`[['facility_id'], ['centre_window_id']]`. The first set is the owner set. Any
+set that matches the stored row admits an update or a delete; only the owner
+set admits an insert or a `rescope`, so a holder of another set edits only rows
+that already carry its value. Clearing that column through a server-side
+`rescope` or command removes the holder's read and write access together. The
+single-set form `writeScopeVariables: ['facility_id']` keeps its meaning.
+
+A scope column of a variable outside the owner set may be NULL. The row then
+has no stored scope for that variable: no unit over it receives the row, no
+set containing it admits a write, and the row stays readable through its other
+scopes. A schema bump re-keys such rows without
+`sync.storage.scope_value_missing`. A NULL in an owner-set column is still
+refused with `sync.forbidden`. The TypeScript server and the Rust local
+authority apply the same rules (SPEC §3.1, §3.4).
+
 ## 0.84.0 release notes
 
 0.84.0 removes duplicated and unused code: 45 files, 465 lines fewer. SSP2
