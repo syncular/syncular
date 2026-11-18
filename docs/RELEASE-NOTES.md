@@ -1,5 +1,47 @@
 # Syncular release notes
 
+## 0.82.0 release notes
+
+PostgreSQL pushes hold the partition lock for fewer statements
+(SYNCULAR-PUSH-LOCK-STATEMENTS-001, SYNCULAR-PUSH-QUERY-CURSOR-001, SPEC §6.4).
+Each statement under the lock costs one round trip; Diego's coordinator pays
+4.7 ms per statement, so a one-row push held the lock for 10 of Syncular's
+statements, about 47 ms.
+
+- The lock read returns `max_commit_seq`, and the storage numbers each commit
+  from it without a statement. The append advances the cursor by the commit
+  count and fails the transaction if the database disagrees.
+- The admission statement after the lock also runs the §9 settlement and the
+  §6.3.2 watermark.
+- A commit's rows, blob references and commit append are held back in memory;
+  closed commits and their results go to the database with the transaction's
+  next statement or before `COMMIT`, bound as JSON text.
+- A commit takes its savepoint only when its writes must reach the database
+  before it closes (a scan, a registered query, a delete, a unique-index
+  upsert, a reaction insert). `getRow` and `getRows` answer held-back rows from
+  memory.
+- A registered query under the lock takes its cursor from the lock read; the
+  separate `SELECT max_commit_seq` is gone.
+- Statements under the lock, `BEGIN` and `COMMIT` included: one one-row commit
+  10 -> 5; ten one-row commits in one request 37 -> 5; Diego's day note with
+  one registered-query validator 11 -> 7 plus the query.
+- Ceiling benchmark, reference app with a 4-read validator, PostgreSQL 17:
+  below 1 ms round trip, one-commit requests 20.9 -> 50.9 commits/s with one
+  pusher and 65.8 -> 141.1 with ten; at 3 to 5 ms, 9.7 -> 13.5 and
+  24.4 -> 40.8.
+- A relational constraint that fails on a closed commit's held-back rows
+  aborts the transaction, so no commit can be rejected alone. The server then
+  rolls back and runs the request once more with every commit written behind
+  its savepoint before it closes, and validators run again, as on a client
+  retry. Only a constraint on a table without a unique index (for example a
+  host `CHECK`) reaches this path.
+- SQLite and D1 are unchanged.
+
+**Upgrade notes.** Custom storage adapters: `preparePushApply` takes an
+optional `{ closeEagerly }`, and a storage that holds closed commits' writes
+back throws `ClosedCommitConstraintError` when a constraint fails on them. The
+shipped storages need no change.
+
 ## 0.81.0 release notes
 
 The revision of an empty first answer notifies only queries that ask for it
