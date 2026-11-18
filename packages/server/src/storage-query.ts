@@ -175,8 +175,9 @@ export interface LiveCandidateRow {
  * The §4.5 live scan over a backend's two reads. `readCandidates` returns
  * up to `limit` candidate commits above every key range's bound with their
  * per-key byte sizes, and no payload. `readChanges` loads the changes the
- * keys read in a commit range `(after, through]`, in (commitSeq, change
- * index) order. Each distinct unit key (the first variable, keys sorted)
+ * keys read in the given candidate commits, in (commitSeq, change index)
+ * order; it never visits a commit outside that list, so the cost of a page
+ * follows its candidates and not the length of the change log below them. Each distinct unit key (the first variable, keys sorted)
  * becomes one index range starting at the lowest bound of the units that
  * share it. A change is kept when a unit covers its table, the pair's
  * effective scopes match it, and its commit lies above that unit's own
@@ -197,8 +198,7 @@ export async function readLiveWindowPages(
   ) => Promise<readonly LiveCandidateRow[]>,
   readChanges: (
     keys: readonly LiveKey[],
-    after: number,
-    through: number,
+    commitSeqs: readonly number[],
   ) => Promise<
     readonly { readonly commitSeq: number; readonly change: StoredChange }[]
   >,
@@ -246,7 +246,10 @@ export async function readLiveWindowPages(
     const last = pending.at(-1);
     if (last === undefined) return undefined;
     const metas = new Map(pending.map((c) => [c.commitSeq, c.meta]));
-    const rows = await readChanges(scanKeys(), scanned, last.commitSeq);
+    const rows = await readChanges(
+      scanKeys(),
+      pending.map((c) => c.commitSeq),
+    );
     pending = [];
     scanned = last.commitSeq;
     for (let i = 0; i < rows.length;) {

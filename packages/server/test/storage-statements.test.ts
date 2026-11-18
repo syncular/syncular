@@ -27,6 +27,7 @@ import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import { D1DatabaseDouble } from './d1-double';
 import { CONTRACT_SCHEMA } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
+import { readLiveWindowPages } from '../src/storage-query';
 import {
   makeContext,
   pushCommit,
@@ -484,16 +485,23 @@ for (const kind of KINDS) {
         tables: ['tasks'],
       })),
     );
-    // The change read ranges the log by (partition, commit_seq).
-    const changeLines = await plan(statements[1]!, [PARTITION, keys, 0, 40]);
+    // The change read seeks each candidate commit by (partition, commit_seq).
+    const changeLines = await plan(statements[1]!, [
+      PARTITION,
+      keys,
+      JSON.stringify(window.commits.map((commit) => commit.commitSeq)),
+    ]);
     expect(
       changeLines.some((line) =>
         kind === 'sqlite'
           ? line.startsWith('SEARCH ch USING') &&
-            line.includes('commit_seq>? AND commit_seq<?')
+            line.includes('(partition=? AND commit_seq=?)')
           : /Index Scan using sync_changes_pkey on sync_changes/.test(line),
       ),
     ).toBe(true);
+    expect(changeLines.some((line) => /^SCAN ch\b|Seq Scan/.test(line))).toBe(
+      false,
+    );
     const lines = await plan(statements[0]!, [PARTITION, keys, 40, 1000]);
     if (kind === 'sqlite') {
       // The 13 keys drive the loop; each seeks one range of the key index.
@@ -782,4 +790,39 @@ test('an idle SQLite storage runs a call before a close in the same tick', async
     logEpoch: 'epoch',
     lastAuthenticatedAtMs: NOW,
   });
+});
+
+test('the live change read loads only the candidate commits, whatever the log holds below them (§4.5)', async () => {
+  const calls: (readonly number[])[] = [];
+  const window = await readLiveWindowPages(
+    {
+      units: [
+        {
+          scopes: { project_id: 'p1' },
+          afterSeq: 25,
+          tables: new Map([['tasks', { project_id: ['p1'] }]]),
+        },
+      ],
+      throughSeq: 26,
+      limitChanges: 1000,
+      limitBytes: 16 * 1024 * 1024,
+    },
+    async (keys) =>
+      keys[0]!.after < 26
+        ? [
+            {
+              commitSeq: 26,
+              meta: { actorId: 'a', createdAtMs: NOW },
+              key: 0,
+              bytes: 3,
+            },
+          ]
+        : [],
+    async (_keys, commitSeqs) => {
+      calls.push(commitSeqs);
+      return [];
+    },
+  );
+  expect(calls).toEqual([[26]]);
+  expect(window.throughSeq).toBe(26);
 });

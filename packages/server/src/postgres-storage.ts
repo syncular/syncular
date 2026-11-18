@@ -3551,8 +3551,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     // the commit meta (NULL when the commit vanished, which still advances
     // the scan) and, per key, the byte size of the changes the key reads;
     // `octet_length` of a TOASTed payload reads its pointer, never the value.
-    // The change read then loads only those changes of the commits the byte
-    // budget admits.
+    // The change read then seeks only the commits the byte budget admits.
     return readLiveWindowPages(
       query,
       async (keys, limit) => {
@@ -3597,7 +3596,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             : { key: asNumber(record.key), bytes: asNumber(record.bytes) }),
         }));
       },
-      async (keys, after, through) => {
+      async (keys, commitSeqs) => {
         const { rows } = await this.#exec.query<
           ChangeRecord & { commit_seq: unknown }
         >(
@@ -3605,10 +3604,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
            SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
              ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
            FROM sync_changes ch
-           WHERE ch.partition=$1 AND ch.commit_seq>$3 AND ch.commit_seq<=$4
+           WHERE ch.partition=$1 AND ch.commit_seq=ANY(ARRAY(SELECT jsonb_array_elements_text($3::text::jsonb)::bigint))
              AND EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND (CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END)->>k.var=k.value)
            ORDER BY ch.commit_seq, ch.idx`,
-          [partition, JSON.stringify(keys), after, through],
+          [partition, JSON.stringify(keys), JSON.stringify(commitSeqs)],
         );
         return rows.map((record) => ({
           commitSeq: asNumber(record.commit_seq),

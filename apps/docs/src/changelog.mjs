@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'A live section reads only its candidate commits',
+    body: "The live-section change read on SQLite, D1 and PostgreSQL storage started at commit 0, so every pull after a commit visited the partition's whole change log up to the last candidate. It now seeks the candidate commits by `(partition, commit_seq)`. With 160,000 changes in commit 1 and 84 unit keys, a live window over commit 26 reads in 0.4 ms instead of 3.9 s on SQLite.",
+    links: [
+      {
+        href: '/server-storage-reference/#pull-path',
+        label: 'Pull path',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A validator query over unwritten tables adds no savepoint',
     body: "PostgreSQL storage wrote a commit's held-back rows behind a savepoint before every registered query, so a validator that reads authority tables the commit never writes cost two extra statements under the partition lock. A registered query, scan or by-index read now writes held-back rows only when one of the tables it reads has some. A one-row commit with a one-query validator holds the lock for 6 statements instead of 8.",
     links: [

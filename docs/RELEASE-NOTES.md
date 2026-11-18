@@ -1,5 +1,24 @@
 # Syncular release notes
 
+## 0.82.3 release notes
+
+A live section's change read visits only its candidate commits
+(SYNCULAR-LIVE-WINDOW-SCAN-001). The candidate read already found the commits
+above each unit key's bound, but the first change read of a pull bound its
+lower commit at -1, so it walked every change of the partition up to the last
+candidate. On SQLite it also parsed the bound key array again for every
+change it visited.
+
+- `readLiveWindow` on SQLite, D1 and PostgreSQL storage loads changes only
+  for the candidate commits the byte budget admits, by `(partition,
+  commit_seq)`. SQLite materializes the key list once per statement.
+- Diego's shape on SQLite (160,000 changes in commit 1, 84 unit keys with
+  bound 25, live window over commit 26): 3,910 ms -> 0.4 ms. The server
+  answers nothing else while the read runs, so pushes no longer wait on it.
+- The delivered commits are unchanged.
+
+**Upgrade notes.** None.
+
 ## 0.82.2 release notes
 
 A registered query under the partition lock writes held-back rows only when

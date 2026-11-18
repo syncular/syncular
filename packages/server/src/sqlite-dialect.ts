@@ -1208,8 +1208,9 @@ export abstract class SqliteFamilyStorage {
     // the index is missing). Each candidate LEFT JOINs its commit meta (NULL
     // when the commit vanished, which still advances the scan) and, per key,
     // the byte size of the changes the key reads; `length()` of a blob reads
-    // the record header, never the payload. The change read then loads only
-    // those changes of the commits the byte budget admits.
+    // the record header, never the payload. The change read then seeks only
+    // the commits the byte budget admits, through the primary key, with the
+    // key list materialized once per statement.
     return readLiveWindowPages(
       query,
       async (keys, limit) =>
@@ -1253,17 +1254,16 @@ export abstract class SqliteFamilyStorage {
             ? { key: record.key, bytes: record.bytes ?? 0 }
             : {}),
         })),
-      async (keys, after, through) =>
+      async (keys, commitSeqs) =>
         (
           await this.guardedAll<SqliteChangeRecord & { commit_seq: number }>(
-            `WITH k AS (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2))
+            `WITH k AS MATERIALIZED (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2))
              SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
                ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-             FROM sync_changes AS ch
-             WHERE ch.partition=?1 AND ch.commit_seq>?3 AND ch.commit_seq<=?4
-               AND EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)) AND (ch.scopes ->> k.var)=k.value)
+             FROM json_each(?3) AS c CROSS JOIN sync_changes AS ch ON ch.partition=?1 AND ch.commit_seq=c.value
+             WHERE EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)) AND (ch.scopes ->> k.var)=k.value)
              ORDER BY ch.commit_seq, ch.idx`,
-            [partition, JSON.stringify(keys), after, through],
+            [partition, JSON.stringify(keys), JSON.stringify(commitSeqs)],
           )
         ).map((record) => ({
           commitSeq: record.commit_seq,

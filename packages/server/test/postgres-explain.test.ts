@@ -130,7 +130,7 @@ test('readLiveWindow ranges the key index once per unit (no Seq Scan)', async ()
     afterSeq: 0,
     tables: new Map([['tasks', { project_id: [project] }]]),
   }));
-  await storage.readLiveWindow(PARTITION, {
+  const window = await storage.readLiveWindow(PARTITION, {
     units,
     throughSeq: ROWS,
     limitChanges: 64,
@@ -147,7 +147,12 @@ test('readLiveWindow ranges the key index once per unit (no Seq Scan)', async ()
       tables: ['tasks'],
     })),
   );
-  const changePlan = await explain(db, texts[1]!, [PARTITION, keys, 0, ROWS]);
+  const changePlan = await explain(db, texts[1]!, [
+    PARTITION,
+    keys,
+    JSON.stringify(window.commits.map((commit) => commit.commitSeq)),
+  ]);
+  expect(changePlan).toContain('Index Scan using sync_changes_pkey');
   expect(changePlan).not.toContain('Seq Scan on sync_changes');
   const plan = await explain(db, texts[0]!, [PARTITION, keys, ROWS, 64]);
   expect(plan).toContain('Index Only Scan using sync_change_scopes_by_key');
