@@ -2742,6 +2742,13 @@ without persisting its `SUB_END`; the next pull presents the same resume
 token and continues with the §5.6 applied-segment rule. Peak memory then
 follows `maxImageSegmentBytes`, never the table size.
 
+The TypeScript client queues every segment download of a pull response and
+runs at most `limits.segmentPrefetch` of them at once (a positive integer up to
+4294967295, default 4; anything else is `sync.invalid_request` at
+construction). The image bound above applies inside that window whatever its
+size. The Rust client downloads a response's segments one at a time; its
+`limits` parser ignores the key like every other key it does not know.
+
 DECISION (2026-11-17): an image copy filters held rows out of its `SELECT`.
 The TypeScript client up to 0.78.1 copied with `ON CONFLICT … DO UPDATE … WHERE`
 the image version is newer than the held one. For a row held at its own
@@ -7434,6 +7441,24 @@ pinned, never interpreted.
   round and triggers another pull. Aggregate drive-to-idle helpers
   (e.g. a conformance driver's `syncUntilIdle`) are part of the
   driver/host contract, not the protocol.
+- **Empty replicas and coalescing in the TypeScript host loops.**
+  `installSyncScheduler`, the browser worker's `autoSync` loop and the
+  realtime supervisor drive with `syncUntilIdle({ skipEmpty: true })`. Such a
+  drive ends without a round, and clears sync-needed, when the replica has
+  no unit record, no outbox commit, no retained row awaiting its server
+  version, no pending eviction, and no unit list the server may still hold
+  (no log epoch yet, or a stored registration digest equal to the empty
+  list's). Every other drive runs its rounds as before; a drive without the
+  option, a single `sync()` and the conformance driver always send a request,
+  and the native bridge does not forward the option. Such a round has no
+  duty left: §8.1 `requiresSync` protects continuity of registered units and
+  there are none; a lease (§7.3) protects offline work and there is none; the
+  log-epoch handshake (§2.1) runs as the first round of the drive that
+  carries the first unit or commit. A replica that releases its last unit
+  still runs the round that sends the empty list. Both hosts also accept
+  `coalesceMs` (default 0): a drive queued by an intent starts that many
+  milliseconds later instead of in the next microtask, and every intent in
+  between joins it. Background deadlines are unaffected.
 - **The TypeScript realtime supervisor** (`installRealtimeSupervisor`, used
   by the browser, Tauri and React Native hosts) owns one attempt at a time.
   An attempt connects, then runs `syncUntilIdle`; only a socket still open

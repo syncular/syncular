@@ -17,6 +17,25 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'Wider segment downloads and fewer empty rounds on a cold start',
+    body: "`limits.segmentPrefetch` sets how many segment downloads of one pull response the TypeScript client runs at once (default 4); SQLite images stay at two at a time. `installSyncScheduler` and the browser worker handle accept `coalesceMs`: a queued drive waits that many milliseconds, so claims and writes made in one burst ride in one pull. The scheduler, the worker's `autoSync` loop and the realtime supervisor now drive with `syncUntilIdle({ skipEmpty: true })`, which ends without a request on a replica with no unit, no outbox commit and no unit list left to clear on the server; before, a freshly signed-in client ran an empty round before its first claims. `syncUntilIdle()` without the option and `sync()` still send a request. The Rust core is unchanged: it downloads segments one at a time and its host loops keep their rounds. Every structural decode failure in `@syncular/core` is now built by the exported `invalidInput(message)`; codes and messages are unchanged.",
+    links: [
+      {
+        href: '/concepts-bootstrap/#parallel-downloads',
+        label: 'Parallel downloads',
+      },
+      {
+        href: '/guide-server-clients/',
+        label: 'Server-side clients',
+      },
+      {
+        href: '/platform-web-realtime/#realtime-policy',
+        label: 'Browser realtime',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Alternative write sets and NULL scope columns',
     body: "`writeScopeVariables` accepts alternative sets, such as `[['facility_id'], ['centre_window_id']]`. Any set that matches the stored row admits an update or delete; only the first set, the owner set, admits an insert or a `rescope`. A scope column outside the owner set may be NULL: the row has no stored scope for that variable, so no unit over it receives the row and no set containing it admits a write, and a schema bump re-keys the row without `sync.storage.scope_value_missing`. The TS server and the Rust local authority apply the same rules.",
     links: [

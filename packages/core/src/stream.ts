@@ -16,7 +16,7 @@
  */
 import { utf8Encode } from './bytes';
 import { isSupportedProtocolWireVersion, SYNC_PACK_MAGIC } from './constants';
-import { DecodeError } from './errors';
+import { invalidInput } from './errors';
 
 const MAGIC = utf8Encode(SYNC_PACK_MAGIC);
 /** `END` frame type byte (§1.2). */
@@ -103,24 +103,19 @@ export class MessageStreamScanner {
       b[2] !== MAGIC[2] ||
       b[3] !== MAGIC[3]
     ) {
-      throw new DecodeError('sync.invalid_request', 'bad envelope magic');
+      throw invalidInput('bad envelope magic');
     }
     const wireVersion = (b[4] as number) | ((b[5] as number) << 8);
     if (!isSupportedProtocolWireVersion(wireVersion)) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `unsupported wireVersion ${wireVersion}`,
-      );
+      throw invalidInput(`unsupported wireVersion ${wireVersion}`);
     }
     if (b[6] !== 0x01 && b[6] !== 0x02) {
-      throw new DecodeError(
-        'sync.invalid_request',
+      throw invalidInput(
         `unknown msgKind byte 0x${(b[6] as number).toString(16)}`,
       );
     }
     if (b[7] !== 0x00) {
-      throw new DecodeError(
-        'sync.invalid_request',
+      throw invalidInput(
         `non-zero envelope flags 0x${(b[7] as number).toString(16)}`,
       );
     }

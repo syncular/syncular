@@ -160,6 +160,8 @@ export interface WorkerInitConfig {
    * `syncUntilIdle` rounds inside the worker. Default true.
    */
   readonly autoSync?: boolean;
+  /** Delay of a queued `autoSync` drive (§8.4); validated by the handle. */
+  readonly coalesceMs?: number;
 }
 
 /** Successful init reply. */

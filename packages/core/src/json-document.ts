@@ -4,7 +4,7 @@
  * `blob_ref` values. The Rust core (`ssp2::primitives::parse_json_document`)
  * accepts exactly the same documents.
  */
-import { DecodeError } from './errors';
+import { invalidInput } from './errors';
 
 const MAX_DEPTH = 64;
 
@@ -23,10 +23,7 @@ export function parseJsonDocument(raw: string, what: string): unknown {
   try {
     value = JSON.parse(raw);
   } catch {
-    throw new DecodeError(
-      'sync.invalid_request',
-      `${what} does not parse as a JSON document`,
-    );
+    throw invalidInput(`${what} does not parse as a JSON document`);
   }
   let depth = 0;
   for (const [token] of raw.matchAll(
@@ -35,10 +32,7 @@ export function parseJsonDocument(raw: string, what: string): unknown {
     const head = token[0];
     if (head === '[' || head === '{') {
       if (++depth > MAX_DEPTH) {
-        throw new DecodeError(
-          'sync.invalid_request',
-          `${what} nests deeper than ${MAX_DEPTH} containers`,
-        );
+        throw invalidInput(`${what} nests deeper than ${MAX_DEPTH} containers`);
       }
     } else if (head === ']' || head === '}') {
       depth--;
@@ -46,16 +40,12 @@ export function parseJsonDocument(raw: string, what: string): unknown {
       // In `u` mode `\p{Cs}` matches only a surrogate outside a pair.
       const text: string = token.includes('\\') ? JSON.parse(token) : token;
       if (text.includes('\u0000') || /\p{Cs}/u.test(text)) {
-        throw new DecodeError(
-          'sync.invalid_request',
+        throw invalidInput(
           `${what} holds a string with U+0000 or an unpaired surrogate`,
         );
       }
     } else if (!Number.isFinite(Number(token))) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `${what} holds a number outside finite binary64`,
-      );
+      throw invalidInput(`${what} holds a number outside finite binary64`);
     }
   }
   return value;

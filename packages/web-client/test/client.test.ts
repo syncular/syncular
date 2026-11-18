@@ -2506,8 +2506,10 @@ describe('push capacity limits (§7.1)', () => {
     }
   });
 
-  test('invalid push limits fail loudly with a static message', () => {
+  test('invalid push and prefetch limits fail loudly with a static message', () => {
     for (const limits of [
+      { segmentPrefetch: 0 },
+      { segmentPrefetch: 2.5 },
       { maxPushOperationsPerRequest: 0 },
       { maxPushCommitsPerRequest: -1 },
       { maxPushRequestBytes: 1.5 },
@@ -2522,7 +2524,7 @@ describe('push capacity limits (§7.1)', () => {
             transport: async () => new Uint8Array(),
             limits,
           }),
-      ).toThrow('push limit must be an integer in 1..=4294967295');
+      ).toThrow('limit must be an integer in 1..=4294967295');
     }
   });
 });

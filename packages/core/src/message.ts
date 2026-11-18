@@ -21,7 +21,7 @@ import {
   writeStringMap,
 } from './bytes';
 import { isSupportedProtocolWireVersion, SYNC_PACK_MAGIC } from './constants';
-import { DecodeError } from './errors';
+import { DecodeError, invalidInput } from './errors';
 import { parseJsonDocument } from './json-document';
 import {
   FrameType,
@@ -332,7 +332,7 @@ export function definedObject<const T extends object>(
 }
 
 function invalid(message: string): never {
-  throw new DecodeError('sync.invalid_request', message);
+  throw invalidInput(message);
 }
 
 /** A `json` field: a valid JSON document (Conventions), kept as raw text. */

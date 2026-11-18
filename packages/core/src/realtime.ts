@@ -8,7 +8,7 @@
  * and ignore unknown JSON control events, so parsing returns
  * `known: false` for unrecognized event names instead of failing.
  */
-import { DecodeError } from './errors';
+import { invalidInput } from './errors';
 import { parseJsonDocument } from './json-document';
 
 /** §8.7 channel tag: a standalone SSP2 response message — a delta. */
@@ -140,10 +140,7 @@ export function encodePresenceError(
 }
 
 function malformed(what: string): never {
-  throw new DecodeError(
-    'sync.invalid_request',
-    `malformed realtime control message: ${what}`,
-  );
+  throw invalidInput(`malformed realtime control message: ${what}`);
 }
 
 function requireObject(value: unknown, what: string): Record<string, unknown> {

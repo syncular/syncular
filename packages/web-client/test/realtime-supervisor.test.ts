@@ -645,6 +645,29 @@ describe('supported realtime host supervisor', () => {
     await client.close();
   });
 
+  test('an empty replica connects without a catch-up round (§8.4)', async () => {
+    const server = makeServer();
+    const empty = await makeClient(server, { clientId: 'supervisor-empty' });
+    empty.db.exec("DELETE FROM _syncular_meta WHERE key = 'logEpoch'");
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(empty.client, {
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await waitFor(
+      () => supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
+      'empty replica connected',
+    );
+    expect(empty.client.diagnosticsSnapshot().lastRound).toBeUndefined();
+    expect(empty.client.statusSnapshot().syncNeeded).toBe(false);
+    await supervisor.stop();
+    await empty.client.close();
+  });
+
   test('reconnect catches up a remote-only commit before claiming connected', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'supervisor-writer' });

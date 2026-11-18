@@ -235,6 +235,7 @@ export function startSyncWorkerCore(
 
   // -- SPEC §7.5 host loop: event-driven intents, no interactive polling --
   let autoSync = true;
+  let coalesceMs = 0;
   let autoSyncScheduled = false;
   let cancelBackground: (() => void) | undefined;
   let backgroundDue = Number.POSITIVE_INFINITY;
@@ -273,7 +274,7 @@ export function startSyncWorkerCore(
       // let every wake-up that arrives while this round waits behind the
       // running one queue its own full drive (§8.4 coalescing).
       autoSyncScheduled = false;
-      return running.syncUntilIdle();
+      return running.syncUntilIdle({ skipEmpty: true });
     })
       .then((summary) => {
         retryDelayMs = 250;
@@ -344,7 +345,8 @@ export function startSyncWorkerCore(
       return;
     }
     autoSyncScheduled = true;
-    queueMicrotask(runAutoSync);
+    if (coalesceMs > 0) scheduleBackground(runAutoSync, coalesceMs);
+    else queueMicrotask(runAutoSync);
   }
 
   function requireClient(): SyncClient {
@@ -383,6 +385,7 @@ export function startSyncWorkerCore(
       );
     }
     autoSync = config.autoSync ?? true;
+    coalesceMs = config.coalesceMs ?? 0;
     headers = config.headers ?? {};
     const http = { headers: () => headers };
 

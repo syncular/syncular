@@ -23,6 +23,7 @@ import {
   browserConnectivitySignal,
   documentLifecycleSignal,
   installRealtimeSupervisor,
+  type SyncIdleOptions,
 } from '@syncular/client';
 import type { SyncClientLike } from '@syncular/react';
 import { schema } from '../syncular.generated';
@@ -32,7 +33,7 @@ import { schema } from '../syncular.generated';
  * lifecycle both concrete clients share, still fully host-agnostic.
  */
 export interface Engine extends SyncClientLike {
-  syncUntilIdle(maxRounds?: number): unknown | Promise<unknown>;
+  syncUntilIdle(options?: number | SyncIdleOptions): unknown | Promise<unknown>;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): void | Promise<void>;
   close(): Promise<void>;

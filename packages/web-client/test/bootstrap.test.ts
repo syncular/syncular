@@ -13,7 +13,11 @@ import {
   encodeRowsSegment,
 } from '@syncular/core';
 import { compileSchema, type SqliteValue } from '@syncular/server';
-import { SyncClient, type SegmentFetchRequest } from '@syncular/client';
+import {
+  SyncClient,
+  type SegmentFetchRequest,
+  type SyncClientLimits,
+} from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { upsertSql, upsertValues } from '../../server/src/relational-rows';
 import { getUnit } from '../src/state';
@@ -209,6 +213,7 @@ describe('external segments (SEGMENT_REF)', () => {
   async function gatedClient(
     ids: readonly string[],
     mediaType: 'rows' | 'sqlite' = 'rows',
+    limits?: SyncClientLimits,
   ): Promise<{
     client: SyncClient;
     pages: { segmentId: string; bytes: Uint8Array }[];
@@ -249,6 +254,7 @@ describe('external segments (SEGMENT_REF)', () => {
       clientId: 'segment-batch',
       transport: async () => response,
       segments,
+      ...(limits !== undefined ? { limits } : {}),
     });
     await client.start();
     db.exec(
@@ -302,6 +308,44 @@ describe('external segments (SEGMENT_REF)', () => {
         gates.get(segmentId)!.resolve();
       expect((await round).segmentRowsApplied).toBe(6);
       expect(started).toEqual(segmentIds);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('limits.segmentPrefetch widens the window: all eight downloads start before the first applies', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
+    const { client, pages, started, gates, issued } = await gatedClient(
+      ids,
+      'rows',
+      { segmentPrefetch: 8 },
+    );
+    try {
+      const round = client.sync();
+      await issued(8);
+      expect(started).toEqual(pages.map((page) => page.segmentId));
+      expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual([]);
+      for (const page of pages) gates.get(page.segmentId)!.resolve();
+      expect((await round).segmentRowsApplied).toBe(8);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a wide limits.segmentPrefetch keeps image bodies at two at once', async () => {
+    const { client, pages, started, gates, issued } = await gatedClient(
+      ['a', 'b', 'c', 'd'],
+      'sqlite',
+      { segmentPrefetch: 8 },
+    );
+    try {
+      const round = client.sync();
+      await issued(2);
+      await drainMicrotasks();
+      expect(started).toEqual(pages.slice(0, 2).map((page) => page.segmentId));
+      gates.get(pages[0]!.segmentId)!.reject(new Error('dropped'));
+      await expect(round).rejects.toThrow('dropped');
+      expect(started).toHaveLength(2);
     } finally {
       await client.close();
     }

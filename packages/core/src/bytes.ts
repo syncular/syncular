@@ -7,7 +7,7 @@
  * out-of-order map keys, out-of-range bools, and i64 values outside the
  * JS safe-integer contract.
  */
-import { DecodeError } from './errors';
+import { invalidInput } from './errors';
 
 const MAX_SAFE_I64 = 9007199254740991n; // 2^53 - 1
 const MIN_SAFE_I64 = -9007199254740991n;
@@ -136,8 +136,7 @@ export class ByteReader {
 
   #take(size: number): number {
     if (this.remaining < size) {
-      throw new DecodeError(
-        'sync.invalid_request',
+      throw invalidInput(
         `truncated input: needed ${size} bytes, have ${this.remaining}`,
       );
     }
@@ -165,10 +164,7 @@ export class ByteReader {
   i64(): number {
     const value = this.#view.getBigInt64(this.#take(8), true);
     if (value > MAX_SAFE_I64 || value < MIN_SAFE_I64) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `i64 outside the safe-integer contract: ${value}`,
-      );
+      throw invalidInput(`i64 outside the safe-integer contract: ${value}`);
     }
     return Number(value);
   }
@@ -180,10 +176,7 @@ export class ByteReader {
   bool(): boolean {
     const byte = this.u8();
     if (byte > 1) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `invalid bool byte 0x${byte.toString(16)}`,
-      );
+      throw invalidInput(`invalid bool byte 0x${byte.toString(16)}`);
     }
     return byte === 1;
   }
@@ -202,7 +195,7 @@ export class ByteReader {
     try {
       return textDecoder.decode(encoded);
     } catch {
-      throw new DecodeError('sync.invalid_request', 'invalid UTF-8 in string');
+      throw invalidInput('invalid UTF-8 in string');
     }
   }
 
@@ -210,18 +203,14 @@ export class ByteReader {
     const presence = this.u8();
     if (presence === 0) return undefined;
     if (presence === 1) return read();
-    throw new DecodeError(
-      'sync.invalid_request',
+    throw invalidInput(
       `invalid option presence byte 0x${presence.toString(16)}`,
     );
   }
 
   expectFullyConsumed(what: string): void {
     if (this.remaining !== 0) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `trailing bytes after ${what}`,
-      );
+      throw invalidInput(`trailing bytes after ${what}`);
     }
   }
 }
@@ -255,8 +244,7 @@ function readCanonicalMap<T>(
   for (let i = 0; i < count; i++) {
     const key = reader.str();
     if (previousKey !== undefined && key <= previousKey) {
-      throw new DecodeError(
-        'sync.invalid_request',
+      throw invalidInput(
         `map keys must be unique and in ascending code-unit order (saw ${JSON.stringify(key)} after ${JSON.stringify(previousKey)})`,
       );
     }

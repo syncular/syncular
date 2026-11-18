@@ -1799,3 +1799,47 @@ test('a runtime without Web Locks refuses the handle before spawning a worker', 
   expect((caught as ClientSyncError).retryable).toBe(false);
   expect(spawned).toBe(0);
 });
+
+test('the worker autoSync loop holds a queued drive for coalesceMs', async () => {
+  await expect(
+    makeHandle({ clientId: 'rpc-coalesce-invalid', coalesceMs: -1 }),
+  ).rejects.toThrow('coalesceMs must be a non-negative finite number');
+  const worker = new Worker(
+    new URL('./heartbeat-worker.ts', import.meta.url).href,
+  );
+  const timers: number[] = [];
+  let notify: () => void = () => {};
+  const observe = (next: () => void) => {
+    notify = next;
+    return () => {
+      notify = () => {};
+    };
+  };
+  worker.addEventListener('message', (event) => {
+    const message = event.data as { readonly t?: string; delayMs?: number };
+    if (message.t === 'timer') timers.push(message.delayMs ?? -1);
+    notify();
+  });
+  const { handle, events } = await makeHandle({
+    clientId: 'rpc-coalesce',
+    worker: () => worker,
+    autoSync: true,
+    realtimePolicy: 'off',
+    coalesceMs: 25,
+    onSynced: (result) => {
+      events.synced.push(result);
+      notify();
+    },
+  });
+  for (const id of ['first', 'second'])
+    await handle.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues(id, 'p-coalesce') },
+    ]);
+  // Both writes queued behind the one held drive.
+  expect(timers).toEqual([25]);
+  expect(events.synced).toEqual([]);
+  worker.postMessage({ t: 'fire-timer' });
+  await waitFor(() => events.synced.length === 1, observe, 'one drive');
+  expect(events.synced[0]?.summary).toMatchObject({ pushed: 2 });
+  expect(await handle.pendingCommits()).toHaveLength(0);
+});

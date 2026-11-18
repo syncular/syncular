@@ -11,7 +11,10 @@ type CancelTimer = () => void;
 export interface RealtimeSupervisorClient {
   connectRealtime(): Promise<void>;
   disconnectRealtime(): void | Promise<void>;
-  syncUntilIdle(maxRounds?: number): unknown | Promise<unknown>;
+  /** Receives `{ skipEmpty: true }` (§8.4); a numeric-budget signature also fits. */
+  syncUntilIdle(
+    options?: number | { readonly skipEmpty?: boolean },
+  ): unknown | Promise<unknown>;
   diagnosticsSnapshot():
     | ClientDiagnosticsSnapshot
     | Promise<ClientDiagnosticsSnapshot>;
@@ -477,7 +480,7 @@ export class RealtimeSupervisor {
       return;
     }
     this.#round = Promise.resolve()
-      .then(() => this.#client.syncUntilIdle())
+      .then(() => this.#client.syncUntilIdle({ skipEmpty: true }))
       .then(
         () => undefined,
         () => undefined,
@@ -637,7 +640,8 @@ export class RealtimeSupervisor {
           });
           this.#transport = true;
         }
-        if (generation === this.#generation) await this.#client.syncUntilIdle();
+        if (generation === this.#generation)
+          await this.#client.syncUntilIdle({ skipEmpty: true });
         caughtUp = generation === this.#generation && this.#transport;
       } catch {
         // A refused socket or a failed catch-up round fails the attempt.

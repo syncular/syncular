@@ -1,11 +1,12 @@
 import type { WakeReason } from '@syncular/core';
-import type { SecurityLifecycle } from './client';
+import type { SecurityLifecycle, SyncIdleOptions } from './client';
+import { invalidRequest } from './errors';
 import type { SyncIntent } from './invalidation';
 
 export interface SyncSchedulerClient {
   statusSnapshot(): { readonly syncNeeded: boolean };
   securityLifecycle(): SecurityLifecycle;
-  syncUntilIdle(maxRounds?: number): Promise<unknown>;
+  syncUntilIdle(options: SyncIdleOptions): Promise<unknown>;
   onSyncNeeded(
     listener: (reason: 'startup' | 'hello' | WakeReason) => void,
   ): () => void;
@@ -14,6 +15,12 @@ export interface SyncSchedulerClient {
 
 export interface SyncSchedulerOptions {
   readonly maxRounds?: number;
+  /**
+   * §8.4: milliseconds a queued drive waits before it starts, so the claims
+   * and writes of one burst ride in one round. Default 0: the drive starts
+   * in the next microtask.
+   */
+  readonly coalesceMs?: number;
   readonly onError?: (error: unknown) => void;
   readonly now?: () => number;
   readonly queueMicrotask?: (callback: () => void) => void;
@@ -30,6 +37,9 @@ export function installSyncScheduler(
   client: SyncSchedulerClient,
   options: SyncSchedulerOptions = {},
 ): SyncScheduler {
+  const coalesceMs = options.coalesceMs ?? 0;
+  if (!(Number.isFinite(coalesceMs) && coalesceMs >= 0))
+    throw invalidRequest('coalesceMs must be a non-negative finite number');
   const now = options.now ?? Date.now;
   const enqueue = options.queueMicrotask ?? globalThis.queueMicrotask;
   const schedule =
@@ -71,12 +81,14 @@ export function installSyncScheduler(
     immediatePending = true;
     if (stopped || running || immediateQueued) return;
     immediateQueued = true;
-    enqueue(() => {
+    const start = (): void => {
       immediateQueued = false;
       if (stopped || !immediatePending) return;
       immediatePending = false;
       run();
-    });
+    };
+    if (coalesceMs > 0) schedule(start, coalesceMs);
+    else enqueue(start);
   };
 
   const run = (): void => {
@@ -88,7 +100,7 @@ export function installSyncScheduler(
     running = true;
     backgroundReady = false;
     void client
-      .syncUntilIdle(options.maxRounds)
+      .syncUntilIdle({ maxRounds: options.maxRounds, skipEmpty: true })
       .then((result) => {
         retryDelayMs = 250;
         if (
