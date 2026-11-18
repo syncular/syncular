@@ -1,5 +1,51 @@
 # Syncular release notes
 
+## 0.86.0 release notes
+
+0.86.0 reports a whole unit bootstrap in progress
+(SYNCULAR-PROGRESS-UNIT-TOTAL-001), applies rows segments next to retained
+failed rows about eight times faster (SYNCULAR-APPLY-ROWS-RATE-001), widens
+segment downloads and drops empty rounds on a cold start
+(SYNCULAR-SEGMENT-PREFETCH-001, SYNCULAR-ROUND-CLAIM-COALESCE-001), and gives
+the browser worker a blob-cache cap (SYNCULAR-WORKER-BLOB-CACHE-CAP-001). The
+wire version is unchanged; SSP2 gains one additive frame.
+
+**Breaking: blob-cache cap.** `SyncClientConfig.blobCacheMaxBytes` moved to
+`limits.blobCacheMaxBytes`, the key the Rust core already reads. Move the
+option into `limits`; the top-level field is gone. `createSyncClientHandle`
+forwards `limits` to its worker core, so a browser worker's blob cache now
+honors the cap. Before, a worker could not set one and its cache had no bound.
+
+**Unit progress.** A fresh bootstrap counts its unit's rows on the row-scope
+index and states them in the additive `UNIT_EXTENT` frame (0x1E) after each
+bootstrap `SUB_START`. `SyncProgress.unitRowsTotal` and `unitRowsProcessed`
+carry the count across segments, rounds and a retried round through the resume
+token. The processed count only rises, the total never falls below it, and a
+completed bootstrap ends with both equal. Against a server that predates the
+frame, both fields stay absent. Both cores, the Rust local authority and
+`ServerStorage.countScopedRows` on SQLite, D1 and PostgreSQL implement it; a
+custom storage adds `countScopedRows`.
+
+**Apply rate.** A rows or image segment applied to a table holding retained
+failed rows wrote the failure journal for every landing row and re-read every
+retained intent's unique conflicts per row. Each 1,000-row block now writes the
+server base only of rows that have a retained row and refreshes those conflicts
+once. With ten retained rows on a table with a unique index, a 10,000-row
+segment of a 12-column table applies at 48,356 to 49,358 rows/s in the OPFS
+worker, up from 6,015 to 6,092 in 0.85.0; updates went from 4,757 to 40,486
+rows/s or more. Tables without retained rows apply at the same rate as before.
+
+**Downloads and rounds (TypeScript client).** `limits.segmentPrefetch` sets how
+many segment downloads of one pull response run at once (default 4); SQLite
+images stay at two. `installSyncScheduler` and the browser worker handle accept
+`coalesceMs`: a queued drive waits that many milliseconds, so claims and writes
+made in one burst ride in one pull. The scheduler, the worker's `autoSync`
+loop and the realtime supervisor drive with `syncUntilIdle({ skipEmpty: true })`,
+which ends without a request on a replica with no unit, no outbox commit and no
+unit list left to clear (SPEC §8.4 host policy). `syncUntilIdle()` without the
+option and `sync()` still send a request. The Rust core is unchanged: it
+downloads segments one at a time and its host loops keep their rounds.
+
 ## 0.85.0 release notes
 
 0.85.0 adds alternative write sets (SYNCULAR-ALTERNATIVE-SCOPE-WRITE-001) and
