@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.81.0 release notes
+
+The revision of an empty first answer notifies only queries that ask for it
+(SYNCULAR-QUERY-FIRST-ANSWER-RENDER-001, SPEC §7.5). Since 0.72.2 a live query
+published an empty answered read with pending coverage once, for its revision
+alone, with its phase still `loading`. Every consumer of every query
+re-rendered for it: on a cold start of Diego's plan 39 of 42 render commits,
+for one view 21 of 24.
+
+- `publishFirstAnswer` (default `false`) on `ReactiveQuerySpec` and on the
+  `useRawSql` options, which `useQuery` inherits. With it, a query behaves as
+  in 0.72.2 to 0.80.0. Without it, the first answer's revision is stored and
+  `getSnapshot` returns it, but observers are not notified, like any other
+  revision-only change.
+- The Tauri and React Native bridges use the same hooks and store, so they
+  take the option the same way. The Rust client has no live-query layer.
+
+**Upgrade notes.** A query that distinguishes an empty answered read from an
+unread one by its revision, while its phase is still `loading`, must now pass
+`publishFirstAnswer: true`.
+
 ## 0.80.0 release notes
 
 A host announces grown scopes to connected clients

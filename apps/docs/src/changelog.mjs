@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'The empty first answer of a live query notifies only on request',
+    body: "Since 0.72.2 a live query notified its observers once for the revision of an empty answer with pending coverage, while its phase stayed `loading`. Every consumer of every query re-rendered for it; on a cold start of one app's plan, 39 of 42 render commits were these. A query now notifies for that answer only with `publishFirstAnswer: true` on `useQuery`, `useRawSql` or `store.query`; `getSnapshot` returns the revision either way.",
+    links: [
+      {
+        href: '/platform-react-reads-writes/',
+        label: 'React reads and writes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A host announces grown scopes to connected clients',
     body: '`refreshScopes` covered a narrowed grant; a grown one had no counterpart, so an app with discovered units polled its discovery to see new ones. `announceScopes(partition, actorIds)` on the realtime hub, and on the Workers notifier across shard objects with retry, sends each connected session of those actors a `scopes` event without scope values. Clients surface it as `onScopesChanged` (TypeScript client, worker handle, React, Tauri and React Native bridges) and `drain_scopes_changed` in Rust; the app runs its discovery then. Clients that predate the event ignore it.',
     links: [
