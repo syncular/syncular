@@ -376,9 +376,6 @@ async function constructClient(
             : {}),
         }
       : undefined;
-  // §5.9.7 B1: the blob-cache cap is a top-level config field, not a §4.2
-  // request limit — pull it out of the driver's limits bag.
-  const blobCacheMaxBytes = options.limits?.blobCacheMaxBytes;
   // §5.11: build a key provider from the driver's `{ $bytes: hex }` keys.
   const encryption = buildEncryption(options.encryption);
   const previousVersionContext = options.previousVersionContext;
@@ -411,7 +408,6 @@ async function constructClient(
       ? { realtimePolicy: options.realtimePolicy }
       : {}),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
-    ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
     ...(nowMs !== undefined ? { now: () => clockMs } : {}),
     ...(encryption !== undefined ? { encryption } : {}),
     ...(previousVersionContext !== undefined ? { previousVersionContext } : {}),

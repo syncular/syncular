@@ -326,7 +326,6 @@ export interface MakeClientOptions {
   readonly encryption?: EncryptionConfig;
   readonly retainFailedCommits?: boolean;
   readonly blobs?: BlobTransport;
-  readonly blobCacheMaxBytes?: number;
   /** Override only the realtime seam for focused ownership/lifecycle tests. */
   readonly realtime?: RealtimeConnector;
   /** Replace the loopback round transport (faults and counters bypassed). */
@@ -383,9 +382,6 @@ export async function makeClient(
     ...(options.blobs !== undefined ? { blobs: options.blobs } : {}),
     ...(options.previousVersionContext !== undefined
       ? { previousVersionContext: options.previousVersionContext }
-      : {}),
-    ...(options.blobCacheMaxBytes !== undefined
-      ? { blobCacheMaxBytes: options.blobCacheMaxBytes }
       : {}),
     transport:
       options.transport ??

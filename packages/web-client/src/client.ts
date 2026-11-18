@@ -449,6 +449,13 @@ export interface SyncClientLimits {
    * SQLite images keep their own bound of two (§5.3).
    */
   readonly segmentPrefetch?: number;
+  /**
+   * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
+   * exceeds it, unreferenced bodies without pending work are evicted oldest
+   * first after each cache write. Referenced bodies stay cached even past the
+   * cap. Absent: retain until storage pressure.
+   */
+  readonly blobCacheMaxBytes?: number;
 }
 
 export interface SyncClientConfig {
@@ -463,14 +470,6 @@ export interface SyncClientConfig {
   readonly segments?: SegmentDownloader;
   /** Blob upload/download (§5.9). Required to use `uploadBlob`/`fetchBlob`. */
   readonly blobs?: BlobTransport;
-  /**
-   * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
-   * exceeds this, unreferenced bodies without pending work are evicted in
-   * creation timestamp order after each cache write. Referenced bodies remain cached
-   * even when that exceeds the cap. Absent means retain until storage pressure (the shipped
-   * default; a referenced body always stays resolvable without a re-download).
-   */
-  readonly blobCacheMaxBytes?: number;
   readonly realtime?: RealtimeConnector;
   /**
    * SPEC §8.8: how sync rounds treat the realtime binding. `optional`
@@ -2377,8 +2376,7 @@ export class SyncClient {
           )
         : 0;
       const pressure =
-        this.#config.blobCacheMaxBytes !== undefined &&
-        blobBytes > this.#config.blobCacheMaxBytes;
+        blobBytes > (this.#config.limits?.blobCacheMaxBytes ?? Infinity);
       return {
         status: pressure ? 'pressure' : 'healthy',
         databaseBytesApprox: Math.max(0, pageCount * pageSize),
@@ -2659,7 +2657,7 @@ export class SyncClient {
 
   /** §5.9.7 B1: trim the blob cache to the configured cap (no-op if unset). */
   #enforceBlobCacheCap(): void {
-    const cap = this.#config.blobCacheMaxBytes;
+    const cap = this.#config.limits?.blobCacheMaxBytes;
     if (cap === undefined) return;
     enforceBlobCacheCap(this.#db, this.#schema, cap);
   }

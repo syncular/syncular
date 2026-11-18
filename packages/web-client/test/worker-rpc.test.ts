@@ -38,6 +38,7 @@ import {
   taskValues,
   waitFor,
 } from './helpers';
+import { computeBlobId } from '../src/blob';
 import { createSyncProfiler } from '../src/dev-profiler';
 import { type HttpTestServer, serveOverHttp } from './http-server';
 
@@ -1842,4 +1843,59 @@ test('the worker autoSync loop holds a queued drive for coalesceMs', async () =>
   await waitFor(() => events.synced.length === 1, observe, 'one drive');
   expect(events.synced[0]?.summary).toMatchObject({ pushed: 2 });
   expect(await handle.pendingCommits()).toHaveLength(0);
+});
+
+test('limits.blobCacheMaxBytes caps the worker core blob cache (§5.9.7 B1)', async () => {
+  const bodies = new Map<string, Uint8Array>();
+  for (const fill of [1, 2, 3]) {
+    const bytes = new Uint8Array(1_000_000).fill(fill);
+    bodies.set(await computeBlobId(bytes), bytes);
+  }
+  const blobServer = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const blobId = decodeURIComponent(
+        new URL(request.url).pathname.slice('/blobs/'.length),
+      );
+      const bytes = bodies.get(blobId);
+      return bytes === undefined
+        ? new Response('not found', { status: 404 })
+        : new Response(bytes.slice().buffer);
+    },
+  });
+  try {
+    const { handle } = await makeHandle({
+      clientId: 'rpc-blob-cache-cap',
+      autoSync: false,
+      // A blob_ref column gives the core its blob cache.
+      schema: {
+        ...CLIENT_SCHEMA,
+        tables: CLIENT_SCHEMA.tables.map((table) =>
+          table.name === 'tasks'
+            ? {
+                ...table,
+                columns: [
+                  ...table.columns,
+                  { name: 'attachment', type: 'blob_ref', nullable: true },
+                ],
+              }
+            : table,
+        ),
+      },
+      limits: { blobCacheMaxBytes: 1_000_000 },
+      endpoints: {
+        syncUrl: http.syncUrl,
+        blobsUrl: `http://127.0.0.1:${blobServer.port}/blobs`,
+      },
+    });
+    for (const blobId of bodies.keys())
+      expect((await handle.fetchBlob(blobId)).bytes.byteLength).toBe(1_000_000);
+    const storage = (await handle.diagnosticsSnapshot()).storage;
+    expect(storage).toMatchObject({ status: 'healthy' });
+    expect(
+      storage.status === 'healthy' ? storage.blobCacheBytesApprox : undefined,
+    ).toBe(1_000_000);
+  } finally {
+    await blobServer.stop(true);
+  }
 });

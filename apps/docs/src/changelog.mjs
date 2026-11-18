@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'One blob-cache cap for in-process, worker and native clients',
+    body: "Breaking. The blob-cache cap moved from `SyncClientConfig.blobCacheMaxBytes` to `limits.blobCacheMaxBytes`, the key the Rust core already reads. Move the option into `limits`; the top-level field is gone. `createSyncClientHandle` forwards `limits` to its worker core, so a browser worker's blob cache now honors the cap; before, the worker had no way to set it and its cache grew without bound.",
+    links: [
+      {
+        href: '/concepts-blobs/#the-local-blob-cache',
+        label: 'The local blob cache',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Wider segment downloads and fewer empty rounds on a cold start',
     body: "`limits.segmentPrefetch` sets how many segment downloads of one pull response the TypeScript client runs at once (default 4); SQLite images stay at two at a time. `installSyncScheduler` and the browser worker handle accept `coalesceMs`: a queued drive waits that many milliseconds, so claims and writes made in one burst ride in one pull. The scheduler, the worker's `autoSync` loop and the realtime supervisor now drive with `syncUntilIdle({ skipEmpty: true })`, which ends without a request on a replica with no unit, no outbox commit and no unit list left to clear on the server; before, a freshly signed-in client ran an empty round before its first claims. `syncUntilIdle()` without the option and `sync()` still send a request. The Rust core is unchanged: it downloads segments one at a time and its host loops keep their rounds. Every structural decode failure in `@syncular/core` is now built by the exported `invalidInput(message)`; codes and messages are unchanged.",
     links: [

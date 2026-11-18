@@ -133,8 +133,17 @@ The client caches bodies in its SQLite database, keyed by `blobId`. A body row i
 <div class="node cool"><span class="t">An upload is queued</span>The upload row lasts until the bytes reach the server.</div>
 </div>
 
-::caption[A body with none of these three is eligible for cache trimming, oldest first, when the total exceeds `blobCacheMaxBytes`. If protected bodies alone exceed the cap, the client keeps them and reads stay cache hits.]
+::caption[A body with none of these three is eligible for cache trimming, oldest first, when the total exceeds `limits.blobCacheMaxBytes`. If protected bodies alone exceed the cap, the client keeps them and reads stay cache hits.]
 :::
+
+Set the cap in `limits`, the same key on every client: `new SyncClient({ limits: { blobCacheMaxBytes } })`, `createSyncClientHandle({ limits: { blobCacheMaxBytes } })`, whose worker core enforces it, and the native `limits` that Tauri, React Native and the FFI pass to the Rust core. Without it the cache keeps bodies until the platform reclaims storage. Diagnostics report the cached total as `storage.blobCacheBytesApprox` and status `pressure` with `client.blob_cache_over_limit` while the total exceeds the cap.
+
+```ts
+const handle = await createSyncClientHandle({
+  // worker, schema, database, endpoints
+  limits: { blobCacheMaxBytes: 256 * 1024 * 1024 },
+});
+```
 
 `uploadBlob` writes the cached bytes and a small upload row in one atomic SQLite transaction. A storage failure rejects the call and preserves the previous body, metadata, and upload state; retry staging after repairing the failure. The same bytes keep their content address and create no duplicate cache entry. The call snapshots the supplied byte view before it yields, so the caller can reuse its buffer after receiving the promise.
 
