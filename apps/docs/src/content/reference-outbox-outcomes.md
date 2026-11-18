@@ -46,6 +46,28 @@ await client.mutate([{ table: 'todos', op: 'upsert', values: todo }], {
 
 After a lost reply, read the commit by that ID instead of calling `mutate` again. `pendingCommits()` lists it while it is queued, and `commitOutcome(eventId)` returns its final outcome once the server answered. When neither knows the ID, the lost call queued nothing, and calling `mutate` again with the same ID is safe. A call with an ID the outbox or the outcome journal still holds throws `client.commit_id_reused` with `details.clientCommitId` and writes nothing. An empty ID throws `sync.invalid_request`. The client does not detect an ID it no longer holds, such as one whose outcome left the journal through retention; never reuse an ID for a different commit. Kotlin, Swift and Flutter take the ID as a `clientCommitId` argument of `mutate`, and the command bridge as the `clientCommitId` parameter of the `mutate` command.
 
+## Pending commits
+
+`pendingCommits()` returns the outbox in send order. The in-process `SyncClient` returns the array; the worker handle and the Tauri and React Native bridges return a promise of the same JSON. The Rust core exposes it as `pending_commits()` and the command bridge as the `pendingCommits` command, whose reply is `{ commits }`. Each commit has these fields:
+
+- `seq`: the outbox sequence number, increasing in creation order.
+- `clientCommitId`: the ID `mutate` returned or the caller supplied.
+- `createdAtMs`: the client clock when `mutate` queued the commit. A Rust replica reports `0` for a commit it queued before 0.89.
+- `operations`: one entry per operation, with `table`, `rowId`, `op` (`upsert` or `delete`; a patch is a sparse `upsert`), `baseVersion` when the write carried one, `values` on an upsert (the columns the operation writes, bytes as `{ "$bytes": "<hex>" }`), and `insert: true` on a full-row write of a row the replica did not hold.
+
+```json
+{
+  "seq": 2,
+  "clientCommitId": "patch",
+  "createdAtMs": 1700000000000,
+  "operations": [
+    { "table": "todos", "rowId": "t1", "op": "upsert", "baseVersion": 3, "values": { "id": "t1", "title": "x" } }
+  ]
+}
+```
+
+Kotlin, Swift and Flutter list only the IDs, through `pendingCommitIds()`.
+
 ## Delivery status
 
 `commitDelivery(id)` reads one commit's delivery status in one local read transaction:

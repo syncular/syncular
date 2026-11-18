@@ -135,6 +135,70 @@ const LEGACY_VALUE_SCHEMA: DriverSchema = {
 };
 
 export const offlineScenarios: readonly Scenario[] = [
+  // §7.1: `pendingCommits` lists the outbox in one JSON shape on every core:
+  // insert intent, sparse patch values, bytes as `$bytes`, a delete's base.
+  {
+    name: 'offline/pending-commits-shape',
+    specRefs: ['§7.1', '§6.1', '§2.4'],
+    server: { schema: LEGACY_VALUE_SCHEMA },
+    async run(ctx) {
+      const createdAtMs = 1_700_000_000_000;
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'pending-shape',
+        schema: LEGACY_VALUE_SCHEMA,
+        allowed: P1,
+        nowMs: createdAtMs,
+      });
+      const row = {
+        id: 't1',
+        project_id: 'p1',
+        title: 'seed',
+        priority: 1,
+        payload: { $bytes: '00ff' },
+      };
+      await a.api.mutate([{ op: 'upsert', table: 'tasks', values: row }], {
+        clientCommitId: 'insert',
+      });
+      await a.api.mutate(
+        [{ op: 'patch', table: 'tasks', values: { id: 't1', title: 'x' } }],
+        { clientCommitId: 'patch' },
+      );
+      await a.api.mutate(
+        [{ op: 'delete', table: 'tasks', rowId: 't1', baseVersion: 7 }],
+        { clientCommitId: 'delete' },
+      );
+      const operation = { table: 'tasks', rowId: 't1' };
+      checkEqual(
+        await a.api.pendingCommits(),
+        [
+          {
+            seq: 1,
+            clientCommitId: 'insert',
+            createdAtMs,
+            operations: [
+              { ...operation, op: 'upsert', values: row, insert: true },
+            ],
+          },
+          {
+            seq: 2,
+            clientCommitId: 'patch',
+            createdAtMs,
+            operations: [
+              { ...operation, op: 'upsert', values: { id: 't1', title: 'x' } },
+            ],
+          },
+          {
+            seq: 3,
+            clientCommitId: 'delete',
+            createdAtMs,
+            operations: [{ ...operation, op: 'delete', baseVersion: 7 }],
+          },
+        ],
+        'pendingCommits lists every commit in the shared shape',
+      );
+    },
+  },
   // §7.1: a caller-supplied clientCommitId names the commit before the reply
   // arrives; an ID the replica still holds is refused without a write.
   {

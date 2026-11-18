@@ -1181,6 +1181,19 @@ pub struct CommitOperation {
     pub insert: bool,
 }
 
+/// One pending outbox commit (§7.1), in the shape the TypeScript client's
+/// `pendingCommits()` returns.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCommit {
+    /// The outbox sequence number; FIFO send order.
+    pub seq: i64,
+    pub client_commit_id: String,
+    /// Local clock at `mutate`; 0 for a commit queued before 0.89.
+    pub created_at_ms: i64,
+    pub operations: Vec<CommitOperation>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitOutcomeStatus {

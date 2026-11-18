@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'pendingCommits returns whole commits on every host',
+    body: 'The Tauri and React Native bridges returned bare commit IDs from `pendingCommits()`; they now return the same `OutboxCommit` objects as the in-process client and the worker handle: `seq`, `clientCommitId`, `createdAtMs` and `operations`. The Rust core adds `pending_commits()` and the command bridge a `pendingCommits` command, both emitting the TypeScript JSON. `SyncClientLike.pendingCommits` is typed `OutboxCommit[] | Promise<OutboxCommit[]>`.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#pending-commits',
+        label: 'Pending commits',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Follow a commit from the outbox to its outcome in React',
     body: '`useCommitDelivery(ids)` returns, per commit, `pending` while the outbox holds it, `known` with its final outcome, or `unknown` when neither the outbox nor the outcome journal holds the ID, which separates an outcome retention removed from a commit still waiting for the server. The hook reads every listed commit in one `snapshotRead` and re-reads on change batches that carry the outbox count or an outcome-journal change. `commitDelivery(id)` is now on `SyncClientLike`, the worker handle and the Tauri and React Native bridges, with the same three states as the in-process client and the Rust core.',
     links: [

@@ -406,7 +406,7 @@ describe('useRawSql', () => {
 describe('useSyncStatus', () => {
   test('reports outbox depth, upgrading, lease, schemaFloor', async () => {
     const client = new FakeClient();
-    client.setPending([{}, {}]);
+    client.setPending(['c1', 'c2']);
     client.setUpgrading(true);
     client.setLeaseState({ leaseId: 'l1', expiresAtMs: 123 });
     const { result } = renderHook(() => useSyncStatus(), {
@@ -425,7 +425,7 @@ describe('useSyncStatus', () => {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.outbox).toBe(0));
-    client.setPending([{}]);
+    client.setPending(['c1']);
     act(() => client.emitStatus());
     await waitFor(() => expect(result.current.outbox).toBe(1));
   });
@@ -512,7 +512,7 @@ describe('useCommitDelivery', () => {
 
   test('follows outbox and journal batches; a pruned outcome reads unknown', async () => {
     const client = new FakeClient();
-    client.setPending([{ clientCommitId: 'c1' }]);
+    client.setPending(['c1']);
     const { result, rerender } = renderHook(
       ({ ids }: { ids: readonly string[] }) => useCommitDelivery(ids),
       { wrapper: wrapper(client), initialProps: { ids: ['c1', 'c2'] } },

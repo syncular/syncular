@@ -14,6 +14,7 @@ import type {
   LocalDataRebootstrapInput,
   LocalDataRebootstrapResult,
   MutationInput,
+  OutboxCommit,
   PresencePeer,
   QueryReadSpec,
   QuerySnapshot,
@@ -63,7 +64,7 @@ export interface SyncClientLike extends ClientSnapshotReader {
   querySnapshot<Row = SqlRow>(
     spec: QueryReadSpec,
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
-  pendingCommits: () => unknown[] | Promise<unknown[]>;
+  pendingCommits(): OutboxCommit[] | Promise<OutboxCommit[]>;
   proveCurrentBase(
     outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
     maxRounds?: number,

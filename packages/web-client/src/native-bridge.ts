@@ -74,6 +74,7 @@ import {
   type SyncProgressListener,
 } from './progress';
 import type { UnitRecord } from './state';
+import type { OutboxCommit } from './outbox';
 import type { WindowBase } from './window';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
@@ -1173,11 +1174,11 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return this.#commitOutcome(result.outcome);
   }
 
-  async pendingCommits(): Promise<unknown[]> {
-    const result = (await this.command('pendingCommitIds', {})) as {
-      ids: string[];
+  async pendingCommits(): Promise<OutboxCommit[]> {
+    const result = (await this.command('pendingCommits', {})) as {
+      commits: OutboxCommit[];
     };
-    return result.ids;
+    return result.commits;
   }
 
   async presence(scopeKey: string): Promise<readonly PresencePeer[]> {

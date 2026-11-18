@@ -308,3 +308,57 @@ fn the_stored_operation_validator_accepts_the_marker_only_on_upserts() {
         json!(true)
     )));
 }
+
+#[test]
+fn pending_commits_list_the_outbox_and_survive_a_legacy_table() {
+    let path = std::env::temp_dir().join(format!(
+        "syncular-pending-commits-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let schema = tasks_schema(1, json!([]));
+    let mut client = SyncClient::open_path(
+        "pending".into(),
+        &schema,
+        ClientLimits::default(),
+        path.to_str().unwrap(),
+    )
+    .unwrap();
+    client.set_now_ms(42);
+    let insert = client.mutate(vec![upsert("q", "new")]).unwrap();
+    let delete = client
+        .mutate(vec![Mutation::Delete {
+            table: "tasks".into(),
+            row_id: "q".into(),
+            base_version: Some(3),
+        }])
+        .unwrap();
+    let expected = json!([
+        { "seq": 1, "clientCommitId": insert, "createdAtMs": 42, "operations": [
+            { "table": "tasks", "rowId": "q", "op": "upsert",
+              "values": { "id": "q", "title": "new" }, "insert": true }
+        ] },
+        { "seq": 2, "clientCommitId": delete, "createdAtMs": 42, "operations": [
+            { "table": "tasks", "rowId": "q", "op": "delete", "baseVersion": 3 }
+        ] }
+    ]);
+    assert_eq!(json!(client.pending_commits().unwrap()), expected);
+    // An outbox written before the column existed reopens with time 0.
+    client
+        .conn
+        .execute_batch("ALTER TABLE _syncular_outbox DROP COLUMN created_at_ms")
+        .unwrap();
+    drop(client);
+    let reopened = SyncClient::open_path(
+        "pending".into(),
+        &schema,
+        ClientLimits::default(),
+        path.to_str().unwrap(),
+    )
+    .unwrap();
+    let mut legacy = expected;
+    legacy[0]["createdAtMs"] = json!(0);
+    legacy[1]["createdAtMs"] = json!(0);
+    assert_eq!(json!(reopened.pending_commits().unwrap()), legacy);
+    drop(reopened);
+    let _ = std::fs::remove_file(path);
+}

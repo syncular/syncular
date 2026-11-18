@@ -1699,6 +1699,16 @@ class RustClientInstance implements ClientInstance {
     return (result.ids ?? []) as unknown as string[];
   }
 
+  async pendingCommits(): Promise<readonly unknown[]> {
+    const { commits } = asObject(
+      await this.#shim.call('pendingCommits', {}),
+      'pendingCommits',
+    );
+    if (!Array.isArray(commits))
+      throw new Error('pendingCommits: expected a list');
+    return commits;
+  }
+
   async pendingPayloads(): Promise<Uint8Array[]> {
     const result = asObject(
       await this.#shim.call('pendingPayloads', {}),

@@ -1542,6 +1542,9 @@ pub fn dispatch<T: Transport>(
             let ids = need_client(client)?.pending_commit_ids();
             Ok(json!({ "ids": ids }))
         }
+        "pendingCommits" => Ok(json!({
+            "commits": need_client(client)?.pending_commits().map_err(client_err)?
+        })),
         "pendingPayloads" => {
             let payloads = need_client(client)?
                 .pending_payloads()

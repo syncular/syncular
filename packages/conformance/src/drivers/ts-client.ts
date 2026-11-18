@@ -1021,6 +1021,10 @@ class TsClientInstance implements ClientInstance {
     return this.#client.pendingCommits().map((c) => c.clientCommitId);
   }
 
+  async pendingCommits(): Promise<readonly unknown[]> {
+    return this.#client.pendingCommits();
+  }
+
   async pendingPayloads(): Promise<Uint8Array[]> {
     const compiled = compileClientSchema(toClientSchema(this.#schema));
     const payloads: Uint8Array[] = [];

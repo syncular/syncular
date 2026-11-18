@@ -62,7 +62,7 @@ describe('React Router scheduling integration fixture', () => {
       const mode = round % 2 === 0 ? 'timeline' : 'plan';
       await act(async () => {
         client.setPending(
-          Array.from({ length: round % 4 }, (_, index) => index),
+          Array.from({ length: round % 4 }, (_, index) => `c${index}`),
         );
         client.emitStatus();
         fireEvent.click(view.getByRole('radio', { name: mode }));

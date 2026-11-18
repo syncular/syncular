@@ -1377,6 +1377,9 @@ export interface ClientInstance {
   rejections(): Promise<ClientRejection[]>;
   /** Outbox commit ids still pending, FIFO order (§7.1). */
   pendingCommitIds(): Promise<string[]>;
+  /** Pending outbox commits, FIFO order (§7.1), exactly as the core's
+   * `pendingCommits` emits them; scenarios compare the raw JSON. */
+  pendingCommits(): Promise<readonly unknown[]>;
   /** The §6.1 sparse push payload bytes of every pending upsert operation,
    * FIFO — exactly what the next push round would put on the wire. Used by
    * B.21(h) to pin cross-core byte identity. */

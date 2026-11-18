@@ -5565,7 +5565,10 @@ documents: a JSON boolean for a `boolean` column.
   `{ clientCommitId }`) and records nothing: no outbox commit, local row
   write, revision or sync intent. The app then reads the commit by ID:
   `pendingCommits` lists it while it is pending and `commitOutcome` returns
-  its final outcome. The client cannot detect reuse of an ID it no longer
+  its final outcome. Every core returns `pendingCommits` as the same JSON:
+  per commit `{seq, clientCommitId, createdAtMs, operations}`, each operation
+  its schema-agnostic local form `{table, rowId, op, baseVersion?, values?,
+  insert?}` with bytes as `{"$bytes": hex}`. The client cannot detect reuse of an ID it no longer
   holds, such as one whose journal entry retention pruned; keeping such IDs
   unique is the caller's obligation under §2.3. The ID travels in
   `PUSH_COMMIT.clientCommitId` as before, so SSP2 is unchanged.

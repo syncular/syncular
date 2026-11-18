@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  type MutationInput,
   ReactiveClientStore,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type UnitRecord,
@@ -255,7 +256,11 @@ if (!available) {
           expect((await client.statusSnapshot()).upgrading).toBe(
             stored !== undefined,
           );
-          expect(await client.pendingCommits()).toEqual([id]);
+          expect(
+            (await client.pendingCommits()).map(
+              (commit) => commit.clientCommitId,
+            ),
+          ).toEqual([id]);
           expect(
             (await client.query('SELECT title FROM todos'))[0]?.title,
           ).toBe('local');
@@ -279,6 +284,96 @@ if (!available) {
           server.stop(true);
           source.storage.db.close();
         }
+      }
+    });
+
+    test('pendingCommits returns the TypeScript outbox JSON from the native core', async () => {
+      const bytesSchema = {
+        version: 1,
+        tables: [
+          {
+            ...schema.tables[0],
+            columns: [
+              ...schema.tables[0].columns,
+              { name: 'blob', type: 'bytes', nullable: true },
+            ],
+          },
+        ],
+      } as const;
+      const write = async (client: {
+        mutate(
+          mutations: readonly MutationInput[],
+          options: { clientCommitId: string },
+        ): string | Promise<string>;
+      }) => {
+        await client.mutate(
+          [
+            {
+              op: 'upsert',
+              table: 'todos',
+              values: {
+                id: 't1',
+                list_id: 'one',
+                title: 'first',
+                blob: new Uint8Array([0, 255]),
+              },
+            },
+          ],
+          { clientCommitId: 'insert' },
+        );
+        await client.mutate(
+          [
+            {
+              op: 'patch',
+              table: 'todos',
+              values: { id: 't1', title: 'second' },
+              baseVersion: 3,
+            },
+          ],
+          { clientCommitId: 'patch' },
+        );
+        await client.mutate(
+          [{ op: 'delete', table: 'todos', rowId: 't1', baseVersion: 3 }],
+          { clientCommitId: 'delete' },
+        );
+      };
+      const source = makeServer(bytesSchema);
+      const reference = await makeClient(source, {
+        clientId: 'pending-ts',
+        schema: bytesSchema,
+        now: () => 1_700_000_000_000,
+      });
+      const host = nativeTauri();
+      const client = await createTauriSyncClient({
+        schema: bytesSchema,
+        transportEnabled: false,
+        tauri: host.api,
+      });
+      try {
+        const before = Date.now();
+        await write(reference.client);
+        await write(client);
+        const native = await client.pendingCommits();
+        for (const commit of native) {
+          expect(commit.createdAtMs).toBeGreaterThanOrEqual(before);
+          expect(commit.createdAtMs).toBeLessThanOrEqual(Date.now());
+        }
+        const expected = reference.client.pendingCommits();
+        expect(expected[0]?.operations[0]).toMatchObject({
+          insert: true,
+          values: { blob: { $bytes: '00ff' } },
+        });
+        expect(
+          native.map((commit) => ({
+            ...commit,
+            createdAtMs: 1_700_000_000_000,
+          })),
+        ).toEqual(expected);
+      } finally {
+        await client.close();
+        await host.close();
+        reference.client.close();
+        source.storage.db.close();
       }
     });
 
@@ -422,7 +517,11 @@ if (!available) {
         expect((await client.query('SELECT title FROM todos'))[0]?.title).toBe(
           'second',
         );
-        expect(await client.pendingCommits()).toEqual([first, second]);
+        expect(
+          (await client.pendingCommits()).map(
+            (commit) => commit.clientCommitId,
+          ),
+        ).toEqual([first, second]);
         expect(await client.commitDelivery(first)).toEqual({
           status: 'pending',
           clientCommitId: first,
@@ -1298,7 +1397,11 @@ if (!available) {
         expect(await client.query('SELECT id FROM todos ORDER BY id')).toEqual([
           { id: 'kept' },
         ]);
-        expect(await client.pendingCommits()).toEqual([kept]);
+        expect(
+          (await client.pendingCommits()).map(
+            (commit) => commit.clientCommitId,
+          ),
+        ).toEqual([kept]);
         expect(await client.commitOutcome(doomed)).toMatchObject({
           status: 'rejected',
           results: [
@@ -1377,7 +1480,11 @@ if (!available) {
         expect(await client.query('SELECT id FROM todos')).toEqual([
           { id: 'offline' },
         ]);
-        expect(await client.pendingCommits()).toEqual([pending]);
+        expect(
+          (await client.pendingCommits()).map(
+            (commit) => commit.clientCommitId,
+          ),
+        ).toEqual([pending]);
         await client.close();
         const reopened = await createTauriSyncClient({
           schema,

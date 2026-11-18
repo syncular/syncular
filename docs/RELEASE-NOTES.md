@@ -1,5 +1,29 @@
 # Syncular release notes
 
+## 0.89.0 release notes
+
+0.89.0 returns whole outbox commits from `pendingCommits()` on every client
+surface (SYNCULAR-NATIVE-PENDING-COMMITS-001). SSP2 and the wire version are
+unchanged.
+
+The Tauri and React Native bridges returned bare commit IDs from
+`pendingCommits()`, typed `unknown[]`, while the in-process client and the
+worker handle returned `OutboxCommit` objects. All four now return
+`OutboxCommit[]`: `seq`, `clientCommitId`, `createdAtMs` and `operations`,
+each operation in its schema-agnostic local form with bytes as
+`{ "$bytes": "<hex>" }`. The Rust core adds `pending_commits()` and the
+command bridge a `pendingCommits` command, both emitting the TypeScript JSON;
+conformance scenario `offline/pending-commits-shape` pins it on both cores.
+The Rust outbox gains a `created_at_ms` column; a commit queued before the
+upgrade reports `createdAtMs: 0`. `pendingCommitIds` stays for the Kotlin,
+Swift and Flutter bindings.
+
+Upgrade note: code on the Tauri or React Native bridge that treated
+`pendingCommits()` entries as strings reads `commit.clientCommitId` instead.
+`SyncClientLike.pendingCommits` is now typed
+`OutboxCommit[] | Promise<OutboxCommit[]>`; a custom client passed to the
+React provider must return that shape.
+
 ## 0.88.0 release notes
 
 0.88.0 brings `commitDelivery` to every TypeScript client surface and adds the

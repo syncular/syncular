@@ -40,7 +40,7 @@ use crate::api::{
     CurrentBaseProof, CurrentBaseProofReason, DiagnosticLastChange, DiagnosticLastRound,
     DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticUnits, EchoRecord, FetchedBlob,
     LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
-    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
+    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PendingCommit, PresencePeer,
     PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
     RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
     RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SyncIntent, SyncOutcome,
@@ -2411,7 +2411,8 @@ impl SyncClient {
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS _syncular_outbox (
                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                   commit_id TEXT NOT NULL UNIQUE, ops_json TEXT NOT NULL);
+                   commit_id TEXT NOT NULL UNIQUE, ops_json TEXT NOT NULL,
+                   created_at_ms INTEGER NOT NULL DEFAULT 0);
                  CREATE TABLE IF NOT EXISTS _syncular_row_deliveries (
                    tbl TEXT NOT NULL, id TEXT NOT NULL, commit_seq INTEGER NOT NULL, PRIMARY KEY(tbl,id));
                  CREATE TABLE IF NOT EXISTS _syncular_acked_rows (
@@ -2474,6 +2475,10 @@ impl SyncClient {
                     .map_err(|e| e.to_string())?;
             }
         }
+        // An outbox created before `pendingCommits` carried creation times.
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE _syncular_outbox ADD COLUMN created_at_ms INTEGER NOT NULL DEFAULT 0",
+        );
         // Migrate an outcome journal created before failed aggregate
         // envelopes were retained. Historical rows intentionally stay NULL.
         let _ = self
@@ -4701,8 +4706,12 @@ impl SyncClient {
             .collect();
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json) VALUES (?1, ?2)",
-                rusqlite::params![commit.client_commit_id, Value::Array(ops).to_string()],
+                "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json, created_at_ms) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    commit.client_commit_id,
+                    Value::Array(ops).to_string(),
+                    self.clock_now_ms()
+                ],
             )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         for operation in &commit.ops {
@@ -6726,6 +6735,41 @@ impl SyncClient {
             .iter()
             .map(|c| c.client_commit_id.clone())
             .collect()
+    }
+
+    /// §7.1: every pending commit in FIFO order, as the TypeScript client's
+    /// `pendingCommits()` returns it.
+    pub fn pending_commits(&self) -> Result<Vec<PendingCommit>, String> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT seq, commit_id, created_at_ms, ops_json FROM _syncular_outbox ORDER BY seq",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        rows.map(|row| {
+            let (seq, client_commit_id, created_at_ms, raw) =
+                row.map_err(|error| error.to_string())?;
+            let operations = serde_json::from_str(&raw).map_err(|error| {
+                format!("invalid persisted outbox {client_commit_id:?}: {error}")
+            })?;
+            Ok(PendingCommit {
+                seq,
+                client_commit_id,
+                created_at_ms,
+                operations,
+            })
+        })
+        .collect()
     }
 
     /// §6.1: the sparse push payload bytes of every pending upsert operation,

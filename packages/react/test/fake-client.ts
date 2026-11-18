@@ -26,6 +26,7 @@ import type {
   LocalDataRebootstrapInput,
   LocalDataRebootstrapResult,
   MutationInput,
+  OutboxCommit,
   PresencePeer,
   QueryReadSpec,
   QuerySnapshot,
@@ -65,7 +66,7 @@ export class FakeClient implements SyncClientLike {
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #outcomes: CommitOutcome[] = [];
-  #pending: unknown[] = [];
+  #pending: OutboxCommit[] = [];
   #upgrading = false;
   #leaseState: LeaseState | undefined;
   #schemaFloor: SchemaFloor | undefined;
@@ -84,8 +85,14 @@ export class FakeClient implements SyncClientLike {
     this.#presence.set(scopeKey, peers);
   }
 
-  setPending(commits: unknown[]): void {
-    this.#pending = commits;
+  /** Queue one single-delete commit per id. */
+  setPending(ids: readonly string[]): void {
+    this.#pending = ids.map((clientCommitId, index) => ({
+      seq: index + 1,
+      clientCommitId,
+      createdAtMs: 0,
+      operations: [{ table: 'tasks', rowId: clientCommitId, op: 'delete' }],
+    }));
   }
 
   setConflicts(conflicts: ConflictRecord[]): void {
@@ -459,13 +466,7 @@ export class FakeClient implements SyncClientLike {
   /** Outbox precedence (§7.5): a pending entry whose `clientCommitId`
    * matches wins over a journal outcome. */
   commitDelivery(id: string): CommitDelivery {
-    if (
-      this.#pending.some(
-        (commit) =>
-          (commit as { clientCommitId?: unknown } | null)?.clientCommitId ===
-          id,
-      )
-    )
+    if (this.#pending.some((commit) => commit.clientCommitId === id))
       return { status: 'pending', clientCommitId: id };
     const outcome = this.commitOutcome(id);
     return outcome === undefined
@@ -505,7 +506,7 @@ export class FakeClient implements SyncClientLike {
     return resolved;
   }
 
-  pendingCommits(): unknown[] {
+  pendingCommits(): OutboxCommit[] {
     return this.#pending;
   }
 

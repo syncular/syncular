@@ -54,6 +54,12 @@ function makeTauri(
 }
 
 const OK = (result: unknown) => ({ result });
+const PENDING_COMMIT = {
+  seq: 1,
+  clientCommitId: 'commit-1',
+  createdAtMs: 1_700_000_000_000,
+  operations: [{ table: 'todo', rowId: 't1', op: 'delete' as const }],
+};
 
 /** The params of a `snapshotRead` sent through `syncular_command`, if any. */
 function snapshotReadParams(
@@ -199,8 +205,8 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
           resolvedAtMs: 2,
         },
       });
-    case 'pendingCommitIds':
-      return OK({ ids: ['commit-1'] });
+    case 'pendingCommits':
+      return OK({ commits: [PENDING_COMMIT] });
     case 'presence':
       return OK({ peers: [] });
     case 'subscribe':
@@ -1391,7 +1397,7 @@ describe('createTauriSyncClient', () => {
         resolution: 'dismissed',
       }),
     ).toMatchObject({ resolution: 'dismissed' });
-    expect(await client.pendingCommits()).toEqual(['commit-1']);
+    expect(await client.pendingCommits()).toEqual([PENDING_COMMIT]);
     expect((await client.statusSnapshot()).schemaFloor).toBeUndefined();
   });
 
@@ -2017,7 +2023,7 @@ describe('SyncClientLike parity', () => {
     expect((await normalized.statusSnapshot()).leaseState).toBeUndefined();
     expect((await normalized.statusSnapshot()).upgrading).toBe(false);
     expect((await normalized.statusSnapshot()).syncNeeded).toBe(false);
-    expect(await normalized.pendingCommits()).toEqual(['commit-1']);
+    expect(await normalized.pendingCommits()).toEqual([PENDING_COMMIT]);
     expect(await normalized.presence('room:1')).toEqual([]);
     await normalized.setPresence('room:1', { hi: true });
   });
