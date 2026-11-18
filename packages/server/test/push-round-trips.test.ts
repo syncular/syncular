@@ -7,6 +7,9 @@
  * for BEGIN, the lock, the admission statement, one write statement and
  * COMMIT when its commits read nothing their own writes changed.
  *
+ * SYNCULAR-PUSH-QUERY-SAVEPOINT-001: a registered query writes the held-back
+ * writes first only when it reads a table they change.
+ *
  * The counter tags statements by where they run: handler admission/readiness
  * traffic is pool-level, everything the commit apply does is inside the push
  * transaction the storage opens.
@@ -961,6 +964,14 @@ describe('statements under the partition lock (SYNCULAR-PUSH-LOCK-STATEMENTS-001
     params: ['p1'],
     tables: ['tasks'],
   };
+  const docsInProject = {
+    plan: {
+      sql: 'SELECT id FROM docs WHERE project_id = ?',
+      relations: [{ table: 'docs', start: 15, end: 19 }],
+    },
+    params: ['p1'],
+    tables: ['docs'],
+  };
 
   async function measure(
     validator: SyncRequestContext['commitValidator'],
@@ -1048,6 +1059,10 @@ describe('statements under the partition lock (SYNCULAR-PUSH-LOCK-STATEMENTS-001
     // The query sees its commit's staged row and the cursor before it.
     expect(ids).toEqual([['day-note'], ['day-note', 'op-edit']]);
     expect(cursors).toEqual([1, 2]);
+    expect(statements.filter((text) => text.startsWith('SAVEPOINT'))).toEqual([
+      'SAVEPOINT syncular_push_candidate',
+      'SAVEPOINT syncular_push_candidate',
+    ]);
     expect(
       statements.filter((text) =>
         /^SELECT max_commit_seq FROM sync_partitions WHERE partition=\$1$/.test(
@@ -1058,6 +1073,95 @@ describe('statements under the partition lock (SYNCULAR-PUSH-LOCK-STATEMENTS-001
     // Per commit: the savepoint, the row write and the query; the first
     // commit's append and result precede the second commit's savepoint.
     expect(statements).toHaveLength(2 + 3 + 1 + 3 + 1);
+  });
+
+  test('a registered query over a table the commit did not write runs before its write', async () => {
+    const cursors: number[] = [];
+    const { results, statements } = await measure(
+      async ({ read }) => {
+        cursors.push(
+          (await read.queryAuthoritative(docsInProject)).maxCommitSeq,
+        );
+      },
+      [oneRow('day-note', 2), oneRow('op-edit', 3)],
+    );
+    expect(results.map((result) => result.commitSeq)).toEqual([2, 3]);
+    expect(cursors).toEqual([1, 2]);
+    // With BEGIN and COMMIT, a one-query commit runs 6 statements under the
+    // lock: the queries run first, and both commits write in one statement.
+    expect(statements).toHaveLength(2 + 2 + 1);
+    expect(statements[2]).toContain('FROM "docs"');
+    expect(statements[3]).toContain('FROM "docs"');
+    expect(statements[4]).toContain('INSERT INTO "tasks"');
+    expect(statements[4]).toContain('INSERT INTO sync_push_results');
+    expect(statements.some((text) => text.startsWith('SAVEPOINT'))).toBe(false);
+  });
+
+  test('a scan of a table the commit did not write takes no savepoint', async () => {
+    const { results, statements } = await measure(
+      async ({ read }) => {
+        await read.scanRows({
+          table: 'docs',
+          scopeFilter: { project_id: ['p1'] },
+        });
+      },
+      [oneRow('day-note', 2)],
+    );
+    expect(results[0]?.status).toBe('applied');
+    expect(statements).toHaveLength(3 + 1);
+    expect(statements[3]).toContain('INSERT INTO "tasks"');
+    expect(statements.some((text) => text.startsWith('SAVEPOINT'))).toBe(false);
+  });
+
+  test('a commit rejected after a query over another table discards its writes', async () => {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const storage = new PostgresServerStorage(counting.executor);
+    const ctx: SyncRequestContext = {
+      ...(await context(storage)),
+      commitValidator: async ({ clientCommitId, read }) => {
+        await read.queryAuthoritative(docsInProject);
+        if (clientCommitId === 'refused') {
+          throw new CommitValidationRejection(0, 'app.rejected');
+        }
+      },
+    };
+    try {
+      counting.transactions.length = 0;
+      const results = pushResults(
+        decodeMessage(
+          await handleSyncRequest(
+            requestBytes(
+              [oneRow('kept', 1), oneRow('refused', 2), oneRow('after', 3)],
+              'client-1',
+              1,
+              TEST_LOG_EPOCH,
+              'outbox-1',
+            ),
+            ctx,
+          ),
+        ) as ResponseMessage,
+      );
+      expect(results.map((result) => result.status)).toEqual([
+        'applied',
+        'rejected',
+        'applied',
+      ]);
+      expect(results[2]?.commitSeq).toBe((results[0]?.commitSeq ?? 0) + 1);
+      expect(
+        await storage.getRow('part-1', 'tasks', 'refused'),
+      ).toBeUndefined();
+      expect(await storage.getRow('part-1', 'tasks', 'kept')).toBeDefined();
+      expect(await storage.getRow('part-1', 'tasks', 'after')).toBeDefined();
+      const statements = counting.transactions.flat();
+      expect(
+        statements.some(
+          (text) => text.startsWith('SAVEPOINT') || text.startsWith('ROLLBACK'),
+        ),
+      ).toBe(false);
+    } finally {
+      await db.close();
+    }
   });
 
   test('ten one-row commits run the same five statements', async () => {

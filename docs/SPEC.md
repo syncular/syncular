@@ -4584,9 +4584,13 @@ results stay until their partition is reset.
   A rejected commit rolls back only its own writes, and the request's
   earlier commits keep theirs. A storage may hold a commit's writes back
   until a later statement needs them; a write held back is discarded on
-  rejection, and before the first of a commit's writes reaches the database
-  the server takes the commit's savepoint (or equivalent), which a rejection
-  rolls back to. Every commit keeps its own result, its frame-order position
+  rejection. A registered query needs them only when its generated table set
+  names a table they change (a row of it, or a commit-log change to it), and a
+  row scan, read-ahead or tombstone read only when its own table is one; any
+  other read runs without them, takes no savepoint and sees the same rows.
+  Before the first of a commit's writes reaches the database the server
+  takes the commit's savepoint (or equivalent), which a rejection rolls back
+  to. Every commit keeps its own result, its frame-order position
   and its own `commitSeq`.
 - A storage may also hold back the writes of a commit that already closed
   with its result (its rows, its commit-log append and its result) and write
@@ -4663,6 +4667,24 @@ read is gone). The cost is the rerun above, which only a relational
 constraint failing on a commit's held-back rows triggers. SQLite and
 D1 keep their statement sequences: SQLite pays no network round trip per
 statement, and D1 writes each commit as one batch when it closes.
+
+DECISION (2026-11-18): a read writes the held-back writes first only when it
+reads a table they change. A one-row commit whose validator runs one
+registered query held the lock for 8 statements: `BEGIN`, the lock, the
+admission statement, `SAVEPOINT`, the row upsert, the query, the write of
+the commit append and result, and `COMMIT`. A validator's query commonly
+reads other tables than the commit writes (memberships, permissions); it then
+runs 6: `BEGIN`, the lock, the admission statement, the query, the write
+statement and `COMMIT`. A registered query's table set is exact: the
+generated plan names every relation of its statement, registration checks
+that the plan's relations and the declared tables match, and the storage
+rewrites each relation to a derived relation over that one table, so a view,
+join, subquery or CTE reads only tables in the set. A row scan, read-ahead
+or tombstone read reads its named table, that table's scope-index entries and
+its tombstones, which only rows and commit-log changes of that table write. A
+held-back commit append counts for every table its changes name; it carries
+the delete tombstones. Every other read in the transaction (the cursor read,
+the admission statement) still writes everything first.
 - Applied commits emit changes (§2.2) that become visible to pulls and
   realtime with their assigned `commitSeq`; a puller can never observe a
   commit's changes before its push response could have reported it

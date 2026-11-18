@@ -1748,6 +1748,33 @@ class PostgresTransaction implements StorageTransaction {
     return cursors.find((cursor) => cursor !== undefined);
   }
 
+  /**
+   * The executor of a read over `tables`: it writes the pending writes first
+   * only when one of them is a row of those tables or a change of the commit
+   * log to them (§6.4). A read of other tables runs without them, so it takes
+   * no savepoint and moves no write ahead of itself.
+   */
+  #readOf(tables: readonly string[]): PgQueryable {
+    return {
+      query: (text, params) => {
+        const appends =
+          this.#stagedAppend === undefined
+            ? this.#closedAppends
+            : [...this.#closedAppends, this.#stagedAppend];
+        return tables.some(
+          (table) =>
+            this.#staged.has(table) ||
+            this.#closedRows.has(table) ||
+            appends.some(({ commit }) =>
+              commit.changes.some((change) => change.table === table),
+            ),
+        )
+          ? this.#client.query(text, params)
+          : this.#serial.query(text, params);
+      },
+    };
+  }
+
   /** The candidate row this transaction staged and has not yet written. */
   #stagedRow(table: string, rowId: string): StoredRow | undefined {
     return (
@@ -1822,10 +1849,12 @@ class PostgresTransaction implements StorageTransaction {
       specs.push({ tbl: target.table, ids });
     }
     if (specs.length === 0) return;
-    const { rows } = await this.#client.query<PrefetchRow>(
-      prefetchRowsBatchSql(tables),
-      [this.#partition, JSON.stringify(specs)],
-    );
+    const { rows } = await this.#readOf(
+      specs.map((spec) => spec.tbl),
+    ).query<PrefetchRow>(prefetchRowsBatchSql(tables), [
+      this.#partition,
+      JSON.stringify(specs),
+    ]);
     this.#recordPrefetched(rows);
   }
 
@@ -1857,7 +1886,7 @@ class PostgresTransaction implements StorageTransaction {
     this.#assertOpen();
     const prefetched = this.#prefetchedTombstones.get(`${table}\u0000${rowId}`);
     if (prefetched !== undefined) return prefetched ?? undefined;
-    const { rows } = await this.#client.query<{
+    const { rows } = await this.#readOf([table]).query<{
       commit_seq: unknown;
       server_version: unknown;
       scopes: unknown;
@@ -1884,12 +1913,13 @@ class PostgresTransaction implements StorageTransaction {
 
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
+    const client = this.#readOf([query.table]);
     const variable = await chooseScanVariable(
       this.#partition,
       query,
       this.#scanVariables,
       (probes, cap) =>
-        this.#client
+        client
           .query<{ sub: unknown; n: unknown }>(scanProbeSql('postgres'), [
             this.#partition,
             JSON.stringify(probes.map((probe) => ({ ...probe, lim: cap }))),
@@ -1907,7 +1937,7 @@ class PostgresTransaction implements StorageTransaction {
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const { rows: records } = await this.#client.query<RowRecord>(sql, [
+      const { rows: records } = await client.query<RowRecord>(sql, [
         this.#partition,
         query.table,
         variable,
@@ -1932,7 +1962,7 @@ class PostgresTransaction implements StorageTransaction {
   scanRowsByIndex(query: IndexRowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
     return scanRowsByIndexOn(
-      this.#client,
+      this.#readOf([query.table]),
       this.#resolveTable(query.table),
       this.#partition,
       query,
@@ -1944,14 +1974,16 @@ class PostgresTransaction implements StorageTransaction {
   ): Promise<AuthoritativeQueryResult> {
     this.#assertOpen();
     // Runs on this transaction's pinned client, so the read observes every
-    // staged row and never waits for a second pool connection.
+    // staged row and never waits for a second pool connection. The prepared
+    // statement reads exactly `query.tables`: every relation of the plan is
+    // one of them, rewritten to a derived relation over its own table.
     const prepared = this.#prepareQuery(query);
-    const result = await this.#client.query<Readonly<Record<string, unknown>>>(
-      postgresPlaceholders(prepared.sql),
-      prepared.params,
-    );
+    const result = await this.#readOf(query.tables).query<
+      Readonly<Record<string, unknown>>
+    >(postgresPlaceholders(prepared.sql), prepared.params);
     // Under the partition lock the cursor is the locked `max_commit_seq` plus
-    // this transaction's appends, which the query above flushed: no read.
+    // this transaction's appends: no read. An append still held back changed
+    // no table the query read, so the rows are those of that cursor.
     if (this.#nextCommitSeq !== undefined) {
       return { rows: result.rows, maxCommitSeq: this.#nextCommitSeq - 1 };
     }
