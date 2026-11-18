@@ -52,7 +52,7 @@ After a lost reply, read the commit by that ID instead of calling `mutate` again
 
 - `seq`: the outbox sequence number, increasing in creation order.
 - `clientCommitId`: the ID `mutate` returned or the caller supplied.
-- `createdAtMs`: the client clock when `mutate` queued the commit. A Rust replica reports `0` for a commit it queued before 0.89.
+- `createdAtMs`: the client clock when `mutate` queued the commit. A Rust replica reports `0` for a commit it queued before 0.90.
 - `operations`: one entry per operation, with `table`, `rowId`, `op` (`upsert` or `delete`; a patch is a sparse `upsert`), `baseVersion` when the write carried one, `values` on an upsert (the columns the operation writes, bytes as `{ "$bytes": "<hex>" }`), and `insert: true` on a full-row write of a row the replica did not hold.
 
 ```json

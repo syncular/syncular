@@ -2,8 +2,23 @@
 
 ## 0.90.0 release notes
 
-0.90.0 records a decision against a conflict without waiting for the server
-(SYNCULAR-CURRENT-BASE-PENDING-001). The wire version is unchanged.
+0.90.0 collects the work prepared as 0.87.0 to 0.89.0, which were not
+published separately. The wire version stays 4; SSP2 gains the optional
+`RESTRICT` request frame (0x07). It closes SYNCULAR-CURRENT-BASE-PENDING-001,
+SYNCULAR-NATIVE-PENDING-COMMITS-001, SYNCULAR-COMMIT-DELIVERY-REACT-001 and
+SYNCULAR-BUMP-UNIT-GRANULARITY-001.
+
+Breaking changes:
+
+- On the Tauri and React Native bridges, `pendingCommits()` returns
+  `OutboxCommit[]` instead of commit IDs; read `commit.clientCommitId`.
+- `resolveCommitOutcome` on an outcome with a pending decision fails with
+  `client.replacement_pending`.
+
+Upgrade servers before clients to get the restricted bootstrap after a schema
+bump.
+
+### A decision on a conflict waits for a proven base
 
 `replaceCommitOutcome({ clientCommitId, sequence, replacement? })` appends a
 held replacement commit for an active conflict or rejection and returns its id.
@@ -33,11 +48,7 @@ drives leave the decision pending. SPEC §7.2.2 specifies the state machine.
   `resolveCommitOutcome(..., 'superseded')` with one `replaceCommitOutcome`
   call, and render the pending state from `replacementClientCommitId`.
 
-## 0.89.0 release notes
-
-0.89.0 returns whole outbox commits from `pendingCommits()` on every client
-surface (SYNCULAR-NATIVE-PENDING-COMMITS-001). SSP2 and the wire version are
-unchanged.
+### `pendingCommits` returns outbox commits on every surface
 
 The Tauri and React Native bridges returned bare commit IDs from
 `pendingCommits()`, typed `unknown[]`, while the in-process client and the
@@ -59,11 +70,7 @@ Upgrade note: code on the Tauri or React Native bridge that treated
 `OutboxCommit[] | Promise<OutboxCommit[]>`; a custom client passed to the
 React provider must return that shape.
 
-## 0.88.0 release notes
-
-0.88.0 brings `commitDelivery` to every TypeScript client surface and adds the
-`useCommitDelivery` React hook (SYNCULAR-COMMIT-DELIVERY-REACT-001). SSP2 and
-the wire version are unchanged.
+### `commitDelivery` on every surface and `useCommitDelivery`
 
 `commitDelivery(id)` is now on `SyncClientLike`, the browser worker handle and
 the Tauri and React Native bridges, with the same three states as the
@@ -79,11 +86,7 @@ every listed commit in one `snapshotRead` and re-reads on change batches that
 carry the outbox count or an outcome-journal change; it does not poll. An app
 that waited for the server acknowledgement by hand can read the hook instead.
 
-## 0.87.0 release notes
-
-0.87.0 re-bootstraps only a unit's changed tables after a schema bump
-(SYNCULAR-BUMP-UNIT-GRANULARITY-001). The wire version stays 4; SSP2 gains one
-optional request frame.
+### A schema bump re-bootstraps only a unit's changed tables
 
 A unit that covers tables a bump changed and tables it kept used to reset as a
 whole: it dropped its cursor and downloaded every covered table again. SPEC
