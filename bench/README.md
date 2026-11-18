@@ -67,6 +67,22 @@ authority as the server:
 cargo run --release --manifest-path rust/Cargo.toml -p syncular-bench --bin unit-bench -- --sizes 500,2000,10000
 ```
 
+## Apply-rows lane
+
+`bench:apply-rows` applies a 10,000-row segment of a 12-column table with one
+unique and one ordinary index through `applyRowsSegment`, as a fresh bootstrap
+and then one version higher, into a Bun file replica and the OPFS SAH-pool
+replica in a worker in headless Chromium:
+
+```sh
+bun run --cwd bench bench:apply-rows -- --rows 10000 --runs 3 [--skip-browser]
+```
+
+Each case runs on a fresh replica, without and with ten retained failed rows
+whose intents collide on the unique index. The lane prints one JSON object
+with rows per second per run and has no timing assertions. The results are in
+[the benchmarks page](../apps/docs/src/content/benchmarks.md#rows-segments-over-retained-failures).
+
 ## Image import lane
 
 `bench:image-import` generates two catalogue images of the size one

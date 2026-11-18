@@ -17,6 +17,22 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title:
+      'Rows segments skip the failure journal for rows without a retained row',
+    body: "A rows segment applied to a table that holds retained rows of failed commits no longer writes the failure journal for every landing row. Each 1,000-row block writes the server base of the retained rows it overwrites and refreshes the retained intents' unique conflicts once. With ten retained rows on a table with a unique index, a 10,000-row segment of a 12-column table bootstraps at 48,356 to 49,358 rows/s in the OPFS worker, up from 6,015 to 6,092 rows/s in 0.85.0; updates went from 4,757 to 40,486 rows/s or more. Tables without retained rows apply at the same rate as before.",
+    links: [
+      {
+        href: '/benchmarks/#rows-segments-over-retained-failures',
+        label: 'Rows segments over retained failures',
+      },
+      {
+        href: '/reference-outbox-outcomes/',
+        label: 'Outbox outcomes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Alternative write sets and NULL scope columns',
     body: "`writeScopeVariables` accepts alternative sets, such as `[['facility_id'], ['centre_window_id']]`. Any set that matches the stored row admits an update or delete; only the first set, the owner set, admits an insert or a `rescope`. A scope column outside the owner set may be NULL: the row has no stored scope for that variable, so no unit over it receives the row and no set containing it admits a write, and a schema bump re-keys the row without `sync.storage.scope_value_missing`. The TS server and the Rust local authority apply the same rules.",
     links: [

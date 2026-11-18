@@ -6679,7 +6679,7 @@ export class SyncClient {
     const values = table.columns.map((column) =>
       jsonToRowValue(image.values?.[column.name] ?? null),
     );
-    upsertLocalRow(this.#db, table, values, image.syncVersion, false);
+    upsertLocalRow(this.#db, table, values, image.syncVersion);
   }
 
   #legacyUndoOptimisticRows(
@@ -6867,7 +6867,7 @@ export class SyncClient {
         ).length
       )
         continue;
-      upsertLocalRow(this.#db, table, values, version, false);
+      upsertLocalRow(this.#db, table, values, version);
     }
   }
 
