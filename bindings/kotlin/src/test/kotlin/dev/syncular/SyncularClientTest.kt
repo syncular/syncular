@@ -360,6 +360,10 @@ class SyncularClientTest {
             assertFailsWith<SyncularException> {
                 client.resolveCommitOutcome(JsonValue.obj("clientCommitId" to JsonValue.of(id), "resolution" to JsonValue.of("dismissed")))
             }
+            val refused = assertFailsWith<SyncularException> {
+                client.replaceCommitOutcome(JsonValue.obj("clientCommitId" to JsonValue.of(id), "sequence" to JsonValue.of(1)))
+            }
+            assertEquals("sync.outcome_not_found", refused.code)
             for (method in listOf("schemaFloor", "leaseState", "upgrading", "syncNeeded")) {
                 assertFailsWith<SyncularException> { client.command(method, JsonValue.Obj(emptyMap())) }
             }

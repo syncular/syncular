@@ -2085,6 +2085,38 @@ test('remote Tauri bridge omits local authority while retaining proof and diagno
   await client.close();
 });
 
+test('Tauri bridge forwards a decision against an outcome as one command', async () => {
+  const commands: unknown[] = [];
+  const { tauri } = makeTauri((cmd, args) => {
+    const command = args.command as { method?: string; params?: unknown };
+    if (command?.method === 'replaceCommitOutcome') {
+      commands.push(command.params);
+      return OK({ clientCommitId: 'replacement' });
+    }
+    return defaultResponder(cmd, args);
+  });
+  const like: SyncClientLike = await createRemoteTauriSyncClient({
+    schema: { version: 1, tables: [] },
+    tauri,
+  });
+  expect(
+    await like.replaceCommitOutcome({ clientCommitId: 'c1', sequence: 3 }),
+  ).toBe('replacement');
+  await like.replaceCommitOutcome({
+    clientCommitId: 'c1',
+    sequence: 3,
+    replacement: [{ table: 'notes', op: 'patch', values: { id: 'n1' } }],
+  });
+  expect(commands).toEqual([
+    { clientCommitId: 'c1', sequence: 3 },
+    {
+      clientCommitId: 'c1',
+      sequence: 3,
+      replacement: [{ table: 'notes', op: 'patch', values: { id: 'n1' } }],
+    },
+  ]);
+});
+
 test('authority-enabled Tauri bridge still exposes its state during preflight', async () => {
   const { tauri } = makeTauri((cmd, args) => {
     const method = (args.command as { method?: string } | undefined)?.method;

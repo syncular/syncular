@@ -240,6 +240,26 @@ impl SyncularCore {
         }
     }
 
+    /// §7.2.2: the decisions pending at the start of an idle drive.
+    pub fn prepare_replacements(
+        &self,
+    ) -> Result<Vec<syncular_client::CurrentBasePreparation>, String> {
+        self.client
+            .as_ref()
+            .map_or(Ok(Vec::new()), SyncClient::prepare_replacements)
+    }
+
+    /// §7.2.2: settle the captured decisions when the drive reaches idle.
+    pub fn settle_replacements(
+        &mut self,
+        decisions: &[syncular_client::CurrentBasePreparation],
+        drive: &syncular_client::SyncOutcome,
+    ) -> Result<bool, String> {
+        self.client.as_mut().map_or(Ok(false), |client| {
+            client.settle_replacements(decisions, drive)
+        })
+    }
+
     /// Run one `syncUntilIdle` round for the background host loop, deriving
     /// events afterwards. A no-op (empty reply) before `create`.
     pub fn sync_until_idle(&mut self) -> Value {

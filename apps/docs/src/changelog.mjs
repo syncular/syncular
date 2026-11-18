@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'Decide a conflict offline with replaceCommitOutcome',
+    body: "`replaceCommitOutcome(outcome)` records keep-mine for an active conflict or rejection, and `replaceCommitOutcome({ ...outcome, replacement })` records an edited payload. The call returns the replacement's commit id at once, offline too, and local reads show the replacement. The client writes it after its next completed sync proves the server row the decision was made against, or refuses it with `sync.replacement_refused` and `details.reason` (`base_moved`, `schema_floor`, `missing_coverage`, `revoked`, `outcome_unavailable`) and keeps it as a new conflict. A pending decision is an `active` outcome with a `replacementClientCommitId` and survives a restart. Browser workers, Tauri, React Native, Swift, Kotlin, Flutter and Rust expose the same call. `proveCurrentBase` is unchanged.",
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#decide-without-waiting-for-the-server',
+        label: 'Decide without waiting for the server',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'pendingCommits returns whole commits on every host',
     body: 'The Tauri and React Native bridges returned bare commit IDs from `pendingCommits()`; they now return the same `OutboxCommit` objects as the in-process client and the worker handle: `seq`, `clientCommitId`, `createdAtMs` and `operations`. The Rust core adds `pending_commits()` and the command bridge a `pendingCommits` command, both emitting the TypeScript JSON. `SyncClientLike.pendingCommits` is typed `OutboxCommit[] | Promise<OutboxCommit[]>`.',
     links: [

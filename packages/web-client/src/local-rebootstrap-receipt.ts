@@ -1,4 +1,4 @@
-import { ClientSyncError } from './errors';
+import { localStateCorrupt } from './errors';
 
 const LEGACY_MARKER = 'v1';
 const RECEIPT_VERSION = 2;
@@ -14,10 +14,7 @@ export interface LocalDataRebootstrapReceipt {
 }
 
 function invalidReceipt(): never {
-  throw new ClientSyncError(
-    'sync.local_corrupt',
-    'persisted local rebootstrap receipt is invalid',
-  );
+  throw localStateCorrupt('persisted local rebootstrap receipt is invalid');
 }
 
 function isCount(value: unknown): value is number {

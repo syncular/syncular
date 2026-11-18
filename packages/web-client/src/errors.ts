@@ -57,6 +57,11 @@ export class ClientSyncError extends Error {
   }
 }
 
+/** `sync.local_corrupt`: persisted local state this client cannot read. */
+export function localStateCorrupt(message: string): ClientSyncError {
+  return new ClientSyncError('sync.local_corrupt', message);
+}
+
 /** Shared invalid-request construction for client validators and transport guards. */
 export function invalidRequest(
   message: string,

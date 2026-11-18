@@ -76,6 +76,8 @@ uuid = { version = "1", features = ["v4", "js"] }
 
 # Tests count COMMITs with a commit hook.
 [dev-dependencies]
+# §7.2.2 tests drive a real server: the local authority.
+syncular-authority = { path = "../authority" }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tungstenite = "0.30"
 

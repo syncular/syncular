@@ -365,6 +365,12 @@ private final class StubbedReplyClient: SyncularClient {
     #expect(throws: SyncularError.self) {
         try client.resolveCommitOutcome(.object(["clientCommitId": .string(id), "resolution": .string("dismissed")]))
     }
+    do {
+        _ = try client.replaceCommitOutcome(.object(["clientCommitId": .string(id), "sequence": .number(1)]))
+        Issue.record("replaceCommitOutcome accepted a pending commit")
+    } catch let error as SyncularError {
+        #expect(error.code == "sync.outcome_not_found")
+    }
     for method in ["schemaFloor", "leaseState", "upgrading", "syncNeeded"] {
         #expect(throws: SyncularError.self) { try client.command(method: method, params: .object([:])) }
     }

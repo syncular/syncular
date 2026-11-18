@@ -550,6 +550,7 @@ export function startSyncWorkerCore(
     'commitOutcomes',
     'resolveCommitOutcome',
     'commitDelivery',
+    'replaceCommitOutcome',
     'pendingCommits',
     'units',
     'unit',

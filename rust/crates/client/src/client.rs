@@ -120,6 +120,11 @@ const LEGACY_VALUE_REFUSAL_MESSAGE: &str =
     "the persisted commit carries values the current codec refuses";
 /// §7.4.4: bounded reason on every intrinsic value drop.
 const INVALID_STORED_VALUES_REASON: &str = "invalid_stored_values";
+/// §7.2.2: an outcome with a pending decision accepts no other resolution.
+const REPLACEMENT_PENDING: &str =
+    "client.replacement_pending: the outcome has a pending replacement";
+/// §7.2.2 client-local code: a pending replacement was not written.
+const REPLACEMENT_REFUSED_CODE: &str = "sync.replacement_refused";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -178,9 +183,13 @@ mod observation_tests;
 
 /// Internal state for hosts that perform network I/O outside the client owner.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct CurrentBasePreparation {
     client_commit_id: String,
     sequence: i64,
+    /// §7.2.2: the pending replacement a drive evaluates; `None` for
+    /// `proveCurrentBase`.
+    replacement: Option<String>,
     units: Vec<UnitRecord>,
     transport_epoch: u64,
     registration_epoch: u64,
@@ -189,6 +198,9 @@ pub struct CurrentBasePreparation {
 
 #[cfg(test)]
 mod units_tests;
+
+#[cfg(test)]
+mod replace_outcome_tests;
 
 #[derive(Debug, Clone)]
 struct OutboxOp {
@@ -5179,6 +5191,7 @@ impl SyncClient {
         Ok(CurrentBasePreparation {
             client_commit_id: client_commit_id.to_owned(),
             sequence,
+            replacement: None,
             units: load_units(&self.conn)
                 .map_err(|_| CurrentBaseProof::failure(CurrentBaseProofReason::SnapshotFailed))?,
             transport_epoch: self.transport_epoch,
@@ -6155,7 +6168,15 @@ impl SyncClient {
                 Err(message) => return self.finish_authoring(prior, Err(message.into())),
             }
         }
-        let outcome = (|| -> Result<String, ClientError> {
+        let outcome = self
+            .prepare_mutations(mutations)
+            .and_then(|ops| Ok(self.record_outbox_commit(ops, client_commit_id, None)?));
+        self.finish_authoring(prior, outcome)
+    }
+
+    /// §7.1: validate one commit's mutations into outbox operations.
+    fn prepare_mutations(&self, mutations: Vec<Mutation>) -> Result<Vec<OutboxOp>, ClientError> {
+        {
             if mutations.is_empty() {
                 return Err(
                     "sync.invalid_request: a commit must contain at least one operation (§6.1)"
@@ -6255,9 +6276,8 @@ impl SyncClient {
                     }
                 }
             }
-            Ok(self.record_outbox_commit(ops, client_commit_id)?)
-        })();
-        self.finish_authoring(prior, outcome)
+            Ok(ops)
+        }
     }
 
     /// Scope the retained `storage_failure` diagnostic to this call so an
@@ -6275,10 +6295,13 @@ impl SyncClient {
         outcome.map_err(|error| fresh.map(ClientError::from).unwrap_or(error))
     }
 
+    /// `decides` names the active outcome this commit replaces (§7.2.2); the
+    /// outcome records it as its pending decision in the same transaction.
     fn record_outbox_commit(
         &mut self,
         ops: Vec<OutboxOp>,
         client_commit_id: Option<String>,
+        decides: Option<&str>,
     ) -> Result<String, String> {
         let commit = OutboxCommit {
             client_commit_id: client_commit_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -6302,7 +6325,27 @@ impl SyncClient {
                 batch.table(&op.table);
             }
         }
-        if let Err(error) = self.persist_outbox_insert(&commit) {
+        let persisted = self.persist_outbox_insert(&commit).and_then(|()| {
+            let Some(outcome) = decides else {
+                return Ok(());
+            };
+            batch.outcomes = true;
+            let updated = self
+                .conn
+                .execute(
+                    "UPDATE _syncular_commit_outcomes SET replacement_client_commit_id = ?1
+                      WHERE client_commit_id = ?2 AND resolution = 'active'
+                        AND replacement_client_commit_id IS NULL",
+                    rusqlite::params![commit.client_commit_id, outcome],
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            if updated == 1 {
+                Ok(())
+            } else {
+                Err(REPLACEMENT_PENDING.to_owned())
+            }
+        });
+        if let Err(error) = persisted {
             self.rollback_observation("syncular_mutation");
             return Err(error);
         }
@@ -6358,7 +6401,7 @@ impl SyncClient {
         base_version: Option<i64>,
     ) -> Result<String, ClientError> {
         let operation = self.prepare_patch(table, row_id, partial, base_version, None)?;
-        Ok(self.record_outbox_commit(vec![operation], None)?)
+        Ok(self.record_outbox_commit(vec![operation], None, None)?)
     }
 
     /// `staged` is the row as the batch's earlier operations leave it
@@ -6635,6 +6678,38 @@ impl SyncClient {
         if failures.is_empty() {
             return Ok(false);
         }
+        self.reject_outbox_commits(
+            failures
+                .into_iter()
+                .map(|(commit, message, code)| {
+                    let details = (code == OUTBOX_INCOMPATIBLE_CODE).then(|| RejectionDetails {
+                        field_paths: None,
+                        reason: Some(INVALID_STORED_VALUES_REASON.to_owned()),
+                        required_action: None,
+                        references: None,
+                    });
+                    (commit, message, code, details)
+                })
+                .collect(),
+            batch,
+        )?;
+        Ok(true)
+    }
+
+    /// §7.4.4 client-local terminal drop of pending commits, each journaled as a
+    /// rejection with `code` and `details`. Every code except
+    /// `sync.outbox_incompatible` keeps the retained intent.
+    #[allow(clippy::type_complexity)]
+    fn reject_outbox_commits(
+        &mut self,
+        failures: Vec<(
+            Arc<OutboxCommit>,
+            String,
+            &'static str,
+            Option<RejectionDetails>,
+        )>,
+        batch: Option<&mut ChangeAccumulator>,
+    ) -> Result<(), String> {
         // §7.4.4: one observation covers the durable outcome writes, the outbox
         // removal, the in-memory drop, and the overlay rebuild, so a storage fault
         // leaves the replica and the client unchanged, a successful recovery
@@ -6648,8 +6723,8 @@ impl SyncClient {
             self.begin_observation("syncular_value_recovery")?;
         }
         let dropped = (|| -> Result<(), String> {
-            for (commit, message, code) in failures {
-                if self.retain_failed_commits && code == ENCRYPT_FAILED_CODE {
+            for (commit, message, code, details) in failures {
+                if self.retain_failed_commits && code != OUTBOX_INCOMPATIBLE_CODE {
                     self.retain_failed_commit(&commit.client_commit_id, &commit.ops)?;
                 }
                 let representable = commit.ops.iter().all(Self::outbox_op_is_journalable);
@@ -6659,12 +6734,7 @@ impl SyncClient {
                     code: code.to_owned(),
                     message,
                     retryable: false,
-                    details: (code == OUTBOX_INCOMPATIBLE_CODE).then(|| RejectionDetails {
-                        field_paths: None,
-                        reason: Some(INVALID_STORED_VALUES_REASON.to_owned()),
-                        required_action: None,
-                        references: None,
-                    }),
+                    details,
                     operation: representable
                         .then(|| commit.ops.first())
                         .flatten()
@@ -6727,7 +6797,7 @@ impl SyncClient {
             self.restore(rollback);
             return Err(error);
         }
-        Ok(true)
+        Ok(())
     }
 
     pub fn pending_commit_ids(&self) -> Vec<String> {
@@ -6823,6 +6893,9 @@ impl SyncClient {
         if current.resolution != CommitOutcomeResolution::Active {
             return Ok(current);
         }
+        if current.replacement_client_commit_id.is_some() {
+            return Err(REPLACEMENT_PENDING.to_owned());
+        }
         if input.resolution == CommitOutcomeResolution::Active {
             return Err("sync.invalid_request: resolution must leave active state".to_owned());
         }
@@ -6871,74 +6944,314 @@ impl SyncClient {
 
         let rollback = self.capture();
         self.begin_observation("syncular_outcome_resolution")?;
-        let result = (|| {
-            self.conn
-                .execute(
-                    "UPDATE _syncular_commit_outcomes
-                        SET resolution = ?1, resolved_at_ms = ?2,
-                            replacement_client_commit_id = ?3
-                      WHERE client_commit_id = ?4 AND resolution = 'active'",
-                    rusqlite::params![
-                        Self::outcome_resolution_name(input.resolution),
-                        self.clock_now_ms(),
-                        input.replacement_client_commit_id,
-                        input.client_commit_id
-                    ],
-                )
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            let resolved = self
-                .commit_outcome(&current.client_commit_id)?
-                .ok_or_else(|| "sync.outcome_not_found: outcome disappeared".to_owned())?;
-            self.conn
-                .execute(
-                    "DELETE FROM _syncular_failed_commits WHERE client_commit_id = ?1",
-                    rusqlite::params![input.client_commit_id],
-                )
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            for (commit, _) in self.failed_commits.iter() {
-                if commit.client_commit_id == input.client_commit_id {
-                    for operation in &commit.ops {
-                        self.overlay_dirty.table(&operation.table);
-                    }
-                }
-            }
-            self.failed_commits
-                .retain(|(commit, _)| commit.client_commit_id != input.client_commit_id);
-            self.prune_commit_outcomes()?;
-            Ok(resolved)
-        })();
-        let resolved = match result {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.rollback_observation("syncular_outcome_resolution");
-                self.restore(rollback);
-                return Err(error);
-            }
-        };
-        self.conflicts
-            .retain(|record| record.client_commit_id != current.client_commit_id);
-        self.rejections
-            .retain(|record| record.client_commit_id != current.client_commit_id);
-        let mut batch = ChangeAccumulator {
-            conflicts: current.status == CommitOutcomeStatus::Conflict,
-            rejections: current.status == CommitOutcomeStatus::Rejected,
-            outcomes: true,
-            ..ChangeAccumulator::default()
-        };
-        if let Some(operations) = &current.operations {
-            for operation in operations {
-                batch.table(&operation.table);
-            }
-        }
-        if let Err(error) = self
-            .rebuild_overlay_if_dirty()
-            .and_then(|()| self.finish_observation("syncular_outcome_resolution", batch))
-        {
+        let mut batch = ChangeAccumulator::default();
+        let result = self
+            .release_outcome(
+                &current,
+                input.resolution,
+                input.replacement_client_commit_id.as_deref(),
+                &mut batch,
+            )
+            .and_then(|()| self.rebuild_overlay_if_dirty())
+            .and_then(|()| self.finish_observation("syncular_outcome_resolution", batch));
+        if let Err(error) = result {
             self.rollback_observation("syncular_outcome_resolution");
             self.restore(rollback);
             return Err(error);
         }
-        Ok(resolved)
+        self.commit_outcome(&current.client_commit_id)?
+            .ok_or_else(|| "sync.outcome_not_found: outcome disappeared".to_owned())
+    }
+
+    /// §7.2.2: record a decision against an active conflict or rejection as a
+    /// held replacement commit and return its client commit id. Without
+    /// `replacement` the retained envelope is kept ("keep mine"); every
+    /// operation on a retained row takes that row's base version.
+    pub fn replace_commit_outcome(
+        &mut self,
+        client_commit_id: &str,
+        sequence: i64,
+        replacement: Option<Vec<Mutation>>,
+    ) -> Result<String, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<String, ClientError> {
+            let Some(current) = self.commit_outcome(client_commit_id)? else {
+                return Err(ClientError {
+                    code: "sync.outcome_not_found".to_owned(),
+                    message: "no durable outcome exists for the commit".to_owned(),
+                    details: Some(json!({ "clientCommitId": client_commit_id })),
+                    retryable: false,
+                });
+            };
+            if current.resolution == CommitOutcomeResolution::Active
+                && current.replacement_client_commit_id.is_some()
+            {
+                return Err(ClientError {
+                    code: "client.replacement_pending".to_owned(),
+                    message: "the outcome has a pending replacement".to_owned(),
+                    details: Some(json!({ "clientCommitId": client_commit_id })),
+                    retryable: false,
+                });
+            }
+            let (Some(envelope), Some(rows)) = (current.operations, current.retained_rows) else {
+                return Err(invalid_authoring(
+                    "the outcome cannot be replaced",
+                    json!({ "clientCommitId": client_commit_id }),
+                ));
+            };
+            if current.sequence != sequence
+                || current.resolution != CommitOutcomeResolution::Active
+                || !matches!(
+                    current.status,
+                    CommitOutcomeStatus::Conflict | CommitOutcomeStatus::Rejected
+                )
+                || rows.is_empty()
+                || envelope.len() != rows.len()
+            {
+                return Err(invalid_authoring(
+                    "the outcome cannot be replaced",
+                    json!({ "clientCommitId": client_commit_id }),
+                ));
+            }
+            let ops = match replacement {
+                None => envelope
+                    .into_iter()
+                    .zip(&rows)
+                    .map(|(operation, row)| OutboxOp {
+                        base_version: Some(row.server_version.unwrap_or(0)),
+                        ..OutboxOp::from(operation)
+                    })
+                    .collect(),
+                Some(mutations) => {
+                    let mut ops = self.prepare_mutations(mutations)?;
+                    for op in &mut ops {
+                        let Some(row) = rows
+                            .iter()
+                            .find(|row| row.table == op.table && row.row_id == op.row_id)
+                        else {
+                            continue;
+                        };
+                        if op.base_version.is_some() {
+                            return Err(invalid_authoring(
+                                "an operation on a retained row takes its base version",
+                                json!({ "table": op.table }),
+                            ));
+                        }
+                        op.base_version = Some(row.server_version.unwrap_or(0));
+                    }
+                    ops
+                }
+            };
+            Ok(self.record_outbox_commit(ops, None, Some(client_commit_id))?)
+        })();
+        self.finish_authoring(prior, outcome)
+    }
+
+    /// Internal host step at the start of an idle drive (§7.2.2): capture
+    /// every pending decision with the units and epochs of this drive.
+    #[doc(hidden)]
+    pub fn prepare_replacements(&self) -> Result<Vec<CurrentBasePreparation>, String> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT client_commit_id, seq, replacement_client_commit_id
+                   FROM _syncular_commit_outcomes
+                  WHERE resolution = 'active' AND replacement_client_commit_id IS NOT NULL
+                  ORDER BY seq ASC",
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let decisions = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .and_then(|rows| rows.collect::<Result<Vec<(String, i64, String)>, _>>())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        if decisions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let units = self.stored(load_units(&self.conn))?;
+        Ok(decisions
+            .into_iter()
+            .map(
+                |(client_commit_id, sequence, replacement)| CurrentBasePreparation {
+                    client_commit_id,
+                    sequence,
+                    replacement: Some(replacement),
+                    units: units.clone(),
+                    transport_epoch: self.transport_epoch,
+                    registration_epoch: self.registration_epoch,
+                    security_epoch: self.security_epoch,
+                },
+            )
+            .collect())
+    }
+
+    /// Internal host step when an idle drive reaches idle (§7.2.2): write,
+    /// refuse, or keep each decision captured at the drive's start. Returns
+    /// whether a decision was written, so the drive runs another round.
+    #[doc(hidden)]
+    pub fn settle_replacements(
+        &mut self,
+        decisions: &[CurrentBasePreparation],
+        drive: &SyncOutcome,
+    ) -> Result<bool, String> {
+        if !self.transport_enabled {
+            return Ok(false);
+        }
+        let mut written = false;
+        for decision in decisions {
+            // A registration change during the drive says nothing about the
+            // base; the decision waits for the next drive.
+            if decision.registration_epoch != self.registration_epoch {
+                continue;
+            }
+            let Some(replacement) = decision.replacement.as_deref() else {
+                continue;
+            };
+            let Some(current) =
+                self.commit_outcome(&decision.client_commit_id)?
+                    .filter(|current| {
+                        current.resolution == CommitOutcomeResolution::Active
+                            && current.replacement_client_commit_id.as_deref() == Some(replacement)
+                    })
+            else {
+                continue;
+            };
+            let held = self
+                .outbox
+                .iter()
+                .find(|commit| commit.client_commit_id == replacement)
+                .cloned();
+            let refused = match &held {
+                // A revocation drop (§3.3) or a crash already ended the
+                // replacement; its own journal entry records what happened.
+                None => None,
+                Some(commit) => match self.finish_current_base(decision.clone(), drive.clone()) {
+                    CurrentBaseProof {
+                        rows: Some(rows), ..
+                    } => {
+                        let proven = commit.ops.iter().all(|op| {
+                            rows.iter()
+                                .find(|row| row.table == op.table && row.row_id == op.row_id)
+                                .is_none_or(|row| {
+                                    op.base_version == Some(row.server_version.unwrap_or(0))
+                                })
+                        });
+                        written |= proven;
+                        (!proven).then(|| "base_moved".to_owned())
+                    }
+                    CurrentBaseProof {
+                        reason:
+                            Some(
+                                reason @ (CurrentBaseProofReason::SchemaFloor
+                                | CurrentBaseProofReason::MissingCoverage
+                                | CurrentBaseProofReason::Revoked
+                                | CurrentBaseProofReason::OutcomeUnavailable),
+                            ),
+                        ..
+                    } => Some(
+                        serde_json::to_value(reason)
+                            .ok()
+                            .and_then(|reason| reason.as_str().map(str::to_owned))
+                            .ok_or("sync.local_corrupt")?,
+                    ),
+                    _ => continue,
+                },
+            };
+            // One transaction: the original outcome is superseded first, so
+            // the refused replacement retains its intent over the restored
+            // server base.
+            let rollback = self.capture();
+            self.begin_observation("syncular_replacement")?;
+            let mut batch = ChangeAccumulator::default();
+            let result = self
+                .release_outcome(
+                    &current,
+                    CommitOutcomeResolution::Superseded,
+                    Some(replacement),
+                    &mut batch,
+                )
+                .and_then(|()| self.rebuild_overlay_if_dirty())
+                .and_then(|()| match (refused, held) {
+                    (Some(reason), Some(commit)) => self.reject_outbox_commits(
+                        vec![(
+                            commit,
+                            "the replacement could not be written on a proven base".to_owned(),
+                            REPLACEMENT_REFUSED_CODE,
+                            Some(RejectionDetails {
+                                field_paths: None,
+                                reason: Some(reason),
+                                required_action: None,
+                                references: None,
+                            }),
+                        )],
+                        Some(&mut batch),
+                    ),
+                    _ => Ok(()),
+                })
+                .and_then(|()| self.finish_observation("syncular_replacement", batch));
+            if let Err(error) = result {
+                self.rollback_observation("syncular_replacement");
+                self.restore(rollback);
+                return Err(error);
+            }
+        }
+        if written {
+            self.set_sync_needed(true, true);
+        }
+        Ok(written)
+    }
+
+    /// §7.2.1 explicit resolution inside the caller's observation: record the
+    /// resolution, release the retained aggregate and mark its tables for the
+    /// overlay rebuild, which restores the server base and replays what
+    /// remains over it.
+    fn release_outcome(
+        &mut self,
+        current: &CommitOutcome,
+        resolution: CommitOutcomeResolution,
+        replacement: Option<&str>,
+        batch: &mut ChangeAccumulator,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE _syncular_commit_outcomes
+                    SET resolution = ?1, resolved_at_ms = ?2,
+                        replacement_client_commit_id = ?3
+                  WHERE client_commit_id = ?4 AND resolution = 'active'",
+                rusqlite::params![
+                    Self::outcome_resolution_name(resolution),
+                    self.clock_now_ms(),
+                    replacement,
+                    current.client_commit_id
+                ],
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_failed_commits WHERE client_commit_id = ?1",
+                rusqlite::params![current.client_commit_id],
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        for (commit, _) in self.failed_commits.iter() {
+            if commit.client_commit_id == current.client_commit_id {
+                for operation in &commit.ops {
+                    self.overlay_dirty.table(&operation.table);
+                }
+            }
+        }
+        self.failed_commits
+            .retain(|(commit, _)| commit.client_commit_id != current.client_commit_id);
+        self.prune_commit_outcomes()?;
+        self.conflicts
+            .retain(|record| record.client_commit_id != current.client_commit_id);
+        self.rejections
+            .retain(|record| record.client_commit_id != current.client_commit_id);
+        batch.conflicts |= current.status == CommitOutcomeStatus::Conflict;
+        batch.rejections |= current.status == CommitOutcomeStatus::Rejected;
+        batch.outcomes = true;
+        for operation in current.operations.iter().flatten() {
+            batch.table(&operation.table);
+        }
+        Ok(())
     }
 
     pub fn schema_floor(&self) -> Option<&SchemaFloor> {
@@ -7738,9 +8051,20 @@ impl SyncClient {
         let mut ops_in_request = 0usize;
         let mut bytes_in_request = 0usize;
         let mut deferred_commits = 0usize;
+        // §7.2.2: a pending replacement is held; the push stops before it
+        // without deferring work.
+        let held: HashSet<String> = self
+            .prepare_replacements()
+            .map_err(storage_failed)?
+            .into_iter()
+            .filter_map(|decision| decision.replacement)
+            .collect();
         #[cfg(feature = "bench-internals")]
         let outbox_phase = self.benchmark_phases.start(Phase::OutboxEncode);
         for (index, commit) in self.outbox.iter().take(total_outbox).enumerate() {
+            if held.contains(&commit.client_commit_id) {
+                break;
+            }
             // §6.1/§7.1: the commit-count and operation caps are hard. A
             // first commit over the operation cap is a typed capacity error
             // and stays queued; a later one defers with the complete suffix.
@@ -8595,6 +8919,19 @@ impl SyncClient {
         let started_at_ms = self.clock_now_ms();
         let rounds = max_rounds.unwrap_or(20);
         let mut aggregate = SyncReport::default();
+        // §7.2.2: decisions pending at the drive's start are evaluated when it
+        // reaches idle.
+        let decisions = match self.prepare_replacements() {
+            Ok(decisions) => decisions,
+            Err(message) => {
+                return SyncOutcome::Failed {
+                    details: None,
+                    error_code: "storage.failed".into(),
+                    message,
+                    recommended_action: None,
+                }
+            }
+        };
         let mut spent = 0;
         let mut completed = false;
         while spent < rounds {
@@ -8641,22 +8978,35 @@ impl SyncClient {
                     // the loop. The latest round still merges first.
                     let stop = !self.transport_enabled() || report.schema_floor.is_some();
                     aggregate.merge(&report);
-                    if stop {
-                        return SyncOutcome::Ok(aggregate);
-                    }
                     // §4.5: pull again whenever the response contained
                     // commits or segments; resets re-bootstrap; a pending
                     // resume token continues paging (§4.7); deferred outbox
                     // commits and a raised sync-needed signal push on the next
                     // round.
-                    let more = !report.bootstrapping.is_empty()
-                        || report.commits_applied > 0
-                        || report.segment_rows_applied > 0
-                        || !report.resets.is_empty()
-                        || report.deferred_commits > 0
-                        || self.sync_needed;
-                    if !more {
-                        return SyncOutcome::Ok(aggregate);
+                    let more = !stop
+                        && (!report.bootstrapping.is_empty()
+                            || report.commits_applied > 0
+                            || report.segment_rows_applied > 0
+                            || !report.resets.is_empty()
+                            || report.deferred_commits > 0
+                            || self.sync_needed);
+                    if more {
+                        continue;
+                    }
+                    // §7.2.2: a written decision runs another round, which
+                    // pushes it.
+                    match self.settle_replacements(&decisions, &SyncOutcome::Ok(aggregate.clone()))
+                    {
+                        Ok(true) if !stop => {}
+                        Ok(_) => return SyncOutcome::Ok(aggregate),
+                        Err(message) => {
+                            return SyncOutcome::Failed {
+                                details: None,
+                                error_code: "storage.failed".into(),
+                                message,
+                                recommended_action: None,
+                            }
+                        }
                     }
                 }
             }

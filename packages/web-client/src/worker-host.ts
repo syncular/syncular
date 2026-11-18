@@ -37,6 +37,7 @@ import type {
   ConflictRecord,
   CurrentBaseProof,
   MutationInput,
+  ReplaceCommitOutcomeInput,
   PresencePeer,
   QueryReadSpec,
   QuerySnapshot,
@@ -830,6 +831,17 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
 
   commitDelivery(id: string): Promise<CommitDelivery> {
     return this.#call('commitDelivery', [id]);
+  }
+
+  /** §7.2.2: record a decision as a replacement held for a proven base. */
+  replaceCommitOutcome({
+    clientCommitId,
+    sequence,
+    replacement,
+  }: ReplaceCommitOutcomeInput): Promise<string> {
+    return this.#call('replaceCommitOutcome', [
+      { clientCommitId, sequence, replacement },
+    ]);
   }
 
   /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */

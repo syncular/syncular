@@ -129,6 +129,34 @@ if (!proof.proven) {
 
 The failure reason is `offline`, `sync_failed`, `schema_floor`, `budget_exhausted`, `snapshot_failed`, `missing_coverage`, `revoked`, or `outcome_unavailable`. Keep the failed outcome and show a message for the reason. Pass a positive round limit as the second argument to bound the drive. A null `serverRow` means the covering unit holds no authorized base; it does not establish that the primary key is absent outside the actor's scopes. Another writer can change a row after proof, so submit the replacement with the domain's version check and retain any new rejection.
 
+### Decide without waiting for the server
+
+`replaceCommitOutcome({ clientCommitId, sequence, replacement? })` records a decision against an active conflict or rejection and returns the replacement's commit id. It needs no connection. Pass the outcome itself to keep the local intent, or add `replacement`, a list of mutations, to record an edited payload.
+
+```ts
+// Keep mine: the failed operations again, against the server row shown.
+client.replaceCommitOutcome(outcome);
+
+// Save an edit of a record with an open conflict.
+client.replaceCommitOutcome({
+  ...outcome,
+  replacement: [{ table: 'todos', op: 'patch', values: { id: 't1', title: 'Buy oat milk' } }],
+});
+```
+
+In one local transaction the client appends the replacement to the outbox, applies it to local reads, and stores its id as the outcome's `replacementClientCommitId`. The outcome stays `active` while the decision is pending. Each replacement operation on a retained row carries that row's `serverVersion` as its `baseVersion`, or 0 when `serverRow` is null. A `replacement` operation on a retained row must not set `baseVersion`; the call fails with `sync.invalid_request`. Operations on other rows keep the `baseVersion` you pass. A pending decision accepts no `resolveCommitOutcome` and no second `replaceCommitOutcome`; both fail with `client.replacement_pending`.
+
+The replacement is held: pushes stop at it, so it and every later commit wait. When the client's next sync drive completes, the client runs the `proveCurrentBase` check for every decision pending when that drive began.
+
+| Proof result | State | What happens |
+|---|---|---|
+| Proven, every retained row still at the recorded version | written | The outcome becomes `superseded`. The drive runs one more round and pushes the replacement, which gets its own outcome. |
+| Proven, a row moved past the recorded version | refused, `base_moved` | The replacement leaves the outbox as a rejected outcome with `sync.replacement_refused` and keeps its retained intent. The original outcome becomes `superseded`. Show the new outcome and decide again. |
+| `schema_floor`, `missing_coverage`, `revoked`, `outcome_unavailable` | refused with that reason | Same as `base_moved`; `details.reason` names the reason. |
+| `offline`, `sync_failed`, `budget_exhausted`, `snapshot_failed` | pending | The next drive tries again. |
+
+The outbox and the journal hold the whole state, so a pending decision survives a restart and a closed page. Read it from `commitOutcomes()`: an `active` outcome with a `replacementClientCommitId` is pending, and `commitDelivery(replacementClientCommitId)` follows the replacement. Every transition publishes `outcomesChanged`, so React's `useCommitOutcomes` re-renders on it. A later `mutate` of the same row queues behind the replacement and moves to the replacement's version when the server acknowledges it.
+
 | Resolution | Call |
 |---|---|
 | Keep server | `resolveCommitOutcome({ clientCommitId, resolution: 'resolved_keep_server' })` restores the latest server base. |

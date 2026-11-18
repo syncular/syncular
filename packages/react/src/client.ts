@@ -8,6 +8,7 @@ import type {
   CommitOutcome,
   CurrentBaseProof,
   InvalidationListener,
+  ReplaceCommitOutcomeInput,
   LeadershipState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
@@ -69,6 +70,9 @@ export interface SyncClientLike extends ClientSnapshotReader {
     outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
     maxRounds?: number,
   ): CurrentBaseProof | Promise<CurrentBaseProof>;
+  replaceCommitOutcome(
+    input: ReplaceCommitOutcomeInput,
+  ): string | Promise<string>;
   presence(
     scopeKey: string,
   ): readonly PresencePeer[] | Promise<readonly PresencePeer[]>;

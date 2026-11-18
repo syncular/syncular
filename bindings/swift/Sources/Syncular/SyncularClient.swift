@@ -517,6 +517,23 @@ public class SyncularClient {
         return try command(method: "proveCurrentBase", params: .object(p))
     }
 
+    /// Record a held replacement for an active conflict or rejection
+    /// (SPEC.md §7.2.2) and return its client commit id. Without
+    /// `replacement` the outcome's own operations are kept; a later idle drive
+    /// writes or refuses the decision.
+    public func replaceCommitOutcome(_ outcome: JSONValue, replacement: [JSONValue]? = nil) throws -> String {
+        var params: [String: JSONValue] = [
+            "clientCommitId": outcome["clientCommitId"] ?? .null,
+            "sequence": outcome["sequence"] ?? .null,
+        ]
+        if let replacement { params["replacement"] = .array(replacement) }
+        let result = try command(method: "replaceCommitOutcome", params: .object(params))
+        guard let id = result["clientCommitId"]?.stringValue else {
+            throw SyncularError(code: "client.failed", message: "replaceCommitOutcome returned no clientCommitId")
+        }
+        return id
+    }
+
     /// Read all locally-visible rows of a table as `RowState` objects
     /// (`{rowId, version, values}`; `version == -1` = optimistic, offline). See
     /// `query` for a flat column-shaped read.

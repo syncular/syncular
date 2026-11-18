@@ -121,6 +121,7 @@ import {
   REALTIME_LOST_CODE,
   RealtimeUnavailableError,
   transportFailed,
+  localStateCorrupt,
 } from './errors';
 import {
   ChangeAccumulator,
@@ -188,6 +189,8 @@ import {
   type RetainedCommitRow,
   type ResolveCommitOutcomeInput,
   commitOutcome as readCommitOutcome,
+  type PendingDecision,
+  pendingDecisions,
   recordCommitOutcome,
   scrubPurgedOutcomes,
 } from './outcomes';
@@ -267,6 +270,7 @@ import {
   setMeta,
   type UnitRecord,
   unitOwners,
+  unitStateCorrupt,
 } from './state';
 import type {
   RealtimeConnector,
@@ -314,6 +318,13 @@ export type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
 } from './outcomes';
+
+/** §7.2.2: without `replacement`, the decision keeps the local intent. */
+export interface ReplaceCommitOutcomeInput {
+  readonly clientCommitId: string;
+  readonly sequence: number;
+  readonly replacement?: readonly MutationInput[] | undefined;
+}
 
 export interface SchemaFloor {
   readonly requiredSchemaVersion?: number;
@@ -730,6 +741,7 @@ const ACCEPT_SIGNED_URLS = 1 << 3;
  * Never a wire code (§10.3) — surfaced through the rejection channel.
  */
 const OUTBOX_INCOMPATIBLE_CODE = 'sync.outbox_incompatible';
+const REPLACEMENT_REFUSED_CODE = 'sync.replacement_refused';
 /** §7.4.4: static text for a persisted commit the current codec refuses. */
 const LEGACY_VALUE_REFUSAL_MESSAGE =
   'the persisted commit carries values the current codec refuses';
@@ -743,6 +755,64 @@ const MAX_OPS_PER_REQUEST = 500;
 
 const invalidHostResponse = (message: string) =>
   new ClientSyncError('client.invalid_host_response', message);
+
+/** A field of the structured `details` any thrown value carries. */
+const errorDetail = (error: unknown, key: string): unknown => {
+  const details =
+    typeof error === 'object' && error !== null && 'details' in error
+      ? error.details
+      : undefined;
+  return typeof details === 'object' && details !== null
+    ? (details as Readonly<Record<string, unknown>>)[key]
+    : undefined;
+};
+
+/** §4.6: the unit state a reset, revocation or rearm starts over from. */
+const UNIT_RESTART = {
+  cursor: -1,
+  bootstrapState: undefined,
+  seeded: [],
+  restrict: undefined,
+} as const;
+
+/** An overlay row key (`JSON [table,rowId]`). */
+const rowKey = (operation: OutboxOperation) =>
+  JSON.stringify([operation.table, operation.rowId]);
+
+const unproven = (
+  reason: Extract<CurrentBaseProof, { proven: false }>['reason'],
+): CurrentBaseProof => ({ proven: false, reason });
+
+const replacementPending = () =>
+  new ClientSyncError(
+    'client.replacement_pending',
+    'the outcome has a pending replacement',
+    false,
+  );
+
+/** §7.2.1: an active failure with a complete retained aggregate. */
+const provable = (
+  candidate: CommitOutcome | undefined,
+  sequence: number,
+): candidate is CommitOutcome & {
+  readonly operations: readonly OutboxOperation[];
+  readonly retainedRows: readonly RetainedCommitRow[];
+} =>
+  candidate !== undefined &&
+  candidate.sequence === sequence &&
+  candidate.resolution === 'active' &&
+  (candidate.status === 'conflict' || candidate.status === 'rejected') &&
+  candidate.operations !== undefined &&
+  candidate.retainedRows !== undefined &&
+  candidate.operations.length === candidate.retainedRows.length &&
+  candidate.retainedRows.length > 0;
+
+interface DriveStart {
+  readonly before: readonly UnitRecord[];
+  readonly epoch: number;
+  readonly registrationEpoch: number;
+  readonly securityEpoch: number;
+}
 
 const outcomeNotFound = () =>
   new ClientSyncError(
@@ -890,8 +960,8 @@ function isFinalPushResult(frame: PushResultFrame): boolean {
   );
 }
 
-/** The stable `code` of a thrown realtime transport error, when it has one. */
-function realtimeErrorCode(error: unknown): string | undefined {
+/** The stable `code` a thrown value carries, when it has one. */
+function thrownCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | undefined)?.code;
   return typeof code === 'string' ? code : undefined;
 }
@@ -1101,8 +1171,7 @@ export class SyncClient {
         value !== undefined &&
         (!Number.isInteger(value) || value < 1 || value > 0xffffffff)
       ) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           'limit must be an integer in 1..=4294967295',
           false,
           { limit: name },
@@ -1213,39 +1282,35 @@ export class SyncClient {
             "SELECT type FROM sqlite_master WHERE name = '_syncular_meta'",
           )[0];
           if (meta !== undefined) {
-            if (meta.type !== 'table')
-              throw new Error('invalid metadata table');
-            const rows = this.#db.query(
-              'SELECT value FROM _syncular_meta WHERE key = ?',
-              [LOCAL_SCHEMA_VERSION_KEY],
-            );
-            // A duplicated marker cannot be resolved. Picking one row could
-            // select an older version and drive a destructive reset over a
-            // newer replica.
-            if (rows.length > 1) throw new Error('invalid schema marker');
-            const row = rows[0];
+            const rows =
+              meta.type === 'table'
+                ? this.#db.query(
+                    'SELECT value FROM _syncular_meta WHERE key = ?',
+                    [LOCAL_SCHEMA_VERSION_KEY],
+                  )
+                : undefined;
+            const value = rows?.[0]?.value;
+            const version = Number(value);
+            // The catch below turns each refusal into `sync.local_corrupt`.
             if (
-              row === undefined &&
-              this.#db.query(
-                "SELECT 1 FROM _syncular_meta WHERE key = 'localSchemaDescriptor' LIMIT 1",
-              ).length > 0
-            ) {
-              throw new Error('missing paired schema marker');
-            }
-            if (row !== undefined) {
-              const value = row.value;
-              const version = Number(value);
-              if (
-                typeof value !== 'string' ||
-                !Number.isInteger(version) ||
-                version < 1 ||
-                version > 2147483647 ||
-                String(version) !== value
-              ) {
-                throw new Error('invalid schema marker');
-              }
-              marker = version;
-            }
+              rows === undefined ||
+              // A duplicated marker cannot be resolved. Picking one row could
+              // select an older version and drive a destructive reset over a
+              // newer replica.
+              rows.length > 1 ||
+              (value === undefined
+                ? // A descriptor without its paired marker.
+                  this.#db.query(
+                    "SELECT 1 FROM _syncular_meta WHERE key = 'localSchemaDescriptor' LIMIT 1",
+                  ).length > 0
+                : typeof value !== 'string' ||
+                  !Number.isInteger(version) ||
+                  version < 1 ||
+                  version > 2147483647 ||
+                  String(version) !== value)
+            )
+              throw new Error('invalid schema marker');
+            if (value !== undefined) marker = version;
           }
         } catch (error) {
           // A recognized SQLite storage failure (including BUSY/LOCKED
@@ -1253,8 +1318,7 @@ export class SyncClient {
           // or otherwise unreadable marker is `sync.local_corrupt`.
           const failure = classifySqliteFailure(error);
           if (failure.code !== undefined) throw failure.error;
-          throw new ClientSyncError(
-            'sync.local_corrupt',
+          throw localStateCorrupt(
             'persisted local schema marker is unreadable or invalid',
           );
         }
@@ -1364,32 +1428,23 @@ export class SyncClient {
    * marker, so the shape chosen here commits under that snapshot.
    */
   #detectAndResetSchema(marker: number | undefined): void {
-    if (marker === undefined) {
-      // Fresh install: the tables just created match the running code.
-      this.#db.transaction(() => {
-        ensureLocalSyncedSchema(this.#db, this.#schema);
+    if (marker !== undefined && marker !== this.#schema.version)
+      return this.#runSchemaReset();
+    // A fresh install's tables just created match the running code. Same-version
+    // opens remain self-healing for absent tables/indexes, and RFC 0005 D1
+    // backfills the descriptor for a database first opened by 0.22.0 or
+    // earlier WITHOUT a schema bump.
+    this.#db.transaction(() => {
+      ensureLocalSyncedSchema(this.#db, this.#schema);
+      if (marker === undefined)
         setMeta(
           this.#db,
           LOCAL_SCHEMA_VERSION_KEY,
           String(this.#schema.version),
         );
-        setLocalSchemaDescriptor(this.#db, this.#schema);
-        saveUnitScopeSchema(this.#db, this.#schema);
-      });
-      return;
-    }
-    if (marker === this.#schema.version) {
-      // Same-version opens remain self-healing for absent tables/indexes, and
-      // RFC 0005 D1 backfills the descriptor for a database first opened by
-      // 0.22.0 or earlier WITHOUT a schema bump.
-      this.#db.transaction(() => {
-        ensureLocalSyncedSchema(this.#db, this.#schema);
-        setLocalSchemaDescriptor(this.#db, this.#schema);
-        saveUnitScopeSchema(this.#db, this.#schema);
-      });
-      return;
-    }
-    this.#runSchemaReset();
+      setLocalSchemaDescriptor(this.#db, this.#schema);
+      saveUnitScopeSchema(this.#db, this.#schema);
+    });
   }
 
   /**
@@ -1859,11 +1914,7 @@ export class SyncClient {
       const unit = getUnit(this.#db, id);
       if (unit === undefined) return { state: 'unknown', id };
       const cursor = unit.cursor ?? replicaCursor(this.#db);
-      if (!Number.isSafeInteger(cursor))
-        throw new ClientSyncError(
-          'sync.local_corrupt',
-          'persisted unit state is invalid',
-        );
+      if (!Number.isSafeInteger(cursor)) throw unitStateCorrupt();
       const active = unit.status === 'active';
       const pending = bootstrapping(unit);
       return definedObject({
@@ -1979,45 +2030,32 @@ export class SyncClient {
       return this.#previousVersionUnavailable(currentVersion, 'not-configured');
     }
     const record = this.#readPreviousVersionRecord();
-    const nowMs = this.#now();
-    if (this.#previousVersionLeaseInactive(nowMs)) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'lease-inactive');
-    }
-    if (loadUnits(this.#db).some((unit) => unit.status === 'revoked')) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'scope-revoked');
-    }
     // Coverage completion is a live predicate: the container is normally
     // dropped by the sync path first, so a read can be the first observer.
-    if (this.#previousVersionCoverageComplete()) {
+    const nowMs = this.#now();
+    const ended = this.#previousVersionLeaseInactive(nowMs)
+      ? 'lease-inactive'
+      : loadUnits(this.#db).some((unit) => unit.status === 'revoked')
+        ? 'scope-revoked'
+        : this.#previousVersionCoverageComplete()
+          ? 'coverage-complete'
+          : record === undefined
+            ? undefined
+            : record.currentVersion !== currentVersion
+              ? 'no-previous-descriptor'
+              : this.#previousVersionExpired(record, nowMs)
+                ? 'expired'
+                : undefined;
+    if (ended !== undefined) {
       this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, ended);
+    }
+    if (record === undefined)
       return this.#previousVersionUnavailable(
         currentVersion,
-        'coverage-complete',
+        storedPreviousVersionRefusal(this.#db)?.reason ??
+          'no-previous-descriptor',
       );
-    }
-    if (record === undefined) {
-      const refusal = storedPreviousVersionRefusal(this.#db);
-      return this.#previousVersionUnavailable(
-        currentVersion,
-        refusal?.reason ?? 'no-previous-descriptor',
-      );
-    }
-    if (record.currentVersion !== currentVersion) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(
-        currentVersion,
-        'no-previous-descriptor',
-      );
-    }
-    if (
-      nowMs - record.createdAtMs >
-      previousVersionMaxAgeMs(this.#config.previousVersionContext)
-    ) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'expired');
-    }
     const table = record.tables.find((entry) => entry.name === spec.table);
     if (table === undefined) {
       throw invalidRequest(
@@ -2149,21 +2187,24 @@ export class SyncClient {
       return;
     }
     const record = this.#readPreviousVersionRecord();
-    if (record === undefined) return;
-    if (loadUnits(this.#db).some((unit) => unit.status === 'revoked')) {
-      this.#discardPreviousVersion();
-      return;
-    }
     if (
+      record !== undefined &&
+      (loadUnits(this.#db).some((unit) => unit.status === 'revoked') ||
+        this.#previousVersionExpired(record, nowMs) ||
+        this.#previousVersionCoverageComplete())
+    )
+      this.#discardPreviousVersion();
+  }
+
+  /** RFC 0005 D7: the container outlived `previousVersionContext.maxAgeMs`. */
+  #previousVersionExpired(
+    record: PreviousVersionRecord,
+    nowMs = this.#now(),
+  ): boolean {
+    return (
       nowMs - record.createdAtMs >
       previousVersionMaxAgeMs(this.#config.previousVersionContext)
-    ) {
-      this.#discardPreviousVersion();
-      return;
-    }
-    if (this.#previousVersionCoverageComplete()) {
-      this.#discardPreviousVersion();
-    }
+    );
   }
 
   /**
@@ -2174,18 +2215,13 @@ export class SyncClient {
   #reconcilePreviousVersionAtBoot(): void {
     if (!this.#previousVersionExists()) return;
     const record = this.#readPreviousVersionRecord();
-    let discard =
-      record === undefined || record.currentVersion !== this.#schema.version;
     if (
-      !discard &&
-      record !== undefined &&
-      this.#previousVersion !== undefined &&
-      this.#now() - record.createdAtMs >
-        previousVersionMaxAgeMs(this.#config.previousVersionContext)
-    ) {
-      discard = true;
-    }
-    if (discard) this.#dropPreviousVersion();
+      record === undefined ||
+      record.currentVersion !== this.#schema.version ||
+      (this.#previousVersion !== undefined &&
+        this.#previousVersionExpired(record))
+    )
+      this.#dropPreviousVersion();
   }
 
   // -- live-query invalidation ----------------------------------------------
@@ -2363,13 +2399,14 @@ export class SyncClient {
         : 0;
       const pressure =
         blobBytes > (this.#config.limits?.blobCacheMaxBytes ?? Infinity);
+      const size = (value: unknown) => Math.max(0, Number(value ?? 0));
       return {
         status: pressure ? 'pressure' : 'healthy',
         databaseBytesApprox: Math.max(0, pageCount * pageSize),
-        pendingOutboxBytesApprox: Math.max(0, Number(sums?.outbox ?? 0)),
-        retainedOutcomeBytesApprox: Math.max(0, Number(sums?.bytes ?? 0)),
-        retainedOutcomeEntries: Math.max(0, Number(sums?.entries ?? 0)),
-        blobCacheBytesApprox: Math.max(0, blobBytes),
+        pendingOutboxBytesApprox: size(sums?.outbox),
+        retainedOutcomeBytesApprox: size(sums?.bytes),
+        retainedOutcomeEntries: size(sums?.entries),
+        blobCacheBytesApprox: size(blobBytes),
         ...(pressure
           ? { pressureReasonCode: 'client.blob_cache_over_limit' as const }
           : {}),
@@ -2676,8 +2713,7 @@ export class SyncClient {
         cached.byteLength !== cached.bytes.byteLength ||
         (await computeBlobId(cached.bytes)) !== pending.blobId
       ) {
-        throw new ClientSyncError(
-          'sync.local_corrupt',
+        throw localStateCorrupt(
           'Pending blob upload body is missing or corrupt',
         );
       }
@@ -2798,67 +2834,68 @@ export class SyncClient {
   ): Promise<CurrentBaseProof> {
     this.#requireActive();
     requireRoundBudget(maxRounds);
-    const { clientCommitId, sequence } = outcome;
-    const provable = (
-      candidate: CommitOutcome | undefined,
-    ): candidate is CommitOutcome & {
-      readonly retainedRows: readonly RetainedCommitRow[];
-    } =>
-      candidate !== undefined &&
-      candidate.sequence === sequence &&
-      candidate.resolution === 'active' &&
-      (candidate.status === 'conflict' || candidate.status === 'rejected') &&
-      candidate.operations !== undefined &&
-      candidate.retainedRows !== undefined &&
-      candidate.operations.length === candidate.retainedRows.length &&
-      candidate.retainedRows.length > 0;
     let initial: CommitOutcome | undefined;
     try {
-      initial = readCommitOutcome(this.#db, clientCommitId);
+      initial = readCommitOutcome(this.#db, outcome.clientCommitId);
     } catch {
-      return { proven: false, reason: 'snapshot_failed' };
+      return unproven('snapshot_failed');
     }
-    if (!provable(initial))
-      return { proven: false, reason: 'outcome_unavailable' };
-    if (!this.#transportEnabled) return { proven: false, reason: 'offline' };
+    if (!provable(initial, outcome.sequence))
+      return unproven('outcome_unavailable');
+    if (!this.#transportEnabled) return unproven('offline');
     await this.#opChain;
-    if (!this.#transportEnabled) return { proven: false, reason: 'offline' };
-    const epoch = this.#transportEpoch;
-    const registrationEpoch = this.#registrationEpoch;
-    const securityEpoch = this.#securityEpoch;
-    let before: UnitRecord[];
+    if (!this.#transportEnabled) return unproven('offline');
+    let start: DriveStart;
     try {
-      before = loadUnits(this.#db);
+      start = this.#driveStart();
     } catch {
-      return { proven: false, reason: 'snapshot_failed' };
+      return unproven('snapshot_failed');
     }
     let report: SyncIdleResult;
     try {
       report = await this.syncUntilIdle(maxRounds);
     } catch {
-      return {
-        proven: false,
-        reason:
-          !this.#transportEnabled || epoch !== this.#transportEpoch
-            ? 'offline'
-            : registrationEpoch !== this.#registrationEpoch
-              ? 'missing_coverage'
-              : 'sync_failed',
-      };
+      return unproven(
+        !this.#transportEnabled || start.epoch !== this.#transportEpoch
+          ? 'offline'
+          : start.registrationEpoch !== this.#registrationEpoch
+            ? 'missing_coverage'
+            : 'sync_failed',
+      );
     }
+    return this.#provenBase(outcome, start, report);
+  }
+
+  /** The drive state a §7.2.1 proof compares against after the drive. */
+  #driveStart(): DriveStart {
+    return {
+      before: loadUnits(this.#db),
+      epoch: this.#transportEpoch,
+      registrationEpoch: this.#registrationEpoch,
+      securityEpoch: this.#securityEpoch,
+    };
+  }
+
+  /** §7.2.1: the proof after a completed drive that began at `start`. */
+  #provenBase(
+    {
+      clientCommitId,
+      sequence,
+    }: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    { before, epoch, registrationEpoch, securityEpoch }: DriveStart,
+    report: SyncIdleResult,
+  ): CurrentBaseProof {
     if (!this.#transportEnabled || epoch !== this.#transportEpoch)
-      return { proven: false, reason: 'offline' };
+      return unproven('offline');
     if (registrationEpoch !== this.#registrationEpoch)
-      return { proven: false, reason: 'missing_coverage' };
+      return unproven('missing_coverage');
     if (
       this.#securityLifecycle !== 'active' ||
       securityEpoch !== this.#securityEpoch
     )
-      return { proven: false, reason: 'sync_failed' };
-    if (report.schemaFloor !== undefined)
-      return { proven: false, reason: 'schema_floor' };
-    if (report.budgetExhausted)
-      return { proven: false, reason: 'budget_exhausted' };
+      return unproven('sync_failed');
+    if (report.schemaFloor !== undefined) return unproven('schema_floor');
+    if (report.budgetExhausted) return unproven('budget_exhausted');
     try {
       return this.#db.transaction(() => {
         const snapshot = this.#readSnapshot({
@@ -2868,12 +2905,10 @@ export class SyncClient {
         });
         const delivery = snapshot.deliveries[0];
         const current = readCommitOutcome(this.#db, clientCommitId);
-        if (delivery?.status !== 'known' || !provable(current))
-          return {
-            proven: false,
-            reason:
-              report.revoked.length > 0 ? 'revoked' : 'outcome_unavailable',
-          };
+        if (delivery?.status !== 'known' || !provable(current, sequence))
+          return unproven(
+            report.revoked.length > 0 ? 'revoked' : 'outcome_unavailable',
+          );
         const after = new Map(
           loadUnits(this.#db).map((unit) => [unit.id, unit]),
         );
@@ -2928,17 +2963,15 @@ export class SyncClient {
               (conflict) => !covered(row.table, conflict.serverRow),
             )
           ) {
-            return {
-              proven: false,
-              reason:
-                report.revoked.length > 0 ? 'revoked' : 'missing_coverage',
-            };
+            return unproven(
+              report.revoked.length > 0 ? 'revoked' : 'missing_coverage',
+            );
           }
         }
         return { proven: true, rows: current.retainedRows };
       });
     } catch {
-      return { proven: false, reason: 'snapshot_failed' };
+      return unproven('snapshot_failed');
     }
   }
 
@@ -2961,6 +2994,8 @@ export class SyncClient {
       throw outcomeNotFound();
     }
     if (current.resolution !== 'active') return current;
+    if (current.replacementClientCommitId !== undefined)
+      throw replacementPending();
     const replacement = input.replacementClientCommitId;
     if (input.resolution === 'superseded') {
       if (
@@ -2989,11 +3024,157 @@ export class SyncClient {
       );
     }
 
+    return this.#resolveOutcome(input, current);
+  }
+
+  /**
+   * §7.2.2: record a decision against an active failure as a held
+   * replacement commit, written once a later drive proves its base.
+   */
+  replaceCommitOutcome(input: ReplaceCommitOutcomeInput): string {
+    this.#requireActive();
+    const current = readCommitOutcome(this.#db, input.clientCommitId);
+    if (current === undefined) throw outcomeNotFound();
+    if (
+      current.resolution === 'active' &&
+      current.replacementClientCommitId !== undefined
+    )
+      throw replacementPending();
+    if (!provable(current, input.sequence))
+      throw invalidRequest('the outcome holds no complete retained aggregate');
+    // Envelope operation i belongs to retained row i, so keep mine finds
+    // every operation's row; a payload names no version for one.
+    const operations = (
+      input.replacement === undefined
+        ? current.operations
+        : this.#outboxOperations(input.replacement)
+    ).map((operation) => {
+      const row = current.retainedRows.find(
+        (candidate) =>
+          candidate.table === operation.table &&
+          candidate.rowId === operation.rowId,
+      );
+      if (row === undefined) return operation;
+      if (
+        input.replacement !== undefined &&
+        operation.baseVersion !== undefined
+      )
+        throw invalidRequest(
+          'a replacement takes the base version of a retained row',
+        );
+      return { ...operation, baseVersion: row.serverVersion ?? 0 };
+    });
+    const clientCommitId = crypto.randomUUID();
+    this.#appendCommit(clientCommitId, operations, (batch) => {
+      this.#db.exec(
+        `UPDATE ${OUTCOMES_TABLE} SET replacement_client_commit_id=? WHERE client_commit_id=? AND resolution='active'`,
+        [clientCommitId, input.clientCommitId],
+      );
+      batch.outcomes();
+    });
+    return clientCommitId;
+  }
+
+  /**
+   * §7.2.2: at the idle point of a drive, write or refuse each decision that
+   * was pending when the drive began. True when a replacement was written.
+   */
+  #settleDecisions(
+    decisions: readonly PendingDecision[],
+    start: DriveStart,
+    report: SyncIdleResult,
+  ): boolean {
+    // A registration change during the drive says nothing about the base;
+    // the decisions wait for the next drive.
+    if (start.registrationEpoch !== this.#registrationEpoch) return false;
+    let written = false;
+    for (const decision of decisions) {
+      const current = readCommitOutcome(this.#db, decision.clientCommitId);
+      if (
+        current?.resolution !== 'active' ||
+        current.replacementClientCommitId !== decision.replacementClientCommitId
+      )
+        continue;
+      // A replacement that already left the outbox has its own outcome.
+      const commit = listOutbox(this.#db).find(
+        (candidate) =>
+          candidate.clientCommitId === decision.replacementClientCommitId,
+      );
+      const proof = commit && this.#provenBase(decision, start, report);
+      const reason = !proof
+        ? undefined
+        : !proof.proven
+          ? proof.reason
+          : commit.operations.every((operation) => {
+                const row = proof.rows.find(
+                  (candidate) =>
+                    candidate.table === operation.table &&
+                    candidate.rowId === operation.rowId,
+                );
+                return (
+                  row === undefined ||
+                  operation.baseVersion === (row.serverVersion ?? 0)
+                );
+              })
+            ? undefined
+            : 'base_moved';
+      // These proof failures say nothing about the base; the next drive retries.
+      if (
+        /^(offline|sync_failed|budget_exhausted|snapshot_failed)$/.test(reason!)
+      )
+        continue;
+      written ||= reason === undefined && commit !== undefined;
+      this.#resolveOutcome(
+        {
+          clientCommitId: decision.clientCommitId,
+          resolution: 'superseded',
+          replacementClientCommitId: decision.replacementClientCommitId,
+        },
+        current,
+        () =>
+          reason !== undefined &&
+          this.#dropIncompatibleCommit(
+            commit!,
+            'the replacement could not be written on a proven base',
+            REPLACEMENT_REFUSED_CODE,
+            true,
+            reason,
+          ),
+      );
+    }
+    return written;
+  }
+
+  #resolveOutcome(
+    input: ResolveCommitOutcomeInput,
+    current: CommitOutcome,
+    within?: () => void,
+  ): CommitOutcome {
     const priorConflicts = this.#conflicts;
     const priorRejections = this.#rejections;
     return this.#applyBatch(
       (batch) => {
-        restoreFailedBases(this.#db, this.#schema);
+        // Restore the server base under the retained rows, then replay what
+        // stays and re-take later commits' before-images over that base, so
+        // a later rollback cannot bring the released intent back.
+        const scope = [
+          ...new Set(
+            this.#db
+              .query(`SELECT tbl,id FROM ${RETAINED_ROWS} WHERE commit_id=?`, [
+                input.clientCommitId,
+              ])
+              .flatMap((row) => {
+                const table = this.#schema.tables.get(String(row.tbl));
+                return [
+                  ...(table !== undefined && hasUniqueIndex(table)
+                    ? [JSON.stringify([row.tbl])]
+                    : []),
+                  JSON.stringify([row.tbl, row.id]),
+                ];
+              }),
+          ),
+        ];
+        restoreFailedBases(this.#db, this.#schema, scope);
         this.#db.exec(`DELETE FROM ${RETAINED_ROWS} WHERE commit_id=?`, [
           input.clientCommitId,
         ]);
@@ -3012,12 +3193,13 @@ export class SyncClient {
           (record) => record.clientCommitId !== input.clientCommitId,
         );
         pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-        this.#replayOutbox();
+        this.#replayOutbox(scope, false);
         for (const operation of current.operations ?? [])
           batch.table(operation.table);
         batch.outcomes();
         if (current.status === 'conflict') batch.conflicts();
         if (current.status === 'rejected') batch.rejections();
+        within?.();
         return resolved;
       },
       undefined,
@@ -3154,9 +3336,7 @@ export class SyncClient {
     );
     if (registered) {
       this.#registrationEpoch += 1;
-      this.#setSyncNeeded(true);
-      this.#emitSyncIntent({ kind: 'interactive' });
-      this.#emitDiagnostics();
+      this.#registrationChanged();
     }
     return ids;
   }
@@ -3175,7 +3355,11 @@ export class SyncClient {
     }
     deleteUnit(this.#db, id);
     this.#registrationEpoch += 1;
-    if (unit.status !== 'active') return;
+    if (unit.status === 'active') this.#registrationChanged();
+  }
+
+  /** A registration change owes an interactive pull. */
+  #registrationChanged(): void {
     this.#setSyncNeeded(true);
     this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();
@@ -3454,6 +3638,12 @@ export class SyncClient {
         { clientCommitId: supplied },
       );
     const clientCommitId = supplied ?? crypto.randomUUID();
+    this.#appendCommit(clientCommitId, this.#outboxOperations(mutations));
+    return clientCommitId;
+  }
+
+  /** §7.1: validate local mutations into their stored outbox operations. */
+  #outboxOperations(mutations: readonly MutationInput[]): OutboxOperation[] {
     // §7.1: a patch reads the row as the commit's earlier operations leave
     // it. Keyed by `table rowId` (a table name holds no space): the JSON
     // values an earlier upsert wrote, or null after an earlier delete. A
@@ -3563,14 +3753,9 @@ export class SyncClient {
       if (refusal !== undefined)
         // §7.5: the same structured shape the native authoring APIs return — a
         // static message, and the dynamic cause in `details.legacyCause`.
-        throw new ClientSyncError(
-          'sync.invalid_request',
-          'the authoring request is invalid',
-          false,
-          {
-            legacyCause: `sync.invalid_request: table ${table.name}: ${refusal}`,
-          },
-        );
+        throw invalidRequest('the authoring request is invalid', false, {
+          legacyCause: `sync.invalid_request: table ${table.name}: ${refusal}`,
+        });
       // §7.1 insert intent: a full-row write of a row the replica does not
       // show replays and encodes as a full row under every later schema.
       if (mutation.op !== 'patch') staged.set(`${table.name} ${pkValue}`, json);
@@ -3585,6 +3770,18 @@ export class SyncClient {
         insert: insert ? true : undefined,
       });
     });
+    return operations;
+  }
+
+  /**
+   * Append one local commit and apply it optimistically; `within` adds its
+   * own writes to the same transaction and change batch.
+   */
+  #appendCommit(
+    clientCommitId: string,
+    operations: readonly OutboxOperation[],
+    within?: (batch: ChangeAccumulator) => void,
+  ): void {
     // §5.11: a sealed row is read-only; a write could send NULL over
     // ciphertext this device cannot see.
     for (const operation of operations) {
@@ -3650,12 +3847,12 @@ export class SyncClient {
           }
           throw error;
         }
+        within?.(batch);
         batch.status();
       });
       this.#needsPull = true;
     });
     this.#emitSyncIntent({ kind: 'interactive' });
-    return clientCommitId;
   }
 
   /** Host-facing mutation result with explicit network work intent (§7.5). */
@@ -3663,12 +3860,7 @@ export class SyncClient {
     mutations: readonly MutationInput[],
     options?: { readonly clientCommitId?: string },
   ): CommandResult<string> {
-    return {
-      value: this.mutate(mutations, options),
-      effects: {
-        sync: { kind: this.#transportEnabled ? 'interactive' : 'none' },
-      },
-    };
+    return this.#commandResult(this.mutate(mutations, options));
   }
 
   /**
@@ -3752,7 +3944,15 @@ export class SyncClient {
     let result: LocalDataPurgeResult;
     try {
       result = this.#applyBatch((batch) => {
-        const targetsByTable = this.#localPurgeTargetsByTable(purge);
+        const targetsByTable = new Map<
+          string,
+          CompiledLocalDataPurgeTarget[]
+        >();
+        for (const target of purge.targets)
+          targetsByTable.set(target.table.name, [
+            ...(targetsByTable.get(target.table.name) ?? []),
+            target,
+          ]);
         restoreFailedBases(this.#db, this.#schema);
         this.#dropRetainedRows(batch, (table, values) =>
           (targetsByTable.get(table) ?? []).some((target) =>
@@ -3843,36 +4043,21 @@ export class SyncClient {
         )
           batch.outcomes();
 
-        if (doomed.length > 0) {
-          // §5.11 purge erasure: the journal keeps a dropped commit's identity and codes,
-          // never its operations, so no purged value survives in it.
-          for (const commit of doomed) {
-            const results: CommitOperationOutcome[] = commit.operations.map(
-              (_operation, opIndex) => {
-                const rejection: RejectionRecord = {
-                  clientCommitId: commit.clientCommitId,
-                  opIndex,
-                  code: 'client.local_data_purged',
-                  message:
-                    'the commit was dropped by an application-authorized local data purge',
-                  retryable: false,
-                };
-                this.#rejections.push(rejection);
-                return { status: 'error', rejection };
-              },
-            );
-            recordCommitOutcome(this.#db, {
-              clientCommitId: commit.clientCommitId,
-              status: 'rejected',
-              recordedAtMs: this.#now(),
-              results,
-            });
-          }
-          pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-          batch.status();
-          batch.rejections();
-          batch.outcomes();
-        }
+        // §5.11 purge erasure: the journal keeps a dropped commit's identity and codes,
+        // never its operations, so no purged value survives in it.
+        for (const { clientCommitId, operations } of doomed)
+          this.#journalDrop(
+            batch,
+            clientCommitId,
+            operations.map((_operation, opIndex) => ({
+              clientCommitId,
+              opIndex,
+              code: 'client.local_data_purged',
+              message:
+                'the commit was dropped by an application-authorized local data purge',
+              retryable: false,
+            })),
+          );
         this.#replayOutbox();
         this.#deleteUnreferencedBlobs();
         setMeta(this.#db, metaKey, purge.canonicalPlan);
@@ -3979,18 +4164,6 @@ export class SyncClient {
     };
   }
 
-  #localPurgeTargetsByTable(
-    purge: CompiledLocalDataPurge,
-  ): Map<string, CompiledLocalDataPurgeTarget[]> {
-    const byTable = new Map<string, CompiledLocalDataPurgeTarget[]>();
-    for (const target of purge.targets) {
-      const targets = byTable.get(target.table.name) ?? [];
-      targets.push(target);
-      byTable.set(target.table.name, targets);
-    }
-    return byTable;
-  }
-
   #localPurgeRowIds(purge: CompiledLocalDataPurge): Map<string, Set<string>> {
     const byTable = new Map<string, Set<string>>();
     for (const target of purge.targets) {
@@ -4021,8 +4194,13 @@ export class SyncClient {
     partial: Readonly<Record<string, unknown>>,
     options?: { readonly baseVersion?: number },
   ): CommandResult<string> {
+    return this.#commandResult(this.patch(table, rowId, partial, options));
+  }
+
+  /** A local write's result; an open transport gate owes interactive sync. */
+  #commandResult<T>(value: T): CommandResult<T> {
     return {
-      value: this.patch(table, rowId, partial, options),
+      value,
       effects: {
         sync: { kind: this.#transportEnabled ? 'interactive' : 'none' },
       },
@@ -4089,7 +4267,14 @@ export class SyncClient {
     let ops = 0;
     let bytes = 0;
     let processed = 0;
+    // §7.2.2: a pending replacement holds itself and every later commit.
+    const held = new Set(
+      pendingDecisions(this.#db).map(
+        (decision) => decision.replacementClientCommitId,
+      ),
+    );
     for (const commit of iterateOutbox(this.#db, throughSeq)) {
+      if (held.has(commit.clientCommitId)) break;
       // §6.1/§7.1: the commit-count and operation caps are hard. A first
       // commit that alone exceeds the operation cap is a typed capacity error
       // and stays queued; a later one defers with the complete suffix.
@@ -4237,7 +4422,11 @@ export class SyncClient {
     const priorRejections = [...this.#rejections];
     this.#applyBatch(
       (batch) => {
-        if (this.#retainFailedCommits && code === 'client.encrypt_failed')
+        if (
+          this.#retainFailedCommits &&
+          (code === 'client.encrypt_failed' ||
+            code === REPLACEMENT_REFUSED_CODE)
+        )
           retainFailedRows(
             this.#db,
             commit,
@@ -4250,27 +4439,22 @@ export class SyncClient {
         // the journal cannot carry keeps its durable commitId, code and a bounded
         // `details.reason` instead of an opaque rewritten value.
         const representable = commit.operations.every(isStoredOperation);
-        const rejection: RejectionRecord = definedObject({
-          clientCommitId: commit.clientCommitId,
-          opIndex: 0,
-          code,
-          message,
-          retryable: false,
-          ...(representable ? { operation: commit.operations[0] } : {}),
-          ...(reason === undefined ? {} : { details: { reason } }),
-        });
-        this.#rejections.push(rejection);
-        recordCommitOutcome(this.#db, {
-          clientCommitId: commit.clientCommitId,
-          status: 'rejected',
-          recordedAtMs: this.#now(),
-          results: [{ status: 'error', rejection }],
-          ...(representable ? { operations: commit.operations } : {}),
-        });
-        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-        batch.status();
-        batch.rejections();
-        batch.outcomes();
+        this.#journalDrop(
+          batch,
+          commit.clientCommitId,
+          [
+            definedObject({
+              clientCommitId: commit.clientCommitId,
+              opIndex: 0,
+              code,
+              message,
+              retryable: false,
+              operation: representable ? commit.operations[0] : undefined,
+              details: reason === undefined ? undefined : { reason },
+            }),
+          ],
+          representable ? commit.operations : undefined,
+        );
       },
       undefined,
       (error) => {
@@ -4280,6 +4464,33 @@ export class SyncClient {
         throw error;
       },
     );
+  }
+
+  /** §7.2: journal a dropped commit as rejected with these rejections. */
+  #journalDrop(
+    batch: ChangeAccumulator,
+    clientCommitId: string,
+    rejections: readonly RejectionRecord[],
+    operations?: readonly OutboxOperation[],
+  ): void {
+    this.#rejections.push(...rejections);
+    recordCommitOutcome(
+      this.#db,
+      definedObject({
+        clientCommitId,
+        status: 'rejected',
+        recordedAtMs: this.#now(),
+        results: rejections.map((rejection) => ({
+          status: 'error' as const,
+          rejection,
+        })),
+        operations,
+      }),
+    );
+    pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+    batch.status();
+    batch.rejections();
+    batch.outcomes();
   }
 
   // -- sync -------------------------------------------------------------------
@@ -4387,16 +4598,7 @@ export class SyncClient {
             typeof code === 'string'
               ? this.#diagnosticCode(code)
               : 'client.unknown_failure';
-          const details =
-            typeof error === 'object' && error !== null && 'details' in error
-              ? error.details
-              : undefined;
-          const rawCause =
-            typeof details === 'object' &&
-            details !== null &&
-            'causeKind' in details
-              ? details.causeKind
-              : undefined;
+          const rawCause = errorDetail(error, 'causeKind');
           const causeKind = (
             [
               'network',
@@ -4414,12 +4616,7 @@ export class SyncClient {
               'unknown',
             ] as const
           ).find((kind) => kind === rawCause);
-          const rawStatus =
-            typeof details === 'object' &&
-            details !== null &&
-            'httpStatus' in details
-              ? details.httpStatus
-              : undefined;
+          const rawStatus = errorDetail(error, 'httpStatus');
           const httpStatus =
             (causeKind === 'status' ||
               causeKind === 'body' ||
@@ -4695,18 +4892,7 @@ export class SyncClient {
       // transport, `network` from a browser fetch) is not a round worth
       // backing off for. Stop without scheduling an intent or growing the
       // delay; the host's own connectivity signal re-arms the drive.
-      const details =
-        error instanceof ClientSyncError
-          ? error.details
-          : typeof error === 'object' && error !== null && 'details' in error
-            ? error.details
-            : undefined;
-      const causeKind =
-        typeof details === 'object' &&
-        details !== null &&
-        'causeKind' in details
-          ? details.causeKind
-          : undefined;
+      const causeKind = errorDetail(error, 'causeKind');
       const unreachable = causeKind === 'connect' || causeKind === 'network';
       // The round's work is still owed; the host's connectivity resume runs it.
       if (unreachable) this.#setSyncNeeded(true);
@@ -4832,6 +5018,9 @@ export class SyncClient {
       this.#setSyncNeeded(false);
       return result(false);
     }
+    // §7.2.2: decisions pending when the drive began are settled at its end.
+    const decisions = pendingDecisions(this.#db);
+    const start = decisions.length > 0 ? this.#driveStart() : undefined;
     const states = () =>
       JSON.stringify(
         loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
@@ -4901,8 +5090,11 @@ export class SyncClient {
       aggregate.deferredCommits = last.deferredCommits ?? 0;
       aggregate.schemaFloor = last.schemaFloor;
       // A disabled transport or a schema floor ends the loop, not the budget.
-      if (!this.#transportEnabled || aggregate.schemaFloor)
+      if (!this.#transportEnabled || aggregate.schemaFloor) {
+        if (start !== undefined)
+          this.#settleDecisions(decisions, start, result(false));
         return result(false);
+      }
       if (
         maxRounds === undefined &&
         last.segmentRowsApplied > 0 &&
@@ -4918,6 +5110,11 @@ export class SyncClient {
         !aggregate.deferredCommits &&
         !this.#needsPull
       ) {
+        if (
+          start !== undefined &&
+          this.#settleDecisions(decisions, start, result(false))
+        )
+          continue;
         return result(false);
       }
     }
@@ -5122,7 +5319,7 @@ export class SyncClient {
       // A superseded attempt leaves the successor's (or the deliberate
       // disconnect's) state alone.
       if (generation === this.#realtimeGeneration) {
-        this.#setRealtimeState('refused', realtimeErrorCode(error));
+        this.#setRealtimeState('refused', thrownCode(error));
       }
       throw error;
     }
@@ -5658,13 +5855,7 @@ export class SyncClient {
                 // catching up with its cursor unpersisted, and the next
                 // round's SUB_START settles it (revoked or a new bootstrap).
                 // A host downloader may throw any error carrying the code.
-                if (
-                  typeof error !== 'object' ||
-                  error === null ||
-                  !('code' in error) ||
-                  error.code !== 'sync.forbidden'
-                )
-                  throw error;
+                if (thrownCode(error) !== 'sync.forbidden') throw error;
                 section.skip = true;
                 break;
               }
@@ -5996,13 +6187,7 @@ export class SyncClient {
       return true;
     }
     // rejected
-    const cacheMiss = frame.results.some(
-      (result) =>
-        result.status === 'error' &&
-        result.code === 'sync.idempotency_cache_miss' &&
-        result.retryable,
-    );
-    if (cacheMiss) {
+    if (!isFinalPushResult(frame)) {
       // §6.3: a serving failure, not the commit's outcome — keep the
       // commit queued and retry the identical push later.
       summary.retryable.push(frame.clientCommitId);
@@ -6428,10 +6613,7 @@ export class SyncClient {
         saveUnit(this.#db, {
           ...unit,
           reasonCode: start.reasonCode,
-          cursor: -1,
-          bootstrapState: undefined,
-          seeded: [],
-          restrict: undefined,
+          ...UNIT_RESTART,
         });
         summary.resets.push(unit.id);
         return;
@@ -6467,11 +6649,8 @@ export class SyncClient {
           ...unit,
           status: failed ? 'failed' : 'revoked',
           reasonCode: failed ? 'sync.scope_revoked' : start.reasonCode,
-          cursor: -1,
-          bootstrapState: undefined,
-          seeded: [],
           echo: undefined,
-          restrict: undefined,
+          ...UNIT_RESTART,
         });
         if (revoked) summary.revoked.push(unit.id);
         if (failed) summary.failed.push(unit.id);
@@ -6485,12 +6664,7 @@ export class SyncClient {
         echo: start.fenced,
         // §7.4.3: a rearm and a completed bootstrap end the restriction.
         ...(rearmed
-          ? {
-              cursor: -1,
-              bootstrapState: undefined,
-              seeded: [],
-              restrict: undefined,
-            }
+          ? UNIT_RESTART
           : start.bootstrap
             ? {
                 cursor: end.nextCursor,
@@ -6573,37 +6747,22 @@ export class SyncClient {
             ownsLocalRow(table, lastEffective, owners, op.values),
         ),
       );
-      for (const commit of doomed) {
-        const { clientCommitId } = commit;
+      for (const { clientCommitId, operations } of doomed) {
         deleteOutboxCommit(this.#db, clientCommitId);
-        const results: CommitOperationOutcome[] = commit.operations.map(
-          (operation, opIndex) => {
-            const rejection: RejectionRecord = {
-              clientCommitId,
-              opIndex,
-              code: 'sync.scope_revoked',
-              message:
-                'the commit was dropped because its effective scope was revoked',
-              retryable: false,
-              operation,
-            };
-            this.#rejections.push(rejection);
-            return { status: 'error', rejection };
-          },
-        );
-        recordCommitOutcome(this.#db, {
+        this.#journalDrop(
+          batch,
           clientCommitId,
-          status: 'rejected',
-          recordedAtMs: this.#now(),
-          results,
-          operations: commit.operations,
-        });
-      }
-      if (doomed.length > 0) {
-        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-        batch.status();
-        batch.rejections();
-        batch.outcomes();
+          operations.map((operation, opIndex) => ({
+            clientCommitId,
+            opIndex,
+            code: 'sync.scope_revoked',
+            message:
+              'the commit was dropped because its effective scope was revoked',
+            retryable: false,
+            operation,
+          })),
+          operations,
+        );
       }
       this.#replayOutbox(scope);
       this.#deleteUnreferencedBlobs();
@@ -6640,8 +6799,7 @@ export class SyncClient {
     }
     const syncVersion = row[SYNC_VERSION_COLUMN];
     if (typeof syncVersion !== 'number') {
-      throw new ClientSyncError(
-        'sync.local_corrupt',
+      throw localStateCorrupt(
         `local row ${operation.table}/${operation.rowId} has no sync version`,
       );
     }
@@ -6654,8 +6812,7 @@ export class SyncClient {
     onlyKeys?: ReadonlySet<string>,
   ): OutboxBeforeImage[] {
     return operations.flatMap((operation, opIndex) =>
-      onlyKeys &&
-      !onlyKeys.has(JSON.stringify([operation.table, operation.rowId]))
+      onlyKeys && !onlyKeys.has(rowKey(operation))
         ? []
         : [this.#captureBeforeImage(operation, opIndex)],
     );
@@ -6674,8 +6831,7 @@ export class SyncClient {
       return;
     }
     if (image.values === undefined || image.syncVersion === undefined) {
-      throw new ClientSyncError(
-        'sync.local_corrupt',
+      throw localStateCorrupt(
         `rollback image for ${operation.table}/${operation.rowId} is incomplete`,
       );
     }
@@ -6715,19 +6871,14 @@ export class SyncClient {
     const complete = commit.operations.every((_, index) =>
       imageByIndex.has(index),
     );
-    const affectedKeys = new Set(
-      commit.operations.map((operation) =>
-        JSON.stringify([operation.table, operation.rowId]),
-      ),
-    );
+    const affectedKeys = new Set(commit.operations.map(rowKey));
     if (complete) {
-      const restored = new Set<string>();
+      // The first operation on a row holds its pre-commit image.
+      const unrestored = new Set(affectedKeys);
       commit.operations.forEach((operation, index) => {
-        const key = JSON.stringify([operation.table, operation.rowId]);
-        if (restored.has(key)) return;
         const image = imageByIndex.get(index);
-        if (image) this.#restoreBeforeImage(operation, image, batch);
-        restored.add(key);
+        if (unrestored.delete(rowKey(operation)) && image)
+          this.#restoreBeforeImage(operation, image, batch);
       });
     } else {
       // Pending commits written by older clients have no before-images.
@@ -6740,7 +6891,7 @@ export class SyncClient {
     for (const later of listOutbox(this.#db, [...affectedKeys])) {
       if (later.seq <= commit.seq) continue;
       const affectedOperations = later.operations.filter((operation) =>
-        affectedKeys.has(JSON.stringify([operation.table, operation.rowId])),
+        affectedKeys.has(rowKey(operation)),
       );
       if (affectedOperations.length === 0) continue;
       replaceOutboxBeforeImages(
@@ -6774,14 +6925,8 @@ export class SyncClient {
         : this.#table(op.table);
       if (table === undefined) continue;
       let precise =
-        batch === undefined
-          ? false
-          : this.#recordStoredRowScopes(batch, table, op.rowId);
-      if (op.op === 'delete') {
-        if (batch !== undefined && !precise) batch.table(op.table);
-        deleteLocalRow(this.#db, table, op.rowId, false);
-        continue;
-      }
+        batch !== undefined &&
+        this.#recordStoredRowScopes(batch, table, op.rowId);
       // §7.1 overlay: apply the operation's PRESENT columns over the current
       // local row. A partial operation over an absent local row leaves it
       // absent — the server answers it with sync.row_deleted or
@@ -6791,20 +6936,21 @@ export class SyncClient {
       const full =
         op.insert === true ||
         table.columns.every((column) => column.name in opValues);
+      const local =
+        op.op === 'delete' ? undefined : this.#rowById(table, op.rowId);
       // An insert lacking a non-nullable column cannot encode (§7.4.4); it
       // stays hidden until the send-time drop classifies it.
       if (
-        op.insert === true &&
-        table.columns.some(
-          (column) => !column.nullable && opValues[column.name] === undefined,
-        )
+        op.op === 'delete' ||
+        (op.insert === true &&
+          table.columns.some(
+            (column) => !column.nullable && opValues[column.name] === undefined,
+          )) ||
+        (local === undefined && !full)
       ) {
         if (batch !== undefined && !precise) batch.table(op.table);
-        continue;
-      }
-      const local = this.#rowById(table, op.rowId);
-      if (local === undefined && !full) {
-        if (batch !== undefined && !precise) batch.table(op.table);
+        if (op.op === 'delete')
+          deleteLocalRow(this.#db, table, op.rowId, false);
         continue;
       }
       const values = table.columns.map((column) => {
@@ -6832,10 +6978,7 @@ export class SyncClient {
             values,
           );
         } catch {
-          throw new ClientSyncError(
-            'sync.local_corrupt',
-            'persisted optimistic row value is invalid',
-          );
+          throw localStateCorrupt('persisted optimistic row value is invalid');
         }
       }
       // Record the row's scope keys from its scope columns (I2 refinement).
@@ -6895,7 +7038,7 @@ export class SyncClient {
       );
       for (const op of commit.operations) {
         batch.table(op.table);
-        scope.push(JSON.stringify([op.table, op.rowId]));
+        scope.push(rowKey(op));
       }
     }
     return scope;
@@ -7029,7 +7172,7 @@ export class SyncClient {
           commit.operations.filter(
             (op) =>
               scope === undefined ||
-              scope.includes(JSON.stringify([op.table, op.rowId])) ||
+              scope.includes(rowKey(op)) ||
               scope.includes(JSON.stringify([op.table])),
           ),
           batch,

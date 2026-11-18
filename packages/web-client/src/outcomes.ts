@@ -15,7 +15,7 @@ import {
   type RowValue,
 } from '@syncular/core';
 import type { ClientDatabase } from './database';
-import { ClientSyncError, invalidRequest } from './errors';
+import { invalidRequest, localStateCorrupt } from './errors';
 import type { OutboxOperation } from './outbox';
 import {
   isBytesEnvelope,
@@ -116,7 +116,30 @@ export interface CommitOutcome {
   readonly retainedRows?: readonly RetainedCommitRow[];
   readonly resolution: CommitOutcomeResolution;
   readonly resolvedAtMs?: number;
+  /**
+   * The replacement commit of a `superseded` outcome; on an `active`
+   * outcome, the replacement of a pending decision (§7.2.2).
+   */
   readonly replacementClientCommitId?: string;
+}
+
+export interface PendingDecision {
+  readonly clientCommitId: string;
+  readonly sequence: number;
+  readonly replacementClientCommitId: string;
+}
+
+/** §7.2.2: active outcomes whose replacement waits for a proven base. */
+export function pendingDecisions(db: ClientDatabase): PendingDecision[] {
+  return db
+    .query(
+      `SELECT seq,client_commit_id,replacement_client_commit_id FROM ${OUTCOMES_TABLE} WHERE resolution='active' AND replacement_client_commit_id IS NOT NULL`,
+    )
+    .map((row) => ({
+      clientCommitId: row.client_commit_id as string,
+      sequence: row.seq as number,
+      replacementClientCommitId: row.replacement_client_commit_id as string,
+    }));
 }
 
 export interface CommitOutcomeQuery {
@@ -195,13 +218,11 @@ export function isStoredOperation(value: unknown): value is OutboxOperation {
   );
 }
 
+function corrupt(): never {
+  throw localStateCorrupt('persisted commit outcome is invalid');
+}
+
 function decodeResults(raw: string): CommitOperationOutcome[] {
-  function corrupt(): never {
-    throw new ClientSyncError(
-      'sync.local_corrupt',
-      'persisted commit outcome is invalid',
-    );
-  }
   // §6.1 op indexes are i32.
   const badIndex = (index: number) =>
     !Number.isInteger(index) || index < -2147483648 || index > 2147483647;
@@ -385,12 +406,6 @@ export function persistedCommitOutcome(
 ): CommitOutcome | undefined {
   const row = outcomeRow(db, clientCommitId);
   if (row === undefined) return undefined;
-  function corrupt(): never {
-    throw new ClientSyncError(
-      'sync.local_corrupt',
-      'persisted commit outcome is invalid',
-    );
-  }
   const status = row.status;
   const resolution = row.resolution;
   if (

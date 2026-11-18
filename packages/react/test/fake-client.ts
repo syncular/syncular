@@ -198,6 +198,10 @@ export class FakeClient implements SyncClientLike {
     return { proven: false, reason: 'outcome_unavailable' };
   }
 
+  replaceCommitOutcome(): string {
+    return 'fake-replacement';
+  }
+
   beginSecurityPreflight(): void {
     this.#securityLifecycle = 'preflight';
   }

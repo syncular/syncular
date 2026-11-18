@@ -442,6 +442,25 @@ class SyncularClient {
     return command('proveCurrentBase', p);
   }
 
+  /// Record a held replacement for an active conflict or rejection
+  /// (SPEC.md §7.2.2) and return its client commit id. Without [replacement]
+  /// the outcome's own operations are kept; a later idle drive writes or
+  /// refuses the decision.
+  String replaceCommitOutcome(Map<String, Object?> outcome,
+      {List<Map<String, Object?>>? replacement}) {
+    final result = command('replaceCommitOutcome', {
+      'clientCommitId': outcome['clientCommitId'],
+      'sequence': outcome['sequence'],
+      if (replacement != null) 'replacement': replacement,
+    });
+    final id = result['clientCommitId'];
+    if (id is! String) {
+      throw const SyncularError(
+          'client.failed', 'replaceCommitOutcome returned no clientCommitId');
+    }
+    return id;
+  }
+
   /// Read all locally-visible rows of a table as RowState maps
   /// (`{rowId, version, values}`; `version == -1` = optimistic/offline).
   List<Map<String, Object?>> readRows(String table) {

@@ -392,6 +392,24 @@ class SyncularClient private constructor(
         return command("proveCurrentBase", JsonValue.Obj(p))
     }
 
+    /**
+     * Record a held replacement for an active conflict or rejection
+     * (SPEC.md §7.2.2) and return its client commit id. Without [replacement]
+     * the outcome's own operations are kept; a later idle drive writes or
+     * refuses the decision.
+     */
+    @JvmOverloads
+    fun replaceCommitOutcome(outcome: JsonValue, replacement: List<JsonValue>? = null): String {
+        val params = linkedMapOf(
+            "clientCommitId" to (outcome["clientCommitId"] ?: JsonValue.Null),
+            "sequence" to (outcome["sequence"] ?: JsonValue.Null),
+        )
+        replacement?.let { params["replacement"] = JsonValue.arr(it) }
+        val result = command("replaceCommitOutcome", JsonValue.Obj(params))
+        return result["clientCommitId"]?.string
+            ?: throw SyncularException("client.failed", "replaceCommitOutcome returned no clientCommitId")
+    }
+
     /** Read all locally-visible rows of a table as RowState objects
      *  (`{rowId, version, values}`; version -1 = optimistic/offline). */
     fun readRows(table: String): List<JsonValue> {

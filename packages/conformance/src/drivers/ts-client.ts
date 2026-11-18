@@ -953,6 +953,9 @@ class TsClientInstance implements ClientInstance {
       clientCommitId: outcome.clientCommitId,
       status: outcome.status,
       resolution: outcome.resolution,
+      ...(outcome.replacementClientCommitId === undefined
+        ? {}
+        : { replacementClientCommitId: outcome.replacementClientCommitId }),
       ...(outcome.retainedRows
         ? {
             retainedRows: outcome.retainedRows.map((row) => ({
@@ -1007,6 +1010,12 @@ class TsClientInstance implements ClientInstance {
         ? {}
         : { replacementClientCommitId }),
     });
+  }
+
+  async replaceCommitOutcome(clientCommitId: string): Promise<string> {
+    const outcome = this.#client.commitOutcome(clientCommitId);
+    if (outcome === undefined) throw new Error('sync.outcome_not_found');
+    return this.#client.replaceCommitOutcome(outcome);
   }
 
   async conflicts(): Promise<ClientConflict[]> {

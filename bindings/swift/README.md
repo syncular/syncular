@@ -204,6 +204,12 @@ per state, `activeUnits` and the `replicaCursor`. `units`, `unit(id:)` and
 one terminal result by commit ID. `commitOutcomes` lists the durable journal,
 and `resolveCommitOutcome` records an explicit resolution. A pending commit
 has no terminal outcome. `rejections` lists rejected commits.
+`replaceCommitOutcome(outcome, replacement:)` records a decision against an active conflict or
+rejection as a held replacement commit and returns its client commit id. Without
+a replacement payload it keeps the outcome's own operations. An idle drive writes
+the replacement once it proves the retained base at the recorded versions; a
+moved base, lost coverage, or a schema floor drops it as a
+`sync.replacement_refused` rejection (SPEC.md §7.2.2).
 
 This source-breaking revision removes the `syncNeeded` convenience and the raw
 `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those

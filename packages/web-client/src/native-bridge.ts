@@ -16,6 +16,7 @@ import {
   type CommitDelivery,
   type CurrentBaseProof,
   type MutationInput,
+  type ReplaceCommitOutcomeInput,
   type PresencePeer,
   type PromiseMethods,
   type QueryReadSpec,
@@ -1172,6 +1173,21 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       input,
     })) as { outcome: CommitOutcome };
     return this.#commitOutcome(result.outcome);
+  }
+
+  async replaceCommitOutcome({
+    clientCommitId,
+    sequence,
+    replacement,
+  }: ReplaceCommitOutcomeInput): Promise<string> {
+    const result = (await this.command('replaceCommitOutcome', {
+      clientCommitId,
+      sequence,
+      ...(replacement === undefined
+        ? {}
+        : { replacement: encodeValue(replacement) }),
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
   }
 
   async pendingCommits(): Promise<OutboxCommit[]> {

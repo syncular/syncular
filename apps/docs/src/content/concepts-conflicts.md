@@ -66,6 +66,8 @@ The conflict record carries the current server row, already decoded, so resoluti
 | Keep local | Re-push the same sparse operation with `baseVersion = serverVersion`. This is an explicit overwrite. |
 | Custom merge | Compute new values for the columns in `conflictColumns`, then push a sparse operation carrying them with `baseVersion = serverVersion`. |
 
+With `retainFailedCommits: true`, record keep-local or a merge with `replaceCommitOutcome`. The call works offline and returns at once: the client queues the replacement, shows it in local reads, and writes it after its next completed sync proves the server row the person decided against. If that row changed in the meantime, the client refuses the decision with `sync.replacement_refused` and keeps the replacement as a new conflict to decide again ([Decide without waiting for the server](/reference-outbox-outcomes/#decide-without-waiting-for-the-server)).
+
 ## Rejections
 
 A rejected commit that is not a version conflict surfaces in `client.rejections` instead. Examples are `sync.forbidden` from a scope check and a retryable serving error. Retry behavior follows the error's `retryable` flag. The [error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.

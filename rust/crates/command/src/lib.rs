@@ -1096,6 +1096,31 @@ pub fn dispatch<T: Transport>(
                 "effects": CommandEffects::interactive()
             }))
         }
+        "replaceCommitOutcome" => {
+            let id = params
+                .get("clientCommitId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    client_err("sync.invalid_request: clientCommitId must be a string".to_owned())
+                })?;
+            let sequence = params
+                .get("sequence")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| {
+                    client_err("sync.invalid_request: sequence must be an integer".to_owned())
+                })?;
+            let replacement = match params.get("replacement") {
+                None | Some(Value::Null) => None,
+                value => Some(parse_mutations(value).map_err(client_err)?),
+            };
+            let id = need_client(client)?
+                .replace_commit_outcome(id, sequence, replacement)
+                .map_err(CommandError::from_client)?;
+            Ok(json!({
+                "clientCommitId": id,
+                "effects": CommandEffects::interactive()
+            }))
+        }
         "patch" => {
             let table = params
                 .get("table")
@@ -2331,6 +2356,48 @@ mod tests {
         )
         .expect_err("mutation must be gated");
         assert_eq!(blocked.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    }
+
+    #[test]
+    fn replace_commit_outcome_forwards_typed_failures() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todos",
+                "columns": [{ "name": "id", "type": "string", "nullable": false }],
+                "primaryKey": "id",
+                "scopes": []
+            }]
+        });
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema }),
+        )
+        .expect("create");
+        for (params, code) in [
+            (json!({ "sequence": 1 }), "sync.invalid_request"),
+            (json!({ "clientCommitId": "none" }), "sync.invalid_request"),
+            (
+                json!({ "clientCommitId": "none", "sequence": 1, "replacement": [] }),
+                "sync.outcome_not_found",
+            ),
+        ] {
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "replaceCommitOutcome",
+                &params,
+            )
+            .expect_err("refused");
+            assert_eq!(error.code, code, "{params}");
+        }
     }
 
     #[test]

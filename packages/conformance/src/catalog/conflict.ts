@@ -59,6 +59,110 @@ const UNIQUE_SCHEMA = {
 
 export const conflictScenarios: readonly Scenario[] = [
   {
+    name: 'conflict/keep-mine-waits-for-a-proven-base',
+    specRefs: ['§7.2.1', '§7.2.2'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'decide-a');
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'decide-b',
+        allowed: P1,
+        retainFailedCommits: true,
+      });
+      await b.api.subscribe(U1);
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'old') },
+      ]);
+      await syncIdle(a);
+      await syncIdle(b);
+      const outcome = async (id: string) =>
+        (await b.api.commitOutcomes()).find(
+          (candidate) => candidate.clientCommitId === id,
+        );
+      const conflicted = async (title: string, theirs: string) => {
+        const [row] = await b.api.readRows('tasks');
+        await a.api.patch('tasks', 't1', { title: theirs });
+        await syncIdle(a);
+        const id = await b.api.patch('tasks', 't1', { title }, row!.version);
+        await syncIdle(b);
+        checkEqual((await outcome(id))?.status, 'conflict', 'stale write');
+        return id;
+      };
+
+      const first = await conflicted('mine', 'theirs');
+      await b.api.setTransportEnabled(false);
+      const written = await b.api.replaceCommitOutcome(first);
+      await ctx.recreateClient(b, ctx.schema);
+      const pending = await outcome(first);
+      checkEqual(
+        [pending?.resolution, pending?.replacementClientCommitId],
+        ['active', written],
+        'an offline decision stays pending across a restart',
+      );
+      checkEqual(
+        await b.api.pendingCommitIds(),
+        [written],
+        'the held replacement is queued',
+      );
+      await b.api.setTransportEnabled(true);
+      await syncIdle(b);
+      checkEqual(
+        (await outcome(first))?.resolution,
+        'superseded',
+        'the next drive writes the decision',
+      );
+      checkEqual(
+        (await outcome(written))?.status,
+        'applied',
+        'the server applies the replacement on the proven base',
+      );
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        'mine',
+        'the peer reads the kept intent',
+      );
+
+      const second = await conflicted('mine again', 'theirs again');
+      await b.api.setTransportEnabled(false);
+      const refused = await b.api.replaceCommitOutcome(second);
+      await a.api.patch('tasks', 't1', { title: 'newer' });
+      await syncIdle(a);
+      await b.api.setTransportEnabled(true);
+      await syncIdle(b);
+      checkEqual(
+        (await outcome(second))?.resolution,
+        'superseded',
+        'a refused decision supersedes its outcome',
+      );
+      const retained = await outcome(refused);
+      checkEqual(
+        [
+          retained?.status,
+          retained?.resolution,
+          retained?.retainedRows?.[0]?.serverRow?.title,
+        ],
+        ['rejected', 'active', 'newer'],
+        'the refused replacement is the active outcome on the newer base',
+      );
+      const rejection = (await b.api.rejections()).find(
+        (candidate) => candidate.clientCommitId === refused,
+      );
+      checkEqual(
+        [rejection?.code, rejection?.retryable, rejection?.details?.reason],
+        ['sync.replacement_refused', false, 'base_moved'],
+        'a base that moved after the decision refuses it',
+      );
+      checkEqual(await b.api.pendingCommitIds(), [], 'nothing stays queued');
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        'newer',
+        'the server keeps the newer write',
+      );
+    },
+  },
+
+  {
     name: 'conflict/reconcile-only-changed-tables',
     specRefs: ['§7.1', '§7.2'],
     async run(ctx) {

@@ -23,6 +23,7 @@ import type {
   ConflictRecord,
   CurrentBaseProof,
   ClientSnapshotMethods,
+  ReplaceCommitOutcomeInput,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -223,6 +224,7 @@ export interface WorkerApi extends Omit<
     outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
     maxRounds?: number,
   ): Promise<CurrentBaseProof>;
+  replaceCommitOutcome(input: ReplaceCommitOutcomeInput): string;
   resetClientId(): string;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   authoritySnapshot(): import('./authority').AuthoritySnapshot;

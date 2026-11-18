@@ -31,7 +31,7 @@
  */
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, localStateCorrupt } from './errors';
 import { INVALID_HOST_RESPONSE_CODE } from './local-rebootstrap';
 import {
   bytesToHex,
@@ -286,10 +286,7 @@ function hasExactKeys(
 }
 
 function localCorrupt(what: string): never {
-  throw new ClientSyncError(
-    'sync.local_corrupt',
-    `persisted ${what} is invalid`,
-  );
+  throw localStateCorrupt(`persisted ${what} is invalid`);
 }
 
 // ---------------------------------------------------------------------------
@@ -803,39 +800,37 @@ function firstIncompatibility(
     // validation, even against a removed table.
     if (operation.op === 'delete') continue;
     const table = schema.tables.get(operation.table);
-    if (table === undefined) {
+    const column =
+      table &&
+      Object.keys(operation.values ?? {}).find(
+        (key) => !table.columnIndex.has(key),
+      );
+    // §7.1: an insert-intent operation presents every current column, so a
+    // non-nullable column it lacks leaves the commit unencodable.
+    const missing =
+      operation.insert === true
+        ? table?.columns.find(
+            (entry) =>
+              !entry.nullable && operation.values?.[entry.name] === undefined,
+          )
+        : undefined;
+    const refusal =
+      table === undefined
+        ? { reason: 'unknown-table' as const }
+        : column !== undefined
+          ? { reason: 'unknown-column' as const, column }
+          : missing !== undefined
+            ? {
+                reason: 'missing-required-column' as const,
+                column: missing.name,
+              }
+            : undefined;
+    if (refusal !== undefined)
       return {
         commitId: commit.clientCommitId,
         table: operation.table,
-        reason: 'unknown-table',
+        ...refusal,
       };
-    }
-    for (const key of Object.keys(operation.values ?? {})) {
-      if (!table.columnIndex.has(key)) {
-        return {
-          commitId: commit.clientCommitId,
-          table: operation.table,
-          reason: 'unknown-column',
-          column: key,
-        };
-      }
-    }
-    // §7.1: an insert-intent operation presents every current column, so a
-    // non-nullable column it lacks leaves the commit unencodable.
-    if (operation.insert === true) {
-      const missing = table.columns.find(
-        (column) =>
-          !column.nullable && operation.values?.[column.name] === undefined,
-      );
-      if (missing !== undefined) {
-        return {
-          commitId: commit.clientCommitId,
-          table: operation.table,
-          reason: 'missing-required-column',
-          column: missing.name,
-        };
-      }
-    }
   }
   return undefined;
 }

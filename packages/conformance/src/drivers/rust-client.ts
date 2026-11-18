@@ -1580,6 +1580,9 @@ class RustClientInstance implements ClientInstance {
         clientCommitId: String(outcome.clientCommitId),
         status: String(outcome.status),
         resolution: String(outcome.resolution),
+        ...(typeof outcome.replacementClientCommitId === 'string'
+          ? { replacementClientCommitId: outcome.replacementClientCommitId }
+          : {}),
         ...(Array.isArray(outcome.retainedRows)
           ? {
               retainedRows: outcome.retainedRows.map((raw) => {
@@ -1669,6 +1672,22 @@ class RustClientInstance implements ClientInstance {
           : { replacementClientCommitId }),
       },
     });
+  }
+
+  async replaceCommitOutcome(clientCommitId: string): Promise<string> {
+    const found = asObject(
+      await this.#shim.call('commitOutcome', { clientCommitId }),
+      'commitOutcome',
+    );
+    const outcome = asObject(found.outcome ?? null, 'commit outcome');
+    const result = asObject(
+      await this.#shim.call('replaceCommitOutcome', {
+        clientCommitId,
+        sequence: outcome.sequence ?? null,
+      }),
+      'replaceCommitOutcome',
+    );
+    return String(result.clientCommitId);
   }
 
   async conflicts(): Promise<ClientConflict[]> {

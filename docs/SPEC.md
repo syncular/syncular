@@ -5949,13 +5949,109 @@ durable, and one-way:
 - a conflict becomes `resolved_keep_server` or `superseded`;
 - a rejection becomes `resolved_keep_server` or `superseded`;
 - an applied/cached history entry may become `dismissed`;
-- `superseded` requires a distinct `replacementClientCommitId`.
+- `superseded` requires a distinct `replacementClientCommitId`;
+- an `active` conflict or rejection carries a `replacementClientCommitId`
+  only while a decision is pending (§7.2.2).
 
 Resolved evidence is retained until ordinary journal retention removes it.
 Retention prunes old applied/cached or resolved entries first and MUST NEVER
 silently delete an active conflict or rejection; active failures may therefore
 temporarily exceed the configured cap. The default cap is 1,000 entries and
 clients expose it as `outcomeRetentionMaxEntries`.
+
+#### 7.2.2 Replacement on a proven base
+
+`replaceCommitOutcome({ clientCommitId, sequence, replacement? })` records a
+decision against an active conflict or rejection as a durable replacement
+commit. Without `replacement` it keeps the local intent ("keep mine"); with
+`replacement`, a list of mutations, it records that payload. The call needs no transport
+and returns the replacement's client commit id. It accepts the outcomes
+`proveCurrentBase` accepts: the same journal sequence, `active`, `conflict` or
+`rejected`, and a complete retained envelope (as many retained rows as
+operations, at least one). A missing entry fails with `sync.outcome_not_found`;
+any other state fails with `sync.invalid_request`.
+
+**Recording.** In one local transaction the client appends the replacement to
+the outbox, applies it to the optimistic overlay like any local commit, and
+stores its id as the outcome's `replacementClientCommitId`. The outcome's
+resolution stays `active`. An active outcome that carries a replacement id is
+a **pending decision**. While a decision is pending, `resolveCommitOutcome`
+and a second `replaceCommitOutcome` for that outcome fail with
+`client.replacement_pending`. The retained aggregate keeps its place below the
+replacement in the overlay and keeps receiving server bases (§7.2.1).
+
+**Payload and base versions.** Retained row `i` belongs to envelope operation
+`i`. Keep mine copies the envelope operation by operation: the operation kind,
+the insert intent, and the presence set of `values`. A column the local
+operation wrote keeps the local value; every other column keeps the value the
+server holds when it applies the replacement. Each copied operation's
+`baseVersion` is its retained row's `serverVersion`, or 0 when the retained
+`serverRow` is null. A supplied payload is validated as `mutate` validates it.
+An operation of the payload on a retained row (same table and primary key)
+takes that row's base version by the same rule, and a caller `baseVersion` on
+such an operation fails with `sync.invalid_request`. Operations on other rows
+keep the caller's `baseVersion`. The recorded base versions name the server
+base the decision was made against.
+
+**Hold.** A pending replacement is held. A push request carries outbox commits
+in FIFO order up to the first held commit and excludes it and every later
+commit (§7.1 order). A held commit is not deferred work: it does not raise the
+sync-needed flag, and a drive reaches idle while it stays queued. A later local
+commit on a row of the replacement queues behind it; when the replacement is
+acknowledged, the §7.1 chained base moves that commit's version.
+
+**Proof.** When an idle drive (§7.8) reaches idle, the client evaluates every
+decision that was pending when the drive started. It applies the proof of
+§7.2.1 to the decision's outcome, with the units, epochs and report of this
+drive in place of the drive `proveCurrentBase` runs. A decision recorded during
+a drive waits for the next drive. A drive that fails, exhausts its budget,
+ends offline, or during which unit registrations change evaluates nothing. The evaluation ends each decision in one of
+three ways:
+
+- The proof succeeds and every replacement operation on a retained row carries
+  that row's proven base version (`serverVersion`, or 0 for a null
+  `serverRow`). The client **writes** the decision: in one local transaction
+  the outcome becomes `superseded` with the replacement id and its retained
+  aggregate is released as an explicit resolution releases it. The
+  replacement is no longer held, and the drive continues with another round,
+  which pushes it. The server judges it with the ordinary version check; a
+  write that lands after the proof produces a new conflict, which is the
+  replacement's own outcome.
+- The proof succeeds and an operation carries another base version: the client
+  **refuses** the decision with reason `base_moved`. A proof that fails with
+  `schema_floor`, `missing_coverage`, `revoked`, or `outcome_unavailable` is
+  refused with that reason. A drive that ends at a schema floor refuses every
+  decision pending at its start with `schema_floor`.
+- The proof fails with `offline`, `sync_failed`, `budget_exhausted`, or
+  `snapshot_failed`: the decision stays pending.
+
+A refused replacement leaves the outbox as a client-local terminal drop
+(§7.4.4) with code `sync.replacement_refused`, `retryable` false, and
+`details.reason` set to the reason. Its journal entry keeps its operation
+envelope and, with retained intent enabled, its retained aggregate, so the
+payload stays visible and the replacement becomes the active outcome to decide
+again. The same local transaction makes the original outcome `superseded`
+with the replacement id. A pending decision whose replacement is no longer in
+the outbox (a revocation drop under §3.3) becomes `superseded` at the next
+evaluation; the replacement's own journal entry records what happened.
+
+An explicit or automatic resolution that releases a retained aggregate restores
+the server base of its rows, replays the remaining retained intent and pending
+commits on those rows, and takes their before-images again over the restored
+base, so a later rollback cannot restore the released intent.
+
+The decision's state is read from the outbox and the journal and survives a
+restart:
+
+| State | Original outcome | Replacement |
+|---|---|---|
+| pending | `active` with `replacementClientCommitId` | in `pendingCommits()`; `commitDelivery` is `pending` |
+| written | `superseded` | queued or delivered; its own §7.2.1 outcome |
+| refused | `superseded` | journal entry `rejected` with `sync.replacement_refused` |
+
+Each transition publishes `outcomesChanged` in the change batch of its
+transaction, and outbox changes publish the outbox status. `proveCurrentBase`
+keeps its contract for callers that need the proof before they write.
 
 ### 7.3 Auth leases
 
@@ -8599,6 +8695,12 @@ round bound; client-local, retryable, and never on the wire],
 exceeds the configured operation or encoded byte budget, or the fixed
 request frames exceed the byte budget; non-retryable, client-local, with
 structured kind/limit/size/commit details],
+`sync.replacement_refused` [§7.2.2: a pending replacement could not be
+written on a proven base; a client-local terminal drop with `details.reason`
+`base_moved`, `schema_floor`, `missing_coverage`, `revoked`, or
+`outcome_unavailable`; non-retryable], `client.replacement_pending`
+[§7.2.2: an outcome with a pending decision accepts no other resolution;
+non-retryable],
 `client.commit_id_reused` [§7.1: a caller-supplied `clientCommitId` names a
 commit the replica still holds; non-retryable, client-local, with
 `clientCommitId` in details],

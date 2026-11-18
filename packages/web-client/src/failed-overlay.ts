@@ -2,7 +2,7 @@ import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_IMAGES } from './outbox';
 export const RETAINED_ROWS = '_syncular_failed_rows';
-import { ClientSyncError } from './errors';
+import { localStateCorrupt } from './errors';
 import type { ClientDatabase } from './database';
 import type {
   CompiledClientSchema,
@@ -130,11 +130,7 @@ export function retainFailedRows(
       operation.op === 'upsert'
         ? { ...image?.values, ...operation.values }
         : undefined;
-    if (!image)
-      throw new ClientSyncError(
-        'sync.local_corrupt',
-        'missing intent before-image',
-      );
+    if (!image) throw localStateCorrupt('missing intent before-image');
     db.exec(
       `INSERT INTO ${RETAINED_ROWS}(commit_id,idx,tbl,id,at,op,intent,base,version,commit_seq)VALUES(?,?,?,?,?,?,?,?,?,?)`,
       [

@@ -322,6 +322,10 @@ void main() {
         () => client.resolveCommitOutcome(
             {'clientCommitId': id, 'resolution': 'dismissed'}),
         throwsA(isA<SyncularError>()));
+    expect(
+        () => client.replaceCommitOutcome({'clientCommitId': id, 'sequence': 1}),
+        throwsA(isA<SyncularError>()
+            .having((e) => e.code, 'code', 'sync.outcome_not_found')));
     for (final method in [
       'schemaFloor',
       'leaseState',

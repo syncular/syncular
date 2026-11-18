@@ -1,5 +1,38 @@
 # Syncular release notes
 
+## 0.90.0 release notes
+
+0.90.0 records a decision against a conflict without waiting for the server
+(SYNCULAR-CURRENT-BASE-PENDING-001). The wire version is unchanged.
+
+`replaceCommitOutcome({ clientCommitId, sequence, replacement? })` appends a
+held replacement commit for an active conflict or rejection and returns its id.
+Without `replacement` it keeps the failed operations; with it, it records that
+payload. The client sets each replacement operation's `baseVersion` on a
+retained row to that row's retained `serverVersion` (0 when the server row is
+absent). At the end of each completed sync drive it runs the `proveCurrentBase`
+check for every decision pending when the drive began. A proven decision whose
+rows are still at the recorded versions is written: the outcome becomes
+`superseded` and the drive pushes the replacement. Any other result named in
+SPEC §7.2.2 refuses the decision with the new client-local code
+`sync.replacement_refused` and `details.reason`; the replacement becomes the
+active rejected outcome with its retained intent. Offline, failed or exhausted
+drives leave the decision pending. SPEC §7.2.2 specifies the state machine.
+
+**Upgrade notes.**
+
+- An `active` outcome may now carry `replacementClientCommitId`: that marks a
+  pending decision. Code that treated the field as proof of `superseded` must
+  check `resolution`.
+- `resolveCommitOutcome` on an outcome with a pending decision fails with the
+  new code `client.replacement_pending`.
+- Resolving an outcome now takes the before-images of later pending commits on
+  its rows again over the restored server base. Before, a later commit that was
+  rejected after a resolution could restore the released intent.
+- Replace an `await proveCurrentBase(outcome)` followed by `mutate` and
+  `resolveCommitOutcome(..., 'superseded')` with one `replaceCommitOutcome`
+  call, and render the pending state from `replacementClientCommitId`.
+
 ## 0.89.0 release notes
 
 0.89.0 returns whole outbox commits from `pendingCommits()` on every client

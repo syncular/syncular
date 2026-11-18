@@ -8,7 +8,7 @@ export const BLOB_COMMIT_REFS = '_syncular_blob_commit_refs';
  */
 import { type BlobRef, parseBlobRef, serializeBlobRef } from '@syncular/core';
 import type { ClientDatabase } from './database';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, localStateCorrupt } from './errors';
 import type { CompiledClientSchema } from './schema';
 import { bytesToHex, quoteIdent, tableExists } from './schema';
 
@@ -217,10 +217,7 @@ export function listPendingUploads(
         typeof row.blob_id !== 'string' ||
         (row.media_type !== null && typeof row.media_type !== 'string')
       ) {
-        throw new ClientSyncError(
-          'sync.local_corrupt',
-          'Pending blob upload metadata is invalid',
-        );
+        throw localStateCorrupt('Pending blob upload metadata is invalid');
       }
       return {
         blobId: row.blob_id,

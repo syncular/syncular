@@ -18,7 +18,7 @@ import { ensureFailedOverlaySchema, RETAINED_ROWS } from './failed-overlay';
  */
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { ClientSyncError, invalidRequest } from './errors';
+import { invalidRequest, localStateCorrupt } from './errors';
 import { snakeToCamel } from './naming';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
@@ -744,8 +744,7 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
           `SELECT 1 FROM ${legacyEvictions} WHERE NOT json_valid(effective_scopes) OR json_type(effective_scopes)<>'object' OR EXISTS(SELECT 1 FROM json_each(effective_scopes) WHERE json_type(value)<>'array' OR EXISTS(SELECT 1 FROM json_each(value) v WHERE v.type<>'text'))`,
         ).length > 0
       )
-        throw new ClientSyncError(
-          'sync.local_corrupt',
+        throw localStateCorrupt(
           'a version 3 pending eviction cannot be upgraded',
         );
       db.exec(

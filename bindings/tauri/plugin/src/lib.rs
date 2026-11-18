@@ -537,6 +537,8 @@ struct RoundRun {
     spent: u32,
     aggregate: syncular_client::SyncReport,
     proof: Option<syncular_client::CurrentBasePreparation>,
+    /// §7.2.2: the decisions pending when this until-idle drive started.
+    decisions: Option<Vec<syncular_client::CurrentBasePreparation>>,
 }
 
 fn run_owner_thread<F>(config: SyncularConfig, tx: Sender<Request>, rx: Receiver<Request>, emit: F)
@@ -633,6 +635,7 @@ where
                             spent: 0,
                             aggregate: Default::default(),
                             proof: None,
+                            decisions: None,
                         });
                     }
                     syncular_client::SyncIntent::Background { delay_ms } => {
@@ -644,6 +647,29 @@ where
                         );
                     }
                     syncular_client::SyncIntent::None => {}
+                }
+            }
+            if active
+                .as_ref()
+                .is_some_and(|run| run.until_idle && run.decisions.is_none())
+            {
+                match core.prepare_replacements() {
+                    Ok(decisions) => {
+                        active.as_mut().expect("active run").decisions = Some(decisions)
+                    }
+                    Err(message) => {
+                        if let Some(reply) = active.take().and_then(|run| run.reply) {
+                            let _ = reply.send(
+                                json!({ "result": syncular_client::SyncOutcome::Failed {
+                                details: None,
+                                error_code: "storage.failed".into(),
+                                message,
+                                recommended_action: None,
+                            }.to_json() }),
+                            );
+                        }
+                        continue;
+                    }
                 }
             }
             if active.is_some() {
@@ -694,6 +720,7 @@ where
                             spent: 0,
                             aggregate: Default::default(),
                             proof: None,
+                            decisions: None,
                         });
                         continue;
                     }
@@ -757,6 +784,27 @@ where
                             );
                         } else if !keep_running {
                             outcome = syncular_client::SyncOutcome::Ok(run.aggregate.clone());
+                            // §7.2.2: a written decision runs another round,
+                            // which pushes it.
+                            match core.settle_replacements(
+                                run.decisions.as_deref().unwrap_or_default(),
+                                &outcome,
+                            ) {
+                                Ok(true) if run.spent >= run.max_rounds.unwrap_or(20) => {
+                                    outcome = syncular_client::SyncOutcome::BudgetExhausted(
+                                        run.aggregate.clone(),
+                                    );
+                                }
+                                Ok(written) => keep_running = written,
+                                Err(message) => {
+                                    outcome = syncular_client::SyncOutcome::Failed {
+                                        details: None,
+                                        error_code: "storage.failed".into(),
+                                        message,
+                                        recommended_action: None,
+                                    };
+                                }
+                            }
                         }
                     }
                 }
@@ -774,6 +822,7 @@ where
                         started_at: Instant::now(),
                         spent: 0,
                         aggregate: Default::default(),
+                        decisions: None,
                         ..run
                     });
                 }
@@ -862,6 +911,7 @@ where
                         spent: 0,
                         aggregate: Default::default(),
                         proof,
+                        decisions: None,
                     });
                     continue;
                 }

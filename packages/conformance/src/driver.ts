@@ -1063,6 +1063,7 @@ export interface ClientCommitOutcome {
   readonly clientCommitId: string;
   readonly status: string;
   readonly resolution: string;
+  readonly replacementClientCommitId?: string;
   readonly retainedRows?: readonly {
     readonly uniqueConflicts?: readonly {
       readonly index: string;
@@ -1373,6 +1374,9 @@ export interface ClientInstance {
     resolution: 'resolved_keep_server' | 'superseded',
     replacementClientCommitId?: string,
   ): Promise<void>;
+  /** §7.2.2: keep the local intent of an active outcome; returns the
+   * held replacement's commit id. */
+  replaceCommitOutcome(clientCommitId: string): Promise<string>;
   conflicts(): Promise<ClientConflict[]>;
   rejections(): Promise<ClientRejection[]>;
   /** Outbox commit ids still pending, FIFO order (§7.1). */

@@ -1322,6 +1322,87 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
   }
 }, 60000);
 
+test('OPFS worker keeps a decision recorded before a reload and writes it', async () => {
+  freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+  const seed = await makeClient(freshSource, {
+    actorId: 'seed',
+    clientId: 'decide-seed',
+    schema: OPFS_SCHEMA,
+  });
+  const browser = await chromium.launch();
+  try {
+    seed.client.mutate([
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: { id: 'decided', project_id: 'p1', title: 'old' },
+      },
+    ]);
+    await seed.client.syncUntilIdle();
+    const page = await browser.newPage();
+    await page.goto(`${server.url.href}?fresh`);
+    await page.evaluate(() => window.opfsTest.open());
+    const { id, replacement } = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({ project_id: 'p1' });
+      await client.syncUntilIdle();
+      const id = await client.mutate([
+        {
+          table: 'catalogue',
+          op: 'patch',
+          values: { id: 'decided', title: 'reject' },
+        },
+      ]);
+      await client.syncUntilIdle();
+      const outcome = await client.commitOutcome(id);
+      if (outcome === undefined) throw new Error('missing outcome');
+      const replacement = await client.replaceCommitOutcome({
+        ...outcome,
+        replacement: [
+          {
+            table: 'catalogue',
+            op: 'patch',
+            values: { id: 'decided', title: 'reviewed' },
+          },
+        ],
+      });
+      return { id, replacement };
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(() => window.opfsTest.open());
+    expect(
+      await page.evaluate(
+        async ({ id, replacement }) => {
+          const client = await window.opfsTest.ready;
+          await client.syncUntilIdle();
+          return {
+            original: (await client.commitOutcome(id))?.resolution,
+            replacement: (await client.commitOutcome(replacement))?.status,
+            rows: await client.query(
+              "SELECT title FROM catalogue WHERE id='decided'",
+            ),
+          };
+        },
+        { id, replacement },
+      ),
+    ).toEqual({
+      original: 'superseded',
+      replacement: 'applied',
+      rows: [{ title: 'reviewed' }],
+    });
+    seed.client.subscribe({ project_id: 'p1' });
+    await seed.client.syncUntilIdle();
+    expect(
+      seed.client.query("SELECT title FROM catalogue WHERE id='decided'"),
+    ).toEqual([{ title: 'reviewed' }]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await seed.client.close();
+    seed.db.close();
+    await browser.close();
+  }
+}, 60000);
+
 test('OPFS live query refused in preflight reads again on activation', async () => {
   freshSource.allowed['actor-1'] = { project_id: ['p1'] };
   const browser = await chromium.launch();

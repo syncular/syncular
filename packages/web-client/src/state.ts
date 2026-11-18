@@ -9,8 +9,13 @@ export const UNITS_TABLE = '_syncular_units';
  * contract is keyed on. The replica cursor, the echo digest and the
  * registration digest the server holds live in meta.
  */
-import type { FencedRecord, ScopeMap, UnitScopes } from '@syncular/core';
-import { ClientSyncError } from './errors';
+import {
+  definedObject,
+  type FencedRecord,
+  type ScopeMap,
+  type UnitScopes,
+} from '@syncular/core';
+import { localStateCorrupt } from './errors';
 import type { CompiledClientSchema, CompiledClientTable } from './schema';
 import type { ClientDatabase } from './database';
 import type { LocalRevision } from './invalidation';
@@ -125,18 +130,16 @@ export function unitOwners(
 
 /** A unit row; every persisted field must have its stored type and shape,
  * otherwise the row is `sync.local_corrupt` (§7.5). */
+export const unitStateCorrupt = () =>
+  localStateCorrupt('persisted unit state is invalid');
+
 function rowToRecord(row: Record<string, unknown>): UnitRecord {
-  const corrupt = () =>
-    new ClientSyncError(
-      'sync.local_corrupt',
-      'persisted unit state is invalid',
-    );
   const json = (raw: unknown): unknown => {
-    if (typeof raw !== 'string') throw corrupt();
+    if (typeof raw !== 'string') throw unitStateCorrupt();
     try {
       return JSON.parse(raw);
     } catch {
-      throw corrupt();
+      throw unitStateCorrupt();
     }
   };
   const isMap = (value: unknown): value is Record<string, unknown> =>
@@ -144,7 +147,7 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
   const isStrings = (value: unknown): value is string[] =>
     Array.isArray(value) && value.every((item) => typeof item === 'string');
   const optionalText = (value: unknown) => {
-    if (value !== null && typeof value !== 'string') throw corrupt();
+    if (value !== null && typeof value !== 'string') throw unitStateCorrupt();
     return value ?? undefined;
   };
   const scopes = json(row.scopes);
@@ -174,34 +177,33 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
         )
       ))
   )
-    throw corrupt();
-  const record: { -readonly [K in keyof UnitRecord]: UnitRecord[K] } = {
-    id,
-    scopes: scopes as UnitScopes,
-    explicit: row.explicit === 1,
-    status,
-    seeded,
-  };
-  const reasonCode = optionalText(row.reason_code);
-  if (reasonCode !== undefined) record.reasonCode = reasonCode;
-  if (typeof cursor === 'number') record.cursor = cursor;
-  const bootstrapState = optionalText(row.bootstrap_state);
-  if (bootstrapState !== undefined) record.bootstrapState = bootstrapState;
-  if (echo !== undefined) record.echo = echo as FencedRecord[];
-  if (applied !== undefined) record.applied = applied as Record<string, number>;
+    throw unitStateCorrupt();
+  let restriction: UnitRecord['restrict'];
   if (restrict !== undefined) {
     if (
       !isMap(restrict) ||
       !Number.isInteger(restrict.cursor) ||
       !isStrings(restrict.tables)
     )
-      throw corrupt();
-    record.restrict = {
+      throw unitStateCorrupt();
+    restriction = {
       cursor: restrict.cursor as number,
       tables: restrict.tables,
     };
   }
-  return record;
+  return definedObject({
+    id,
+    scopes: scopes as UnitScopes,
+    explicit: row.explicit === 1,
+    status,
+    seeded,
+    reasonCode: optionalText(row.reason_code),
+    cursor: typeof cursor === 'number' ? cursor : undefined,
+    bootstrapState: optionalText(row.bootstrap_state),
+    echo: echo as FencedRecord[] | undefined,
+    applied: applied as Record<string, number> | undefined,
+    restrict: restriction,
+  });
 }
 
 /** Every unit in registration order (§4.1). */
@@ -352,10 +354,7 @@ export function pruneUnknownUnits(
     Array.isArray(generations) ||
     Object.values(generations).some((value) => typeof value !== 'string')
   )
-    throw new ClientSyncError(
-      'sync.local_corrupt',
-      'invalid persisted table generations',
-    );
+    throw localStateCorrupt('invalid persisted table generations');
   const kept = new Set(
     [...schema.tables.values()]
       .filter(
@@ -480,10 +479,7 @@ export function getLocalRevision(db: ClientDatabase): LocalRevision {
     !/^(0|[1-9][0-9]*)$/.test(raw) ||
     BigInt(raw) > MAX_U64
   ) {
-    throw new ClientSyncError(
-      'sync.local_corrupt',
-      'persisted local revision is invalid',
-    );
+    throw localStateCorrupt('persisted local revision is invalid');
   }
   return BigInt(raw);
 }
@@ -495,10 +491,7 @@ export function getLocalRevision(db: ClientDatabase): LocalRevision {
 export function bumpLocalRevision(db: ClientDatabase): LocalRevision {
   const current = getLocalRevision(db);
   if (current === MAX_U64) {
-    throw new ClientSyncError(
-      'sync.local_corrupt',
-      'local revision exhausted u64',
-    );
+    throw localStateCorrupt('local revision exhausted u64');
   }
   const next = current + 1n;
   setMeta(db, LOCAL_REVISION_KEY, next.toString());

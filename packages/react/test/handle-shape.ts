@@ -39,6 +39,8 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     commitDelivery: (id) => Promise.resolve(client.commitDelivery(id)),
     proveCurrentBase: (outcome, maxRounds) =>
       client.proveCurrentBase(outcome, maxRounds),
+    replaceCommitOutcome: (input) =>
+      Promise.resolve(client.replaceCommitOutcome(input)),
     resolveCommitOutcome: (input) =>
       Promise.resolve(client.resolveCommitOutcome(input)),
     pendingCommits: () => Promise.resolve(client.pendingCommits()),
