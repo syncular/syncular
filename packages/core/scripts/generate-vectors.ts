@@ -597,6 +597,44 @@ const bootstrapSegments: ResponseMessage = {
   ],
 };
 
+// §4.4: a fresh bootstrap states its counted rows with rowsDone = 0; a
+// resumed one carries the rows its earlier sections delivered.
+const bootstrapUnitExtent: ResponseMessage = {
+  wireVersion: 4,
+  msgKind: 'response',
+  frames: [
+    RESP_HEADER,
+    {
+      type: 'SUB_START',
+      id: NOTES_ID,
+      status: 'active',
+      reasonCode: '',
+      bootstrap: true,
+      fenced: NOTES_ECHO,
+    },
+    { type: 'UNIT_EXTENT', rowsTotal: 1000, rowsDone: 0 },
+    { type: 'SEGMENT_INLINE', payload: inlineSegment },
+    {
+      type: 'SUB_END',
+      nextCursor: 100,
+      bootstrapState:
+        '{"asOfCommitSeq":100,"tables":["projects","notes","tasks"],"tableIndex":1,"rowCursor":"n-0001","rowsTotal":1000,"rowsDone":1}',
+    },
+    {
+      type: 'SUB_START',
+      id: TEAM_ID,
+      status: 'active',
+      reasonCode: '',
+      bootstrap: true,
+      fenced: [],
+    },
+    { type: 'UNIT_EXTENT', rowsTotal: 2500, rowsDone: 2000 },
+    { type: 'SEGMENT_INLINE', payload: inlineSegment },
+    { type: 'SUB_END', nextCursor: 90 },
+    ...live(100),
+  ],
+};
+
 const pushApplied: ResponseMessage = {
   wireVersion: 4,
   msgKind: 'response',
@@ -1098,6 +1136,14 @@ const rawSubEnd = (bootstrapState?: string): RawFrame => [
     p.i64(42);
     p.u8(bootstrapState === undefined ? 0 : 1);
     if (bootstrapState !== undefined) p.str(bootstrapState);
+  },
+];
+
+const rawUnitExtent = (rowsTotal: number, rowsDone = 0): RawFrame => [
+  FrameType.UNIT_EXTENT,
+  (p) => {
+    p.i64(rowsTotal);
+    p.i64(rowsDone);
   },
 ];
 
@@ -1907,6 +1953,13 @@ total += emitKind(
         'A catching-up unit section with an echo: SEGMENT_REF (sqlite, with signed URL) + SEGMENT_REF (rows, no URL) + SEGMENT_INLINE across two tables; incomplete bootstrapState in SUB_END; then an empty live section',
     },
     {
+      name: 'bootstrap-unit-extent',
+      bytes: encodeMessage(bootstrapUnitExtent),
+      render: renderMessage,
+      covers:
+        'UNIT_EXTENT immediately after an active bootstrap SUB_START: a fresh bootstrap (rowsDone 0) and a resumed one (§4.4)',
+    },
+    {
       name: 'push-applied',
       bytes: encodeMessage(pushApplied),
       render: renderMessage,
@@ -2089,6 +2142,47 @@ total += emitKind(
       ]),
       error: 'sync.invalid_request',
       covers: 'LIVE_END.echoDigest of 31 bytes (§4.4: 0 or 32)',
+    },
+    {
+      name: 'unit-extent-after-non-bootstrap-sub-start',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart(),
+        rawUnitExtent(3),
+        rawSubEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'UNIT_EXTENT after a SUB_START whose bootstrap is false (§4.4)',
+    },
+    {
+      name: 'unit-extent-after-segment',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart([], 1),
+        [FrameType.SEGMENT_INLINE, (p) => p.raw(inlineSegment)],
+        rawUnitExtent(3),
+        rawSubEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'UNIT_EXTENT after a segment frame (§4.4: immediately after SUB_START)',
+    },
+    {
+      name: 'unit-extent-negative-total',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart([], 1),
+        rawUnitExtent(-1),
+        rawSubEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'UNIT_EXTENT.rowsTotal of -1 (§4.4: non-negative)',
     },
   ],
 );

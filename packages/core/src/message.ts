@@ -209,6 +209,15 @@ export interface SubStartFrame {
   fenced: FencedRecord[];
 }
 
+/** §4.4: the rows of a unit's bootstrap, stated after its `SUB_START`. */
+export interface UnitExtentFrame {
+  type: 'UNIT_EXTENT';
+  /** Rows of the bootstrap, counted when it took its pin (§4.7). */
+  rowsTotal: number;
+  /** Rows the bootstrap delivered in its earlier sections. */
+  rowsDone: number;
+}
+
 export interface LiveStartFrame {
   type: 'LIVE_START';
   status: 'active' | 'reset' | 'unregistered';
@@ -290,6 +299,7 @@ export type ResponseFrame =
   | PushResultFrame
   | PushResultDetailsFrame
   | SubStartFrame
+  | UnitExtentFrame
   | CommitFrame
   | SegmentRefFrame
   | SegmentInlineFrame
@@ -469,10 +479,9 @@ function decodePushCommit(r: ByteReader): PushCommitFrame {
     const table = r.str();
     const rowId = r.str();
     const opByte = r.u8();
-    let op: 'upsert' | 'delete';
-    if (opByte === 1) op = 'upsert';
-    else if (opByte === 2) op = 'delete';
-    else invalid(`invalid operation op byte ${opByte}`);
+    const op =
+      (['upsert', 'delete'] as const)[opByte - 1] ??
+      invalid(`invalid operation op byte ${opByte}`);
     const baseVersion = r.opt(() => r.i64());
     const payload = r.opt(() => r.bytes());
     if (op === 'upsert' && payload === undefined) {
@@ -561,11 +570,9 @@ function decodeLease(r: ByteReader): LeaseFrame {
 function decodePushResult(r: ByteReader): PushResultFrame {
   const clientCommitId = r.str();
   const statusByte = r.u8();
-  let status: 'applied' | 'cached' | 'rejected';
-  if (statusByte === 1) status = 'applied';
-  else if (statusByte === 2) status = 'cached';
-  else if (statusByte === 3) status = 'rejected';
-  else invalid(`invalid push result status byte ${statusByte}`);
+  const status =
+    (['applied', 'cached', 'rejected'] as const)[statusByte - 1] ??
+    invalid(`invalid push result status byte ${statusByte}`);
   const commitSeq = r.opt(() => r.i64());
   if (status === 'rejected' && commitSeq !== undefined) {
     invalid('rejected PUSH_RESULT must not carry a commitSeq');
@@ -646,24 +653,20 @@ function decodeSubStart(r: ByteReader): SubStartFrame {
   const id = r.str();
   checkUnitId(id, 'SUB_START', invalid);
   const statusByte = r.u8();
-  let status: 'active' | 'revoked' | 'reset';
-  if (statusByte === 1) status = 'active';
-  else if (statusByte === 2) status = 'revoked';
-  else if (statusByte === 3) status = 'reset';
-  else invalid(`invalid SUB_START status byte ${statusByte}`);
+  const status =
+    (['active', 'revoked', 'reset'] as const)[statusByte - 1] ??
+    invalid(`invalid SUB_START status byte ${statusByte}`);
   const reasonCode = r.str();
   const bootstrap = r.bool();
   const fencedCount = r.u32();
   const fenced: FencedRecord[] = [];
   for (let i = 0; i < fencedCount; i++) {
     const table = r.str();
-    const fencedStatus = r.u8();
-    if (fencedStatus !== 1 && fencedStatus !== 2) {
-      invalid('invalid fenced record status byte');
-    }
     fenced.push({
       table,
-      status: fencedStatus === 1 ? 'active' : 'revoked',
+      status:
+        (['active', 'revoked'] as const)[r.u8() - 1] ??
+        invalid('invalid fenced record status byte'),
       scopes: readStringListMap(r),
     });
   }
@@ -672,12 +675,9 @@ function decodeSubStart(r: ByteReader): SubStartFrame {
 }
 
 function decodeLiveStart(r: ByteReader): LiveStartFrame {
-  const statusByte = r.u8();
-  let status: LiveStartFrame['status'];
-  if (statusByte === 1) status = 'active';
-  else if (statusByte === 3) status = 'reset';
-  else if (statusByte === 4) status = 'unregistered';
-  else invalid('invalid LIVE_START status byte');
+  const status =
+    (['active', undefined, 'reset', 'unregistered'] as const)[r.u8() - 1] ??
+    invalid('invalid LIVE_START status byte');
   return { type: 'LIVE_START', status, reasonCode: r.str() };
 }
 
@@ -706,10 +706,9 @@ function decodeCommit(r: ByteReader): CommitFrame {
     }
     const rowId = r.str();
     const opByte = r.u8();
-    let op: 'upsert' | 'delete';
-    if (opByte === 1) op = 'upsert';
-    else if (opByte === 2) op = 'delete';
-    else invalid(`invalid change op byte ${opByte}`);
+    const op =
+      (['upsert', 'delete'] as const)[opByte - 1] ??
+      invalid(`invalid change op byte ${opByte}`);
     const rowVersion = r.i64();
     if (rowVersion < 1) invalid('change rowVersion must be at least 1');
     const scopes = readStringMap(r);
@@ -727,10 +726,9 @@ function decodeCommit(r: ByteReader): CommitFrame {
 function decodeSegmentRef(r: ByteReader): SegmentRefFrame {
   const segmentId = r.str();
   const mediaTypeByte = r.u8();
-  let mediaType: 'rows' | 'sqlite';
-  if (mediaTypeByte === 1) mediaType = 'rows';
-  else if (mediaTypeByte === 2) mediaType = 'sqlite';
-  else invalid(`invalid SEGMENT_REF mediaType byte ${mediaTypeByte}`);
+  const mediaType =
+    (['rows', 'sqlite'] as const)[mediaTypeByte - 1] ??
+    invalid(`invalid SEGMENT_REF mediaType byte ${mediaTypeByte}`);
   const table = r.str();
   const byteLength = r.i64();
   const rowCount = r.i64();
@@ -765,6 +763,15 @@ function decodeSegmentInline(r: ByteReader): SegmentInlineFrame {
   // segment); the schema checksum of §5.2 is the receiver's job.
   decodeRowsSegment(payload);
   return { type: 'SEGMENT_INLINE', payload };
+}
+
+function decodeUnitExtent(r: ByteReader): UnitExtentFrame {
+  const rowsTotal = r.i64();
+  const rowsDone = r.i64();
+  if (rowsTotal < 0 || rowsDone < 0) {
+    invalid('UNIT_EXTENT counts must be >= 0');
+  }
+  return { type: 'UNIT_EXTENT', rowsTotal, rowsDone };
 }
 
 function decodeSubEnd(r: ByteReader): SubEndFrame {
@@ -832,57 +839,39 @@ function decodeRequestFrame(
   return frame;
 }
 
+const RESPONSE_DECODERS: Partial<
+  Record<number, (r: ByteReader) => ResponseFrame>
+> = {
+  [FrameType.RESP_HEADER]: decodeRespHeader,
+  [FrameType.LEASE]: decodeLease,
+  [FrameType.PUSH_RESULT]: decodePushResult,
+  [FrameType.PUSH_RESULT_DETAILS]: decodePushResultDetails,
+  [FrameType.SUB_START]: decodeSubStart,
+  [FrameType.COMMIT]: decodeCommit,
+  [FrameType.SEGMENT_REF]: decodeSegmentRef,
+  [FrameType.SEGMENT_INLINE]: decodeSegmentInline,
+  [FrameType.SUB_END]: decodeSubEnd,
+  [FrameType.UNIT_EXTENT]: decodeUnitExtent,
+  [FrameType.LIVE_START]: decodeLiveStart,
+  [FrameType.LIVE_END]: decodeLiveEnd,
+  [FrameType.ERROR]: decodeErrorFrame,
+};
+
 function decodeResponseFrame(
   frameType: number,
   payload: Uint8Array,
 ): ResponseFrame {
-  const r = new ByteReader(payload);
-  let frame: ResponseFrame;
-  switch (frameType) {
-    case FrameType.RESP_HEADER:
-      frame = decodeRespHeader(r);
-      break;
-    case FrameType.LEASE:
-      frame = decodeLease(r);
-      break;
-    case FrameType.PUSH_RESULT:
-      frame = decodePushResult(r);
-      break;
-    case FrameType.PUSH_RESULT_DETAILS:
-      frame = decodePushResultDetails(r);
-      break;
-    case FrameType.SUB_START:
-      frame = decodeSubStart(r);
-      break;
-    case FrameType.COMMIT:
-      frame = decodeCommit(r);
-      break;
-    case FrameType.SEGMENT_REF:
-      frame = decodeSegmentRef(r);
-      break;
-    case FrameType.SEGMENT_INLINE:
-      frame = decodeSegmentInline(r);
-      break;
-    case FrameType.SUB_END:
-      frame = decodeSubEnd(r);
-      break;
-    case FrameType.LIVE_START:
-      frame = decodeLiveStart(r);
-      break;
-    case FrameType.LIVE_END:
-      frame = decodeLiveEnd(r);
-      break;
-    case FrameType.ERROR:
-      frame = decodeErrorFrame(r);
-      break;
-    default:
-      if (REQUEST_FRAME_TYPES.has(frameType)) {
-        invalid(
-          `request frame type 0x${frameType.toString(16)} is illegal in a response message`,
-        );
-      }
-      return { type: 'UNKNOWN', frameType, payload };
+  const decode = RESPONSE_DECODERS[frameType];
+  if (decode === undefined) {
+    if (REQUEST_FRAME_TYPES.has(frameType)) {
+      invalid(
+        `request frame type 0x${frameType.toString(16)} is illegal in a response message`,
+      );
+    }
+    return { type: 'UNKNOWN', frameType, payload };
   }
+  const r = new ByteReader(payload);
+  const frame = decode(r);
   r.expectFullyConsumed(`${frame.type} frame payload`);
   return frame;
 }
@@ -954,6 +943,7 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
   let errorSeen = false;
   let lastPushResult: PushResultFrame | undefined;
   let lastPushResultHasDetails = false;
+  let previous: ResponseFrame | undefined;
   for (const frame of frames.slice(1)) {
     if (errorSeen) invalid('frames after ERROR (the next frame must be END)');
     switch (frame.type) {
@@ -1013,6 +1003,18 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         sawBody = true;
         lastPushResult = undefined;
         break;
+      case 'UNIT_EXTENT':
+        // §4.4: only immediately after an active bootstrap SUB_START.
+        if (
+          previous?.type !== 'SUB_START' ||
+          previous.status !== 'active' ||
+          !previous.bootstrap
+        ) {
+          invalid(
+            'UNIT_EXTENT frame must immediately follow an active bootstrap SUB_START',
+          );
+        }
+        break;
       case 'SEGMENT_REF':
       case 'SEGMENT_INLINE':
         if (section !== 'unit') invalid('segment frame outside a unit section');
@@ -1050,6 +1052,7 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         lastPushResult = undefined;
         break;
     }
+    previous = frame;
   }
   if (section !== 'none' && !errorSeen) {
     invalid('unit or live section not terminated');
@@ -1324,6 +1327,14 @@ function encodeResponseFrame(frame: ResponseFrame, w: ByteWriter): number {
     }
     case 'SEGMENT_INLINE': {
       w.raw(frame.payload);
+      break;
+    }
+    case 'UNIT_EXTENT': {
+      if (frame.rowsTotal < 0 || frame.rowsDone < 0) {
+        encodeInvalid('UNIT_EXTENT counts must be >= 0');
+      }
+      w.i64(frame.rowsTotal);
+      w.i64(frame.rowsDone);
       break;
     }
     case 'SUB_END': {

@@ -247,6 +247,14 @@ fn render_frame(frame: &Frame) -> Value {
             entries.push(("status", Value::from(status.name())));
             entries.push(("reasonCode", Value::from(reason_code.clone())));
         }
+        Frame::UnitExtent {
+            rows_total,
+            rows_done,
+        } => {
+            entries.push(("type", Value::from("UNIT_EXTENT")));
+            entries.push(("rowsTotal", Value::from(*rows_total)));
+            entries.push(("rowsDone", Value::from(*rows_done)));
+        }
         Frame::LiveEnd {
             through_seq,
             echo_digest,

@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'Progress counts a whole unit bootstrap',
+    body: "`SyncProgress` gains `unitRowsTotal` and `unitRowsProcessed`, so an app can show \"x of y\" rows for a unit's first load. When a bootstrap takes its pin, the server counts the unit's rows on the scope index and states them in a new `UNIT_EXTENT` frame after each of the bootstrap's `SUB_START` frames, with the rows already delivered; the resume token carries both, so the count continues across segments, rounds and a retried round. The count only rises and ends equal to the total. A server that predates the frame states nothing, and both fields stay absent. `UNIT_EXTENT` is an additive frame inside wire version 4: older clients skip it. A custom `ServerStorage` implements the new `countScopedRows` method. The TS and Rust clients and the Rust local authority behave alike.",
+    links: [
+      {
+        href: '/platform-web-realtime/#sync-progress',
+        label: 'Sync progress',
+      },
+      {
+        href: '/server-storage-reference/',
+        label: 'Storage reference',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Alternative write sets and NULL scope columns',
     body: "`writeScopeVariables` accepts alternative sets, such as `[['facility_id'], ['centre_window_id']]`. Any set that matches the stored row admits an update or delete; only the first set, the owner set, admits an insert or a `rescope`. A scope column outside the owner set may be NULL: the row has no stored scope for that variable, so no unit over it receives the row and no set containing it admits a write, and a schema bump re-keys the row without `sync.storage.scope_value_missing`. The TS server and the Rust local authority apply the same rules.",
     links: [

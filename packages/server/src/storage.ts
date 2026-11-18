@@ -1495,6 +1495,17 @@ export interface ServerStorage {
   scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]>;
 
   /**
+   * The rows `scanRows` returns for the filter from the start of the table,
+   * counted (§4.7 bootstrap extent). Reads only the row-scope index: one
+   * index range of the variable `scanRows` seeks plus one index seek per
+   * other variable and candidate, never the row table.
+   */
+  countScopedRows(
+    partition: string,
+    query: Pick<RowScanQuery, 'table' | 'scopeFilter'>,
+  ): Promise<number>;
+
+  /**
    * Optional registered-query capability. The implementation MUST replace
    * every generated app-table relation with a partition-filtered relation and
    * return rows plus maxCommitSeq from one consistent database snapshot.

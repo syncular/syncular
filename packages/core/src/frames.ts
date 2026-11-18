@@ -18,6 +18,7 @@ export const FrameType = {
   PUSH_RESULT_DETAILS: 0x1b,
   LIVE_START: 0x1c,
   LIVE_END: 0x1d,
+  UNIT_EXTENT: 0x1e,
   ERROR: 0x1f,
 } as const;
 
@@ -46,6 +47,7 @@ export const RESPONSE_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.PUSH_RESULT_DETAILS,
   FrameType.LIVE_START,
   FrameType.LIVE_END,
+  FrameType.UNIT_EXTENT,
   FrameType.ERROR,
 ]);
 

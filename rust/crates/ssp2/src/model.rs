@@ -42,6 +42,7 @@ pub mod frame_type {
     pub const PUSH_RESULT_DETAILS: u8 = 0x1B;
     pub const LIVE_START: u8 = 0x1C;
     pub const LIVE_END: u8 = 0x1D;
+    pub const UNIT_EXTENT: u8 = 0x1E;
     pub const ERROR: u8 = 0x1F;
 
     pub const REQUEST_TYPES: &[u8] = &[
@@ -64,6 +65,7 @@ pub mod frame_type {
         PUSH_RESULT_DETAILS,
         LIVE_START,
         LIVE_END,
+        UNIT_EXTENT,
         ERROR,
     ];
 }
@@ -336,6 +338,9 @@ pub enum Frame {
         /// The unit's echo, in ascending table order (§4.4).
         fenced: Vec<FencedRecord>,
     },
+    /// §4.4: the rows of a unit's bootstrap, stated immediately after an
+    /// active bootstrap `SUB_START`. Both counts are `>= 0`.
+    UnitExtent { rows_total: i64, rows_done: i64 },
     LiveStart {
         status: LiveStatus,
         reason_code: String,

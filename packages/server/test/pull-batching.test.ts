@@ -418,10 +418,11 @@ describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // The push half: the partition lock, the admission read (the serve
     // gate, every idempotency record, and the read-ahead of every commit's
     // rows) and one statement that writes every commit's rows, appends and
-    // results (§6.4). The pull half adds 11 for the round (the snapshot
-    // pages of both tables share one statement, and the completed
-    // bootstraps join the live section's read, §4.5).
-    expect(large.counts.statements).toBe(3 + 11);
+    // results (§6.4). The pull half adds 12 for the round (the snapshot
+    // pages of both tables share one statement, so do the extent counts of
+    // every unit (§4.7), and the completed bootstraps join the live
+    // section's read, §4.5).
+    expect(large.counts.statements).toBe(3 + 12);
   }, 60_000);
 });
 

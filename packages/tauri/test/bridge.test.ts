@@ -2038,6 +2038,8 @@ test('progress arrives as an event and listener removal does not issue a command
     bytesReceived: 100,
     rowsProcessed: 1024,
     rowsTotal: 4096,
+    unitRowsTotal: 9000,
+    unitRowsProcessed: 5120,
   } as const;
   emit({ type: 'progress', progress });
   expect(received).toEqual([1024]);

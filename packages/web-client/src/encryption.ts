@@ -116,23 +116,16 @@ function encryptionKeyId(
   }
   const selectorColumn = config.keyIdColumns?.[table.name];
   if (selectorColumn === undefined) return table.name;
-  const index = table.columns.findIndex(
-    (column) => column.name === selectorColumn,
-  );
-  if (index < 0) {
-    throw new EncryptError(
-      `encryption key-id column ${JSON.stringify(selectorColumn)} is not present on table ${JSON.stringify(table.name)}`,
-    );
-  }
-  if (table.columns[index]?.encrypted === true) {
-    throw new EncryptError(
-      `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must not be encrypted`,
-    );
-  }
-  const selected = values[index];
+  // The column must exist, stay plaintext, and hold a non-empty string.
+  const selected =
+    values[
+      table.columns.findIndex(
+        (column) => column.name === selectorColumn && column.encrypted !== true,
+      )
+    ];
   if (typeof selected !== 'string' || selected.length === 0) {
     throw new EncryptError(
-      `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must contain a non-empty string`,
+      `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must be a plaintext column holding a non-empty string`,
     );
   }
   return selected;

@@ -112,6 +112,16 @@ function wrapperFor(frame: ResponseFrame): {
         frames: [stubHeader(), STUB_LIVE_START, frame, STUB_LIVE_END],
         index: 2,
       };
+    case 'UNIT_EXTENT':
+      return {
+        frames: [
+          stubHeader(),
+          { ...STUB_SUB_START, bootstrap: true },
+          frame,
+          STUB_SUB_END,
+        ],
+        index: 2,
+      };
     case 'SEGMENT_REF':
     case 'SEGMENT_INLINE':
       return {

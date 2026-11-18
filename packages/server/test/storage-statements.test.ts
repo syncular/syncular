@@ -12,6 +12,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { encodeRow } from '@syncular/core';
 import {
   compileSchema,
+  countRowsSql,
   D1ServerStorage,
   type D1PreparedStatement,
   type PgExecutor,
@@ -826,3 +827,68 @@ test('the live change read loads only the candidate commits, whatever the log ho
   expect(calls).toEqual([[26]]);
   expect(window.throughSeq).toBe(26);
 });
+
+for (const kind of KINDS) {
+  test(`${kind} counts a bootstrap extent on the row-scope index only (§4.7)`, async () => {
+    const { storage, drain, plan } = await backend(kind);
+    const tx = await storage.begin(PARTITION);
+    for (let i = 0; i < 60; i++) {
+      const rowId = `d${i}`;
+      const scopes = { org_id: `o${i % 2}`, project_id: `p${i % 3}` };
+      await tx.upsertRow('docs', {
+        rowId,
+        serverVersion: 1,
+        scopes,
+        payload: encodeRow(DOCS_COLUMNS, [
+          rowId,
+          scopes.org_id,
+          scopes.project_id,
+        ]),
+      });
+    }
+    await tx.commit();
+    drain();
+    const count = (scopeFilter: Record<string, string[]>) =>
+      storage.countScopedRows(PARTITION, { table: 'docs', scopeFilter });
+    // D1 runs each batch behind its schema guard statement.
+    const guard = kind === 'd1' ? 1 : 0;
+    expect(await count({ project_id: ['p1'] })).toBe(20);
+    expect(drain()).toHaveLength(1 + guard);
+    // Several variables: the scan's selectivity probe, then the count.
+    expect(await count({ org_id: ['o0'], project_id: ['p1', 'p2'] })).toBe(20);
+    expect(drain()).toHaveLength(2 + 2 * guard);
+    const rest = [{ var: 'org_id', vals: ['o0'] }];
+    const lines =
+      kind === 'postgres'
+        ? await plan(countRowsSql('postgres'), [
+            PARTITION,
+            JSON.stringify([
+              { i: 0, tbl: 'docs', var: 'project_id', vals: ['p1'], rest },
+            ]),
+          ])
+        : await plan(countRowsSql('sqlite'), [
+            PARTITION,
+            'docs',
+            'project_id',
+            JSON.stringify(['p1']),
+            JSON.stringify(rest),
+          ]);
+    const text = lines.join('\n');
+    expect(text).not.toMatch(/docs/);
+    if (kind === 'postgres') {
+      expect(text).toContain('Index Only Scan using sync_row_scopes_pk');
+      expect(text).not.toContain('Seq Scan');
+    } else {
+      // `a` ranges the seek variable, `b` seeks each other variable.
+      const scopeSteps = lines.filter((line) =>
+        /^(SCAN|SEARCH) [ab]\b/.test(line),
+      );
+      expect(scopeSteps).toHaveLength(2);
+      for (const step of scopeSteps) {
+        expect(step).toMatch(
+          /^SEARCH [ab] USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 \(partition=\? AND tbl=\? AND var=\? AND value=\?/,
+        );
+      }
+    }
+  });
+}

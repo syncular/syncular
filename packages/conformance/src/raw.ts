@@ -19,6 +19,7 @@ import {
   type RequestFrame,
   type ResponseFrame,
   type ResponseMessage,
+  type UnitExtentFrame,
   type RowColumn,
   type RowValue,
   registrationDigest,
@@ -321,6 +322,8 @@ export function responsePushResults(
 
 export interface ResponseSection {
   readonly start: SubStartFrame;
+  /** The section's `UNIT_EXTENT` (§4.4), outside `body`. */
+  readonly extent?: UnitExtentFrame;
   readonly body: readonly ResponseFrame[];
   readonly end: SubEndFrame;
 }
@@ -330,14 +333,23 @@ export function responseSections(
 ): Map<string, ResponseSection> {
   const result = new Map<string, ResponseSection>();
   let start: SubStartFrame | undefined;
+  let extent: UnitExtentFrame | undefined;
   let body: ResponseFrame[] = [];
   for (const frame of message.frames) {
     if (frame.type === 'SUB_START') {
       start = frame;
+      extent = undefined;
       body = [];
+    } else if (frame.type === 'UNIT_EXTENT') {
+      extent = frame;
     } else if (frame.type === 'SUB_END') {
       if (start !== undefined) {
-        result.set(start.id, { start, body, end: frame });
+        result.set(start.id, {
+          start,
+          ...(extent !== undefined ? { extent } : {}),
+          body,
+          end: frame,
+        });
       }
       start = undefined;
     } else if (start !== undefined) {

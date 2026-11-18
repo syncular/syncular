@@ -1,0 +1,87 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-a",
+      "resetRequired": false
+    },
+    {
+      "type": "SUB_START",
+      "id": "98bfde90a5f820d3555be61bb46dbbe6",
+      "status": "active",
+      "reasonCode": "",
+      "bootstrap": true,
+      "fenced": [
+        {
+          "table": "tasks",
+          "status": "active",
+          "scopes": {
+            "assignee": [
+              "u1",
+              "u2"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "UNIT_EXTENT",
+      "rowsTotal": 1000,
+      "rowsDone": 0
+    },
+    {
+      "type": "SEGMENT_INLINE",
+      "payload": "U1NHMgEAAAAFAAAAbm90ZXMBAAAACAACAAAAaWQBAAUAAAB0aXRsZQEBBAAAAGJvZHkBAAUAAABjb3VudAIBBQAAAHNjb3JlAwAEAAAAZG9uZQQABAAAAG1ldGEFAQQAAABibG9iBgEBAAAANwAAAAUAAAAAAAAAQAMAAABuLTMCAAAAzrYIAAAAYm91bmRhcnn///////8fAAAAAAAAAPi/AQAAAAAAAAAA"
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 100,
+      "bootstrapState": {
+        "asOfCommitSeq": 100,
+        "tables": [
+          "projects",
+          "notes",
+          "tasks"
+        ],
+        "tableIndex": 1,
+        "rowCursor": "n-0001",
+        "rowsTotal": 1000,
+        "rowsDone": 1
+      }
+    },
+    {
+      "type": "SUB_START",
+      "id": "7229e751d6a9ec99dfbcb011ed895d52",
+      "status": "active",
+      "reasonCode": "",
+      "bootstrap": true,
+      "fenced": []
+    },
+    {
+      "type": "UNIT_EXTENT",
+      "rowsTotal": 2500,
+      "rowsDone": 2000
+    },
+    {
+      "type": "SEGMENT_INLINE",
+      "payload": "U1NHMgEAAAAFAAAAbm90ZXMBAAAACAACAAAAaWQBAAUAAAB0aXRsZQEBBAAAAGJvZHkBAAUAAABjb3VudAIBBQAAAHNjb3JlAwAEAAAAZG9uZQQABAAAAG1ldGEFAQQAAABibG9iBgEBAAAANwAAAAUAAAAAAAAAQAMAAABuLTMCAAAAzrYIAAAAYm91bmRhcnn///////8fAAAAAAAAAPi/AQAAAAAAAAAA"
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 90
+    },
+    {
+      "type": "LIVE_START",
+      "status": "active",
+      "reasonCode": ""
+    },
+    {
+      "type": "LIVE_END",
+      "throughSeq": 100,
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
+    }
+  ]
+}

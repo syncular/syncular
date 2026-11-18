@@ -94,6 +94,95 @@ export const bootstrapScenarios: readonly Scenario[] = [
       },
     }),
   ),
+  ...[0b0011, 0b0111].map(
+    (accept): Scenario => ({
+      name: `bootstrap/unit-extent-across-segments-and-rounds-${accept === 3 ? 'rows' : 'sqlite'}`,
+      specRefs: ['§4.4', '§4.7', '§7.7', '§5.3'],
+      requires:
+        accept === 3 ? ['server-limits'] : ['server-limits', 'sqlite-image'],
+      async run(ctx) {
+        for (let start = 0; start < 1000; start += 500) {
+          await seedTasks(
+            ctx,
+            Array.from({ length: 500 }, (_, i) =>
+              task(`task-${String(start + i).padStart(4, '0')}`, 'p1', 'x'),
+            ),
+          );
+        }
+        const id = unitId(U1);
+        const progressOf = async (
+          clientId: string,
+          omitUnitExtent: boolean,
+        ) => {
+          const client = await ctx.newClient({
+            actorId: 'actor-a',
+            clientId,
+            allowed: P1,
+            // Rows: 200-row pages, three per section, so two rounds of
+            // several segments. Images: one range image per section.
+            limits:
+              accept === 3
+                ? { accept, limitSnapshotRows: 200, maxSnapshotPages: 3 }
+                : { accept, limitSnapshotRows: 1, maxSnapshotPages: 1 },
+          });
+          client.faults.omitUnitExtent = omitUnitExtent;
+          await syncOk(client);
+          await client.api.subscribe(U1);
+          await client.api.drainProgress?.();
+          const first = await syncOk(client);
+          await syncIdle(client);
+          checkEqual(
+            (await client.api.readRows('tasks')).length,
+            1000,
+            'the unit bootstrapped',
+          );
+          return {
+            rounds: first.bootstrapping.length > 0,
+            events: (await client.api.drainProgress?.()) ?? [],
+          };
+        };
+        const stated = await progressOf('client-a', false);
+        if (accept === 3) check(stated.rounds, 'the bootstrap spans rounds');
+        const named = stated.events.filter((p) => p.unitId === id);
+        check(named.length > 0, 'progress names the unit');
+        checkEqual(
+          named[0]?.unitRowsTotal,
+          1000,
+          'the first snapshot naming the unit carries its total',
+        );
+        const processed = stated.events.flatMap((p) =>
+          p.unitRowsProcessed === undefined ? [] : [p.unitRowsProcessed],
+        );
+        check(
+          processed.every((n, i) => i === 0 || n >= processed[i - 1]!),
+          'the unit count only rises across segments and rounds',
+        );
+        check(
+          stated.events.every(
+            (p) =>
+              p.unitRowsTotal === undefined ||
+              (p.unitRowsTotal === 1000 &&
+                (p.unitRowsProcessed ?? 0) <= p.unitRowsTotal),
+          ),
+          'every stated total is 1,000 and bounds the count',
+        );
+        checkEqual(processed.at(-1), 1000, 'the count ends at the total');
+        const absent = await progressOf('client-b', true);
+        check(
+          absent.events.some((p) => p.unitId === id),
+          'progress names the unit without an extent',
+        );
+        check(
+          absent.events.every(
+            (p) =>
+              p.unitRowsTotal === undefined &&
+              p.unitRowsProcessed === undefined,
+          ),
+          'a unit whose extent the server does not state reports no total',
+        );
+      },
+    }),
+  ),
   {
     name: 'bootstrap/live-progress-failure-and-retry',
     specRefs: ['§7.7', '§5.1', '§1.4'],

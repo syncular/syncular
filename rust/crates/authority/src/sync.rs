@@ -70,8 +70,9 @@ fn scopes_value(scopes: &[(String, String)]) -> Value {
     )
 }
 
-/// §4.7: one bootstrap section's segments from a usable resume token, or
-/// from a fresh pin at `max_seq`; returns the pin, the frames and the
+/// §4.7: one bootstrap section's frames (its `UNIT_EXTENT`, then segments)
+/// from a usable resume token, or from a fresh pin at `max_seq` that counts
+/// the extent; returns the pin, the frames and the
 /// advanced token, `None` once every table is exhausted.
 fn bootstrap(
     conn: &Connection,
@@ -95,16 +96,42 @@ fn bootstrap(
             Value::String(cursor) => Some(cursor.clone()),
             _ => return None,
         };
+        // The extent: both counts or neither; anything else restarts.
+        let extent = match (parsed.get("rowsTotal"), parsed.get("rowsDone")) {
+            (None, None) => None,
+            (Some(total), Some(done)) => Some((
+                total.as_i64().filter(|count| *count >= 0)?,
+                done.as_i64().filter(|count| *count >= 0)?,
+            )),
+            _ => return None,
+        };
         let same_tables = names.len() == unit.tables.len()
             && names
                 .iter()
                 .zip(&unit.tables)
                 .all(|(name, table)| name.as_str() == Some(table.name.as_str()));
         (same_tables && (horizon..=max_seq).contains(&as_of) && index < unit.tables.len())
-            .then_some((as_of, index, row_cursor))
+            .then_some((as_of, index, row_cursor, extent))
     });
-    let (pin, mut index, mut row_cursor) = resume.unwrap_or((max_seq, 0, None));
-    let mut frames = Vec::new();
+    let (pin, mut index, mut row_cursor, extent) = match resume {
+        Some(resume) => resume,
+        // A fresh pin counts the rows the bootstrap delivers.
+        None => {
+            let mut total = 0;
+            for table in &unit.tables {
+                total += store::count_rows(conn, table, unit.scopes)?;
+            }
+            (max_seq, 0, None, Some((total, 0)))
+        }
+    };
+    let mut frames: Vec<Frame> = extent
+        .map(|(rows_total, rows_done)| Frame::UnitExtent {
+            rows_total,
+            rows_done,
+        })
+        .into_iter()
+        .collect();
+    let mut delivered = 0;
     let mut pages = 0;
     while index < unit.tables.len() {
         if pages == limits.snapshot_pages {
@@ -114,9 +141,13 @@ fn bootstrap(
                 .map(|table| table.name.as_str())
                 .collect();
             let token = format!(
-                "{{\"asOfCommitSeq\":{pin},\"tables\":{},\"tableIndex\":{index},\"rowCursor\":{}}}",
+                "{{\"asOfCommitSeq\":{pin},\"tables\":{},\"tableIndex\":{index},\"rowCursor\":{}{}}}",
                 Value::from(names),
-                Value::from(row_cursor.as_deref())
+                Value::from(row_cursor.as_deref()),
+                extent.map_or(String::new(), |(total, done)| format!(
+                    ",\"rowsTotal\":{total},\"rowsDone\":{}",
+                    done + delivered
+                ))
             );
             return Ok((pin, frames, Some(token)));
         }
@@ -139,6 +170,7 @@ fn bootstrap(
                 })
             })
             .collect::<Result<Vec<_>, AuthorityError>>()?;
+        delivered += decoded.len() as i64;
         frames.push(Frame::SegmentInline {
             payload: encode_rows_segment(&RowsSegment {
                 table: table.name.clone(),

@@ -27,6 +27,12 @@
       "covers": "A catching-up unit section with an echo: SEGMENT_REF (sqlite, with signed URL) + SEGMENT_REF (rows, no URL) + SEGMENT_INLINE across two tables; incomplete bootstrapState in SUB_END; then an empty live section"
     },
     {
+      "name": "bootstrap-unit-extent",
+      "bin": "bootstrap-unit-extent.bin",
+      "json": "bootstrap-unit-extent.json",
+      "covers": "UNIT_EXTENT immediately after an active bootstrap SUB_START: a fresh bootstrap (rowsDone 0) and a resumed one (§4.4)"
+    },
+    {
       "name": "push-applied",
       "bin": "push-applied.bin",
       "json": "push-applied.json",
@@ -159,6 +165,24 @@
       "bin": "invalid/live-end-echo-digest-31-bytes.bin",
       "error": "sync.invalid_request",
       "covers": "LIVE_END.echoDigest of 31 bytes (§4.4: 0 or 32)"
+    },
+    {
+      "name": "unit-extent-after-non-bootstrap-sub-start",
+      "bin": "invalid/unit-extent-after-non-bootstrap-sub-start.bin",
+      "error": "sync.invalid_request",
+      "covers": "UNIT_EXTENT after a SUB_START whose bootstrap is false (§4.4)"
+    },
+    {
+      "name": "unit-extent-after-segment",
+      "bin": "invalid/unit-extent-after-segment.bin",
+      "error": "sync.invalid_request",
+      "covers": "UNIT_EXTENT after a segment frame (§4.4: immediately after SUB_START)"
+    },
+    {
+      "name": "unit-extent-negative-total",
+      "bin": "invalid/unit-extent-negative-total.bin",
+      "error": "sync.invalid_request",
+      "covers": "UNIT_EXTENT.rowsTotal of -1 (§4.4: non-negative)"
     }
   ]
 }

@@ -28,6 +28,7 @@ import {
   deleteSqliteRowScopesSql,
   indexRowPageStatement,
   quoteIdent,
+  countRowsSql,
   scanProbeSql,
   scanRowPageSql,
   rowsReferencingBlobSql,
@@ -1033,8 +1034,11 @@ export abstract class SqliteFamilyStorage {
     );
   }
 
-  async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    const variable = await chooseScanVariable(
+  private scanVariable(
+    partition: string,
+    query: RowScanQuery,
+  ): Promise<string | undefined> {
+    return chooseScanVariable(
       partition,
       query,
       this.scanVariables,
@@ -1045,6 +1049,34 @@ export abstract class SqliteFamilyStorage {
           cap,
         ]),
     );
+  }
+
+  async countScopedRows(
+    partition: string,
+    query: Pick<RowScanQuery, 'table' | 'scopeFilter'>,
+  ): Promise<number> {
+    const variable = await this.scanVariable(partition, {
+      ...query,
+      afterRowId: null,
+      limit: 0,
+    });
+    if (variable === undefined) return 0;
+    const [row] = await this.guardedAll<{ n: number }>(countRowsSql('sqlite'), [
+      partition,
+      query.table,
+      variable,
+      JSON.stringify(query.scopeFilter[variable]),
+      JSON.stringify(
+        Object.entries(query.scopeFilter).flatMap(([name, vals]) =>
+          name === variable ? [] : [{ var: name, vals }],
+        ),
+      ),
+    ]);
+    return Number(row?.n ?? 0);
+  }
+
+  async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+    const variable = await this.scanVariable(partition, query);
     if (variable === undefined) return [];
     const values = query.scopeFilter[variable]!;
     // Candidates via the inverted index LEFT JOINed to the row table — one

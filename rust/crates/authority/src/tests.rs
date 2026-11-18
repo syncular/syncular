@@ -385,6 +385,20 @@ fn segment_rows(frames: &[Frame]) -> Vec<(String, i64)> {
         .collect()
 }
 
+/// Every `UNIT_EXTENT` of a response as (rowsTotal, rowsDone).
+fn unit_extents(frames: &[Frame]) -> Vec<(i64, i64)> {
+    frames
+        .iter()
+        .filter_map(|frame| match frame {
+            Frame::UnitExtent {
+                rows_total,
+                rows_done,
+            } => Some((*rows_total, *rows_done)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Every unit section: `SUB_START` id, status and bootstrap flag, and its
 /// `SUB_END` cursor and token.
 type Section = (String, SubStatus, bool, i64, Option<String>);
@@ -1219,20 +1233,24 @@ fn bootstrap_pages_resume_through_the_token() {
     frames.extend(unit_frames(units));
     frames.push(progress(&o1, -1, None));
     let mut echo = None;
-    for (expected, next) in [
+    // §4.7 extent: every section states the total counted at the pin and
+    // the rows delivered before it.
+    for (expected, extent, next) in [
         (
             vec!["t1", "t2", "t3", "t4"],
+            (5, 0),
             Some(format!(
-                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":1,"rowCursor":"t4"}}"#
+                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":1,"rowCursor":"t4","rowsTotal":5,"rowsDone":4}}"#
             )),
         ),
         (
             vec!["t5"],
+            (5, 4),
             Some(format!(
-                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":4,"rowCursor":null}}"#
+                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":4,"rowCursor":null,"rowsTotal":5,"rowsDone":5}}"#
             )),
         ),
-        (vec![], None),
+        (vec![], (5, 5), None),
     ] {
         let response = client.round(&mut authority, frames);
         let rows: Vec<String> = segment_rows(&response)
@@ -1240,6 +1258,7 @@ fn bootstrap_pages_resume_through_the_token() {
             .map(|(id, _)| id)
             .collect();
         assert_eq!(rows, expected);
+        assert_eq!(unit_extents(&response), vec![extent]);
         let [(_, SubStatus::Active, true, 1, token)] = &sections(&response)[..] else {
             panic!("one bootstrap section at pin 1: {response:?}");
         };
@@ -1277,6 +1296,60 @@ fn bootstrap_pages_resume_through_the_token() {
             .collect::<Vec<_>>(),
         vec!["t1", "t2", "t3", "t4"]
     );
+    assert_eq!(unit_extents(&restarted), vec![(5, 0)]);
+}
+
+#[test]
+fn a_token_without_an_extent_resumes_without_one() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let operations = ["t1", "t2", "t3", "t4", "t5"]
+        .iter()
+        .map(|id| task(&s, id, None, None))
+        .collect();
+    client.push(&mut authority, "a", operations);
+    let o1 = org("o1");
+    let units = std::slice::from_ref(&o1);
+    let tables = r#"["projects","tasks","notes","pins","nodes","docs"]"#;
+    let resume = |token: String| {
+        let mut frames = vec![pull_header(-1, units, None, 2, 3)];
+        frames.extend(unit_frames(units));
+        frames.push(progress(&o1, 1, Some(token)));
+        frames
+    };
+    // §4.7: a token from a server that predates UNIT_EXTENT finishes its
+    // bootstrap without an extent.
+    let old = client.round(
+        &mut authority,
+        resume(format!(
+            r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":1,"rowCursor":"t2"}}"#
+        )),
+    );
+    assert_eq!(unit_extents(&old), vec![]);
+    let [(_, SubStatus::Active, true, 1, Some(token))] = &sections(&old)[..] else {
+        panic!("one resumed bootstrap section: {old:?}");
+    };
+    assert_eq!(
+        token,
+        &format!(r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":3,"rowCursor":null}}"#)
+    );
+    // A token with one count, or a count that is no non-negative integer, is
+    // unusable: the bootstrap restarts at a fresh pin and counts again.
+    for extent in [
+        r#""rowsTotal":5"#,
+        r#""rowsTotal":5,"rowsDone":-1"#,
+        r#""rowsTotal":5.5,"rowsDone":1"#,
+    ] {
+        let restarted = client.round(
+            &mut authority,
+            resume(format!(
+                r#"{{"asOfCommitSeq":1,"tables":{tables},"tableIndex":1,"rowCursor":"t2",{extent}}}"#
+            )),
+        );
+        assert_eq!(unit_extents(&restarted), vec![(5, 0)], "{extent}");
+        assert_eq!(segment_rows(&restarted)[0].0, "t1", "{extent}");
+    }
 }
 
 #[test]

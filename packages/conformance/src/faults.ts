@@ -24,6 +24,8 @@ export class TransportFaults extends TestkitTransportFaults {
    * in call order, so concurrent downloads cannot take each other's fault.
    */
   truncateNthSegmentDownload = 0;
+  /** Drop every `UNIT_EXTENT` frame: a server that predates §4.4's frame. */
+  omitUnitExtent = false;
   /** Run once before the next direct segment download reaches the server. */
   beforeNextSegmentDownload: (() => Promise<void>) | undefined;
 }

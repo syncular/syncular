@@ -100,6 +100,7 @@ import {
   SYNC_SCOPES_COLUMN,
   SYNC_VERSION_COLUMN,
   type StoredColumnLayout,
+  countRowsSql,
   scanRowBatchSql,
   scanProbeSql,
   scanRowPageSql,
@@ -3357,9 +3358,12 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     );
   }
 
-  async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+  #scanVariable(
+    partition: string,
+    query: RowScanQuery,
+  ): Promise<string | undefined> {
     // The probes of concurrent scans leave as one statement, like their pages.
-    const variable = await chooseScanVariable(
+    return chooseScanVariable(
       partition,
       query,
       this.#scanVariables,
@@ -3376,6 +3380,37 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           }),
         ),
     );
+  }
+
+  async countScopedRows(
+    partition: string,
+    query: Pick<RowScanQuery, 'table' | 'scopeFilter'>,
+  ): Promise<number> {
+    const variable = await this.#scanVariable(partition, {
+      ...query,
+      afterRowId: null,
+      limit: 0,
+    });
+    if (variable === undefined) return 0;
+    // The counts of concurrent bootstraps leave as one statement.
+    const [row] = await this.#batchedPage<{ n: unknown }>(
+      'countRows',
+      countRowsSql('postgres'),
+      partition,
+      {
+        tbl: query.table,
+        var: variable,
+        vals: query.scopeFilter[variable],
+        rest: Object.entries(query.scopeFilter).flatMap(([name, vals]) =>
+          name === variable ? [] : [{ var: name, vals }],
+        ),
+      },
+    );
+    return row === undefined ? 0 : asNumber(row.n);
+  }
+
+  async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+    const variable = await this.#scanVariable(partition, query);
     if (variable === undefined) return [];
     // Candidates via the inverted index (ordered + LIMITed at the covering
     // PK) LEFT JOINed to the row table — one round trip per page, never one

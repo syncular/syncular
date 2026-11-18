@@ -381,6 +381,8 @@ impl PreparedSyncRound {
                 if matches!(response.frames.first(), Some(Frame::RespHeader { required_schema_version: None, reset_required: false, log_epoch: epoch, .. }) if self.message.frames.first().is_some_and(|f| matches!(f, Frame::ReqHeader { log_epoch: Some(request_epoch), .. } if request_epoch == epoch)))
                 {
                     let mut scope: Option<(&str, &str)> = None;
+                    // §7.7: the section's UNIT_EXTENT as (rowsTotal, rowsDone).
+                    let mut extent: Option<(u64, u64)> = None;
                     // §5.4 / §5.5: collect every eligible descriptor first so
                     // the host can overlap the fetches. One batch start is the
                     // fetch start for the expiry rule.
@@ -397,8 +399,17 @@ impl PreparedSyncRound {
                                     .scopes
                                     .get(id)
                                     .map(|scopes| (id.as_str(), scopes.as_str()));
+                                extent = None;
                             }
                             Frame::SubStart { .. } | Frame::SubEnd { .. } => scope = None,
+                            Frame::UnitExtent {
+                                rows_total,
+                                rows_done,
+                            } => {
+                                extent = u64::try_from(*rows_total)
+                                    .ok()
+                                    .zip(u64::try_from(*rows_done).ok());
+                            }
                             Frame::Error { .. } => break,
                             Frame::SegmentRef {
                                 segment_id,
@@ -479,6 +490,7 @@ impl PreparedSyncRound {
                                     segment_id: segment_id.clone(),
                                     bytes_total: u64::try_from(*byte_length).ok(),
                                     rows_total: u64::try_from(*row_count).ok(),
+                                    extent,
                                     fetch,
                                 });
                                 if expired {
@@ -503,6 +515,8 @@ impl PreparedSyncRound {
                                 p.bytes_total = planned_fetch.bytes_total;
                                 p.rows_processed = 0;
                                 p.rows_total = planned_fetch.rows_total;
+                                p.unit_rows_total = planned_fetch.extent.map(|(total, _)| total);
+                                p.unit_rows_processed = planned_fetch.extent.map(|(_, done)| done);
                             });
                         };
                         // Announce the download phase before the first byte lands.
@@ -561,6 +575,8 @@ impl PreparedSyncRound {
                             p.bytes_total = planned_fetch.bytes_total;
                             p.rows_processed = 0;
                             p.rows_total = planned_fetch.rows_total;
+                            p.unit_rows_total = planned_fetch.extent.map(|(total, _)| total);
+                            p.unit_rows_processed = planned_fetch.extent.map(|(_, done)| done);
                         });
                     }
                     let failed = result.is_err();
@@ -813,6 +829,8 @@ pub(crate) struct PlannedFetch {
     segment_id: String,
     bytes_total: Option<u64>,
     rows_total: Option<u64>,
+    /// The unit section's `UNIT_EXTENT` (rowsTotal, rowsDone), §7.7.
+    extent: Option<(u64, u64)>,
     /// `None` when the signed URL had already expired at the batch start: the
     /// fetch is never attempted and its descriptor fails with
     /// `sync.segment_expired`. Collection stops there, so only the last

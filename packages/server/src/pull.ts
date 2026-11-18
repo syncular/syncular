@@ -216,6 +216,9 @@ interface BootstrapToken {
   rowCursor: string | null;
   /** Present when the table at `tableIndex` continues on the image lane. */
   image?: true;
+  /** The §4.7 extent: present together, or absent for the bootstrap. */
+  rowsTotal?: number;
+  rowsDone?: number;
 }
 
 /**
@@ -246,7 +249,12 @@ function parseBootstrapToken(
       parsed.tableIndex >= tables.length ||
       (parsed.rowCursor !== null && typeof parsed.rowCursor !== 'string') ||
       (parsed.image !== undefined &&
-        (parsed.image !== true || parsed.rowCursor === null))
+        (parsed.image !== true || parsed.rowCursor === null)) ||
+      (parsed.rowsTotal === undefined) !== (parsed.rowsDone === undefined) ||
+      [parsed.rowsTotal, parsed.rowsDone].some(
+        (count) =>
+          count !== undefined && (!Number.isSafeInteger(count) || count < 0),
+      )
     ) {
       return undefined;
     }
@@ -256,6 +264,9 @@ function parseBootstrapToken(
       tableIndex: parsed.tableIndex,
       rowCursor: parsed.rowCursor ?? null,
       ...(parsed.image === true ? { image: true as const } : {}),
+      ...(parsed.rowsTotal !== undefined && parsed.rowsDone !== undefined
+        ? { rowsTotal: parsed.rowsTotal, rowsDone: parsed.rowsDone }
+        : {}),
     };
   } catch {
     return undefined;
@@ -625,7 +636,7 @@ async function* tableSegments(
   logEpoch: string,
 ): AsyncGenerator<
   ResponseFrame,
-  { pages: number; rowCursor: string | null; image: boolean }
+  { pages: number; rows: number; rowCursor: string | null; image: boolean }
 > {
   const { storage, segments, partition } = ctx;
   const serverLimits = limitsOf(ctx);
@@ -634,6 +645,7 @@ async function* tableSegments(
   const current = compileSchema(ctx.schema).tables.get(pair.table.name)!;
   let rowCursor = startRowCursor;
   let image = start.image;
+  let rows = 0;
   for (let page = 0; page < pageBudget; page++) {
     const scanned =
       page === 0
@@ -672,8 +684,9 @@ async function* tableSegments(
         scanned,
       );
       if (record !== undefined) {
+        rows += record.rowCount;
         if (record.nextRowCursor === null)
-          return { pages: page + 1, rowCursor: null, image: false };
+          return { pages: page + 1, rows, rowCursor: null, image: false };
         rowCursor = record.nextRowCursor;
         continue;
       }
@@ -681,6 +694,7 @@ async function* tableSegments(
     }
     const pageRows = scanned.slice(0, limits.limitSnapshotRows);
     const hasMore = scanned.length > limits.limitSnapshotRows;
+    rows += pageRows.length;
     // §5.2: every row record carries the row's current server_version.
     const decoded = pageRows.map((row: StoredRow) => ({
       serverVersion: row.serverVersion,
@@ -740,10 +754,11 @@ async function* tableSegments(
         await signedUrlFields(ctx, limits, record.segmentId, digest, now),
       );
     }
-    if (!hasMore) return { pages: page + 1, rowCursor: null, image: false };
+    if (!hasMore)
+      return { pages: page + 1, rows, rowCursor: null, image: false };
     rowCursor = nextRowCursor;
   }
-  return { pages: pageBudget, rowCursor, image: image !== undefined };
+  return { pages: pageBudget, rows, rowCursor, image: image !== undefined };
 }
 
 /** A bootstrapping unit's position and its table starts, read ahead (§4.7). */
@@ -757,6 +772,10 @@ export interface BootstrapPlan {
   readonly image: boolean;
   /** Table index → its start reads. */
   readonly starts: ReadonlyMap<number, Promise<TableStart>>;
+  /** The §4.7 extent the section states, absent for an uncounted bootstrap. */
+  readonly extent:
+    | Promise<{ readonly rowsTotal: number; readonly rowsDone: number }>
+    | undefined;
 }
 
 /**
@@ -811,6 +830,25 @@ export function planBootstrap(
     start.catch(() => undefined);
     starts.set(index, start);
   }
+  // §4.7: a fresh pin counts every active pair once; a resume carries the
+  // token's counts, and a token minted without them stays without.
+  const extent =
+    resume === undefined
+      ? Promise.all(
+          [...unit.pairs].map(([table, scopeFilter]) =>
+            ctx.storage.countScopedRows(ctx.partition, { table, scopeFilter }),
+          ),
+        ).then((counts) => ({
+          rowsTotal: counts.reduce((sum, count) => sum + count, 0),
+          rowsDone: 0,
+        }))
+      : resume.rowsTotal !== undefined && resume.rowsDone !== undefined
+        ? Promise.resolve({
+            rowsTotal: resume.rowsTotal,
+            rowsDone: resume.rowsDone,
+          })
+        : undefined;
+  extent?.catch(() => undefined);
   return {
     unit,
     pin: resume?.asOfCommitSeq ?? maxSeq,
@@ -818,6 +856,7 @@ export function planBootstrap(
     rowCursor,
     image,
     starts,
+    extent,
   };
 }
 
@@ -838,6 +877,9 @@ export async function* bootstrapSegments(
   const { unit, pin } = plan;
   let { tableIndex, rowCursor, image } = plan;
   let pages = 0;
+  const extent = await plan.extent;
+  if (extent !== undefined) yield { type: 'UNIT_EXTENT', ...extent };
+  let rowsDone = extent?.rowsDone ?? 0;
   for (;;) {
     while (
       tableIndex < unit.tables.length &&
@@ -855,6 +897,9 @@ export async function* bootstrapSegments(
         tableIndex,
         rowCursor,
         ...(image ? { image: true as const } : {}),
+        ...(extent !== undefined
+          ? { rowsTotal: extent.rowsTotal, rowsDone }
+          : {}),
       };
       return JSON.stringify(token);
     }
@@ -872,6 +917,7 @@ export async function* bootstrapSegments(
       logEpoch,
     );
     pages += outcome.pages;
+    rowsDone += outcome.rows;
     rowCursor = outcome.rowCursor;
     image = outcome.image;
     if (rowCursor === null) tableIndex += 1;

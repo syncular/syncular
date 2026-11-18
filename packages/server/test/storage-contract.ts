@@ -1810,6 +1810,47 @@ export function runStorageContract(
       expect(staged?.map((row) => row.rowId)).toEqual(['f1']);
     });
 
+    test('countScopedRows counts the rows scanRows returns for the filter (§4.7 extent)', async () => {
+      const storage = await make();
+      const doc = (rowId: string, org: string, project: string) => ({
+        rowId,
+        serverVersion: 1,
+        scopes: { org_id: org, project_id: project },
+        payload: encodeRow(DOCS_COLUMNS, [rowId, org, project]),
+      });
+      const seed = await storage.begin(PARTITION);
+      for (let i = 0; i < 100; i++) {
+        await seed.upsertRow(
+          'docs',
+          doc(
+            `d${String(i).padStart(3, '0')}`,
+            'o1',
+            i % 25 === 0 ? 'p1' : 'p2',
+          ),
+        );
+      }
+      await seed.upsertRow('docs', doc('e1', 'o2', 'p1'));
+      await seed.commit();
+      const other = await storage.begin('other');
+      await other.upsertRow('docs', doc('x1', 'o1', 'p1'));
+      await other.commit();
+      const count = (scopeFilter: Record<string, string[]>) =>
+        storage.countScopedRows(PARTITION, { table: 'docs', scopeFilter });
+      expect(await count({ project_id: ['p1'] })).toBe(5);
+      expect(await count({ org_id: ['o1'] })).toBe(100);
+      expect(await count({ org_id: ['o1'], project_id: ['p1'] })).toBe(4);
+      expect(await count({ org_id: ['o1', 'o2'], project_id: ['p1'] })).toBe(5);
+      expect(await count({ org_id: ['o1'], project_id: ['p9'] })).toBe(0);
+      expect(await count({ org_id: ['o1'], project_id: [] })).toBe(0);
+      // A delete and a scope move leave no index entry behind.
+      const change = await storage.begin(PARTITION);
+      await change.deleteRow('docs', 'd000');
+      await change.upsertRow('docs', doc('d025', 'o1', 'p2'));
+      await change.commit();
+      expect(await count({ org_id: ['o1'], project_id: ['p1'] })).toBe(2);
+      expect(await count({ project_id: ['p2'] })).toBe(97);
+    });
+
     test('scanRows rejects an empty or omitted scope filter explicitly', async () => {
       const storage = await make();
       for (const scopeFilter of [{}, undefined]) {

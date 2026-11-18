@@ -390,7 +390,7 @@ Rules:
    *either* message kind: a frame type registered for the other message
    kind (e.g. `SUB_START` in a request) is not unknown — it is a decode
    error. Registry entries that are *reserved* without a message kind
-   (`0x17`, `0x18`, `0x1A`, `0x1E`, `0x20`–`0x2F`) have no layout in wire version 4 and
+   (`0x17`, `0x18`, `0x1A`, `0x20`–`0x2F`) have no layout in wire version 4 and
    are therefore unknown — skippable, not errors — until a future
    version assigns them one. Preservation is the **only** source of
    unknown frames on the encode side: an encoder MUST NOT emit an
@@ -433,6 +433,7 @@ Frame type registry (wire version 4):
 | `0x1B` | `PUSH_RESULT_DETAILS` | response | 6.3.1 |
 | `0x1C` | `LIVE_START` | response | 4.4 |
 | `0x1D` | `LIVE_END` | response | 4.4 |
+| `0x1E` | `UNIT_EXTENT` | response | 4.4 |
 | `0x1F` | `ERROR` | response | 1.6 |
 | `0x20`–`0x2F` | *reserved* (realtime extensions, presence) | — | §8.6 |
 
@@ -569,6 +570,8 @@ LEASE                           0 or 1 (§7.3.2), immediately after RESP_HEADER
                                 optional details immediately follow their result
 per unit section, in registration order (§4.4):
   SUB_START
+  UNIT_EXTENT                   0 or 1, immediately after an active
+                                bootstrap SUB_START (§4.4)
   (SEGMENT_REF | SEGMENT_INLINE) × m    bootstrap data (§5)
   SUB_END
 LIVE_START                      0 or 1, after every unit section (§4.4)
@@ -652,7 +655,8 @@ independent codecs agree byte-for-byte on which messages are
   32-byte `registrationDigest` and a 0- or 32-byte `echoDigest` (§4.2),
   `PROGRESS.cursor ≥ -1` and a unit id of 32 lowercase hex characters in
   `PROGRESS` and `SUB_START` (§4.3, §4.4), fenced records in strictly
-  ascending table order and a 0- or 32-byte `LIVE_END.echoDigest` (§4.4),
+  ascending table order, a 0- or 32-byte `LIVE_END.echoDigest` and
+  non-negative `UNIT_EXTENT` counts (§4.4),
   the `url`/`urlExpiresAtMs` presence tie (§5.4), and the structural
   validity of a `SEGMENT_INLINE` payload as a rows segment (§5.7 —
   structural only; the column-table schema check stays with the
@@ -1893,6 +1897,25 @@ re-registers the unit. A unit the app released and registered again before
 the section's `SUB_END` is registered when the client processes it, so the
 section applies to the new registration.
 
+**`UNIT_EXTENT`** (`0x1E`) states how many rows a unit's bootstrap
+delivers. It appears at most once per unit section, as the frame immediately
+after a `SUB_START` whose `status` is `active` and whose `bootstrap` is true;
+any other position is a decode error.
+
+| Field | Type | Semantics |
+|---|---|---|
+| `rowsTotal` | `i64` | The rows of the unit's bootstrap, counted when the bootstrap took its pin (§4.7). A negative value is a decode error |
+| `rowsDone` | `i64` | The rows the bootstrap delivered in its earlier sections. A negative value is a decode error |
+
+A row counts once per segment that carries it: a rows segment counts its row
+records, a sqlite image its `rowCount` (§5.4). The server emits the frame in
+every section of a bootstrap it counted at the pin, and in no other section
+(§4.7). `UNIT_EXTENT` is a frame of its own, so a client that predates it
+skips it as an unknown frame (§1.2, §9). A client MUST accept a bootstrap
+section without it and then reports no unit total (§7.7). The frame carries
+no byte count: the server learns a segment's size only when it encodes or
+builds the segment.
+
 **`LIVE_START`** (`0x1C`):
 
 | Field | Type | Semantics |
@@ -2253,9 +2276,11 @@ Bootstrap is **resumable, pinned, and paged**:
   token's `asOfCommitSeq` never becomes an image reuse key.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
   shape `{ "asOfCommitSeq": i, "tables": [..], "tableIndex": i,
-  "rowCursor": string|null, "image"?: true }`. `image` is present only
+  "rowCursor": string|null, "image"?: true, "rowsTotal"?: i,
+  "rowsDone"?: i }`. `image` is present only
   when `rowCursor` is not null and the table continues with its next range
-  image (§5.3). **Clients MUST treat it as opaque** and
+  image (§5.3). `rowsTotal` and `rowsDone` are non-negative integers,
+  present together or not at all (the extent, below). **Clients MUST treat it as opaque** and
   round-trip it byte-for-byte; only servers interpret it. (The shape is
   specified so vectors and tooling can render it, not for clients.)
 - Each pull continues from (`tableIndex`, `rowCursor`), emitting up to
@@ -2300,6 +2325,26 @@ Bootstrap is **resumable, pinned, and paged**:
   below the unit's pin already holds the table's state at `maxCommitSeq`; for
   one whose scope pin lies above it, the live section delivers changes the
   image already holds, and the version guard skips them (§4.5).
+
+**Extent.** When a bootstrap takes a fresh pin, the server counts the rows
+whose stored scopes match the effective scopes of each active (unit, table)
+pair (§3.2) and states their sum in the section's `UNIT_EXTENT` (§4.4) with
+`rowsDone = 0`. The count reads the row-scope index with one statement per
+covered table, once per bootstrap; the bootstrap reads every counted row in
+its pages anyway. Each resume token of the bootstrap carries `rowsTotal`
+unchanged and `rowsDone` raised by the rows its section delivered, so every
+later section states the same total and the exact rows delivered before it.
+A token without the two fields, minted by a server that predates
+`UNIT_EXTENT`, finishes its bootstrap without an extent and without them; a
+restarted bootstrap counts again.
+
+Pages read the rows as they are when the page is read, and the live section
+delivers the changes after the pin (§4.5). A write committed in a unit's
+scope while its bootstrap spans several sections can therefore add a row to
+a later page or remove one the count included: `rowsTotal` equals the rows
+delivered exactly when no such write lands before the bootstrap completes,
+and `rowsDone` is always exact. A client keeps its unit counters consistent
+under §7.7.
 
 **Phases.** SSP2 does not encode bootstrap phases (critical / interactive /
 background) in the protocol: registration order is the priority order, and
@@ -7010,6 +7055,23 @@ restart at 0, the work done for the new section so far. Its `SUB_END` clears
 section's last payload, which `complete` and `failed` report. No snapshot
 names the unit, table or segment of a section that already ended.
 
+`unitRowsTotal` and `unitRowsProcessed` count a whole unit's bootstrap
+across its payloads, sections and rounds. A section's `UNIT_EXTENT` (§4.4)
+sets `unitRowsTotal` to `rowsTotal` and `unitRowsProcessed` to `rowsDone`
+in the same snapshot that its `SUB_START` starts, so every snapshot that
+names a unit with a stated extent carries both. Each rise of `rowsProcessed`
+within the section raises `unitRowsProcessed` by the same amount.
+`unitRowsTotal` never falls below `unitRowsProcessed`: when writes during
+the bootstrap (§4.7) deliver more rows than the count, it rises with
+`unitRowsProcessed`. A `SUB_END` that completes the bootstrap sets
+`unitRowsTotal` to `unitRowsProcessed`, so a completed bootstrap ends with
+both equal. `SUB_START` clears both; a section without `UNIT_EXTENT` leaves
+them absent, and `SUB_END` keeps them like the payload counters. The
+starting point comes from the resume token, so the counters continue over a
+resumed round without client state. An attempt that fails part-way restarts
+its section at the token's `rowsDone`, and a restarted bootstrap (§4.7)
+starts again at 0.
+
 `bytesReceived` counts decoded response-body bytes, with optional `bytesTotal`.
 HTTP segment transports report intermediate bytes at 64 KiB boundaries (or
 larger transport chunks). A custom buffered transport can report only its final
@@ -8188,7 +8250,10 @@ object's single thread orders a registration before or after each relay.
 - **Breaking change definition**: anything that changes the bytes of an
   existing golden vector, removes an error code, or changes normative
   MUST behavior. Non-breaking: new frame types, new error codes, new
-  segment media types, new JSON control events.
+  segment media types, new JSON control events. `PUSH_RESULT_DETAILS`
+  (§6.3.1) and `UNIT_EXTENT` (§4.4) are frames of this kind inside wire
+  version 4: a peer that predates one skips it, and a server that predates
+  one never emits it.
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
@@ -8715,8 +8780,9 @@ byte-identical output):
 | 33 | `request/producer-push` | A database-less producer push: no `outboxId`, `clientSeq = 0` (§6.10) |
 | 34 | `response/realtime-delta` | A delta: `LIVE_START`, one `COMMIT` spanning three tables, `LIVE_END` with `throughSeq` = its `commitSeq` and an empty `echoDigest` (§8.2) |
 | 35 | `registration/digests` | JSON only, one object `{"units":[{"scopes","canonicalJson","id"}],"registrations":[{"units","canonicalJson","digest"}],"echoes":[{"units","canonicalJson","digest"}]}`: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4). Digests render as 64 lowercase hex characters |
+| 36 | `response/bootstrap-unit-extent` | Two unit sections: a fresh bootstrap whose `UNIT_EXTENT` states `rowsDone = 0` and a resumed one with `rowsDone` above 0, each immediately after its `SUB_START` (§4.4) |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1` |
-| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest` |
+| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest`, `UNIT_EXTENT` after a non-bootstrap `SUB_START`, after a segment frame, or with `rowsTotal = -1` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
 | — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column. Push admission values (§2.4): a `string` with U+0000; `json` nested 65 deep, holding `1e999` or `1.7976931348623159e308`, an unpaired surrogate as value or key, U+0000 as value or key, and `1e999`, an unpaired surrogate, a `\u0000` escape, nesting 65 deep or nesting 128 deep inside a value that a later duplicate key shadows; a NaN, `Infinity` or `-Infinity` `float`; a `blob_ref` with reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace, a duplicate key, or an unpaired surrogate or U+0000 in `name` |

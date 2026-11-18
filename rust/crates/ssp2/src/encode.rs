@@ -335,6 +335,18 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             w.raw(payload);
             ft::SEGMENT_INLINE
         }
+        Frame::UnitExtent {
+            rows_total,
+            rows_done,
+        } => {
+            assert!(
+                *rows_total >= 0 && *rows_done >= 0,
+                "UNIT_EXTENT counts must be >= 0"
+            );
+            w.i64(*rows_total);
+            w.i64(*rows_done);
+            ft::UNIT_EXTENT
+        }
         Frame::SubEnd {
             next_cursor,
             bootstrap_state,

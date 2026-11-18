@@ -630,6 +630,17 @@ export class ScenarioContext {
             faults.truncateNextResponse = false;
             return faults.truncate(result.bytes);
           }
+          if (faults.omitUnitExtent) {
+            const message = decodeMessage(result.bytes);
+            if (message.msgKind !== 'response')
+              throw new Error('expected response');
+            return encodeMessage({
+              ...message,
+              frames: message.frames.filter(
+                (frame) => frame.type !== 'UNIT_EXTENT',
+              ),
+            });
+          }
           if (faults.deferNextPulls > 0) {
             faults.deferNextPulls -= 1;
             const message = decodeMessage(result.bytes);

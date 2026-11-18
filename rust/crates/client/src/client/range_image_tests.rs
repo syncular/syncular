@@ -73,6 +73,8 @@ struct RangeServer {
     presented: Vec<Option<Position>>,
     downloads: Vec<String>,
     fail_once: Option<String>,
+    /// The `UNIT_EXTENT` each section states, as (rowsTotal, rowsDone).
+    extent: Option<(i64, i64)>,
 }
 
 impl RangeServer {
@@ -84,6 +86,7 @@ impl RangeServer {
             presented: Vec::new(),
             downloads: Vec::new(),
             fail_once: None,
+            extent: None,
         }
     }
 
@@ -133,6 +136,13 @@ impl Transport for RangeServer {
                 bootstrap: true,
                 fenced: Vec::new(),
             });
+            frames.extend(
+                self.extent
+                    .map(|(rows_total, rows_done)| Frame::UnitExtent {
+                        rows_total,
+                        rows_done,
+                    }),
+            );
             frames.extend(refs);
             frames.push(Frame::SubEnd {
                 next_cursor: 7,
@@ -455,4 +465,40 @@ fn a_units_table_without_the_applied_record_gains_it_on_open() {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
+}
+
+#[test]
+fn an_image_an_earlier_attempt_applied_still_counts_toward_the_unit() {
+    // §7.7: the retry skips the applied image's import, and its rows still
+    // raise the unit count to the total.
+    let mut client = client();
+    let unit = client
+        .subscribe(UnitScopes::from([("project_id".into(), "p1".into())]))
+        .unwrap();
+    let mut server = RangeServer::new(&unit);
+    server.section((-1, None), &[&["a"], &["b"], &["c"]], None);
+    server.extent = Some((3, 0));
+    let images = ids_of(&server, &(-1, None));
+    server.fail_once = Some(images[1].clone());
+
+    let outcome = client.sync(&mut server);
+
+    assert!(matches!(outcome, SyncOutcome::Failed { .. }), "{outcome:?}");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<crate::SyncProgress>::new()));
+    let sink = seen.clone();
+    let _subscription = client
+        .progress()
+        .subscribe(move |progress| sink.lock().unwrap().push(progress.clone()));
+    let outcome = client.sync_until_idle(&mut server, None);
+
+    assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+    let seen = seen.lock().unwrap();
+    let progress = seen
+        .iter()
+        .rfind(|p| p.unit_rows_total.is_some())
+        .expect("a snapshot with the unit counters");
+    assert_eq!(
+        (progress.unit_rows_total, progress.unit_rows_processed),
+        (Some(3), Some(3))
+    );
 }

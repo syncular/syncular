@@ -1953,3 +1953,93 @@ fn a_corrupt_generation_record_refuses_the_bump_before_mutation() {
     drop(h);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn a_unit_extent_counts_the_bootstrap_across_segments_sections_and_rounds() {
+    // §7.7: UNIT_EXTENT starts the unit counters in the SUB_START snapshot;
+    // each payload rise adds to them, and a section without it reports none.
+    let mut h = Harness::new();
+    h.client.subscribe(p1()).unwrap();
+    h.client.subscribe(p2()).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<crate::SyncProgress>::new()));
+    let sink = seen.clone();
+    let _subscription = h
+        .client
+        .progress()
+        .subscribe(move |progress| sink.lock().unwrap().push(progress.clone()));
+    let extent = |rows_total, rows_done| Frame::UnitExtent {
+        rows_total,
+        rows_done,
+    };
+    h.round(vec![
+        start(&id_of(&p1()), SubStatus::Active, true, vec![]),
+        extent(5, 0),
+        h.rows("tasks", &[&["t1", "p1", "a"], &["t2", "p1", "b"]]),
+        h.rows("tasks", &[&["t3", "p1", "c"]]),
+        end(4, Some(r#"{"tableIndex":0,"rowCursor":"t3"}"#)),
+        start(&id_of(&p2()), SubStatus::Active, true, vec![]),
+        h.rows("tasks", &[&["u1", "p2", "a"]]),
+        end(4, Some(r#"{"tableIndex":0,"rowCursor":"u1"}"#)),
+    ]);
+    h.round(vec![
+        start(&id_of(&p1()), SubStatus::Active, true, vec![]),
+        extent(5, 3),
+        h.rows("tasks", &[&["t4", "p1", "d"], &["t5", "p1", "e"]]),
+        end(4, None),
+    ]);
+    let seen = seen.lock().unwrap();
+    let (p1_id, p2_id) = (id_of(&p1()), id_of(&p2()));
+    let p1_seen: Vec<_> = seen
+        .iter()
+        .filter(|p| p.unit_id.as_deref() == Some(p1_id.as_str()))
+        .collect();
+    assert_eq!(
+        (p1_seen[0].unit_rows_total, p1_seen[0].unit_rows_processed),
+        (Some(5), Some(0))
+    );
+    assert!(p1_seen.iter().all(|p| p.unit_rows_total == Some(5)));
+    let processed: Vec<u64> = p1_seen
+        .iter()
+        .map(|p| p.unit_rows_processed.unwrap())
+        .collect();
+    assert!(
+        processed.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{processed:?}"
+    );
+    assert_eq!(processed.last(), Some(&5));
+    assert!(seen
+        .iter()
+        .filter(|p| p.unit_id.as_deref() == Some(p2_id.as_str()))
+        .all(|p| p.unit_rows_total.is_none() && p.unit_rows_processed.is_none()));
+    let last = seen.last().unwrap();
+    assert_eq!(last.state, crate::ProgressState::Complete);
+    assert_eq!(
+        (last.unit_rows_total, last.unit_rows_processed),
+        (Some(5), Some(5))
+    );
+    // A new attempt starts without unit counters.
+    let second = seen.iter().rposition(|p| p.attempt == 1).unwrap() + 1;
+    assert_eq!(seen[second].unit_rows_total, None);
+}
+
+#[test]
+fn a_unit_total_rises_with_rows_written_during_the_bootstrap() {
+    // §7.7: the total never falls below the rows processed.
+    let mut h = Harness::new();
+    h.client.subscribe(p1()).unwrap();
+    let rows = h.rows("tasks", &[&["t1", "p1", "a"], &["t2", "p1", "b"]]);
+    h.round(vec![
+        start(&id_of(&p1()), SubStatus::Active, true, vec![]),
+        Frame::UnitExtent {
+            rows_total: 1,
+            rows_done: 0,
+        },
+        rows,
+        end(4, None),
+    ]);
+    let last = h.client.progress().snapshot().unwrap();
+    assert_eq!(
+        (last.unit_rows_total, last.unit_rows_processed),
+        (Some(2), Some(2))
+    );
+}

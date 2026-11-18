@@ -846,6 +846,12 @@ under a new `epoch`. `phase` is `request`,
 `download`, or `import`; `state` is `running`, `complete`, or `failed`. Unknown
 totals remain absent. A new attempt clears prior errors and counters.
 
+`unitRowsTotal` and `unitRowsProcessed` cover the bootstrap of the unit in
+`unitId` as a whole: the rows the server counted when the bootstrap started and
+the rows imported since, across segments and rounds. The count only rises and
+ends equal to the total; both are absent when the server states no count
+(SPEC §7.7).
+
 HTTP downloads report decoded body bytes at 64 KiB intervals or larger network
 chunks. Custom segment downloaders receive `request.onProgress`; signed-URL
 implementations receive an optional second callback argument. Call it with the

@@ -720,6 +720,34 @@ export function scanRowPageSql(
 }
 
 /**
+ * The §4.7 bootstrap extent of one (table, filter): the `sync_row_scopes`
+ * entries of the seek variable whose row also holds an entry of every other
+ * variable of the filter. A row holds one entry per variable, so the count is
+ * the matching rows; the index changes in the transaction of each row write.
+ *
+ * Bind order:
+ *   - postgres: [partition, records as JSON text]; one `(sub, n)` row per
+ *     `{i, tbl, var, vals, rest}` record, so the counts of concurrent
+ *     bootstraps share one statement;
+ *   - sqlite:   [partition, tbl, var, values as JSON array text, rest as
+ *     JSON text]; one `n` row.
+ * `rest` is the JSON array of `{var, vals}` for the other variables.
+ */
+export function countRowsSql(dialect: RelationalDialect): string {
+  return dialect === 'sqlite'
+    ? `SELECT count(*) AS n FROM sync_row_scopes a
+       WHERE a.partition=?1 AND a.tbl=?2 AND a.var=?3 AND a.value IN (SELECT value FROM json_each(?4))
+         AND NOT EXISTS (SELECT 1 FROM json_each(?5) f WHERE NOT EXISTS (SELECT 1 FROM sync_row_scopes b
+           WHERE b.partition=?1 AND b.tbl=?2 AND b.var=json_extract(f.value, '$.var')
+             AND b.value IN (SELECT value FROM json_each(f.value, '$.vals')) AND b.row_id=a.row_id))`
+    : `SELECT s.i AS sub, (SELECT count(*) FROM sync_row_scopes a
+         WHERE a.partition=$1 AND a.tbl=s.tbl AND a.var=s.var AND a.value=ANY(s.vals)
+           AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(s.rest) AS f(var text, vals text[]) WHERE NOT EXISTS (SELECT 1 FROM sync_row_scopes b
+             WHERE b.partition=$1 AND b.tbl=s.tbl AND b.var=f.var AND b.value=ANY(f.vals) AND b.row_id=a.row_id))) AS n
+       FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], rest jsonb)`;
+}
+
+/**
  * Selectivity probe for `chooseScanVariable`: per `{i, tbl, var, vals}`
  * record of the JSON array, the count of its `sync_row_scopes` entries up
  * to a cap, read from the covering primary key. Rows come back as

@@ -1028,6 +1028,61 @@ describe('§7.7 progress across sections', () => {
     expect(seen.at(-1)).toMatchObject({ state: 'complete' });
     expect(seen.at(-1)?.unitId).toBeUndefined();
   });
+
+  test('a unit extent counts the bootstrap across segments and rounds (§4.4)', async () => {
+    const { client, round } = await scripted();
+    client.subscribe(P1);
+    client.subscribe(P2);
+    const seen: SyncProgress[] = [];
+    client.onProgress((progress) => seen.push(progress));
+    const task = (i: number) => [`t${i}`, 'p1', `${i}`];
+    const page = (from: number, to: number) =>
+      rows(
+        'tasks',
+        ...Array.from({ length: to - from }, (_, i) => task(from + i)),
+      );
+    const token =
+      '{"asOfCommitSeq":3,"tables":["tasks","notes"],"tableIndex":0,"rowCursor":"t599","rowsTotal":1000,"rowsDone":600}';
+    await round(
+      start(unitId(P1), { bootstrap: true }),
+      { type: 'UNIT_EXTENT', rowsTotal: 1000, rowsDone: 0 },
+      page(0, 300),
+      page(300, 600),
+      { type: 'SUB_END', nextCursor: 3, bootstrapState: token },
+      // A server that states no extent: the unit reports no total.
+      ...bootstrap(P2, 3, [rows('notes'), rows('tasks', ['u1', 'p2', 'a'])]),
+      ...live(3),
+    );
+    await round(
+      start(unitId(P1), { bootstrap: true }),
+      { type: 'UNIT_EXTENT', rowsTotal: 1000, rowsDone: 600 },
+      page(600, 1000),
+      rows('notes'),
+      { type: 'SUB_END', nextCursor: 3 },
+      ...live(3),
+    );
+    const p1 = seen.filter((p) => p.unitId === unitId(P1));
+    expect(p1[0]).toMatchObject({ unitRowsTotal: 1000, unitRowsProcessed: 0 });
+    expect(p1.every((p) => p.unitRowsTotal === 1000)).toBe(true);
+    const processed = seen
+      .map((p) => p.unitRowsProcessed)
+      .filter((n): n is number => n !== undefined);
+    const rounds = processed.findIndex(
+      (n, i) => i > 0 && n < processed[i - 1]!,
+    );
+    // Each round only rises; the second one resumes at the token's count.
+    expect(rounds).toBe(-1);
+    expect(processed).toContain(600);
+    expect(seen.at(-1)).toMatchObject({
+      state: 'complete',
+      unitRowsTotal: 1000,
+      unitRowsProcessed: 1000,
+    });
+    const p2 = seen.filter((p) => p.unitId === unitId(P2));
+    expect(p2.length).toBeGreaterThan(0);
+    expect(p2.some((p) => p.unitRowsTotal !== undefined)).toBe(false);
+    expect(client.query('SELECT count(*) AS n FROM tasks')[0]?.n).toBe(1001);
+  });
 });
 
 describe('§6.3.2 push sequence', () => {

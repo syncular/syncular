@@ -488,17 +488,13 @@ export function persistCommitOutcomeResolution(
 
 /**
  * Bound journal growth without deleting active failures. If active failures
- * alone exceed the cap the journal intentionally remains over-capacity.
+ * alone exceed the cap the journal intentionally remains over-capacity. The
+ * client constructor validates `maxEntries`.
  */
 export function pruneCommitOutcomes(
   db: ClientDatabase,
   maxEntries: number,
 ): number {
-  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
-    throw invalidRequest(
-      'outcome retention maxEntries must be a positive safe integer',
-    );
-  }
   const count = db.query(`SELECT COUNT(*) AS count FROM ${OUTCOMES_TABLE}`)[0]
     ?.count as number | undefined;
   const excess = Math.max(0, (count ?? 0) - maxEntries);

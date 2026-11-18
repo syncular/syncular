@@ -928,6 +928,15 @@ export type ClientSnapshotReader = {
     | Promise<ReturnType<ClientSnapshotMethods[Key]>>;
 };
 
+/** Encodes a request in the current wire version. */
+function encodeRequestFrames(frames: RequestFrame[]): Uint8Array {
+  return encodeRequest({
+    wireVersion: PROTOCOL_WIRE_VERSION,
+    msgKind: 'request',
+    frames,
+  });
+}
+
 /** §7.7: progress fields of a payload; no payload is current. */
 const NO_PAYLOAD: Partial<SyncProgress> = {
   table: undefined,
@@ -4086,13 +4095,7 @@ export class SyncClient {
     // frames make a valid probe whose encoded size cancels out of the
     // per-commit delta measured against the canonical encoder.
     const baseBytes =
-      byteCap === undefined
-        ? 0
-        : encodeRequest({
-            wireVersion: PROTOCOL_WIRE_VERSION,
-            msgKind: 'request',
-            frames: [header, pull],
-          }).length;
+      byteCap === undefined ? 0 : encodeRequestFrames([header, pull]).length;
     const pushFrames: RequestFrame[] = [];
     const outbox: OutboxCommit[] = [];
     const frameBytes: number[] = [];
@@ -4189,11 +4192,7 @@ export class SyncClient {
       const frame =
         byteCap === undefined
           ? 0
-          : encodeRequest({
-              wireVersion: PROTOCOL_WIRE_VERSION,
-              msgKind: 'request',
-              frames: [header, pushFrame, pull],
-            }).length - baseBytes;
+          : encodeRequestFrames([header, pushFrame, pull]).length - baseBytes;
       // The head is always encoded so the caller can report the full
       // projected request size with the final header and subscription bytes;
       // a later commit defers once it no longer fits.
@@ -4621,11 +4620,7 @@ export class SyncClient {
         // The fixed frames encode as envelope + fixed frames + END; each
         // admitted push frame adds its own (5 + payload). Trimming the tail
         // re-fits the request to the final registration state.
-        const fixedBytes = encodeRequest({
-          wireVersion: PROTOCOL_WIRE_VERSION,
-          msgKind: 'request',
-          frames: fixedFrames,
-        }).length;
+        const fixedBytes = encodeRequestFrames(fixedFrames).length;
         if (fixedBytes > byteCap)
           throw this.#pushCapacityError('bytes', byteCap, fixedBytes);
         let admittedBytes = 0;
@@ -4651,11 +4646,7 @@ export class SyncClient {
         ...pushFrames,
         ...fixedFrames.slice(lead.length),
       ];
-      const requestBytes = encodeRequest({
-        wireVersion: PROTOCOL_WIRE_VERSION,
-        msgKind: 'request',
-        frames,
-      });
+      const requestBytes = encodeRequestFrames(frames);
       const responseBytes = await this.#roundTrip(requestBytes, signal);
       const message = decodeResponse(responseBytes);
       // §1.5: a complete, decodable response ends the report obligation.
@@ -5593,11 +5584,17 @@ export class SyncClient {
                     skip: false,
                   }
                 : undefined;
-            // §7.7: a section boundary ends the previous payload.
+            // §7.7: a section boundary ends the previous payload; the same
+            // snapshot takes the section's extent (§4.4).
+            const extent = message.frames[index + 1];
+            const stated =
+              section !== undefined && extent?.type === 'UNIT_EXTENT';
             this.#progress.update({
               ...NO_PAYLOAD,
               phase: 'import',
               unitId: section?.unit.id,
+              unitRowsTotal: stated ? extent.rowsTotal : undefined,
+              unitRowsProcessed: stated ? extent.rowsDone : undefined,
             });
             break;
           }
@@ -5625,19 +5622,22 @@ export class SyncClient {
               // §5.6: rows an earlier attempt at this position applied. A
               // partly applied image already ran its table's first-page clear.
               appliedRows = section.unit.applied?.[frame.segmentId];
-              if (appliedRows !== undefined) {
-                section.seeded.add(frame.table);
-                if (appliedRows === frame.rowCount) break;
-              }
+              if (appliedRows !== undefined) section.seeded.add(frame.table);
+              const imported = appliedRows === frame.rowCount;
               this.#progress.update({
                 ...NO_PAYLOAD,
-                phase: 'download',
+                phase: imported ? 'import' : 'download',
                 unitId,
                 table: frame.table,
                 segmentId: frame.segmentId,
-                bytesTotal: frame.byteLength,
+                bytesTotal: imported ? undefined : frame.byteLength,
                 rowsTotal: frame.rowCount,
               });
+              if (imported) {
+                // §7.7: an earlier attempt imported this payload.
+                this.#progress.update({ rowsProcessed: frame.rowCount });
+                break;
+              }
               prefetch();
               const pending = prefetched.get(frame);
               prefetched.delete(frame);
@@ -5748,6 +5748,10 @@ export class SyncClient {
               this.#localResetEpoch === resetEpoch
             ) {
               this.#finishSection(section, frame, summary);
+              // §7.7: a completed bootstrap ends at what it imported.
+              const processed = this.#progress.snapshot()?.unitRowsProcessed;
+              if (frame.bootstrapState === undefined && processed !== undefined)
+                this.#progress.update({ unitRowsTotal: processed });
             }
             section = undefined;
             // The counters stay: `complete` and `failed` report them.

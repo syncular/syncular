@@ -383,6 +383,23 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 seen_body = true;
                 last_push_result = None;
             }
+            ft::UNIT_EXTENT => {
+                // §4.4: only immediately after an active bootstrap SUB_START.
+                if !matches!(
+                    frames.last(),
+                    Some(Frame::SubStart {
+                        status: SubStatus::Active,
+                        bootstrap: true,
+                        ..
+                    })
+                ) {
+                    return Err(DecodeError::invalid(
+                        "UNIT_EXTENT frame must immediately follow an active bootstrap SUB_START",
+                    ));
+                }
+                frames.push(decode_unit_extent(payload)?);
+                seen_body = true;
+            }
             ft::SEGMENT_REF | ft::SEGMENT_INLINE => {
                 if section != Section::Unit {
                     return Err(DecodeError::invalid("segment frame outside a unit section"));
@@ -1115,6 +1132,20 @@ fn decode_segment_ref(payload: &[u8]) -> Result<Frame> {
             next_row_cursor,
             url,
             url_expires_at_ms,
+        })
+    })
+}
+
+fn decode_unit_extent(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "UNIT_EXTENT", |r| {
+        let rows_total = r.i64("rowsTotal")?;
+        let rows_done = r.i64("rowsDone")?;
+        if rows_total < 0 || rows_done < 0 {
+            return Err(DecodeError::invalid("UNIT_EXTENT counts must be >= 0"));
+        }
+        Ok(Frame::UnitExtent {
+            rows_total,
+            rows_done,
         })
     })
 }

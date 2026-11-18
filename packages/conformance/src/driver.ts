@@ -1197,9 +1197,12 @@ export interface DriverSyncProgress {
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
   readonly phase: 'request' | 'download' | 'import';
+  readonly unitId?: string | undefined;
   readonly bytesReceived: number;
   readonly rowsProcessed: number;
   readonly rowsTotal?: number | undefined;
+  readonly unitRowsTotal?: number | undefined;
+  readonly unitRowsProcessed?: number | undefined;
   readonly importWriteMs?: number | undefined;
   readonly importCommitMs?: number | undefined;
   readonly errorCode?: string;

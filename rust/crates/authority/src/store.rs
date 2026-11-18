@@ -351,24 +351,11 @@ pub(crate) fn scan_rows(
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<StoredRow>, AuthorityError> {
-    let (variable, value) = unit.iter().min().ok_or_else(|| corrupt("unit scopes"))?;
-    let column = &table.columns[table
-        .scopes
-        .iter()
-        .find(|scope| &scope.variable == variable)
-        .ok_or_else(|| corrupt("unit scopes"))?
-        .column];
-    // The column holds the typed value its stored scope renders from.
-    let key = match (column.ty, value.as_str()) {
-        (ColumnType::Integer, _) => value
-            .parse()
-            .map_or_else(|_| SqlValue::Text(value.clone()), SqlValue::Integer),
-        _ => SqlValue::Text(value.clone()),
-    };
+    let (column, key) = scope_seek(table, unit)?;
     let sql = format!(
         "SELECT {ROW_COLUMNS} FROM {} WHERE _sync_partition=?1 AND {}=?4 AND _sync_row_id>?2 ORDER BY _sync_row_id LIMIT ?3",
         quote(&table.name),
-        quote(&column.name)
+        quote(column)
     );
     let batch = limit.max(64);
     let mut rows = Vec::new();
@@ -400,6 +387,62 @@ pub(crate) fn scan_rows(
         }
     }
     Ok(rows)
+}
+
+/// §4.7 extent: the rows `scan_rows` delivers for the unit, in one statement
+/// over the same scope-index seek and stored-scope match.
+pub(crate) fn count_rows(
+    conn: &Connection,
+    table: &Table,
+    unit: &[(String, String)],
+) -> Result<i64, AuthorityError> {
+    let (column, key) = scope_seek(table, unit)?;
+    let mut sql = format!(
+        "SELECT COUNT(*) FROM {} WHERE _sync_partition=?1 AND {}=?2",
+        quote(&table.name),
+        quote(column)
+    );
+    let mut bindings = vec![SqlValue::Text(PARTITION.to_owned()), key];
+    for (variable, value) in unit {
+        sql.push_str(&format!(
+            " AND json_extract(_sync_scopes, ?{}) IS ?{}",
+            bindings.len() + 1,
+            bindings.len() + 2
+        ));
+        bindings.push(SqlValue::Text(format!(
+            "$.{}",
+            Value::from(variable.as_str())
+        )));
+        bindings.push(SqlValue::Text(value.clone()));
+    }
+    conn.prepare_cached(&sql)
+        .and_then(|mut statement| {
+            statement.query_row(rusqlite::params_from_iter(bindings), |row| row.get(0))
+        })
+        .db()
+}
+
+/// The scope-index seek of a unit's first variable: the column and its typed
+/// key. The stored scopes decide, so the seek only has to keep every match.
+fn scope_seek<'a>(
+    table: &'a Table,
+    unit: &[(String, String)],
+) -> Result<(&'a str, SqlValue), AuthorityError> {
+    let (variable, value) = unit.iter().min().ok_or_else(|| corrupt("unit scopes"))?;
+    let column = &table.columns[table
+        .scopes
+        .iter()
+        .find(|scope| &scope.variable == variable)
+        .ok_or_else(|| corrupt("unit scopes"))?
+        .column];
+    // The column holds the typed value its stored scope renders from.
+    let key = match (column.ty, value.as_str()) {
+        (ColumnType::Integer, _) => value
+            .parse()
+            .map_or_else(|_| SqlValue::Text(value.clone()), SqlValue::Integer),
+        _ => SqlValue::Text(value.clone()),
+    };
+    Ok((&column.name, key))
 }
 
 /// Up to `limit` rows of `child` after `after` whose reference `column`

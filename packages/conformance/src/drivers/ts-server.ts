@@ -665,6 +665,7 @@ class TsServerInstance implements ServerInstance {
       },
       latestScopedChangeSeq: (p, q) =>
         this.#storage.latestScopedChangeSeq(p, q),
+      countScopedRows: (p, q) => this.#storage.countScopedRows(p, q),
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
       putClientRecord: (p, r, o) => this.#storage.putClientRecord(p, r, o),

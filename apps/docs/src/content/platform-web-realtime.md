@@ -247,7 +247,31 @@ const unsubscribe = handle.onProgress((progress) => {
 | `unitId`, `table`, `segmentId` | The current payload; `segmentId` is optional. A unit section's start sets `unitId` (absent for a section the client skips) and clears `table`, `segmentId`, the totals and both counters. Its end clears `unitId`, `table` and `segmentId` and keeps the counters of its last payload. |
 | `bytesTotal`, `rowsTotal` | Absent when unknown. A `SEGMENT_REF` sets both when its download starts, so `bytesReceived / bytesTotal` is the payload's share during `download`; `rowsProcessed` stays 0 until `import`. |
 | `rowsProcessed` | Work inside an import transaction, including rows a failure can roll back. |
+| `unitRowsTotal`, `unitRowsProcessed` | The bootstrap of the unit in `unitId` as a whole, across its segments and rounds. Present from the first snapshot of a bootstrap section whose server counted the unit's rows; absent otherwise. |
 | `errorCode`, `retryDelayMs` | Set on `failed`. A scheduled background retry also sets `retryDelayMs`: 250 ms, doubling per consecutive failure up to 30,000 ms. |
+
+`unitRowsTotal` is the number of rows the server counted when the unit's
+bootstrap started, and `unitRowsProcessed` the rows the client has imported for
+that bootstrap since, so `unitRowsProcessed / unitRowsTotal` is the unit's
+share for an "x of y" display:
+
+```ts title="src/unit-progress.ts"
+handle.onProgress((progress) => {
+  if (progress.unitRowsTotal !== undefined)
+    console.log(progress.unitId, progress.unitRowsProcessed, 'of', progress.unitRowsTotal);
+});
+```
+
+The server carries the count of rows already delivered in the bootstrap's resume
+token, so a later round, or a round that resumes after a failure, continues the
+count where the last completed section left it. Within one bootstrap
+`unitRowsProcessed` only rises, and `unitRowsTotal` is never below it: writes
+to the unit's scope during a bootstrap that spans several rounds can add rows to
+its later pages, and the total then rises with the count. When the bootstrap
+completes, `unitRowsTotal` equals `unitRowsProcessed`. A server older than this
+release states no count, and the client then leaves both fields absent until
+the bootstrap ends. Each unit section's start clears both, so the values of one
+unit never show under another.
 
 `complete` follows checkpoint persistence and optimistic read-model
 reconciliation for that round. It does not mean every unit has

@@ -704,8 +704,15 @@ function progressValue(value: JsonValue): DriverSyncProgress {
     phase: object.phase,
     bytesReceived: object.bytesReceived,
     rowsProcessed: object.rowsProcessed,
+    ...(typeof object.unitId === 'string' ? { unitId: object.unitId } : {}),
     ...(typeof object.rowsTotal === 'number'
       ? { rowsTotal: object.rowsTotal }
+      : {}),
+    ...(typeof object.unitRowsTotal === 'number'
+      ? { unitRowsTotal: object.unitRowsTotal }
+      : {}),
+    ...(typeof object.unitRowsProcessed === 'number'
+      ? { unitRowsProcessed: object.unitRowsProcessed }
       : {}),
     ...(typeof object.importWriteMs === 'number'
       ? { importWriteMs: object.importWriteMs }

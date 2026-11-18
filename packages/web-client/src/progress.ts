@@ -14,6 +14,10 @@ export interface SyncProgress {
   readonly bytesTotal?: number | undefined;
   readonly rowsProcessed: number;
   readonly rowsTotal?: number | undefined;
+  /** The unit's bootstrap rows as the server counted them (SPEC §4.4, §7.7). */
+  readonly unitRowsTotal?: number | undefined;
+  /** Rows of the unit's bootstrap imported so far, across its sections. */
+  readonly unitRowsProcessed?: number | undefined;
   /** Time in this payload's import transactions before COMMIT, in ms. */
   readonly importWriteMs?: number | undefined;
   /** Time committing them and publishing their changes, in ms. */
@@ -68,7 +72,19 @@ export class ProgressEmitter {
   }
 
   update(update: Partial<SyncProgress>): void {
-    if (this.#snapshot?.state === 'running')
-      this.emit({ ...this.#snapshot, ...update });
+    const before = this.#snapshot;
+    if (before?.state !== 'running') return;
+    const next = { ...before, ...update };
+    // §7.7: each rise of the payload counter raises the unit's, and the unit
+    // total never falls below what was imported.
+    if (next.unitRowsProcessed !== undefined) {
+      const processed =
+        next.unitRowsProcessed +
+        Math.max(0, next.rowsProcessed - before.rowsProcessed);
+      next.unitRowsProcessed = processed;
+      if (next.unitRowsTotal !== undefined)
+        next.unitRowsTotal = Math.max(next.unitRowsTotal, processed);
+    }
+    this.emit(next);
   }
 }

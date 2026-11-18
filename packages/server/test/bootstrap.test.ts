@@ -297,13 +297,26 @@ test('a unit pages across its covered tables in bootstrap order (§4.7)', async 
         .map((row) => row.values[0]),
     ),
   ).toEqual([['t1', 't2'], ['t3']]);
+  // §4.7 extent: counted at the pin over both tables, carried by the token.
+  expect(first.body[0]).toEqual({
+    type: 'UNIT_EXTENT',
+    rowsTotal: 4,
+    rowsDone: 0,
+  });
   expect(JSON.parse(first.end.bootstrapState ?? '')).toEqual({
     asOfCommitSeq: 4,
     tables: ['tasks', 'notes'],
     tableIndex: 1,
     rowCursor: null,
+    rowsTotal: 4,
+    rowsDone: 3,
   });
   const second = section(await replica.pull(t, page), unit);
+  expect(second.body[0]).toEqual({
+    type: 'UNIT_EXTENT',
+    rowsTotal: 4,
+    rowsDone: 3,
+  });
   expect(
     inlineSegments(second.body).map((f) => decodeRowsSegment(f.payload).table),
   ).toEqual(['notes']);
@@ -335,6 +348,51 @@ test('a unit pages across its covered tables in bootstrap order (§4.7)', async 
       (f) => decodeRowsSegment(f.payload).table,
     ),
   ).toEqual(['tasks', 'notes']);
+});
+
+test('a token minted without an extent finishes without one; a malformed count restarts (§4.7)', async () => {
+  const t = makeContext();
+  t.scopes.value = { project_id: ['p1'] };
+  for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
+  const unit = { project_id: 'p1' };
+  const resume = async (token: object) =>
+    section(
+      await sync(
+        t,
+        pullFrames([unit], {
+          limitSnapshotRows: 1,
+          maxSnapshotPages: 1,
+          progress: [progressFrame(unit, 3, JSON.stringify(token))],
+        }),
+      ),
+      unit,
+    );
+  const legacy = {
+    asOfCommitSeq: 3,
+    tables: ['tasks'],
+    tableIndex: 0,
+    rowCursor: 't1',
+  };
+  const old = await resume(legacy);
+  expect(old.body.some((frame) => frame.type === 'UNIT_EXTENT')).toBe(false);
+  expect(JSON.parse(old.end.bootstrapState ?? '')).toEqual({
+    ...legacy,
+    rowCursor: 't2',
+  });
+  // One count without the other is no token shape: a fresh, counted pin.
+  const restarted = await resume({ ...legacy, rowsTotal: 3 });
+  expect(restarted.body[0]).toEqual({
+    type: 'UNIT_EXTENT',
+    rowsTotal: 3,
+    rowsDone: 0,
+  });
+  expect(
+    inlineSegments(restarted.body).flatMap((f) =>
+      decodeRowsSegment(f.payload)
+        .blocks.flat()
+        .map((row) => row.values[0]),
+    ),
+  ).toEqual(['t1']);
 });
 
 describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
@@ -993,6 +1051,14 @@ test('returning one bootstrap stream does not cancel a build awaited by another'
       'epoch',
     ),
   );
+  // Each section opens with its §4.4 extent, before any segment work.
+  for (const stream of streams) {
+    expect((await stream.next()).value).toEqual({
+      type: 'UNIT_EXTENT',
+      rowsTotal: 2,
+      rowsDone: 0,
+    });
+  }
   const first = streams[0]!.next();
   const second = streams[1]!.next();
   await building;

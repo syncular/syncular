@@ -289,6 +289,12 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
         type: 'SEGMENT_INLINE',
         payload: bytesToBase64(frame.payload),
       };
+    case 'UNIT_EXTENT':
+      return {
+        type: 'UNIT_EXTENT',
+        rowsTotal: frame.rowsTotal,
+        rowsDone: frame.rowsDone,
+      };
     case 'SUB_END':
       return {
         type: 'SUB_END',

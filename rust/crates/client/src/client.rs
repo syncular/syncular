@@ -8766,7 +8766,7 @@ impl SyncClient {
                         bootstrap,
                         fenced,
                     };
-                    match self.process_section(
+                    let completed = match self.process_section(
                         transport,
                         &section,
                         body,
@@ -8782,14 +8782,20 @@ impl SyncClient {
                             failure = Some((error.code, error.message, None, error.details));
                             break;
                         }
-                        _ => {}
-                    }
+                        Ok(completed) => completed,
+                        Err(_) => false,
+                    };
                     if ended {
                         // The counters stay: `complete` and `failed` report them.
+                        // §7.7: a completed bootstrap ends with the unit total
+                        // equal to the rows processed.
                         self.progress.update(|p| {
                             p.unit_id = None;
                             p.table = None;
                             p.segment_id = None;
+                            if completed && p.unit_rows_total.is_some() {
+                                p.unit_rows_total = p.unit_rows_processed;
+                            }
                         });
                     }
                     match error {
@@ -9444,7 +9450,8 @@ impl SyncClient {
     /// `SUB_END` (§4.6 reset, §3.3 revocation and purge, the echo, cursor and
     /// resume token). A section of a unit the app released while the round was
     /// in flight is skipped; a fail-closed first page fails the unit and skips
-    /// the rest of its section (§5.6).
+    /// the rest of its section (§5.6). Returns whether its `SUB_END` completed
+    /// a bootstrap (§7.7).
     fn process_section(
         &mut self,
         transport: &mut dyn Transport,
@@ -9453,16 +9460,31 @@ impl SyncClient {
         sub_end: Option<(i64, Option<String>)>,
         meta: &RequestMeta,
         report: &mut SyncReport,
-    ) -> Result<(), SectionError> {
+    ) -> Result<bool, SectionError> {
         let storage = |message| SectionError::Abort("storage.failed".to_owned(), message);
         let unit = self
             .stored(get_unit(&self.conn, &start.id))
             .map_err(storage)?
             .filter(|unit| unit.status == UnitStatus::Active);
-        // §7.7: a section boundary ends the previous payload.
+        // §7.7: a section boundary ends the previous payload; the section's
+        // UNIT_EXTENT starts the unit counters in the same snapshot.
+        let extent = match (&unit, body.first()) {
+            (
+                Some(_),
+                Some(Frame::UnitExtent {
+                    rows_total,
+                    rows_done,
+                }),
+            ) => u64::try_from(*rows_total)
+                .ok()
+                .zip(u64::try_from(*rows_done).ok()),
+            _ => None,
+        };
         self.progress.update(|p| {
             p.phase = ProgressPhase::Import;
             p.unit_id = unit.as_ref().map(|unit| unit.id.clone());
+            p.unit_rows_total = extent.map(|(total, _)| total);
+            p.unit_rows_processed = extent.map(|(_, done)| done);
             p.table = None;
             p.segment_id = None;
             p.bytes_received = 0;
@@ -9473,7 +9495,7 @@ impl SyncClient {
             p.import_commit_ms = None;
         });
         let Some(unit) = unit else {
-            return Ok(());
+            return Ok(false);
         };
         let echo: Vec<EchoRecord> = start
             .fenced
@@ -9559,6 +9581,23 @@ impl SyncClient {
                             seeded.insert(table.clone());
                         }
                         if resumed == Some(row_count) {
+                            // §7.7: an earlier attempt imported this payload;
+                            // its rows still count toward the unit.
+                            self.progress.update(|p| {
+                                p.phase = ProgressPhase::Import;
+                                p.unit_id = Some(unit.id.clone());
+                                p.table = Some(table.clone());
+                                p.segment_id = Some(segment_id.clone());
+                                p.bytes_received = 0;
+                                p.bytes_total = None;
+                                p.rows_processed = 0;
+                                p.rows_total = u64::try_from(row_count).ok();
+                                p.import_write_ms = None;
+                                p.import_commit_ms = None;
+                            });
+                            self.progress.update(|p| {
+                                p.rows_processed = u64::try_from(row_count).unwrap_or(0)
+                            });
                             continue;
                         }
                         if meta
@@ -9705,6 +9744,7 @@ impl SyncClient {
                             .map_err(storage)?;
                         }
                     }
+                    Frame::UnitExtent { .. } => {}
                     _ => {
                         return Err(SectionError::Abort(
                             "sync.invalid_request".to_owned(),
@@ -9718,7 +9758,7 @@ impl SyncClient {
         match applied {
             Ok(()) => {}
             // The unit keeps catching up with its cursor unpersisted.
-            Err(SectionError::Refused | SectionError::Deferred) => return Ok(()),
+            Err(SectionError::Refused | SectionError::Deferred) => return Ok(false),
             Err(SectionError::FailClosed) => {
                 // §5.6: the failure is unit-local; the rest of the response
                 // still applies and the failed unit leaves the list.
@@ -9745,13 +9785,14 @@ impl SyncClient {
                     return Err(storage(message));
                 }
                 report.failed.push(unit.id);
-                return Ok(());
+                return Ok(false);
             }
             Err(error) => return Err(error),
         }
         let Some((next_cursor, bootstrap_state)) = sub_end else {
-            return Ok(());
+            return Ok(false);
         };
+        let completes = start.bootstrap && bootstrap_state.is_none();
         let rollback = self.capture();
         let counts = (
             report.resets.len(),
@@ -9774,7 +9815,7 @@ impl SyncClient {
             report.failed.truncate(counts.2);
             return Err(storage(message));
         }
-        Ok(())
+        Ok(completes)
     }
 
     /// §5.6: the table, first-page flag and effective scopes of one segment

@@ -24,6 +24,12 @@ pub struct SyncProgress {
     pub rows_processed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_total: Option<u64>,
+    /// §7.7: a unit's bootstrap rows across its payloads, sections and rounds,
+    /// present when its section stated a `UNIT_EXTENT` (§4.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_rows_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_rows_processed: Option<u64>,
     /// SQLite image payloads: time in import transactions before COMMIT, in ms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_write_ms: Option<u64>,
@@ -142,6 +148,8 @@ impl ProgressObserver {
             bytes_total: None,
             rows_processed: 0,
             rows_total: None,
+            unit_rows_total: None,
+            unit_rows_processed: None,
             import_write_ms: None,
             import_commit_ms: None,
             error_code: None,
@@ -156,7 +164,17 @@ impl ProgressObserver {
             if snapshot.state != ProgressState::Running {
                 return;
             }
+            let before = snapshot.rows_processed;
             update(&mut snapshot);
+            // §7.7: each rise of `rowsProcessed` raises the unit counter, and
+            // the unit total never falls below it.
+            if let Some(processed) = snapshot.unit_rows_processed.as_mut() {
+                *processed += snapshot.rows_processed.saturating_sub(before);
+                let processed = *processed;
+                if let Some(total) = snapshot.unit_rows_total.as_mut() {
+                    *total = (*total).max(processed);
+                }
+            }
             self.emit(snapshot);
         }
     }
