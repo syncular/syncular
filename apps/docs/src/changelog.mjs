@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'A json column reads as JSON text on every storage',
+    body: "A registered query over a `json` column returned a parsed object on PostgreSQL, while SQLite, D1, `getRow` and the generated row type give the JSON text, so code that followed the type broke only on PostgreSQL. The authoritative query's derived relation now casts a json column to text. Bun.sql also JSON-encoded the string bound to a `jsonb` column, so row writes stored json columns and `_sync_scopes` as JSON strings; they now bind as text before the JSONB cast.",
+    links: [
+      {
+        href: '/server-storage-reference/#push-path',
+        label: 'Push path',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A one-row push holds the partition lock for 5 statements',
     body: "Lock time is statements times the round trip to PostgreSQL. A one-row push held the partition lock for 10 of Syncular's statements, and a validator's registered query added a cursor read. PostgreSQL storage now numbers commits from the lock read, settles the watermark and results in the admission statement, holds a commit's writes back until the next statement or `COMMIT`, and takes a savepoint only when a commit's writes must reach the database early. A one-row commit holds the lock for 5 statements, ten one-row commits in one request for the same 5. At a sub-millisecond round trip one partition applied 141 commits a second with ten pushers, against 66 before.",
     links: [

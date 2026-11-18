@@ -1,5 +1,32 @@
 # Syncular release notes
 
+## 0.82.1 release notes
+
+A `json` column reads as JSON text on every storage
+(SYNCULAR-QUERY-JSON-TYPE-001, SYQL §6, REMOTE §2).
+
+- Registered queries: `queryAuthoritative` (storage-level and
+  transaction-bound) and remote registered queries run through one derived,
+  partition-filtered relation. On PostgreSQL a json column is `jsonb`, and
+  every driver returned it parsed; SQLite and D1 return text, as do `getRow`,
+  pulls and the generated row type. The derived relation now selects a json
+  column as `CAST(col AS TEXT)`. PostgreSQL renders the `jsonb` form
+  (`{"b":1,"a":2}` reads as `{"a": 2, "b": 1}`); SQLite and D1 return the text
+  verbatim. Inside a registered query a json column is text on PostgreSQL as on
+  SQLite, so `jsonb` operators do not apply to it.
+- Row writes: Bun.sql JSON-encodes a string bound to a `jsonb` column, so row
+  upserts and the schema-bump rewrite stored every json column and
+  `_sync_scopes` as a JSON string. Both now bind as text before the JSONB cast,
+  as do the reaction payload and failure columns. node-postgres and PGlite
+  were not affected.
+- The remote-query json normalizer requires a string and validates it; it no
+  longer stringifies other values, and a JSON string document such as
+  `"sieve"` reads correctly.
+
+**Upgrade notes.** Remove a `cast(... as text)` on json columns in registered
+queries. A deployment on Bun.sql keeps its double-encoded projections until a
+schema bump rewrites the table from the payload.
+
 ## 0.82.0 release notes
 
 PostgreSQL pushes hold the partition lock for fewer statements
