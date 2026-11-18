@@ -29,7 +29,7 @@ import type {
 import { deleteLocalRow, upsertLocalRow } from './apply';
 
 /** Protected failure state. The server base advances independently of intent. */
-const SET_UNIQUE_CONFLICTS = `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE commit_id=? AND idx=?`;
+const SET_UNIQUE_CONFLICTS = `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE rowid=?`;
 
 export function ensureFailedOverlaySchema(db: ClientDatabase): void {
   db.exec(
@@ -44,24 +44,42 @@ export function ensureFailedOverlaySchema(db: ClientDatabase): void {
   );
 }
 
+/**
+ * Server writes, after they are stored: each `written` row replaces the base
+ * of its key's retained rows (`undefined`: deleted), and the table's retained
+ * intents re-read their unique conflicts with the written keys. A written row
+ * without a retained row costs no statement.
+ */
 export function retainedBaseWrite(
   db: ClientDatabase,
   table: CompiledClientTable,
-  rowId: string,
-  values?: Readonly<Record<string, JsonRowValue>>,
-  version?: number,
+  written: ReadonlyMap<
+    string,
+    readonly [readonly RowValue[], number] | undefined
+  >,
 ): void {
-  db.exec(`UPDATE ${RETAINED_ROWS} SET base=?,version=? WHERE tbl=? AND id=?`, [
-    values === undefined ? null : JSON.stringify(values),
-    version ?? null,
-    table.name,
-    rowId,
-  ]);
-  if (!hasUniqueIndex(table)) return;
+  if (!written.size) return;
   for (const retained of db.query(
-    `SELECT commit_id,idx,intent,unique_conflicts FROM ${RETAINED_ROWS} WHERE tbl=? AND commit_seq IS NULL`,
+    `SELECT rowid AS r,* FROM ${RETAINED_ROWS} WHERE tbl=?`,
     [table.name],
   )) {
+    const base = written.get(retained.id as string);
+    if (written.has(retained.id as string))
+      db.exec(`UPDATE ${RETAINED_ROWS} SET base=?,version=? WHERE rowid=?`, [
+        base
+          ? JSON.stringify(
+              Object.fromEntries(
+                table.columns.map((column, index) => [
+                  column.name,
+                  rowValueToJson(base[0][index] ?? null),
+                ]),
+              ),
+            )
+          : null,
+        base?.[1] ?? null,
+        retained.r as number,
+      ]);
+    if (!hasUniqueIndex(table) || retained.commit_seq !== null) continue;
     const prior: readonly (Omit<
       NonNullable<RetainedCommitRow['uniqueConflicts']>[number],
       'serverRow'
@@ -69,14 +87,14 @@ export function retainedBaseWrite(
       retained.unique_conflicts === null
         ? []
         : JSON.parse(retained.unique_conflicts as string);
-    const conflicts = prior.filter((conflict) => conflict.rowId !== rowId);
-    if (values !== undefined && retained.intent !== null) {
+    const conflicts = prior.filter((conflict) => !written.has(conflict.rowId));
+    if (retained.intent !== null) {
       const intent: Record<string, JsonRowValue> = JSON.parse(
         retained.intent as string,
       );
       conflicts.push(
         ...uniqueConflicts(db, table, mapRowValues(intent, jsonToRowValue))
-          .filter((conflict) => conflict.rowId === rowId)
+          .filter((conflict) => written.has(conflict.rowId))
           .map((conflict) => ({
             ...conflict,
             serverRow: mapRowValues(conflict.serverRow, rowValueToJson),
@@ -93,8 +111,7 @@ export function retainedBaseWrite(
             ),
           )
         : null,
-      retained.commit_id as string,
-      Number(retained.idx),
+      retained.r as number,
     ]);
   }
 }
@@ -181,7 +198,7 @@ function retainedRows(
   // A scope joins through the (tbl, id) index; a scan per applied commit
   // would make a drained batch quadratic.
   return db.query(
-    `SELECT * FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=json_extract(k.value,'$[0]') AND r.id=json_extract(k.value,'$[1]') UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=json_extract(k.value,'$[0]')))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
+    `SELECT rowid AS r,* FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=json_extract(k.value,'$[0]') AND r.id=json_extract(k.value,'$[1]') UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=json_extract(k.value,'$[0]')))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
     [scope ? JSON.stringify(scope) : null],
   );
 }
@@ -190,7 +207,7 @@ export function restoreFailedBases(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   scope?: OverlayScope,
-): boolean {
+): void {
   const seen = new Set<string>();
   for (const row of retainedRows(db, scope)) {
     const key = JSON.stringify([row.tbl, row.id]);
@@ -211,11 +228,9 @@ export function restoreFailedBases(
           jsonToRowValue(values[column.name] ?? null),
         ),
         (row.version ?? -1) as number,
-        false,
       );
     }
   }
-  return seen.size > 0;
 }
 
 export function failedOverlayCommits(
@@ -278,8 +293,7 @@ export function failedOverlayCommits(
                 serverRow: mapRowValues(conflict.serverRow, rowValueToJson),
               })),
             ),
-            row.commit_id as string,
-            row.idx as number,
+            row.r as number,
           ]);
       }
     }

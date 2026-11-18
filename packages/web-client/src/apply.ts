@@ -36,7 +36,6 @@ import {
   SEALED_KEY_COLUMN,
   SYNC_VERSION_COLUMN,
   toSqlValue,
-  rowValueToJson,
 } from './schema';
 
 /** Lets the client wrap the physical write in its revision transaction. */
@@ -63,7 +62,6 @@ export function upsertLocalRow(
   table: CompiledClientTable,
   values: readonly RowValue[],
   syncVersion: number,
-  serverWrite = true,
   sealed?: SealedRow,
 ): void {
   db.exec(upsertSql(table), [
@@ -73,19 +71,6 @@ export function upsertLocalRow(
       ? [sealed?.keyId ?? null, sealed?.envelopes ?? null]
       : []),
   ]);
-  if (serverWrite)
-    retainedBaseWrite(
-      db,
-      table,
-      String(values[table.primaryKeyIndex]),
-      Object.fromEntries(
-        table.columns.map((column, index) => [
-          column.name,
-          rowValueToJson(values[index] ?? null),
-        ]),
-      ),
-      syncVersion,
-    );
 }
 
 export function deleteLocalRow(
@@ -94,11 +79,11 @@ export function deleteLocalRow(
   rowId: string,
   serverWrite = true,
 ): void {
-  if (serverWrite) retainedBaseWrite(db, table, rowId);
   db.exec(
     `DELETE FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
     [pkSqlValue(table, rowId)],
   );
+  if (serverWrite) retainedBaseWrite(db, table, new Map([[rowId, undefined]]));
 }
 
 /**
@@ -238,15 +223,20 @@ export async function applyCommitFrame(
       );
       if (!land) continue;
       if (change.op === 'delete') deleteLocalRow(db, change.table, rowId);
-      else
+      else {
         upsertLocalRow(
           db,
           change.table,
           change.values,
           rowVersion,
-          true,
           change.sealed,
         );
+        retainedBaseWrite(
+          db,
+          change.table,
+          new Map([[rowId, [change.values, rowVersion]]]),
+        );
+      }
     }
     return rebaseScope(scope, kept, skipped);
   });
@@ -416,11 +406,13 @@ export function deleteScopedRows(
   const scope = localScopePredicate(table, effective, owners);
   if (!scope) return;
   const { sql, params } = scope;
-  if (retainsRows(db, table))
-    for (const row of scopedRows(db, table, scope)) {
-      retainedBaseWrite(db, table, String(row.id));
-    }
+  const retained = retainsRows(db, table) ? scopedRows(db, table, scope) : [];
   db.exec(`DELETE FROM ${quoteIdent(table.name)} WHERE ${sql}`, params);
+  retainedBaseWrite(
+    db,
+    table,
+    new Map(retained.map((row) => [String(row.id), undefined])),
+  );
 }
 
 /**
@@ -668,7 +660,7 @@ export async function applySqliteSegment(
                 JSON.stringify([table.name, String(row[table.primaryKey])]),
               ),
             ];
-        const protectedRows = restoreFailedBases(db, schema, scope);
+        restoreFailedBases(db, schema, scope);
         if (first && options.clearFirst)
           deleteScopedRows(db, table, options.effective, options.owners());
         const kept = new Set<string>();
@@ -709,21 +701,19 @@ export async function applySqliteSegment(
             Math.min(1024, size - chunk),
           );
         }
-        if (protectedRows)
-          for (const row of landing) {
-            retainedBaseWrite(
-              db,
-              table,
+        retainedBaseWrite(
+          db,
+          table,
+          new Map(
+            landing.map((row) => [
               String(row[table.primaryKey]),
-              Object.fromEntries(
-                table.columns.map((column) => [
-                  column.name,
-                  rowValueToJson(row[column.name] as RowValue),
-                ]),
-              ),
-              Number(row._syncular_version),
-            );
-          }
+              [
+                table.columns.map((column) => row[column.name] as RowValue),
+                Number(row._syncular_version),
+              ],
+            ]),
+          ),
+        );
         options.onChunk?.(applied);
         return rebaseScope(scope, kept, skipped);
       });
@@ -812,26 +802,23 @@ export async function applyRowsSegment(
           ]),
         ),
       ];
-      const protectedRows = restoreFailedBases(db, schema, scope);
+      restoreFailedBases(db, schema, scope);
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective, options.owners());
       }
       const kept = new Set<string>();
       const skipped = new Set<string>();
+      const written = new Map<string, readonly [readonly RowValue[], number]>();
       for (const row of rows) {
         const rowId = String(row.values[table.primaryKeyIndex]);
-        if (lands(db, table, rowId, row.serverVersion, kept, skipped))
-          upsertLocalRow(
-            db,
-            table,
-            row.values,
-            row.serverVersion,
-            protectedRows,
-            row.sealed,
-          );
+        if (lands(db, table, rowId, row.serverVersion, kept, skipped)) {
+          upsertLocalRow(db, table, row.values, row.serverVersion, row.sealed);
+          written.set(rowId, [row.values, row.serverVersion]);
+        }
         applied += 1;
         if (applied % 1024 === 0) options.onProgress?.(applied);
       }
+      retainedBaseWrite(db, table, written);
       return rebaseScope(scope, kept, skipped);
     });
     options.onProgress?.(applied);

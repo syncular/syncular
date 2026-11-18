@@ -326,6 +326,37 @@ the text-match scan. The runs exclude disk-backed imports and binding queue
 latency. A host that serializes reads behind synchronization needs a separate
 read connection; yielding inside the Rust core does not provide one.
 
+## Rows segments over retained failures
+
+`applyRowsSegment` applies a rows segment one 1,000-row block per
+transaction. When a table holds retained rows of failed commits (the failed
+overlay of [outbox outcomes](/reference-outbox-outcomes/)), each block writes
+the server base of the retained rows it overwrites and refreshes the unique
+conflicts of the retained intents once. A landing row without a retained row
+costs no statement in the journal.
+
+The lane applies 10,000 rows of a 12-column table with one unique and one
+ordinary index, first as a fresh bootstrap and then one version higher, so
+every row lands as an update. The retained case adds ten failed commits whose
+intents collide on the unique index. It ran on an Apple M5 Pro, three runs per
+case, each on a fresh replica: Bun 1.4.4 against a WAL file replica, and the
+production OPFS SAH-pool replica in a worker in headless Chromium. Rows per
+second, slowest and fastest run:
+
+| Replica | Case | Bootstrap | Update |
+|---|---|---:|---:|
+| OPFS worker | no retained rows | 51,467 to 53,763 | 42,863 to 45,683 |
+| OPFS worker | 10 retained rows, 0.85.0 | 6,015 to 6,092 | 4,757 to 4,766 |
+| OPFS worker | 10 retained rows | 48,356 to 49,358 | 40,486 to 43,440 |
+| Bun file | no retained rows | 204,510 to 251,791 | 157,449 to 179,481 |
+| Bun file | 10 retained rows, 0.85.0 | 23,582 to 27,872 | 18,089 to 19,483 |
+| Bun file | 10 retained rows | 171,623 to 221,182 | 143,763 to 160,720 |
+
+In 0.85.0 every landing row of such a table wrote the journal and re-read every
+retained intent's unique conflicts, so the cost grew with rows times retained
+intents. Reproduce with `bun run --cwd bench bench:apply-rows`. The clock
+covers `applyRowsSegment` only: no download, decode or overlay replay.
+
 ## Table-scoped overlay reconciliation
 
 The debug-build probe measures one task's base write, acknowledgement, and

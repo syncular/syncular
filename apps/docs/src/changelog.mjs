@@ -17,6 +17,22 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title:
+      'Rows segments skip the failure journal for rows without a retained row',
+    body: "A rows segment applied to a table that holds retained rows of failed commits no longer writes the failure journal for every landing row. Each 1,000-row block writes the server base of the retained rows it overwrites and refreshes the retained intents' unique conflicts once. With ten retained rows on a table with a unique index, a 10,000-row segment of a 12-column table bootstraps at 48,356 to 49,358 rows/s in the OPFS worker, up from 6,015 to 6,092 rows/s in 0.85.0; updates went from 4,757 to 40,486 rows/s or more. Tables without retained rows apply at the same rate as before.",
+    links: [
+      {
+        href: '/benchmarks/#rows-segments-over-retained-failures',
+        label: 'Rows segments over retained failures',
+      },
+      {
+        href: '/reference-outbox-outcomes/',
+        label: 'Outbox outcomes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'Progress counts a whole unit bootstrap',
     body: "`SyncProgress` gains `unitRowsTotal` and `unitRowsProcessed`, so an app can show \"x of y\" rows for a unit's first load. When a bootstrap takes its pin, the server counts the unit's rows on the scope index and states them in a new `UNIT_EXTENT` frame after each of the bootstrap's `SUB_START` frames, with the rows already delivered; the resume token carries both, so the count continues across segments, rounds and a retried round. The count only rises and ends equal to the total. A server that predates the frame states nothing, and both fields stay absent. `UNIT_EXTENT` is an additive frame inside wire version 4: older clients skip it. A custom `ServerStorage` implements the new `countScopedRows` method. The TS and Rust clients and the Rust local authority behave alike.",
     links: [
