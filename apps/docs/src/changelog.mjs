@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-18',
+    title: 'OPFS replicas cache 64 MiB of pages',
+    body: "SQLite's default page cache holds 31 pages of 64 KiB, and in a private window every miss is an OPFS call of about 0.27 ms. A unit's first-page clear on an 87,267-row table without an index on the unit's scope columns took 62 to 70 s. Both cores now open an OPFS replica with a 64 MiB page cache, and a rows clear lists its rows only when a pending write needs a replay. A cold private window of Diego's catalogue loaded in 14 to 36 s instead of 197 to 219 s, with search working once its unit completed.",
+    links: [
+      {
+        href: '/platform-web-specifics/#support-floor',
+        label: 'Web specifics',
+      },
+    ],
+  },
+  {
     date: '2026-11-17',
     title: 'Measured throughput of one partition on PostgreSQL',
     body: 'The partitions page publishes the push and pull ceiling of one partition on PostgreSQL 17 with its method. With a 13 ms round trip to the database, one-commit requests reach 6 to 7 commits a second and ten-commit requests 10 to 11, because each commit holds the partition lock for its statements times the round trip; below 1 ms, 85 commits a second with one pusher and 162 with ten. Pull-only rounds take no lock and kept 165 to 190 rounds a second while pushes saturated the partition. `bun run load:ceiling` reruns the matrix against an app with its own validator.',

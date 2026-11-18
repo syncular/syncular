@@ -1,5 +1,36 @@
 # Syncular release notes
 
+## 0.79.3 release notes
+
+OPFS replicas cache 64 MiB of pages (SYNCULAR-PRIVATE-WIDE-ROUND-001, SPEC
+§5.3). A cold private Chromium window loaded Diego's catalogue (7 release units,
+13 image ranges, 430 MB) in 89.5 and 100.6 s with wide rounds, against 39.1
+and 55.3 s with one range per round, and the visited edition found nothing
+afterwards. The client never held more than two image bodies and loaded the
+visited unit first. SQLite's 2,000 KiB default cache holds 31 pages of 64 KiB,
+and every miss is an access-handle call of about 0.27 ms in a private window.
+Two first-page clears of empty units on an 87,267-row table, whose indexes did
+not lead with the units' scope columns, took 62 to 70 s each.
+
+- Both cores open an OPFS replica with `PRAGMA cache_size=-65536`
+  (TypeScript `openPersistentWasmDatabase`, the Rust wasm32 file replica).
+  Native storages keep SQLite's default.
+- A rows segment's first-page clear lists the cleared rows only when the
+  outbox holds commits or the failed overlay retains rows of the table, as the
+  image path already did, and writes retained bases only when the table has
+  retained rows. An empty unit's clear walks the table twice instead of four
+  times.
+- Diego's measurement script against production, cold private window, two
+  runs each: wide rounds 196.9 and 219.2 s with no search hits before, 14.2
+  and 36.3 s with all 16 hits after; one range per round 89.7 and 99.4 s
+  before, 42.1 and 33.7 s after. Persistent window, wide: 20.5 and 16.2 s
+  before, 11.7 and 12.9 s after. A 32 MiB cache still took 88 to 120 s.
+
+**Upgrade notes.** Give each windowed table an index whose first columns are
+the scope columns of its units; a table larger than the cache is otherwise
+read from OPFS for every unit that starts. A `maxSnapshotPages: 1` that only
+worked around this can go.
+
 ## 0.79.2 release notes
 
 PostgreSQL list parameters bind as JSON text on every driver. Since 0.78.0 the
