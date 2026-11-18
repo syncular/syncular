@@ -650,7 +650,7 @@ describe('push declared-reference reads (SYNCULAR-PUSH-ROUNDTRIPS-003)', () => {
       // One parent table (combats); before batching this was one statement
       // per reference, four for this commit.
       expect(readBacks).toHaveLength(1);
-      expect(readBacks[0]).toContain('=ANY(');
+      expect(readBacks[0]).toContain('IN (SELECT jsonb_array_elements_text(');
       expect(await storage.getRow('part-1', 'combats', 'f1')).toBeDefined();
       expect(await storage.getRow('part-1', 'combatants', 'ca3')).toBeDefined();
     } finally {
