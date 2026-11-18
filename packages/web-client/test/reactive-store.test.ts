@@ -226,30 +226,36 @@ describe('reactive cache identity', () => {
     store.dispose();
   });
 
-  test('an empty read with incomplete coverage publishes its revision', async () => {
-    const client = new FakeReactiveClient();
-    client.snapshots.push({
-      revision: 1n,
-      rows: [],
-      coverage: { complete: false, pending: [], missing: [] },
-    });
-    const store = new ReactiveClientStore(client);
-    const query = store.query<Row>(querySpec());
-    const unread = query.getSnapshot();
-    let published = 0;
-    const off = query.subscribe(() => (published += 1));
-    await drainMicrotasks();
+  test.each([
+    [true, 1],
+    [false, 0],
+  ])(
+    'an empty read with incomplete coverage, publishFirstAnswer %p, notifies %p times and exposes its revision',
+    async (publishFirstAnswer, notified) => {
+      const client = new FakeReactiveClient();
+      client.snapshots.push({
+        revision: 1n,
+        rows: [],
+        coverage: { complete: false, pending: [], missing: [] },
+      });
+      const store = new ReactiveClientStore(client);
+      const query = store.query<Row>(querySpec({ publishFirstAnswer }));
+      const unread = query.getSnapshot();
+      let published = 0;
+      const off = query.subscribe(() => (published += 1));
+      await drainMicrotasks();
 
-    expect(unread.revision).toBeUndefined();
-    expect(published).toBe(1);
-    expect(query.getSnapshot()).toMatchObject({
-      rows: [],
-      phase: 'loading',
-      revision: 1n,
-    });
-    off();
-    store.dispose();
-  });
+      expect(unread.revision).toBeUndefined();
+      expect(published).toBe(notified);
+      expect(query.getSnapshot()).toMatchObject({
+        rows: [],
+        phase: 'loading',
+        revision: 1n,
+      });
+      off();
+      store.dispose();
+    },
+  );
 });
 
 describe('leader link recovery', () => {
@@ -728,7 +734,10 @@ describe('failed sync rounds', () => {
     );
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({
+        coverage: [{ base: BASE, units: ['p1'] }],
+        publishFirstAnswer: true,
+      }),
     );
     const phases: string[] = [];
     const off = entry.subscribe(() => phases.push(entry.getSnapshot().phase));
@@ -1490,7 +1499,9 @@ describe('keyed reconciliation performance', () => {
     expect(Object.isFrozen(initial)).toBe(true);
     expect(Object.isFrozen(initial.rows)).toBe(true);
 
-    const second = store.query<Row>(querySpec({ params: ['p1', 'p2'] }));
+    const second = store.query<Row>(
+      querySpec({ params: ['p1', 'p2'], publishFirstAnswer: true }),
+    );
     let notifications = 0;
     const offSecond = second.subscribe(() => {
       notifications += 1;

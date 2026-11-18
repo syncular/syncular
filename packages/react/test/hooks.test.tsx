@@ -181,33 +181,40 @@ describe('useRawSql', () => {
     view.unmount();
   });
 
-  test('growing coverage before the first complete read keeps rows identity', async () => {
-    const client = new FakeClient();
-    const base = { variable: 'project_id' };
-    let renders = 0;
-    const view = renderHook(
-      ({ units }: { units: readonly string[] }) => {
-        renders += 1;
-        return useRawSql('SELECT * FROM tasks', [], {
-          tables: ['tasks'],
-          coverage: [{ base, units }],
-        });
-      },
-      { wrapper: wrapper(client), initialProps: { units: ['p1'] } },
-    );
-    await flushEffects();
-    expect(view.result.current.phase).toBe('loading');
-    const rows = view.result.current.rows;
-    const before = renders;
+  test.each([
+    [true, 2],
+    [false, 1],
+  ])(
+    'growing coverage before the first complete read keeps rows identity (publishFirstAnswer %p renders %p more times)',
+    async (publishFirstAnswer, extraRenders) => {
+      const client = new FakeClient();
+      const base = { variable: 'project_id' };
+      let renders = 0;
+      const view = renderHook(
+        ({ units }: { units: readonly string[] }) => {
+          renders += 1;
+          return useRawSql('SELECT * FROM tasks', [], {
+            tables: ['tasks'],
+            coverage: [{ base, units }],
+            publishFirstAnswer,
+          });
+        },
+        { wrapper: wrapper(client), initialProps: { units: ['p1'] } },
+      );
+      await flushEffects();
+      expect(view.result.current.phase).toBe('loading');
+      const rows = view.result.current.rows;
+      const before = renders;
 
-    view.rerender({ units: ['p1', 'p2'] });
-    await flushEffects();
-    expect(view.result.current.phase).toBe('loading');
-    expect(view.result.current.rows).toBe(rows);
-    // The rerender, then the new query's first answer with its revision.
-    expect(renders).toBe(before + 2);
-    view.unmount();
-  });
+      view.rerender({ units: ['p1', 'p2'] });
+      await flushEffects();
+      expect(view.result.current.phase).toBe('loading');
+      expect(view.result.current.rows).toBe(rows);
+      // The rerender, then with the option the first answer's revision.
+      expect(renders).toBe(before + extraRenders);
+      view.unmount();
+    },
+  );
 
   test('a failed round surfaces as error until the retry starts', async () => {
     const client = new FakeClient();

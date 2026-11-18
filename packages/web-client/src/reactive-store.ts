@@ -36,6 +36,9 @@ export interface ReactiveQuerySpec<Row> {
   readonly mapRow?: (row: Readonly<Record<string, SqlValue>>) => Row;
   readonly rowKey?: (row: Row) => readonly SqlValue[];
   readonly claimCoverage?: boolean;
+  /** Notify observers of the revision of an empty first answer. Off by
+   * default; `getSnapshot` returns that revision either way. */
+  readonly publishFirstAnswer?: boolean;
 }
 
 export type LiveQueryPhase =
@@ -601,10 +604,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   #publish(next: LiveQueryResult<Row>): void {
-    // A revision change alone publishes nothing, except the first answer:
-    // an empty answered read differs from an unread one by its revision.
+    // A revision change alone publishes nothing. The first answer's revision
+    // notifies only a query that opts in; getSnapshot returns it either way.
+    const firstAnswer =
+      (next.revision === undefined) !== (this.#state.revision === undefined);
     if (
-      (next.revision === undefined) === (this.#state.revision === undefined) &&
       next.rows === this.#state.rows &&
       next.phase === this.#state.phase &&
       next.error === this.#state.error &&
@@ -612,7 +616,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       canonicalValue(next.availability) ===
         canonicalValue(this.#state.availability)
     ) {
-      return;
+      if (!firstAnswer) return;
+      if (this.spec.publishFirstAnswer !== true) {
+        this.#state = next;
+        return;
+      }
     }
     this.#state =
       next.revision === undefined &&
@@ -1118,6 +1126,7 @@ export class ReactiveClientStore {
       dependencies,
       coverage,
       claimCoverage: spec.claimCoverage !== false,
+      publishFirstAnswer: spec.publishFirstAnswer === true,
       ...(mapRowId === undefined ? {} : { mapRow: mapRowId }),
     });
     let entry = this.#queries.get(key) as QueryEntry<Row> | undefined;

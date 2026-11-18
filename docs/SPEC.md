@@ -6690,6 +6690,14 @@ reports any other attempt, the observation returns to `loading` (no rows) or
 attempt reports the failure on its first incomplete read, because progress
 delivers its latest snapshot on subscription.
 
+DECISION (2026-11-18): the revision of an empty first answer with pending
+coverage notifies observers only when the query sets `publishFirstAnswer`
+(default `false`). Every consumer of every query otherwise re-rendered for it,
+and only a host that tells an answered empty read from an unread one needs it.
+The observation moves to that revision either way, with phase `loading`, so a
+snapshot read after any other publication reports it. This is host-side
+reactive-store behavior with no Rust counterpart.
+
 **Change batch.** After an observer transaction commits, the core emits exactly
 one batch carrying its revision and the domains changed by that transaction:
 

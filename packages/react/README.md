@@ -219,6 +219,7 @@ Options:
 | `coverage` | Required window units read atomically with the rows. |
 | `rowKey` | Stable identity fields used to retain unchanged row objects. |
 | `claimCoverage` | Claim declared coverage while observed; default `true`. |
+| `publishFirstAnswer` | Re-render for the revision of an empty answer with pending coverage; default `false`. |
 | `enabled` | Disable observation and reads while `false`. |
 | `id` | Stable cache identity for a raw query. |
 | `tables`, `scopeKeys` | Compatibility shorthand; prefer `dependencies`. |

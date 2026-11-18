@@ -50,7 +50,9 @@ return <Rows rows={todos.rows} partial={todos.phase === 'partial'} />;
 The result is `{ rows, phase, revision, isLoading, isRefreshing, error,
 availability, refresh }`. `revision` stays `undefined` until the first local
 read answers; a read that answers with no rows while coverage is pending sets it
-and keeps `phase` at `loading`. Observing the query claims its coverage; unobserving releases only
+and keeps `phase` at `loading`. That first answer re-renders the component only
+when the query sets `publishFirstAnswer: true` (default `false`); without it the
+revision appears at the next render. Observing the query claims its coverage; unobserving releases only
 that consumer's claim. No separate `useWindow` effect or completeness read is
 needed.
 
@@ -122,7 +124,7 @@ const result = useRawSql(
 ```
 
 It returns the same phase and revision result. The options are `dependencies`,
-`coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. Set `id` to a
+`coverage`, `rowKey`, `claimCoverage`, `publishFirstAnswer`, `enabled`, and `id`. `useQuery` takes the same options except `dependencies`, `coverage`, `rowKey`, and `id`. Set `id` to a
 stable value without protected data for support diagnostics; the default id is
 `raw` and never contains SQL. The table-list shorthand `tables` with `scopeKeys`
 still works. While `enabled` is `false`, the hook reads nothing and reports

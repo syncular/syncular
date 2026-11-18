@@ -24,6 +24,8 @@ export interface UseRawSqlOptions<Row = SqlRow> {
   readonly rowKey?: (row: Row) => readonly SqlValue[];
   /** Generated coverage claims its windows by default. */
   readonly claimCoverage?: boolean;
+  /** Re-render for the revision of an empty first answer; off by default. */
+  readonly publishFirstAnswer?: boolean;
   readonly enabled?: boolean;
   /**
    * Stable, PHI-free query id. It names the query in
@@ -79,12 +81,14 @@ export function useRawSql<Row = SqlRow>(
   }
   const coverage = options?.coverage ?? [];
   const claimCoverage = options?.claimCoverage ?? true;
+  const publishFirstAnswer = options?.publishFirstAnswer === true;
   const identity = canonicalValue({
     sql,
     params: params ?? [],
     dependencies,
     coverage,
     claimCoverage,
+    publishFirstAnswer,
     ...(options?.id !== undefined ? { id: options.id } : {}),
   });
   // `identity` canonically contains every value-shaped input. Depending on
@@ -104,6 +108,7 @@ export function useRawSql<Row = SqlRow>(
         ...(options?.mapRow !== undefined ? { mapRow: options.mapRow } : {}),
         ...(options?.rowKey !== undefined ? { rowKey: options.rowKey } : {}),
         claimCoverage,
+        publishFirstAnswer,
       }),
     [store, identity, options?.mapRow, options?.rowKey],
   );
