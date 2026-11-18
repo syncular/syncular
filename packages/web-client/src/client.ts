@@ -3464,9 +3464,10 @@ export class SyncClient {
       );
     const clientCommitId = supplied ?? crypto.randomUUID();
     // §7.1: a patch reads the row as the commit's earlier operations leave
-    // it. Keyed by `JSON [table,rowId]`: the values an earlier upsert
-    // wrote, or null after an earlier delete. A patch changes neither
-    // presence nor a scope column, so it records nothing.
+    // it. Keyed by `table rowId` (a table name holds no space): the JSON
+    // values an earlier upsert wrote, or null after an earlier delete. A
+    // patch changes neither presence nor a scope column, so it records
+    // nothing.
     const staged = new Map<string, Record<string, JsonRowValue> | null>();
     const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
@@ -3474,7 +3475,7 @@ export class SyncClient {
         // §2.4: the server rejects a rowId holding U+0000.
         if (mutation.rowId.includes('\u0000'))
           throw invalidRequest('rowId holds U+0000');
-        staged.set(JSON.stringify([table.name, mutation.rowId]), null);
+        staged.set(`${table.name} ${mutation.rowId}`, null);
         return definedObject({
           table: mutation.table,
           rowId: mutation.rowId,
@@ -3492,29 +3493,13 @@ export class SyncClient {
         const scopeColumns = new Set(table.scopeColumnByVariable.values());
         const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
         const pkValue = requireRowId(normalized.get(pkColumn.name));
-        const key = JSON.stringify([table.name, pkValue]);
-        // The base as JSON values; a stored row contributes its scope
-        // columns, the only ones the checks below read.
-        let local = staged.get(key);
-        if (!staged.has(key)) {
-          const stored = this.#db.query(
-            `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-            [pkSqlValue(table, pkValue)],
-          )[0];
-          local =
-            stored &&
-            Object.fromEntries(
-              table.columns
-                .filter((column) => scopeColumns.has(column.name))
-                .map((column) => [
-                  column.name,
-                  rowValueToJson(
-                    fromSqlValue(column, stored[column.name] ?? null),
-                  ),
-                ]),
-            );
-        }
-        if (!local)
+        // The base: an earlier operation's JSON values, else the stored row.
+        const key = `${table.name} ${pkValue}`;
+        const base = staged.get(key);
+        const stored = staged.has(key)
+          ? undefined
+          : this.#rowById(table, pkValue);
+        if (!base && !stored)
           throw new ClientSyncError(
             'sync.row_missing',
             'a sparse patch requires a local row',
@@ -3536,7 +3521,11 @@ export class SyncClient {
           if (scopeColumns.has(column.name) && column.name !== pkColumn.name) {
             if (
               !Object.is(
-                local[column.name] ?? null,
+                stored
+                  ? rowValueToJson(
+                      fromSqlValue(column, stored[column.name] ?? null),
+                    )
+                  : base?.[column.name],
                 rowValueToJson(
                   coerceSqlRepresentation(
                     column,
@@ -3593,14 +3582,9 @@ export class SyncClient {
         );
       // §7.1 insert intent: a full-row write of a row the replica does not
       // show replays and encodes as a full row under every later schema.
+      if (mutation.op !== 'patch') staged.set(`${table.name} ${pkValue}`, json);
       const insert =
-        mutation.op !== 'patch' &&
-        this.#db.query(
-          `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=? LIMIT 1`,
-          [pkSqlValue(table, pkValue)],
-        ).length === 0;
-      if (mutation.op !== 'patch')
-        staged.set(JSON.stringify([table.name, pkValue]), json);
+        mutation.op !== 'patch' && !this.#rowById(table, pkValue, '1');
       return definedObject({
         table: mutation.table,
         rowId: pkValue,
@@ -3615,10 +3599,11 @@ export class SyncClient {
     for (const operation of operations) {
       const table = this.#table(operation.table);
       if (!table.hasEncryptedColumns) continue;
-      const keyId = this.#db.query(
-        `SELECT ${quoteIdent(SEALED_KEY_COLUMN)} AS k FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-        [pkSqlValue(table, operation.rowId)],
-      )[0]?.k;
+      const keyId = this.#rowById(
+        table,
+        operation.rowId,
+        `${quoteIdent(SEALED_KEY_COLUMN)} AS k`,
+      )?.k;
       if (typeof keyId === 'string')
         throw new ClientSyncError(
           'client.encryption_key_missing',
@@ -4152,10 +4137,11 @@ export class SyncClient {
             (table, rowId) => {
               const selector = this.#encryption?.keyIdColumns?.[table.name];
               if (selector === undefined) return undefined;
-              const row = this.#db.query(
-                `SELECT ${quoteIdent(selector)} AS value FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-                [pkSqlValue(table, rowId)],
-              )[0];
+              const row = this.#rowById(
+                table,
+                rowId,
+                `${quoteIdent(selector)} AS value`,
+              );
               const value = row?.value;
               return typeof value === 'string' && value.length > 0
                 ? value
@@ -6201,10 +6187,11 @@ export class SyncClient {
       table.scopePrefixByVariable.has(variable),
     );
     if (mappings.length === 0) return false;
-    const row = this.#db.query(
-      `SELECT ${mappings.map(([, column]) => quoteIdent(column)).join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-      [pkSqlValue(table, rowId)],
-    )[0];
+    const row = this.#rowById(
+      table,
+      rowId,
+      mappings.map(([, column]) => quoteIdent(column)).join(),
+    );
     if (row === undefined) return false;
     let recorded = false;
     for (const [variable, column] of mappings) {
@@ -6638,10 +6625,7 @@ export class SyncClient {
       ...table.columns.map((column) => quoteIdent(column.name)),
       quoteIdent(SYNC_VERSION_COLUMN),
     ];
-    const row = this.#db.query(
-      `SELECT ${columns.join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-      [pkSqlValue(table, operation.rowId)],
-    )[0];
+    const row = this.#rowById(table, operation.rowId, columns.join());
     if (row === undefined) return { opIndex, existed: false };
     const values: Record<string, ReturnType<typeof rowValueToJson>> = {};
     for (const column of table.columns) {
@@ -6704,10 +6688,11 @@ export class SyncClient {
       if (operation.op !== 'upsert') continue;
       const table = this.#schema.tables.get(operation.table);
       if (table === undefined) continue;
-      const row = this.#db.query(
-        `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-        [pkSqlValue(table, operation.rowId)],
-      )[0];
+      const row = this.#rowById(
+        table,
+        operation.rowId,
+        `${quoteIdent(SYNC_VERSION_COLUMN)} AS v`,
+      );
       if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
         batch.table(table.name);
         deleteLocalRow(this.#db, table, operation.rowId);
@@ -6812,10 +6797,7 @@ export class SyncClient {
         if (batch !== undefined && !precise) batch.table(op.table);
         continue;
       }
-      const local = this.#db.query(
-        `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-        [pkSqlValue(table, op.rowId)],
-      )[0];
+      const local = this.#rowById(table, op.rowId);
       if (local === undefined && !full) {
         if (batch !== undefined && !precise) batch.table(op.table);
         continue;
@@ -7069,6 +7051,18 @@ export class SyncClient {
   }
 
   // -- helpers -----------------------------------------------------------------
+
+  /** The local row `rowId` of `table`, selecting `columns`. */
+  #rowById(
+    table: CompiledClientTable,
+    rowId: string,
+    columns = '*',
+  ): SqlRow | undefined {
+    return this.#db.query(
+      `SELECT ${columns} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
+      [pkSqlValue(table, rowId)],
+    )[0];
+  }
 
   #table(name: string): CompiledClientTable {
     const table = this.#schema.tables.get(name);
