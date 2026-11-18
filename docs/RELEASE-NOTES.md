@@ -1,5 +1,25 @@
 # Syncular release notes
 
+## 0.88.0 release notes
+
+0.88.0 brings `commitDelivery` to every TypeScript client surface and adds the
+`useCommitDelivery` React hook (SYNCULAR-COMMIT-DELIVERY-REACT-001). SSP2 and
+the wire version are unchanged.
+
+`commitDelivery(id)` is now on `SyncClientLike`, the browser worker handle and
+the Tauri and React Native bridges, with the same three states as the
+in-process client and the Rust core: `pending` while the outbox holds the
+commit, `known` with its final outcome, and `unknown` when neither the outbox
+nor the outcome journal holds the ID. `unknown` separates an outcome that
+retention removed from a commit still waiting for the server. The bridges read
+it through `snapshotRead`, as the Rust core's `commit_delivery` does. The
+Kotlin, Swift and Flutter bindings do not expose it.
+
+`useCommitDelivery(ids)` returns `{ deliveries, isLoading, error }`. It reads
+every listed commit in one `snapshotRead` and re-reads on change batches that
+carry the outbox count or an outcome-journal change; it does not poll. An app
+that waited for the server acknowledgement by hand can read the hook instead.
+
 ## 0.87.0 release notes
 
 0.87.0 re-bootstraps only a unit's changed tables after a schema bump
