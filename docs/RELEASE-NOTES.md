@@ -1,5 +1,30 @@
 # Syncular release notes
 
+## 0.82.2 release notes
+
+A registered query under the partition lock writes held-back rows only when
+it reads their table (SYNCULAR-PUSH-QUERY-SAVEPOINT-001, SPEC §6.4). Since
+0.82.0 PostgreSQL storage holds a commit's writes back; before any registered
+query it took the commit's savepoint and wrote them. Diego's day-note
+validator reads memberships, facilities, workspaces, participants and
+connections, none of which the commit writes, and still paid both statements.
+
+- A read flushes held-back writes, and takes the savepoint, only when one of
+  the tables it reads has a held-back row or a held-back commit append whose
+  changes name it (the appends carry delete tombstones). Otherwise it runs
+  directly.
+- `queryAuthoritative` uses the query's declared tables. That set is exact:
+  the plan's relations must match the declared tables one to one, and every
+  relation occurrence reads a derived relation over one of them. `scanRows`,
+  `scanRowsByIndex`, `prefetchRows` and `getTombstone` use their named
+  table. The check runs per statement, so a row staged between scan pages
+  still flushes.
+- Statements under the lock for a one-row commit with one registered-query
+  validator over unwritten tables: 8 -> 6 (`BEGIN`, lock, admission, query,
+  one write, `COMMIT`). A query over a written table runs as in 0.82.0.
+
+**Upgrade notes.** None.
+
 ## 0.82.1 release notes
 
 A `json` column reads as JSON text on every storage

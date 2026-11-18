@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'A validator query over unwritten tables adds no savepoint',
+    body: "PostgreSQL storage wrote a commit's held-back rows behind a savepoint before every registered query, so a validator that reads authority tables the commit never writes cost two extra statements under the partition lock. A registered query, scan or by-index read now writes held-back rows only when one of the tables it reads has some. A one-row commit with a one-query validator holds the lock for 6 statements instead of 8.",
+    links: [
+      {
+        href: '/server-storage-reference/#push-path',
+        label: 'Push path',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A json column reads as JSON text on every storage',
     body: "A registered query over a `json` column returned a parsed object on PostgreSQL, while SQLite, D1, `getRow` and the generated row type give the JSON text, so code that followed the type broke only on PostgreSQL. The authoritative query's derived relation now casts a json column to text. Bun.sql also JSON-encoded the string bound to a `jsonb` column, so row writes stored json columns and `_sync_scopes` as JSON strings; they now bind as text before the JSONB cast.",
     links: [
