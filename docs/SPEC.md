@@ -4581,10 +4581,21 @@ results stay until their partition is reset.
   under one partition serialization (§6.3). It takes the partition lock,
   reads the serve gate (RFC 0007) and the idempotency records of every
   commit of the request, and runs §6.3.2 steps 1 and 2, once per request.
-  Each commit applies inside its own savepoint (or equivalent): a rejected
-  commit rolls back to it, and the request's earlier commits keep their
-  writes. Every commit keeps its own result, its frame-order position and
-  its own `commitSeq`. The server sends no `PUSH_RESULT` of the request and
+  A rejected commit rolls back only its own writes, and the request's
+  earlier commits keep theirs. A storage may hold a commit's writes back
+  until a later statement needs them; a write held back is discarded on
+  rejection, and before the first of a commit's writes reaches the database
+  the server takes the commit's savepoint (or equivalent), which a rejection
+  rolls back to. Every commit keeps its own result, its frame-order position
+  and its own `commitSeq`.
+- A storage may also hold back the writes of a commit that already closed
+  with its result (its rows, its commit-log append and its result) and write
+  them with a later statement of the request, outside every commit's
+  savepoint. When a relational constraint fails on such a write, no commit
+  can be rejected alone: the server rolls the request's transaction back and
+  runs the request once more with every commit written behind its savepoint
+  before it closes, as a client retry would. The rerun stores the constraint
+  rejection of the failing commit (§6.3) and applies the others. The server sends no `PUSH_RESULT` of the request and
   notifies realtime (§8) of no commit before the transaction commits; it
   then notifies each applied commit in `commitSeq` order and never a
   rolled-back one.
@@ -4625,6 +4636,33 @@ D1 keeps a batch per commit because its transaction buffers writes and
 cannot answer a registered query over a table an earlier commit of the
 request wrote (`sync.storage.query_over_staged_writes`); one batch per
 request would refuse queries that one batch per commit answers.
+
+DECISION (2026-11-18): fewer statements under the partition lock. The lock
+is held for the statements under it times the round trip, so one partition
+of a PostgreSQL host 4.7 ms from its database applied about 15 one-commit
+requests a second. A one-row, one-commit request ran 10 Syncular statements
+under the lock: `BEGIN`, the lock, the §9 settlement, the §6.3.2 watermark,
+the admission read, `SAVEPOINT`, the row upsert, the commit append, the
+results insert and `COMMIT`. It now runs 5: `BEGIN`, the lock, one
+admission statement that also runs the §9 settlement and §6.3.2 steps 1 and
+2, one write statement with the commit's rows, its commit append and its
+result, and `COMMIT`. A request of 10 such commits ran 37 and now runs the
+same 5. The lock stays its own statement, for the snapshot reason of §6.3.
+Three changes make the rest possible. The settlement's writable CTEs share
+the admission read's snapshot, so they touch disjoint rows and the read
+leaves out the results they delete. The partition lock freezes
+`max_commit_seq`, so the server knows each commit's `commitSeq` without a
+statement, holds the commit append back with the commit's rows, and serves a
+registered query's cursor from the lock read. A read by primary key answers
+a held-back row from memory, so a validator's `getRow` adds its own
+statement only. A read that must see the commit's held-back rows (a scan or a
+registered query) still writes them first behind the commit's savepoint: a
+one-row commit whose validator runs one registered query holds the lock for
+7 Syncular statements and the query, down from 11 and the query (the cursor
+read is gone). The cost is the rerun above, which only a relational
+constraint failing on a commit's held-back rows triggers. SQLite and
+D1 keep their statement sequences: SQLite pays no network round trip per
+statement, and D1 writes each commit as one batch when it closes.
 - Applied commits emit changes (§2.2) that become visible to pulls and
   realtime with their assigned `commitSeq`; a puller can never observe a
   commit's changes before its push response could have reported it

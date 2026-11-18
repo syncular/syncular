@@ -415,14 +415,13 @@ describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     expect(small.counts.transactions).toBe(1);
     expect(large.counts.transactions).toBe(1);
     expect(large.counts.statements).toBe(small.counts.statements);
-    // Once per request: the partition lock, the admission read (the serve
+    // The push half: the partition lock, the admission read (the serve
     // gate, every idempotency record, and the read-ahead of every commit's
-    // rows) and the insert of all results. Per commit: the savepoint, one
-    // write per table, and the combined allocation + change log. The pull
-    // half adds 11 for the round (the snapshot pages of both tables share
-    // one statement, and the completed bootstraps join the live section's
-    // read, §4.5).
-    expect(large.counts.statements).toBe(3 + 10 * 4 + 11);
+    // rows) and one statement that writes every commit's rows, appends and
+    // results (§6.4). The pull half adds 11 for the round (the snapshot
+    // pages of both tables share one statement, and the completed
+    // bootstraps join the live section's read, §4.5).
+    expect(large.counts.statements).toBe(3 + 11);
   }, 60_000);
 });
 

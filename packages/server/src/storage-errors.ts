@@ -13,6 +13,20 @@ export class StorageConstraintError extends Error {
   }
 }
 
+/**
+ * A relational constraint failed on the writes of push commits that had
+ * already closed, which a storage defers to its next statement (§6.4). The
+ * transaction is aborted and no commit can be rejected alone, so the push
+ * layer reruns the request with `closeEagerly`.
+ */
+export class ClosedCommitConstraintError extends Error {
+  override readonly name = 'ClosedCommitConstraintError';
+
+  constructor(cause: unknown) {
+    super('a closed commit violates a relational constraint', { cause });
+  }
+}
+
 /** Stable, privacy-safe failures for trusted server storage queries. */
 export type StorageQueryErrorCode =
   | 'sync.storage.schema_migration_pending'

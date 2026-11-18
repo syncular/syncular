@@ -71,9 +71,30 @@ A push request on PostgreSQL holds the partition lock from its first statement a
 commits per second ≈ commits per request / (statements under the lock × round-trip time)
 ```
 
-Since 0.78.0 a request of several commits runs in one transaction under one lock. A request with one 1-row commit and a `commitValidator` that reads four rows runs 12 statements under the lock: the outbox settlement (2), the serve gate, a savepoint, the row upsert, the four validator reads, the commit-log append, the push results and COMMIT. A request of 10 such commits runs 74 to 75 statements, about 7.4 per commit. The row count barely changes it: a 10-row commit upserts its rows in one statement per table.
+A push request runs 5 Syncular statements under the lock when its commits read nothing their own writes changed: `BEGIN`, the lock, one admission statement (the outbox settlement, the serve gate, the idempotency records and the row read-ahead), one write statement (every commit's rows, commit-log append and result) and `COMMIT`. That count holds for a 7-operation commit and for a request of 10 one-row commits ([Storage reference](/server-storage-reference/#push-path)). A `commitValidator` adds its own reads: a `getRow` of a row the commit wrote answers from memory, and every other `getRow` is one statement. A registered query or scan in the validator adds the commit's savepoint and the write of its rows ahead of the query. On 0.79.3 a one-row commit with a four-read validator ran 12 statements from the lock to COMMIT, and a request of 10 such commits 74 to 75.
 
-### Measured ceilings
+### Measured on 18 November 2026
+
+The [partition ceiling](https://github.com/syncular/syncular/blob/main/load/README.md#partition-ceiling) harness ran the same points against 0.79.3 and against the current statement sequence, one after the other on one machine: an Apple M5 Pro, Bun 1.4.4, PostgreSQL 17.11 in Docker inside colima, four server processes, the reference app (one-row commits, a validator that reads four rows), no readers, 30 seconds per point. The 5 ms rows run through the delay proxy set to 5 ms; `SELECT 1` measured 2.8 to 4.7 ms through it. "Statements" counts from the lock to the end of COMMIT and includes the validator's reads.
+
+| Round trip | Commits / request | Pushers | Statements, 0.79.3 → now | Commits/s, 0.79.3 → now | Lock held p50, 0.79.3 → now |
+|---|---|---|---|---|---|
+| 0 ms | 1 | 1 | 12 → 7 | 20.9 → 50.9 | 17.3 → 5.2 ms |
+| 0 ms | 1 | 10 | 12 → 7 | 65.8 → 141.1 | 12.0 → 5.8 ms |
+| 0 ms | 1 | 50 | 12 → 7 | 65.1 → 104.1 | 14.0 → 7.8 ms |
+| 0 ms | 10 | 1 | 74.4 → 38.9 | 105.7 → 144.3 | 59.6 → 30.7 ms |
+| 0 ms | 10 | 10 | 74.4 → 39 | 149.7 → 236.0 | 54.7 → 31.6 ms |
+| 0 ms | 10 | 50 | 74.4 → 39 | 113.7 → 201.0 | 72.3 → 47.3 ms |
+| 5 ms | 1 | 1 | 12 → 7 | 9.7 → 13.5 | 45.5 → 26.0 ms |
+| 5 ms | 1 | 10 | 12 → 7 | 24.4 → 40.8 | 38.9 → 23.6 ms |
+| 5 ms | 1 | 50 | 12 → 7 | 25.7 → 34.7 | 37.5 → 27.4 ms |
+| 5 ms | 10 | 1 | 74.4 → 39.1 | 36.0 → 44.3 | 238.9 → 166.5 ms |
+| 5 ms | 10 | 10 | 74.4 → 39.1 | 38.3 → 37.3 | 243.5 → 234.3 ms |
+| 5 ms | 10 | 50 | 74.4 → 39.4 | 38.7 → 32.7 | 254.0 → 166.4 ms |
+
+Of the 7 statements of a one-commit request, 3 are the validator's reads; its fourth read is a row the commit wrote, which needs no statement. In the 10-commit rows the validator's reads are 35 of the 39, so a validator that reads with one `getRows` call gains more there than any further change to Syncular's share. At 5 ms the 10-commit points held the lock 4 to 35% shorter and applied no more commits a second; the proxy's measured round trip varied from 2.8 to 3.8 ms between those points, so these rows do not separate the two versions.
+
+### Measured ceilings of 0.78.0
 
 The [partition ceiling](https://github.com/syncular/syncular/blob/main/load/README.md#partition-ceiling) harness in `load/` produced the figures below on 17 November 2026:
 
@@ -135,7 +156,7 @@ With 20 readers sending pull-only rounds alongside:
 | 12.8 ms | 10 | 10 | 50 | 10.3 | 50.7 / 52.3 s | 178 | 111 / 125 ms |
 | 12.9 ms | 10 | 10 | 200 | 10.7 | 134 / 149 s | 190 | 105 / 120 ms |
 
-At 13 ms the arithmetic holds: 12 statements hold the lock for 145 to 157 ms, and the partition applies 6 to 7 one-commit requests a second however many pushers queue. A request of 10 commits holds the lock for 940 to 980 ms and the partition applies 10 to 11 commits a second. A pusher's commit latency is its wait in that queue, so it grows with the number of pushers while throughput stays flat.
+On 0.78.0 at 13 ms the arithmetic holds: 12 statements hold the lock for 145 to 157 ms, and the partition applies 6 to 7 one-commit requests a second however many pushers queue. A request of 10 commits holds the lock for 940 to 980 ms and the partition applies 10 to 11 commits a second. A pusher's commit latency is its wait in that queue, so it grows with the number of pushers while throughput stays flat.
 
 Pull-only rounds take no partition lock. At 13 ms a pull round takes about 115 ms, nine round trips to PostgreSQL, whether pushes saturate the partition or not, and 20 readers complete 165 to 190 rounds a second. At sub-millisecond round trips readers and pushers share PostgreSQL's CPU: 20 readers sending 1,750 to 3,600 rounds a second double the lock hold of a lone pusher (5.5 to 11.5 ms) and halve its throughput.
 

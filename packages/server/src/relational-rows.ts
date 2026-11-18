@@ -569,13 +569,14 @@ export function upsertValues(
 
 /**
  * Upsert statement text (bind with `upsertValues`). PostgreSQL takes `rows`
- * rows in one statement, bound as consecutive `upsertValues` lists; their
- * row ids must be distinct.
+ * rows in one statement, bound as consecutive `upsertValues` lists from
+ * parameter `offset + 1` on; their row ids must be distinct.
  */
 export function upsertSql(
   table: CompiledTable,
   dialect: RelationalDialect,
   rows = 1,
+  offset = 0,
 ): string {
   const names = tableColumnNames(table);
   const quoted = names.map((name) => quoteIdent(name)).join(', ');
@@ -585,7 +586,7 @@ export function upsertSql(
       : Array.from(
           { length: rows },
           (_, row) =>
-            `(${names.map((_, column) => `$${row * names.length + column + 1}`).join(',')})`,
+            `(${names.map((_, column) => `$${offset + row * names.length + column + 1}`).join(',')})`,
         ).join(',');
   const updates = names
     .slice(2) // partition + row id are the conflict key

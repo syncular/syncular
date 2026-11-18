@@ -942,15 +942,20 @@ describe('server-side schema migration (the subset)', () => {
     expect(
       log.filter((sql) => sql.includes('INSERT INTO "tasks"')),
     ).toHaveLength(0);
-    // A read in the transaction sees the staged rows.
+    // A read by id answers from the staged rows without writing them.
     expect((await tx.getRow('tasks', 't0'))?.scopes).toEqual({
       project_id: 'p2',
     });
     expect(
       log.filter((sql) => sql.includes('INSERT INTO "tasks"')),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     await tx.upsertRow('tasks', taskRow('t1', 'p1', 'second write'));
+    // A delete writes the staged rows ahead of itself.
     await tx.deleteRow('tasks', 't2');
+    expect(
+      log.filter((sql) => sql.includes('INSERT INTO "tasks"')),
+    ).toHaveLength(1);
+    await tx.upsertRow('tasks', taskRow('t3', 'p1', 'third write'));
     await tx.commit();
     expect(
       log.filter((sql) => sql.includes('INSERT INTO "tasks"')),

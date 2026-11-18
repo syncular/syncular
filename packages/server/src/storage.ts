@@ -118,6 +118,16 @@ export interface PushApplyCommit {
   }[];
 }
 
+/** How `preparePushApply` closes the request's commits. */
+export interface PushApplyOptions {
+  /**
+   * Write each commit behind its savepoint before it closes. The push layer
+   * sets it on the rerun after `ClosedCommitConstraintError`; a storage that
+   * never defers a closed commit's writes ignores it.
+   */
+  readonly closeEagerly?: boolean;
+}
+
 /** The outbox position of one pushed commit (§6.3.2). */
 export interface OutboxSequence {
   readonly outboxId: string;
@@ -825,6 +835,7 @@ export interface StorageTransaction {
     commits: readonly PushApplyCommit[],
     runningSchemaVersion: number,
     outbox?: OutboxSettlement,
+    options?: PushApplyOptions,
   ): Promise<PreparedPushApply>;
   /**
    * Reject the request's current commit while the push-apply serialization
@@ -846,7 +857,11 @@ export interface StorageTransaction {
     context?: { readonly opIndex: number },
   ): Promise<void>;
   deleteRow(table: string, rowId: string): Promise<void>;
-  /** Allocates the next per-partition commitSeq and appends the commit. */
+  /**
+   * Allocates the next per-partition commitSeq and appends the commit. A
+   * storage may hold the append back with the commit's rows until a later
+   * statement of the transaction.
+   */
   appendCommit(commit: NewCommit): Promise<number>;
   /**
    * Persist reaction rows in this authoritative transaction. Required when
@@ -861,10 +876,12 @@ export interface StorageTransaction {
    * by a watermark.
    *
    * The call closes the request's current push commit: the next write opens
-   * the next commit's savepoint. PostgreSQL writes the request's results as
-   * one statement at `commit()`. D1, whose transaction cannot read its own
-   * staged writes across commits, flushes the commit's writes and this
-   * result as one atomic batch here (§6.4).
+   * the next commit's savepoint. PostgreSQL holds the closed commit's rows,
+   * append and result back and writes them with the request's next
+   * statement; a relational constraint that fails there throws
+   * `ClosedCommitConstraintError` (§6.4). D1, whose transaction cannot read
+   * its own staged writes across commits, flushes the commit's writes and
+   * this result as one atomic batch here.
    */
   putPushResult(
     clientId: string,

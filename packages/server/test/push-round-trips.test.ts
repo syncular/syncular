@@ -1,8 +1,11 @@
 /**
  * SYNCULAR-PUSH-ROUNDTRIPS-001: one push commit's storage statements are a
- * function of its tables, not of its operations. A 7-operation commit applies
- * in at most 8 statements inside its transaction and a refused one in at most
- * 3, so a remote Postgres pays per-table cost instead of per-row cost.
+ * function of its tables, not of its operations, so a remote Postgres pays
+ * per-table cost instead of per-row cost.
+ *
+ * SYNCULAR-PUSH-LOCK-STATEMENTS-001: a push request holds the partition lock
+ * for BEGIN, the lock, the admission statement, one write statement and
+ * COMMIT when its commits read nothing their own writes changed.
  *
  * The counter tags statements by where they run: handler admission/readiness
  * traffic is pool-level, everything the commit apply does is inside the push
@@ -246,7 +249,7 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       await db.close();
     }
   });
-  test('a 7-op commit applies in ≤8 statements, a refused one in ≤3', async () => {
+  test('a 7-op commit applies in 3 statements, a refused one in 3', async () => {
     const db = await PGlite.create();
     const counting = countingExecutor(pgliteExecutor(db));
     const storage = new PostgresServerStorage(counting.executor);
@@ -266,7 +269,8 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       )[0];
       const insertStatements = counting.count.transaction;
       expect(inserted?.status).toBe('applied');
-      expect(insertStatements).toBeLessThanOrEqual(8);
+      // The lock, the admission read and one write statement.
+      expect(insertStatements).toBe(3);
 
       counting.count.transaction = 0;
       const updated = pushResults(
@@ -274,7 +278,7 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       )[0];
       const updateStatements = counting.count.transaction;
       expect(updated?.status).toBe('applied');
-      expect(updateStatements).toBeLessThanOrEqual(8);
+      expect(updateStatements).toBe(3);
 
       // The commit's writes all landed under the one commitSeq the result
       // reports, and the per-column versions advanced.
@@ -296,9 +300,8 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       expect(commits).toHaveLength(1);
       expect(commits[0]?.changes).toHaveLength(4);
 
-      // A refused commit writes nothing and costs the admission lock, the
-      // admission read (which carries the row read-ahead), and the persisted
-      // rejection.
+      // A refused commit writes no row and costs the lock, the admission
+      // read (which carries the row read-ahead), and the persisted rejection.
       const maxSeqBefore = await storage.getMaxCommitSeq('part-1');
       counting.count.transaction = 0;
       const refused = pushResults(
@@ -310,7 +313,7 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
       )[0];
       const refusedStatements = counting.count.transaction;
       expect(refused?.status).toBe('rejected');
-      expect(refusedStatements).toBeLessThanOrEqual(3);
+      expect(refusedStatements).toBe(3);
       expect(await storage.getMaxCommitSeq('part-1')).toBe(maxSeqBefore);
       expect(
         (await storage.getRow('part-1', 'tasks', 'a-t1'))?.serverVersion,
@@ -327,7 +330,7 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
         ]),
       )[0];
       expect(replay).toEqual(refused);
-      expect(counting.count.transaction).toBeLessThanOrEqual(2);
+      expect(counting.count.transaction).toBe(2);
     } finally {
       await db.close();
     }
@@ -357,9 +360,10 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
         ]),
       )[0];
       expect(message?.status).toBe('applied');
-      // Two tables of writes plus the read-ahead, savepoint, combined
-      // allocation + change log, and the outcome record.
-      expect(counting.count.transaction).toBeLessThanOrEqual(8);
+      // The lock, the admission read, the savepoint, each delete (the second
+      // carries the staged update ahead of it), and the commit append with
+      // its result.
+      expect(counting.count.transaction).toBe(7);
       expect(await storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
       expect(await storage.getRow('part-1', 'docs', 'd1')).toBeUndefined();
       expect(
@@ -590,7 +594,7 @@ describe('push declared-reference reads (SYNCULAR-PUSH-ROUNDTRIPS-003)', () => {
   const payload = (id: string, combatId: string): Uint8Array =>
     encodeSparseRow(CHILD_COLUMNS, 0, [id, 'p1', combatId]);
 
-  test('a 5-row commit over 3 tables reads its parent table once', async () => {
+  test('a 4-row commit over 2 tables reads its parent table once', async () => {
     const db = await PGlite.create();
     const sql: string[] = [];
     const inner = pgliteExecutor(db);
@@ -620,17 +624,26 @@ describe('push declared-reference reads (SYNCULAR-PUSH-ROUNDTRIPS-003)', () => {
       TEST_LOG_EPOCH,
     );
     try {
+      // The fight row lands first: a parent staged in the same commit
+      // answers from memory and costs no read.
+      await handleSyncRequest(
+        requestBytes([
+          pushCommit('fight', [
+            upsert(
+              'combats',
+              'f1',
+              encodeSparseRow(COMBAT_COLUMNS, 0, ['f1', 'p1']),
+              0,
+            ),
+          ]),
+        ]),
+        ctx,
+      );
       sql.length = 0;
       const message = decodeMessage(
         await handleSyncRequest(
           requestBytes([
             pushCommit('fight-start', [
-              upsert(
-                'combats',
-                'f1',
-                encodeSparseRow(COMBAT_COLUMNS, 0, ['f1', 'p1']),
-                0,
-              ),
               upsert('chronicle', 'ch1', payload('ch1', 'f1'), 0),
               upsert('combatants', 'ca1', payload('ca1', 'f1'), 0),
               upsert('combatants', 'ca2', payload('ca2', 'f1'), 0),
@@ -668,7 +681,7 @@ describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () 
     ),
   );
 
-  test('Postgres applies 10 commits under one lock and gate read, 3 statements per commit', async () => {
+  test('Postgres applies 10 commits in BEGIN, the lock, the admission read, one write and COMMIT', async () => {
     const db = await PGlite.create();
     const counting = countingExecutor(pgliteExecutor(db));
     const storage = new PostgresServerStorage(counting.executor);
@@ -718,14 +731,14 @@ describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () 
       expect(
         matching(/FROM sync_partitions WHERE partition=\$1 FOR UPDATE/),
       ).toHaveLength(1);
+      // The admission statement carries the §6.3.2 settlement and the gate;
+      // the write statement carries every row, commit and result. No commit
+      // read its own writes, so none took a savepoint.
       expect(matching(/sync_schema_meta/)).toHaveLength(1);
       expect(matching(/sync_push_watermarks/)).toHaveLength(1);
-      expect(matching(/^SAVEPOINT/)).toHaveLength(10);
-      expect(matching(/^INSERT INTO sync_push_results/)).toHaveLength(1);
-      // Once per request: the lock, the two §6.3.2 settlement statements,
-      // the admission read and the insert of all results. Per commit: the
-      // savepoint, the row write and the commit append.
-      expect(statements).toHaveLength(5 + 10 * 3);
+      expect(matching(/^SAVEPOINT/)).toHaveLength(0);
+      expect(matching(/INSERT INTO sync_push_results/)).toHaveLength(1);
+      expect(statements).toHaveLength(3);
 
       // An idempotent replay returns the stored results without a write.
       counting.transactions.length = 0;
@@ -736,8 +749,8 @@ describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () 
       expect(replayed.map((result) => result.commitSeq)).toEqual(seqs);
       expect(notified).toEqual(seqs);
       expect(counting.transactions).toHaveLength(1);
-      // The lock, the two settlement statements and the admission read.
-      expect(counting.transactions[0]).toHaveLength(4);
+      // The lock and the admission read, which carries the settlement.
+      expect(counting.transactions[0]).toHaveLength(2);
     } finally {
       await db.close();
     }
@@ -770,11 +783,18 @@ describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () 
             notified.push(commit.commitSeq);
           },
         },
-        // The read reaches the staged rows, so the middle commit has written
+        // The scan reaches the staged rows, so the middle commit has written
         // them before its rejection rolls them back.
         commitValidator: async ({ clientCommitId, read }) => {
           if (clientCommitId !== 'middle') return;
-          expect(await read.getRow('tasks', 'middle-a')).toBeDefined();
+          expect(
+            (
+              await read.scanRows({
+                table: 'tasks',
+                scopeFilter: { project_id: ['p1'] },
+              })
+            ).map(({ row }) => row.id),
+          ).toContain('middle-a');
           throw new CommitValidationRejection(1, 'app.rejected');
         },
       };
@@ -923,5 +943,200 @@ describe('one push request, one transaction (SYNCULAR-PUSH-ROUNDTRIPS-001)', () 
     expect(
       (await d1.getPushResult('part-1', 'client-1', 'durable'))?.status,
     ).toBe('applied');
+  });
+});
+
+/**
+ * SYNCULAR-PUSH-LOCK-STATEMENTS-001 and SYNCULAR-PUSH-QUERY-CURSOR-001: the
+ * statements a push request runs under the partition lock. The counting
+ * executor sees the statements between BEGIN and COMMIT, which the executor
+ * issues itself.
+ */
+describe('statements under the partition lock (SYNCULAR-PUSH-LOCK-STATEMENTS-001)', () => {
+  const tasksInProject = {
+    plan: {
+      sql: 'SELECT id FROM tasks WHERE project_id = ?',
+      relations: [{ table: 'tasks', start: 15, end: 20 }],
+    },
+    params: ['p1'],
+    tables: ['tasks'],
+  };
+
+  async function measure(
+    validator: SyncRequestContext['commitValidator'],
+    frames: RequestFrame[],
+  ) {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const storage = new PostgresServerStorage(counting.executor);
+    const ctx: SyncRequestContext = {
+      ...(await context(storage)),
+      ...(validator === undefined ? {} : { commitValidator: validator }),
+    };
+    const push = async (pushed: RequestFrame[]) =>
+      pushResults(
+        decodeMessage(
+          await handleSyncRequest(
+            requestBytes(pushed, 'client-1', 1, TEST_LOG_EPOCH, 'outbox-1'),
+            ctx,
+          ),
+        ) as ResponseMessage,
+      );
+    // The partition's first commit initializes its lock row.
+    const warmUp = await storage.begin('part-1');
+    await warmUp.appendCommit({
+      clientId: 'host',
+      clientCommitId: 'warm-up',
+      actorId: 'host',
+      createdAtMs: 0,
+      changes: [],
+    });
+    await warmUp.commit();
+    counting.transactions.length = 0;
+    const results = await push(frames);
+    const statements = counting.transactions.flat();
+    await db.close();
+    return { results, statements, transactions: counting.transactions };
+  }
+
+  const oneRow = (id: string, seq: number, title = 'task') =>
+    pushCommit(id, [upsert('tasks', id, taskRow(id, 'p1', title))], seq);
+
+  test('a one-row commit runs the lock, the admission read and one write', async () => {
+    const { results, statements } = await measure(undefined, [
+      oneRow('day-note', 2),
+    ]);
+    expect(results[0]?.status).toBe('applied');
+    // With BEGIN and COMMIT: 5 statements under the lock.
+    expect(statements).toHaveLength(3);
+    expect(statements[0]).toContain('FOR UPDATE');
+    expect(statements[1]).toContain('sync_push_watermarks');
+    expect(statements[1]).toContain('sync_schema_meta');
+    expect(statements[2]).toContain('INSERT INTO "tasks"');
+    expect(statements[2]).toContain('INSERT INTO sync_changes');
+    expect(statements[2]).toContain('INSERT INTO sync_push_results');
+  });
+
+  test('a validator reading rows by id adds only its reads', async () => {
+    const { results, statements } = await measure(
+      async ({ read }) => {
+        for (const id of ['day-note', 'other-1', 'other-2', 'other-3']) {
+          await read.getRow('tasks', id);
+        }
+      },
+      [oneRow('day-note', 2)],
+    );
+    expect(results[0]?.status).toBe('applied');
+    // The staged row answers from memory; the three others are reads.
+    expect(statements).toHaveLength(3 + 3);
+    expect(statements.some((text) => text.startsWith('SAVEPOINT'))).toBe(false);
+  });
+
+  test('a registered query reads the cursor from the lock (SYNCULAR-PUSH-QUERY-CURSOR-001)', async () => {
+    const cursors: number[] = [];
+    const ids: string[][] = [];
+    const { results, statements } = await measure(
+      async ({ read }) => {
+        const { rows, maxCommitSeq } =
+          await read.queryAuthoritative(tasksInProject);
+        ids.push(rows.map((row) => String(row.id)));
+        cursors.push(maxCommitSeq);
+      },
+      [oneRow('day-note', 2), oneRow('op-edit', 3)],
+    );
+    expect(results.map((result) => result.commitSeq)).toEqual([2, 3]);
+    // The query sees its commit's staged row and the cursor before it.
+    expect(ids).toEqual([['day-note'], ['day-note', 'op-edit']]);
+    expect(cursors).toEqual([1, 2]);
+    expect(
+      statements.filter((text) =>
+        /^SELECT max_commit_seq FROM sync_partitions WHERE partition=\$1$/.test(
+          text,
+        ),
+      ),
+    ).toEqual([]);
+    // Per commit: the savepoint, the row write and the query; the first
+    // commit's append and result precede the second commit's savepoint.
+    expect(statements).toHaveLength(2 + 3 + 1 + 3 + 1);
+  });
+
+  test('ten one-row commits run the same five statements', async () => {
+    const { results, statements } = await measure(
+      undefined,
+      Array.from({ length: 10 }, (_, i) => oneRow(`batch-${i}`, i + 2)),
+    );
+    expect(results.map((result) => result.commitSeq)).toEqual(
+      Array.from({ length: 10 }, (_, i) => i + 2),
+    );
+    expect(statements).toHaveLength(3);
+  });
+
+  test('a constraint on a closed commit reruns the request and rejects only that commit', async () => {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const storage = new PostgresServerStorage(counting.executor);
+    const notified: number[] = [];
+    const ctx: SyncRequestContext = {
+      ...(await context(storage)),
+      realtime: {
+        notifyCommit: (_partition, commit) => {
+          notified.push(commit.commitSeq);
+        },
+      },
+    };
+    // A host constraint PostgreSQL checks only when the staged row is written.
+    await db.exec(
+      "ALTER TABLE tasks ADD CONSTRAINT tasks_title_allowed CHECK (title <> 'forbidden')",
+    );
+    const push = async (pushed: RequestFrame[]) =>
+      pushResults(
+        decodeMessage(
+          await handleSyncRequest(
+            requestBytes(pushed, 'client-1', 1, TEST_LOG_EPOCH, 'outbox-1'),
+            ctx,
+          ),
+        ) as ResponseMessage,
+      );
+    try {
+      counting.transactions.length = 0;
+      const single = await push([oneRow('alone', 1, 'forbidden')]);
+      expect(single[0]).toMatchObject({
+        status: 'rejected',
+        results: [{ opIndex: 0, code: 'sync.constraint_violation' }],
+      });
+      // The first transaction rolled back; the rerun wrote the rejection.
+      expect(counting.transactions).toHaveLength(2);
+      expect(
+        (await storage.getPushResult('part-1', 'client-1', 'alone'))?.status,
+      ).toBe('rejected');
+      expect(
+        (
+          await db.query(
+            'SELECT outbox_id, through_seq FROM sync_push_watermarks',
+          )
+        ).rows,
+      ).toEqual([{ outbox_id: 'outbox-1', through_seq: 1 }]);
+
+      const batch = await push([
+        oneRow('first', 2),
+        oneRow('middle', 3, 'forbidden'),
+        oneRow('last', 4),
+      ]);
+      expect(batch.map((result) => result.status)).toEqual([
+        'applied',
+        'rejected',
+        'applied',
+      ]);
+      const [first, , last] = batch;
+      expect(last?.commitSeq).toBe((first?.commitSeq ?? 0) + 1);
+      expect(notified).toEqual([first?.commitSeq ?? 0, last?.commitSeq ?? 0]);
+      expect(await storage.getRow('part-1', 'tasks', 'middle')).toBeUndefined();
+      expect(await storage.getRow('part-1', 'tasks', 'last')).toBeDefined();
+      expect(await storage.getMaxCommitSeq('part-1')).toBe(
+        last?.commitSeq ?? 0,
+      );
+    } finally {
+      await db.close();
+    }
   });
 });

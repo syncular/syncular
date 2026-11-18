@@ -60,7 +60,10 @@ import {
   readCandidateRows,
   serveGateRefusal,
 } from './storage';
-import { StorageConstraintError } from './storage-errors';
+import {
+  ClosedCommitConstraintError,
+  StorageConstraintError,
+} from './storage-errors';
 import { transactionQuery } from './storage-query';
 import { serveNotReadyError } from './readiness';
 import type {
@@ -1849,6 +1852,11 @@ export async function processPushOperationsWithTrace(
  *
  * `outbox` lists every commit of the request in the same order as
  * `commits`; it carries the §6.3.2 sequences and the §9 settlement.
+ *
+ * A storage may write a closed commit with the request's later statements
+ * (PostgreSQL). When a relational constraint fails there, no commit can be
+ * rejected alone: the request rolls back and runs once more with every
+ * commit written before it closes, as a client retry would (§6.4).
  */
 export async function processPushCommitsWithTrace(
   ctx: SyncRequestContext,
@@ -1858,6 +1866,35 @@ export async function processPushCommitsWithTrace(
   commits: readonly PushRequestCommit[],
   wireSchema: CompiledSchema = schema,
   outbox?: OutboxSettlement,
+): Promise<ProcessedPushCommit[]> {
+  const apply = (closeEagerly: boolean) =>
+    applyPushCommits(
+      ctx,
+      schema,
+      resolved,
+      clientId,
+      commits,
+      wireSchema,
+      outbox,
+      closeEagerly,
+    );
+  try {
+    return await apply(false);
+  } catch (error) {
+    if (!(error instanceof ClosedCommitConstraintError)) throw error;
+    return apply(true);
+  }
+}
+
+async function applyPushCommits(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  resolved: ResolvedScopes,
+  clientId: string,
+  commits: readonly PushRequestCommit[],
+  wireSchema: CompiledSchema,
+  outbox: OutboxSettlement | undefined,
+  closeEagerly: boolean,
 ): Promise<ProcessedPushCommit[]> {
   const { partition } = ctx;
   const blobCtx: BlobApplyContext = {
@@ -1936,6 +1973,7 @@ export async function processPushCommitsWithTrace(
       })),
       schema.version,
       outbox,
+      closeEagerly ? { closeEagerly } : undefined,
     );
     // RFC 0007: the gate is evaluated while the partition lock is held, so
     // the migration check and the writes share one transaction and no

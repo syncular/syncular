@@ -445,6 +445,125 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     });
   }
 
+  test('concurrent pushers to one partition get consecutive commitSeqs and one result per commit', async () => {
+    const sql = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    handles.push(sql);
+    const storage = new PostgresServerStorage(bunSqlExecutor(sql));
+    await storage.migrate();
+    await storage.ensureSchema(compileSchema(SYNC_SCHEMA));
+    const partition = `concurrent-${crypto.randomUUID()}`;
+    const { logEpoch } = await storage.touchPartition(
+      partition,
+      Date.now(),
+      crypto.randomUUID(),
+    );
+    const notified: number[] = [];
+    const clients = 8;
+    const requests = 4;
+    const commitsPerRequest = 3;
+    const request = (client: number, round: number) =>
+      encodeMessage({
+        wireVersion: PROTOCOL_WIRE_VERSION,
+        msgKind: 'request',
+        frames: [
+          {
+            type: 'REQ_HEADER',
+            clientId: `client-${client}`,
+            schemaVersion: 1,
+            logEpoch,
+            outboxId: `outbox-${client}`,
+          },
+          ...Array.from({ length: commitsPerRequest }, (_, k) => {
+            const seq = round * commitsPerRequest + k + 1;
+            const id = `c${client}-s${seq}`;
+            return {
+              type: 'PUSH_COMMIT' as const,
+              clientCommitId: id,
+              clientSeq: seq,
+              operations: [
+                {
+                  table: 'tasks',
+                  rowId: id,
+                  op: 'upsert' as const,
+                  payload: encodeSparseRow(TASK_COLUMNS, 0, [id, 'p1', id]),
+                },
+              ],
+            };
+          }),
+        ],
+      });
+    const deliver = async (client: number, round: number) => {
+      const message = decodeMessage(
+        await handleSyncRequest(request(client, round), {
+          partition,
+          actorId: `actor-${client}`,
+          schema: SYNC_SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ project_id: ['p1'] }),
+          realtime: {
+            notifyCommit: (_partition, commit) => {
+              notified.push(commit.commitSeq);
+            },
+          },
+        }),
+      );
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      return message.frames.filter(
+        (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+      );
+    };
+    // Every client sends its requests in order, and every request twice at
+    // once (a lost acknowledgement retried while the first is in flight).
+    const outcomes = await Promise.all(
+      Array.from({ length: clients }, async (_, client) => {
+        const results: PushResultFrame[][] = [];
+        for (let round = 0; round < requests; round++) {
+          results.push(
+            ...(await Promise.all([
+              deliver(client, round),
+              deliver(client, round),
+            ])),
+          );
+        }
+        return results;
+      }),
+    );
+    const total = clients * requests * commitsPerRequest;
+    const byCommit = new Map<string, PushResultFrame[]>();
+    for (const result of outcomes.flat(2)) {
+      byCommit.set(result.clientCommitId, [
+        ...(byCommit.get(result.clientCommitId) ?? []),
+        result,
+      ]);
+    }
+    expect(byCommit.size).toBe(total);
+    for (const results of byCommit.values()) {
+      // One delivery applied it; the other replayed the same commitSeq.
+      expect(results.map((result) => result.status).sort()).toEqual([
+        'applied',
+        'cached',
+      ]);
+      expect(results[0]?.commitSeq).toBe(results[1]?.commitSeq);
+    }
+    const seqs = [...byCommit.values()]
+      .map((results) => results[0]?.commitSeq ?? 0)
+      .sort((a, b) => a - b);
+    expect(seqs).toEqual(Array.from({ length: total }, (_, i) => i + 1));
+    expect([...notified].sort((a, b) => a - b)).toEqual(seqs);
+    expect(await storage.getMaxCommitSeq(partition)).toBe(total);
+    const counts = await bunSqlExecutor(sql).query<{
+      commits: unknown;
+      changes: unknown;
+    }>(
+      `SELECT (SELECT count(*) FROM sync_commits WHERE partition=$1) AS commits,
+              (SELECT count(*) FROM sync_changes WHERE partition=$1) AS changes`,
+      [partition],
+    );
+    expect(Number(counts.rows[0]?.commits)).toBe(total);
+    expect(Number(counts.rows[0]?.changes)).toBe(total);
+  });
+
   test('NOTIFY on one connection wakes a LISTEN on another', async () => {
     // Two independent connections: a listener and a notifier.
     const listenSql = new (BunSQL as new (url: string) => unknown)(
