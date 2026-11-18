@@ -359,6 +359,14 @@ export function ownsLocalRow(
   );
 }
 
+/** Whether the failed overlay (§7.4.4) retains rows of `table`. */
+function retainsRows(db: ClientDatabase, table: CompiledClientTable): boolean {
+  return (
+    db.query(`SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`, [table.name])
+      .length > 0
+  );
+}
+
 function scopedRows(
   db: ClientDatabase,
   table: CompiledClientTable,
@@ -408,9 +416,10 @@ export function deleteScopedRows(
   const scope = localScopePredicate(table, effective, owners);
   if (!scope) return;
   const { sql, params } = scope;
-  for (const row of scopedRows(db, table, scope)) {
-    retainedBaseWrite(db, table, String(row.id));
-  }
+  if (retainsRows(db, table))
+    for (const row of scopedRows(db, table, scope)) {
+      retainedBaseWrite(db, table, String(row.id));
+    }
   db.exec(`DELETE FROM ${quoteIdent(table.name)} WHERE ${sql}`, params);
 }
 
@@ -643,11 +652,7 @@ export async function applySqliteSegment(
       const started = now();
       let chunk = 0;
       const first = applied === 0;
-      const replay =
-        countOutbox(db) ||
-        db.query(`SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`, [
-          table.name,
-        ]).length;
+      const replay = countOutbox(db) || retainsRows(db, table);
       const rows = replay
         ? db.query(`SELECT * FROM ${source} WHERE ${where}`, params)
         : [];
@@ -796,7 +801,8 @@ export async function applyRowsSegment(
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
       const scope: OverlayScope = [
         ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
-        ...(clearThisBlock
+        // The clear's rows matter only to a replay (§7.8), as in an image chunk.
+        ...(clearThisBlock && (countOutbox(db) || retainsRows(db, table))
           ? bootstrapScope(db, table, options.effective, options.owners())
           : []),
         ...rows.map((row) =>

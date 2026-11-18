@@ -487,6 +487,43 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
     expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['held']);
   });
 
+  test('a first-page clear lists the cleared rows only for a replay', async () => {
+    const reads: string[] = [];
+    const database = new (class extends BunClientDatabase {
+      override query(
+        sql: string,
+        params?: Parameters<BunClientDatabase['query']>[1],
+      ) {
+        reads.push(sql);
+        return super.query(sql, params);
+      }
+    })();
+    const listsDocs = () =>
+      reads.some((sql) => sql.startsWith('SELECT "id" AS id FROM "docs"'));
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a', database });
+    a.client.subscribe({ org_id: 'o1' });
+    await a.client.syncUntilIdle();
+    a.db.exec(
+      `INSERT INTO "docs" (id, org_id, project_id, body, _sync_version)
+       VALUES ('stale', 'o2', 'p1', 'stale', 1)`,
+    );
+    reads.length = 0;
+    a.client.subscribe({ projectId: 'p1' });
+    await a.client.syncUntilIdle();
+    expect(tableRows(a.db, 'docs')).toEqual([]);
+    expect(listsDocs()).toBe(false);
+    // A pending write in the cleared scope needs the list, and survives.
+    a.client.setTransportEnabled(false);
+    a.client.mutate([doc('mine', 'o2', 'p2')]);
+    reads.length = 0;
+    a.client.subscribe({ projectId: 'p2' });
+    a.client.setTransportEnabled(true);
+    await a.client.syncUntilIdle();
+    expect(listsDocs()).toBe(true);
+    expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['mine']);
+  });
+
   test('a bulk delete whose map omits a scope variable invalidates the whole table', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
