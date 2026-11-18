@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'A host announces grown scopes to connected clients',
+    body: '`refreshScopes` covered a narrowed grant; a grown one had no counterpart, so an app with discovered units polled its discovery to see new ones. `announceScopes(partition, actorIds)` on the realtime hub, and on the Workers notifier across shard objects with retry, sends each connected session of those actors a `scopes` event without scope values. Clients surface it as `onScopesChanged` (TypeScript client, worker handle, React, Tauri and React Native bridges) and `drain_scopes_changed` in Rust; the app runs its discovery then. Clients that predate the event ignore it.',
+    links: [
+      {
+        href: '/concepts-realtime/#grown-grants',
+        label: 'Grown grants',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'OPFS replicas cache 64 MiB of pages',
     body: "SQLite's default page cache holds 31 pages of 64 KiB, and in a private window every miss is an OPFS call of about 0.27 ms. A unit's first-page clear on an 87,267-row table without an index on the unit's scope columns took 62 to 70 s. Both cores now open an OPFS replica with a 64 MiB page cache, and a rows clear lists its rows only when a pending write needs a replay. A cold private window of Diego's catalogue loaded in 14 to 36 s instead of 197 to 219 s, with search working once its unit completed.",
     links: [

@@ -1,5 +1,35 @@
 # Syncular release notes
 
+## 0.80.0 release notes
+
+A host announces grown scopes to connected clients
+(SYNCULAR-SCOPE-GROWTH-NOTICE-001, SPEC §8.7, §8.9). `refreshScopes` stops
+the scopes a narrowed grant lost; a grown grant had no counterpart. A client
+registers only the units it knows, so an app with discovered units had to
+poll its discovery, and in Diego a one-minute poll cost half of production's
+coordinator time.
+
+- Wire: a new server-to-client realtime event
+  `{"event":"scopes","data":{"timestamp":<ms>}}`. It carries no scopes, units
+  or cursor, re-resolves nothing, raises no sync-needed signal and starts no
+  round. It is an event name, not a wake reason, because §8.3 closes the wake
+  reason set; every client ignores an unknown event name (§8.1), so clients
+  that predate it skip it.
+- Host: `RealtimeHub.announceScopes(partition, actorIds)`, and
+  `durableObjectRealtimeNotifier(...).announceScopes`, which relays through
+  the partition object to every shard like `refreshScopes`; a failed shard
+  relay is retried on the alarm.
+- Client: `onScopesChanged(listener)` on `SyncClient`, the worker handle
+  (every tab), `NativeBridgeClient` (Tauri and React Native) and React's
+  `SyncClientLike`; `SyncClient::drain_scopes_changed()` in Rust; the FFI and
+  the Tauri plugin emit `{"type":"scopes-changed"}`, which the Swift, Kotlin
+  and Flutter event channels pass through.
+- Delivery is best effort per connected session with no replay on connect, so
+  run discovery when realtime becomes connected as well.
+
+**Upgrade notes.** None required. A Worker and its Durable Object classes
+deploy from the same release, as before.
+
 ## 0.79.3 release notes
 
 OPFS replicas cache 64 MiB of pages (SYNCULAR-PRIVATE-WIDE-ROUND-001, SPEC
