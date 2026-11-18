@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'A patch can follow an upsert of its row in one commit',
+    body: "`mutate` resolved each sparse patch against the local row as it stood before the batch, so `mutate([upsert, patch])` of one new row threw `sync.row_missing`. A patch now reads its row as the batch's earlier operations leave it, in the TS and Rust clients: the overlay shows the merged row, and the server applies the operations in order to the same result. A patch after a delete of its row in the same batch still raises `sync.row_missing`.",
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#atomic-sparse-aggregates',
+        label: 'Atomic sparse aggregates',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A live section reads only its candidate commits',
     body: "The live-section change read on SQLite, D1 and PostgreSQL storage started at commit 0, so every pull after a commit visited the partition's whole change log up to the last candidate. It now seeks the candidate commits by `(partition, commit_seq)`. With 160,000 changes in commit 1 and 84 unit keys, a live window over commit 26 reads in 0.4 ms instead of 3.9 s on SQLite.",
     links: [

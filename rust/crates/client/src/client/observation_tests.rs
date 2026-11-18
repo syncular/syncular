@@ -11959,3 +11959,69 @@ fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
     }
     assert_eq!(*seen.lock().unwrap(), vec![1024, 2000, 3024, 4048, 5000]);
 }
+
+#[test]
+fn patch_reads_the_row_as_earlier_operations_of_its_commit_leave_it() {
+    let mut client = client();
+    client.create_synced_tables().unwrap();
+    let row = |id: &str, project: &str| {
+        Map::from_iter([
+            ("id".to_owned(), json!(id)),
+            ("project_id".to_owned(), json!(project)),
+        ])
+    };
+    let patch = |values: Map<String, Value>| Mutation::Patch {
+        table: "tasks".into(),
+        values,
+        base_version: None,
+    };
+    let delete = |id: &str| Mutation::Delete {
+        table: "tasks".into(),
+        row_id: id.into(),
+        base_version: None,
+    };
+    let upsert = |values: Map<String, Value>| Mutation::Upsert {
+        table: "tasks".into(),
+        values,
+        base_version: None,
+    };
+
+    // The scope column compares against the value the upsert wrote: equal
+    // drops from the presence set, different refuses.
+    client
+        .mutate(vec![upsert(row("t1", "p1")), patch(row("t1", "p1"))])
+        .expect("a patch after an upsert of its row applies");
+    let ops = &client.outbox[0].ops;
+    assert_eq!(
+        ops.iter().map(|op| op.insert).collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert_eq!(
+        ops[1].values,
+        Some(Map::from_iter([("id".to_owned(), json!("t1"))]))
+    );
+    let moved = client
+        .mutate(vec![upsert(row("t2", "p1")), patch(row("t2", "p2"))])
+        .expect_err("the in-commit scope value differs");
+    assert_eq!(moved.message, "patch cannot write a scope column (§3.4)");
+
+    // A delete earlier in the commit leaves no base.
+    let deleted = client
+        .mutate(vec![delete("t1"), patch(row("t1", "p1"))])
+        .expect_err("a patch after a delete has no base");
+    assert_eq!(deleted.code, "sync.row_missing");
+    assert_eq!(client.pending_commit_ids().len(), 1);
+
+    // A recreate after the delete is a base again.
+    client
+        .mutate(vec![
+            delete("t1"),
+            upsert(row("t1", "p1")),
+            patch(row("t1", "p1")),
+        ])
+        .expect("a patch after a recreate applies");
+    let rows = client
+        .query("SELECT id, project_id FROM tasks", &[])
+        .unwrap();
+    assert_eq!(Value::from(rows), json!([{"id": "t1", "project_id": "p1"}]));
+}

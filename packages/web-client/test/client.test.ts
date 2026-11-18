@@ -1843,6 +1843,75 @@ describe('the SELECT * → mutate round trip', () => {
     await a.client.syncUntilIdle();
     expect(a.client.query('SELECT * FROM tasks')).toEqual([]);
   });
+
+  test('a patch reads the row as earlier operations of its commit leave it', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    const b = await makeClient(server, { clientId: 'client-b' });
+    for (const c of [a, b]) c.client.subscribe({ project_id: 'p1' });
+    const created = a.client.mutate([
+      {
+        op: 'upsert',
+        table: 'tasks',
+        values: taskValues('t1', 'p1', 'created', false, 1),
+      },
+      // The scope column equals the value the upsert wrote.
+      {
+        op: 'patch',
+        table: 'tasks',
+        values: { id: 't1', projectId: 'p1', priority: 2 },
+      },
+      { op: 'patch', table: 'tasks', values: { id: 't1', done: true } },
+    ]);
+    expect(
+      a.client.pendingCommits()[0]?.operations.map((op) => op.insert),
+    ).toEqual([true, undefined, undefined]);
+    expect(tableRows(a.db, 'tasks')).toMatchObject([
+      { id: 't1', title: 'created', done: 1, priority: 2 },
+    ]);
+    const report = await a.client.syncUntilIdle();
+    expect(report.applied).toEqual([created]);
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks')).toMatchObject([
+      { id: 't1', title: 'created', done: 1, priority: 2 },
+    ]);
+
+    // The scope column compares against the in-commit row, which moved.
+    expect(() =>
+      a.client.mutate([
+        { op: 'upsert', table: 'tasks', values: taskValues('t2', 'p1') },
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't2', project_id: 'p2', title: 'x' },
+        },
+      ]),
+    ).toThrow('patch cannot write a scope column (§3.4)');
+    // A delete earlier in the commit leaves no base.
+    expect(() =>
+      a.client.mutate([
+        { op: 'delete', table: 'tasks', rowId: 't1' },
+        { op: 'patch', table: 'tasks', values: { id: 't1', title: 'x' } },
+      ]),
+    ).toThrow('a sparse patch requires a local row');
+    expect(a.client.pendingCommits()).toEqual([]);
+    expect(tableRows(a.db, 'tasks')).toHaveLength(1);
+    // After a delete and a recreate in one commit a patch applies. Insert
+    // intent still reads the replica at call time, where t1 is present.
+    a.client.mutate([
+      { op: 'delete', table: 'tasks', rowId: 't1' },
+      { op: 'upsert', table: 'tasks', values: taskValues('t1', 'p1', 'again') },
+      { op: 'patch', table: 'tasks', values: { id: 't1', priority: 7 } },
+    ]);
+    expect(
+      a.client.pendingCommits()[0]?.operations.map((op) => op.insert),
+    ).toEqual([undefined, undefined, undefined]);
+    await a.client.syncUntilIdle();
+    await b.client.syncUntilIdle();
+    expect(tableRows(b.db, 'tasks')).toMatchObject([
+      { id: 't1', title: 'again', done: 0, priority: 7 },
+    ]);
+  });
 });
 
 describe('blob downloads', () => {

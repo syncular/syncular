@@ -28,7 +28,8 @@ client.mutate([
 
 | Rule | Behavior |
 |---|---|
-| Every sparse patch needs a local row at call time | An absent row rejects the whole batch with `sync.row_missing` before any local write or outbox insert. |
+| Every sparse patch needs a base row | The base is the row as the batch's earlier operations leave it, otherwise the local row at call time. A patch may follow an upsert of its row in the same batch. A missing base, including one an earlier delete in the batch removed, rejects the whole batch with `sync.row_missing` before any local write or outbox insert. |
+| `baseVersion` after an earlier write of the row | Omit it. The server judges it against the row the earlier operation wrote, so the pre-commit version conflicts. |
 | Omitted columns | Retain their values. |
 | Encrypted columns | A patch that writes only plaintext columns needs no encryption key for omitted encrypted columns. Their stored ciphertext stays unchanged. |
 

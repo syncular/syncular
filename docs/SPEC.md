@@ -5349,9 +5349,18 @@ durable under the original idempotency key; the host must repair storage freshne
 one atomic local commit. Each patch carries its primary key in `values`; only
 present columns are written. Omitted encrypted columns require no key and remain
 byte-identical on the server. Single-row `patch` uses the same batch path.
-Every patch requires its base row in the local replica at call time. An absent
-base raises `sync.row_missing` before the batch changes local rows or appends
-an outbox commit. This includes a patch following an insert in the same batch.
+A patch's base is its row as the batch's earlier operations leave it: the
+values of the last earlier upsert of the row, absent after an earlier delete,
+and otherwise the row in the local replica at call time. An absent base raises
+`sync.row_missing` before the batch changes local rows or appends an outbox
+commit. The §3.4 rule 5 scope-column equality check compares against the same
+base. The server applies a commit's operations in order (§6.4), so an upsert
+followed by a patch of the same row converges to the same row on both sides.
+A `baseVersion` on a later operation is judged against the row the earlier
+operations wrote (§6.2): a patch after an earlier write of its row in the same
+commit omits `baseVersion`, and one carrying the pre-commit version conflicts
+on every column the earlier write presented. Insert intent (below) and the
+§5.11 sealed-row refusal read the replica at call time.
 
 **Insert intent.** A `mutate` upsert of a row that is absent from the local
 replica's visible state at call time records insert intent: its
@@ -8996,7 +9005,13 @@ Each is a driver-interface script, not a prose test.
     concurrent server change to an untouched column survives the pending
     sparse patch (§7.1). (h) The Rust and TS clients emit byte-identical
     sparse payloads for the same patch, pinned against the reference
-    encoding. Both pairings (TS×TS, Rust×TS).
+    encoding. (i) A patch reads its row as the commit's earlier operations
+    leave it: an upsert followed by two patches of the same row applies
+    locally and on the server as one commit with the merged row, a scope
+    column compares against the upserted value, a patch after a delete in
+    the same batch raises `sync.row_missing`, and a pre-commit
+    `baseVersion` on a patch after an upsert of its row rejects the commit.
+    Both pairings (TS×TS, Rust×TS).
 
 22. **Local mutation during a captured round (§7.1, §8.4).** Prepare a request
    containing one commit, author a second commit while its reply is pending,

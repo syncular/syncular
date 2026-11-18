@@ -3463,12 +3463,18 @@ export class SyncClient {
         { clientCommitId: supplied },
       );
     const clientCommitId = supplied ?? crypto.randomUUID();
+    // §7.1: a patch reads the row as the commit's earlier operations leave
+    // it. Keyed by `JSON [table,rowId]`: the values an earlier upsert
+    // wrote, or null after an earlier delete. A patch changes neither
+    // presence nor a scope column, so it records nothing.
+    const staged = new Map<string, Record<string, JsonRowValue> | null>();
     const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
         // §2.4: the server rejects a rowId holding U+0000.
         if (mutation.rowId.includes('\u0000'))
           throw invalidRequest('rowId holds U+0000');
+        staged.set(JSON.stringify([table.name, mutation.rowId]), null);
         return definedObject({
           table: mutation.table,
           rowId: mutation.rowId,
@@ -3486,10 +3492,28 @@ export class SyncClient {
         const scopeColumns = new Set(table.scopeColumnByVariable.values());
         const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
         const pkValue = requireRowId(normalized.get(pkColumn.name));
-        const local = this.#db.query(
-          `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-          [pkSqlValue(table, pkValue)],
-        )[0];
+        const key = JSON.stringify([table.name, pkValue]);
+        // The base as JSON values; a stored row contributes its scope
+        // columns, the only ones the checks below read.
+        let local = staged.get(key);
+        if (!staged.has(key)) {
+          const stored = this.#db.query(
+            `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
+            [pkSqlValue(table, pkValue)],
+          )[0];
+          local =
+            stored &&
+            Object.fromEntries(
+              table.columns
+                .filter((column) => scopeColumns.has(column.name))
+                .map((column) => [
+                  column.name,
+                  rowValueToJson(
+                    fromSqlValue(column, stored[column.name] ?? null),
+                  ),
+                ]),
+            );
+        }
         if (!local)
           throw new ClientSyncError(
             'sync.row_missing',
@@ -3501,7 +3525,8 @@ export class SyncClient {
           // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
           // server accepts a present scope column whose value equals the
           // stored row and applies it as a no-op, so a decoded envelope
-          // round-trips. The local row is the only value the client can
+          // round-trips. The local row, as the commit's earlier operations
+          // leave it, is the only value the client can
           // prove equality against; when the row is absent locally the
           // client cannot prove equality against the server's stored row
           // and fails closed. A primary key that is also a scope column
@@ -3511,9 +3536,7 @@ export class SyncClient {
           if (scopeColumns.has(column.name) && column.name !== pkColumn.name) {
             if (
               !Object.is(
-                rowValueToJson(
-                  fromSqlValue(column, local[column.name] ?? null),
-                ),
+                local[column.name] ?? null,
                 rowValueToJson(
                   coerceSqlRepresentation(
                     column,
@@ -3576,6 +3599,8 @@ export class SyncClient {
           `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=? LIMIT 1`,
           [pkSqlValue(table, pkValue)],
         ).length === 0;
+      if (mutation.op !== 'patch')
+        staged.set(JSON.stringify([table.name, pkValue]), json);
       return definedObject({
         table: mutation.table,
         rowId: pkValue,

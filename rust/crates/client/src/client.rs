@@ -6074,6 +6074,11 @@ impl SyncClient {
                 );
             }
             let mut ops = Vec::with_capacity(mutations.len());
+            // §7.1: a patch reads the row as the commit's earlier operations
+            // leave it: the values an earlier upsert wrote, or None after an
+            // earlier delete. A patch changes neither presence nor a scope
+            // column, so it records nothing.
+            let mut staged: HashMap<(String, String), Option<Map<String, Value>>> = HashMap::new();
             for mutation in mutations {
                 match mutation {
                     Mutation::Patch {
@@ -6087,7 +6092,14 @@ impl SyncClient {
                             .ok_or_else(|| "sync.unknown_table".to_owned())?;
                         let values = normalize_values_casing(schema_table, values)?;
                         let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
-                        ops.push(self.prepare_patch(&table, &row_id, values, base_version)?);
+                        let base = staged.get(&(table.clone(), row_id.clone()));
+                        ops.push(self.prepare_patch(
+                            &table,
+                            &row_id,
+                            values,
+                            base_version,
+                            base,
+                        )?);
                     }
                     Mutation::Upsert {
                         table,
@@ -6116,6 +6128,7 @@ impl SyncClient {
                         // visible replica at call time, before this batch
                         // applies anything.
                         let insert = !self.visible_row_exists(schema_table, &row_id)?;
+                        staged.insert((table.clone(), row_id.clone()), Some(values.clone()));
                         ops.push(OutboxOp {
                             upsert: true,
                             table,
@@ -6140,6 +6153,7 @@ impl SyncClient {
                                 .to_owned()
                                 .into());
                         }
+                        staged.insert((table.clone(), row_id.clone()), None);
                         ops.push(OutboxOp {
                             upsert: false,
                             table,
@@ -6253,16 +6267,19 @@ impl SyncClient {
         partial: Map<String, Value>,
         base_version: Option<i64>,
     ) -> Result<String, ClientError> {
-        let operation = self.prepare_patch(table, row_id, partial, base_version)?;
+        let operation = self.prepare_patch(table, row_id, partial, base_version, None)?;
         Ok(self.record_outbox_commit(vec![operation], None)?)
     }
 
+    /// `staged` is the row as the batch's earlier operations leave it
+    /// (`Some(None)` after a delete); `None` reads the visible replica.
     fn prepare_patch(
         &self,
         table: &str,
         row_id: &str,
         partial: Map<String, Value>,
         base_version: Option<i64>,
+        staged: Option<&Option<Map<String, Value>>>,
     ) -> Result<OutboxOp, ClientError> {
         let schema_table = self
             .schema
@@ -6277,7 +6294,11 @@ impl SyncClient {
                 ));
             }
         }
-        if !self.visible_row_exists(schema_table, row_id)? {
+        let exists = match staged {
+            Some(row) => row.is_some(),
+            None => self.visible_row_exists(schema_table, row_id)?,
+        };
+        if !exists {
             return Err("sync.row_missing: a sparse patch requires a local row"
                 .to_owned()
                 .into());
@@ -6303,20 +6324,27 @@ impl SyncClient {
             else {
                 continue;
             };
-            let stored = self
-                .conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM {} WHERE {}",
-                        quote_ident(&scope.column),
-                        visible_table(&schema_table.name),
-                        row_id_predicate(schema_table)
-                    ),
-                    rusqlite::params![row_id],
-                    |row| Ok(sql_ref_to_json(column, row.get_ref(0)?)),
-                )
-                .optional()
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let stored = match staged {
+                Some(row) => row.as_ref().and_then(|row| {
+                    json_to_column_value(column, row.get(&scope.column))
+                        .ok()
+                        .map(|value| column_value_to_json(&value))
+                }),
+                None => self
+                    .conn
+                    .query_row(
+                        &format!(
+                            "SELECT {} FROM {} WHERE {}",
+                            quote_ident(&scope.column),
+                            visible_table(&schema_table.name),
+                            row_id_predicate(schema_table)
+                        ),
+                        rusqlite::params![row_id],
+                        |row| Ok(sql_ref_to_json(column, row.get_ref(0)?)),
+                    )
+                    .optional()
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?,
+            };
             // Decode the supplied value through the same column-type path the
             // rest of the patch encoding uses, so a value that only equals
             // the stored one in another number representation still compares

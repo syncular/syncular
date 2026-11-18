@@ -922,6 +922,109 @@ export const sparseRowScenarios: readonly Scenario[] = [
   },
 
   {
+    // A patch reads the row as the commit's earlier operations leave it,
+    // locally as on the server (§6.4, §7.1).
+    name: 'sparse-rows/patch-reads-earlier-operations-of-its-commit',
+    specRefs: ['§3.4', '§6.2', '§6.4', '§7.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const b = await bootstrapped(ctx, 'actor-b', 'client-b');
+      const created = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'created') },
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', project_id: 'p1', priority: 2 },
+        },
+        { op: 'patch', table: 'tasks', values: { id: 't1', done: true } },
+      ]);
+      const merged = {
+        id: 't1',
+        project_id: 'p1',
+        title: 'created',
+        done: true,
+        priority: 2,
+        meta: null,
+      };
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.values),
+        [merged],
+        'the overlay shows the patches over the in-commit row',
+      );
+      checkEqual((await syncOk(a)).applied, [created], 'one commit applies');
+      checkEqual(
+        (await serverRow(ctx, 't1'))?.values,
+        merged,
+        'the server applies the operations in order',
+      );
+
+      let code: string | undefined;
+      try {
+        await a.api.mutate([
+          { op: 'upsert', table: 'tasks', values: task('t2', 'p1') },
+          {
+            op: 'patch',
+            table: 'tasks',
+            values: { id: 't2', project_id: 'p2' },
+          },
+        ]);
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
+      checkEqual(
+        code,
+        'sync.invalid_request',
+        'a scope column compares against the in-commit row',
+      );
+      code = undefined;
+      try {
+        await a.api.mutate([
+          { op: 'delete', table: 'tasks', rowId: 't1' },
+          { op: 'patch', table: 'tasks', values: { id: 't1', title: 'x' } },
+        ]);
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
+      checkEqual(code, 'sync.row_missing', 'a delete leaves no patch base');
+      checkEqual(await a.api.pendingCommitIds(), [], 'nothing enqueued');
+
+      // The server judges a later baseVersion against the in-commit row: the
+      // upsert wrote every column above the pre-commit version.
+      const version = (await serverRow(ctx, 't1'))?.version ?? -1;
+      checkEqual(version, 3, 'each operation advanced the version');
+      const stale = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t1', 'p1', 'rewritten'),
+          baseVersion: version,
+        },
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', title: 'stale' },
+          baseVersion: version,
+        },
+      ]);
+      checkEqual(
+        (await syncOk(a)).rejected,
+        [stale],
+        'a pre-commit baseVersion conflicts with the earlier write',
+      );
+      checkEqual(
+        (await serverRow(ctx, 't1'))?.values.title,
+        'created',
+        'the commit rolled back whole',
+      );
+      await syncIdle(b);
+      await expectConverged(ctx, 'tasks', [b], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+
+  {
     // B.21(f): a present scope column that changes the stored value rejects
     // sync.invalid_request, replacing the old silent strip (§3.4 rule 5).
     name: 'sparse-rows/present-scope-column-change-rejects',
