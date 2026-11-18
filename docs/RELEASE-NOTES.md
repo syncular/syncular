@@ -1,5 +1,37 @@
 # Syncular release notes
 
+## 0.83.0 release notes
+
+0.83.0 lets a patch follow an upsert of its row in one commit
+(SYNCULAR-PATCH-AFTER-CREATE-001) and gives each sync round an identity
+(SYNCULAR-ROUND-IDENTITY-001). SSP2 and the wire version are unchanged.
+
+`mutate` resolved each sparse patch against the local row as it stood before
+the batch, so `mutate([upsert, patch])` of one new row threw
+`sync.row_missing`, although the server applies both operations in order.
+The TypeScript and Rust clients now judge a patch's existence and its
+scope-column equality against the row the batch's earlier upserts and
+deletes leave. A patch after a delete of its row in the same batch still
+raises `sync.row_missing`. SPEC §7.1 and B.21(i) state the rule; the
+conformance scenario `sparse-rows/patch-reads-earlier-operations-of-its-commit`
+covers both cores. Upgrade note: omit `baseVersion` on a patch that follows an
+earlier write of its row in the same commit; the server judges it against the
+row that write left.
+
+Diagnostics `lastRound` carries `epoch` and `attempt`, and every progress
+snapshot carries the same `epoch` (SPEC §7.6, §7.7). `attempt` is the
+progress attempt that ran the round; `epoch` is a random string each client
+core generates when it starts, so attempts restart at 1 under a new `epoch`
+after a Worker handover or a process restart. Count rounds by
+`(epoch, attempt)`: `completedAtMs` repeats under an equal or frozen clock.
+Every progress attempt now ends in exactly one `lastRound`. The TypeScript
+client no longer records a failed round for a `sync()` refused with
+`sync.offline` before it starts, matching Rust. The Rust client ends a round
+it abandons mid-flight (realtime loss, disconnect, security teardown, reset,
+local purge) as failed with `client.round_cancelled` instead of leaving
+progress `running`, matching TypeScript. The conformance scenario
+`observation/round-identity` covers both cores.
+
 ## 0.82.3 release notes
 
 A live section's change read visits only its candidate commits
