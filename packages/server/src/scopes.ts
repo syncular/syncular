@@ -80,8 +80,9 @@ export function renderScopeValue(
 }
 
 /**
- * Extract the stored scopes (§3.1) from a decoded row. Returns the missing
- * variable name when a declared scope column is absent or empty.
+ * Extract the stored scopes (§3.1) from a decoded row. A NULL column outside
+ * the owner set leaves its variable without a stored scope. Returns the
+ * variable name when a column is empty, or NULL in the owner set.
  */
 export function storedScopesForRow(
   table: CompiledTable,
@@ -89,7 +90,14 @@ export function storedScopesForRow(
 ): { scopes: StoredScopes } | { missing: string } {
   const scopes: StoredScopes = {};
   for (const pattern of table.scopePatterns) {
-    const value = renderScopeValue(values[pattern.columnIndex]);
+    const raw = values[pattern.columnIndex];
+    if (
+      (raw === null || raw === undefined) &&
+      !table.writeScopeSets[0]!.includes(pattern.variable)
+    ) {
+      continue;
+    }
+    const value = renderScopeValue(raw);
     if (value === undefined) return { missing: pattern.variable };
     scopes[pattern.variable] = value;
   }
@@ -97,29 +105,32 @@ export function storedScopesForRow(
 }
 
 /**
- * Write-path authorization (§3.4 steps 2–3): all stored values must exist;
- * the declared write variables must be allowed (or hold `'*'`).
+ * Write-path authorization (§3.4 step 3): a write set admits the row when
+ * each of its variables has a value the actor is allowed (or `'*'`). An
+ * insert and a rescope need the owner set; an existing row needs any set.
  */
 export function authorizeWrite(
   table: CompiledTable,
   rowScopes: StoredScopes,
   resolved: ResolvedScopes,
+  ownerOnly = false,
 ): boolean {
   if (!resolved.ok) return false;
-  for (const pattern of table.scopePatterns) {
-    const value = rowScopes[pattern.variable];
-    if (value === undefined || value.length === 0) return false;
-  }
-  for (const variable of table.writeScopeVariables) {
-    const value = rowScopes[variable];
-    if (value === undefined) return false;
-    const allowedValues = resolved.allowed[variable];
-    if (allowedValues === undefined) return false;
-    if (!allowedValues.includes('*') && !allowedValues.includes(value)) {
-      return false;
-    }
-  }
-  return true;
+  const { allowed } = resolved;
+  return (
+    ownerOnly ? table.writeScopeSets.slice(0, 1) : table.writeScopeSets
+  ).some((set) =>
+    set.every((variable) => {
+      const value = rowScopes[variable];
+      const values = allowed[variable];
+      return (
+        value !== undefined &&
+        value.length > 0 &&
+        values !== undefined &&
+        (values.includes('*') || values.includes(value))
+      );
+    }),
+  );
 }
 
 /** Does a change's stored scopes match the effective scopes (§3.2)? */

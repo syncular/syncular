@@ -75,8 +75,11 @@ export interface TableSchema {
   readonly primaryKey: string;
   /** Scope patterns (§3.1). Every synced table declares at least one. */
   readonly scopes: readonly ScopePatternSpec[];
-  /** Variables required together for writes; defaults to every scope variable. */
-  readonly writeScopeVariables?: readonly string[];
+  /** Write sets (§3.4): one list of variables, or alternative lists whose
+   * first is the owner set. Defaults to one set of every scope variable. */
+  readonly writeScopeVariables?:
+    | readonly string[]
+    | readonly (readonly string[])[];
   /** User indexes (optional) — created on the server's relational tables. */
   readonly indexes?: readonly IndexSchema[];
   /** Server-only indexes (optional); names share the namespace of `indexes`. */
@@ -122,7 +125,8 @@ export interface CompiledTable {
   readonly columns: readonly RowColumn[];
   readonly primaryKeyIndex: number;
   readonly scopePatterns: readonly CompiledScopePattern[];
-  readonly writeScopeVariables: readonly string[];
+  /** §3.4 write sets; the first is the owner set. */
+  readonly writeScopeSets: readonly (readonly string[])[];
   /** User indexes (validated: unique names, existing columns). */
   readonly indexes: readonly IndexSchema[];
   /** Server-only indexes (validated like `indexes`). */
@@ -345,15 +349,33 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       variables.add(pattern.variable);
       declaredVariables.add(pattern.variable);
     }
-    const writeScopeVariables = table.writeScopeVariables ?? [...variables];
+    // §3.4: one list is one set; a list of lists holds alternative sets.
+    const declaredSets: readonly (string | readonly string[])[] =
+      table.writeScopeVariables ?? [[...variables]];
+    const flatSet = declaredSets.filter(
+      (entry): entry is string => typeof entry === 'string',
+    );
+    const writeScopeSets =
+      flatSet.length > 0
+        ? [flatSet]
+        : declaredSets.filter((entry) => typeof entry !== 'string');
+    const setKeys = new Set(
+      writeScopeSets.map((set) => JSON.stringify([...set].sort())),
+    );
     if (
-      !Array.isArray(writeScopeVariables) ||
-      writeScopeVariables.length === 0 ||
-      new Set(writeScopeVariables).size !== writeScopeVariables.length ||
-      writeScopeVariables.some((variable) => !variables.has(variable))
+      (flatSet.length > 0 && flatSet.length !== declaredSets.length) ||
+      writeScopeSets.length === 0 ||
+      setKeys.size !== writeScopeSets.length ||
+      writeScopeSets.some(
+        (set) =>
+          !Array.isArray(set) ||
+          set.length === 0 ||
+          new Set(set).size !== set.length ||
+          set.some((variable) => !variables.has(variable)),
+      )
     ) {
       throw new Error(
-        `table ${table.name}: writeScopeVariables must contain distinct declared scope variables (§3.4)`,
+        `table ${table.name}: writeScopeVariables must be one list or distinct lists of distinct declared scope variables (§3.4)`,
       );
     }
     const blobRefColumnIndices: number[] = [];
@@ -410,7 +432,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       columns: table.columns,
       primaryKeyIndex,
       scopePatterns,
-      writeScopeVariables,
+      writeScopeSets,
       indexes,
       serverIndexes,
       references,

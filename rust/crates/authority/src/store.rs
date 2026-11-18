@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use ssp2::primitives::{Reader, Writer};
 use ssp2::segment::{decode_row, encode_row, Column, ColumnType, ColumnValue, Row};
 
-use crate::schema::{Schema, Table};
+use crate::schema::{Schema, Scope, Table};
 use crate::{AuthorityError, Db, Retention};
 
 /// The one partition a local authority serves (§12.2).
@@ -153,13 +153,21 @@ pub(crate) fn render(value: &Option<ColumnValue>) -> Option<String> {
     (!rendered.is_empty()).then_some(rendered)
 }
 
-/// The stored scopes of a row (§3.1), or `None` when one is missing.
-pub(crate) fn scopes_of(table: &Table, values: &Row) -> Option<Scopes> {
-    table
-        .scopes
-        .iter()
-        .map(|scope| Some((scope.variable.clone(), render(&values[scope.column])?)))
-        .collect()
+/// The stored scopes of a row (§3.1), or the first scope without a valid
+/// value: an empty column, or a NULL one in the owner set. A NULL column
+/// outside the owner set leaves its variable without a stored scope.
+pub(crate) fn scopes_of<'t>(table: &'t Table, values: &Row) -> Result<Scopes, &'t Scope> {
+    let mut scopes = Scopes::new();
+    for scope in &table.scopes {
+        if values[scope.column].is_none() && !table.write_sets[0].contains(&scope.variable) {
+            continue;
+        }
+        scopes.insert(
+            scope.variable.clone(),
+            render(&values[scope.column]).ok_or(scope)?,
+        );
+    }
+    Ok(scopes)
 }
 
 pub(crate) fn encode_column_versions(versions: &BTreeMap<usize, i64>) -> Option<Vec<u8>> {
@@ -1202,23 +1210,18 @@ fn rekey(conn: &Connection, table: &Table) -> Result<(), AuthorityError> {
     );
     for (row_id, payload) in all_rows(conn, &table.name)? {
         let values = decode_payload(&table.columns, &payload)?;
-        let Some(scopes) = scopes_of(table, &values) else {
-            let variable = table
-                .scopes
-                .iter()
-                .find(|scope| render(&values[scope.column]).is_none())
-                .map(|scope| scope.variable.as_str());
-            return Err(AuthorityError::with_details(
+        let scopes = scopes_of(table, &values).map_err(|scope| {
+            AuthorityError::with_details(
                 "sync.schema_mismatch",
                 "a stored row has no value for a scope column the schema bump re-keys it under",
                 json!({
                     "table": table.name,
                     "reason": "scope_value_missing",
-                    "variable": variable,
+                    "variable": scope.variable,
                     "rowId": row_id,
                 }),
-            ));
-        };
+            )
+        })?;
         conn.execute(&sql, params![scopes_json(&scopes), PARTITION, row_id])
             .db()?;
     }

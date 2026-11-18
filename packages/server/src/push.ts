@@ -392,19 +392,11 @@ async function applyOperation(
         'rescope targets an absent row (§2.2)',
       );
     }
-    if (!authorizeWrite(table, stored.scopes, resolved)) {
+    if (!authorizeWrite(table, stored.scopes, resolved, true)) {
       return errorRecord(
         opIndex,
         'sync.forbidden',
         'rescope denied by scope authorization (§3.4)',
-      );
-    }
-    const missing = missingScopeVariable(table, stored.scopes);
-    if (missing !== undefined) {
-      return errorRecord(
-        opIndex,
-        'sync.missing_scopes',
-        `stored row lacks scope variable ${JSON.stringify(missing)} (§3.1)`,
       );
     }
     let sparse: SparseRowValue[];
@@ -473,7 +465,7 @@ async function applyOperation(
         `rescope missing scope column value for ${JSON.stringify(extracted.missing)} (§3.4)`,
       );
     }
-    if (!authorizeWrite(table, extracted.scopes, resolved)) {
+    if (!authorizeWrite(table, extracted.scopes, resolved, true)) {
       return errorRecord(
         opIndex,
         'sync.forbidden',
@@ -631,14 +623,6 @@ async function applyOperation(
         opIndex,
         'sync.forbidden',
         'delete denied by scope authorization (§3.4)',
-      );
-    }
-    const missing = missingScopeVariable(table, stored.scopes);
-    if (missing !== undefined) {
-      return errorRecord(
-        opIndex,
-        'sync.missing_scopes',
-        `stored row lacks scope variable ${JSON.stringify(missing)} (§3.1)`,
       );
     }
     // §6.7: validate the delete against the stored row (row = undefined,
@@ -910,9 +894,8 @@ async function applyOperation(
     };
   }
 
-  // Insert path: no stored row (§5.2). The authorization row is the payload
-  // plus the primary key (§3.4 step 2); a missing or empty scope column value
-  // ⇒ deny.
+  // Insert path: no stored row (§5.2). The owner set authorizes the payload
+  // plus the primary key (§3.4 steps 2 and 3).
   const values: RowValue[] = sparse.map((value) => value ?? null);
   const extracted = storedScopesForRow(table, values);
   const insert =
@@ -922,7 +905,7 @@ async function applyOperation(
           'sync.forbidden',
           'insert missing scope column value (§3.4)',
         )
-      : authorizeWrite(table, extracted.scopes, resolved)
+      : authorizeWrite(table, extracted.scopes, resolved, true)
         ? extracted
         : errorRecord(
             opIndex,
@@ -1107,17 +1090,6 @@ async function checkAndRecordBlobs(
   // Update the reference index for this row (empty set clears it, §5.9.4).
   if (tx.setBlobRefs !== undefined) {
     await tx.setBlobRefs(table.name, rowId, blobIds);
-  }
-  return undefined;
-}
-
-function missingScopeVariable(
-  table: CompiledTable,
-  scopes: Record<string, string>,
-): string | undefined {
-  for (const pattern of table.scopePatterns) {
-    const value = scopes[pattern.variable];
-    if (value === undefined || value.length === 0) return pattern.variable;
   }
   return undefined;
 }

@@ -45,6 +45,38 @@ const ALTERNATIVE_WRITE_SCHEMA: DriverSchema = {
   ],
 };
 
+/** An owner set (`facility_id`) and a second set over a nullable window
+ * column (§3.1, §3.4). */
+export const WRITE_SETS_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'sessions',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'facility_id', type: 'string', nullable: false },
+        { name: 'window_id', type: 'string', nullable: true },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [
+        { pattern: 'facility:{facility_id}' },
+        { pattern: 'window:{window_id}' },
+      ],
+      writeScopeVariables: [['facility_id'], ['window_id']],
+    },
+  ],
+};
+
+export function session(
+  id: string,
+  facility: string,
+  window: string | null,
+  body = 'body',
+): DriverRow {
+  return { id, facility_id: facility, window_id: window, body };
+}
+
 /** A table whose scope column is an INTEGER (§2.4); scope values are text. */
 const INTEGER_SCOPE_SCHEMA: DriverSchema = {
   version: 1,
@@ -455,6 +487,131 @@ export const scopeScenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    name: 'scopes/alternative-write-sets-and-null-scopes',
+    specRefs: ['§3.1', '§3.3', '§3.4', '§2.2'],
+    requires: ['scope-authorization'],
+    server: { schema: WRITE_SETS_SCHEMA },
+    async run(ctx) {
+      const rescope = ctx.server.rescope?.bind(ctx.server);
+      if (rescope === undefined) {
+        throw new ScenarioSkip('server driver has no rescope operation');
+      }
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: WRITE_SETS_SCHEMA,
+        allowed: { facility_id: ['f1'] },
+      });
+      const centre = await ctx.newClient({
+        actorId: 'centre',
+        clientId: 'centre',
+        schema: WRITE_SETS_SCHEMA,
+        allowed: { window_id: ['w1'] },
+      });
+      const ids = async (handle: typeof owner) =>
+        (await handle.api.readRows('sessions')).map((row) => row.rowId);
+      const rejected = async (commitId: string) =>
+        (await centre.api.rejections()).find(
+          (rejection) => rejection.clientCommitId === commitId,
+        )?.code;
+      const write = (row: DriverRow) =>
+        centre.api.mutate([{ op: 'upsert', table: 'sessions', values: row }]);
+      await owner.api.subscribe({ facility_id: 'f1' });
+      await owner.api.mutate([
+        { op: 'upsert', table: 'sessions', values: session('s1', 'f1', 'w1') },
+        { op: 'upsert', table: 'sessions', values: session('s2', 'f1', null) },
+      ]);
+      await syncIdle(owner);
+      checkEqual(
+        await owner.api.rejections(),
+        [],
+        'the owner set inserts with and without a window',
+      );
+      await centre.api.subscribe({ window_id: 'w1' });
+      await syncIdle(centre);
+      checkEqual(
+        await ids(centre),
+        ['s1'],
+        'a row without a window reaches no window reader',
+      );
+
+      const updated = await write(session('s1', 'f1', 'w1', 'centre'));
+      const planted = await write(session('s3', 'f1', 'w1'));
+      const foreign = await write(session('s4', 'f2', 'w1'));
+      const outside = await write(session('s2', 'f1', null, 'centre'));
+      await syncIdle(centre);
+      checkEqual(
+        [
+          await rejected(updated),
+          await rejected(planted),
+          await rejected(foreign),
+          await rejected(outside),
+        ],
+        [undefined, 'sync.forbidden', 'sync.forbidden', 'sync.forbidden'],
+        'the window set updates its rows and inserts nothing',
+      );
+      await syncIdle(owner);
+      checkEqual(
+        (await owner.api.readRows('sessions')).map((row) => row.values),
+        [session('s1', 'f1', 'w1', 'centre'), session('s2', 'f1', null)],
+        'the owner holds the centre update and no planted row',
+      );
+      const moved = await rescope(
+        'centre',
+        'sessions',
+        session('s2', 'f1', 'w1'),
+      );
+      check(!moved.ok, 'the window set cannot move a row');
+
+      // Clearing the window ends the centre's read and write of the row.
+      const cleared = await rescope(
+        'owner',
+        'sessions',
+        session('s1', 'f1', null, 'centre'),
+      );
+      check(cleared.ok, 'the owner set clears the window');
+      await syncIdle(centre);
+      checkEqual(await ids(centre), [], 'the cleared row leaves the window');
+      const late = await write(session('s1', 'f1', 'w1', 'late'));
+      await syncIdle(centre);
+      checkEqual(
+        await rejected(late),
+        'sync.forbidden',
+        'the cleared row admits no window write',
+      );
+
+      // Revocation rejects the pending write and purges the window.
+      const opened = await rescope(
+        'owner',
+        'sessions',
+        session('s2', 'f1', 'w1'),
+      );
+      check(opened.ok, 'the owner set opens the window');
+      await syncIdle(centre);
+      checkEqual(
+        await ids(centre),
+        ['s2'],
+        'the opened row reaches the window',
+      );
+      await ctx.server.setAllowedScopes('centre', { window_id: ['w2'] });
+      const pending = await write(session('s2', 'f1', 'w1', 'revoked'));
+      await syncOk(centre);
+      checkEqual(
+        await rejected(pending),
+        'sync.forbidden',
+        'revocation rejects the pending write',
+      );
+      checkEqual(await ids(centre), [], 'revocation purges the window');
+      await syncIdle(owner);
+      checkEqual(
+        (await owner.api.readRows('sessions')).map((row) => row.values),
+        [session('s1', 'f1', null, 'centre'), session('s2', 'f1', 'w1')],
+        'no rejected write reached the owner',
+      );
+    },
+  },
+
   {
     name: 'scopes/effective-is-requested-intersect-allowed',
     specRefs: ['§3.2'],

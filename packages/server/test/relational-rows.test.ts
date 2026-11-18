@@ -582,6 +582,43 @@ describe('same-version schema readiness', () => {
       await db.close();
     });
 
+    test(`${backend}: a re-key leaves a NULL column outside the owner set without a stored scope`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      await upsert(
+        storage,
+        PARTITION,
+        'tasks',
+        taskRow('t1', 'p1', 'one', { priority: 5 }),
+      );
+      await upsert(storage, PARTITION, 'tasks', taskRow('t2', 'p1', 'two'));
+      const bumped = db.open();
+      await ensure(bumped, {
+        version: 2,
+        tables: [
+          {
+            ...SCHEMA.tables[0]!,
+            scopes: [
+              'project:{project_id}',
+              { pattern: 'priority:{priority}', column: 'priority' },
+            ],
+            writeScopeVariables: ['project_id'],
+          },
+          SCHEMA.tables[1]!,
+        ],
+      });
+      expect((await bumped.getRow(PARTITION, 'tasks', 't2'))?.scopes).toEqual({
+        project_id: 'p1',
+      });
+      expect(
+        (await scopeIndex(db))
+          .map((entry) => `${entry.row_id} ${entry.var}=${entry.value}`)
+          .sort(),
+      ).toEqual(['t1 priority=5', 't1 project_id=p1', 't2 project_id=p1']);
+      await db.close();
+    });
+
     test(`${backend}: a marker without scope patterns records them at the next open`, async () => {
       const db = await database(backend);
       await ensure(db.open(), SCHEMA);

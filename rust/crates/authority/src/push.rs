@@ -185,12 +185,13 @@ fn write(
     })
 }
 
-/// §3.4 with every value granted: every declared scope variable is present.
+/// §3.4 with every value granted: a write set admits a stored row when
+/// each of its variables has a value.
 fn authorized(table: &Table, scopes: &Scopes) -> bool {
     table
-        .scopes
+        .write_sets
         .iter()
-        .all(|scope| scopes.get(&scope.variable).is_some_and(|v| !v.is_empty()))
+        .any(|set| set.iter().all(|variable| scopes.contains_key(variable)))
 }
 
 /// §5.10.3: replace each present non-NULL crdt value with
@@ -442,8 +443,9 @@ fn apply_operation(
     }
 
     // Insert path: no stored row (§6.2 tombstone table). The authorization
-    // row is the payload plus the primary key (§3.4 step 2).
-    let scopes = store::scopes_of(table, &values);
+    // row is the payload plus the primary key; the owner set authorizes it
+    // (§3.4 steps 2 and 3).
+    let scopes = store::scopes_of(table, &values).ok();
     if op.base_version.is_some_and(|base| base != 0) {
         if scopes.is_none() {
             return Err(error(

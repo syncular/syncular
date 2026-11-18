@@ -24,6 +24,7 @@ import {
   valueBytes,
 } from './crdt';
 import { E2EE_SCHEMA, goodKeys, utf8Hex } from './encryption';
+import { session, WRITE_SETS_SCHEMA } from './scopes';
 import { expectConverged, syncFails, syncIdle } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
@@ -152,6 +153,67 @@ async function expectLocalConverged(
 }
 
 export const localAuthorityScenarios: readonly Scenario[] = [
+  {
+    name: 'local-authority/null-scope-outside-the-owner-set',
+    specRefs: ['§12.2', '§3.1', '§3.4', 'B.24'],
+    requires: ['local-authority'],
+    async run(ctx) {
+      const { writeScopeVariables: _, ...sessions } =
+        WRITE_SETS_SCHEMA.tables[0]!;
+      const facilityOnly: DriverSchema = {
+        version: 1,
+        tables: [
+          { ...sessions, scopes: [{ pattern: 'facility:{facility_id}' }] },
+        ],
+      };
+      const authority = await ctx.newLocalAuthority(facilityOnly);
+      const a = await localClient(ctx, authority, facilityOnly, [
+        { facility_id: 'f1' },
+      ]);
+      await a.api.mutate([
+        { op: 'upsert', table: 'sessions', values: session('s1', 'f1', null) },
+        { op: 'upsert', table: 'sessions', values: session('s2', 'f1', 'w1') },
+      ]);
+      await syncIdle(a);
+      checkEqual(await a.api.rejections(), [], 'both rows apply');
+
+      // The bump adds the window scope: s1 re-keys without one (§3.1).
+      const bumped = { ...WRITE_SETS_SCHEMA, version: 2 };
+      await authority.restart(bumped);
+      await ctx.recreateClient(a, bumped);
+      await syncIdle(a);
+      const empty = await a.api.mutate([
+        { op: 'upsert', table: 'sessions', values: session('s3', 'f1', '') },
+      ]);
+      await a.api.mutate([
+        { op: 'upsert', table: 'sessions', values: session('s4', 'f1', null) },
+      ]);
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.rejections()).map((rejection) => [
+          rejection.clientCommitId,
+          rejection.code,
+        ]),
+        [[empty, 'sync.forbidden']],
+        'an empty window is no scope; a NULL one is',
+      );
+      await expectLocalConverged(authority, a, 'sessions');
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        server: authority,
+        schema: bumped,
+      });
+      await reader.api.subscribe({ window_id: 'w1' });
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.readRows('sessions')).map((row) => row.rowId),
+        ['s2'],
+        'a window reader receives only the row with that window',
+      );
+    },
+  },
+
   {
     name: 'local-authority/round-trip-applies-server-rules',
     specRefs: ['§12.1', '§12.2', '§6.11', 'B.24'],

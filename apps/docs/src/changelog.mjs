@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'Alternative write sets and NULL scope columns',
+    body: "`writeScopeVariables` accepts alternative sets, such as `[['facility_id'], ['centre_window_id']]`. Any set that matches the stored row admits an update or delete; only the first set, the owner set, admits an insert or a `rescope`. A scope column outside the owner set may be NULL: the row has no stored scope for that variable, so no unit over it receives the row and no set containing it admits a write, and a schema bump re-keys the row without `sync.storage.scope_value_missing`. The TS server and the Rust local authority apply the same rules.",
+    links: [
+      {
+        href: '/concepts-scopes/#alternative-write-sets',
+        label: 'Alternative write sets',
+      },
+      {
+        href: '/concepts-scopes/#null-scope-columns',
+        label: 'NULL scope columns',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'The Rust transport has one realtime connect method',
     body: 'Breaking. `Transport::realtime_connect` takes the client id: `fn realtime_connect(&mut self, client_id: &str)`. `realtime_connect_for_client` is removed. A transport that implemented it renames it; a transport that implemented only `realtime_connect` adds the parameter and ignores it. `HostTransport::new_from_config` is removed; call `HostTransport::from_config`. `syncular-command` no longer exports `bytes_to_hex`, `hex_to_bytes`, `parse_limits`, `parse_encryption` and `parse_previous_version_context`, and `syncular-ffi` no longer re-exports the native transport as `transport`. These TypeScript exports had no caller and are removed: `SyncClient.leaseRemainingMs`, `isBlobRef` in `@syncular/core`, `d1Storage` in `@syncular/server-workers` (construct `new D1ServerStorage(binding)`), and `queryNameFromFile` in `@syncular/typegen` (call `queryNameFromPath`). On SQLite and Postgres, `ensureSchema` against a database whose stored schema version is newer than the configured schema now fails with `sync.storage.schema_changed` and both versions in `details`, as D1 does; it threw an uncoded `Error` before.',
     links: [

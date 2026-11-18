@@ -1329,18 +1329,30 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   (`typegen.scope_column_type`, `schema.scope_column_type`). A scope value
   is an authorization key, and a `float` renders differently per
   implementation (`1e21` is `1e+21` in ECMAScript and `1000000000000000000000`
-  in Rust's `f64::to_string`). A row whose scope column is NULL has no
-  stored scope for that variable, so the server rejects every write of it.
+  in Rust's `f64::to_string`).
+- A scope value is never the empty string: a row whose scope column holds
+  `''` has no valid value for that variable, and the server rejects the
+  write (§3.4) and the re-key below. A NULL scope column is legal only for
+  a variable outside the **owner set** (the first write set, below): the
+  row then has no stored scope for that variable and no scope-index entry
+  under it, so no unit that names the variable matches the row, while
+  units over the row's other variables do. A NULL in an owner-set variable
+  is rejected like the empty string.
 - Every synced table MUST declare **at least one** scope pattern — a
   schema-compile-time requirement (configuring a table without one is a
   server bug, rejected before serving). Rationale: a unit names at least
   one variable (§4.1), so no unit could cover a zero-scope table; "global" tables are modeled with
   an explicit scope column shared by all rows, never by omitting
   patterns.
-- A server table MAY declare `writeScopeVariables`, a non-empty list of
-  distinct variables from its scope patterns. The server requires all of
-  those variables to authorize a write. If omitted, all declared variables
-  are required. This server-side policy does not change read scopes.
+- A server table MAY declare `writeScopeVariables`, its **write sets**:
+  either one list of variables (one set) or a list of alternative sets, for
+  example `[['facility_id'], ['centre_window_id']]`. The first set is the
+  owner set. If omitted, the table has one set holding every declared
+  variable. The server's schema compile rejects an empty list, an empty
+  set, a variable the table does not declare, a variable repeated within a
+  set, and two sets holding the same variables. §3.4 states which sets
+  admit which writes. Write sets do not change read scopes: a grant for a
+  variable of any set is also a read grant for units over that variable.
 - On every applied change the server extracts the declared columns from
   the row (upsert: the row after the write; delete: the row before
   removal) and stores them as **stored scopes**: a `map` of
@@ -1365,11 +1377,17 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   row's entries in the row scope index, deletes the table's tombstones
   (§2.2), and raises the horizon of every partition to its `maxCommitSeq`
   (§4.6). It then records the new patterns. A table whose patterns are
-  unchanged is not re-keyed. A row whose newly mapped scope column is NULL
-  or empty has no value for that variable, so the bump refuses with
+  unchanged is not re-keyed. A NULL column of a variable outside the owner
+  set re-keys to no stored scope for that variable. A row whose newly
+  mapped scope column is empty, or NULL for an owner-set variable, has no
+  valid value for that variable, so the bump refuses with
   `sync.storage.scope_value_missing` (`table`, `variable`, `rowId` in its
-  details) and changes nothing; a changed pattern therefore cannot map to
-  a column the same bump appends.
+  details) and changes nothing; a changed owner-set pattern therefore
+  cannot map to a column the same bump appends. Changing the write sets
+  alone re-keys nothing: a stored row with NULL in a variable that a bump
+  moves into the owner set keeps no stored scope for it, and only the
+  sets it satisfies admit writes to it (§3.4). Move a variable into the
+  owner set only after every stored row holds a value for it.
 - Logged changes keep the scopes they were written under, and the horizon
   raise keeps them from being served under the new patterns. Client resets
   alone do not cover this: a client may send an old cursor, and a pattern
@@ -1470,7 +1488,7 @@ child scope, while validating the parent reference server-side;
 enumerate the exact authorized child values; or perform the operation
 behind a server-authoritative command. The wildcard fence covers reads
 on a table that declares both variables; writes are authorized by the
-table's write variables alone (§3.4). A later table that declares only
+table's write sets alone (§3.4). A later table that declares only
 the child variable does not inherit the parent fence and MUST be treated
 as a new authorization decision.
 
@@ -1598,16 +1616,25 @@ On every push operation:
    existing row (upsert onto an existing row, or delete), the row **as
    currently stored** — never the pushed payload; for an insert (no
    existing row), the pushed payload plus the primary key. It extracts
-   that row's scope values for **all** declared scope variables of the
-   table. A missing or empty scope column value ⇒ deny. A delete
+   that row's scope values for every declared scope variable of the
+   table (§3.1). An empty value, or a NULL in an owner-set variable ⇒
+   deny; a NULL elsewhere leaves the variable without a value. A delete
    targeting an absent row has no authorization row: it is applied
    idempotently, emits no change, and performs no scope check (§6.2).
-3. For every variable in the table's `writeScopeVariables`, or every
-   declared variable when that list is absent, the row's value MUST be
-   present in the actor's allowed values for that variable, or the allowed
-   values contain `'*'`. All variables in that list are required. The
-   server validates the list when it compiles the schema and rejects an
-   empty list, duplicates, or variables the table does not declare.
+3. A write set **admits** the row when every variable of the set has a
+   value in the row and that value is in the actor's allowed values for
+   the variable, or the allowed values contain `'*'`. A variable without a
+   value admits nothing, whatever the grant. An operation on an existing
+   row is authorized when any write set admits the stored row. An insert
+   is authorized only when the owner set admits the payload. Without the
+   owner-set rule, an actor holding only another set could insert rows
+   under an owner scope it holds no grant for (any `facility_id`) and
+   plant data in a foreign owner's units. A holder of another set creates
+   rows through a registered command whose per-request resolver grants
+   the owner-set value for that call after the host validates the request
+   (REMOTE.md §5.1). The same check applies to the parent of a declared reference
+   (§6.11), every child a reference cascade reaches, a cached conflict on
+   replay (§6.3), and a registered command's row reads.
 4. Any denial, or a throwing `resolveScopes`, rejects the operation with
    `sync.forbidden` (non-retryable) and rolls back the commit (§6.4).
 5. **Scope columns are immutable on update.** A present scope column on
@@ -1617,9 +1644,12 @@ On every push operation:
    no-op, and an absent scope column leaves it unchanged (§6.2). Clients
    cannot re-home a row across scopes by push; scope migration is
    server-emitted only (§2.2). A registered command's `rescope` mutation is
-   that server-emitted path: it authorizes both the stored and the new
-   scope values, changes only scope columns, and emits the delete/upsert
-   pair. Scope columns are written only on insert and on an explicit
+   that server-emitted path: the owner set MUST admit both the stored
+   and the new scope values, it changes only scope columns, and it emits
+   the delete/upsert pair. A holder of another set cannot move a row. The
+   owner moves a row out of another set's units by rescoping that
+   variable to NULL, which ends that set's reads and writes of the row.
+   Scope columns are written only on insert and on an explicit
    `rescope`, where authorization covered exactly those values.
 
 Rules 2 and 5 are load-bearing together: authorizing the pushed payload
@@ -4333,8 +4363,8 @@ every unversioned upsert, including one from the client that issued the
 delete; recreating takes `baseVersion = 0`.
 
 An unversioned upsert whose payload presents every scope column is
-authorized on the payload (§3.4 steps 2 and 3) before the server reads the
-tombstone table: a missing or empty scope value, or a denial, is
+authorized on the payload (§3.4 steps 2 and 3: the owner set) before the
+server reads the tombstone table: a missing or empty scope value, or a denial, is
 `sync.forbidden` whether or not a tombstone exists, so the answer never
 discloses a deletion to an actor who could not write the row. The server
 then authorizes the actor against the tombstone's stored scopes (§3.4 step

@@ -7,7 +7,6 @@ import { decodeRow, serializeBlobRef } from '@syncular/core';
 import {
   type BlobStore,
   CommitValidationRejection,
-  compileSchema,
   handleSyncRequest,
   MemoryBlobStore,
   ValidationRejection,
@@ -93,25 +92,6 @@ describe('push apply (§6.2)', () => {
     });
   });
 
-  test('write variables must be distinct, nonempty, declared variables', () => {
-    const table = {
-      name: 'docs',
-      columns: DOC_COLUMNS,
-      primaryKey: 'id',
-      scopes: [
-        'org:{org_id}',
-        { pattern: 'project:{projectId}', column: 'project_id' },
-      ],
-    };
-    for (const writeScopeVariables of [[], ['org_id', 'org_id'], ['missing']]) {
-      expect(() =>
-        compileSchema({
-          version: 1,
-          tables: [{ ...table, writeScopeVariables }],
-        }),
-      ).toThrow('writeScopeVariables');
-    }
-  });
   test('insert applies with server_version 1 and a commitSeq', async () => {
     const t = makeContext();
     const message = await sync(t, [

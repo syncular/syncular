@@ -134,7 +134,7 @@ See [Scopes & authorization](/concepts-scopes/).
 
 ### Do declare the scopes a write requires
 
-The server authorizes a write against the stored row and, by default, requires every declared scope variable to be in the actor's allowed values. A row that carries campaign and user scopes cannot be changed by a campaign owner who holds only the campaign scope. Set `writeScopeVariables` on the server table when the campaign grant is intended to authorize writes independently of the user read scope. Every variable in that list must match.
+The server authorizes a write against the stored row and, by default, requires every declared scope variable to be in the actor's allowed values. A row that carries campaign and user scopes cannot be changed by a campaign owner who holds only the campaign scope. Set `writeScopeVariables` on the server table when the campaign grant is intended to authorize writes independently of the user read scope. Every variable of a set must match. With alternative sets, any set admits updates and deletes, and only the first set admits inserts.
 
 Use a registered remote command when the operation requires authorization beyond a fixed set of scope variables. A `RemoteOperationResolver` binds the registry, the commit actor, and extra scopes for one call. Available since 0.34.0.
 

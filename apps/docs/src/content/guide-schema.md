@@ -138,7 +138,9 @@ every table present at the head of migration history; omit a table that
 A scope column has type `TEXT` or `INTEGER`. `syncular generate` rejects
 `REAL`, `BOOLEAN`, `JSON`, `BLOB`, `BLOB_REF`, and `CRDT` scope columns with
 `typegen.scope_column_type`. A row whose scope column is NULL has no stored
-scope, so the server rejects every write of it.
+scope for that variable. The server rejects the write unless the variable is
+outside the table's owner write set
+([NULL scope columns](/concepts-scopes/#null-scope-columns)).
 
 ::checkpoint[`syncular.json` names every table that `up.sql` creates.]
 ::::

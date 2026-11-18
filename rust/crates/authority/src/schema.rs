@@ -26,11 +26,19 @@ struct TableIr {
     primary_key: String,
     scopes: Vec<ScopeIr>,
     #[serde(default)]
-    write_scope_variables: Option<Vec<String>>,
+    write_scope_variables: Option<WriteScopesIr>,
     #[serde(default)]
     indexes: Vec<IndexIr>,
     #[serde(default)]
     references: Vec<ReferenceIr>,
+}
+
+/// §3.4 write sets: one list is one set; a list of lists holds alternatives.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WriteScopesIr {
+    One(Vec<String>),
+    Sets(Vec<Vec<String>>),
 }
 
 #[derive(Deserialize)]
@@ -115,6 +123,8 @@ pub(crate) struct Table {
     pub columns: Vec<Column>,
     pub pk: usize,
     pub scopes: Vec<Scope>,
+    /// §3.4 write sets; the first is the owner set.
+    pub write_sets: Vec<Vec<String>>,
     pub indexes: Vec<Index>,
     pub references: Vec<Reference>,
     pub referenced_by: Vec<Incoming>,
@@ -302,19 +312,27 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
                 column,
             });
         }
-        if let Some(variables) = &table.write_scope_variables {
-            let distinct: BTreeSet<_> = variables.iter().collect();
-            if variables.is_empty()
-                || distinct.len() != variables.len()
-                || variables
-                    .iter()
-                    .any(|variable| !scopes.iter().any(|scope| &scope.variable == variable))
-            {
-                return Err(invalid(format!(
-                    "table {:?}: writeScopeVariables must contain distinct declared scope variables (§3.4)",
-                    table.name
-                )));
-            }
+        let write_sets = match &table.write_scope_variables {
+            None => vec![scopes.iter().map(|scope| scope.variable.clone()).collect()],
+            Some(WriteScopesIr::One(set)) => vec![set.clone()],
+            Some(WriteScopesIr::Sets(sets)) => sets.clone(),
+        };
+        let distinct_sets: BTreeSet<BTreeSet<&String>> =
+            write_sets.iter().map(|set| set.iter().collect()).collect();
+        if write_sets.is_empty()
+            || distinct_sets.len() != write_sets.len()
+            || write_sets.iter().any(|set| {
+                set.is_empty()
+                    || set.iter().collect::<BTreeSet<_>>().len() != set.len()
+                    || set
+                        .iter()
+                        .any(|variable| !scopes.iter().any(|scope| &scope.variable == variable))
+            })
+        {
+            return Err(invalid(format!(
+                "table {:?}: writeScopeVariables must be one list or distinct lists of distinct declared scope variables (§3.4)",
+                table.name
+            )));
         }
         let mut indexes: Vec<Index> = Vec::with_capacity(table.indexes.len());
         for index in &table.indexes {
@@ -364,6 +382,7 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
             columns,
             pk,
             scopes,
+            write_sets,
             indexes,
             references,
             referenced_by: Vec::new(),

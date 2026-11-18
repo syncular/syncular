@@ -86,7 +86,7 @@ A scope move is one commit with a delete under the old scopes and an upsert unde
 
 ### Independent read and write scopes
 
-By default, a write requires an allowed value for every scope variable declared by the table. A table with an independent exact-ID read scope can select the variables required for writes in the server schema:
+By default, a write requires an allowed value for every scope variable declared by the table. `writeScopeVariables` on the server schema names the table's **write sets** instead: one list is one set, and a list of lists holds alternative sets. The first set is the owner set. A table with an independent exact-ID read scope selects the variables required for writes:
 
 ```ts
 const serverSchema = {
@@ -101,7 +101,21 @@ const serverSchema = {
 
 Declare both the `facility_id` and `calendar_id` scope patterns in the manifest. Return the authorized facility IDs and exact calendar IDs from `resolveScopes`. A facility grant authorizes writes to rows in that facility, including offline inserts with new calendar IDs. An exact calendar grant authorizes a unit on that calendar; it does not authorize writes under this policy. The server still extracts every declared scope value and prevents updates from changing scope columns.
 
-`writeScopeVariables` must contain one or more distinct scope variables declared by the table. Every listed variable must match. Omitting the property preserves the default intersection of all variables. The typegen manifest does not accept `writeScopeVariables`; decorate the generated server schema as shown. Generated client schemas and units do not need the policy. Review each table and grant before changing it. A registered command's row reads and blob downloads also use the table's write scope check; an exact-only reader needs an independently authorized route for blobs.
+### Alternative write sets
+
+A table whose rows have two kinds of writer lists one set per writer. A practice owns every row of a facility; an OP centre writes the rows of its window:
+
+```ts
+{ ...table, writeScopeVariables: [['facility_id'], ['centre_window_id']] }
+```
+
+A set matches a row when every variable of the set has a value in the row and the actor holds that value, or `'*'`. The server admits an update or delete when any set matches the stored row, and an insert only when the owner set, `facility_id` here, matches the pushed row. A centre holding only a `centre_window_id` grant updates and deletes the rows of its window and inserts nothing: if the second set admitted inserts, the centre could create rows under any facility. A centre creates rows through a registered command whose [per-request resolver](/guide-remote-operations/#bind-the-registry-per-request) adds the facility for that call after the command checks the request. A grant for `centre_window_id` is also a read grant: a unit over the window receives the window's rows.
+
+### NULL scope columns
+
+A scope column of a variable outside the owner set may be NULL. The row then has no stored scope for that variable: no unit over the variable receives the row, no set containing the variable matches it, and units over the row's other variables receive it as usual. The owner closes a centre's window on a row with a `rescope` that sets `centre_window_id` to NULL; the centre's unit receives the delete, and the centre's later writes to the row return `sync.forbidden`. A `rescope` requires the owner set to match both the stored and the new values, so a centre cannot move a row. The server returns `sync.forbidden` for a NULL in an owner-set variable and for an empty string in any scope column, and a schema bump that re-keys such a row refuses with `sync.storage.scope_value_missing`. Changing the write sets re-keys nothing: move a variable into the owner set only after every stored row holds a value for it.
+
+The server's schema compile rejects an empty `writeScopeVariables` list, an empty set, a variable the table does not declare, a variable repeated within a set, and two sets holding the same variables. Omitting the property keeps one set of every declared variable. The typegen manifest does not accept `writeScopeVariables`; decorate the generated server schema as shown. Generated client schemas and units do not need the policy. Review each table and grant before changing it. A registered command's row reads and blob downloads also use the table's write scope check, where any set matches; an exact-only reader needs an independently authorized route for blobs.
 
 A [SYNC query](/syql/#query-and-sync-query) can select the facility as its
 window unit with `by calendars.facility_id` and bind only the facility

@@ -1761,6 +1761,73 @@ fn a_rekey_refuses_a_row_without_a_value_for_the_new_pattern() {
 }
 
 #[test]
+fn a_null_scope_outside_the_owner_set_rekeys_admits_and_matches_nothing() {
+    let path = temp_path();
+    {
+        let mut authority = LocalAuthority::open(&path, &schema_json(1)).unwrap();
+        let s = authority.schema.clone();
+        let client = Session::new(&mut authority, "c1");
+        client.push(&mut authority, "a", vec![node(&s, "n1", None)]);
+        client.push(&mut authority, "b", vec![node(&s, "n2", Some("n1"))]);
+    }
+    // §3.1: `team` sits outside the owner set, so a NULL parent re-keys to
+    // no stored scope for it.
+    let mut schema = schema_json(2);
+    for table in schema["tables"].as_array_mut().unwrap() {
+        if table["name"] == "nodes" {
+            table["scopes"] =
+                json!(["org:{org}", { "pattern": "team:{team}", "column": "parent_id" }]);
+            table["writeScopeVariables"] = json!([["org"], ["team"]]);
+        }
+    }
+    let mut authority = LocalAuthority::open(&path, &schema).unwrap();
+    let scopes = |authority: &LocalAuthority, row_id: &str| -> String {
+        authority
+            .conn
+            .query_row(
+                "SELECT _sync_scopes FROM nodes WHERE _sync_row_id=?1",
+                [row_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(scopes(&authority, "n1"), r#"{"org":"o1"}"#);
+    assert_eq!(scopes(&authority, "n2"), r#"{"org":"o1","team":"n1"}"#);
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c2");
+    let (status, results, _) = client.push(&mut authority, "c", vec![node(&s, "n3", None)]);
+    assert_eq!(status, PushStatus::Applied, "{results:?}");
+    // An empty value is never a scope, in the owner set or outside it.
+    for (id, values) in [
+        ("e", [Some("n4"), Some(""), None]),
+        ("f", [Some("n4"), Some("o1"), Some("")]),
+    ] {
+        let (status, results, _) =
+            client.push(&mut authority, id, vec![upsert(&s, "nodes", &values, None)]);
+        assert_eq!(status, PushStatus::Rejected);
+        assert!(
+            matches!(&results[0], OpResult::Error { code, .. } if code == "sync.forbidden"),
+            "{results:?}"
+        );
+    }
+    let team = vec![("team".to_owned(), "n1".to_owned())];
+    let frames = client.register(&mut authority, std::slice::from_ref(&team));
+    let rows: Vec<Option<ColumnValue>> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            Frame::SegmentInline { payload } => Some(decode_rows_segment(payload).unwrap()),
+            _ => None,
+        })
+        .filter(|segment| segment.table == "nodes")
+        .flat_map(|segment| segment.blocks.into_iter().flatten())
+        .map(|row| row.values[0].clone())
+        .collect();
+    assert_eq!(rows, vec![text("n2")]);
+    drop(authority);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn request_validation_fails_before_any_byte() {
     let mut authority = memory();
     let s = authority.schema.clone();
