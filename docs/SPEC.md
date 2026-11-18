@@ -2791,7 +2791,8 @@ the TypeScript client in `openPersistentWasmDatabase`, the Rust client when it
 opens a file replica on `wasm32-unknown-unknown`. A database that already
 holds tables keeps its page size; neither client converts it, because SQLite
 changes the page size of a populated database only with `VACUUM`. Native file
-replicas keep SQLite's default.
+replicas keep SQLite's default. Both clients open an OPFS replica with a 64 MiB page
+cache (`PRAGMA cache_size=-65536`) whatever its page size.
 
 DECISION (2026-11-17): new OPFS replicas use 64 KiB pages. The `opfs-sahpool`
 VFS writes one page per `FileSystemSyncAccessHandle` call. A web app measured
@@ -2812,6 +2813,36 @@ disk, 18.8 to 21.4 and 16.3 to 25.7 ms in memory. The chunk rule stays: at
 4 KiB in memory the 250 ms budget shrank the import to 136 to 139 commits, and
 at 64 KiB it committed 27 to 28, the count on disk, so a read waits at most one
 chunk on either storage.
+
+DECISION (2026-11-18): OPFS replicas get a 64 MiB page cache. SQLite's default
+cache of 2,000 KiB holds 31 pages of 64 KiB, and every miss costs a
+`FileSystemSyncAccessHandle` call. A web app's cold private Chromium window
+loaded seven catalogue release units (13 range images, 430 MB) in four wide
+rounds in 196.9 and 219.2 s, against 89.7 and 99.4 s with one range per unit and
+round. Its worker spent 62 to 70 s in each of two first-page clears of an empty
+unit: the relations table held 87,267 rows of another unit, its indexes lead
+with `catalogue_set_id` and none holds the unit's `release_id`, so each clear
+read every row through a table lookup that missed the cache. One-range rounds
+ran most of those clears before the relations arrived and one after, in 18 and
+20 s. In both modes a later 42,752-row relations range took 34 to 42 s, mostly
+in 1,024-row chunks. With the 64 MiB cache, wide rounds
+loaded in 14.2 and 36.3 s and one-range rounds in 42.1 and 33.7 s; a clear took
+0.5 to 0.9 s, and the visited edition answered a search right after the load
+in every run. A 32 MiB cache left the clears at 24 to 34 s (wide 88.4 and
+119.9 s). On a persistent profile wide rounds went from 20.5 and 16.2 s to 11.7 and
+12.9 s, one-range rounds from 17.8 and 17.9 s to 11.7 and 15.1 s.
+`bench/src/image-range-lane.ts --units 7 --fts` reproduces the layout with
+67,302 codes over seven units and 87,267 relations in the first (Apple M5 Pro,
+two runs each). In an ephemeral context wide rounds took 200.9 and 172.4 s
+before and 39.4 and 46.0 s after, one-range rounds 183.0 and 196.7 s before and
+41.5 and 37.8 s after; the longest wait of a local read fell from 30.7 to
+70.2 s to 6.7 to 13.2 s. On a persistent profile wide rounds took 13.3 and
+11.4 s before and 6.9 and 5.9 s after, one-range rounds 11.4 and 10.2 s before
+and 7.4 and 4.8 s after. The lane's relations table is larger than the cache,
+so its clears still lead the read waits: a clear reads every row whose leading
+index columns match when no index holds all of the unit's scope columns, and
+only such an index bounds it. The cache grows the worker's wasm heap by at most
+64 MiB.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version

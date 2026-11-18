@@ -589,6 +589,7 @@ for (const point of [
       expect(recovered.probe.integrity).toEqual([{ integrity_check: 'ok' }]);
       expect(recovered.probe.journal).toEqual([{ journal_mode: 'delete' }]);
       expect(recovered.probe.pageSize).toEqual([{ page_size: 65536 }]);
+      expect(recovered.probe.cacheSize).toEqual([{ cache_size: -65536 }]);
       expect(recovered.probe.synchronous).toEqual([{ synchronous: 2 }]);
       expect(recovered.probe.ftsCount).toBe(recovered.rows.length);
       expect(recovered.probe.ftsIntegrity).toBe('ok');

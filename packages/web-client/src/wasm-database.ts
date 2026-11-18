@@ -569,8 +569,10 @@ export async function openPersistentWasmDatabase(
     );
     // §5.3: a new replica uses 64 KiB pages, because every sync-access-handle
     // call costs the same whatever its size. A database with tables keeps its
-    // page size.
+    // page size. The page cache holds 64 MiB: SQLite's 2,000 KiB default is
+    // 31 such pages, and a cache miss is a sync-access-handle call.
     database.exec('PRAGMA page_size=65536');
+    database.exec('PRAGMA cache_size=-65536');
     return database;
   } catch (error) {
     db?.close();

@@ -7,10 +7,17 @@
  * SAH-pool replica on a persistent profile, once per run on a fresh profile.
  *
  *   bun run --cwd bench bench:image-range [--config before|after] [--runs 2] [--scale 1]
+ *     [--units 7] [--fts] [--ephemeral] [--max-pages 1]
  *
  * `before` lifts `maxImageSegmentBytes` to 4 GiB (one image per table), `after`
- * keeps the 32 MiB default. The first run builds the images; later runs find
- * them in the segment store, so `serverSyncMs` shows the build cost.
+ * keeps the 32 MiB default.
+ * `--units` splits the rows into release units (see below), `--fts` adds an FTS5
+ * projection on the codes, `--ephemeral` runs in an ephemeral context (OPFS in
+ * memory, like a private window), and `--max-pages` limits the image ranges per
+ * unit and round. `firstUnitMs` is when the first unit finished, `readLagMs` how
+ * late a 50 ms timer in the worker ran during the import.
+ * The first run builds the images; later runs find them in the segment store,
+ * so `serverSyncMs` shows the build cost.
  * Memory, sampled during the import only (`measureUserAgentSpecificMemory`
  * answers too late to sample a multi-second import, so it is not used):
  *  - `rendererRssPeakMiB`: peak resident size of the largest Chromium
@@ -38,6 +45,9 @@ import { IMAGE_SCHEMA } from './image-import-fixture';
 const { values } = parseArgs({
   options: {
     config: { type: 'string', default: 'after' },
+    ephemeral: { type: 'boolean', default: false },
+    fts: { type: 'boolean', default: false },
+    units: { type: 'string', default: '1' },
     'max-image-mib': { type: 'string' },
     'max-pages': { type: 'string' },
     runs: { type: 'string', default: '2' },
@@ -53,6 +63,26 @@ const hex = (n: number) => n.toString(16).padStart(8, '0');
 const codeId = (x: number) => `c${hex((x * 2654435761) % 4294967296)}`;
 const codeRows = Math.round(67_302 * scale);
 const relationRows = Math.round(87_267 * scale);
+const units = Number(values.units);
+// With more than one unit, each release of `set-1` is a unit (scopes
+// `catalogue_set_id` and `release_id`), codes
+// spread over the releases and every relation belongs to the first one. The
+// client loads the first release, then the rest, the way a web app loads the
+// visited catalogue edition first: every later unit clears an empty relations
+// scope while the table holds all relations, through indexes that lead with
+// `catalogue_set_id`.
+const variable = units > 1 ? 'release_id' : 'catalogue_set_id';
+const unitScopes =
+  units > 1 ? ['set:{catalogue_set_id}', 'release:{release_id}'] : undefined;
+const unitValues =
+  units > 1
+    ? Array.from({ length: units }, (_, i) => `rel-${i + 1}`)
+    : ['set-1'];
+const release = (x: number) => (units > 1 ? `rel-${(x % units) + 1}` : 'rel-1');
+const scope = (releaseId: string) =>
+  units > 1
+    ? { catalogue_set_id: 'set-1', release_id: releaseId }
+    : { catalogue_set_id: 'set-1' };
 
 const schema: ServerSchema = {
   version: IMAGE_SCHEMA.version,
@@ -60,7 +90,7 @@ const schema: ServerSchema = {
     name,
     columns,
     primaryKey,
-    scopes,
+    scopes: unitScopes ?? scopes,
   })),
 };
 const storage = new SqliteServerStorage();
@@ -71,11 +101,11 @@ for (let x = 0; x < codeRows; x++)
   await tx.upsertRow('codes', {
     rowId: codeId(x),
     serverVersion: 1,
-    scopes: { catalogue_set_id: 'set-1' },
+    scopes: scope(release(x)),
     payload: encodeRow(codes!.columns, [
       codeId(x),
       'set-1',
-      'rel-1',
+      release(x),
       'ops',
       `${Math.floor(x / 1000)}-${x % 1000}.${x % 7}`,
       x % 50 === 0 ? null : codeId(Math.floor(x / 50) * 50),
@@ -91,7 +121,7 @@ for (let x = 0; x < relationRows; x++) {
   await tx.upsertRow('relations', {
     rowId: id,
     serverVersion: 1,
-    scopes: { catalogue_set_id: 'set-1' },
+    scopes: scope('rel-1'),
     payload: encodeRow(relations!.columns, [
       id,
       'set-1',
@@ -114,7 +144,10 @@ const config: SyncRequestContext = {
   schema,
   storage,
   segments: new MemorySegmentStore(),
-  resolveScopes: () => ({ catalogue_set_id: ['set-1'] }),
+  resolveScopes: () => ({
+    catalogue_set_id: ['set-1'],
+    [variable]: unitValues,
+  }),
   ...(values.config === 'before'
     ? { limits: { maxImageSegmentBytes: 4 * 1024 ** 3 } }
     : values['max-image-mib'] === undefined
@@ -198,7 +231,11 @@ for (let run = 1; run <= Number(values.runs); run++) {
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   const profile = join(directory, 'profile');
-  const context = await chromium.launchPersistentContext(profile);
+  // An ephemeral context keeps OPFS in memory, like a private window.
+  const browser = values.ephemeral ? await chromium.launch() : undefined;
+  const context = browser
+    ? await browser.newContext()
+    : await chromium.launchPersistentContext(profile);
   let importing = false;
   let rssStart: number | undefined;
   let rssPeak = 0;
@@ -233,7 +270,7 @@ for (let run = 1; run <= Number(values.runs); run++) {
         ? undefined
         : Number(values['max-pages']);
     const value = await page.evaluate(
-      (maxSnapshotPages) =>
+      (options) =>
         new Promise<Record<string, unknown>>((resolve, reject) => {
           const worker = new Worker('/worker.js', { type: 'module' });
           worker.onmessage = (event) => {
@@ -247,9 +284,9 @@ for (let run = 1; run <= Number(values.runs); run++) {
             } else reject(new Error(event.data.message));
           };
           worker.onerror = (event) => reject(new Error(event.message));
-          worker.postMessage({ maxSnapshotPages });
+          worker.postMessage(options);
         }),
-      maxSnapshotPages,
+      { maxSnapshotPages, variable, unitValues, unitScopes, fts: values.fts },
     );
     const { wasmHeapBytes, ...rest } = value;
     runs.push({
@@ -263,13 +300,23 @@ for (let run = 1; run <= Number(values.runs); run++) {
   } finally {
     clearInterval(poll);
     await context.close();
+    await browser?.close();
   }
 }
 await server.stop(true);
 rmSync(directory, { recursive: true, force: true });
 console.log(
   JSON.stringify(
-    { config: values.config, scale, date: new Date().toISOString(), runs },
+    {
+      config: values.config,
+      units,
+      ephemeral: values.ephemeral,
+      fts: values.fts,
+      maxSnapshotPages: values['max-pages'],
+      scale,
+      date: new Date().toISOString(),
+      runs,
+    },
     null,
     2,
   ),

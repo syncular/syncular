@@ -20,7 +20,32 @@ const scope = globalThis as typeof globalThis & {
 
 scope.onmessage = async (event: MessageEvent) => {
   try {
-    const { maxSnapshotPages } = event.data as { maxSnapshotPages?: number };
+    const { maxSnapshotPages, variable, unitValues, unitScopes, fts } =
+      event.data as {
+        maxSnapshotPages?: number;
+        variable: string;
+        unitScopes?: string[];
+        unitValues: string[];
+        fts: boolean;
+      };
+    const schema = {
+      ...IMAGE_SCHEMA,
+      tables: IMAGE_SCHEMA.tables.map((table) => ({
+        ...table,
+        ...(unitScopes === undefined ? {} : { scopes: unitScopes }),
+        ...(fts && table.name === 'codes'
+          ? {
+              ftsIndexes: [
+                {
+                  name: 'codes_search',
+                  columns: ['title', 'description'],
+                  tokenize: 'unicode61',
+                },
+              ],
+            }
+          : {}),
+      })),
+    };
     const database = await openPersistentWasmDatabase('image-range-lane');
     let rounds = 0;
     // Timeline of the import: one entry per pull round, and the intervals of
@@ -45,7 +70,7 @@ scope.onmessage = async (event: MessageEvent) => {
     };
     const client = new SyncClient({
       database,
-      schema: IMAGE_SCHEMA,
+      schema,
       transport: async (request, signal) => {
         const at = performance.now();
         const response = await http(request, signal);
@@ -81,7 +106,6 @@ scope.onmessage = async (event: MessageEvent) => {
     await client.start();
     // The first contact adopts the server log epoch (§3.8); the window and the import follow.
     await client.sync();
-    await client.setWindow({ variable: 'catalogue_set_id' }, ['set-1']);
     rounds = 0;
     chunks = 0;
     roundStarts.length = 0;
@@ -90,8 +114,34 @@ scope.onmessage = async (event: MessageEvent) => {
     for (const table of Object.keys(images)) delete images[table];
     scope.postMessage({ t: 'phase', phase: 'import' });
     const started = performance.now();
+    // A reader timer every 50 ms measures how long a local read waits for the
+    // worker (its lag past the due time).
+    const lags: number[] = [];
+    let due = performance.now() + 50;
+    const reader = setInterval(() => {
+      lags.push(performance.now() - due);
+      due = performance.now() + 50;
+    }, 50);
+    // The first unit loads alone, then the window widens to all of them.
+    const base =
+      variable === 'release_id'
+        ? { variable, fixedScopes: { catalogue_set_id: 'set-1' } }
+        : { variable };
+    await client.setWindow(base, unitValues.slice(0, 1));
     await client.syncUntilIdle({ timeoutMs: Infinity });
+    const firstUnitMs = Math.round(performance.now() - started);
+    if (unitValues.length > 1) {
+      await client.setWindow(base, unitValues);
+      await client.syncUntilIdle({ timeoutMs: Infinity });
+    }
     const importMs = performance.now() - started;
+    clearInterval(reader);
+    lags.sort((a, b) => a - b);
+    const readLagMs = {
+      p50: Math.round(lags[Math.floor(lags.length / 2)] ?? 0),
+      p95: Math.round(lags[Math.floor(lags.length * 0.95)] ?? 0),
+      max: Math.round(lags.at(-1) ?? 0),
+    };
     const finished = performance.now();
     scope.postMessage({ t: 'phase', phase: 'idle' });
     // Per round: wall time, the /sync request, the image applies that began in
@@ -131,6 +181,8 @@ scope.onmessage = async (event: MessageEvent) => {
         chunks,
         images,
         rows,
+        firstUnitMs,
+        readLagMs,
         wasmHeapBytes: scope.__sqlite3!.wasm.heap8u().byteLength,
       },
     });

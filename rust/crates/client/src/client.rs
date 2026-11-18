@@ -1836,7 +1836,9 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
 /// journal before any statement reads it: `wasm_vfs` replaces the installed
 /// OPFS VFS's reserved lock callback before the connection opens its file. A
 /// new browser replica uses 64 KiB pages (§5.3), because every OPFS call costs
-/// the same whatever its size; a database with tables keeps its page size.
+/// the same whatever its size; a database with tables keeps its page size. Its
+/// page cache holds 64 MiB, because SQLite's 2,000 KiB default is 31 such pages
+/// and every cache miss is an OPFS call.
 fn open_replica(path: &str) -> Result<Connection, String> {
     let browser = cfg!(all(target_arch = "wasm32", target_os = "unknown"))
         && !path.is_empty()
@@ -1847,7 +1849,7 @@ fn open_replica(path: &str) -> Result<Connection, String> {
     }
     let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
     if browser {
-        conn.execute_batch("PRAGMA page_size = 65536")
+        conn.execute_batch("PRAGMA page_size = 65536; PRAGMA cache_size = -65536")
             .map_err(|e| format!("open db {path:?}: {e}"))?;
     }
     Ok(conn)

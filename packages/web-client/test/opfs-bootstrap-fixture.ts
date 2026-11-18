@@ -71,6 +71,8 @@ export interface OpfsProbe {
   sqliteVersion: string;
   journal: unknown;
   pageSize: unknown;
+  /** The page cache the replica opened with, before this test shrinks it. */
+  cacheSize: unknown;
   synchronous: unknown;
   ftsCount: number;
   ftsIntegrity: string;

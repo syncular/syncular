@@ -44,7 +44,7 @@ The host supplies three things the target cannot:
 
 A wasm build is untested against a real server in this repository; the native gate is `cargo test`.
 
-`sqlite-wasm-vfs` 0.2.0's `opfs-sahpool` reports a reserved lock unconditionally (`xCheckReservedLock` writes 1), so SQLite would skip hot-journal rollback after a worker is killed mid-commit. `syncular-client` wraps the VFS's `xOpen` before the first connection opens its file and makes the file methods report 0, which lets SQLite replay the journal. Install the VFS before opening the replica. A new replica gets 64 KiB pages, as in the TypeScript client, because every OPFS call costs the same whatever its size; a replica with tables keeps its page size.
+`sqlite-wasm-vfs` 0.2.0's `opfs-sahpool` reports a reserved lock unconditionally (`xCheckReservedLock` writes 1), so SQLite would skip hot-journal rollback after a worker is killed mid-commit. `syncular-client` wraps the VFS's `xOpen` before the first connection opens its file and makes the file methods report 0, which lets SQLite replay the journal. Install the VFS before opening the replica. A new replica gets 64 KiB pages, as in the TypeScript client, because every OPFS call costs the same whatever its size; a replica with tables keeps its page size. The connection caches 64 MiB of pages, also as in the TypeScript client.
 
 The core does not acquire a cross-context lock. A host that can have two documents or workers on one pool serializes them itself; the TypeScript binding takes a Web Lock keyed by the pool directory in `packages/web-client/src/wasm-database.ts`, and a Rust browser host needs the same guard.
 :::::

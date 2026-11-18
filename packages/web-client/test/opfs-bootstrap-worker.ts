@@ -16,6 +16,7 @@ const scope = globalThis as typeof globalThis & {
 };
 let armed: CrashPoint | undefined;
 let database: ClientDatabase;
+let openedCacheSize: unknown;
 let failCommit = false;
 let importing = false;
 let imageInserts = 0;
@@ -95,6 +96,7 @@ scope.addEventListener('message', (event: MessageEvent) => {
         ),
         journal: database.query('PRAGMA journal_mode'),
         pageSize: database.query('PRAGMA page_size'),
+        cacheSize: openedCacheSize,
         synchronous: database.query('PRAGMA synchronous'),
         ftsCount: Number(
           database.query(
@@ -143,6 +145,7 @@ startSyncWorker({
       scope.postMessage({ t: 'storage-open-failed' });
       throw error;
     }
+    openedCacheSize = database.query('PRAGMA cache_size');
     // Force dirty database pages to spill before COMMIT, so mid-import
     // interruption exercises a hot rollback journal, not just a memory loss.
     database.exec('PRAGMA cache_size=8');
