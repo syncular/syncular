@@ -5,8 +5,8 @@
 0.90.0 collects the work prepared as 0.87.0 to 0.89.0, which were not
 published separately. The wire version stays 4; SSP2 gains the optional
 `RESTRICT` request frame (0x07). It closes SYNCULAR-CURRENT-BASE-PENDING-001,
-SYNCULAR-NATIVE-PENDING-COMMITS-001, SYNCULAR-COMMIT-DELIVERY-REACT-001 and
-SYNCULAR-BUMP-UNIT-GRANULARITY-001.
+SYNCULAR-NATIVE-PENDING-COMMITS-001, SYNCULAR-COMMIT-DELIVERY-REACT-001,
+SYNCULAR-BUMP-UNIT-GRANULARITY-001 and SYNCULAR-LIVE-WINDOW-RELOAD-001.
 
 Breaking changes:
 
@@ -17,6 +17,20 @@ Breaking changes:
 
 Upgrade servers before clients to get the restricted bootstrap after a schema
 bump.
+
+### A live page loads only the changes it delivers
+
+The live-section read loaded every candidate commit its 16 MiB budget
+admitted, delivered `limitCommits` (1,000) changes, dropped the rest, and the
+next round read them again: a client 290 commits behind read 420,807 change
+rows to receive about 18,000. The candidate read on SQLite, D1 and PostgreSQL
+now counts each candidate's changes per unit key, and the change read loads
+candidates only until those counts reach the rest of the page. The cut and the
+delivered commits are unchanged. With 290 commits of 62 changes on SQLite, a
+client reads 17,980 change rows instead of 162,378 over the same 18 rounds.
+No API or wire change. A custom `ServerStorage` that implements
+`readLiveWindow` itself is unaffected; one that calls `readLiveWindowPages`
+with its own candidate reader returns `changes` per key.
 
 ### A decision on a conflict waits for a proven base
 
