@@ -41,8 +41,15 @@ if result-column metadata is missing, empty, or contains duplicate names.
 
 Before execution, storage replaces every generated application-table relation
 with a derived relation that selects the table's application columns and binds
-`_sync_partition` to the authenticated partition. Request values are never
-interpolated into SQL. A table with `materialize: false` cannot be queried.
+`_sync_partition` to the authenticated partition. The derived relation selects
+a `json` column as `CAST(column AS TEXT)`, so the query reads and returns
+the column as JSON text on every storage, the representation `getRow` and the
+generated row type use. PostgreSQL stores a `json` column as JSONB and returns
+the JSONB rendering of the document, which normalizes whitespace and key order
+and keeps the last of duplicate keys; SQLite and D1 return the stored text.
+PostgreSQL JSON operators do not apply to the column inside the query. Request
+values are never interpolated into SQL. A table with `materialize: false`
+cannot be queried.
 
 Each generated descriptor carries a relation plan for every physical SQL
 statement. A plan contains the exact positional SQL and every physical table

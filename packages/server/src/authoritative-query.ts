@@ -127,10 +127,12 @@ export function prepareAuthoritativeQuery(
       throw new Error('registered query targets an unknown table');
     if (!table.materialize)
       throw new Error('registered query targets a non-materialized table');
+    // A `json` column reads as its JSON text on every storage: PostgreSQL
+    // stores it as JSONB, which its drivers would return parsed.
     return {
       start: relation.start,
       end: relation.end,
-      text: `(SELECT ${table.columns.map((column) => quoteIdent(column.name)).join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=?)${relation.alias === undefined ? ` AS ${quoteIdent(table.name)}` : ''}`,
+      text: `(SELECT ${table.columns.map((column) => (column.type === 'json' ? `CAST(${quoteIdent(column.name)} AS TEXT) AS ${quoteIdent(column.name)}` : quoteIdent(column.name))).join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=?)${relation.alias === undefined ? ` AS ${quoteIdent(table.name)}` : ''}`,
     };
   });
   const bound: (AuthoritativeQueryValue | typeof PARTITION_BIND)[] = [];

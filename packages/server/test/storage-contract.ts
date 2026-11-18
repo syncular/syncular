@@ -78,6 +78,11 @@ const DEVICE_KEY_GRANTS_COLUMNS: readonly RowColumn[] = [
   { name: 'workspace_id', type: 'string', nullable: false },
   { name: 'key_id', type: 'string', nullable: false },
 ];
+const FACILITIES_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'project_id', type: 'string', nullable: false },
+  { name: 'capabilities', type: 'json', nullable: true },
+];
 export const CONTRACT_SCHEMA: ServerSchema = {
   version: 1,
   tables: [
@@ -109,6 +114,12 @@ export const CONTRACT_SCHEMA: ServerSchema = {
           columns: ['workspace_id', 'key_id'],
         },
       ],
+    },
+    {
+      name: 'facilities',
+      columns: FACILITIES_COLUMNS,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
     },
   ],
 };
@@ -286,6 +297,89 @@ export function runStorageContract(
       } finally {
         await tx.rollback();
       }
+    });
+
+    test('a registered query reads a json column as the JSON text of the row (SYQL §6)', async () => {
+      const storage = await make();
+      // PostgreSQL stores JSONB, so a document it reads back is the JSONB
+      // rendering; these documents are already in that form.
+      const documents = [
+        '{"keep": true, "sieves": [1, 2]}',
+        '"sieve"',
+        '7',
+        '[]',
+        null,
+      ];
+      const facility = (id: string, capabilities: string | null) => ({
+        rowId: id,
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+        payload: encodeRow(FACILITIES_COLUMNS, [id, 'p1', capabilities]),
+      });
+      const write = await storage.begin(PARTITION);
+      for (const [i, document] of documents.entries()) {
+        await write.upsertRow('facilities', facility(`f${i}`, document));
+      }
+      await write.upsertRow('facilities', facility('f9', '{"b":1,"a":2}'));
+      await write.commit();
+      const sql = 'SELECT id, capabilities FROM facilities ORDER BY id';
+      const request = {
+        plan: {
+          sql,
+          relations: [
+            {
+              table: 'facilities',
+              start: sql.indexOf('facilities'),
+              end: sql.indexOf('facilities') + 'facilities'.length,
+            },
+          ],
+        },
+        params: [],
+        tables: ['facilities'],
+      };
+      const expected = [
+        ...documents.map((capabilities, i) => ({ id: `f${i}`, capabilities })),
+        {
+          id: 'f9',
+          capabilities: name.startsWith('postgres')
+            ? '{"a": 2, "b": 1}'
+            : '{"b":1,"a":2}',
+        },
+      ];
+      expect(
+        (await storage.queryAuthoritative?.(PARTITION, request))?.rows,
+      ).toEqual(expected);
+      const read = await storage.begin(PARTITION);
+      try {
+        expect((await read.queryAuthoritative?.(request))?.rows).toEqual(
+          expected,
+        );
+      } finally {
+        await read.rollback();
+      }
+      // A schema bump that adds a column rewrites every stored row's
+      // projection; the json column reads the same after it. D1 migrates in
+      // steps (d1-migration.test.ts).
+      if (name === 'd1/double') return;
+      await storage.ensureSchema(
+        compileSchema({
+          version: 2,
+          tables: CONTRACT_SCHEMA.tables.map((table) =>
+            table.name === 'facilities'
+              ? {
+                  ...table,
+                  columns: [
+                    ...table.columns,
+                    { name: 'note', type: 'string', nullable: true },
+                  ],
+                }
+              : table,
+          ),
+        }),
+      );
+      expect(
+        (await storage.queryAuthoritative?.(PARTITION, request))?.rows,
+      ).toEqual(expected);
     });
 
     test('appendCommit allocates a dense per-partition commitSeq', async () => {

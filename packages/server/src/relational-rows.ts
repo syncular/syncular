@@ -570,7 +570,9 @@ export function upsertValues(
 /**
  * Upsert statement text (bind with `upsertValues`). PostgreSQL takes `rows`
  * rows in one statement, bound as consecutive `upsertValues` lists from
- * parameter `offset + 1` on; their row ids must be distinct.
+ * parameter `offset + 1` on; their row ids must be distinct. A JSONB column
+ * binds as text before the JSONB cast, so a driver that JSON-encodes a string
+ * bound to `jsonb` (Bun.sql) cannot store the document as a JSON string.
  */
 export function upsertSql(
   table: CompiledTable,
@@ -586,7 +588,7 @@ export function upsertSql(
       : Array.from(
           { length: rows },
           (_, row) =>
-            `(${names.map((_, column) => `$${offset + row * names.length + column + 1}`).join(',')})`,
+            `(${names.map((name, column) => `$${offset + row * names.length + column + 1}${name === SYNC_SCOPES_COLUMN || table.columns.some((c) => c.name === name && c.type === 'json') ? '::text::jsonb' : ''}`).join(',')})`,
         ).join(',');
   const updates = names
     .slice(2) // partition + row id are the conflict key

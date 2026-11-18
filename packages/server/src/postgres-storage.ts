@@ -1029,11 +1029,13 @@ async function rewriteRowsOn(
   // database) every statement is a round trip, and the bump holds the
   // migration lock for its whole duration. The page's rows bind as one
   // VALUES list with typed placeholders (`rewriteValues` order: projection
-  // columns, re-keyed scopes, payload, partition, row id). The scopes bind as
-  // text before the JSONB cast (see `scanRowBatchSql`).
+  // columns, re-keyed scopes, payload, partition, row id). The scopes and
+  // `json` columns bind as text before the JSONB cast (see `scanRowBatchSql`).
   const projected = table.materialize ? table.columns : [];
   const types = [
-    ...projected.map((column) => columnSqlType(column, 'postgres')),
+    ...projected.map((column) =>
+      column.type === 'json' ? 'TEXT' : columnSqlType(column, 'postgres'),
+    ),
     ...(rekey ? ['TEXT'] : []),
     'BYTEA',
     'TEXT',
@@ -1041,7 +1043,10 @@ async function rewriteRowsOn(
   ];
   const payloadAt = projected.length + (rekey ? 1 : 0);
   const sets = [
-    ...projected.map((column, i) => `${quoteIdent(column.name)}=v.c${i}`),
+    ...projected.map(
+      (column, i) =>
+        `${quoteIdent(column.name)}=v.c${i}${column.type === 'json' ? '::jsonb' : ''}`,
+    ),
     ...(rekey
       ? [`${quoteIdent(SYNC_SCOPES_COLUMN)}=v.c${projected.length}::jsonb`]
       : []),
@@ -2278,7 +2283,7 @@ class PostgresTransaction implements StorageTransaction {
            partition, idempotency_key, type, version, payload,
            source_client_id, source_client_commit_id, source_commit_seq,
            created_at_ms, available_at_ms, status, attempts, max_attempts
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,'pending',0,$10)`,
+         ) VALUES ($1,$2,$3,$4,$5::text::jsonb,$6,$7,$8,$9,$9,'pending',0,$10)`,
         [
           this.#partition,
           reaction.idempotencyKey,
@@ -3352,7 +3357,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
   ): Promise<boolean> {
     const result = await this.#exec.query(
       `UPDATE sync_reactions
-          SET status=$4, available_at_ms=$5, last_failure=$6,
+          SET status=$4, available_at_ms=$5, last_failure=$6::text::jsonb,
               lease_owner=NULL, lease_expires_at_ms=NULL
         WHERE partition=$1 AND idempotency_key=$2
           AND status='leased' AND lease_owner=$3

@@ -179,6 +179,10 @@ The source types map to the target-neutral IR as follows:
 | `blob_ref` | blob reference string |
 | `crdt` | encoded CRDT bytes |
 
+A `json` value is a string holding one JSON document in every client core,
+in a server registered query on every storage (REMOTE.md §2), and in the
+generated row type.
+
 `T | null` describes a present value which may be SQL `NULL`. It is distinct
 from an optional input.
 

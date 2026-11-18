@@ -282,19 +282,15 @@ function normalizeQueryRows(
             );
           }
           break;
-        case 'json': {
-          const json =
-            typeof value === 'string' ? value : JSON.stringify(value);
-          if (json === undefined) {
+        case 'json':
+          if (typeof value !== 'string') {
             throw syncError(
               'operation.query_failed',
               'registered query returned invalid JSON',
             );
           }
-          JSON.parse(json);
-          normalized[column.name] = json;
+          JSON.parse(value);
           break;
-        }
         case 'bytes':
         case 'crdt': {
           const bytes =

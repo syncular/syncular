@@ -399,6 +399,93 @@ describe('authoritative query partition rewriting', () => {
       else await db?.close();
     }
   });
+
+  test('a remote query returns a json column as its JSON text on Postgres and SQLite', async () => {
+    const columns: readonly RowColumn[] = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'project_id', type: 'string', nullable: false },
+      { name: 'caps', type: 'json', nullable: false },
+    ];
+    const schema: ServerSchema = {
+      version: 1,
+      tables: [
+        {
+          name: 'facilities',
+          columns,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    };
+    const sql = 'SELECT id, caps FROM facilities ORDER BY id';
+    const operation = registerRemoteQuery(
+      {
+        id: 'facility-caps',
+        hasParams: false,
+        sql,
+        tables: ['facilities'],
+        relationPlans: [
+          {
+            sql,
+            relations: [{ table: 'facilities', start: 21, end: 31 }],
+          },
+        ],
+        resultColumns: [
+          { name: 'id', type: 'string', nullable: false },
+          { name: 'caps', type: 'json', nullable: false },
+        ],
+        bind: () => [],
+        dependencies: () => [{ table: 'facilities' }],
+        coverage: () => [],
+      },
+      { maxRows: 10, auth: { access: 'privileged', authorize: () => true } },
+    );
+    for (const backend of ['SQLite', 'Postgres'] as const) {
+      const db = backend === 'Postgres' ? await PGlite.create() : undefined;
+      const storage =
+        backend === 'SQLite'
+          ? new SqliteServerStorage()
+          : new PostgresServerStorage(pgliteExecutor(db as PGlite));
+      await storage.ensureSchema(compileSchema(schema));
+      const tx = await storage.begin('part-1');
+      for (const [id, caps] of [
+        ['f1', '{"keep": true}'],
+        ['f2', '"sieve"'],
+      ]) {
+        await tx.upsertRow('facilities', {
+          rowId: id!,
+          serverVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: encodeRow(columns, [id!, 'p1', caps!]),
+        });
+      }
+      await tx.commit();
+
+      expect(
+        await operation.run(
+          {
+            schema,
+            storage,
+            segments: new MemorySegmentStore(),
+            partition: 'part-1',
+            actorId: 'reader',
+            resolveScopes: () => ({}),
+          },
+          'reader-client',
+          undefined,
+        ),
+      ).toMatchObject({
+        kind: 'query',
+        rows: [
+          { id: 'f1', caps: '{"keep": true}' },
+          { id: 'f2', caps: '"sieve"' },
+        ],
+      });
+
+      if (storage instanceof SqliteServerStorage) storage.db.close();
+      else await db?.close();
+    }
+  });
 });
 
 describe('RFC 0007 gate on the registered-query path', () => {

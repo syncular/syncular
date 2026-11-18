@@ -158,6 +158,8 @@ server database. Typegen currently checks the SQLite form, so a Postgres
 deployment should keep remotely registered SQL within the common SQL subset or
 test it against Postgres in CI.
 
+A `json` column reads as JSON text on every storage, matching the generated row type and `getRow`. The partition-filtered relation selects it as `CAST(column AS TEXT)`, so PostgreSQL returns the JSONB rendering of the document (`{"a": 2, "b": 1}` for a stored `{"b":1,"a":2}`) where SQLite and D1 return the stored text. Parse the value before comparing documents across storages. PostgreSQL JSON operators such as `->>` do not apply to the column inside a registered query.
+
 Generated descriptors include `relationPlans` for every selected SQL variant. The compiler records each physical table occurrence, including quoted self joins and tables inside CTEs. QueryIR uses version 4. The server rejects descriptors without matching relation plans, so register descriptors that `syncular generate` produced and replace hand-authored ones.
 
 Registration also requires generated result-column metadata. The server validates
