@@ -1,5 +1,33 @@
 # Syncular release notes
 
+## 0.84.0 release notes
+
+0.84.0 removes duplicated and unused code: 45 files, 465 lines fewer. SSP2
+and the wire version are unchanged. It breaks Rust transport implementations
+and removes several exports.
+
+**Rust transport.** `Transport::realtime_connect(&mut self, client_id: &str)`
+replaces both `realtime_connect` without arguments and
+`realtime_connect_for_client`. `HostTransport::new_from_config` is removed;
+use `HostTransport::from_config`. Host glue moved into `syncular-command`,
+which no longer exports `bytes_to_hex`, `hex_to_bytes`, `parse_limits`,
+`parse_encryption` or `parse_previous_version_context`, and `syncular-ffi` no
+longer re-exports `transport`.
+
+**TypeScript.** `SyncClient.leaseRemainingMs`, `isBlobRef`, `d1Storage` and
+`queryNameFromFile` are removed. The SQLite and PostgreSQL server storages and
+the D1 storage share one copy of the stored-row decoders.
+
+**Schema check.** SQLite and PostgreSQL storage refuse a database whose stored
+schema is newer than the configured one with `sync.storage.schema_changed`, as
+D1 already did.
+
+**Upgrade.** Rename each `impl Transport` method to
+`realtime_connect(&mut self, client_id: &str)`; an implementation that had
+both methods keeps the `_for_client` body under the new name. Pass the client
+id at each `.realtime_connect()` call, and replace `new_from_config` with
+`from_config`.
+
 ## 0.83.0 release notes
 
 0.83.0 lets a patch follow an upsert of its row in one commit
