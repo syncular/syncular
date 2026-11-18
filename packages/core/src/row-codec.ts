@@ -14,7 +14,7 @@
  */
 import { parseBlobRef } from './blob-ref';
 import { ByteReader, ByteWriter } from './bytes';
-import { DecodeError, EncodeError } from './errors';
+import { EncodeError, invalidInput } from './errors';
 import { parseJsonDocument } from './json-document';
 
 export type ColumnType =
@@ -81,10 +81,7 @@ export function columnTypeTag(type: ColumnType): number {
 export function columnTypeFromTag(tag: number): ColumnType {
   const type = TAG_TO_TYPE.get(tag);
   if (type === undefined) {
-    throw new DecodeError(
-      'sync.invalid_request',
-      `unknown column type tag ${tag}`,
-    );
+    throw invalidInput(`unknown column type tag ${tag}`);
   }
   return type;
 }
@@ -157,8 +154,7 @@ function readValue(reader: ByteReader, column: RowColumn): RowValue {
       try {
         JSON.parse(raw);
       } catch {
-        throw new DecodeError(
-          'sync.invalid_request',
+        throw invalidInput(
           `json column ${column.name} does not parse as a JSON document`,
         );
       }
@@ -275,22 +271,19 @@ export function decodeSparseRow(
   const presence = reader.raw(presenceLength);
   for (let bit = columns.length; bit < presenceLength * 8; bit++) {
     if (bitmapBit(presence, bit)) {
-      throw new DecodeError(
-        'sync.invalid_request',
+      throw invalidInput(
         'sparse row presence bitmap has a set padding bit (non-canonical encoding)',
       );
     }
   }
   const primaryKey = columns[primaryKeyIndex];
   if (primaryKey === undefined) {
-    throw new DecodeError(
-      'sync.invalid_request',
+    throw invalidInput(
       `primary-key column index ${primaryKeyIndex} is outside the column table`,
     );
   }
   if (!bitmapBit(presence, primaryKeyIndex)) {
-    throw new DecodeError(
-      'sync.invalid_request',
+    throw invalidInput(
       `sparse row is missing the primary-key column ${primaryKey.name}`,
     );
   }
@@ -302,8 +295,7 @@ export function decodeSparseRow(
   const nulls = reader.raw(nullLength);
   for (let bit = presentCount; bit < nullLength * 8; bit++) {
     if (bitmapBit(nulls, bit)) {
-      throw new DecodeError(
-        'sync.invalid_request',
+      throw invalidInput(
         'sparse row null bitmap sets a null bit for an absent column',
       );
     }
@@ -328,10 +320,7 @@ export function decodeSparseRow(
         typeof value === 'string' &&
         value.includes('\u0000')
       ) {
-        throw new DecodeError(
-          'sync.invalid_request',
-          `string column ${column.name} holds U+0000`,
-        );
+        throw invalidInput(`string column ${column.name} holds U+0000`);
       }
       if (column.type === 'json' && typeof value === 'string') {
         parseJsonDocument(value, `json column ${column.name}`);
@@ -341,8 +330,7 @@ export function decodeSparseRow(
         typeof value === 'number' &&
         !Number.isFinite(value)
       ) {
-        throw new DecodeError(
-          'sync.invalid_request',
+        throw invalidInput(
           `float column ${column.name} holds NaN or an infinity`,
         );
       }
@@ -350,10 +338,7 @@ export function decodeSparseRow(
       continue;
     }
     if (!column.nullable) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `null bit set for non-nullable column ${column.name}`,
-      );
+      throw invalidInput(`null bit set for non-nullable column ${column.name}`);
     }
     values.push(null);
   }
@@ -407,10 +392,7 @@ export function readRow(
   const bitmap = reader.raw(bitmapLength);
   for (let i = columns.length; i < bitmapLength * 8; i++) {
     if ((((bitmap[i >> 3] ?? 0) >> (i & 7)) & 1) !== 0) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        'non-zero padding bit in row null bitmap',
-      );
+      throw invalidInput('non-zero padding bit in row null bitmap');
     }
   }
   const values: RowValue[] = [];
@@ -420,8 +402,7 @@ export function readRow(
     const isNull = (((bitmap[i >> 3] ?? 0) >> (i & 7)) & 1) !== 0;
     if (isNull) {
       if (!column.nullable) {
-        throw new DecodeError(
-          'sync.invalid_request',
+        throw invalidInput(
           `null bit set for non-nullable column ${column.name}`,
         );
       }

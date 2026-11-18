@@ -379,7 +379,7 @@ export interface SyncIdleResult extends SyncSummary {
 
 export interface SyncIdleOptions {
   /** §7.8: a strict positive round count. Default: 20. */
-  readonly maxRounds?: number;
+  readonly maxRounds?: number | undefined;
   /**
    * Total budget for one drive, across every round, on the client clock. A
    * drive past it after a completed round resolves with `budgetExhausted`.
@@ -388,6 +388,12 @@ export interface SyncIdleOptions {
    * `Infinity` disables the bound.
    */
   readonly timeoutMs?: number;
+  /**
+   * §8.4 host policy: end the drive without a round when the replica has no
+   * unit, no outbox commit, and no unit list to clear on the server. The
+   * shipped host loops pass it; the native bridge ignores it.
+   */
+  readonly skipEmpty?: boolean;
 }
 
 export type CurrentBaseProof =
@@ -438,6 +444,18 @@ export interface SyncClientLimits {
    * raises `client.push_request_too_large` and stays queued.
    */
   readonly maxPushRequestBytes?: number;
+  /**
+   * §5.4: rows segment downloads one pull response runs at once. Default 4.
+   * SQLite images keep their own bound of two (§5.3).
+   */
+  readonly segmentPrefetch?: number;
+  /**
+   * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
+   * exceeds it, unreferenced bodies without pending work are evicted oldest
+   * first after each cache write. Referenced bodies stay cached even past the
+   * cap. Absent: retain until storage pressure.
+   */
+  readonly blobCacheMaxBytes?: number;
 }
 
 export interface SyncClientConfig {
@@ -452,14 +470,6 @@ export interface SyncClientConfig {
   readonly segments?: SegmentDownloader;
   /** Blob upload/download (§5.9). Required to use `uploadBlob`/`fetchBlob`. */
   readonly blobs?: BlobTransport;
-  /**
-   * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
-   * exceeds this, unreferenced bodies without pending work are evicted in
-   * creation timestamp order after each cache write. Referenced bodies remain cached
-   * even when that exceeds the cap. Absent means retain until storage pressure (the shipped
-   * default; a referenced body always stays resolvable without a re-download).
-   */
-  readonly blobCacheMaxBytes?: number;
   readonly realtime?: RealtimeConnector;
   /**
    * SPEC §8.8: how sync rounds treat the realtime binding. `optional`
@@ -1096,6 +1106,7 @@ export class SyncClient {
         config.limits?.maxPushOperationsPerRequest,
       ],
       ['maxPushRequestBytes', config.limits?.maxPushRequestBytes],
+      ['segmentPrefetch', config.limits?.segmentPrefetch],
     ] as const) {
       if (
         value !== undefined &&
@@ -1103,7 +1114,7 @@ export class SyncClient {
       ) {
         throw new ClientSyncError(
           'sync.invalid_request',
-          'push limit must be an integer in 1..=4294967295',
+          'limit must be an integer in 1..=4294967295',
           false,
           { limit: name },
         );
@@ -2374,8 +2385,7 @@ export class SyncClient {
           )
         : 0;
       const pressure =
-        this.#config.blobCacheMaxBytes !== undefined &&
-        blobBytes > this.#config.blobCacheMaxBytes;
+        blobBytes > (this.#config.limits?.blobCacheMaxBytes ?? Infinity);
       return {
         status: pressure ? 'pressure' : 'healthy',
         databaseBytesApprox: Math.max(0, pageCount * pageSize),
@@ -2656,7 +2666,7 @@ export class SyncClient {
 
   /** §5.9.7 B1: trim the blob cache to the configured cap (no-op if unset). */
   #enforceBlobCacheCap(): void {
-    const cap = this.#config.blobCacheMaxBytes;
+    const cap = this.#config.limits?.blobCacheMaxBytes;
     if (cap === undefined) return;
     enforceBlobCacheCap(this.#db, this.#schema, cap);
   }
@@ -4780,17 +4790,18 @@ export class SyncClient {
       !(Number.isFinite(timeoutMs) && timeoutMs > 0)
     )
       throw invalidRequest('timeoutMs must be a positive number or Infinity');
-    const key = `${maxRounds ?? 'default'}:${timeoutMs}`;
+    const skipEmpty = typeof options === 'object' && options.skipEmpty === true;
+    const key = `${maxRounds ?? 'default'}:${timeoutMs}:${skipEmpty}`;
     const pending = this.#syncIdlePending.get(key);
     if (pending !== undefined) return pending;
     const previous = this.#syncIdleTail;
     let drive: Promise<SyncIdleResult>;
     if (previous === undefined) {
-      drive = this.#syncIdleRounds(maxRounds, timeoutMs);
+      drive = this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty);
     } else {
       drive = previous.then(() => {
         this.#syncIdlePending.delete(key);
-        return this.#syncIdleRounds(maxRounds, timeoutMs);
+        return this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty);
       });
       this.#syncIdlePending.set(key, drive);
     }
@@ -4809,6 +4820,7 @@ export class SyncClient {
   async #syncIdleRounds(
     maxRounds: number | undefined,
     timeoutMs: number,
+    skipEmpty: boolean,
   ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
@@ -4826,6 +4838,21 @@ export class SyncClient {
         budgetExhausted,
       };
     };
+    // §8.4: a replica without units, outbox work, or a server-side unit list
+    // to clear has nothing to exchange; a host drive ends without a round.
+    this.#requireActive();
+    if (
+      skipEmpty &&
+      this.#schemaFloor === undefined &&
+      !this.#hasStartupWork() &&
+      loadUnits(this.#db).length === 0 &&
+      (getMeta(this.#db, LOG_EPOCH_META_KEY) === undefined ||
+        getMeta(this.#db, REGISTERED_DIGEST_KEY) ===
+          bytesToHex(registrationDigest([])))
+    ) {
+      this.#setSyncNeeded(false);
+      return result(false);
+    }
     const states = () =>
       JSON.stringify(
         loadUnits(this.#db).map((unit) => [unit.id, unit.bootstrapState]),
@@ -5427,11 +5454,12 @@ export class SyncClient {
 
     // §5.4/§5.5: queue every segment download of this response, so a paged
     // bootstrap overlaps its page fetches instead of paying one blocking round
-    // trip per page. At most four downloads run at once, the Rust native
-    // transport's pool size: enough to overlap round trips, while the client
-    // holds at most four bodies, the one being applied and three ahead. An
-    // image starts only beside at most one other body, so at most two are
-    // images (§5.3 client memory); later descriptors wait in order. The
+    // trip per page. `limits.segmentPrefetch` downloads run at once, by
+    // default four, the Rust native transport's pool size: enough to overlap
+    // round trips, while the client holds that many bodies, the one being
+    // applied and the rest ahead. An image starts only beside at most one
+    // other body, so at most two are images (§5.3 client memory) whatever the
+    // limit; later descriptors wait in order. The
     // loop takes each body out of the map before applying it and tops the
     // window up at the next descriptor. Eligibility mirrors the loop: a
     // descriptor outside an applied section or from an unconfigured
@@ -5443,7 +5471,7 @@ export class SyncClient {
     const prefetch = () => {
       for (
         let next;
-        prefetched.size < 4 &&
+        prefetched.size < (this.#config.limits?.segmentPrefetch ?? 4) &&
         !(queued[0]?.[0].mediaType === 'sqlite' && prefetched.size > 1) &&
         (next = queued.shift());
       ) {

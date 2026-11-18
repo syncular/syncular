@@ -3,10 +3,11 @@ import {
   ClientSyncError,
   installSyncScheduler,
   type SecurityLifecycle,
+  type SyncIdleOptions,
   type SyncIntent,
   type SyncSchedulerClient,
 } from '@syncular/client';
-import type { WakeReason } from '@syncular/core';
+import { decodeMessage, type WakeReason } from '@syncular/core';
 import {
   makeClient,
   makeServer,
@@ -23,6 +24,7 @@ class FakeSchedulerClient implements SyncSchedulerClient {
   >();
   readonly intents = new Set<(intent: SyncIntent) => void>();
   runs = 0;
+  readonly options: SyncIdleOptions[] = [];
   run: () => Promise<unknown> = async () => undefined;
 
   statusSnapshot(): { readonly syncNeeded: boolean } {
@@ -33,7 +35,8 @@ class FakeSchedulerClient implements SyncSchedulerClient {
     return this.lifecycle;
   }
 
-  syncUntilIdle(): Promise<unknown> {
+  syncUntilIdle(options: SyncIdleOptions): Promise<unknown> {
+    this.options.push(options);
     this.runs += 1;
     return this.run();
   }
@@ -80,6 +83,40 @@ test('coalesces wake and intent signals into one immediate round', async () => {
   expect(client.runs).toBe(1);
 
   scheduler.stop();
+});
+
+test('coalesceMs holds a queued drive on one deadline that later intents share', async () => {
+  const client = new FakeSchedulerClient();
+  const timers: Array<{ callback: () => void; delayMs: number }> = [];
+  const scheduler = installSyncScheduler(client, {
+    coalesceMs: 25,
+    maxRounds: 3,
+    queueMicrotask: () => {
+      throw new Error('a coalesced drive never takes the microtask path');
+    },
+    schedule: (callback, delayMs) => {
+      timers.push({ callback, delayMs });
+      return () => {};
+    },
+  });
+
+  client.intent({ kind: 'interactive' });
+  client.wake();
+  client.intent({ kind: 'interactive' });
+  expect(timers.map((timer) => timer.delayMs)).toEqual([25]);
+  expect(client.runs).toBe(0);
+  timers[0]!.callback();
+  await flushPromises();
+  expect(client.options).toEqual([{ maxRounds: 3, skipEmpty: true }]);
+
+  scheduler.stop();
+});
+
+test('an invalid coalesceMs fails at install', () => {
+  for (const coalesceMs of [-1, Number.NaN, Number.POSITIVE_INFINITY])
+    expect(() =>
+      installSyncScheduler(new FakeSchedulerClient(), { coalesceMs }),
+    ).toThrow('coalesceMs must be a non-negative finite number');
 });
 
 test('runs one sync at a time and preserves an interactive signal mid-round', async () => {
@@ -266,6 +303,93 @@ test('installs on a real SyncClient and runs the startup catch-up round', async 
     } finally {
       scheduler.stop();
     }
+  } finally {
+    await client.close();
+    db.close();
+    server.storage.db.close();
+  }
+});
+
+test('two setWindow calls 10 ms apart ride one pull with coalesceMs 25', async () => {
+  const server = makeServer();
+  const { client, db, requests } = await makeClient(server, {
+    clientId: 'scheduler-coalesce',
+  });
+  const timers: Array<{ callback: () => void; dueMs: number }> = [];
+  let nowMs = 0;
+  const advance = (ms: number): void => {
+    nowMs += ms;
+    for (const timer of timers.splice(0))
+      if (timer.dueMs <= nowMs) timer.callback();
+      else timers.push(timer);
+  };
+  const scheduler = installSyncScheduler(client, {
+    coalesceMs: 25,
+    now: () => nowMs,
+    schedule: (callback, delayMs) => {
+      timers.push({ callback, dueMs: nowMs + delayMs });
+      return () => {};
+    },
+  });
+  try {
+    const base = { variable: 'project_id' };
+    await client.setWindow(base, ['p1']);
+    advance(10);
+    await client.setWindow(base, ['p1', 'p2']);
+    expect(requests).toHaveLength(0);
+    advance(15);
+    await waitFor(
+      () => client.windowState(base).pending.length === 0,
+      (notify) => client.onChange(notify),
+      'one coalesced drive',
+    );
+    const units = requests.map(
+      (request) =>
+        decodeMessage(request).frames.filter((frame) => frame.type === 'UNIT')
+          .length,
+    );
+    // The first pull carries both units; later rounds of the drive only
+    // continue their bootstrap.
+    expect(units[0]).toBe(2);
+    expect(units.slice(1).every((count) => count === 0)).toBe(true);
+  } finally {
+    scheduler.stop();
+    await client.close();
+    db.close();
+    server.storage.db.close();
+  }
+});
+
+test('a skipEmpty drive on an empty replica sends nothing until it has a unit or a list to clear', async () => {
+  const server = makeServer();
+  const { client, db, httpRounds } = await makeClient(server, {
+    clientId: 'scheduler-empty',
+  });
+  // A fresh replica: no log epoch, no unit list stored on the server.
+  db.exec("DELETE FROM _syncular_meta WHERE key = 'logEpoch'");
+  try {
+    const empty = await client.syncUntilIdle({ skipEmpty: true });
+    expect(httpRounds.count).toBe(0);
+    expect(empty).toMatchObject({ budgetExhausted: false, pushed: 0 });
+    expect(client.diagnosticsSnapshot().lastRound).toBeUndefined();
+
+    const id = client.subscribe({ project_id: 'p1' });
+    await client.syncUntilIdle({ skipEmpty: true });
+    const withUnit = httpRounds.count;
+    expect(withUnit).toBeGreaterThan(0);
+
+    // The server still holds the unit: the release must reach it.
+    client.unsubscribe(id);
+    await client.syncUntilIdle({ skipEmpty: true });
+    const cleared = httpRounds.count;
+    expect(cleared).toBeGreaterThan(withUnit);
+    expect(client.statusSnapshot().syncNeeded).toBe(false);
+
+    await client.syncUntilIdle({ skipEmpty: true });
+    expect(httpRounds.count).toBe(cleared);
+    // An explicit drive without the option still runs its round.
+    await client.syncUntilIdle();
+    expect(httpRounds.count).toBe(cleared + 1);
   } finally {
     await client.close();
     db.close();

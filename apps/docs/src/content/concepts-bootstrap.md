@@ -43,6 +43,19 @@ The server cuts a table's image into **range images** of at most `maxImageSegmen
 
 The client holds at most two image bodies at once, the one it applies and the next one downloading, so its peak memory follows `maxImageSegmentBytes` and not the table size. The Rust core downloads at most two images per round and leaves the rest of the section to the next round. A download that fails repeats only that image. The client records with the unit, in the transaction of each committed chunk, how many rows of each segment it applied since the unit's last checkpoint. When the next pull serves the same segments again, it skips the ones it applied completely and continues a partly applied image after its last committed chunk, so a failed round, a closed client or a restarted app repeats only rows no transaction committed ([SPEC §5.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#56-segment-application-contract-client)). 67,302 + 87,267 catalogue rows (351 MB of images) bootstrap into an OPFS replica in Chromium with a peak renderer memory of 434 to 490 MiB as 32 MiB range images, against 1,310 to 1,351 MiB as one image per table, and in 1.6 to 1.7 s against 1.5 s (`bench/src/image-range-lane.ts`, Apple M5 Pro).
 
+### Parallel downloads
+
+The TypeScript client queues every segment download of a pull response and runs `limits.segmentPrefetch` of them at once, default 4. A body that finishes early waits for the bodies before it, because the client applies segments in frame order, and each applied body frees one slot. Raise the limit when a cold start brings many small rows segments: on a production cold load, 8 rows segments of 15 to 44 KB took 3.3 s to download in two waves of four. The two-image bound above holds at any limit. The value is a positive integer; anything else fails construction with `sync.invalid_request`.
+
+```ts
+const client = new SyncClient({
+  // database, schema, transport, segments
+  limits: { segmentPrefetch: 8 },
+});
+```
+
+The browser worker handle forwards `limits` to its core unchanged. The Rust core downloads a response's segments one at a time and ignores the key, so a native `limits.segmentPrefetch` has no effect.
+
 ## Where segments are delivered
 
 Segments are the CDN and bulk path. They travel over HTTP only, so the sync socket carries no bulk data. The client's `accept` bitmask negotiates one of three shapes ([SPEC §4.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#42-pull_header-frame)).

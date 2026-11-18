@@ -180,6 +180,19 @@ immediate sync intent. With `autoSync` the worker coalesces those intents; the
 page reacts to revisioned changes and re-queries. On a direct `SyncClient`,
 provide `onSyncNeeded` and call `sync()` when it fires.
 
+Set `coalesceMs` on the handle to hold each queued `autoSync` drive for that
+many milliseconds, so the claims an app makes in one burst, such as the
+`setWindow` calls that follow an access read, ride in one pull. The default 0
+starts the drive in the next microtask. A negative or non-finite value fails
+`createSyncClientHandle` with `sync.invalid_request`.
+
+The worker loop and the supervisor skip drives on an empty replica. With no
+unit, no outbox commit and no unit list left to clear on the server, the
+supervisor's catch-up round before `connected` and every automatic drive end
+without a request. A freshly signed-in tab therefore sends its first pull
+together with its first units. `handle.syncUntilIdle()` called by the app
+still sends a request.
+
 The handle's `onSyncNeeded`, `onConflict`, `onSynced`, `onUpgrading`,
 `onPresence`, and `onDiagnostics` configuration callbacks give the main thread the
 events it needs for rendering. They fire in the tab whose worker raised the

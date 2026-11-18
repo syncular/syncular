@@ -676,12 +676,13 @@ directory or IndexedDB store. This is the pinned decision (SPEC §5.9.7 B1):
 
 ### Size cap
 
-Pass `blobCacheMaxBytes` to cap the on-device cache. When the sum of cached body
+Set `limits.blobCacheMaxBytes` to cap the on-device cache. The worker handle
+forwards `limits` to its core, and the native core reads the same key. When the sum of cached body
 sizes exceeds the cap, the client evicts bodies with no visible row or pending
 commit by creation timestamp, then blob ID, until back under the cap:
 
 ```ts
-new SyncClient({ /* … */, blobCacheMaxBytes: 256 * 1024 * 1024 }); // 256 MiB
+new SyncClient({ /* … */, limits: { blobCacheMaxBytes: 256 * 1024 * 1024 } }); // 256 MiB
 ```
 
 - A body **referenced by a live row** is **never** evicted. It
@@ -691,7 +692,7 @@ new SyncClient({ /* … */, blobCacheMaxBytes: 256 * 1024 * 1024 }); // 256 MiB
 - Evicting an unreferenced body only costs a future re-download, never correctness:
   any surviving `blob_ref` value re-enables the fetch (§5.9.7 B3). If every
   over-cap body is referenced or pinned, the cache stays over the cap
-  (correctness beats the cap). Absent `blobCacheMaxBytes` ⇒ retain until storage
+  (correctness beats the cap). Absent `limits.blobCacheMaxBytes` ⇒ retain until storage
   pressure (the default).
 
 ### Very large media — the escape hatch

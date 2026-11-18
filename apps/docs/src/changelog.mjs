@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'One blob-cache cap for in-process, worker and native clients',
+    body: "Breaking. The blob-cache cap moved from `SyncClientConfig.blobCacheMaxBytes` to `limits.blobCacheMaxBytes`, the key the Rust core already reads. Move the option into `limits`; the top-level field is gone. `createSyncClientHandle` forwards `limits` to its worker core, so a browser worker's blob cache now honors the cap; before, the worker had no way to set it and its cache grew without bound.",
+    links: [
+      {
+        href: '/concepts-blobs/#the-local-blob-cache',
+        label: 'The local blob cache',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title:
       'Rows segments skip the failure journal for rows without a retained row',
     body: "A rows segment applied to a table that holds retained rows of failed commits no longer writes the failure journal for every landing row. Each 1,000-row block writes the server base of the retained rows it overwrites and refreshes the retained intents' unique conflicts once. With ten retained rows on a table with a unique index, a 10,000-row segment of a 12-column table bootstraps at 48,356 to 49,358 rows/s in the OPFS worker, up from 6,015 to 6,092 rows/s in 0.85.0; updates went from 4,757 to 40,486 rows/s or more. Tables without retained rows apply at the same rate as before.",
@@ -28,6 +39,25 @@ export const changelog = [
       {
         href: '/reference-outbox-outcomes/',
         label: 'Outbox outcomes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
+    title: 'Wider segment downloads and fewer empty rounds on a cold start',
+    body: "`limits.segmentPrefetch` sets how many segment downloads of one pull response the TypeScript client runs at once (default 4); SQLite images stay at two at a time. `installSyncScheduler` and the browser worker handle accept `coalesceMs`: a queued drive waits that many milliseconds, so claims and writes made in one burst ride in one pull. The scheduler, the worker's `autoSync` loop and the realtime supervisor now drive with `syncUntilIdle({ skipEmpty: true })`, which ends without a request on a replica with no unit, no outbox commit and no unit list left to clear on the server; before, a freshly signed-in client ran an empty round before its first claims. `syncUntilIdle()` without the option and `sync()` still send a request. The Rust core is unchanged: it downloads segments one at a time and its host loops keep their rounds. Every structural decode failure in `@syncular/core` is now built by the exported `invalidInput(message)`; codes and messages are unchanged.",
+    links: [
+      {
+        href: '/concepts-bootstrap/#parallel-downloads',
+        label: 'Parallel downloads',
+      },
+      {
+        href: '/guide-server-clients/',
+        label: 'Server-side clients',
+      },
+      {
+        href: '/platform-web-realtime/#realtime-policy',
+        label: 'Browser realtime',
       },
     ],
   },

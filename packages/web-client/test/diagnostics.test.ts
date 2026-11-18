@@ -394,7 +394,7 @@ describe('privacy-safe client diagnostics', () => {
     const fixture = await makeClient(makeServer(), {
       clientId: 'diagnostics-pressure',
       schema: blobSchema,
-      blobCacheMaxBytes: 0,
+      limits: { blobCacheMaxBytes: 0 },
       blobs: {
         upload: async () => {},
         download: async () => ({

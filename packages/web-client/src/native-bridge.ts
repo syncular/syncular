@@ -25,6 +25,7 @@ import {
   type SnapshotReadRequest,
   type SyncClient,
   type SyncClientConfig,
+  type SyncIdleOptions,
   type UnitCatchup,
   type WindowState,
 } from './client';
@@ -1087,10 +1088,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return this.command('sync', {});
   }
 
+  /** The Rust core has no §8.4 empty-replica gate: `skipEmpty` is not sent. */
   async syncUntilIdle(
-    maxRounds?: number,
+    options?: number | SyncIdleOptions,
     timeoutMs?: number,
   ): Promise<unknown> {
+    const maxRounds = typeof options === 'object' ? options.maxRounds : options;
+    if (typeof options === 'object') timeoutMs = options.timeoutMs;
     return this.command('syncUntilIdle', {
       ...(maxRounds !== undefined ? { maxRounds } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),

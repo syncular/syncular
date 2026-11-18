@@ -17,6 +17,11 @@ export class DecodeError extends Error {
   }
 }
 
+/** The structural decode failure: a `DecodeError` with `sync.invalid_request`. */
+export function invalidInput(message: string): DecodeError {
+  return new DecodeError('sync.invalid_request', message);
+}
+
 /**
  * A value the row codec cannot encode (SPEC.md §7.1 authoring validation,
  * §6.1 push payloads). Structural failures stay plain `Error`s; this class

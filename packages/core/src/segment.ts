@@ -9,7 +9,7 @@
  * rows participate in §6.2 conflict detection (§5.6).
  */
 import { ByteReader, ByteWriter, utf8Encode } from './bytes';
-import { DecodeError } from './errors';
+import { invalidInput } from './errors';
 import {
   columnTypeFromTag,
   columnTypeTag,
@@ -84,21 +84,17 @@ export function decodeRowsSegment(bytes: Uint8Array): RowsSegment {
     magic[2] !== MAGIC_BYTES[2] ||
     magic[3] !== MAGIC_BYTES[3]
   ) {
-    throw new DecodeError('sync.invalid_request', 'bad rows segment magic');
+    throw invalidInput('bad rows segment magic');
   }
   const formatVersion = reader.u16();
   if (formatVersion !== ROWS_SEGMENT_FORMAT_VERSION) {
-    throw new DecodeError(
-      'sync.invalid_request',
+    throw invalidInput(
       `unsupported rows segment format version ${formatVersion}`,
     );
   }
   const flags = reader.u16();
   if (flags !== 0) {
-    throw new DecodeError(
-      'sync.invalid_request',
-      `non-zero rows segment flags 0x${flags.toString(16)}`,
-    );
+    throw invalidInput(`non-zero rows segment flags 0x${flags.toString(16)}`);
   }
   const table = reader.str();
   const schemaVersion = reader.i32();
@@ -109,20 +105,14 @@ export function decodeRowsSegment(bytes: Uint8Array): RowsSegment {
     const type = columnTypeFromTag(reader.u8());
     const columnFlags = reader.u8();
     if ((columnFlags & 0xfe) !== 0) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `reserved column flag bits set for column ${name}`,
-      );
+      throw invalidInput(`reserved column flag bits set for column ${name}`);
     }
     columns.push({ name, type, nullable: columnFlags === 1 });
   }
   const blocks: SegmentRow[][] = [];
   for (;;) {
     if (reader.remaining < 4) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        'rows segment truncated: missing end marker',
-      );
+      throw invalidInput('rows segment truncated: missing end marker');
     }
     const rowCount = reader.u32();
     if (rowCount === 0) {
@@ -136,8 +126,7 @@ export function decodeRowsSegment(bytes: Uint8Array): RowsSegment {
     for (let i = 0; i < rowCount; i++) {
       const serverVersion = blockReader.i64();
       if (serverVersion < 1) {
-        throw new DecodeError(
-          'sync.invalid_request',
+        throw invalidInput(
           `rows segment row serverVersion must be >= 1, got ${serverVersion}`,
         );
       }
