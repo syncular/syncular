@@ -16,7 +16,9 @@ command bridge a `pendingCommits` command, both emitting the TypeScript JSON;
 conformance scenario `offline/pending-commits-shape` pins it on both cores.
 The Rust outbox gains a `created_at_ms` column; a commit queued before the
 upgrade reports `createdAtMs: 0`. `pendingCommitIds` stays for the Kotlin,
-Swift and Flutter bindings.
+Swift and Flutter bindings. The Rust core orders the keys inside an
+operation's `values` alphabetically and TypeScript in column order; compare
+the objects, not their JSON text.
 
 Upgrade note: code on the Tauri or React Native bridge that treated
 `pendingCommits()` entries as strings reads `commit.clientCommitId` instead.
