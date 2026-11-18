@@ -908,6 +908,7 @@ export type ClientSnapshotMethods = Pick<
   | 'commitOutcome'
   | 'commitOutcomes'
   | 'resolveCommitOutcome'
+  | 'commitDelivery'
 >;
 
 /** Project a method contract across an asynchronous host boundary. */

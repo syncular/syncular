@@ -63,7 +63,7 @@ window lifecycle should pass that evidence through the same structural
 keys and `active` only after reactivation. Render local SQLite immediately.
 
 The bridge includes the native core's durable commit-outcome journal:
-`commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`. Final results
+`commitOutcome`, `commitOutcomes`, `commitDelivery`, and `resolveCommitOutcome`. Final results
 and explicit conflict resolutions survive process restarts; active failures
 are never silently removed by retention. Failed outcomes retain their complete
 ordered local operation envelope for authorized aggregate recovery with the

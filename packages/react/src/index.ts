@@ -25,6 +25,10 @@ export {
 export { SYNCULAR_REACT_RUNTIME_VERSION } from './runtime-version';
 export { useReactiveStore, useSyncClient } from './use-client';
 export {
+  type UseCommitDeliveryResult,
+  useCommitDelivery,
+} from './use-commit-delivery';
+export {
   type UseCommitOutcomesResult,
   useCommitOutcomes,
 } from './use-commit-outcomes';

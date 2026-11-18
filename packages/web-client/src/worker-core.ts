@@ -549,6 +549,7 @@ export function startSyncWorkerCore(
     'commitOutcome',
     'commitOutcomes',
     'resolveCommitOutcome',
+    'commitDelivery',
     'pendingCommits',
     'units',
     'unit',
@@ -575,11 +576,11 @@ export function startSyncWorkerCore(
       await requireClient().beginSecurityPreflight();
     },
     activateSecurity: async (options = {}) => {
-      await requireClient().activateSecurity({
-        ...(options.encryption !== undefined
-          ? { encryption: encryptionConfigFromKeyring(options.encryption) }
-          : {}),
-      });
+      await requireClient().activateSecurity(
+        options.encryption === undefined
+          ? {}
+          : { encryption: encryptionConfigFromKeyring(options.encryption) },
+      );
     },
     setWindow: async (base, units) => {
       await requireClient().setWindowCommand(base, units);
@@ -590,13 +591,7 @@ export function startSyncWorkerCore(
     patch: (table, rowId, partial, options) => {
       // Same §8.4 rule as `mutate`: a local write must push without the app
       // orchestrating sync, so consume the core's immediate intent.
-      const result = requireClient().patchCommand(
-        table,
-        rowId,
-        partial,
-        options,
-      );
-      return result.value;
+      return requireClient().patchCommand(table, rowId, partial, options).value;
     },
     sync: () => {
       const running = requireClient();
@@ -684,10 +679,7 @@ export function startSyncWorkerCore(
     void (async () => {
       try {
         const value = await fn();
-        post(
-          { t: 'result', id, value },
-          transfer !== undefined ? transfer(value) : undefined,
-        );
+        post({ t: 'result', id, value }, transfer?.(value));
       } catch (error) {
         post({ t: 'error', id, error: toErrorShape(error) });
       }

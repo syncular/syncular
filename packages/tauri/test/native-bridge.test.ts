@@ -423,6 +423,10 @@ if (!available) {
           'second',
         );
         expect(await client.pendingCommits()).toEqual([first, second]);
+        expect(await client.commitDelivery(first)).toEqual({
+          status: 'pending',
+          clientCommitId: first,
+        });
         expect(await client.sync()).toMatchObject({
           errorCode: 'sync.offline',
         });
@@ -440,6 +444,15 @@ if (!available) {
         expect(
           (await client.commitOutcomes()).map((o) => o.clientCommitId).sort(),
         ).toEqual([first, second].sort());
+        expect(await client.commitDelivery(first)).toMatchObject({
+          status: 'known',
+          clientCommitId: first,
+          outcome: { clientCommitId: first, status: 'applied' },
+        });
+        expect(await client.commitDelivery('never-written')).toEqual({
+          status: 'unknown',
+          clientCommitId: 'never-written',
+        });
         expect(calls.length).toBeGreaterThan(0);
       } finally {
         await client.close();

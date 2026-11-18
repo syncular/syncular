@@ -16,6 +16,7 @@ import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { type ReactNode, StrictMode } from 'react';
 import {
   SyncProvider,
+  useCommitDelivery,
   useCommitOutcomes,
   useConflicts,
   useDiagnostics,
@@ -496,6 +497,108 @@ describe('useCommitOutcomes', () => {
     act(() => client.emitOutcomes());
     await waitFor(() => expect(result.current.outcomes).toHaveLength(1));
     expect(result.current.outcomes[0]?.clientCommitId).toBe('c1');
+  });
+});
+
+describe('useCommitDelivery', () => {
+  const applied = {
+    sequence: 1,
+    clientCommitId: 'c1',
+    status: 'applied' as const,
+    recordedAtMs: 1,
+    results: [{ status: 'applied' as const, opIndex: 0 }],
+    resolution: 'active' as const,
+  };
+
+  test('follows outbox and journal batches; a pruned outcome reads unknown', async () => {
+    const client = new FakeClient();
+    client.setPending([{ clientCommitId: 'c1' }]);
+    const { result, rerender } = renderHook(
+      ({ ids }: { ids: readonly string[] }) => useCommitDelivery(ids),
+      { wrapper: wrapper(client), initialProps: { ids: ['c1', 'c2'] } },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.deliveries).toEqual([
+      { status: 'pending', clientCommitId: 'c1' },
+      { status: 'unknown', clientCommitId: 'c2' },
+    ]);
+
+    // A status batch without a delivery transition keeps the snapshot.
+    const before = result.current;
+    act(() => client.emitStatus());
+    await flushEffects();
+    expect(result.current).toBe(before);
+
+    // A fresh array with the same ids keeps the subscription and snapshot.
+    rerender({ ids: ['c1', 'c2'] });
+    await flushEffects();
+    expect(result.current).toBe(before);
+
+    // The drain removes the outbox entry and journals the outcome together.
+    client.setPending([]);
+    client.setOutcomes([applied]);
+    act(() => client.emitOutcomes());
+    await waitFor(() =>
+      expect(result.current.deliveries[0]).toEqual({
+        status: 'known',
+        clientCommitId: 'c1',
+        outcome: applied,
+      }),
+    );
+
+    // Resolving the journal entry is a delivery transition.
+    act(() => {
+      client.resolveCommitOutcome({
+        clientCommitId: 'c1',
+        resolution: 'superseded',
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.deliveries[0]).toMatchObject({
+        outcome: { resolution: 'superseded' },
+      }),
+    );
+
+    // Retention pruned the outcome: unknown, never pending again.
+    client.setOutcomes([]);
+    act(() => client.emitOutcomes());
+    await waitFor(() =>
+      expect(result.current.deliveries[0]).toEqual({
+        status: 'unknown',
+        clientCommitId: 'c1',
+      }),
+    );
+  });
+
+  test('changing the ids resets to loading and reads the new commits', async () => {
+    const client = new FakeClient();
+    client.setOutcomes([applied]);
+    const { result, rerender } = renderHook(
+      ({ ids }: { ids: readonly string[] }) => useCommitDelivery(ids),
+      { wrapper: wrapper(client), initialProps: { ids: ['c2'] } },
+    );
+    await waitFor(() =>
+      expect(result.current.deliveries[0]?.status).toBe('unknown'),
+    );
+    rerender({ ids: ['c1'] });
+    expect(result.current.isLoading).toBe(true);
+    await waitFor(() =>
+      expect(result.current.deliveries[0]?.status).toBe('known'),
+    );
+  });
+
+  test('a failed read surfaces the error', async () => {
+    const client = new FakeClient();
+    client.snapshotRead = () => {
+      throw new Error('read failed');
+    };
+    const { result } = renderHook(() => useCommitDelivery(['c1']), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() =>
+      expect(result.current.error?.message).toBe('read failed'),
+    );
+    expect(result.current.deliveries).toEqual([]);
   });
 });
 

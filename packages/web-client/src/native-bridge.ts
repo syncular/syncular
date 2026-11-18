@@ -13,6 +13,7 @@
  */
 import {
   type ClientSnapshotMethods,
+  type CommitDelivery,
   type CurrentBaseProof,
   type MutationInput,
   type PresencePeer,
@@ -740,7 +741,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         sql: spec.sql,
         params: encodeValue(spec.params ?? []),
         coverage: spec.coverage ?? [],
-        ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
+        owner: spec.owner,
       }),
     )) as {
       revision: string;
@@ -767,7 +768,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       coverage: request.coverage ?? [],
       units: request.units ?? [],
       commitIds: request.commitIds ?? [],
-      ...(request.owner !== undefined ? { owner: request.owner } : {}),
+      owner: request.owner,
     })) as {
       revision: string;
       queries: readonly (readonly Record<string, unknown>[])[];
@@ -996,10 +997,8 @@ export abstract class NativeBridgeClient implements PromiseMethods<
   ): Promise<string> {
     const result = (await this.command('uploadBlob', {
       bytes: encodeValue(bytes),
-      ...(options?.mediaType !== undefined
-        ? { mediaType: options.mediaType }
-        : {}),
-      ...(options?.name !== undefined ? { name: options.name } : {}),
+      mediaType: options?.mediaType,
+      name: options?.name,
     })) as { ref: string };
     return result.ref;
   }
@@ -1072,6 +1071,12 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return (await this.snapshotRead({ statements: [], units: [id] })).units[0]!;
   }
 
+  /** §7.5: one client commit's delivery status, from the same snapshot read. */
+  async commitDelivery(id: string): Promise<CommitDelivery> {
+    return (await this.snapshotRead({ statements: [], commitIds: [id] }))
+      .deliveries[0]!;
+  }
+
   async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
     await this.command('setWindow', { base, units });
   }
@@ -1096,8 +1101,8 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     const maxRounds = typeof options === 'object' ? options.maxRounds : options;
     if (typeof options === 'object') timeoutMs = options.timeoutMs;
     return this.command('syncUntilIdle', {
-      ...(maxRounds !== undefined ? { maxRounds } : {}),
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      maxRounds,
+      timeoutMs,
     });
   }
 
@@ -1118,7 +1123,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         clientCommitId: outcome.clientCommitId,
         sequence: outcome.sequence,
       },
-      ...(maxRounds !== undefined ? { maxRounds } : {}),
+      maxRounds,
     })) as CurrentBaseProof;
     return proof.proven
       ? { proven: true, rows: this.#retainedRows(proof.rows) }

@@ -265,6 +265,10 @@ not need a custom retention effect.
 - `useCommitOutcomes()` observes the durable newest-first final-outcome journal
   from exact `outcomesChanged` batches. Resolve entries through the client
   returned by `useSyncClient()`.
+- `useCommitDelivery(ids)` returns each listed commit's delivery status:
+  `pending` while the outbox holds it, `known` with its final outcome, or
+  `unknown` when neither the outbox nor the journal holds the ID. It reads in
+  one `snapshotRead` and re-reads on outbox and outcome-journal batches.
 - `usePresence(scopeKey)` observes ephemeral realtime peers.
 - `useSyncClient()` and `useReactiveStore()` expose the normalized low-level
   surfaces for integrations. When the concrete client was passed through

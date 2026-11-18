@@ -346,6 +346,10 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   ]);
   expect(commitId.length).toBeGreaterThan(0);
   expect((await handle.pendingCommits()).length).toBe(1);
+  expect(await handle.commitDelivery(commitId)).toEqual({
+    status: 'pending',
+    clientCommitId: commitId,
+  });
 
   // The first version 2 round acquires the partition log epoch without
   // sending the outbox. The next round reports the push; syncUntilIdle would
@@ -364,6 +368,14 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(
     (await handle.commitOutcomes()).map((outcome) => outcome.clientCommitId),
   ).toContain(commitId);
+  expect(await handle.commitDelivery(commitId)).toMatchObject({
+    status: 'known',
+    outcome: { clientCommitId: commitId, status: 'applied' },
+  });
+  expect(await handle.commitDelivery('never-written')).toEqual({
+    status: 'unknown',
+    clientCommitId: 'never-written',
+  });
 
   const rows = await handle.query(
     'SELECT id, title, done FROM tasks ORDER BY id',

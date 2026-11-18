@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'Follow a commit from the outbox to its outcome in React',
+    body: '`useCommitDelivery(ids)` returns, per commit, `pending` while the outbox holds it, `known` with its final outcome, or `unknown` when neither the outbox nor the outcome journal holds the ID, which separates an outcome retention removed from a commit still waiting for the server. The hook reads every listed commit in one `snapshotRead` and re-reads on change batches that carry the outbox count or an outcome-journal change. `commitDelivery(id)` is now on `SyncClientLike`, the worker handle and the Tauri and React Native bridges, with the same three states as the in-process client and the Rust core.',
+    links: [
+      {
+        href: '/platform-react-realtime/#follow-a-write-to-its-outcome',
+        label: 'Follow a write to its outcome',
+      },
+      {
+        href: '/reference-outbox-outcomes/#delivery-status',
+        label: 'Delivery status',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'A schema bump re-downloads only the changed tables of a unit',
     body: "A unit that covers a table whose generation changed and tables whose generation did not now keeps its rows of the unchanged tables and bootstraps only the changed ones. Its next pull carries a new `RESTRICT` request frame with the unit's kept cursor and the changed tables; once those tables are bootstrapped the unit catches up on every covered table from the kept cursor. Before, the unit downloaded every table it covers: a bump that changed one of 24 tables re-downloaded about 26,000 rows in 25 segments and kept a browser in `upgrading` for 41 s. A server older than this release skips the frame and serves the whole unit as before, and a kept cursor below the pruning horizon also bootstraps the whole unit. Upgrade servers before clients.",
     links: [

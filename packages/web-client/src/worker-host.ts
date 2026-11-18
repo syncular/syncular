@@ -3,7 +3,7 @@ import {
   type SyncProgress,
   type SyncProgressListener,
 } from './progress';
-import type { PromiseMethods } from './client';
+import type { CommitDelivery, PromiseMethods } from './client';
 /**
  * Main-thread side of the worker mode and the
  * multi-tab topology.
@@ -826,6 +826,10 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     input: ResolveCommitOutcomeInput,
   ): Promise<CommitOutcome> {
     return this.#call('resolveCommitOutcome', [input]);
+  }
+
+  commitDelivery(id: string): Promise<CommitDelivery> {
+    return this.#call('commitDelivery', [id]);
   }
 
   /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */

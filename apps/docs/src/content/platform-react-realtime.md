@@ -71,7 +71,7 @@ pairing with `outbox` is the same.
 
 ::::step{title="Follow a write to its outcome" time="3 min"}
 `useMutation` calls `onEnqueued` with the commit id after local persistence.
-`useCommitOutcomes()` observes the journal:
+`useCommitDelivery(ids)` follows those commits:
 
 ```tsx title="src/AddTodo.tsx"
 const mutation = useMutation({
@@ -79,13 +79,21 @@ const mutation = useMutation({
     setLastCommitId(commitId);
   },
 });
-const { outcomes } = useCommitOutcomes();
-const outcome = outcomes.find((item) => item.clientCommitId === lastCommitId);
+const { deliveries } = useCommitDelivery(
+  lastCommitId === undefined ? [] : [lastCommitId],
+);
+const delivery = deliveries[0];
 ```
 
-`isPending` counts local mutation calls. Use `client.commitOutcome(commitId)` to
-look up the same result after a restart. An absent terminal outcome means the
-commit has not reached a recorded final server result. For a rejection or
+`deliveries` holds one entry per ID, in order, and is empty until the first
+read. `delivery.status` is `pending` while the outbox holds the commit, `known`
+with `delivery.outcome` once the server answered, and `unknown` when neither
+the outbox nor the outcome journal holds the ID, for example after retention
+removed the outcome. The hook re-reads on change batches that carry the outbox
+count or an outcome-journal change, and it reads the same state after a reload.
+`useCommitOutcomes()` observes the whole journal. `isPending` counts local
+mutation calls. The [outcome reference](/reference-outbox-outcomes/#delivery-status)
+defines the three states. For a rejection or
 conflict, inspect the outcome and apply the resolution actions in
 [Conflicts & optimistic writes](/concepts-conflicts/). Read the client with
 `useSyncClient()` at the top of the component and resolve an entry with
@@ -96,7 +104,7 @@ prove every retained base through the actor-bound client. The result and
 failure reasons match the [outcome reference](/reference-outbox-outcomes/#refresh-a-retained-base-before-recovery).
 Custom `SyncClientLike` implementations supply this method as well.
 
-::checkpoint[`outcome` is `undefined` while the commit is pending and holds the server result after a round accepts or rejects it.]
+::checkpoint[`delivery.status` reads `pending` while the device is offline and `known` after a round accepts or rejects the commit.]
 ::::
 :::::
 

@@ -127,7 +127,7 @@ revision. The bridge decodes query cells and conflict row images, and preserves
 native error codes, retryability, and structured details.
 
 Final commit outcomes use the same native SQLite journal as Tauri. Call
-`commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`; active
+`commitOutcome`, `commitOutcomes`, `commitDelivery`, and `resolveCommitOutcome`; active
 conflicts/rejections and their losing operations survive app restarts.
 Failed aggregate outcomes also carry the complete ordered local operation
 envelope; it remains protected native SQLite payload and never enters the wire

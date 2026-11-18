@@ -430,7 +430,9 @@ results, or app state alongside it. See SPEC §7.6.
 ## Durable commit outcomes
 
 `SyncClient` and every host bridge expose `commitOutcome(id)`,
-`commitOutcomes({ limit?, activeOnly? })`, and `resolveCommitOutcome(input)`.
+`commitOutcomes({ limit?, activeOnly? })`, `commitDelivery(id)`, and
+`resolveCommitOutcome(input)`. `commitDelivery` answers `pending`, `known` with
+the outcome, or `unknown` when neither the outbox nor the journal holds the ID.
 Final `applied`, `cached`, `conflict`, and `rejected` results are journaled in
 the same SQLite transaction that drains their outbox commit. Conflict entries
 retain the losing operation plus `serverVersion`/`serverRow`; active failures

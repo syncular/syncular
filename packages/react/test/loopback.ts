@@ -92,18 +92,26 @@ export function makeServer(): LoopbackServer {
   };
 }
 
+/** `database` reopens a persisted replica; `online` gates the transport. */
 export async function makeClient(
   server: LoopbackServer,
   clientId: string,
+  options: {
+    readonly database?: BunClientDatabase;
+    readonly online?: () => boolean;
+  } = {},
 ): Promise<SyncClient> {
-  const db = new BunClientDatabase();
+  const db = options.database ?? new BunClientDatabase();
   const actorId = 'actor-1';
   const client = new SyncClient({
     database: db,
     schema: CLIENT_SCHEMA,
     clientId,
     now: () => server.now.ms,
-    transport: (bytes) => handleSyncRequest(bytes, server.ctxFor(actorId)),
+    transport: (bytes) => {
+      if (options.online?.() === false) throw new Error('loopback offline');
+      return handleSyncRequest(bytes, server.ctxFor(actorId));
+    },
     segments: async (request: SegmentFetchRequest) => {
       const result = await handleSegmentDownload(server.ctxFor(actorId), {
         segmentId: request.segmentId,

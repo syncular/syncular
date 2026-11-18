@@ -122,7 +122,9 @@ const outcome = await handle.commitOutcome(commitId);
 ```
 
 An absent outcome means the commit has not reached a recorded final server
-result. For a rejection or conflict, apply the resolution actions in
+result. `commitDelivery(commitId)` separates a commit the outbox still holds
+(`pending`) from one whose outcome the client no longer holds (`unknown`); see
+[Delivery status](/reference-outbox-outcomes/#delivery-status). For a rejection or conflict, apply the resolution actions in
 [Conflicts & optimistic writes](/concepts-conflicts/).
 
 ## Windowed sync and local purge

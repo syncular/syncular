@@ -46,6 +46,16 @@ await client.mutate([{ table: 'todos', op: 'upsert', values: todo }], {
 
 After a lost reply, read the commit by that ID instead of calling `mutate` again. `pendingCommits()` lists it while it is queued, and `commitOutcome(eventId)` returns its final outcome once the server answered. When neither knows the ID, the lost call queued nothing, and calling `mutate` again with the same ID is safe. A call with an ID the outbox or the outcome journal still holds throws `client.commit_id_reused` with `details.clientCommitId` and writes nothing. An empty ID throws `sync.invalid_request`. The client does not detect an ID it no longer holds, such as one whose outcome left the journal through retention; never reuse an ID for a different commit. Kotlin, Swift and Flutter take the ID as a `clientCommitId` argument of `mutate`, and the command bridge as the `clientCommitId` parameter of the `mutate` command.
 
+## Delivery status
+
+`commitDelivery(id)` reads one commit's delivery status in one local read transaction:
+
+- `{ status: 'pending', clientCommitId }`: the outbox holds the ID. The outbox entry wins when the journal holds the ID as well.
+- `{ status: 'known', clientCommitId, outcome }`: the outcome journal holds the commit's final outcome. The outcome omits `retainedRows`; read them with `commitOutcome(id)`.
+- `{ status: 'unknown', clientCommitId }`: neither holds the ID. This client never queued it, or retention removed its outcome.
+
+The in-process `SyncClient` returns the value; the worker handle and the Tauri and React Native bridges return a promise with the same states. The bridges read it through the native core's `snapshotRead`, and the Rust core exposes it as `commit_delivery`. `snapshotRead({ statements: [], commitIds })` reads several deliveries in one transaction. React follows a list of commits with [`useCommitDelivery(ids)`](/platform-react-realtime/#follow-a-write-to-its-outcome). Kotlin, Swift and Flutter do not expose `commitDelivery`.
+
 ## Acknowledgement and replay
 
 An `applied` or `cached` acknowledgement confirms server acceptance and removes the commit from the send queue. The client keeps its local intent in protected storage until an authoritative change for the same row arrives at that commit sequence or later. A completed covering bootstrap also retires it. Empty pulls, restarts, and later edits keep acknowledged intent. This runs automatically in Bun, the web worker, and native clients, independent of `retainFailedCommits`.

@@ -41,6 +41,7 @@ query does not need it.
 | `useSyncStatus()` | Outbox, upgrading, lease, schema floor, availability, pull state. `syncNeeded` is an inbound pull or catch-up; `outbox` is pending local push work. |
 | `useConflicts()` | Conflict and rejection changes. |
 | `useCommitOutcomes()` | The durable newest-first final-outcome journal and its resolution transitions. |
+| `useCommitDelivery(ids)` | The delivery status of each listed commit: `pending`, its final outcome, or `unknown`. |
 | `usePresence(scopeKey)` | Ephemeral realtime peers. |
 | `useSyncProgress(client)` | Live download and import progress. |
 | `useWindow(base)`, `useRetainedWindow` | Explicit window claims. |
