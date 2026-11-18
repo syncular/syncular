@@ -13,7 +13,7 @@
  * bytes decode). Header carries the IR hash for byte-exact `--check`.
  */
 import type { IrColumnType } from './ir';
-import { snakeToCamel } from './naming';
+import { snakeToCamel, stringLiteral, typeName } from './naming';
 import {
   type AnalyzedQuery,
   type QueryColumn,
@@ -36,14 +36,7 @@ const SYQL_SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
   integer: 'Int64',
 };
 
-/** The query function/type name: already camelCase; PascalCase for the type. */
-function typeName(name: string): string {
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
-
-function quote(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
+const quote = (value: string) => stringLiteral(value, 'swift');
 
 function rowAccessor(column: QueryColumn): string {
   const key = `row[${quote(column.langName)}]`;

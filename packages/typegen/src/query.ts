@@ -428,18 +428,6 @@ export function queryNameFromPath(relPath: string): string {
   );
 }
 
-/** Back-compat flat-file helper: `list-todos.sql` → `listTodos`. Rejects a
- * path with folders (use {@link queryNameFromPath} for nested queries). */
-export function queryNameFromFile(file: string): string {
-  if (file.includes('/') || file.includes('\\')) {
-    throw new TypegenError(
-      file,
-      `queryNameFromFile takes a flat filename; got a path ${JSON.stringify(file)} — use queryNameFromPath`,
-    );
-  }
-  return queryNameFromPath(file);
-}
-
 /** Validate a `-- name:` override is a camelCase identifier (loud otherwise). */
 export function validateOverrideName(name: string, location: string): string {
   if (!CAMEL_IDENT_RE.test(name)) {

@@ -56,6 +56,11 @@ export function pascalCase(name: string): string {
     .join('');
 }
 
+/** Upper-cases the first character of an already camelCase name. */
+export function typeName(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
 /** `value` as a string literal of a schema emitter's language. Swift and
  * Kotlin delimit with `"`, TS and Dart with `'`; Kotlin and Dart also escape
  * the `$` that would start an interpolation. */

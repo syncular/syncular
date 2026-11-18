@@ -103,13 +103,3 @@ export function serializeBlobRef(ref: BlobRef): string {
   if (ref.name !== undefined) obj.name = ref.name;
   return JSON.stringify(obj);
 }
-
-/** True iff `raw` is a valid canonical BlobRef document (no throw). */
-export function isBlobRef(raw: string): boolean {
-  try {
-    parseBlobRef(raw);
-    return true;
-  } catch {
-    return false;
-  }
-}

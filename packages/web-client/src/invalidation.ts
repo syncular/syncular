@@ -79,10 +79,6 @@ export interface CommandResult<T> {
   readonly effects: CommandEffects;
 }
 
-export const NO_COMMAND_EFFECTS: CommandEffects = {
-  sync: { kind: 'none' },
-};
-
 interface MutableTableChange {
   tableWide: boolean;
   scopeKeys: Set<string> | undefined;

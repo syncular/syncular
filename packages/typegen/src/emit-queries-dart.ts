@@ -8,7 +8,7 @@
  * Header carries the IR hash for byte-exact `--check`.
  */
 import type { IrColumnType } from './ir';
-import { snakeToCamel } from './naming';
+import { pascalCase, snakeToCamel, stringLiteral, typeName } from './naming';
 import {
   type AnalyzedQuery,
   type QueryColumn,
@@ -27,21 +27,7 @@ const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'List<int>',
 };
 
-function pascalCase(name: string): string {
-  return name
-    .split(/[_-]+/)
-    .filter((p) => p.length > 0)
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join('');
-}
-
-function typeName(name: string): string {
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
-
-function quote(value: string): string {
-  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\$/g, '\\$')}'`;
-}
+const quote = (value: string) => stringLiteral(value, 'dart');
 
 function rowAccessor(column: QueryColumn): string {
   const key = `row[${quote(column.langName)}]`;

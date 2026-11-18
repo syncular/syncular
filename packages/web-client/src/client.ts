@@ -3033,13 +3033,6 @@ export class SyncClient {
     );
   }
 
-  /** §7.3.5: remaining lease validity in ms (`expiresAtMs − now`), or
-   * `undefined` if no lease is held. Negative once expired. */
-  leaseRemainingMs(now: number = this.#now()): number | undefined {
-    const expiresAtMs = this.#leaseState?.expiresAtMs;
-    return expiresAtMs === undefined ? undefined : expiresAtMs - now;
-  }
-
   /** True when syncing is stopped pending a client upgrade. */
   get stopped(): boolean {
     return this.#schemaFloor !== undefined;

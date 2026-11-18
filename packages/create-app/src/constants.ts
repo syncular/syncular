@@ -9,14 +9,8 @@ import { createRequire } from 'node:module';
 /** The scoped npm namespace for the v2 packages, e.g. `@syncular`. */
 export const PACKAGE_SCOPE = '@syncular';
 
-/** The typegen CLI binary name (`syncular generate`, `syncular init`). */
-export const CLI_BIN = 'syncular';
-
 /** This package's own bin (`bun create syncular …` / `bunx create-syncular-app …`). */
 export const CREATE_BIN = 'create-syncular-app';
-
-/** Human-facing product name in prose. */
-export const PRODUCT_NAME = 'syncular';
 
 /**
  * The scoped workspace packages a template may depend on. The scaffolder only
@@ -46,9 +40,3 @@ const ownVersion = createRequire(import.meta.url)('../package.json')
   .version as string;
 
 export const PUBLISHED_DEPENDENCY_RANGE = `^${ownVersion}`;
-
-/** Placeholder tokens substituted verbatim during scaffold (dumb + greppable). */
-export const PLACEHOLDER = {
-  /** Replaced by the chosen project name in package.json/README. */
-  projectName: '__PROJECT_NAME__',
-} as const;

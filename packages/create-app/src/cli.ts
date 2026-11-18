@@ -9,7 +9,7 @@
  */
 import { relative } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { CREATE_BIN, PRODUCT_NAME } from './constants';
+import { CREATE_BIN } from './constants';
 import {
   isTemplateName,
   scaffoldApp,
@@ -27,7 +27,7 @@ interface ParsedArgs {
 function usage(): string {
   return `usage: ${CREATE_BIN} [project-name] [options]
 
-Scaffolds a ${PRODUCT_NAME} v2 starter app.
+Scaffolds a syncular v2 starter app.
 
 templates:
   minimal   server + a terminal two-client convergence demo (no browser)

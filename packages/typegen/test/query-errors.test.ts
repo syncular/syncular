@@ -12,7 +12,6 @@ import {
   analyzeQueryFile,
   type IrDocument,
   type QueryDb,
-  queryNameFromFile,
   queryNameFromPath,
   scanTableRefs,
   makeQueryDb,
@@ -69,18 +68,15 @@ const IR: IrDocument = {
 const db = makeQueryDb(IR).db;
 const analyze = (file: string, sql: string) => analyzeQuery(file, sql, IR, db);
 
-describe('query filename → name', () => {
-  test('kebab → camel (flat, unchanged)', () => {
-    expect(queryNameFromFile('list-todos.sql')).toBe('listTodos');
-    expect(queryNameFromFile('todos.sql')).toBe('todos');
+describe('recursive path → name', () => {
+  test('flat kebab → camel', () => {
+    expect(queryNameFromPath('list-todos.sql')).toBe('listTodos');
+    expect(queryNameFromPath('todos.sql')).toBe('todos');
   });
   test('rejects non-kebab filenames', () => {
-    expect(() => queryNameFromFile('ListTodos.sql')).toThrow(/kebab-case/);
-    expect(() => queryNameFromFile('list_todos.sql')).toThrow(/kebab-case/);
+    expect(() => queryNameFromPath('ListTodos.sql')).toThrow(/kebab-case/);
+    expect(() => queryNameFromPath('list_todos.sql')).toThrow(/kebab-case/);
   });
-});
-
-describe('recursive path → name', () => {
   test('nested folders join + camelCase (path-derived default)', () => {
     expect(queryNameFromPath('billing/invoices/list.sql')).toBe(
       'billingInvoicesList',

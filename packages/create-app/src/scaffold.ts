@@ -13,11 +13,7 @@ import {
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  PACKAGE_SCOPE,
-  PLACEHOLDER,
-  PUBLISHED_DEPENDENCY_RANGE,
-} from './constants';
+import { PACKAGE_SCOPE, PUBLISHED_DEPENDENCY_RANGE } from './constants';
 
 /** The templates this rung ships. */
 export const TEMPLATES = ['minimal', 'web', 'tauri'] as const;
@@ -82,7 +78,7 @@ export function rewriteTemplatePackageJson(
 
 /** Replace `__PROJECT_NAME__` everywhere in a text file body. */
 function substitutePlaceholders(body: string, projectName: string): string {
-  return body.replaceAll(PLACEHOLDER.projectName, projectName);
+  return body.replaceAll('__PROJECT_NAME__', projectName);
 }
 
 export interface ScaffoldOptions {
