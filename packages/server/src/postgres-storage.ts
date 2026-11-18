@@ -3302,6 +3302,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           created_at_ms: unknown;
           key: unknown;
           bytes: unknown;
+          changes: unknown;
         }>(
           `WITH k AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::text::jsonb) AS k(i int, var text, value text, after bigint, tables jsonb)),
            c AS MATERIALIZED (SELECT DISTINCT s.commit_seq
@@ -3311,10 +3312,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
                ORDER BY commit_seq LIMIT $4) s
              ORDER BY s.commit_seq LIMIT $4)
            SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
-             z.key AS key, z.bytes AS bytes
+             z.key AS key, z.bytes AS bytes, z.changes AS changes
            FROM c
            LEFT JOIN sync_commits m ON m.partition=$1 AND m.commit_seq=c.commit_seq
-           LEFT JOIN LATERAL (SELECT k.i AS key,
+           LEFT JOIN LATERAL (SELECT k.i AS key, count(*) AS changes,
                sum(coalesce(octet_length(ch.payload), 0) + octet_length(ch.row_id) + octet_length(ch.scopes::text)) AS bytes
              FROM sync_changes ch JOIN k ON ch.commit_seq>k.after AND k.tables @> to_jsonb(ch.tbl) AND (CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END)->>k.var=k.value
              WHERE ch.partition=$1 AND ch.commit_seq=c.commit_seq
@@ -3334,7 +3335,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
               }),
           ...(record.key === null
             ? {}
-            : { key: asNumber(record.key), bytes: asNumber(record.bytes) }),
+            : {
+                key: asNumber(record.key),
+                bytes: asNumber(record.bytes),
+                changes: asNumber(record.changes),
+              }),
         }));
       },
       async (keys, commitSeqs) => {

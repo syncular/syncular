@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-19',
+    title: 'A live page loads only the changes it delivers',
+    body: "The live-section read loaded every candidate commit the 16 MiB byte budget admitted, delivered 1,000 changes and dropped the rest, so the next round read them again; a client 290 commits behind read 420,807 change rows to receive about 18,000. The candidate read now counts each candidate's changes per unit key, and the change read loads candidates only until those counts reach the rest of `limitCommits`. On SQLite, catching up 290 commits of 62 changes reads 17,980 change rows instead of 162,378, in the same 18 rounds with the same commits delivered.",
+    links: [
+      {
+        href: '/server-storage-reference/#pull-path',
+        label: 'Pull path',
+      },
+    ],
+  },
+  {
     date: '2026-11-18',
     title: 'Decide a conflict offline with replaceCommitOutcome',
     body: "`replaceCommitOutcome(outcome)` records keep-mine for an active conflict or rejection, and `replaceCommitOutcome({ ...outcome, replacement })` records an edited payload. The call returns the replacement's commit id at once, offline too, and local reads show the replacement. The client writes it after its next completed sync proves the server row the decision was made against, or refuses it with `sync.replacement_refused` and `details.reason` (`base_moved`, `schema_floor`, `missing_coverage`, `revoked`, `outcome_unavailable`) and keeps it as a new conflict. A pending decision is an `active` outcome with a `replacementClientCommitId` and survives a restart. Browser workers, Tauri, React Native, Swift, Kotlin, Flutter and Rust expose the same call. `proveCurrentBase` is unchanged.",

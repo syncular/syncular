@@ -892,3 +892,61 @@ for (const kind of KINDS) {
     }
   });
 }
+
+test('a live page loads candidates only up to its cut, so a far-behind client reads what it receives (§4.5)', async () => {
+  // 40 candidate commits whose key reads 2 changes each; `kept` of them
+  // match the unit (the per-key count bounds delivery from above).
+  const run = async (kept: number) => {
+    const calls: (readonly number[])[] = [];
+    const window = await readLiveWindowPages(
+      {
+        units: [
+          {
+            scopes: { project_id: 'p1' },
+            afterSeq: 0,
+            tables: new Map([['tasks', { project_id: ['p1'] }]]),
+          },
+        ],
+        throughSeq: 40,
+        limitChanges: 5,
+        limitBytes: 16 * 1024 * 1024,
+      },
+      async (keys) =>
+        Array.from({ length: 40 - keys[0]!.after }, (_, i) => ({
+          commitSeq: keys[0]!.after + i + 1,
+          meta: { actorId: 'a', createdAtMs: NOW },
+          key: 0,
+          bytes: 2,
+          changes: 2,
+        })),
+      async (_keys, commitSeqs) => {
+        calls.push(commitSeqs);
+        return commitSeqs.flatMap((commitSeq) =>
+          ['a', 'b'].map((suffix, index) => ({
+            commitSeq,
+            change: {
+              table: 'tasks',
+              rowId: `r${commitSeq}${suffix}`,
+              op: 'upsert' as const,
+              rowVersion: 1,
+              scopes: { project_id: index < kept ? 'p1' : 'p2' },
+            },
+          })),
+        );
+      },
+    );
+    return { calls, window };
+  };
+  const exact = await run(2);
+  // 2 + 2 + 2 reaches 5 at commit 3: one load, and no candidate past the cut.
+  expect(exact.calls).toEqual([[1, 2, 3]]);
+  expect(exact.window.throughSeq).toBe(3);
+  expect(exact.window.commits.map((commit) => commit.commitSeq)).toEqual([
+    1, 2, 3,
+  ]);
+  const over = await run(1);
+  // The count overstates delivery; the page loads again until the exact cut.
+  expect(over.calls).toEqual([[1, 2, 3], [4], [5]]);
+  expect(over.window.throughSeq).toBe(5);
+  expect(over.window.commits).toHaveLength(5);
+});

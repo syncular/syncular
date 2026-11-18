@@ -159,16 +159,18 @@ export interface LiveKey {
 
 /**
  * One row of a live-window candidate page: a candidate commit joined to its
- * metadata (absent when the commit vanished) and, per key, the stored bytes
- * (payload, row id, scopes) of its changes that key reads: a covered table
- * and the key's value in the stored scopes. A commit with no such change
- * comes back once without `key`. Rows are in (commitSeq, key) order.
+ * metadata (absent when the commit vanished) and, per key, the count and
+ * stored bytes (payload, row id, scopes) of its changes that key reads: a
+ * covered table and the key's value in the stored scopes. A commit with no
+ * such change comes back once without `key`. Rows are in (commitSeq, key)
+ * order.
  */
 export interface LiveCandidateRow {
   readonly commitSeq: number;
   readonly meta?: { readonly actorId: string; readonly createdAtMs: number };
   readonly key?: number;
   readonly bytes?: number;
+  readonly changes?: number;
 }
 
 /**
@@ -183,6 +185,11 @@ export interface LiveCandidateRow {
  * effective scopes match it, and its commit lies above that unit's own
  * bound. Every candidate advances the scan, so a page of non-matching
  * candidates never repeats.
+ *
+ * The counts bound the delivered changes from above, because every change
+ * a unit keeps is one its key reads: the scan loads pending candidates once
+ * their counts could reach the rest of `limitChanges`, so a page loads
+ * about the changes it delivers and never a candidate past the cut.
  *
  * The sizes bound the loaded bytes by `limitBytes` before any payload is
  * read: the section stops before the commit that would pass it, and a
@@ -236,6 +243,8 @@ export async function readLiveWindowPages(
   const limit = Math.max(64, query.limitChanges);
   let delivered = 0;
   let loaded = 0;
+  // Upper bound of the changes the pending candidates deliver.
+  let bound = 0;
   let scanned = -1;
   // Candidates sized but not loaded yet: (scanned, pending.at(-1)].
   let pending: { commitSeq: number; meta?: LiveCandidateRow['meta'] }[] = [];
@@ -251,6 +260,7 @@ export async function readLiveWindowPages(
       pending.map((c) => c.commitSeq),
     );
     pending = [];
+    bound = 0;
     scanned = last.commitSeq;
     for (let i = 0; i < rows.length;) {
       const seq = rows[i]!.commitSeq;
@@ -287,11 +297,13 @@ export async function readLiveWindowPages(
       const head = rows[i]!;
       candidates += 1;
       let bytes = 0;
+      let changes = 0;
       const sizes: [key: number, bytes: number][] = [];
       for (; rows[i]?.commitSeq === head.commitSeq; i++) {
         const row = rows[i]!;
         if (row.key === undefined) continue;
         bytes += row.bytes ?? 0;
+        changes += row.changes ?? 0;
         sizes.push([row.key, row.bytes ?? 0]);
       }
       if (bytes > query.limitBytes) {
@@ -324,7 +336,12 @@ export async function readLiveWindowPages(
         return { commits, throughSeq: cut ?? scanned };
       }
       loaded += bytes;
+      bound += changes;
       pending.push({ commitSeq: head.commitSeq, meta: head.meta });
+      if (delivered + bound >= query.limitChanges) {
+        const cut = await load();
+        if (cut !== undefined) return { commits, throughSeq: cut };
+      }
     }
     const cut = await load();
     if (cut !== undefined) return { commits, throughSeq: cut };

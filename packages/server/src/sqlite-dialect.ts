@@ -983,6 +983,7 @@ export abstract class SqliteFamilyStorage {
             created_at_ms: number | null;
             key: number | null;
             bytes: number | null;
+            changes: number | null;
           }>(
             `WITH k AS (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2)),
              c AS MATERIALIZED (SELECT DISTINCT s.commit_seq AS commit_seq
@@ -991,10 +992,10 @@ export abstract class SqliteFamilyStorage {
                 AND s.commit_seq>k.after AND s.commit_seq<=?3
                ORDER BY s.commit_seq LIMIT ?4)
              SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
-               z.i AS key, z.bytes AS bytes
+               z.i AS key, z.bytes AS bytes, z.changes AS changes
              FROM c
              LEFT JOIN sync_commits AS m ON m.partition=?1 AND m.commit_seq=c.commit_seq
-             LEFT JOIN (SELECT ch.commit_seq AS commit_seq, k.i AS i,
+             LEFT JOIN (SELECT ch.commit_seq AS commit_seq, k.i AS i, count(*) AS changes,
                    sum(coalesce(length(ch.payload), 0) + length(CAST(ch.row_id AS BLOB)) + length(CAST(ch.scopes AS BLOB))) AS bytes
                  FROM c CROSS JOIN sync_changes AS ch ON ch.partition=?1 AND ch.commit_seq=c.commit_seq
                  CROSS JOIN k ON ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)) AND (ch.scopes ->> k.var)=k.value
@@ -1013,7 +1014,11 @@ export abstract class SqliteFamilyStorage {
               }
             : {}),
           ...(record.key !== null
-            ? { key: record.key, bytes: record.bytes ?? 0 }
+            ? {
+                key: record.key,
+                bytes: record.bytes ?? 0,
+                changes: record.changes ?? 0,
+              }
             : {}),
         })),
       async (keys, commitSeqs) =>
