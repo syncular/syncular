@@ -125,7 +125,17 @@ export async function seedRows(
   rows: readonly DriverRow[],
   actorId = 'seed-actor',
 ): Promise<void> {
-  await ctx.server.setAllowedScopes(actorId, ALL_SCOPES);
+  // Grant every fixture variable the server schema declares; a resolver
+  // that returns an undeclared variable fails the request (§3.2).
+  const declared = JSON.stringify(ctx.serverSchema.tables.map((t) => t.scopes));
+  await ctx.server.setAllowedScopes(
+    actorId,
+    Object.fromEntries(
+      Object.entries(ALL_SCOPES).filter(([variable]) =>
+        declared.includes(`{${variable}}`),
+      ),
+    ),
+  );
   seedCounter += 1;
   // Seed at the SERVER's schema version (§7.4 scenarios run a bumped
   // server): the codec and the REQ_HEADER schemaVersion must both match

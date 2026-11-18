@@ -34,6 +34,7 @@ import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 import { INVALID_HOST_RESPONSE_CODE } from './local-rebootstrap';
 import {
+  bytesToHex,
   type CompiledClientSchema,
   fromSqlValue,
   type JsonRowValue,
@@ -649,12 +650,7 @@ export function capturePreviousVersion(
 function rowIdText(table: LocalSchemaDescriptorTable, row: SqlRow): string {
   const value = row[table.primaryKey] ?? null;
   if (value === null) return '';
-  if (value instanceof Uint8Array) {
-    return [...value]
-      .map((byte) => byte.toString(16).padStart(2, '0'))
-      .join('');
-  }
-  return String(value);
+  return value instanceof Uint8Array ? bytesToHex(value) : String(value);
 }
 
 function decodePreviousVersionPayload(

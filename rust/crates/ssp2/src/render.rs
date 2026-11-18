@@ -149,6 +149,11 @@ fn render_frame(frame: &Frame) -> Value {
                 entries.push(("bootstrapState", b.parse()));
             }
         }
+        Frame::Restrict { cursor, tables } => {
+            entries.push(("type", Value::from("RESTRICT")));
+            entries.push(("cursor", Value::from(*cursor)));
+            entries.push(("tables", Value::from(tables.clone())));
+        }
         Frame::RespHeader {
             required_schema_version,
             latest_schema_version,

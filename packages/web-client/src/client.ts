@@ -111,7 +111,6 @@ import {
   MAX_DIAGNOSTIC_QUERY_FAILURES,
   type RealtimePolicy,
   type RealtimeState,
-  type TransportCauseKind,
 } from './diagnostics';
 import type { EncryptionConfig } from './encryption';
 import {
@@ -264,6 +263,7 @@ import {
   replicaCursor,
   saveUnit,
   saveUnitScopeSchema,
+  UNITS_TABLE,
   setMeta,
   type UnitRecord,
   unitOwners,
@@ -741,16 +741,6 @@ const INVALID_STORED_VALUES_REASON = 'invalid_stored_values';
  * commit order up to this cap and defers the rest to the next round. */
 const MAX_OPS_PER_REQUEST = 500;
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    bytes.slice().buffer as ArrayBuffer,
-  );
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 const invalidHostResponse = (message: string) =>
   new ClientSyncError('client.invalid_host_response', message);
 
@@ -1099,15 +1089,13 @@ export class SyncClient {
       throw invalidRequest('transportEnabled must be a boolean');
     }
     this.#transportEnabled = config.transportEnabled !== false;
-    for (const [name, value] of [
-      ['maxPushCommitsPerRequest', config.limits?.maxPushCommitsPerRequest],
-      [
-        'maxPushOperationsPerRequest',
-        config.limits?.maxPushOperationsPerRequest,
-      ],
-      ['maxPushRequestBytes', config.limits?.maxPushRequestBytes],
-      ['segmentPrefetch', config.limits?.segmentPrefetch],
+    for (const name of [
+      'maxPushCommitsPerRequest',
+      'maxPushOperationsPerRequest',
+      'maxPushRequestBytes',
+      'segmentPrefetch',
     ] as const) {
+      const value = config.limits?.[name];
       if (
         value !== undefined &&
         (!Number.isInteger(value) || value < 1 || value > 0xffffffff)
@@ -1348,7 +1336,6 @@ export class SyncClient {
     if (this.#securityLifecycle === 'active' && this.#hasStartupWork()) {
       this.#needsPull = true;
       this.#emitSyncNeeded('startup');
-      this.#emitSyncIntent({ kind: 'interactive' });
     }
     // Console introspection is a no-op outside a dev page.
     this.#devtoolsUnregister = this.#config.devtools?.({
@@ -1532,9 +1519,7 @@ export class SyncClient {
   #runLogEpochReset(logEpoch: string): string[] {
     if (getMeta(this.#db, LOG_EPOCH_META_KEY) === undefined) {
       this.#applyBatch(() => setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch));
-      this.#setSyncNeeded(true);
       this.#emitSyncNeeded('startup');
-      this.#emitSyncIntent({ kind: 'interactive' });
       return [];
     }
     const units = loadUnits(this.#db);
@@ -1568,9 +1553,7 @@ export class SyncClient {
       },
     );
     this.#localResetEpoch += 1;
-    this.#setSyncNeeded(true);
     this.#emitSyncNeeded('startup');
-    this.#emitSyncIntent({ kind: 'interactive' });
     return units.map((unit) => unit.id);
   }
 
@@ -1614,32 +1597,32 @@ export class SyncClient {
     this.#syncIntentListeners.clear();
   }
 
+  /** Mark a pull as needed and tell the host; a startup wake also asks for
+   * an interactive round. */
   #emitSyncNeeded(reason: 'startup' | 'hello' | WakeReason): void {
+    this.#setSyncNeeded(true);
     if (!this.#transportEnabled) return;
-    try {
-      this.#config.onSyncNeeded?.(reason);
-    } catch {
-      // An observer cannot alter sync correctness.
-    }
-    for (const listener of this.#syncNeededListeners) {
+    for (const listener of [
+      this.#config.onSyncNeeded,
+      ...this.#syncNeededListeners,
+    ]) {
       try {
-        listener(reason);
+        listener?.(reason);
       } catch {
         // An observer cannot alter sync correctness.
       }
     }
+    if (reason === 'startup') this.#emitSyncIntent({ kind: 'interactive' });
   }
 
   #emitSyncIntent(intent: SyncIntent): void {
     if (!this.#transportEnabled && intent.kind !== 'none') return;
-    try {
-      this.#config.onSyncIntent?.(intent);
-    } catch {
-      // An observer cannot alter sync correctness.
-    }
-    for (const listener of this.#syncIntentListeners) {
+    for (const listener of [
+      this.#config.onSyncIntent,
+      ...this.#syncIntentListeners,
+    ]) {
       try {
-        listener(intent);
+        listener?.(intent);
       } catch {
         // An observer cannot alter sync correctness.
       }
@@ -1696,16 +1679,11 @@ export class SyncClient {
       this.#syncOutstanding = false;
     })();
     this.#preflightBarrier = barrier;
-    void barrier.then(
-      () => {
-        if (this.#preflightBarrier === barrier)
-          this.#preflightBarrier = undefined;
-      },
-      () => {
-        if (this.#preflightBarrier === barrier)
-          this.#preflightBarrier = undefined;
-      },
-    );
+    const release = () => {
+      if (this.#preflightBarrier === barrier)
+        this.#preflightBarrier = undefined;
+    };
+    void barrier.then(release, release);
     return barrier;
   }
 
@@ -1731,9 +1709,7 @@ export class SyncClient {
     });
     await this.#serialize(() => this.#revealSealed());
     if (this.#hasStartupWork()) {
-      this.#setSyncNeeded(true);
       this.#emitSyncNeeded('startup');
-      this.#emitSyncIntent({ kind: 'interactive' });
     }
   }
 
@@ -3995,7 +3971,6 @@ export class SyncClient {
 
     if (!priorUpgrading) this.#config.onUpgrading?.(true);
     this.#emitSyncNeeded('startup');
-    this.#emitSyncIntent({ kind: 'interactive' });
     return {
       alreadyApplied: false,
       retainedCommits: pending.length,
@@ -4421,23 +4396,23 @@ export class SyncClient {
             'causeKind' in details
               ? details.causeKind
               : undefined;
-          let causeKind: TransportCauseKind | undefined;
-          switch (rawCause) {
-            case 'network':
-            case 'connect':
-            case 'tls':
-            case 'io':
-            case 'request':
-            case 'protocol':
-            case 'timeout':
-            case 'round_deadline':
-            case 'aborted':
-            case 'body':
-            case 'status':
-            case 'redirect':
-            case 'unknown':
-              causeKind = rawCause;
-          }
+          const causeKind = (
+            [
+              'network',
+              'connect',
+              'tls',
+              'io',
+              'request',
+              'protocol',
+              'timeout',
+              'round_deadline',
+              'aborted',
+              'body',
+              'status',
+              'redirect',
+              'unknown',
+            ] as const
+          ).find((kind) => kind === rawCause);
           const rawStatus =
             typeof details === 'object' &&
             details !== null &&
@@ -4618,6 +4593,9 @@ export class SyncClient {
                   cursor: unit.cursor,
                   bootstrapState: unit.bootstrapState,
                 }),
+                ...(unit.restrict === undefined
+                  ? []
+                  : [{ type: 'RESTRICT' as const, ...unit.restrict }]),
               ],
         ),
       ];
@@ -5266,14 +5244,12 @@ export class SyncClient {
     const event = parsed.event;
     if (event.event === 'hello') {
       if (event.data.requiresSync) {
-        this.#setSyncNeeded(true);
         this.#emitSyncNeeded('hello');
       }
       return;
     }
     if (event.event === 'sync') {
       // §8.3: any wake-up means "run a pull soon", never data.
-      this.#setSyncNeeded(true);
       this.#emitSyncNeeded(event.data.reason);
       return;
     }
@@ -5334,7 +5310,6 @@ export class SyncClient {
       )
         return;
       if (resetEpoch !== this.#localResetEpoch) {
-        this.#setSyncNeeded(true);
         this.#emitSyncNeeded('catchup-required');
         return;
       }
@@ -5344,7 +5319,6 @@ export class SyncClient {
         await this.#processResponse(message, [], undefined, 'delta');
       } catch {
         // A delta that cannot be applied is recovered by a pull (§8.3).
-        this.#setSyncNeeded(true);
         this.#emitSyncNeeded('catchup-required');
       }
     });
@@ -5940,7 +5914,6 @@ export class SyncClient {
       if (deltaCursor >= 0) this.#sendAck(deltaCursor);
       // §8.2: an unapplied delta is a drop; a pull repairs it.
       if (deltaDropped) {
-        this.#setSyncNeeded(true);
         this.#emitSyncNeeded('catchup-required');
       }
     } else {
@@ -6038,6 +6011,10 @@ export class SyncClient {
     for (const result of frame.results) {
       const operation = commit.operations[result.opIndex];
       if (result.status === 'conflict') {
+        const columns =
+          this.#schema.tables.get(operation?.table ?? '')?.columns ?? [];
+        const values =
+          columns.length === 0 ? [] : decodeRow(columns, result.serverRow);
         const conflict: ConflictRecord = definedObject({
           clientCommitId: frame.clientCommitId,
           opIndex: result.opIndex,
@@ -6046,11 +6023,21 @@ export class SyncClient {
           code: result.code,
           message: result.message,
           serverVersion: result.serverVersion,
-          serverRow: this.#decodeServerRow(operation?.table, result.serverRow),
-          conflictColumns: this.#decodeConflictColumns(
-            operation?.table,
-            result.conflictColumns,
+          serverRow: Object.fromEntries(
+            columns.map((column, index) => [
+              column.name,
+              values[index] ?? null,
+            ]),
           ),
+          // §6.3: the presence-layout bitmap names the present columns whose
+          // `column_version` exceeded `baseVersion`; a custom merge
+          // recomputes exactly these (§6.5).
+          conflictColumns: columns
+            .filter(
+              (_, index) =>
+                ((result.conflictColumns[index >> 3] ?? 0) >> (index & 7)) & 1,
+            )
+            .map((column) => column.name),
           operation: operation,
         });
         this.#conflicts.push(conflict);
@@ -6127,41 +6114,6 @@ export class SyncClient {
         [clientCommitId],
       ).length > 0
     );
-  }
-
-  #decodeServerRow(
-    tableName: string | undefined,
-    payload: Uint8Array,
-  ): Record<string, RowValue> {
-    if (tableName === undefined) return {};
-    const table = this.#schema.tables.get(tableName);
-    if (table === undefined) return {};
-    const values = decodeRow(table.columns, payload);
-    const record: Record<string, RowValue> = {};
-    table.columns.forEach((column, index) => {
-      record[column.name] = values[index] ?? null;
-    });
-    return record;
-  }
-
-  /**
-   * §6.3 `conflictColumns`: decode the presence-layout bitmap into the names
-   * of the present columns whose `column_version` exceeded `baseVersion`. A
-   * custom merge recomputes exactly these columns (§6.5).
-   */
-  #decodeConflictColumns(
-    tableName: string | undefined,
-    bitmap: Uint8Array,
-  ): readonly string[] {
-    if (tableName === undefined) return [];
-    const table = this.#schema.tables.get(tableName);
-    if (table === undefined) return [];
-    const names: string[] = [];
-    table.columns.forEach((column, index) => {
-      const byte = bitmap[index >> 3] ?? 0;
-      if (((byte >> (index & 7)) & 1) === 1) names.push(column.name);
-    });
-    return names;
   }
 
   async #applyCommit(
@@ -6331,10 +6283,17 @@ export class SyncClient {
     // §3.3 owners matter only for rows the clear would reach, so a pair
     // with no matching local or retained row never reads the unit list.
     let owners: readonly ScopeMap[] | undefined;
+    const clearFirst = !section.seeded.has(tableName);
+    // §5.6: a first page outside the restriction is a whole bootstrap from a
+    // server that predates RESTRICT; the restriction ends before the clear.
+    if (clearFirst && unit.restrict?.tables.includes(tableName) === false)
+      this.#db.exec(`UPDATE ${UNITS_TABLE} SET restriction=NULL WHERE id=?`, [
+        unit.id,
+      ]);
     try {
       summary.segmentRowsApplied += await apply(
         table,
-        !section.seeded.has(tableName),
+        clearFirst,
         effective,
         () =>
           (owners ??=
@@ -6360,6 +6319,7 @@ export class SyncClient {
           ...current,
           status: 'failed',
           reasonCode: 'sync.scope_revoked',
+          restrict: undefined,
         });
         for (const ref of windowRefs(this.#db, unit.id))
           batch.window(ref.baseKey, ref.value);
@@ -6433,8 +6393,7 @@ export class SyncClient {
       throw invalidRequest('segment exceeds its byteLength', true);
     }
     onProgress(bytes.byteLength);
-    const hash = await sha256Hex(bytes);
-    if (`sha256:${hash}` !== frame.segmentId) {
+    if ((await computeBlobId(bytes)) !== frame.segmentId) {
       throw invalidRequest(
         'segment failed content-address verification (§5.1)',
         true,
@@ -6471,6 +6430,7 @@ export class SyncClient {
           cursor: -1,
           bootstrapState: undefined,
           seeded: [],
+          restrict: undefined,
         });
         summary.resets.push(unit.id);
         return;
@@ -6510,6 +6470,7 @@ export class SyncClient {
           bootstrapState: undefined,
           seeded: [],
           echo: undefined,
+          restrict: undefined,
         });
         if (revoked) summary.revoked.push(unit.id);
         if (failed) summary.failed.push(unit.id);
@@ -6521,14 +6482,23 @@ export class SyncClient {
         ...unit,
         reasonCode: undefined,
         echo: start.fenced,
+        // §7.4.3: a rearm and a completed bootstrap end the restriction.
         ...(rearmed
-          ? { cursor: -1, bootstrapState: undefined, seeded: [] }
+          ? {
+              cursor: -1,
+              bootstrapState: undefined,
+              seeded: [],
+              restrict: undefined,
+            }
           : start.bootstrap
             ? {
                 cursor: end.nextCursor,
                 bootstrapState: end.bootstrapState,
                 seeded:
                   end.bootstrapState === undefined ? [] : [...section.seeded],
+                ...(end.bootstrapState === undefined
+                  ? { restrict: undefined }
+                  : {}),
               }
             : {}),
       });

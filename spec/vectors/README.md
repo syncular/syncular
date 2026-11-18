@@ -68,7 +68,7 @@ SPEC.md Appendix A. Summary of what it covers:
   multi-commit push with `outboxId` and increasing `clientSeq`, a
   database-less producer push, combined push+pull with one
   post-bootstrap `PROGRESS`, an epoch-bound header, a `ROUND_FAILURE`
-  report (§1.5)
+  report (§1.5), two restricted units with `RESTRICT` frames (§4.3)
 - responses: a quiet live section, a live section of two commits with
   every row-codec column type (null, bytes, non-BMP unicode), a
   catching-up unit's bootstrap section (ref + signed URL + inline across
@@ -106,7 +106,8 @@ SPEC.md Appendix A. Summary of what it covers:
   31-byte `registrationDigest`, a 16-byte `echoDigest`,
   `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after
   `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`,
-  `clientSeq = -1`
+  `clientSeq = -1`, `RESTRICT` grammar and field violations (not after
+  `PROGRESS`, negative cursor, empty or unordered tables)
 - invalid responses: bad bool byte, `COMMIT` inside a unit section,
   `SUB_START` after the live section, a second `LIVE_START`, `LIVE_START`
   without `LIVE_END`, fenced records out of table order, a 31-byte

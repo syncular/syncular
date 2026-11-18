@@ -31,6 +31,7 @@ pub mod frame_type {
     pub const UNIT: u8 = 0x04;
     pub const ROUND_FAILURE: u8 = 0x05;
     pub const PROGRESS: u8 = 0x06;
+    pub const RESTRICT: u8 = 0x07;
     pub const RESP_HEADER: u8 = 0x10;
     pub const PUSH_RESULT: u8 = 0x11;
     pub const SUB_START: u8 = 0x12;
@@ -52,6 +53,7 @@ pub mod frame_type {
         UNIT,
         ROUND_FAILURE,
         PROGRESS,
+        RESTRICT,
     ];
     pub const RESPONSE_TYPES: &[u8] = &[
         RESP_HEADER,
@@ -105,6 +107,23 @@ pub fn valid_outbox_id(outbox_id: &str) -> bool {
 /// §4.3, §4.4: a unit id is 32 lowercase hex characters.
 pub fn valid_unit_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// §4.3: why a `RESTRICT.tables` list is not canonical, or `None`: it must
+/// be non-empty, every name non-empty, in strictly ascending code-unit order.
+pub fn restrict_tables_error(tables: &[String]) -> Option<&'static str> {
+    if tables.is_empty() {
+        Some("RESTRICT.tables must not be empty")
+    } else if tables.iter().any(String::is_empty) {
+        Some("RESTRICT.tables must not name an empty table")
+    } else if !tables
+        .windows(2)
+        .all(|pair| crate::util::utf16_lt(&pair[0], &pair[1]))
+    {
+        Some("RESTRICT.tables must be unique and in ascending order")
+    } else {
+        None
+    }
 }
 
 /// §4.4: fenced records in strictly ascending code-unit order of `table`.
@@ -304,6 +323,14 @@ pub enum Frame {
         cursor: i64,
         /// Opaque resume token, round-tripped byte for byte (§4.7).
         bootstrap_state: Option<RawJson>,
+    },
+    /// §4.3: the restriction of the unit whose `PROGRESS` immediately
+    /// precedes this frame (§7.4.3): bootstrap only `tables`, join at `cursor`.
+    Restrict {
+        /// The kept cursor `C`, `≥ 0`.
+        cursor: i64,
+        /// The tables to bootstrap: non-empty, unique, ascending code-unit order.
+        tables: Vec<String>,
     },
     RespHeader {
         required_schema_version: Option<i32>,

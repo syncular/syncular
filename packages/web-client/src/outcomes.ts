@@ -202,17 +202,15 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
       'persisted commit outcome is invalid',
     );
   }
+  // §6.1 op indexes are i32.
+  const badIndex = (index: number) =>
+    !Number.isInteger(index) || index < -2147483648 || index > 2147483647;
   const stored = JSON.parse(raw) as StoredCommitOperationOutcome[];
   if (!Array.isArray(stored)) corrupt();
   return stored.map((result) => {
     if (!isRecord(result)) corrupt();
     if (result.status === 'applied') {
-      if (
-        !Number.isInteger(result.opIndex) ||
-        result.opIndex < -2147483648 ||
-        result.opIndex > 2147483647
-      )
-        corrupt();
+      if (badIndex(result.opIndex)) corrupt();
       return result;
     }
     if (result.status === 'conflict') {
@@ -221,9 +219,7 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
         !isRecord(conflict) ||
         !isStoredRow(conflict.serverRow) ||
         typeof conflict.clientCommitId !== 'string' ||
-        !Number.isInteger(conflict.opIndex) ||
-        conflict.opIndex < -2147483648 ||
-        conflict.opIndex > 2147483647 ||
+        badIndex(conflict.opIndex) ||
         typeof conflict.table !== 'string' ||
         typeof conflict.rowId !== 'string' ||
         typeof conflict.code !== 'string' ||
@@ -254,9 +250,7 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
       if (
         !isRecord(rejection) ||
         typeof rejection.clientCommitId !== 'string' ||
-        !Number.isInteger(rejection.opIndex) ||
-        rejection.opIndex < -2147483648 ||
-        rejection.opIndex > 2147483647 ||
+        badIndex(rejection.opIndex) ||
         typeof rejection.code !== 'string' ||
         typeof rejection.message !== 'string' ||
         typeof rejection.retryable !== 'boolean' ||

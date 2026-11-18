@@ -283,3 +283,112 @@ fn the_encoder_refuses_an_outbox_id_over_64_bytes() {
         ],
     );
 }
+
+fn restrict(cursor: i64, tables: &[&str]) -> Frame {
+    Frame::Restrict {
+        cursor,
+        tables: tables.iter().map(|t| (*t).to_owned()).collect(),
+    }
+}
+
+/// A request whose last frame is a raw `RESTRICT` payload the encoder would
+/// refuse: `prefix` frames, then type 0x07 with `cursor` and `tables`.
+fn raw_restrict_request(prefix: Vec<Frame>, cursor: i64, tables: &[&str]) -> Vec<u8> {
+    let mut bytes = message(MsgKind::Request, prefix);
+    bytes.truncate(bytes.len() - 5); // drop END
+    let mut payload = cursor.to_le_bytes().to_vec();
+    payload.extend((tables.len() as u32).to_le_bytes());
+    for table in tables {
+        payload.extend((table.len() as u32).to_le_bytes());
+        payload.extend(table.as_bytes());
+    }
+    bytes.push(0x07);
+    bytes.extend((payload.len() as u32).to_le_bytes());
+    bytes.extend(payload);
+    bytes.extend([0, 0, 0, 0, 0]);
+    bytes
+}
+
+#[test]
+fn restrict_round_trips_after_its_progress() {
+    let frames = vec![
+        req_header(),
+        pull_header(),
+        progress(),
+        restrict(5, &["a", "b"]),
+        progress(),
+    ];
+    let bytes = message(MsgKind::Request, frames.clone());
+    let decoded = decode_message(&bytes).expect("valid message");
+    assert_eq!(decoded.frames, frames);
+    assert_eq!(encode_message(&decoded), bytes);
+    assert_eq!(
+        ssp2::render_message(&decoded)["frames"][3],
+        serde_json::json!({"type": "RESTRICT", "cursor": 5, "tables": ["a", "b"]})
+    );
+}
+
+#[test]
+fn restrict_decode_errors() {
+    let base = || vec![req_header(), pull_header(), progress()];
+    let cases: [(Vec<u8>, &str); 6] = [
+        (
+            raw_restrict_request(base(), -1, &["a"]),
+            "RESTRICT.cursor must be >= 0",
+        ),
+        (
+            raw_restrict_request(base(), 0, &[]),
+            "RESTRICT.tables must not be empty",
+        ),
+        (
+            raw_restrict_request(base(), 0, &["b", "a"]),
+            "RESTRICT.tables must be unique and in ascending order",
+        ),
+        (
+            raw_restrict_request(base(), 0, &["a", "a"]),
+            "RESTRICT.tables must be unique and in ascending order",
+        ),
+        (
+            raw_restrict_request(base(), 0, &[""]),
+            "RESTRICT.tables must not name an empty table",
+        ),
+        (
+            raw_restrict_request(vec![req_header(), pull_header()], 0, &["a"]),
+            "RESTRICT frame must immediately follow a PROGRESS frame",
+        ),
+    ];
+    for (bytes, detail) in cases {
+        assert_eq!(decode_message(&bytes).expect_err(detail).detail, detail);
+    }
+    let mut twice = base();
+    twice.push(restrict(0, &["a"]));
+    assert_eq!(
+        decode_message(&raw_restrict_request(twice, 0, &["a"]))
+            .expect_err("second RESTRICT")
+            .detail,
+        "RESTRICT frame must immediately follow a PROGRESS frame"
+    );
+}
+
+#[test]
+#[should_panic(expected = "RESTRICT frame must immediately follow a PROGRESS frame")]
+fn the_encoder_refuses_a_restrict_without_its_progress() {
+    message(
+        MsgKind::Request,
+        vec![req_header(), pull_header(), restrict(0, &["a"])],
+    );
+}
+
+#[test]
+#[should_panic(expected = "RESTRICT.tables must be unique")]
+fn the_encoder_refuses_unordered_restrict_tables() {
+    message(
+        MsgKind::Request,
+        vec![
+            req_header(),
+            pull_header(),
+            progress(),
+            restrict(0, &["b", "a"]),
+        ],
+    );
+}

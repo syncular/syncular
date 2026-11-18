@@ -15,7 +15,7 @@ const MAX_TARGETS = 64;
 const MAX_SELECTORS_PER_TARGET = 8;
 const MAX_VALUES_PER_SELECTOR = 128;
 const MAX_ROUTING_VALUE_LENGTH = 256;
-const CODE_LIKE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+export const CODE_LIKE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 function compareCodeLike(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;

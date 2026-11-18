@@ -383,11 +383,10 @@ function sqlType(column: RowColumn): string {
     case 'blob_ref':
       return 'TEXT';
     case 'integer':
+    case 'boolean':
       return 'INTEGER';
     case 'float':
       return 'REAL';
-    case 'boolean':
-      return 'INTEGER';
     case 'bytes':
     case 'crdt':
       // §5.10: a crdt column stores its opaque bytes locally, exactly like
@@ -712,12 +711,14 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       UNITS_TABLE,
       "id TEXT PRIMARY KEY,scopes TEXT NOT NULL,explicit INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',reason_code TEXT,cursor INTEGER DEFAULT -1,bootstrap_state TEXT,seeded TEXT NOT NULL DEFAULT '[]',echo TEXT",
     );
-    // §5.6 applied-segment record, added after the table shipped.
-    try {
-      db.exec(`ALTER TABLE ${UNITS_TABLE} ADD COLUMN applied TEXT`);
-    } catch {
-      // column already exists
-    }
+    // §5.6 applied-segment record and §7.4.3 restriction, added after the
+    // table shipped.
+    for (const column of ['applied', 'restriction'])
+      try {
+        db.exec(`ALTER TABLE ${UNITS_TABLE} ADD COLUMN ${column} TEXT`);
+      } catch {
+        // column already exists
+      }
     // §4.8 window registry: base + value → the unit it holds, the
     // completeness oracle and one of a unit's references (§4.1).
     createTable(
@@ -790,7 +791,7 @@ export function resetLocalReplica(
 ): string[] {
   const kept = bump
     ? pruneUnknownUnits(db, schema, true)
-    : { tables: new Set<string>(), units: [] };
+    : { tables: new Set<string>(), units: [], restricts: undefined };
   const keptNames = [...kept.tables];
   db.exec(
     `DELETE FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL AND tbl NOT IN(${keptNames.map(() => '?')})`,
@@ -815,7 +816,7 @@ export function resetLocalReplica(
   for (const table of schema.tables.values()) createSyncedTable(db, table);
   for (const table of schema.tables.values())
     for (const index of table.ftsIndexes) createFtsProjection(db, table, index);
-  resetUnits(db, kept.units);
+  resetUnits(db, kept.units, kept.restricts);
   return [...schema.tables.keys()].filter((name) => !kept.tables.has(name));
 }
 

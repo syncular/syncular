@@ -7,6 +7,7 @@ export const FrameType = {
   UNIT: 0x04,
   ROUND_FAILURE: 0x05,
   PROGRESS: 0x06,
+  RESTRICT: 0x07,
   RESP_HEADER: 0x10,
   PUSH_RESULT: 0x11,
   SUB_START: 0x12,
@@ -32,6 +33,7 @@ export const REQUEST_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.UNIT,
   FrameType.ROUND_FAILURE,
   FrameType.PROGRESS,
+  FrameType.RESTRICT,
 ]);
 
 /** Known response frame types (excluding END). */

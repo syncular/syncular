@@ -19,11 +19,11 @@ When your schema changes, you bump `schemaVersions` in the manifest and regenera
 <span class="d-arrow"></span>
 <div class="node bad"><span class="t">2 · Wipe</span>Changed tables with their indexes, FTS and unit cursors</div>
 <span class="d-arrow"></span>
-<div class="node cool"><span class="t">3 · Bootstrap</span>The units of the changed tables at version N+1, from segments</div>
+<div class="node cool"><span class="t">3 · Bootstrap</span>The changed tables of each unit at version N+1, from segments</div>
 <span class="d-arrow"></span>
 <div class="node ok"><span class="t">4 · Replay</span>Outbox commits re-encode with the N+1 codec</div>
 </div>
-<div class="node hot"><span class="t">Kept through the reset</span>The outbox, the client identity (<code>clientId</code>), the auth lease (<code>leaseState</code>), unchanged tables, and the units that cover only unchanged tables</div>
+<div class="node hot"><span class="t">Kept through the reset</span>The outbox, the client identity (<code>clientId</code>), the auth lease (<code>leaseState</code>), unchanged tables, the units that cover only unchanged tables, and each other unit's cursor over its unchanged tables</div>
 
 ::caption[The `upgrading` state is `true` from step 2 until step 3 reaches idle. The server sees an ordinary fresh bootstrapper at the new version.]
 :::
@@ -59,11 +59,12 @@ Schema validation refusals leave the replica's journal mode and contents untouch
 | Kept | Wiped and rebuilt |
 |---|---|
 | The outbox (schema-independent by design, §0 and §7.1) | Every synced table whose generation changed or is absent, with its secondary indexes and FTS projections |
-| The client identity (`clientId`) | The cursor, resume token, echo and status of every unit that covers a wiped table |
+| The client identity (`clientId`) | The cursor, resume token and status of every unit that covers a wiped table |
 | The auth lease (`leaseState`) | Incompatible units and their window bookkeeping |
 | Every table whose generation is unchanged, with its rows and indexes | |
 | The state of every unit that covers only unchanged tables | |
-| The registration of every other compatible unit, reset to cursor `-1` | |
+| The registration and echo of every other compatible unit, reset to cursor `-1` | |
+| The kept cursor of every live or caught-up unit that also covers an unchanged table | |
 
 ### Which tables the reset keeps
 
@@ -71,11 +72,23 @@ Schema validation refusals leave the replica's journal mode and contents untouch
 
 Migration SQL cannot change rows: `typegen` refuses `UPDATE`, `INSERT` and `DELETE` in a migration, so every data change reaches clients through the change log ([Data changes and backfills](/guide-schema/#data-changes-and-backfills)). A migration that names a table, even one that only adds an index or a column whose name matches the table, changes that table's generation and resets it. A schema written by hand has no generations, and a replica written before 0.77 persisted none: its next bump resets every table, as before. One open at the unchanged schema version on a build that writes generations records them, so the bump after that keeps unchanged tables.
 
-A unit keeps its cursor, echo and status only when every table it covers, under the old schema and the new one, is kept. A unit that covers a changed table bootstraps again and downloads every table it covers, unchanged ones included. Give a large table that rarely changes its own scope variable, so its unit covers no table that changes with every release. The replica cursor stays while at least one kept unit is live.
+A unit keeps its cursor, echo and status only when every table it covers, under the old schema and the new one, is kept. The replica cursor stays while at least one kept unit is live.
+
+### Units that cover changed and unchanged tables
+
+A unit that covers a changed table and an unchanged one takes a **restriction** (SPEC §7.4.3): its unchanged tables keep their rows, and the unit keeps the cursor they are complete through, its **kept cursor**. Its next pull carries a `RESTRICT` frame after the unit's `PROGRESS` frame, naming the kept cursor and the changed tables. The server bootstraps only those tables (SPEC §4.7), and when that bootstrap completes the unit catches up on every covered table from the kept cursor through the live section. A unit that covers 24 tables, one of which changed, downloads the rows of that one table.
+
+A unit takes a restriction when it was live or caught up at the bump, or already held a restriction from an earlier bump that has not finished. A unit that was still bootstrapping has no cursor its unchanged tables are complete through, so it bootstraps whole, unchanged tables included. While the restricted bootstrap runs the unit reports bootstrapping, local reads see the kept rows, and unit progress counts the rows of the changed tables only. `upgrading` ends when the changed tables are bootstrapped.
+
+The restriction ends, and the unit bootstraps whole, in three cases:
+
+- The server's pruning horizon passed the kept cursor, so the change log no longer holds what the unchanged tables missed. The server answers the unit `reset` with `sync.cursor_expired` (SPEC §4.6), and the next round bootstraps every covered table. A bump that changes a table's scope patterns raises the horizon to the last commit, so it always takes this path.
+- The server predates `RESTRICT` (before 0.87). It skips the frame and serves the whole bootstrap that the unit's cursor `-1` asks for. The client applies it by the ordinary rules and drops the restriction at the first segment of an unchanged table (SPEC §5.6). Upgrade the server before the clients to get the restricted bootstrap.
+- The unit is revoked, fails, or a revoked table of the unit becomes active again.
 
 A unit survives a bump when every one of its variables keeps its pattern prefix and mapped column on every table it covered, and the unit still covers at least one table. The client drops incompatible units, their windows, and their pending evictions before its first sync. The app registers units for its current schema, and the client never translates stored scope values. Changing `calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}`, for example, removes the units that use the old variable.
 
-A compatible unit that covers a wiped table resets to catching up with cursor `-1` and status `active`, because its rows are gone and need a fresh bootstrap. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
+A compatible unit that covers a wiped table resets to catching up with cursor `-1` and status `active`, because those rows are gone and need a fresh bootstrap. It keeps its echo, so a revocation answered before its bootstrap completes still purges the rows it holds in unchanged tables. Reopening the same schema version keeps every cursor. A replica without stored scope declaration evidence needs re-registration at its next bump even when variable names match.
 
 ### Changing a table's scope patterns
 
@@ -111,11 +124,11 @@ The client classifies incompatible commits before it collects their pending blob
 
 `upgrading` is a small, queryable client state. Show an "upgrading…" affordance while it is `true`, and re-run live queries against the rebuilt tables when it ends. The worker transport emits it as an `upgrading` event on the event channel. Nothing about the flow crosses the wire.
 
-Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, image-lane re-bootstrap, and a kept table with its unit beside a changed one.
+Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, image-lane re-bootstrap, a kept table with its unit beside a changed one, a restricted unit that transfers only its changed table, a server that skips `RESTRICT`, and a kept cursor below the pruning horizon.
 
 ## What a bump costs
 
-**Re-download volume.** A unit that covers only unchanged tables downloads nothing; its next round continues from its cursor. The reset keeps every other compatible unit, including the units a [window](/concepts-windowing/) maintains, and clears only its sync state. The bootstrap covers those units and nothing more. A phone holding a 3-list window of a 500-list workspace downloads those 3 lists again. Data outside the window was never local.
+**Re-download volume.** A unit that covers only unchanged tables downloads nothing; its next round continues from its cursor. A unit that covers changed and unchanged tables downloads the changed tables and catches up on the unchanged ones from its kept cursor. The reset keeps every other compatible unit, including the units a [window](/concepts-windowing/) maintains, and clears only its sync state. The bootstrap covers those units and nothing more. A phone holding a 3-list window of a 500-list workspace downloads those 3 lists again. Data outside the window was never local.
 
 **Apply cost.** On the wire, a bump costs one segment download of the registered units' data at the new version: the same bytes as a fresh install, with [segment compression](/concepts-bootstrap/) applied. Apply rates on the sqlite-image and rows lanes are on [Benchmarks](/benchmarks/). The server builds an image once per scope set and pin, so a fleet of clients that bump after a release deploy shares one build. For cellular-sensitive apps, size the window to the user's working set.
 

@@ -419,6 +419,7 @@ Frame type registry (wire version 4):
 | `0x04` | `UNIT` | request | 4.3 |
 | `0x05` | `ROUND_FAILURE` | request | 1.5 |
 | `0x06` | `PROGRESS` | request | 4.3 |
+| `0x07` | `RESTRICT` | request | 4.3 |
 | `0x10` | `RESP_HEADER` | response | 1.6 |
 | `0x11` | `PUSH_RESULT` | response | 6.3 |
 | `0x12` | `SUB_START` | response | 4.4 |
@@ -516,6 +517,7 @@ PULL_HEADER                     0 or 1
 UNIT × M                        M ≥ 0, only if PULL_HEADER present (§4.1)
 PROGRESS × K                    K ≥ 0, only if PULL_HEADER present, after
                                 every UNIT frame (§4.3)
+  RESTRICT                      0 or 1, immediately after its PROGRESS (§4.3)
 END
 ```
 
@@ -1546,9 +1548,10 @@ eviction, the §5.6 first-page clear) removes a row only when it matches
 the departing or bootstrapping pair's effective scopes and no **owner**
 matches it. An owner is any other unit that covers the same table with an
 active pair and has a persisted echo, and that is live or post-bootstrap
-(§4.1) or is bootstrapping and has received a segment of the table in its
+(§4.1), or is bootstrapping and has received a segment of the table in its
 current bootstrap (the §5.6 first-page record persisted at its last
-`SUB_END`); it owns the rows that echo matches. A bootstrapping unit (cursor
+`SUB_END`), or holds a restriction (§7.4.3) that excludes the table; it owns
+the rows that echo matches. A bootstrapping unit (cursor
 `-1` or a resume token: never synced, reset, or rebootstrapped) owns nothing
 in a table its bootstrap has not reached: its own first-page clear runs
 there. Without this rule a revoked or evicted unit deletes rows a surviving
@@ -1760,9 +1763,10 @@ cursor `-1`.
 
 **Client state.** A client persists, per unit: the scope map, the status
 (`active`, `revoked` or `failed`) and reason code, whether it is live, the
-cursor and resume token while it catches up, the tables that received a
-segment in the current bootstrap (§5.6), and the last echo of each covered
-table (§4.4). Per replica it persists the replica cursor (§4.5) and the last
+cursor and resume token while it catches up, its restriction while it holds
+one (§7.4.3: the kept cursor and the tables to bootstrap), the tables that
+received a segment in the current bootstrap (§5.6), and the last echo of each
+covered table (§4.4). Per replica it persists the replica cursor (§4.5) and the last
 `LIVE_END.echoDigest`. Registering a scope map that is already registered
 and active changes nothing and keeps all of this state.
 
@@ -1822,6 +1826,27 @@ order:
 | `id` | `str` | The unit id (§4.1): 32 lowercase hex characters; any other value is a decode error |
 | `cursor` | `i64` | `-1` for a unit without a cursor, the §4.7 pin while a resume token is held, otherwise the unit's cursor `P`. A value below `-1` is a decode error |
 | `bootstrapState` | `opt(json)` | The resume token of the unit's last `SUB_END`, round-tripped **unchanged and uninspected** (§4.7) |
+
+**`RESTRICT`** (`0x07`), at most one, immediately after the `PROGRESS` frame
+of a unit that holds a **restriction** (§7.4.3): the unit bootstraps only the
+listed tables and joins at the kept cursor (§4.7).
+
+| Field | Type | Semantics |
+|---|---|---|
+| `cursor` | `i64` | The kept cursor `C`: the cursor through which the unit's other covered tables hold every change (§4.5). A value below `0` is a decode error |
+| `tables` | `list(str)` | The tables to bootstrap, in ascending code-unit order, each at most once, at least one. An empty list, a table out of order or repeated, or an empty name is a decode error |
+
+`RESTRICT` belongs to the `PROGRESS` frame it follows. A `RESTRICT` frame
+that does not immediately follow a `PROGRESS` frame is a decode error. A
+server MUST fail the request with `sync.invalid_subscription`
+(`details.reason = "restrict_tables"`) when a listed table is not a covered
+table of the unit or when the list names every covered table.
+
+A server that predates `RESTRICT` skips it as an unknown frame (§1.2 rule 2)
+and serves the unit by its `PROGRESS` frame alone. A client therefore sends a
+restricted unit's `PROGRESS` with cursor `-1` until its first bootstrap
+section, so such a server answers it with a whole bootstrap (§4.7), and the
+client applies that bootstrap through the ordinary rules (§5.6).
 
 ### 4.4 Section frames
 
@@ -1886,7 +1911,7 @@ never a digest value.
 
 | Field | Type | Semantics |
 |---|---|---|
-| `nextCursor` | `i64` | For a bootstrap section, the unit's pin (§4.7). Otherwise the cursor the request held for the unit: its `PROGRESS` cursor, or `PULL_HEADER.cursor` for a live unit |
+| `nextCursor` | `i64` | For a bootstrap section, the unit's join cursor (§4.7). Otherwise the cursor the request held for the unit: its `PROGRESS` cursor, or `PULL_HEADER.cursor` for a live unit |
 | `bootstrapState` | `opt(json)` | Present iff the unit's bootstrap is incomplete; round-trip it in the next `PROGRESS`. Absent = bootstrap complete (or not bootstrapping) |
 
 The client persists a unit's `nextCursor`, `bootstrapState` and echo only on
@@ -1961,8 +1986,8 @@ a segment frame or a `SUB_START` inside or after the live section (§1.6).
 **The scan set.** A pull whose live status is `active` scans the log for:
 every live unit with lower bound `R`; every post-bootstrap unit that the
 server does not answer `reset` or `revoked`, with lower bound `P`; and every
-unit whose bootstrap completes in this response, with lower bound its pin
-(§4.7). `L` is the lowest of these bounds. A bootstrapping unit is outside
+unit whose bootstrap completes in this response, with lower bound its join
+cursor (§4.7). `L` is the lowest of these bounds. A bootstrapping unit is outside
 the scan and does not hold back `R`.
 
 **The live section.** It returns, oldest first, every commit with
@@ -2073,8 +2098,10 @@ last completed round, the **record cursor** with its timestamp, and the
 round outcome below. At the end of a completed pull the server writes the
 list and digest only when the list traveled, and always writes the
 catching-up ids and the record cursor: the lowest of `R*` when a unit is
-live, the cursor of every post-bootstrap unit still catching up, and the pin
-of every bootstrapping unit that holds one; `-1` when none exists. A pull
+live, the cursor of every post-bootstrap unit still catching up, and the join
+cursor of every bootstrapping unit that holds one (§4.7); `-1` when none
+exists. A restricted bootstrap therefore holds the horizon at its kept cursor
+from its first section on. A pull
 answered `unregistered` writes only the round outcome. The record cursor
 feeds the retention watermark (§4.6) and realtime (§8.1, §8.2).
 
@@ -2132,6 +2159,13 @@ Servers prune the commit log. The contract:
   send cursor `-1` next. It keeps the unit's persisted echo: a revocation or
   eviction before the next bootstrap completes still matches the rows the
   unit held.
+- **Restricted unit reset.** A unit whose `RESTRICT` (§4.3) carries a kept
+  cursor `C` with `C < horizonSeq` or `C > maxCommitSeq` cannot join at
+  `C` (§4.7). The server answers it `SUB_START.status = reset` with
+  `reasonCode = "sync.cursor_expired"`, no segments and its `PROGRESS`
+  cursor echoed in `SUB_END`, before and at the horizon recheck below. On
+  that `reset` the client discards the restriction together with the state
+  the unit reset above discards; the next round bootstraps the whole unit.
 - A reset unit SHOULD keep its local rows until bootstrap application
   replaces them (§5.6): `reset` is a staleness signal, not a purge signal;
   only `revoked` purges (§3.3).
@@ -2239,7 +2273,8 @@ like pruning.
 
 ### 4.7 Bootstrap state machine
 
-A catching-up unit **bootstraps** when any of: its `PROGRESS` carries a
+A catching-up unit **bootstraps** when any of: its `PROGRESS` is followed by a
+`RESTRICT` frame (a restricted bootstrap, below); its `PROGRESS` carries a
 `bootstrapState` token (a resume; this keeps a part-way bootstrap in
 bootstrap mode, since its cursor already equals the pin); its cursor is
 `-1`; its cursor is above `maxCommitSeq` (a client from the future, treated
@@ -2250,9 +2285,11 @@ takes the §4.6 `reset` round trip.
 Bootstrap is **resumable, pinned, and paged**:
 
 - On start, the server pins `asOfCommitSeq = maxCommitSeq` and computes the
-  unit's table list: its covered tables in the handler-declared bootstrap
-  order (parents before children, so foreign keys apply cleanly). The
-  unit's **pin** is that `asOfCommitSeq`.
+  unit's **bootstrap tables**: its covered tables in the handler-declared
+  bootstrap order (parents before children, so foreign keys apply cleanly),
+  restricted to the `RESTRICT` tables when the unit has that frame. The
+  unit's **pin** is that `asOfCommitSeq`. Its **join cursor** is the pin for
+  a whole bootstrap and the `RESTRICT` cursor for a restricted one.
 - A table eligible for the sqlite lane (§5.3: the client advertised
   `accept` bit 2 and the table has no encrypted column) is served at its
   **scope pin** when the bootstrap reaches the table's start: the newest
@@ -2305,8 +2342,10 @@ Bootstrap is **resumable, pinned, and paged**:
   history.
 - A `bootstrapState` that does not parse as the shape above, whose
   `asOfCommitSeq` is not an integer in `[0, maxCommitSeq]`, whose
-  `tableIndex` is not an index into `tables`, or whose `tables` differ from
-  the unit's covered tables in bootstrap order, MUST be handled the same way:
+  `tableIndex` is not an index into `tables`, whose `tables` differ from
+  the unit's bootstrap tables, or, for a restricted bootstrap, whose
+  `asOfCommitSeq` lies below the `RESTRICT` cursor, MUST be handled the
+  same way:
   silently restart the bootstrap with a fresh pin. A present token keeps the
   unit bootstrapping even when its cursor lies in
   `[horizonSeq, maxCommitSeq]`. An unusable resume token is never a request
@@ -2314,21 +2353,43 @@ Bootstrap is **resumable, pinned, and paged**:
   client state, and bootstrap is self-healing by construction (a fresh
   bootstrap always converges).
 - **Every** bootstrap section, complete or not, sets
-  `SUB_END.nextCursor` to the unit's pin. A resuming client therefore
-  presents `cursor` = pin plus the round-tripped resume token; the token,
-  not the cursor, marks the unit as still bootstrapping. The record cursor
-  (§4.5) holds the pruning horizon at the pin.
+  `SUB_END.nextCursor` to the unit's join cursor. A resuming client therefore
+  presents `cursor` = join cursor plus the round-tripped resume token; the
+  token, not the cursor, marks the unit as still bootstrapping. The record
+  cursor (§4.5) holds the pruning horizon at the join cursor.
 - On completion (`bootstrapState` omitted) the unit is post-bootstrap with
-  `P` = its pin and enters the scan set of the same response (§4.5).
+  `P` = its join cursor and enters the scan set of the same response (§4.5).
   Nothing is lost between the pin and the join: the live section delivers
   the unit's changes after the pin. A sqlite image whose scope pin lies
   below the unit's pin already holds the table's state at `maxCommitSeq`; for
   one whose scope pin lies above it, the live section delivers changes the
   image already holds, and the version guard skips them (§4.5).
 
+**Restricted bootstrap.** A schema bump keeps a unit's rows of the tables
+whose generation is unchanged and its kept cursor `C` (§7.4.3), and the
+unit bootstraps only its other covered tables. Its sections deliver segments
+for the bootstrap tables only; the snapshot holds every row of those tables
+in the unit's scope at the pin `S ≥ C`, by the rules above. On completion
+the unit holds `P = C` and the scan from `C` delivers every matching
+change of every covered table in `(C, T]` (§4.5). The kept tables held every
+change through `C` before the bump (C1 for a live unit, C2 for a
+post-bootstrap one), so they hold every change through `T` after the scan
+and no kept row is lost. A bootstrap table was dropped and recreated empty
+at the bump (§7.4.3), so its rows are exactly the snapshot, which holds no
+row deleted at or before `S`; the scan then re-delivers the changes in
+`(C, S]`, and the version guard (§4.5) skips each one the snapshot already
+holds. A delete in `(C, S]` finds no row, or a row at a newer version, and
+changes nothing. An upsert in `(C, S]` of a row a later write removed
+re-creates it until the scan reaches that write, as for any unit (§4.5).
+The scan from `C` needs the log above `C`: the record cursor holds the
+horizon at `C` (§4.5), and a kept cursor below the horizon answers the
+unit `reset` (§4.6). A `RESTRICT` whose `PROGRESS` carries a token of a
+whole bootstrap fails the token check above and restarts as a restricted
+bootstrap with a fresh pin.
+
 **Extent.** When a bootstrap takes a fresh pin, the server counts the rows
 whose stored scopes match the effective scopes of each active (unit, table)
-pair (§3.2) and states their sum in the section's `UNIT_EXTENT` (§4.4) with
+pair (§3.2) of its bootstrap tables and states their sum in the section's `UNIT_EXTENT` (§4.4) with
 `rowsDone = 0`. The count reads the row-scope index with one statement per
 covered table, once per bootstrap; the bootstrap reads every counted row in
 its pages anyway. Each resume token of the bootstrap carries `rowsTotal`
@@ -3175,6 +3236,14 @@ for clients without signed-URL support.
   exactly when it is the first segment of its table in the bootstrap. A
   later range image of a table also has `rowCursor` absent and is not a
   first page.
+- **A restriction ends at a foreign first page.** A unit that holds a
+  restriction (§7.4.3) and receives a first page of a table outside its
+  `RESTRICT` tables is served a whole bootstrap by a server that predates
+  `RESTRICT` (§4.3). The client MUST discard the restriction before that
+  first-page clear commits, at the latest in its transaction. The section's `SUB_END` then
+  persists the whole bootstrap's pin and token, and the unit continues it
+  without `RESTRICT`. A restriction that survived the clear would let a later
+  restricted bootstrap skip the table the clear emptied.
 - **Applied-segment rule.** A client records, with the unit in its replica
   database, how many rows of each `SEGMENT_REF` it applied at the unit's
   current cursor and resume token. A sqlite image records its applied row
@@ -6193,13 +6262,17 @@ Everything else is destroyed and rebuilt:
 - **Dropped and recreated:** every synced table that is not kept, and the
   unit-derived state of every unit that is not kept: its cursor, bootstrap
   resume token (`bootstrapState`), the tables that received a segment in its
-  current bootstrap (§5.6), its persisted echo (§3.3), and its
+  current bootstrap (§5.6), its restriction, and its
   `active`/`revoked`/`failed` status. The unit *registrations*
   themselves (scope maps) are **kept only when compatible** — they are the
   app's declared intent, not synced data — and each unit that is not kept is
   reset to catching up with cursor `-1`, no resume token,
-  `status = active`, so the next round is a fresh bootstrap of exactly the
-  units whose tables changed. Compatibility requires every variable of the
+  `status = active`, so the next round bootstraps exactly the units whose
+  tables changed: a unit that takes a restriction (below) only its
+  bootstrap tables, every other one whole. Every unit keeps its persisted
+  echo (§4.4): a kept table still holds the rows it keys, so a revocation
+  before the unit's next bootstrap completes purges them (§3.3), as after a
+  §4.6 unit reset. Compatibility requires every variable of the
   unit to exist with the same
   declared prefix and column mapping on every table it covered, and the
   unit to cover at least one table under the new schema. Incompatible
@@ -6258,14 +6331,31 @@ with `sync.local_corrupt` before mutation.
   every table.
 - **Kept unit:** a registration that remains compatible and covers only kept
   tables, both under the declaration evidence the replica persisted and
-  under the new schema. It keeps its cursor, resume token, segment record,
-  echo, status and reason code. A unit that covers a table that is not kept
-  (changed, added, or removed) resets as above and its bootstrap downloads
-  every table it covers, kept tables included; the version guard (§4.5)
-  makes re-applying an unchanged row a no-op.
+  under the new schema. It keeps its cursor, resume token, restriction,
+  segment record, echo, status and reason code.
+- **Restriction:** a unit that is not kept takes a restriction when it is
+  compatible and `active`, is live, post-bootstrap or already restricted,
+  and has at least one bootstrap table but not every table it covers under
+  the new schema. Its **kept cursor** `C` is the cursor of its existing
+  restriction, else its post-bootstrap cursor `P`, else the replica cursor
+  `R` it was live under. Its **bootstrap tables** are the tables it covers
+  under the new schema that are not kept, together with the tables of its
+  existing restriction that the new schema still covers, in ascending
+  code-unit order. The unit keeps the rows of its other covered tables,
+  sends `RESTRICT` (§4.3) after every `PROGRESS`, and bootstraps only its
+  bootstrap tables (§4.7). A restricted unit owns the rows of its covered
+  tables outside its bootstrap tables (§3.3 row ownership), as a
+  post-bootstrap unit does. The restriction ends when the unit's bootstrap
+  completes, at a `reset` (§4.6), when the unit is revoked or failed, when
+  a revoked fenced record turns active again (§3.3), and at a foreign first
+  page (§5.6). Every other unit that is not kept bootstraps whole, kept
+  tables included, and the version guard (§4.5) makes re-applying an
+  unchanged row a no-op: a unit that was bootstrapping whole at the bump has
+  no cursor through which its kept tables are complete.
 - **Replica state:** the replica cursor is kept while at least one kept unit
   is live, and becomes `-1` otherwise. C1 (§4.5) constrains live units only,
-  and a reset unit is bootstrapping, outside the scan. The persisted echo
+  and a reset unit is bootstrapping, outside the scan. A restricted unit
+  carries its kept cursor in `RESTRICT` and needs no replica cursor. The persisted echo
   digest and the stored registration digest are cleared at every reset, so
   the next pull carries the registration list (§4.1) and the server answers
   every unit's echo again.
@@ -6281,22 +6371,37 @@ ones. The generation closes that gap in `typegen`, which reads every
 migration: any statement that names the table changes the generation, and
 migration SQL cannot change data. Generations come only from `typegen`; a
 schema written by hand has none and keeps the full reset, because nothing
-proves its unchanged tables carry unchanged data. A unit resets as a whole,
-because a unit has one cursor across its tables; per-table cursors are out
-of scope. A table whose scope pattern or column mapping changed (a
-re-key) has a new generation and re-bootstraps; keeping its rows under the
-new stored scopes is out of scope.
+proves its unchanged tables carry unchanged data. A table whose scope
+pattern or column mapping changed (a re-key) has a new generation and
+re-bootstraps; keeping its rows under the new stored scopes is out of scope.
+
+DECISION (2026-11-18): a unit that covers changed and unchanged tables
+bootstraps only the changed ones. The decision of 2026-11-17 reset such a
+unit whole, because a unit has one cursor across its tables. A unit that
+covered 24 tables, one of them changed, made every client download its
+whole private replica again: about 26,000 rows in 25 segments and 19 MB
+decoded, and a browser reported `upgrading` for 41 s. The unit keeps the
+cursor its kept tables are complete through and joins the scan there after
+bootstrapping the changed tables (§4.7), so it needs no per-table cursor.
+`RESTRICT` is a request frame of its own: a server that predates it skips
+it and serves the whole bootstrap that the client's cursor `-1` asks for,
+which the client applies by the ordinary rules, so the frame ships inside
+wire version 4 (§9). A kept cursor below the horizon cannot join, and the
+unit takes the `reset` round trip to a whole bootstrap (§4.6). Re-keying a
+table raises the horizon to `maxCommitSeq` (§4.6), so a bump that re-keys
+one of a unit's tables resets that unit whole.
 
 **Order (all in one durable step where the storage allows):**
 
 1. Detect (the boot-time marker check, §7.4.2 trigger 1). Clear any
    `schemaFloor` stop state carried over — the client now ships a schema
    the server serves.
-2. Determine the kept tables and kept units. Drop every synced local table
-   that is not kept, with its FTS projections and row-level bookkeeping, and
-   recreate it from the *new* generated schema; reset the state of every
-   unit that is not kept to the fresh-bootstrap defaults, keeping the
-   registration; settle the replica cursor and clear the digests.
+2. Determine the kept tables, kept units and restrictions. Drop every synced
+   local table that is not kept, with its FTS projections and row-level
+   bookkeeping, and recreate it from the *new* generated schema; reset the
+   state of every unit that is not kept to the fresh-bootstrap defaults,
+   keeping the registration and the echo, and give each unit its
+   restriction; settle the replica cursor and clear the digests.
 3. Rewrite the persisted marker (§7.4.1) to the new generated version,
    with the declaration evidence and table generations.
 4. Surface the `upgrading` state (§7.4.5) across steps 1–3; clear it
@@ -6379,8 +6484,8 @@ and know when it is safe to render:
 
 - `upgrading` — true from the moment the reset begins (§7.4.3 step 1)
   until the first post-reset bootstrap round completes (every
-  unit past its fresh bootstrap, or the round reaching idle,
-  §4.5). It is the schema-bump mirror of `schemaFloor` / `leaseState`:
+  unit past its fresh or restricted bootstrap, or the round reaching idle,
+  §4.5). A restricted unit (§7.4.3) clears it after its bootstrap tables. It is the schema-bump mirror of `schemaFloor` / `leaseState`:
   a small, queryable client state, not a wire concept.
 - A completion signal fires when `upgrading` clears — the app's cue to
   re-run its live queries against the rebuilt tables. In the worker
@@ -8278,7 +8383,9 @@ object's single thread orders a registration before or after each relay.
   segment media types, new JSON control events. `PUSH_RESULT_DETAILS`
   (§6.3.1) and `UNIT_EXTENT` (§4.4) are frames of this kind inside wire
   version 4: a peer that predates one skips it, and a server that predates
-  one never emits it.
+  one never emits it. `RESTRICT` (§4.3) is the request-side frame of this
+  kind: a server that predates it skips it and answers the restricted unit
+  with a whole bootstrap, which the client applies (§5.6).
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
@@ -8806,7 +8913,8 @@ byte-identical output):
 | 34 | `response/realtime-delta` | A delta: `LIVE_START`, one `COMMIT` spanning three tables, `LIVE_END` with `throughSeq` = its `commitSeq` and an empty `echoDigest` (§8.2) |
 | 35 | `registration/digests` | JSON only, one object `{"units":[{"scopes","canonicalJson","id"}],"registrations":[{"units","canonicalJson","digest"}],"echoes":[{"units","canonicalJson","digest"}]}`: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4). Digests render as 64 lowercase hex characters |
 | 36 | `response/bootstrap-unit-extent` | Two unit sections: a fresh bootstrap whose `UNIT_EXTENT` states `rowsDone = 0` and a resumed one with `rowsDone` above 0, each immediately after its `SUB_START` (§4.4) |
-| — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1` |
+| 37 | `request/pull-restrict` | Two restricted units (§4.3 `RESTRICT`, §4.7): a first round with `PROGRESS` cursor `-1` and the kept cursor in `RESTRICT`, and a resumed round at the join cursor with a token over the bootstrap tables |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1`; `RESTRICT` not immediately after `PROGRESS`, `RESTRICT.cursor = -1`, an empty `RESTRICT.tables`, `RESTRICT.tables` out of order |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest`, `UNIT_EXTENT` after a non-bootstrap `SUB_START`, after a segment frame, or with `rowsTotal = -1` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |

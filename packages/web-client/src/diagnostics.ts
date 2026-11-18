@@ -6,6 +6,7 @@
  * diagnostic prose.
  */
 import type { SecurityLifecycle } from './client';
+import { ChangeEmitter } from './invalidation';
 
 export const CLIENT_DIAGNOSTICS_VERSION = 2 as const;
 export const MAX_DIAGNOSTIC_DOMAINS = 256;
@@ -198,26 +199,9 @@ export type ClientDiagnosticsListener = (
   snapshot: ClientDiagnosticsSnapshot,
 ) => void;
 
-export class ClientDiagnosticsEmitter {
-  readonly #listeners = new Set<ClientDiagnosticsListener>();
-
+export class ClientDiagnosticsEmitter extends ChangeEmitter<ClientDiagnosticsSnapshot> {
   get observed(): boolean {
-    return this.#listeners.size > 0;
-  }
-
-  on(listener: ClientDiagnosticsListener): () => void {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
-  }
-
-  emit(snapshot: ClientDiagnosticsSnapshot): void {
-    for (const listener of this.#listeners) {
-      try {
-        listener(snapshot);
-      } catch {
-        // Diagnostics observers cannot alter sync correctness.
-      }
-    }
+    return this.size > 0;
   }
 }
 

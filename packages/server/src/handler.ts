@@ -14,6 +14,7 @@ import {
   decodeRequest,
   echoDigest,
   type ProgressFrame,
+  type RestrictFrame,
   type PullHeaderFrame,
   type PushCommitFrame,
   type PushResultDetailsFrame,
@@ -82,6 +83,8 @@ interface PlannedUnit {
   readonly plan: UnitPlan;
   /** Absent for a live unit. */
   readonly progress: ProgressFrame | undefined;
+  /** §4.3: the restriction that follows the unit's `PROGRESS`. */
+  readonly restrict: RestrictFrame | undefined;
 }
 
 interface PullPlan {
@@ -259,7 +262,11 @@ async function planRequest(
   let pullHeader: PullHeaderFrame | undefined;
   const unitFrames: UnitFrame[] = [];
   const progressFrames: ProgressFrame[] = [];
+  // §4.3: a RESTRICT belongs to the PROGRESS it immediately follows.
+  const restricts = new Map<string, RestrictFrame>();
   for (const frame of request.frames) {
+    if (frame.type === 'RESTRICT')
+      restricts.set(progressFrames.at(-1)!.id, frame);
     if (frame.type === 'ROUND_FAILURE') roundFailure = frame;
     else if (frame.type === 'PUSH_COMMIT') pushes.push(frame);
     else if (frame.type === 'PULL_HEADER') pullHeader = frame;
@@ -425,6 +432,22 @@ async function planRequest(
         }
         progressed.add(frame.id);
       }
+      for (const { id, tables } of list) {
+        const restrict = restricts.get(id);
+        if (
+          restrict !== undefined &&
+          (restrict.tables.length >= tables.length ||
+            restrict.tables.some(
+              (name) => !tables.some((table) => table.name === name),
+            ))
+        ) {
+          throw syncError(
+            'sync.invalid_subscription',
+            'a RESTRICT frame names a table the unit does not cover, or every covered table (§4.3)',
+            JSON.stringify({ reason: 'restrict_tables', id }),
+          );
+        }
+      }
     }
   }
 
@@ -450,7 +473,11 @@ async function planRequest(
             registration,
             units: list?.map(({ scopes, tables, id }) => {
               const plan = planUnit(scopes, tables, resolved, id);
-              return { plan, progress: progress.get(plan.id) };
+              return {
+                plan,
+                progress: progress.get(plan.id),
+                restrict: restricts.get(plan.id),
+              };
             }),
           },
     record,
@@ -848,26 +875,47 @@ async function* streamResponse(
           | { kind: 'post'; cursor: number }
           | {
               kind: 'bootstrap';
+              /** The join cursor (§4.7): the pin, or the kept cursor. */
               pin: number;
+              restricted: boolean;
               frames: ResponseFrame[];
               token: string | undefined;
             };
-        const states: UnitState[] = units.map(({ plan: unit, progress }) => {
-          if (unit.status === 'revoked') return { kind: 'revoked' };
-          if (progress === undefined) return { kind: 'live' };
-          // §4.7: a token, cursor -1 or a cursor from the future bootstraps.
-          if (
-            progress.bootstrapState === undefined &&
-            progress.cursor >= 0 &&
-            progress.cursor <= maxSeq
-          ) {
-            return progress.cursor < horizonSeq
-              ? { kind: 'reset' }
-              : { kind: 'post', cursor: progress.cursor };
-          }
-          // Replaced by the section the bootstrap below produces.
-          return { kind: 'bootstrap', pin: -1, frames: [], token: '' };
-        });
+        const states: UnitState[] = units.map(
+          ({ plan: unit, progress, restrict }): UnitState => {
+            if (unit.status === 'revoked') return { kind: 'revoked' };
+            if (progress === undefined) return { kind: 'live' };
+            // §4.6: a kept cursor outside [horizon, max] cannot join.
+            if (restrict !== undefined)
+              return restrict.cursor < horizonSeq || restrict.cursor > maxSeq
+                ? { kind: 'reset' }
+                : {
+                    kind: 'bootstrap',
+                    pin: -1,
+                    restricted: true,
+                    frames: [],
+                    token: '',
+                  };
+            // §4.7: a token, cursor -1 or a cursor from the future bootstraps.
+            if (
+              progress.bootstrapState === undefined &&
+              progress.cursor >= 0 &&
+              progress.cursor <= maxSeq
+            ) {
+              return progress.cursor < horizonSeq
+                ? { kind: 'reset' }
+                : { kind: 'post', cursor: progress.cursor };
+            }
+            // Replaced by the section the bootstrap below produces.
+            return {
+              kind: 'bootstrap',
+              pin: -1,
+              restricted: false,
+              frames: [],
+              token: '',
+            };
+          },
+        );
         const traces = units.map((): PullSectionTrace | undefined =>
           events !== undefined ? { segments: [] } : undefined,
         );
@@ -899,19 +947,36 @@ async function* streamResponse(
             pages += reads;
             next += 1;
           }
-          const batch = window.map((index) => ({
-            index,
-            plan: planBootstrap(
-              ctx,
-              schema,
-              limits,
-              units[index]!.plan,
-              units[index]!.progress?.bootstrapState,
-              maxSeq,
-              horizonSeq,
-              plan.logEpoch,
-            ),
-          }));
+          const batch = window.map((index) => {
+            const { plan: unit, progress, restrict } = units[index]!;
+            // §4.7: a restricted bootstrap serves only the RESTRICT tables.
+            const only =
+              restrict === undefined ? undefined : new Set(restrict.tables);
+            return {
+              index,
+              plan: planBootstrap(
+                ctx,
+                schema,
+                limits,
+                only === undefined
+                  ? unit
+                  : {
+                      ...unit,
+                      tables: unit.tables.filter((table) =>
+                        only.has(table.name),
+                      ),
+                      pairs: new Map(
+                        [...unit.pairs].filter(([name]) => only.has(name)),
+                      ),
+                    },
+                progress?.bootstrapState,
+                maxSeq,
+                horizonSeq,
+                plan.logEpoch,
+                restrict?.cursor,
+              ),
+            };
+          });
           for (const { index, plan: bootstrap } of batch) {
             const frames: ResponseFrame[] = [];
             const segments = bootstrapSegments(
@@ -927,9 +992,11 @@ async function* streamResponse(
               frames.push(step.value);
               step = await segments.next();
             }
+            const restrict = units[index]!.restrict;
             states[index] = {
               kind: 'bootstrap',
-              pin: bootstrap.pin,
+              pin: restrict?.cursor ?? bootstrap.pin,
+              restricted: restrict !== undefined,
               frames,
               token: step.value,
             };
@@ -975,7 +1042,12 @@ async function* streamResponse(
           const recheck = await ctx.storage.getHorizonSeq(ctx.partition);
           let expired = false;
           for (const [index, state] of states.entries()) {
-            const afterSeq = bound(state);
+            // §4.6: a restricted bootstrap's kept cursor is rechecked too.
+            const afterSeq =
+              bound(state) ??
+              (state.kind === 'bootstrap' && state.restricted
+                ? state.pin
+                : undefined);
             if (afterSeq === undefined || afterSeq >= recheck) continue;
             expired = true;
             if (state.kind === 'live') liveReset = true;

@@ -5,8 +5,8 @@
 use crate::decode::{SSP2_MAGIC, WIRE_VERSION};
 use crate::model::frame_type as ft;
 use crate::model::{
-    fenced_in_order, valid_outbox_id, valid_unit_id, EchoStatus, Frame, LiveStatus, MediaType,
-    Message, MsgKind, Op, OpResult, PushStatus, SubStatus,
+    fenced_in_order, restrict_tables_error, valid_outbox_id, valid_unit_id, EchoStatus, Frame,
+    LiveStatus, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus,
 };
 use crate::primitives::Writer;
 
@@ -24,7 +24,14 @@ pub fn encode_message(msg: &Message) -> Vec<u8> {
         MsgKind::Response => 0x02,
     });
     w.u8(0x00); // flags
+    let mut prev: Option<&Frame> = None;
     for frame in &msg.frames {
+        assert!(
+            !matches!(frame, Frame::Restrict { .. })
+                || matches!(prev, Some(Frame::Progress { .. })),
+            "RESTRICT frame must immediately follow a PROGRESS frame"
+        );
+        prev = Some(frame);
         let (ty, payload) = encode_frame(frame);
         w.u8(ty);
         w.u32(payload.len() as u32);
@@ -134,6 +141,18 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             w.i64(*cursor);
             w.opt(bootstrap_state, |w, j| w.str(&j.0));
             ft::PROGRESS
+        }
+        Frame::Restrict { cursor, tables } => {
+            assert!(*cursor >= 0, "RESTRICT.cursor must be >= 0");
+            if let Some(reason) = restrict_tables_error(tables) {
+                panic!("{reason}");
+            }
+            w.i64(*cursor);
+            w.u32(tables.len() as u32);
+            for table in tables {
+                w.str(table);
+            }
+            ft::RESTRICT
         }
         Frame::RespHeader {
             required_schema_version,

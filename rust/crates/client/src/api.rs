@@ -126,6 +126,15 @@ pub struct EchoRecord {
     pub scopes: BTreeMap<String, Vec<String>>,
 }
 
+/// §7.4.3 a unit's restriction: the kept cursor `C` through which its other
+/// covered tables hold every change, and the tables it bootstraps, in
+/// ascending code-unit order. It travels as `RESTRICT` (§4.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitRestriction {
+    pub cursor: i64,
+    pub tables: Vec<String>,
+}
+
 /// §4.1 one registered unit as the client persists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +161,9 @@ pub struct UnitRecord {
     /// The echo persisted at the last `SUB_END` (§4.4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub echo: Option<Vec<EchoRecord>>,
+    /// §7.4.3: the restriction a schema bump gave the unit, while it holds one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restriction: Option<UnitRestriction>,
 }
 
 impl UnitRecord {

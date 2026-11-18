@@ -29,7 +29,7 @@ import {
   responseSection,
 } from '../raw';
 import type { DriverSchema, DriverTable } from '../driver';
-import type { Scenario } from '../scenario';
+import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
 import {
   expectConverged,
   seedRows,
@@ -96,7 +96,195 @@ const KEEP_V2: DriverSchema = {
   ],
 };
 
+/** §7.4.3 restriction: `docs` also declares `project_id`, so U1 covers
+ * `tasks` (kept) and `docs` (changed: a new nullable `note`). */
+const docsByProject = (generation: string): DriverTable => ({
+  ...(FIXTURE_SCHEMA.tables[1] as DriverTable),
+  generation,
+  scopes: [{ pattern: 'org:{org_id}' }, { pattern: 'project:{project_id}' }],
+});
+const RESTRICT_V1: DriverSchema = {
+  version: 1,
+  tables: [KEEP_V1.tables[0] as DriverTable, docsByProject('docs-1')],
+};
+const RESTRICT_V2: DriverSchema = {
+  version: 2,
+  tables: [
+    KEEP_V1.tables[0] as DriverTable,
+    {
+      ...docsByProject('docs-2'),
+      columns: [
+        ...(FIXTURE_SCHEMA.tables[1] as DriverTable).columns,
+        { name: 'note', type: 'string', nullable: true },
+      ],
+    },
+  ],
+};
+
+/**
+ * Client A holds U1 live at v1 over three tasks and two docs; then t4 and d3
+ * commit above its replica cursor, and A reopens at v2. Returns the cursor.
+ */
+async function restrictedBump(ctx: ScenarioContext): Promise<{
+  readonly a: ClientHandle;
+  readonly cursor: number;
+}> {
+  await seedTasks(
+    ctx,
+    ['t1', 't2', 't3'].map((id) => task(id, 'p1', id)),
+  );
+  await seedRows(ctx, 'docs', [
+    { ...doc('d1', 'o1', 'p1'), note: null },
+    { ...doc('d2', 'o1', 'p1'), note: null },
+  ]);
+  const a = await ctx.newClient({
+    actorId: 'actor-a',
+    clientId: 'client-a',
+    schema: RESTRICT_V1,
+    allowed: { project_id: ['p1'], org_id: ['o1'] },
+  });
+  await a.api.subscribe(U1);
+  await syncIdle(a);
+  const cursor = await a.api.replicaCursor();
+  check(cursor > 0, 'U1 is live before the bump');
+  await seedTasks(ctx, [task('t4', 'p1', 'after')]);
+  await seedRows(ctx, 'docs', [{ ...doc('d3', 'o1', 'p1'), note: 'n' }]);
+  await ctx.recreateClient(a, RESTRICT_V2);
+  checkEqual(
+    (await a.api.unitState(unitId(U1)))?.cursor,
+    -1,
+    'U1 covers a changed table and bootstraps again',
+  );
+  return { a, cursor };
+}
+
+/** Every RESTRICT frame A sent from request `from` on. */
+function restrictsSent(a: ClientHandle, from: number): unknown[] {
+  return a.sentRequests
+    .slice(from)
+    .flatMap((bytes) =>
+      decodeMessage(bytes).frames.filter((frame) => frame.type === 'RESTRICT'),
+    );
+}
+
 export const schemaBumpScenarios: readonly Scenario[] = [
+  {
+    // §7.4.3, §4.7: a unit covering a kept and a changed table bootstraps the
+    // changed table only and joins the scan at its kept cursor.
+    name: 'schema-bump/restricted-unit-bootstraps-changed-tables-only',
+    specRefs: ['§7.4.3', '§4.3', '§4.7', '§4.5'],
+    requires: ['schema-window'],
+    server: { schema: RESTRICT_V2, schemaWindow: [RESTRICT_V2, RESTRICT_V1] },
+    async run(ctx) {
+      const { a, cursor } = await restrictedBump(ctx);
+      const sent = a.sentRequests.length;
+      const report = await syncIdle(a);
+      checkEqual(
+        restrictsSent(a, sent)[0],
+        { type: 'RESTRICT', cursor, tables: ['docs'] },
+        'the first pull restricts U1 to docs at its kept cursor',
+      );
+      checkEqual(
+        report.segmentRowsApplied,
+        3,
+        'only the three docs rows were transferred',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2', 't3', 't4'],
+        'the kept table kept its rows and caught up through the scan',
+      );
+      checkEqual(
+        (await a.api.unitState(unitId(U1)))?.cursor,
+        undefined,
+        'U1 is live after the restricted bootstrap',
+      );
+      check((await a.api.upgrading?.()) !== true, 'upgrading cleared');
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+      await expectConverged(ctx, 'docs', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    // §4.3, §5.6: a server that predates RESTRICT skips it and serves the
+    // whole bootstrap, which the client applies; the restriction ends.
+    name: 'schema-bump/restrict-skipped-by-older-server-bootstraps-whole',
+    specRefs: ['§4.3', '§5.6', '§9'],
+    requires: ['schema-window'],
+    server: { schema: RESTRICT_V2, schemaWindow: [RESTRICT_V2, RESTRICT_V1] },
+    async run(ctx) {
+      const { a } = await restrictedBump(ctx);
+      a.faults.skipRestrict = true;
+      const report = await syncIdle(a);
+      checkEqual(
+        report.segmentRowsApplied,
+        7,
+        'the whole unit was transferred: four tasks and three docs',
+      );
+      const sent = a.sentRequests.length;
+      a.faults.skipRestrict = false;
+      await syncIdle(a);
+      checkEqual(
+        restrictsSent(a, sent),
+        [],
+        'the completed whole bootstrap ended the restriction',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+      await expectConverged(ctx, 'docs', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    // §4.6: a kept cursor below the horizon cannot join; the unit takes the
+    // reset round trip and bootstraps whole.
+    name: 'schema-bump/restricted-unit-below-horizon-resets-whole',
+    specRefs: ['§4.6', '§7.4.3'],
+    requires: ['schema-window'],
+    server: { schema: RESTRICT_V2, schemaWindow: [RESTRICT_V2, RESTRICT_V1] },
+    async run(ctx) {
+      const { a } = await restrictedBump(ctx);
+      await ctx.server.advanceClock(60 * 60 * 1000);
+      const horizon = await ctx.server.prune({
+        activeWindowMs: 0,
+        ageForceMs: 0,
+        minRetainedCommits: 0,
+      });
+      checkEqual(
+        horizon,
+        await ctx.server.getMaxCommitSeq(),
+        'the horizon passed the kept cursor',
+      );
+      const first = await syncOk(a);
+      check(first.resets.includes(unitId(U1)), 'U1 answered reset (§4.6)');
+      checkEqual(first.segmentRowsApplied, 0, 'the reset carried no segment');
+      const sent = a.sentRequests.length;
+      const rest = await syncIdle(a);
+      checkEqual(restrictsSent(a, sent), [], 'the reset ended the restriction');
+      checkEqual(
+        rest.segmentRowsApplied,
+        7,
+        'the unit bootstrapped whole: four tasks and three docs',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+      await expectConverged(ctx, 'docs', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
   {
     // §7.4.3: a bump keeps the table whose generation is unchanged, with its
     // rows and the live unit that covers only it; the changed table is

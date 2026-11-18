@@ -72,6 +72,7 @@ fn store_unit(client: &SyncClient, status: UnitStatus, bootstrap_state: Option<&
             bootstrap_state: bootstrap_state.map(str::to_owned),
             seeded: Vec::new(),
             echo: None,
+            restriction: None,
         },
     )
     .unwrap();

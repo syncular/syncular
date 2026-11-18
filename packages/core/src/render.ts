@@ -177,6 +177,12 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
           ? { bootstrapState: parseJson(frame.bootstrapState) }
           : {}),
       };
+    case 'RESTRICT':
+      return {
+        type: 'RESTRICT',
+        cursor: frame.cursor,
+        tables: [...frame.tables],
+      };
     case 'RESP_HEADER':
       return {
         type: 'RESP_HEADER',

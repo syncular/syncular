@@ -5,9 +5,9 @@
 use crate::error::{DecodeError, Result};
 use crate::model::frame_type as ft;
 use crate::model::{
-    fenced_in_order, valid_outbox_id, valid_round_failure_code, valid_unit_id, Change, EchoStatus,
-    FencedRecord, Frame, LiveStatus, MediaType, Message, MsgKind, Op, OpResult, Operation,
-    PushStatus, SubStatus,
+    fenced_in_order, restrict_tables_error, valid_outbox_id, valid_round_failure_code,
+    valid_unit_id, Change, EchoStatus, FencedRecord, Frame, LiveStatus, MediaType, Message,
+    MsgKind, Op, OpResult, Operation, PushStatus, SubStatus,
 };
 use crate::primitives::Reader;
 use crate::segment::decode_rows_segment;
@@ -110,8 +110,8 @@ fn classify(ty: u8, kind: MsgKind) -> Result<bool> {
 
 /// §1.5 grammar: REQ_HEADER, ROUND_FAILURE 0|1 immediately after it,
 /// PUSH_COMMIT × N, PULL_HEADER 0|1, UNIT × M then PROGRESS × K (only if
-/// PULL_HEADER present), END. A request with neither push nor pull frames is
-/// invalid.
+/// PULL_HEADER present), each PROGRESS followed by RESTRICT 0|1, END. A
+/// request with neither push nor pull frames is invalid.
 fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
@@ -120,9 +120,11 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut seen_pull = false;
     let mut seen_push = false;
     let mut seen_progress = false;
+    let mut prev_progress = false; // the previous frame was PROGRESS (§4.3 RESTRICT)
 
     while let Some((ty, payload)) = next_frame(r)? {
         let known = classify(ty, MsgKind::Request)?;
+        let after_progress = std::mem::replace(&mut prev_progress, ty == ft::PROGRESS);
         if !known {
             if !seen_header {
                 return Err(DecodeError::invalid(
@@ -206,6 +208,28 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 frames.push(decode_progress(payload)?);
                 seen_body = true;
                 seen_progress = true;
+            }
+            ft::RESTRICT => {
+                if !after_progress {
+                    return Err(DecodeError::invalid(
+                        "RESTRICT frame must immediately follow a PROGRESS frame",
+                    ));
+                }
+                frames.push(frame_payload(payload, "RESTRICT", |r| {
+                    let cursor = r.i64("cursor")?;
+                    if cursor < 0 {
+                        return Err(DecodeError::invalid("RESTRICT.cursor must be >= 0"));
+                    }
+                    let count = r.u32("tables")? as usize;
+                    let mut tables = Vec::with_capacity(count.min(1024));
+                    for _ in 0..count {
+                        tables.push(r.str("tables")?);
+                    }
+                    if let Some(reason) = restrict_tables_error(&tables) {
+                        return Err(DecodeError::invalid(reason));
+                    }
+                    Ok(Frame::Restrict { cursor, tables })
+                })?);
             }
             _ => unreachable!("classified as known request type"),
         }

@@ -49,13 +49,18 @@ struct Unit<'a> {
     tables: Vec<&'a Table>,
 }
 
+/// A unit's `PROGRESS` (§4.3): its cursor, resume token, and the kept cursor
+/// and tables of the `RESTRICT` frame that follows it.
+type Progress<'a> = (i64, Option<&'a str>, Option<(i64, &'a [String])>);
+
 /// A unit's section kind and its scan-set bound (§4.5).
 enum State {
     Live,
     Reset,
     Post(i64),
+    /// `join` is the §4.7 join cursor: the pin, or the `RESTRICT` cursor.
     Bootstrap {
-        pin: i64,
+        join: i64,
         frames: Vec<Frame>,
         token: Option<String>,
     },
@@ -72,20 +77,24 @@ fn scopes_value(scopes: &[(String, String)]) -> Value {
 
 /// §4.7: one bootstrap section's frames (its `UNIT_EXTENT`, then segments)
 /// from a usable resume token, or from a fresh pin at `max_seq` that counts
-/// the extent; returns the pin, the frames and the
-/// advanced token, `None` once every table is exhausted.
+/// the extent of `tables`, the unit's bootstrap tables; returns the pin, the
+/// frames and the advanced token, `None` once every table is exhausted. A
+/// token pinned below `floor` (the horizon, or a restricted unit's kept
+/// cursor) restarts.
+#[allow(clippy::too_many_arguments)]
 fn bootstrap(
     conn: &Connection,
     schema: &Schema,
     limits: &Limits,
-    unit: &Unit<'_>,
+    scopes: &[(String, String)],
+    tables: &[&Table],
     token: Option<&str>,
     max_seq: i64,
-    horizon: i64,
+    floor: i64,
 ) -> Result<(i64, Vec<Frame>, Option<String>), AuthorityError> {
     // A token whose pin is no commit of this log, whose tables differ from
-    // the covered tables, or whose position names none of them restarts the
-    // bootstrap, as does a pin behind the horizon.
+    // the bootstrap tables, or whose position names none of them restarts the
+    // bootstrap, as does a pin below `floor`.
     let resume = token.and_then(|raw| {
         let parsed: Value = serde_json::from_str(raw).ok()?;
         let as_of = parsed.get("asOfCommitSeq")?.as_i64()?;
@@ -105,12 +114,12 @@ fn bootstrap(
             )),
             _ => return None,
         };
-        let same_tables = names.len() == unit.tables.len()
+        let same_tables = names.len() == tables.len()
             && names
                 .iter()
-                .zip(&unit.tables)
+                .zip(tables)
                 .all(|(name, table)| name.as_str() == Some(table.name.as_str()));
-        (same_tables && (horizon..=max_seq).contains(&as_of) && index < unit.tables.len())
+        (same_tables && (floor..=max_seq).contains(&as_of) && index < tables.len())
             .then_some((as_of, index, row_cursor, extent))
     });
     let (pin, mut index, mut row_cursor, extent) = match resume {
@@ -118,8 +127,8 @@ fn bootstrap(
         // A fresh pin counts the rows the bootstrap delivers.
         None => {
             let mut total = 0;
-            for table in &unit.tables {
-                total += store::count_rows(conn, table, unit.scopes)?;
+            for table in tables {
+                total += store::count_rows(conn, table, scopes)?;
             }
             (max_seq, 0, None, Some((total, 0)))
         }
@@ -133,13 +142,9 @@ fn bootstrap(
         .collect();
     let mut delivered = 0;
     let mut pages = 0;
-    while index < unit.tables.len() {
+    while index < tables.len() {
         if pages == limits.snapshot_pages {
-            let names: Vec<&str> = unit
-                .tables
-                .iter()
-                .map(|table| table.name.as_str())
-                .collect();
+            let names: Vec<&str> = tables.iter().map(|table| table.name.as_str()).collect();
             let token = format!(
                 "{{\"asOfCommitSeq\":{pin},\"tables\":{},\"tableIndex\":{index},\"rowCursor\":{}{}}}",
                 Value::from(names),
@@ -151,11 +156,11 @@ fn bootstrap(
             );
             return Ok((pin, frames, Some(token)));
         }
-        let table = unit.tables[index];
+        let table = tables[index];
         let mut rows = store::scan_rows(
             conn,
             table,
-            unit.scopes,
+            scopes,
             row_cursor.as_deref(),
             limits.snapshot_rows + 1,
         )?;
@@ -209,7 +214,7 @@ fn pull(
     schema: &Schema,
     limits: &Limits,
     units: &[Unit<'_>],
-    progress: &HashMap<&str, (i64, Option<&str>)>,
+    progress: &HashMap<&str, Progress<'_>>,
     replica_cursor: i64,
     echo_sections: bool,
     echo: [u8; 32],
@@ -226,9 +231,37 @@ fn pull(
     let states = units
         .iter()
         .map(|unit| {
-            let Some((cursor, token)) = progress.get(unit.id.as_str()) else {
+            let Some((cursor, token, restrict)) = progress.get(unit.id.as_str()) else {
                 return Ok(State::Live);
             };
+            // §4.7 restricted bootstrap: only the `RESTRICT` tables, joining at
+            // the kept cursor; a kept cursor the log cannot serve resets (§4.6).
+            if let Some((kept, names)) = restrict {
+                if *kept < horizon || *kept > max_seq {
+                    return Ok(State::Reset);
+                }
+                let tables: Vec<&Table> = unit
+                    .tables
+                    .iter()
+                    .copied()
+                    .filter(|table| names.contains(&table.name))
+                    .collect();
+                let (_, frames, token) = bootstrap(
+                    conn,
+                    schema,
+                    limits,
+                    unit.scopes,
+                    &tables,
+                    *token,
+                    max_seq,
+                    *kept,
+                )?;
+                return Ok(State::Bootstrap {
+                    join: *kept,
+                    frames,
+                    token,
+                });
+            }
             // §4.7: a token, cursor -1 or a cursor from the future bootstraps.
             if token.is_none() && (0..=max_seq).contains(cursor) {
                 return Ok(if *cursor < horizon {
@@ -237,9 +270,21 @@ fn pull(
                     State::Post(*cursor)
                 });
             }
-            let (pin, frames, token) =
-                bootstrap(conn, schema, limits, unit, *token, max_seq, horizon)?;
-            Ok(State::Bootstrap { pin, frames, token })
+            let (join, frames, token) = bootstrap(
+                conn,
+                schema,
+                limits,
+                unit.scopes,
+                &unit.tables,
+                *token,
+                max_seq,
+                horizon,
+            )?;
+            Ok(State::Bootstrap {
+                join,
+                frames,
+                token,
+            })
         })
         .collect::<Result<Vec<_>, AuthorityError>>()?;
     let bounds: Vec<Option<i64>> = states
@@ -248,8 +293,8 @@ fn pull(
             State::Live => Some(r),
             State::Post(cursor) => Some(*cursor),
             State::Bootstrap {
-                pin, token: None, ..
-            } => Some(*pin),
+                join, token: None, ..
+            } => Some(*join),
             _ => None,
         })
         .collect();
@@ -287,11 +332,11 @@ fn pull(
             State::Live => None,
             State::Reset => Some(-1),
             State::Bootstrap {
-                pin,
+                join,
                 token: Some(_),
                 ..
-            } => Some(*pin),
-            State::Post(cursor) | State::Bootstrap { pin: cursor, .. } => {
+            } => Some(*join),
+            State::Post(cursor) | State::Bootstrap { join: cursor, .. } => {
                 if live_reset {
                     Some(*cursor)
                 } else if (*cursor).max(t) >= joined {
@@ -318,7 +363,7 @@ fn pull(
         // A section that delivers no bootstrap echoes the request's cursor.
         let cursor = progress
             .get(unit.id.as_str())
-            .map_or(r, |(cursor, _)| *cursor);
+            .map_or(r, |(cursor, _, _)| *cursor);
         match state {
             State::Reset => {
                 frames.push(sub_start(
@@ -333,14 +378,14 @@ fn pull(
                 });
             }
             State::Bootstrap {
-                pin,
+                join,
                 frames: segments,
                 token,
             } => {
                 frames.push(sub_start(&unit.id, SubStatus::Active, "", true));
                 frames.extend(segments);
                 frames.push(Frame::SubEnd {
-                    next_cursor: pin,
+                    next_cursor: join,
                     bootstrap_state: token.map(RawJson),
                 });
             }
@@ -497,8 +542,18 @@ fn respond(
                 bootstrap_state,
             } => progress_frames.push((
                 id.as_str(),
-                (*cursor, bootstrap_state.as_ref().map(|raw| raw.0.as_str())),
+                (
+                    *cursor,
+                    bootstrap_state.as_ref().map(|raw| raw.0.as_str()),
+                    None,
+                ),
             )),
+            // §4.3: the decoder placed it right after its PROGRESS.
+            Frame::Restrict { cursor, tables } => {
+                if let Some((_, (_, _, restrict))) = progress_frames.last_mut() {
+                    *restrict = Some((*cursor, tables.as_slice()));
+                }
+            }
             _ => {}
         }
     }
@@ -661,7 +716,7 @@ fn respond(
                 planned.push(Unit { id, scopes, tables });
             }
             let mut progressed = HashSet::new();
-            for (id, _) in &progress_frames {
+            for (id, (_, _, restrict)) in &progress_frames {
                 if !ids.contains(*id) || !progressed.insert(*id) {
                     return Err(invalid_subscription(
                         "a PROGRESS frame names no registered unit or repeats one (§4.1)",
@@ -670,6 +725,24 @@ fn respond(
                             "id": id,
                         }),
                     ));
+                }
+                // §4.3: a restriction names covered tables, never all of them.
+                if let Some((_, names)) = restrict {
+                    let covered = &planned
+                        .iter()
+                        .find(|unit| unit.id == *id)
+                        .expect("ids holds every planned unit")
+                        .tables;
+                    if names.len() >= covered.len()
+                        || names
+                            .iter()
+                            .any(|name| !covered.iter().any(|table| table.name == *name))
+                    {
+                        return Err(invalid_subscription(
+                            "a RESTRICT frame names a table its unit does not cover, or every covered table (§4.3)",
+                            json!({ "reason": "restrict_tables", "id": id, "tables": names }),
+                        ));
+                    }
                 }
             }
             units = Some(planned);
@@ -739,7 +812,7 @@ fn respond(
     // §4.4 rule 1: every unit gets a section when the list traveled or the
     // client holds another echo.
     let echo_sections = traveled.is_some() || *echo_digest != Some(echo);
-    let progress: HashMap<&str, (i64, Option<&str>)> = progress_frames.into_iter().collect();
+    let progress: HashMap<&str, Progress<'_>> = progress_frames.into_iter().collect();
     let (record, catching_up) = pull(
         conn,
         schema,

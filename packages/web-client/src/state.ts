@@ -48,6 +48,13 @@ export interface UnitRecord {
   /** §5.6 applied-segment record: segment id → rows applied at the unit's
    * current cursor and token. */
   readonly applied?: Readonly<Record<string, number>> | undefined;
+  /** §7.4.3 restriction: the kept cursor and the tables to bootstrap. */
+  readonly restrict?: Restriction | undefined;
+}
+
+export interface Restriction {
+  readonly cursor: number;
+  readonly tables: readonly string[];
 }
 
 /** §4.1: a catching-up unit holding cursor `-1` or a resume token. */
@@ -94,7 +101,8 @@ export function pairScopes(
 }
 
 /** §3.3 row ownership: the pair scopes of every owner of `table` but one.
- * A bootstrapping unit owns the tables its current bootstrap seeded. */
+ * A bootstrapping unit owns the tables its current bootstrap seeded, and a
+ * restricted one the tables outside its restriction. */
 export function unitOwners(
   units: readonly UnitRecord[],
   table: CompiledClientTable,
@@ -106,7 +114,8 @@ export function unitOwners(
       (owning(unit) ||
         (unit.status === 'active' &&
           unit.echo !== undefined &&
-          unit.seeded.includes(table.name))) &&
+          (unit.seeded.includes(table.name) ||
+            unit.restrict?.tables.includes(table.name) === false))) &&
       covers(table, unit.scopes)
         ? pairScopes(unit.scopes, table.name, unit.echo)
         : undefined;
@@ -142,6 +151,7 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
   const seeded = json(row.seeded);
   const echo = row.echo === null ? undefined : json(row.echo);
   const applied = row.applied === null ? undefined : json(row.applied);
+  const restrict = row.restriction === null ? undefined : json(row.restriction);
   const { id, status, cursor } = row;
   if (
     typeof id !== 'string' ||
@@ -179,6 +189,18 @@ function rowToRecord(row: Record<string, unknown>): UnitRecord {
   if (bootstrapState !== undefined) record.bootstrapState = bootstrapState;
   if (echo !== undefined) record.echo = echo as FencedRecord[];
   if (applied !== undefined) record.applied = applied as Record<string, number>;
+  if (restrict !== undefined) {
+    if (
+      !isMap(restrict) ||
+      !Number.isInteger(restrict.cursor) ||
+      !isStrings(restrict.tables)
+    )
+      throw corrupt();
+    record.restrict = {
+      cursor: restrict.cursor as number,
+      tables: restrict.tables,
+    };
+  }
   return record;
 }
 
@@ -201,7 +223,7 @@ export function getUnit(
  * §5.6 applied-segment record ends when the cursor or the token changes. */
 export function saveUnit(db: ClientDatabase, record: UnitRecord): void {
   db.exec(
-    `INSERT INTO ${UNITS_TABLE}(id,scopes,explicit,status,reason_code,cursor,bootstrap_state,seeded,echo)VALUES(?,?,?,?,?,?,?,?,?)ON CONFLICT(id)DO UPDATE SET explicit=excluded.explicit,status=excluded.status,reason_code=excluded.reason_code,cursor=excluded.cursor,bootstrap_state=excluded.bootstrap_state,seeded=excluded.seeded,echo=excluded.echo,applied=iif((cursor,bootstrap_state)IS(excluded.cursor,excluded.bootstrap_state),applied,NULL)`,
+    `INSERT INTO ${UNITS_TABLE}(id,scopes,explicit,status,reason_code,cursor,bootstrap_state,seeded,echo,restriction)VALUES(?,?,?,?,?,?,?,?,?,?)ON CONFLICT(id)DO UPDATE SET explicit=excluded.explicit,status=excluded.status,reason_code=excluded.reason_code,cursor=excluded.cursor,bootstrap_state=excluded.bootstrap_state,seeded=excluded.seeded,echo=excluded.echo,restriction=excluded.restriction,applied=iif((cursor,bootstrap_state)IS(excluded.cursor,excluded.bootstrap_state),applied,NULL)`,
     [
       record.id,
       JSON.stringify(record.scopes),
@@ -212,6 +234,7 @@ export function saveUnit(db: ClientDatabase, record: UnitRecord): void {
       record.bootstrapState ?? null,
       JSON.stringify(record.seeded),
       record.echo === undefined ? null : JSON.stringify(record.echo),
+      record.restrict === undefined ? null : JSON.stringify(record.restrict),
     ],
   );
 }
@@ -238,17 +261,24 @@ export function deleteUnit(db: ClientDatabase, id: string): void {
  * §7.4.3 reset, §2.1 log reset and local rebootstrap: keep the unit
  * registrations (the app's declared intent) and discard the synced state of
  * every unit outside `keep`, so the next round sends the list and
- * fresh-bootstraps those units. The replica cursor survives only while a
+ * fresh-bootstraps those units. A bump (`restricts` given) keeps every echo
+ * and restricts the units it names. The replica cursor survives only while a
  * kept unit is live. Caller owns the transaction.
  */
 export function resetUnits(
   db: ClientDatabase,
   keep: readonly string[] = [],
+  restricts?: ReadonlyMap<string, Restriction>,
 ): void {
   db.exec(
-    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',echo=NULL,applied=NULL WHERE id NOT IN(${keep.map(() => '?').join(',')})`,
+    `UPDATE ${UNITS_TABLE} SET status='active',reason_code=NULL,cursor=-1,bootstrap_state=NULL,seeded='[]',${restricts ? '' : 'echo=NULL,'}applied=NULL,restriction=NULL WHERE id NOT IN(${keep.map(() => '?').join(',')})`,
     [...keep],
   );
+  for (const [id, restrict] of restricts ?? [])
+    db.exec(`UPDATE ${UNITS_TABLE} SET restriction=? WHERE id=?`, [
+      JSON.stringify(restrict),
+      id,
+    ]);
   db.exec(
     `DELETE FROM ${META_TABLE} WHERE key IN(?,?) OR key=? AND NOT EXISTS(SELECT 1 FROM ${UNITS_TABLE} WHERE cursor IS NULL)`,
     [ECHO_DIGEST_KEY, REGISTERED_DIGEST_KEY, REPLICA_CURSOR_KEY],
@@ -299,7 +329,11 @@ export function pruneUnknownUnits(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   bump = false,
-): { readonly tables: ReadonlySet<string>; readonly units: string[] } {
+): {
+  readonly tables: ReadonlySet<string>;
+  readonly units: string[];
+  readonly restricts: Map<string, Restriction>;
+} {
   const stored = bump ? getMeta(db, 'subscriptionScopeSchema') : undefined;
   const previous =
     stored === undefined
@@ -388,22 +422,41 @@ export function pruneUnknownUnits(
     db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE unit_id=?`, [id]);
     deleteUnit(db, id);
   }
-  return {
-    tables: kept,
-    units: loadUnits(db)
-      .filter(
-        ({ scopes }) =>
-          Object.entries(previous ?? {}).every(
-            ([name, old]) =>
-              kept.has(name) ||
-              !Object.keys(scopes).every((v) => old[v] !== undefined),
-          ) &&
-          [...schema.tables.values()].every(
-            (table) => kept.has(table.name) || !covers(table, scopes),
-          ),
-      )
-      .map((unit) => unit.id),
-  };
+  const units: string[] = [];
+  const restricts = new Map<string, Restriction>();
+  for (const unit of loadUnits(db)) {
+    const covered = [...schema.tables.values()]
+      .filter((table) => covers(table, unit.scopes))
+      .map((table) => table.name);
+    if (
+      Object.entries(previous ?? {}).every(
+        ([name, old]) =>
+          kept.has(name) ||
+          !Object.keys(unit.scopes).every((v) => old[v] !== undefined),
+      ) &&
+      covered.every((name) => kept.has(name))
+    ) {
+      units.push(unit.id);
+      continue;
+    }
+    // §7.4.3 restriction: a live, post-bootstrap or restricted unit keeps its
+    // rows of kept tables through its kept cursor and bootstraps the rest.
+    const tables = covered
+      .filter((name) => !kept.has(name) || unit.restrict?.tables.includes(name))
+      .sort();
+    const cursor =
+      unit.restrict?.cursor ??
+      (bootstrapping(unit) ? -1 : (unit.cursor ?? replicaCursor(db)));
+    if (
+      bump &&
+      unit.status === 'active' &&
+      cursor >= 0 &&
+      tables.length > 0 &&
+      tables.length < covered.length
+    )
+      restricts.set(unit.id, { cursor, tables });
+  }
+  return { tables: kept, units, restricts };
 }
 
 export function getMeta(db: ClientDatabase, key: string): string | undefined {
@@ -422,20 +475,17 @@ export function setMeta(db: ClientDatabase, key: string, value: string): void {
 export function getLocalRevision(db: ClientDatabase): LocalRevision {
   const raw = getMeta(db, LOCAL_REVISION_KEY);
   if (raw === undefined) return 0n;
-  if (typeof raw !== 'string' || !/^(0|[1-9][0-9]*)$/.test(raw)) {
+  if (
+    typeof raw !== 'string' ||
+    !/^(0|[1-9][0-9]*)$/.test(raw) ||
+    BigInt(raw) > MAX_U64
+  ) {
     throw new ClientSyncError(
       'sync.local_corrupt',
       'persisted local revision is invalid',
     );
   }
-  const revision = BigInt(raw);
-  if (revision > MAX_U64) {
-    throw new ClientSyncError(
-      'sync.local_corrupt',
-      'persisted local revision is invalid',
-    );
-  }
-  return revision;
+  return BigInt(raw);
 }
 
 /**

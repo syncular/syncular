@@ -609,8 +609,20 @@ export class ScenarioContext {
         ...(fetchBlobUrl !== undefined ? { fetchBlobUrl } : {}),
         ...(uploadBlobGrant !== undefined ? { uploadBlobGrant } : {}),
         ...(putBlobUrl !== undefined ? { putBlobUrl } : {}),
-        sync: async (request) => {
-          sentRequests.push(request);
+        sync: async (bytes) => {
+          sentRequests.push(bytes);
+          let request = bytes;
+          if (faults.skipRestrict) {
+            const message = decodeMessage(bytes);
+            if (message.msgKind !== 'request')
+              throw new Error('expected request');
+            request = encodeMessage({
+              ...message,
+              frames: message.frames.filter(
+                (frame) => frame.type !== 'RESTRICT',
+              ),
+            });
+          }
           if (faults.dropNextRequests > 0) {
             faults.dropNextRequests -= 1;
             throw new TransportFault('injected: request lost');

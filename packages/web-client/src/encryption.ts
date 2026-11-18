@@ -151,20 +151,11 @@ export async function encryptRowValues<T extends RowValue | undefined>(
   values: readonly T[],
   storedKeyId?: string,
 ): Promise<T[]> {
-  if (!table.hasEncryptedColumns) return values.slice();
   const out = values.slice();
   // Sparse semantics: absent (undefined) and NULL columns are never
   // re-encrypted, so a patch that presents no encrypted value needs no key.
-  let hasPresentEncrypted = false;
-  for (let i = 0; i < table.columns.length; i++) {
-    if (table.columns[i]?.encrypted !== true) continue;
-    const value = out[i];
-    if (value !== undefined && value !== null) {
-      hasPresentEncrypted = true;
-      break;
-    }
-  }
-  if (!hasPresentEncrypted) return out;
+  if (!table.columns.some((column, i) => column.encrypted && out[i] != null))
+    return out;
   if (config === undefined) {
     throw new EncryptError('encrypted columns need an encryption config');
   }
@@ -272,7 +263,6 @@ export async function decryptRowValues(
   table: CompiledClientTable,
   values: readonly RowValue[],
 ): Promise<RowValue[]> {
-  if (!table.hasEncryptedColumns) return values.slice();
   const out = values.slice();
   for (let i = 0; i < table.columns.length; i++) {
     const column = table.columns[i];
@@ -287,20 +277,12 @@ export async function decryptRowValues(
     if (config === undefined) {
       throw new DecryptError('encrypted columns need an encryption config');
     }
-    out[i] = deserializeGuard(
-      await decryptValue(
-        declaredTypeOf(column),
-        value,
-        config.keyProvider,
-        table.name,
-      ),
+    out[i] = await decryptValue(
+      declaredTypeOf(column),
+      value,
+      config.keyProvider,
+      table.name,
     );
   }
   return out;
-}
-
-// decryptValue already returns a PlainValue; RowValue is a superset, so this
-// is just the type widening (kept explicit for clarity at the seam).
-function deserializeGuard(value: PlainValue): RowValue {
-  return value;
 }

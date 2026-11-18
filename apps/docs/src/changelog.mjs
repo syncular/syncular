@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-18',
+    title: 'A schema bump re-downloads only the changed tables of a unit',
+    body: "A unit that covers a table whose generation changed and tables whose generation did not now keeps its rows of the unchanged tables and bootstraps only the changed ones. Its next pull carries a new `RESTRICT` request frame with the unit's kept cursor and the changed tables; once those tables are bootstrapped the unit catches up on every covered table from the kept cursor. Before, the unit downloaded every table it covers: a bump that changed one of 24 tables re-downloaded about 26,000 rows in 25 segments and kept a browser in `upgrading` for 41 s. A server older than this release skips the frame and serves the whole unit as before, and a kept cursor below the pruning horizon also bootstraps the whole unit. Upgrade servers before clients.",
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#units-that-cover-changed-and-unchanged-tables',
+        label: 'Units that cover changed and unchanged tables',
+      },
+    ],
+  },
+  {
+    date: '2026-11-18',
     title: 'One blob-cache cap for in-process, worker and native clients',
     body: "Breaking. The blob-cache cap moved from `SyncClientConfig.blobCacheMaxBytes` to `limits.blobCacheMaxBytes`, the key the Rust core already reads. Move the option into `limits`; the top-level field is gone. `createSyncClientHandle` forwards `limits` to its worker core, so a browser worker's blob cache now honors the cap; before, the worker had no way to set it and its cache grew without bound.",
     links: [

@@ -143,6 +143,7 @@ fn live_unit(client: &SyncClient, scopes: &[(&str, &str)]) -> String {
             bootstrap_state: None,
             seeded: Vec::new(),
             echo: Some(Vec::new()),
+            restriction: None,
         },
     )
     .unwrap();

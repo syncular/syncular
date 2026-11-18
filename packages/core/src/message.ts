@@ -100,6 +100,15 @@ export interface ProgressFrame {
   bootstrapState?: string;
 }
 
+/** §4.3: the restriction of the unit whose `PROGRESS` it follows (§7.4.3). */
+export interface RestrictFrame {
+  type: 'RESTRICT';
+  /** The kept cursor `C`, `>= 0`: the unit's join cursor (§4.7). */
+  cursor: number;
+  /** The tables to bootstrap: non-empty, ascending code-unit order, unique. */
+  tables: readonly string[];
+}
+
 export interface UnknownFrame {
   type: 'UNKNOWN';
   frameType: number;
@@ -122,6 +131,7 @@ export type RequestFrame =
   | PullHeaderFrame
   | UnitFrame
   | ProgressFrame
+  | RestrictFrame
   | UnknownFrame;
 
 export interface RespHeaderFrame {
@@ -529,6 +539,22 @@ function decodePullHeader(r: ByteReader): PullHeaderFrame {
   };
 }
 
+/** §4.3: a kept cursor `>= 0` and a non-empty list of non-empty names in
+ * strictly ascending code-unit order (the empty string sorts first). */
+function checkRestrict(
+  { cursor, tables }: RestrictFrame,
+  fail: (message: string) => never,
+) {
+  if (
+    cursor < 0 ||
+    tables.length === 0 ||
+    tables.some((table, i) => !((tables[i - 1] ?? '') < table))
+  )
+    fail(
+      'RESTRICT needs a cursor >= 0 and ascending, unique, non-empty tables',
+    );
+}
+
 function decodeProgress(r: ByteReader): ProgressFrame {
   const id = r.str();
   checkUnitId(id, 'PROGRESS', invalid);
@@ -827,6 +853,14 @@ function decodeRequestFrame(
     case FrameType.PROGRESS:
       frame = decodeProgress(r);
       break;
+    case FrameType.RESTRICT: {
+      const cursor = r.i64();
+      const tables: string[] = [];
+      for (let i = r.u32(); i > 0; i--) tables.push(r.str());
+      frame = { type: 'RESTRICT', cursor, tables };
+      checkRestrict(frame, invalid);
+      break;
+    }
     default:
       if (RESPONSE_FRAME_TYPES.has(frameType)) {
         invalid(
@@ -918,6 +952,10 @@ function validateRequestSequence(frames: readonly RequestFrame[]): void {
       case 'PROGRESS':
         if (!hasPull) invalid('PROGRESS frame without a PULL_HEADER');
         hasProgress = true;
+        break;
+      case 'RESTRICT':
+        if (frames[index - 1]?.type !== 'PROGRESS')
+          invalid('RESTRICT frame must follow a PROGRESS frame');
         break;
       case 'UNKNOWN':
         break;
@@ -1173,6 +1211,13 @@ function encodeRequestFrame(frame: RequestFrame, w: ByteWriter): number {
       w.str(frame.id);
       w.i64(frame.cursor);
       w.opt(frame.bootstrapState, (v) => w.str(v));
+      break;
+    }
+    case 'RESTRICT': {
+      checkRestrict(frame, encodeInvalid);
+      w.i64(frame.cursor);
+      w.u32(frame.tables.length);
+      for (const table of frame.tables) w.str(table);
       break;
     }
     case 'UNKNOWN':

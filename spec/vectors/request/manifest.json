@@ -15,6 +15,12 @@
       "covers": "A traveling list of two units + two PROGRESS frames: a fresh bootstrap (cursor = -1) and a resumed bootstrap (cursor at the §4.7 pin, bootstrapState round-trip); accept bits incl. sqlite + signed URLs; empty echoDigest"
     },
     {
+      "name": "pull-restrict",
+      "bin": "pull-restrict.bin",
+      "json": "pull-restrict.json",
+      "covers": "Two restricted units (§4.3 RESTRICT, §4.7): a first round with PROGRESS cursor -1 and the kept cursor in RESTRICT, and a resumed round at the join cursor with a token over the bootstrap tables"
+    },
+    {
       "name": "push-multi-commit",
       "bin": "push-multi-commit.bin",
       "json": "push-multi-commit.json",
@@ -159,6 +165,30 @@
       "bin": "invalid/unit-after-progress.bin",
       "error": "sync.invalid_request",
       "covers": "UNIT after a PROGRESS frame (§1.5: PROGRESS follows every UNIT)"
+    },
+    {
+      "name": "restrict-without-progress",
+      "bin": "invalid/restrict-without-progress.bin",
+      "error": "sync.invalid_request",
+      "covers": "RESTRICT not immediately after a PROGRESS frame (§1.5, §4.3)"
+    },
+    {
+      "name": "restrict-cursor-negative",
+      "bin": "invalid/restrict-cursor-negative.bin",
+      "error": "sync.invalid_request",
+      "covers": "RESTRICT.cursor = -1 (§4.3: a kept cursor is >= 0)"
+    },
+    {
+      "name": "restrict-tables-empty",
+      "bin": "invalid/restrict-tables-empty.bin",
+      "error": "sync.invalid_request",
+      "covers": "RESTRICT with an empty table list (§4.3)"
+    },
+    {
+      "name": "restrict-tables-unordered",
+      "bin": "invalid/restrict-tables-unordered.bin",
+      "error": "sync.invalid_request",
+      "covers": "RESTRICT.tables out of ascending code-unit order (§4.3; a repeat fails the same rule)"
     },
     {
       "name": "unit-without-pull-header",

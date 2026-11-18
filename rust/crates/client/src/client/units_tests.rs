@@ -1832,6 +1832,14 @@ fn a_bump_keeps_a_table_with_an_unchanged_generation_and_the_units_covering_only
         Some(-1),
         "a unit covering tasks resets"
     );
+    assert_eq!(
+        h.unit(&p1()).restriction,
+        Some(UnitRestriction {
+            cursor: 3,
+            tables: vec!["tasks".to_owned()],
+        }),
+        "it keeps its notes rows and bootstraps tasks only"
+    );
     assert_eq!(replica_cursor(&h.client.conn).unwrap(), 3);
     assert_eq!(
         h.client.get_meta(TABLE_GENERATIONS_KEY).unwrap().as_deref(),
@@ -1855,12 +1863,16 @@ fn a_bump_keeps_a_table_with_an_unchanged_generation_and_the_units_covering_only
     // the reset unit bootstraps, and the list travels again.
     assert_eq!(progress_of(request), vec![(id_of(&p1()), -1, None)]);
     let (cursor, _, echo_digest) = pull_of(request);
+    assert_eq!(restricts_of(request).len(), 1);
     assert_eq!(cursor, 3);
     assert_eq!(echo_digest, None);
     assert_eq!(units_of(request).len(), 2);
     assert_eq!(h.ids("notes"), vec!["n1", "n2"]);
     assert_eq!(h.ids("tasks"), vec!["t1"]);
     assert!(h.client.pending_commit_ids().is_empty());
+    // §5.6: the notes first page is a whole bootstrap from a server that
+    // predates RESTRICT; it ends the restriction.
+    assert_eq!(h.unit(&p1()).restriction, None);
     drop(h);
     std::fs::remove_file(path).unwrap();
 }
@@ -2042,4 +2054,142 @@ fn a_unit_total_rises_with_rows_written_during_the_bootstrap() {
         (last.unit_rows_total, last.unit_rows_processed),
         (Some(2), Some(2))
     );
+}
+
+/// Every `RESTRICT` of a request with the id of the `PROGRESS` it follows.
+fn restricts_of(frames: &[Frame]) -> Vec<(String, i64, Vec<String>)> {
+    frames
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [Frame::Progress { id, .. }, Frame::Restrict { cursor, tables }] => {
+                Some((id.clone(), *cursor, tables.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A replica bumped from `tasks` generation t1 to t2 with `notes` kept: the
+/// live tasks+notes unit `p1` holds restriction (3, [tasks]).
+fn restricted_replica(name: &str) -> (Harness, String, String) {
+    let path = generation_db(name);
+    let pending = synced_replica(&path, &generated(1, Some("t1"), Some("n1")));
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &generated(2, Some("t2"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    (Harness::over(client), path, pending)
+}
+
+#[test]
+fn a_restricted_unit_bootstraps_its_changed_tables_and_joins_at_the_kept_cursor() {
+    let (mut h, path, pending) = restricted_replica("restrict");
+    // §7.4.3: the unit keeps its echo and its kept cursor C = R = 3.
+    let unit = h.unit(&p1());
+    assert_eq!(
+        (unit.cursor, unit.echo, unit.restriction),
+        (
+            Some(-1),
+            Some(Vec::new()),
+            Some(UnitRestriction {
+                cursor: 3,
+                tables: vec!["tasks".to_owned()],
+            })
+        )
+    );
+    let token = r#"{"asOfCommitSeq":4}"#;
+    let first = h.rows("tasks", &[&["t1", "p1", "a"]]);
+    let pushed = h.commit(4, &[("notes", Op::Upsert, &["n2", "p1", "o1", "mine"], 1)]);
+    h.round(concat(vec![
+        vec![
+            applied(&pending, 4),
+            start(&id_of(&p1()), SubStatus::Active, true, vec![]),
+            first,
+            end(3, Some(token)),
+        ],
+        live(4, vec![pushed]),
+    ]));
+    // §4.3: PROGRESS carries -1 until the first section, then the join
+    // cursor and the token; RESTRICT follows it every round.
+    let request = h.last();
+    assert_eq!(progress_of(request), vec![(id_of(&p1()), -1, None)]);
+    assert_eq!(
+        restricts_of(request),
+        vec![(id_of(&p1()), 3, vec!["tasks".to_owned()])]
+    );
+    let second = h.rows("tasks", &[&["t9", "p1", "b"]]);
+    h.round(concat(vec![
+        vec![
+            start(&id_of(&p1()), SubStatus::Active, true, vec![]),
+            second,
+            end(3, None),
+        ],
+        live(4, vec![]),
+    ]));
+    let request = h.last();
+    assert_eq!(
+        progress_of(request),
+        vec![(id_of(&p1()), 3, Some(token.to_owned()))]
+    );
+    assert_eq!(restricts_of(request).len(), 1);
+    // Completion ends the restriction and the scan from C joins the unit;
+    // the kept notes rows were never cleared.
+    let unit = h.unit(&p1());
+    assert_eq!((unit.cursor, unit.restriction), (None, None));
+    assert_eq!(h.ids("tasks"), vec!["t1", "t9"]);
+    assert_eq!(h.ids("notes"), vec!["n1", "n2"]);
+    drop(h);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn a_reset_ends_the_restriction() {
+    let (mut h, path, pending) = restricted_replica("restrict-reset");
+    h.round(concat(vec![
+        vec![
+            applied(&pending, 4),
+            start(&id_of(&p1()), SubStatus::Reset, false, vec![]),
+            end(-1, None),
+        ],
+        live(4, vec![]),
+    ]));
+    let unit = h.unit(&p1());
+    assert_eq!((unit.cursor, unit.restriction), (Some(-1), None));
+    h.round(live(4, vec![]));
+    assert_eq!(restricts_of(h.last()), vec![]);
+    assert_eq!(progress_of(h.last()), vec![(id_of(&p1()), -1, None)]);
+    drop(h);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn a_restricted_unit_owns_the_rows_of_tables_outside_its_restriction() {
+    let h = Harness::new();
+    let restricted = UnitRecord {
+        id: id_of(&p1()),
+        scopes: p1(),
+        explicit: true,
+        status: UnitStatus::Active,
+        reason_code: None,
+        cursor: Some(-1),
+        bootstrap_state: None,
+        seeded: Vec::new(),
+        echo: Some(Vec::new()),
+        restriction: Some(UnitRestriction {
+            cursor: 3,
+            tables: vec!["tasks".to_owned()],
+        }),
+    };
+    let owners = |table: &str| {
+        unit_owners(
+            std::slice::from_ref(&restricted),
+            h.client.schema.table(table).unwrap(),
+            "other",
+        )
+    };
+    assert_eq!(owners("notes").len(), 1);
+    assert!(owners("tasks").is_empty());
 }

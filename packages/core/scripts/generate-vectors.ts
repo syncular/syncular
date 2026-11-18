@@ -313,6 +313,34 @@ const pullBootstrap: RequestMessage = {
   ],
 };
 
+// §4.3 RESTRICT: a restricted bootstrap's first round (cursor -1) and a
+// resumed one (cursor at the join cursor C, token over the bootstrap tables).
+const pullRestrict: RequestMessage = {
+  wireVersion: 4,
+  msgKind: 'request',
+  frames: [
+    {
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 3,
+      outboxId: 'outbox-7d1c',
+    },
+    pullHeader({ accept: 0b0111, cursor: 42 }),
+    { type: 'UNIT', scopes: UNIT_NOTES },
+    { type: 'UNIT', scopes: UNIT_TEAM },
+    { type: 'PROGRESS', id: NOTES_ID, cursor: -1 },
+    { type: 'RESTRICT', cursor: 42, tables: ['notes'] },
+    {
+      type: 'PROGRESS',
+      id: TEAM_ID,
+      cursor: 40,
+      bootstrapState:
+        '{"asOfCommitSeq":57,"tables":["comments","tasks"],"tableIndex":1,"rowCursor":null}',
+    },
+    { type: 'RESTRICT', cursor: 40, tables: ['comments', 'tasks'] },
+  ],
+};
+
 const pushMultiCommit: RequestMessage = {
   wireVersion: 4,
   msgKind: 'request',
@@ -1139,6 +1167,15 @@ const rawSubEnd = (bootstrapState?: string): RawFrame => [
   },
 ];
 
+const rawRestrict = (cursor: number, tables: readonly string[]): RawFrame => [
+  FrameType.RESTRICT,
+  (p) => {
+    p.i64(cursor);
+    p.u32(tables.length);
+    for (const table of tables) p.str(table);
+  },
+];
+
 const rawUnitExtent = (rowsTotal: number, rowsDone = 0): RawFrame => [
   FrameType.UNIT_EXTENT,
   (p) => {
@@ -1704,6 +1741,13 @@ total += emitKind(
         'A traveling list of two units + two PROGRESS frames: a fresh bootstrap (cursor = -1) and a resumed bootstrap (cursor at the §4.7 pin, bootstrapState round-trip); accept bits incl. sqlite + signed URLs; empty echoDigest',
     },
     {
+      name: 'pull-restrict',
+      bytes: encodeMessage(pullRestrict),
+      render: renderMessage,
+      covers:
+        'Two restricted units (§4.3 RESTRICT, §4.7): a first round with PROGRESS cursor -1 and the kept cursor in RESTRICT, and a resumed round at the join cursor with a token over the bootstrap tables',
+    },
+    {
       name: 'push-multi-commit',
       bytes: encodeMessage(pushMultiCommit),
       render: renderMessage,
@@ -1900,6 +1944,50 @@ total += emitKind(
       ]),
       error: 'sync.invalid_request',
       covers: 'UNIT after a PROGRESS frame (§1.5: PROGRESS follows every UNIT)',
+    },
+    {
+      name: 'restrict-without-progress',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawRestrict(7, ['notes']),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'RESTRICT not immediately after a PROGRESS frame (§1.5, §4.3)',
+    },
+    {
+      name: 'restrict-cursor-negative',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID, -1),
+        rawRestrict(-1, ['notes']),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'RESTRICT.cursor = -1 (§4.3: a kept cursor is >= 0)',
+    },
+    {
+      name: 'restrict-tables-empty',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID, -1),
+        rawRestrict(7, []),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'RESTRICT with an empty table list (§4.3)',
+    },
+    {
+      name: 'restrict-tables-unordered',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        rawProgress(NOTES_ID, -1),
+        rawRestrict(7, ['tasks', 'notes']),
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'RESTRICT.tables out of ascending code-unit order (§4.3; a repeat fails the same rule)',
     },
     {
       name: 'unit-without-pull-header',

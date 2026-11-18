@@ -8,8 +8,7 @@
  */
 
 import { ClientSyncError, invalidRequest } from './errors';
-
-const CODE_LIKE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+import { CODE_LIKE_VALUE } from './local-purge';
 const RESULT_KEYS = [
   'alreadyApplied',
   'resetSubscriptions',

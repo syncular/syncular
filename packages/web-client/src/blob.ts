@@ -10,7 +10,7 @@ import { type BlobRef, parseBlobRef, serializeBlobRef } from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import type { CompiledClientSchema } from './schema';
-import { quoteIdent, tableExists } from './schema';
+import { bytesToHex, quoteIdent, tableExists } from './schema';
 
 /**
  * A blob download result (§5.9.5). The authorized endpoint either serves the
@@ -114,10 +114,7 @@ export async function computeBlobId(bytes: Uint8Array): Promise<string> {
     'SHA-256',
     input as Uint8Array<ArrayBuffer>,
   );
-  const hex = [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  return `sha256:${hex}`;
+  return `sha256:${bytesToHex(new Uint8Array(digest))}`;
 }
 
 export function ensureBlobSchema(db: ClientDatabase): void {
@@ -126,16 +123,8 @@ export function ensureBlobSchema(db: ClientDatabase): void {
       .query('PRAGMA table_info(_syncular_blobs)')
       .map((row) => row.name)
       .sort();
-    const expected = [
-      'blob_id',
-      'byte_length',
-      'bytes',
-      'created_at_ms',
-      'media_type',
-    ].sort();
     if (
-      columns.length !== expected.length ||
-      columns.some((column, index) => column !== expected[index])
+      columns.join() !== 'blob_id,byte_length,bytes,created_at_ms,media_type'
     ) {
       throw new ClientSyncError(
         'sync.schema_mismatch',
@@ -259,7 +248,7 @@ export function clearPendingUpload(db: ClientDatabase, blobId: string): void {
 /**
  * All `blob_ref` column names per table.
  */
-export function blobRefColumnsBySchema(
+function blobRefColumnsBySchema(
   schema: CompiledClientSchema,
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
@@ -273,10 +262,7 @@ export function blobRefColumnsBySchema(
 }
 
 export function schemaHasBlobs(schema: CompiledClientSchema): boolean {
-  for (const table of schema.tables.values()) {
-    if (table.columns.some((c) => c.type === 'blob_ref')) return true;
-  }
-  return false;
+  return blobRefColumnsBySchema(schema).size > 0;
 }
 
 /** The cached bodies no upload, pending commit, or visible row references. */

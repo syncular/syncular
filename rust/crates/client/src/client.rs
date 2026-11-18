@@ -44,8 +44,8 @@ use crate::api::{
     PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
     RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
     RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SyncIntent, SyncOutcome,
-    SyncReport, SyncStatusSnapshot, TableChange, UnitCatchup, UnitRecord, UnitScopes, UnitStatus,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    SyncReport, SyncStatusSnapshot, TableChange, UnitCatchup, UnitRecord, UnitRestriction,
+    UnitScopes, UnitStatus, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 use crate::api::{RealtimePolicy, RealtimeState, REALTIME_UNAVAILABLE_CODE};
@@ -878,7 +878,7 @@ fn pair_scopes(
 /// §3.3 row ownership: the pair scopes of every owner of `table` except
 /// `except_id`. An owner is active with a persisted echo and live or
 /// post-bootstrap, or bootstrapping with a segment of the table in its
-/// current bootstrap.
+/// current bootstrap, or holding a restriction that excludes the table.
 fn unit_owners(
     units: &[UnitRecord],
     table: &TableSchema,
@@ -890,7 +890,12 @@ fn unit_owners(
             unit.id != except_id
                 && unit.status == UnitStatus::Active
                 && unit.echo.is_some()
-                && (!unit.bootstrapping() || unit.seeded.contains(&table.name))
+                && (!unit.bootstrapping()
+                    || unit.seeded.contains(&table.name)
+                    || unit
+                        .restriction
+                        .as_ref()
+                        .is_some_and(|restriction| !restriction.tables.contains(&table.name)))
                 && covers(table, &unit.scopes)
         })
         .filter_map(|unit| pair_scopes(&unit.scopes, &table.name, unit.echo.as_deref()))
@@ -911,7 +916,7 @@ fn unit_scope_lists(scopes: &UnitScopes) -> Vec<(String, Vec<String>)> {
 const ACKED_ROWS_BY_ROW: &str = "SELECT a.op_json,a.intent_json FROM json_each(?1) k JOIN _syncular_acked_rows a ON a.tbl=json_extract(k.value,'$[0]') AND a.id=json_extract(k.value,'$[1]') WHERE ?2 IS NULL OR a.tbl IN(SELECT value FROM json_each(?2)) ORDER BY a.commit_seq,a.idx";
 
 const UNIT_COLUMNS: &str =
-    "id, scopes, explicit, status, reason_code, cursor, bootstrap_state, seeded, echo";
+    "id, scopes, explicit, status, reason_code, cursor, bootstrap_state, seeded, echo, restriction";
 
 /// A unit row; a field that does not parse is a conversion failure, which
 /// both read paths classify as `sync.local_corrupt`.
@@ -956,6 +961,10 @@ fn unit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnitRecord> {
                 }
             })
             .transpose()?,
+        restriction: row
+            .get::<_, Option<String>>(9)?
+            .map(|raw| json::<UnitRestriction>(9, &raw))
+            .transpose()?,
     })
 }
 
@@ -981,10 +990,11 @@ fn get_unit(conn: &Connection, id: &str) -> rusqlite::Result<Option<UnitRecord>>
 /// §5.6 applied-segment record ends when the cursor or the token changes.
 fn save_unit(conn: &Connection, unit: &UnitRecord) -> rusqlite::Result<()> {
     conn.prepare_cached(&format!(
-        "INSERT INTO _syncular_units({UNIT_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+        "INSERT INTO _syncular_units({UNIT_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
          ON CONFLICT(id) DO UPDATE SET explicit=excluded.explicit, status=excluded.status,
            reason_code=excluded.reason_code, cursor=excluded.cursor,
            bootstrap_state=excluded.bootstrap_state, seeded=excluded.seeded, echo=excluded.echo,
+           restriction=excluded.restriction,
            applied=CASE WHEN cursor IS excluded.cursor
              AND bootstrap_state IS excluded.bootstrap_state THEN applied END"
     ))?
@@ -1000,6 +1010,9 @@ fn save_unit(conn: &Connection, unit: &UnitRecord) -> rusqlite::Result<()> {
         unit.echo
             .as_ref()
             .map(|echo| serde_json::to_string(echo).expect("echo serializes")),
+        unit.restriction
+            .as_ref()
+            .map(|restriction| serde_json::to_string(restriction).expect("restriction serializes")),
     ])
     .map(|_| ())
 }
@@ -1052,15 +1065,26 @@ fn window_refs(conn: &Connection, unit_id: &str) -> rusqlite::Result<Vec<(String
 
 /// §7.4.3 reset, §2.1 log reset and local rebootstrap: keep the unit
 /// registrations and discard the synced state of every unit outside `keep`,
-/// so the next round sends the list and fresh-bootstraps those units. The
-/// replica cursor survives only while a kept unit is live. The caller owns
-/// the transaction.
-fn reset_units(conn: &Connection, keep: &BTreeSet<String>) -> rusqlite::Result<()> {
+/// so the next round sends the list and bootstraps those units. A schema bump
+/// passes `restrictions`: every reset unit keeps its echo and takes its
+/// restriction from the map, if any (§7.4.3); the other resets discard both.
+/// The replica cursor survives only while a kept unit is live. The caller
+/// owns the transaction.
+fn reset_units(
+    conn: &Connection,
+    keep: &BTreeSet<String>,
+    restrictions: Option<&BTreeMap<String, UnitRestriction>>,
+) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE _syncular_units SET status='active', reason_code=NULL, cursor=-1,
-           bootstrap_state=NULL, seeded='[]', echo=NULL, applied=NULL
+           bootstrap_state=NULL, seeded='[]', applied=NULL,
+           echo=CASE WHEN ?2 IS NULL THEN NULL ELSE echo END,
+           restriction=(SELECT value FROM json_each(?2) WHERE key=_syncular_units.id)
          WHERE id NOT IN (SELECT value FROM json_each(?1))",
-        [serde_json::to_string(keep).expect("unit ids serialize")],
+        rusqlite::params![
+            serde_json::to_string(keep).expect("unit ids serialize"),
+            restrictions.map(|map| serde_json::to_string(map).expect("restrictions serialize")),
+        ],
     )?;
     conn.execute_batch(
         "DELETE FROM _syncular_meta WHERE key IN ('echoDigest','registrationDigest');
@@ -2417,7 +2441,7 @@ impl SyncClient {
                    explicit INTEGER NOT NULL DEFAULT 0,
                    status TEXT NOT NULL DEFAULT 'active', reason_code TEXT,
                    cursor INTEGER DEFAULT -1, bootstrap_state TEXT,
-                   seeded TEXT NOT NULL DEFAULT '[]', echo TEXT, applied TEXT);
+                   seeded TEXT NOT NULL DEFAULT '[]', echo TEXT, applied TEXT, restriction TEXT);
                  CREATE TABLE IF NOT EXISTS _syncular_meta (
                    key TEXT PRIMARY KEY, value TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS _syncular_windows (
@@ -2434,16 +2458,21 @@ impl SyncClient {
                    ON _syncular_blob_commit_refs(blob_id);",
             )
             .map_err(|e| e.to_string())?;
-        // §5.6 applied-segment record, added after the units table shipped.
-        if !self
-            .conn
-            .prepare("SELECT 1 FROM pragma_table_info('_syncular_units') WHERE name = 'applied'")
-            .and_then(|mut stmt| stmt.exists([]))
-            .map_err(|e| e.to_string())?
-        {
-            self.conn
-                .execute_batch("ALTER TABLE _syncular_units ADD COLUMN applied TEXT")
-                .map_err(|e| e.to_string())?;
+        // The §5.6 applied-segment record and the §7.4.3 restriction, added
+        // after the units table shipped.
+        for column in ["applied", "restriction"] {
+            if !self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('_syncular_units') WHERE name = ?1")
+                .and_then(|mut stmt| stmt.exists([column]))
+                .map_err(|e| e.to_string())?
+            {
+                self.conn
+                    .execute_batch(&format!(
+                        "ALTER TABLE _syncular_units ADD COLUMN {column} TEXT"
+                    ))
+                    .map_err(|e| e.to_string())?;
+            }
         }
         // Migrate an outcome journal created before failed aggregate
         // envelopes were retained. Historical rows intentionally stay NULL.
@@ -2491,7 +2520,7 @@ impl SyncClient {
                      DROP TABLE IF EXISTS _syncular_subscriptions;
                      DELETE FROM _syncular_windows;",
                 )
-                .and_then(|()| reset_units(&self.conn, &BTreeSet::new()))
+                .and_then(|()| reset_units(&self.conn, &BTreeSet::new(), None))
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         // §5.9.7 blob cache. Mutable upload state stays off the body row so
@@ -4186,7 +4215,52 @@ impl SyncClient {
                 .collect(),
             _ => BTreeSet::new(),
         };
-        reset_units(&self.conn, &keep_units)
+        // §7.4.3 restriction: an active unit that is not kept and whose rows
+        // of a kept table are complete through a cursor C (its restriction's,
+        // its post-bootstrap P, or the replica cursor it is live under)
+        // bootstraps only its other covered tables and joins at C.
+        let restrictions = if capture {
+            let replica = self.stored(replica_cursor(&self.conn))?;
+            let mut restrictions = BTreeMap::new();
+            for unit in self.stored(load_units(&self.conn))? {
+                if keep_units.contains(&unit.id) || unit.status != UnitStatus::Active {
+                    continue;
+                }
+                let cursor = match (&unit.restriction, unit.cursor) {
+                    (Some(restriction), _) => restriction.cursor,
+                    (None, Some(cursor)) if cursor >= 0 && unit.bootstrap_state.is_none() => cursor,
+                    (None, None) if replica >= 0 => replica,
+                    _ => continue,
+                };
+                let covered: Vec<&String> = self
+                    .schema
+                    .tables
+                    .iter()
+                    .filter(|table| covers(table, &unit.scopes))
+                    .map(|table| &table.name)
+                    .collect();
+                let mut tables: Vec<String> = covered
+                    .iter()
+                    .filter(|name| {
+                        !kept.contains(**name)
+                            || unit
+                                .restriction
+                                .as_ref()
+                                .is_some_and(|restriction| restriction.tables.contains(name))
+                    })
+                    .map(|name| (*name).clone())
+                    .collect();
+                if tables.is_empty() || tables.len() == covered.len() {
+                    continue;
+                }
+                tables.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+                restrictions.insert(unit.id, UnitRestriction { cursor, tables });
+            }
+            Some(restrictions)
+        } else {
+            None
+        };
+        reset_units(&self.conn, &keep_units, restrictions.as_ref())
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         // The stop state is over: this client now ships a servable schema.
         self.stopped = false;
@@ -5496,6 +5570,7 @@ impl SyncClient {
                 bootstrap_state: None,
                 seeded: Vec::new(),
                 echo: None,
+                restriction: None,
             },
         ))?;
         Ok((id, true))
@@ -7555,14 +7630,26 @@ impl SyncClient {
                 scopes: scope_pairs(&unit.scopes),
             }));
         }
-        // §4.3: one PROGRESS per catching-up unit, in registration order.
-        sub_frames.extend(registered.iter().filter_map(|unit| {
-            Some(Frame::Progress {
+        // §4.3: one PROGRESS per catching-up unit, in registration order, each
+        // followed by its RESTRICT while the unit holds a restriction.
+        for unit in &registered {
+            let Some(cursor) = unit.cursor else {
+                continue;
+            };
+            sub_frames.push(Frame::Progress {
                 id: unit.id.clone(),
-                cursor: unit.cursor?,
+                cursor,
                 bootstrap_state: unit.bootstrap_state.clone().map(RawJson),
-            })
-        }));
+            });
+            sub_frames.extend(
+                unit.restriction
+                    .as_ref()
+                    .map(|restriction| Frame::Restrict {
+                        cursor: restriction.cursor,
+                        tables: restriction.tables.clone(),
+                    }),
+            );
+        }
         // The fixed frames (order-independent size) and the header+pull probe
         // both encode canonically, so the byte budget is the exact wire size.
         let fixed_bytes = match byte_cap {
@@ -9775,6 +9862,7 @@ impl SyncClient {
                         &UnitRecord {
                             status: UnitStatus::Failed,
                             reason_code: Some("sync.scope_revoked".to_owned()),
+                            restriction: None,
                             ..unit.clone()
                         },
                     ))?;
@@ -9819,7 +9907,7 @@ impl SyncClient {
     }
 
     /// §5.6: the table, first-page flag and effective scopes of one segment
-    /// of `unit`'s section.
+    /// of `unit`'s section. A first page outside the unit's restriction ends it.
     #[allow(clippy::type_complexity)]
     fn segment_pair(
         &self,
@@ -9843,7 +9931,29 @@ impl SyncClient {
                     "a segment names no active pair of its unit".to_owned(),
                 )
             })?;
-        Ok((table, !seeded.contains(name), effective))
+        let first_page = !seeded.contains(name);
+        // §5.6: a first page of a table outside the restriction is a whole
+        // bootstrap from a server that predates RESTRICT; the restriction ends
+        // before the clear runs.
+        if first_page
+            && unit
+                .restriction
+                .as_ref()
+                .is_some_and(|restriction| !restriction.tables.iter().any(|t| t == name))
+        {
+            self.conn
+                .execute(
+                    "UPDATE _syncular_units SET restriction=NULL WHERE id=?1",
+                    [&unit.id],
+                )
+                .map_err(|error| {
+                    SectionError::Abort(
+                        "storage.failed".to_owned(),
+                        Self::sqlite_failure(&self.storage_failure, error),
+                    )
+                })?;
+        }
+        Ok((table, first_page, effective))
     }
 
     /// §4.4 `SUB_END` of an active, revoked or reset section, inside the
@@ -9885,6 +9995,7 @@ impl SyncClient {
                     cursor: Some(-1),
                     bootstrap_state: None,
                     seeded: Vec::new(),
+                    restriction: None,
                     ..unit
                 },
             ))?;
@@ -9943,6 +10054,7 @@ impl SyncClient {
                     bootstrap_state: None,
                     seeded: Vec::new(),
                     echo: None,
+                    restriction: None,
                     ..unit
                 },
             ))?;
@@ -9973,6 +10085,9 @@ impl SyncClient {
                 cursor,
                 bootstrap_state,
                 seeded,
+                // §7.4.3: the restriction ends when the unit re-bootstraps or
+                // completes its bootstrap.
+                restriction: unit.restriction.clone().filter(|_| !rearmed && !completed),
                 ..unit.clone()
             },
         ))?;

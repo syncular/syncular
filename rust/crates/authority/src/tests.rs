@@ -1416,6 +1416,92 @@ fn a_cursor_behind_the_horizon_resets() {
     );
 }
 
+fn restrict(cursor: i64, tables: &[&str]) -> Frame {
+    Frame::Restrict {
+        cursor,
+        tables: tables.iter().map(|table| (*table).to_owned()).collect(),
+    }
+}
+
+#[test]
+fn a_restricted_bootstrap_serves_its_tables_and_joins_at_the_kept_cursor() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let project = |id: &str| upsert(&s, "projects", &[Some(id), Some("o1"), Some("name")], None);
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    client.push(&mut authority, "b", vec![project("p1")]);
+    client.push(&mut authority, "c", vec![project("p2")]);
+    client.push(&mut authority, "d", vec![task(&s, "t2", None, None)]);
+    let o1 = org("o1");
+    let units = std::slice::from_ref(&o1);
+    let pull = |unit_cursor: i64, token: Option<String>, kept: i64| {
+        let mut frames = vec![pull_header(-1, units, None, 1, 1)];
+        frames.extend(unit_frames(units));
+        frames.push(progress(&o1, unit_cursor, token));
+        frames.push(restrict(kept, &["projects"]));
+        frames
+    };
+    // §4.7: only the RESTRICT tables, the extent counts only them, and every
+    // section ends at the kept cursor, which holds the record cursor (§4.5).
+    let first = client.round(&mut authority, pull(-1, None, 1));
+    assert_eq!(segment_rows(&first), vec![("p1".to_owned(), 1)]);
+    assert_eq!(unit_extents(&first), vec![(2, 0)]);
+    let token = r#"{"asOfCommitSeq":4,"tables":["projects"],"tableIndex":0,"rowCursor":"p1","rowsTotal":2,"rowsDone":1}"#;
+    assert_eq!(
+        sections(&first),
+        vec![(
+            ssp2::unit_id(&o1),
+            SubStatus::Active,
+            true,
+            1,
+            Some(token.to_owned())
+        )]
+    );
+    assert_eq!(
+        client_record(&authority, "c1").map(|record| record.0),
+        Some(1)
+    );
+    // Completion joins at the kept cursor: the scan delivers every covered
+    // change after it, the kept tables' included.
+    let done = client.round(&mut authority, pull(1, Some(token.to_owned()), 1));
+    assert_eq!(segment_rows(&done), vec![("p2".to_owned(), 1)]);
+    assert_eq!(
+        sections(&done),
+        vec![(ssp2::unit_id(&o1), SubStatus::Active, true, 1, None)]
+    );
+    assert_eq!(
+        changes(&done),
+        vec![
+            (2, "projects".to_owned(), "p1".to_owned(), Op::Upsert, 1),
+            (3, "projects".to_owned(), "p2".to_owned(), Op::Upsert, 1),
+            (4, "tasks".to_owned(), "t2".to_owned(), Op::Upsert, 1),
+        ]
+    );
+    // A whole bootstrap's token, or one pinned below the kept cursor, fails
+    // the token check and restarts the restricted bootstrap.
+    for stale in [
+        r#"{"asOfCommitSeq":4,"tables":["projects","tasks","notes","pins","nodes","docs"],"tableIndex":0,"rowCursor":"p1","rowsTotal":4,"rowsDone":1}"#,
+        r#"{"asOfCommitSeq":3,"tables":["projects"],"tableIndex":0,"rowCursor":"p1","rowsTotal":2,"rowsDone":1}"#,
+    ] {
+        let restarted = client.round(&mut authority, pull(4, Some(stale.to_owned()), 4));
+        assert_eq!(
+            segment_rows(&restarted),
+            vec![("p1".to_owned(), 1)],
+            "{stale}"
+        );
+        assert_eq!(unit_extents(&restarted), vec![(2, 0)], "{stale}");
+    }
+    // §4.6: a kept cursor the log cannot serve resets the unit, with no
+    // segments and the PROGRESS cursor echoed.
+    let reset = client.round(&mut authority, pull(-1, None, 5));
+    assert_eq!(
+        sections(&reset),
+        vec![(ssp2::unit_id(&o1), SubStatus::Reset, false, -1, None)]
+    );
+    assert_eq!(segment_rows(&reset), vec![]);
+}
+
 /// An authority whose clock the test moves.
 fn clocked() -> (LocalAuthority, Arc<AtomicI64>) {
     let now = Arc::new(AtomicI64::new(1_000));
@@ -1971,6 +2057,20 @@ fn request_validation_fails_before_any_byte() {
         frames.extend(progressed);
         let error = refused(&mut authority, None, frames);
         assert_eq!(error.details.unwrap()["reason"], json!(reason));
+    }
+    // §4.3: a RESTRICT names covered tables only, and never all of them.
+    for tables in [
+        vec!["labels"],
+        vec!["docs", "nodes", "notes", "pins", "projects", "tasks"],
+    ] {
+        let mut frames = unit(org("o1"));
+        frames.push(progress(&org("o1"), -1, None));
+        frames.push(restrict(0, &tables));
+        let error = refused(&mut authority, None, frames);
+        assert_eq!(
+            (error.code.as_str(), &error.details.unwrap()["reason"]),
+            ("sync.invalid_subscription", &json!("restrict_tables"))
+        );
     }
     // §6.1 sequence rules: with an outbox every clientSeq is ≥ 1 and strictly
     // increasing; without one every clientSeq is 0. Nothing applies.

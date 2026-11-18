@@ -794,12 +794,15 @@ export function planBootstrap(
   maxSeq: number,
   horizonSeq: number,
   logEpoch: string,
+  keptCursor = 0,
 ): BootstrapPlan {
-  // §4.7: resume at the token's pin unless the token is unusable or the pin
-  // fell behind the horizon; then restart from a fresh pin.
+  // §4.7: resume at the token's pin unless the token is unusable, or the pin
+  // fell behind the horizon or a restricted bootstrap's kept cursor; then
+  // restart from a fresh pin.
   const token = parseBootstrapToken(bootstrapState, unit.tables, maxSeq);
   const resume =
-    token !== undefined && token.asOfCommitSeq >= horizonSeq
+    token !== undefined &&
+    token.asOfCommitSeq >= Math.max(horizonSeq, keptCursor)
       ? token
       : undefined;
   const tableIndex = resume?.tableIndex ?? 0;
