@@ -511,9 +511,10 @@ END`);
       )
       .get();
     if (marker !== null && marker.schema_version > schema.version) {
-      throw new Error(
-        `stored schema version ${marker.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
-      );
+      throw new StorageQueryError('sync.storage.schema_changed', {
+        storedVersion: String(marker.schema_version),
+        configuredVersion: String(schema.version),
+      });
     }
     if (marker !== null && marker.schema_version === schema.version) {
       assertStoredLayouts(schema, marker.layouts);
@@ -627,9 +628,10 @@ END`);
           )
           .get();
         if (locked !== null && locked.schema_version > schema.version) {
-          throw new Error(
-            `stored schema version ${locked.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
-          );
+          throw new StorageQueryError('sync.storage.schema_changed', {
+            storedVersion: String(locked.schema_version),
+            configuredVersion: String(schema.version),
+          });
         }
         if (locked !== null && locked.schema_version === schema.version) {
           this.db.exec('COMMIT');

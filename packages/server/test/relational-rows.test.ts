@@ -1335,9 +1335,33 @@ describe('server-side schema migration (the subset)', () => {
       compileSchema({ ...SCHEMA, version: 5 } as ServerSchema),
     );
     const older = new SqliteServerStorage(storage.db);
-    await expect(older.ensureSchema(compileSchema(SCHEMA))).rejects.toThrow(
-      /newer than the configured schema/,
+    await expect(
+      older.ensureSchema(compileSchema(SCHEMA)),
+    ).rejects.toMatchObject({
+      code: 'sync.storage.schema_changed',
+      details: {
+        storedVersion: '5',
+        configuredVersion: String(SCHEMA.version),
+      },
+    });
+  });
+
+  test('postgres: an older server refuses a newer database', async () => {
+    const db = await PGlite.create();
+    await new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
+      compileSchema({ ...SCHEMA, version: 5 } as ServerSchema),
     );
+    await expect(
+      new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
+        compileSchema(SCHEMA),
+      ),
+    ).rejects.toMatchObject({
+      code: 'sync.storage.schema_changed',
+      details: {
+        storedVersion: '5',
+        configuredVersion: String(SCHEMA.version),
+      },
+    });
   });
 
   test('a version bump outside the migration subset fails loud', async () => {

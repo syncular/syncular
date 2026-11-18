@@ -35,8 +35,6 @@
  */
 import {
   acceptsEncoding,
-  type D1Database,
-  D1ServerStorage,
   errorBody,
   SSP2_CONTENT_TYPE,
   SyncError,
@@ -470,15 +468,6 @@ export function forwardRealtimeUpgrade(
     shard === undefined ? undefined : name,
   );
   return stub.fetch(forwarded);
-}
-
-/**
- * Convenience: a `D1ServerStorage` over a Worker's D1 binding. `migrate` is
- * NOT called here — apply the schema with `wrangler d1 migrations` (see the
- * README + `wrangler.toml` example) so cold requests never race a DDL apply.
- */
-export function d1Storage(binding: D1Database): D1ServerStorage {
-  return new D1ServerStorage(binding);
 }
 
 /** Re-export the shared config type for host `configFactory` signatures. */

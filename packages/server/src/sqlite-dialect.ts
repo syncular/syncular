@@ -14,7 +14,7 @@
  * promises; the synchronous SQLite driver resolves them with rows it read at
  * call time. Both classes run the identical `test/storage-contract.ts`.
  */
-import type { PushOperationResult, UnitScopes } from '@syncular/core';
+import type { UnitScopes } from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -45,9 +45,18 @@ import type { CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import type { SqliteValue } from './sqlite-driver';
 import {
-  clientRoundState,
+  type ClientRowRecord,
+  CLIENT_RECORD_COLUMNS,
   PARTITION_TOUCH_INTERVAL_MS,
+  pushResultFromJson,
+  pushResultToJson,
   rowsLiveAfterDelete,
+  type StoredReactionRecord,
+  toClientRecord,
+  toStoredChange,
+  toStoredReaction,
+  toStoredRow,
+  toTombstone,
 } from './storage';
 import type {
   AuthoritativeQueryRequest,
@@ -61,7 +70,6 @@ import type {
   CommitMetadataQuery,
   CommitPruneQuery,
   CommitPruneResult,
-  DurableJsonValue,
   IndexRowScanQuery,
   LiveWindow,
   LiveWindowQuery,
@@ -73,7 +81,6 @@ import type {
   PrunedReactionCounts,
   PushWatermark,
   ReactionClaimQuery,
-  ReactionFailure,
   ReactionFailureUpdate,
   ReactionListQuery,
   ReactionPruneQuery,
@@ -85,7 +92,6 @@ import type {
   ScopeCommitActivity,
   ScopeValueHistoryQuery,
   ScopeValueQuery,
-  StoredChange,
   StoredPushResult,
   StoredReaction,
   StoredRow,
@@ -350,124 +356,15 @@ export function placeholders(count: number): string {
 
 // -- value (de)serialization, shared by both SQLite storages ----------------
 
-/** Runtime-neutral base64 (no `Buffer` — Workers-safe) for push results. */
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function base64ToBytes(text: string): Uint8Array {
-  const binary = atob(text);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-interface SerializedResult {
-  opIndex: number;
-  status: string;
-  code?: string;
-  message?: string;
-  serverVersion?: number;
-  serverRow?: string;
-  conflictColumns?: string;
-  retryable?: boolean;
-  details?: import('@syncular/core').RejectionDetails;
-}
-
 /** Serialize a push result to the JSON `TEXT` stored in `sync_push_results`. */
 export function serializePushResult(result: StoredPushResult): string {
-  return JSON.stringify({
-    status: result.status,
-    ...(result.commitSeq !== undefined ? { commitSeq: result.commitSeq } : {}),
-    ...(result.recordedAtMs !== undefined
-      ? { recordedAtMs: result.recordedAtMs }
-      : {}),
-    ...(result.cacheIdentity !== undefined
-      ? { cacheIdentity: result.cacheIdentity }
-      : {}),
-    ...(result.conflictAuthorization !== undefined
-      ? { conflictAuthorization: result.conflictAuthorization }
-      : {}),
-    results: result.results.map((record) => {
-      if (record.status === 'conflict') {
-        return {
-          opIndex: record.opIndex,
-          status: record.status,
-          code: record.code,
-          message: record.message,
-          serverVersion: record.serverVersion,
-          serverRow: bytesToBase64(record.serverRow),
-          conflictColumns: bytesToBase64(record.conflictColumns),
-        };
-      }
-      if (record.status === 'error') {
-        return {
-          opIndex: record.opIndex,
-          status: record.status,
-          code: record.code,
-          message: record.message,
-          retryable: record.retryable,
-          ...(record.details !== undefined ? { details: record.details } : {}),
-        };
-      }
-      return { opIndex: record.opIndex, status: record.status };
-    }),
-  });
+  return JSON.stringify(pushResultToJson(result));
 }
 
 /** Parse a stored push result; an unreadable record is a §6.3 cache miss. */
 export function deserializePushResult(text: string): StoredPushResult {
   try {
-    const parsed = JSON.parse(text) as {
-      status: 'applied' | 'rejected';
-      commitSeq?: number;
-      recordedAtMs?: number;
-      cacheIdentity?: string;
-      conflictAuthorization?: StoredPushResult['conflictAuthorization'];
-      results: SerializedResult[];
-    };
-    const results: PushOperationResult[] = parsed.results.map((record) => {
-      if (record.status === 'conflict') {
-        return {
-          opIndex: record.opIndex,
-          status: 'conflict',
-          code: record.code ?? '',
-          message: record.message ?? '',
-          serverVersion: record.serverVersion ?? 0,
-          serverRow: base64ToBytes(record.serverRow ?? ''),
-          conflictColumns: base64ToBytes(record.conflictColumns ?? ''),
-        };
-      }
-      if (record.status === 'error') {
-        return {
-          opIndex: record.opIndex,
-          status: 'error',
-          code: record.code ?? '',
-          message: record.message ?? '',
-          retryable: record.retryable ?? false,
-          ...(record.details !== undefined ? { details: record.details } : {}),
-        };
-      }
-      return { opIndex: record.opIndex, status: 'applied' };
-    });
-    return {
-      status: parsed.status,
-      ...(parsed.commitSeq !== undefined
-        ? { commitSeq: parsed.commitSeq }
-        : {}),
-      ...(parsed.recordedAtMs !== undefined
-        ? { recordedAtMs: parsed.recordedAtMs }
-        : {}),
-      ...(parsed.cacheIdentity !== undefined
-        ? { cacheIdentity: parsed.cacheIdentity }
-        : {}),
-      ...(parsed.conflictAuthorization !== undefined
-        ? { conflictAuthorization: parsed.conflictAuthorization }
-        : {}),
-      results,
-    };
+    return pushResultFromJson(JSON.parse(text));
   } catch {
     throw syncError(
       'sync.idempotency_cache_miss',
@@ -494,146 +391,10 @@ export interface SqliteChangeRecord {
   payload: Uint8Array | null;
 }
 
-/** Native SQLite returns `Uint8Array`; D1 returns `ArrayBuffer` for BLOBs. */
-export function asUint8Array(value: unknown): Uint8Array {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (Array.isArray(value)) return new Uint8Array(value);
-  throw new Error(`expected a BLOB column, got ${typeof value}`);
-}
-
-export function toStoredRow(record: SqliteRowRecord): StoredRow {
-  return {
-    rowId: record.row_id,
-    serverVersion: record.server_version,
-    scopes: JSON.parse(record.scopes) as Record<string, string>,
-    payload: asUint8Array(record.payload),
-    ...(record.column_versions !== null
-      ? { columnVersions: asUint8Array(record.column_versions) }
-      : {}),
-  };
-}
-
 export interface SqliteTombstoneRecord {
   commit_seq: number;
   server_version: number | null;
   scopes: string | null;
-}
-
-export function toTombstone(record: SqliteTombstoneRecord): Tombstone {
-  return {
-    commitSeq: record.commit_seq,
-    ...(record.server_version !== null
-      ? { serverVersion: record.server_version }
-      : {}),
-    ...(record.scopes !== null
-      ? { scopes: JSON.parse(record.scopes) as Record<string, string> }
-      : {}),
-  };
-}
-
-export function toStoredChange(record: SqliteChangeRecord): StoredChange {
-  return {
-    table: record.tbl,
-    rowId: record.row_id,
-    op: record.op === 1 ? 'upsert' : 'delete',
-    ...(record.row_version !== null ? { rowVersion: record.row_version } : {}),
-    scopes: JSON.parse(record.scopes) as Record<string, string>,
-    ...(record.payload !== null
-      ? { payload: asUint8Array(record.payload) }
-      : {}),
-  };
-}
-
-interface SqliteReactionRecord {
-  idempotency_key: string;
-  type: string;
-  version: number;
-  payload: string;
-  source_client_id: string;
-  source_client_commit_id: string;
-  source_commit_seq: number;
-  created_at_ms: number;
-  available_at_ms: number;
-  status: StoredReaction['status'];
-  attempts: number;
-  max_attempts: number;
-  lease_owner: string | null;
-  lease_expires_at_ms: number | null;
-  completed_at_ms: number | null;
-  last_failure: string | null;
-}
-
-function toStoredReaction(record: SqliteReactionRecord): StoredReaction {
-  return {
-    idempotencyKey: record.idempotency_key,
-    type: record.type,
-    version: record.version,
-    payload: JSON.parse(record.payload) as DurableJsonValue,
-    sourceClientId: record.source_client_id,
-    sourceClientCommitId: record.source_client_commit_id,
-    sourceCommitSeq: record.source_commit_seq,
-    createdAtMs: record.created_at_ms,
-    maxAttempts: record.max_attempts,
-    status: record.status,
-    attempts: record.attempts,
-    availableAtMs: record.available_at_ms,
-    ...(record.lease_owner !== null ? { leaseOwner: record.lease_owner } : {}),
-    ...(record.lease_expires_at_ms !== null
-      ? { leaseExpiresAtMs: record.lease_expires_at_ms }
-      : {}),
-    ...(record.completed_at_ms !== null
-      ? { completedAtMs: record.completed_at_ms }
-      : {}),
-    ...(record.last_failure !== null
-      ? { lastFailure: JSON.parse(record.last_failure) as ReactionFailure }
-      : {}),
-  };
-}
-
-interface SqliteClientRecord {
-  client_id: string;
-  actor_id: string;
-  wire_version: number;
-  cursor: number;
-  updated_at_ms: number;
-  schema_version: number | null;
-  units: string | null;
-  registration_digest: Uint8Array | null;
-  catching_up: string;
-  last_round_at_ms: number | null;
-  last_error_code: string | null;
-  consecutive_failures: number;
-}
-
-const CLIENT_RECORD_COLUMNS =
-  'client_id, actor_id, wire_version, cursor, updated_at_ms, schema_version, units, registration_digest, catching_up, last_round_at_ms, last_error_code, consecutive_failures';
-
-function toClientRecord(record: SqliteClientRecord): ClientRecord {
-  return {
-    clientId: record.client_id,
-    actorId: record.actor_id,
-    wireVersion: record.wire_version,
-    cursor: record.cursor,
-    updatedAtMs: record.updated_at_ms,
-    ...(record.schema_version !== null
-      ? { schemaVersion: record.schema_version }
-      : {}),
-    ...(record.units !== null && record.registration_digest !== null
-      ? {
-          registration: {
-            units: JSON.parse(record.units) as UnitScopes[],
-            digest: asUint8Array(record.registration_digest),
-          },
-        }
-      : {}),
-    catchingUp: JSON.parse(record.catching_up) as ClientRecord['catchingUp'],
-    ...clientRoundState(
-      record.last_round_at_ms,
-      record.last_error_code,
-      record.consecutive_failures,
-    ),
-  };
 }
 
 interface SqlitePartitionRegistryRecord {
@@ -978,7 +739,7 @@ export abstract class SqliteFamilyStorage {
     if (query.types.length + 7 > this.maxBindParams) {
       throw new Error('D1 reaction claim exceeds the bound-parameter limit');
     }
-    const records = await this.all<SqliteReactionRecord>(
+    const records = await this.all<StoredReactionRecord>(
       `UPDATE sync_reactions
           SET status='leased', attempts=attempts+1,
               lease_owner=?, lease_expires_at_ms=?, completed_at_ms=NULL
@@ -1092,7 +853,7 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     idempotencyKey: string,
   ): Promise<StoredReaction | undefined> {
-    const [record] = await this.all<SqliteReactionRecord>(
+    const [record] = await this.all<StoredReactionRecord>(
       'SELECT * FROM sync_reactions WHERE partition=? AND idempotency_key=?',
       [partition, idempotencyKey],
     );
@@ -1117,7 +878,7 @@ export abstract class SqliteFamilyStorage {
       throw new Error('D1 reaction list exceeds the bound-parameter limit');
     }
     params.push(query.limit);
-    const records = await this.all<SqliteReactionRecord>(
+    const records = await this.all<StoredReactionRecord>(
       `SELECT * FROM sync_reactions WHERE ${where.join(' AND ')}
         ORDER BY created_at_ms DESC, idempotency_key DESC LIMIT ?`,
       params,
@@ -1348,7 +1109,7 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     clientId: string,
   ): Promise<ClientRecord | undefined> {
-    const [record] = await this.all<SqliteClientRecord>(
+    const [record] = await this.all<ClientRowRecord>(
       `SELECT ${CLIENT_RECORD_COLUMNS} FROM sync_clients WHERE partition=? AND client_id=?`,
       [partition, clientId],
     );
@@ -1582,7 +1343,7 @@ export abstract class SqliteFamilyStorage {
 
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
     return (
-      await this.all<SqliteClientRecord>(
+      await this.all<ClientRowRecord>(
         `SELECT ${CLIENT_RECORD_COLUMNS} FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC`,
         [partition],
       )

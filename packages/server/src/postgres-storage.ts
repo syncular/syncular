@@ -2,7 +2,18 @@ import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
 import {
-  clientRoundState,
+  asJson,
+  CLIENT_RECORD_COLUMNS,
+  pushResultFromJson,
+  pushResultToJson,
+  type StoredChangeRecord,
+  type StoredReactionRecord,
+  type StoredRowRecord,
+  toClientRecord,
+  toStoredChange,
+  toStoredReaction,
+  toStoredRow,
+  toTombstone,
   PARTITION_TOUCH_INTERVAL_MS,
   commitDeleteFloor,
   rowsLiveAfterDelete,
@@ -46,11 +57,7 @@ import { serveNotReadyError } from './readiness';
  * would leave gaps on rollback, which the pull-window arithmetic in §4.5
  * does not tolerate). Cross-partition pushes never contend.
  */
-import {
-  decodeRow,
-  type PushOperationResult,
-  type UnitScopes,
-} from '@syncular/core';
+import { decodeRow, type UnitScopes } from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -121,7 +128,6 @@ import type {
   CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
-  DurableJsonValue,
   IndexRowScanQuery,
   LiveWindow,
   LiveWindowQuery,
@@ -136,7 +142,6 @@ import type {
   PushApplyCommit,
   PushWatermark,
   ReactionClaimQuery,
-  ReactionFailure,
   ReactionFailureUpdate,
   ReactionListQuery,
   ReactionPruneQuery,
@@ -151,7 +156,6 @@ import type {
   ServerStorage,
   ServeGate,
   StorageTransaction,
-  StoredChange,
   StoredCheckpoint,
   StoredPushResult,
   StoredReaction,
@@ -346,18 +350,6 @@ CREATE TABLE IF NOT EXISTS sync_writer_fence(
   required_writer_version INTEGER NOT NULL
 );
 `;
-
-interface SerializedResult {
-  opIndex: number;
-  status: string;
-  code?: string;
-  message?: string;
-  serverVersion?: number;
-  serverRow?: string;
-  conflictColumns?: string;
-  retryable?: boolean;
-  details?: import('@syncular/core').RejectionDetails;
-}
 
 /** Lock the partition row; returns its `max_commit_seq`, which the lock freezes. */
 async function lockPartitionOn(
@@ -727,10 +719,6 @@ function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
 }
 
-function fromBase64(text: string): Uint8Array {
-  return new Uint8Array(Buffer.from(text, 'base64'));
-}
-
 interface PostgresCheckpointRecord {
   partition: string;
   name: string;
@@ -754,260 +742,6 @@ function toStoredCheckpoint(
     ownerEpoch: asNumber(record.owner_epoch),
     observedRows: asNumber(record.observed_rows),
     updatedAtMs: asNumber(record.updated_at_ms),
-  };
-}
-
-interface PostgresReactionRecord {
-  idempotency_key: string;
-  type: string;
-  version: unknown;
-  payload: unknown;
-  source_client_id: string;
-  source_client_commit_id: string;
-  source_commit_seq: unknown;
-  created_at_ms: unknown;
-  available_at_ms: unknown;
-  status: StoredReaction['status'];
-  attempts: unknown;
-  max_attempts: unknown;
-  lease_owner: string | null;
-  lease_expires_at_ms: unknown | null;
-  completed_at_ms: unknown | null;
-  last_failure: unknown | null;
-}
-
-function toStoredReaction(record: PostgresReactionRecord): StoredReaction {
-  return {
-    idempotencyKey: record.idempotency_key,
-    type: record.type,
-    version: asNumber(record.version),
-    payload: asJson(record.payload) as DurableJsonValue,
-    sourceClientId: record.source_client_id,
-    sourceClientCommitId: record.source_client_commit_id,
-    sourceCommitSeq: asNumber(record.source_commit_seq),
-    createdAtMs: asNumber(record.created_at_ms),
-    maxAttempts: asNumber(record.max_attempts),
-    status: record.status,
-    attempts: asNumber(record.attempts),
-    availableAtMs: asNumber(record.available_at_ms),
-    ...(record.lease_owner !== null ? { leaseOwner: record.lease_owner } : {}),
-    ...(record.lease_expires_at_ms !== null
-      ? { leaseExpiresAtMs: asNumber(record.lease_expires_at_ms) }
-      : {}),
-    ...(record.completed_at_ms !== null
-      ? { completedAtMs: asNumber(record.completed_at_ms) }
-      : {}),
-    ...(record.last_failure !== null
-      ? { lastFailure: asJson(record.last_failure) as ReactionFailure }
-      : {}),
-  };
-}
-
-/**
- * Serialize a push result to a JSON-able object (stored in a JSONB column).
- * `serverRow` bytes are base64-encoded — JSONB cannot hold raw bytes.
- */
-function serializePushResult(result: StoredPushResult): unknown {
-  return {
-    status: result.status,
-    ...(result.commitSeq !== undefined ? { commitSeq: result.commitSeq } : {}),
-    ...(result.recordedAtMs !== undefined
-      ? { recordedAtMs: result.recordedAtMs }
-      : {}),
-    ...(result.cacheIdentity !== undefined
-      ? { cacheIdentity: result.cacheIdentity }
-      : {}),
-    ...(result.conflictAuthorization !== undefined
-      ? { conflictAuthorization: result.conflictAuthorization }
-      : {}),
-    results: result.results.map((record) => {
-      if (record.status === 'conflict') {
-        return {
-          opIndex: record.opIndex,
-          status: record.status,
-          code: record.code,
-          message: record.message,
-          serverVersion: record.serverVersion,
-          serverRow: toBase64(record.serverRow),
-          conflictColumns: toBase64(record.conflictColumns),
-        };
-      }
-      if (record.status === 'error') {
-        return {
-          opIndex: record.opIndex,
-          status: record.status,
-          code: record.code,
-          message: record.message,
-          retryable: record.retryable,
-          ...(record.details !== undefined ? { details: record.details } : {}),
-        };
-      }
-      return { opIndex: record.opIndex, status: record.status };
-    }),
-  };
-}
-
-function deserializePushResult(value: unknown): StoredPushResult {
-  const parsed = value as {
-    status: 'applied' | 'rejected';
-    commitSeq?: number;
-    recordedAtMs?: number;
-    cacheIdentity?: string;
-    conflictAuthorization?: StoredPushResult['conflictAuthorization'];
-    results: SerializedResult[];
-  };
-  const results: PushOperationResult[] = parsed.results.map((record) => {
-    if (record.status === 'conflict') {
-      return {
-        opIndex: record.opIndex,
-        status: 'conflict',
-        code: record.code ?? '',
-        message: record.message ?? '',
-        serverVersion: record.serverVersion ?? 0,
-        serverRow: fromBase64(record.serverRow ?? ''),
-        conflictColumns: fromBase64(record.conflictColumns ?? ''),
-      };
-    }
-    if (record.status === 'error') {
-      return {
-        opIndex: record.opIndex,
-        status: 'error',
-        code: record.code ?? '',
-        message: record.message ?? '',
-        retryable: record.retryable ?? false,
-        ...(record.details !== undefined ? { details: record.details } : {}),
-      };
-    }
-    return { opIndex: record.opIndex, status: 'applied' };
-  });
-  return {
-    status: parsed.status,
-    ...(parsed.commitSeq !== undefined ? { commitSeq: parsed.commitSeq } : {}),
-    ...(parsed.recordedAtMs !== undefined
-      ? { recordedAtMs: parsed.recordedAtMs }
-      : {}),
-    ...(parsed.cacheIdentity !== undefined
-      ? { cacheIdentity: parsed.cacheIdentity }
-      : {}),
-    ...(parsed.conflictAuthorization !== undefined
-      ? { conflictAuthorization: parsed.conflictAuthorization }
-      : {}),
-    results,
-  };
-}
-
-/**
- * Some drivers return a JSONB column already parsed (pglite, node-postgres);
- * accept a string too for defensiveness.
- */
-function asJson<T>(value: unknown): T {
-  if (typeof value === 'string') return JSON.parse(value) as T;
-  return value as T;
-}
-
-interface RowRecord {
-  row_id: string;
-  server_version: unknown;
-  scopes: unknown;
-  payload: unknown;
-  column_versions: unknown;
-}
-
-interface ChangeRecord {
-  tbl: string;
-  row_id: string;
-  op: unknown;
-  row_version: unknown;
-  scopes: unknown;
-  payload: unknown;
-}
-
-function toStoredRow(record: RowRecord): StoredRow {
-  return {
-    rowId: record.row_id,
-    serverVersion: asNumber(record.server_version),
-    scopes: asJson<Record<string, string>>(record.scopes),
-    payload: asBytes(record.payload),
-    ...(record.column_versions === null || record.column_versions === undefined
-      ? {}
-      : { columnVersions: asBytes(record.column_versions) }),
-  };
-}
-
-function toTombstone(
-  seq: unknown,
-  version: unknown,
-  scopes: unknown,
-): Tombstone | null {
-  if (seq === null || seq === undefined) return null;
-  return {
-    commitSeq: asNumber(seq),
-    ...(version === null || version === undefined
-      ? {}
-      : { serverVersion: asNumber(version) }),
-    ...(scopes === null || scopes === undefined
-      ? {}
-      : { scopes: asJson<Record<string, string>>(scopes) }),
-  };
-}
-
-const CLIENT_RECORD_COLUMNS =
-  'client_id, actor_id, wire_version, cursor, updated_at_ms, schema_version, units, registration_digest, catching_up, last_round_at_ms, last_error_code, consecutive_failures';
-
-function toClientRecord(record: {
-  client_id: string;
-  actor_id: string;
-  wire_version: unknown;
-  cursor: unknown;
-  updated_at_ms: unknown;
-  schema_version: unknown;
-  units: unknown;
-  registration_digest: unknown;
-  catching_up: unknown;
-  last_round_at_ms: unknown;
-  last_error_code: string | null;
-  consecutive_failures: unknown;
-}): ClientRecord {
-  return {
-    clientId: record.client_id,
-    actorId: record.actor_id,
-    wireVersion: asNumber(record.wire_version),
-    cursor: asNumber(record.cursor),
-    updatedAtMs: asNumber(record.updated_at_ms),
-    ...(record.schema_version === null
-      ? {}
-      : { schemaVersion: asNumber(record.schema_version) }),
-    ...(record.units === null || record.registration_digest === null
-      ? {}
-      : {
-          registration: {
-            units: asJson<UnitScopes[]>(record.units),
-            digest: asBytes(record.registration_digest),
-          },
-        }),
-    catchingUp: asJson<ClientRecord['catchingUp']>(record.catching_up),
-    ...clientRoundState(
-      record.last_round_at_ms === null
-        ? null
-        : asNumber(record.last_round_at_ms),
-      record.last_error_code,
-      asNumber(record.consecutive_failures),
-    ),
-  };
-}
-
-function toStoredChange(record: ChangeRecord): StoredChange {
-  return {
-    table: record.tbl,
-    rowId: record.row_id,
-    op: asNumber(record.op) === 1 ? 'upsert' : 'delete',
-    ...(record.row_version !== null && record.row_version !== undefined
-      ? { rowVersion: asNumber(record.row_version) }
-      : {}),
-    scopes: asJson<Record<string, string>>(record.scopes),
-    ...(record.payload !== null && record.payload !== undefined
-      ? { payload: asBytes(record.payload) }
-      : {}),
   };
 }
 
@@ -1120,7 +854,7 @@ async function getRowOn(
   partition: string,
   rowId: string,
 ): Promise<StoredRow | undefined> {
-  const { rows } = await q.query<RowRecord>(
+  const { rows } = await q.query<StoredRowRecord>(
     selectRowSql(compiled, 'postgres'),
     [partition, rowId],
   );
@@ -1144,7 +878,10 @@ async function scanRowsByIndexOn(
     query.limit,
     'postgres',
   );
-  const { rows } = await q.query<RowRecord>(statement.sql, statement.params);
+  const { rows } = await q.query<StoredRowRecord>(
+    statement.sql,
+    statement.params,
+  );
   return rows.map(toStoredRow);
 }
 
@@ -1455,7 +1192,7 @@ async function getPushResultOn(
 function toPersistedPushResult(value: unknown): StoredPushResult | undefined {
   if (value === null || value === undefined) return undefined;
   try {
-    return deserializePushResult(asJson(value));
+    return pushResultFromJson(asJson(value));
   } catch {
     throw syncError(
       'sync.idempotency_cache_miss',
@@ -1821,7 +1558,7 @@ class PostgresTransaction implements StorageTransaction {
     if (missing.length === 0) return rows;
     // One statement for every id neither the staged writes nor the
     // admission read answered (see `getRow`).
-    const { rows: records } = await this.#serial.query<RowRecord>(
+    const { rows: records } = await this.#serial.query<StoredRowRecord>(
       selectRowsSql(this.#resolveTable(table), 'postgres'),
       [this.#partition, JSON.stringify(missing)],
     );
@@ -1870,11 +1607,13 @@ class PostgresTransaction implements StorageTransaction {
       );
       this.#prefetchedTombstones.set(
         key,
-        toTombstone(
-          record.tombstone_seq,
-          record.tombstone_version,
-          record.tombstone_scopes,
-        ),
+        record.tombstone_seq === null || record.tombstone_seq === undefined
+          ? null
+          : toTombstone({
+              commit_seq: record.tombstone_seq,
+              server_version: record.tombstone_version,
+              scopes: record.tombstone_scopes,
+            }),
       );
     }
   }
@@ -1895,10 +1634,9 @@ class PostgresTransaction implements StorageTransaction {
       [this.#partition, table, rowId],
     );
     const row = rows[0];
-    return (
-      toTombstone(row?.commit_seq, row?.server_version, row?.scopes) ??
-      undefined
-    );
+    return row === undefined || row.commit_seq === null
+      ? undefined
+      : toTombstone(row);
   }
 
   async clearTombstone(table: string, rowId: string): Promise<void> {
@@ -1937,7 +1675,7 @@ class PostgresTransaction implements StorageTransaction {
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const { rows: records } = await client.query<RowRecord>(sql, [
+      const { rows: records } = await client.query<StoredRowRecord>(sql, [
         this.#partition,
         query.table,
         variable,
@@ -2130,7 +1868,7 @@ class PostgresTransaction implements StorageTransaction {
     this.#pushResults.push({
       client_id: clientId,
       client_commit_id: clientCommitId,
-      result: serializePushResult(result),
+      result: pushResultToJson(result),
       outbox_id: sequence?.outboxId ?? null,
       client_seq: sequence?.clientSeq ?? null,
     });
@@ -2620,9 +2358,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         ? undefined
         : asNumber(marker.schema_version);
     if (stored !== undefined && stored > schema.version) {
-      throw new Error(
-        `stored schema version ${stored} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
-      );
+      throw new StorageQueryError('sync.storage.schema_changed', {
+        storedVersion: String(stored),
+        configuredVersion: String(schema.version),
+      });
     }
     if (stored !== undefined && stored === schema.version) {
       const storedLayouts =
@@ -2710,9 +2449,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             ? undefined
             : asNumber(lockedMarker[0].schema_version);
         if (lockedVersion !== undefined && lockedVersion > schema.version) {
-          throw new Error(
-            `stored schema version ${lockedVersion} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
-          );
+          throw new StorageQueryError('sync.storage.schema_changed', {
+            storedVersion: String(lockedVersion),
+            configuredVersion: String(schema.version),
+          });
         }
         if (lockedVersion === schema.version) return;
         const lockedLayouts =
@@ -3309,7 +3049,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     const limitParam = nowParam + 1;
     const workerParam = limitParam + 1;
     const expiresParam = workerParam + 1;
-    const { rows } = await this.#exec.query<PostgresReactionRecord>(
+    const { rows } = await this.#exec.query<StoredReactionRecord>(
       `WITH due AS (
          SELECT partition, idempotency_key
            FROM sync_reactions
@@ -3427,7 +3167,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     idempotencyKey: string,
   ): Promise<StoredReaction | undefined> {
-    const { rows } = await this.#exec.query<PostgresReactionRecord>(
+    const { rows } = await this.#exec.query<StoredReactionRecord>(
       'SELECT * FROM sync_reactions WHERE partition=$1 AND idempotency_key=$2',
       [partition, idempotencyKey],
     );
@@ -3455,7 +3195,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       params.push(...query.types);
     }
     params.push(query.limit);
-    const { rows } = await this.#exec.query<PostgresReactionRecord>(
+    const { rows } = await this.#exec.query<StoredReactionRecord>(
       `SELECT * FROM sync_reactions WHERE ${where.join(' AND ')}
         ORDER BY created_at_ms DESC, idempotency_key DESC LIMIT $${params.length}`,
       params,
@@ -3598,7 +3338,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       },
       async (keys, commitSeqs) => {
         const { rows } = await this.#exec.query<
-          ChangeRecord & { commit_seq: unknown }
+          StoredChangeRecord & { commit_seq: unknown }
         >(
           `WITH k AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::text::jsonb) AS k(i int, var text, value text, after bigint, tables jsonb))
            SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
@@ -3646,7 +3386,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const records = await this.#batchedPage<RowRecord>(
+      const records = await this.#batchedPage<StoredRowRecord>(
         'scanRows',
         (specs) =>
           scanRowBatchSql(
@@ -4070,7 +3810,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     );
     const meta = rows[0];
     if (meta === undefined) return undefined;
-    const { rows: changeRows } = await this.#exec.query<ChangeRecord>(
+    const { rows: changeRows } = await this.#exec.query<StoredChangeRecord>(
       'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=$1 AND commit_seq=$2 ORDER BY idx',
       [partition, commitSeq],
     );
@@ -4124,7 +3864,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
   async listRows(partition: string, query: RowListQuery): Promise<StoredRow[]> {
     // Keyset page over the row table's (partition, rowId) primary key: an
     // index range read, no scope filter, no per-row lookup.
-    const { rows } = await this.#exec.query<RowRecord>(
+    const { rows } = await this.#exec.query<StoredRowRecord>(
       `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
        FROM ${quoteIdent(this.table(query.table).name)}
        WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>$2
@@ -4159,7 +3899,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       try {
         return {
           clientId: row.client_id,
-          result: deserializePushResult(asJson(row.result)),
+          result: pushResultFromJson(asJson(row.result)),
         };
       } catch {
         throw syncError(

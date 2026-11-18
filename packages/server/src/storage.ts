@@ -20,10 +20,12 @@ import type { AuthoritativeRelationPlan } from './authoritative-query';
  */
 import type {
   PushOperationResult,
+  RejectionDetails,
   RowValue,
   ScopeMap,
   UnitScopes,
 } from '@syncular/core';
+import { asNumber } from './pg-executor';
 import type { CompiledSchema } from './schema';
 
 export interface CommitPruneQuery {
@@ -497,6 +499,296 @@ export function clientRoundState(
     ...(lastRoundAtMs !== null ? { lastRoundAtMs } : {}),
     ...(lastErrorCode !== null ? { lastErrorCode } : {}),
     ...(consecutiveFailures > 0 ? { consecutiveFailures } : {}),
+  };
+}
+
+/** Runtime-neutral base64 (no `Buffer`, Workers-safe) for stored push results. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToBytes(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Some drivers return a JSON column already parsed (pglite, node-postgres);
+ * SQLite returns the `TEXT`.
+ */
+export function asJson<T>(value: unknown): T {
+  if (typeof value === 'string') return JSON.parse(value) as T;
+  return value as T;
+}
+
+/** Native SQLite and Postgres return `Uint8Array`; D1 returns `ArrayBuffer` for BLOBs. */
+export function asUint8Array(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (Array.isArray(value)) return new Uint8Array(value);
+  throw new Error(`expected a BLOB column, got ${typeof value}`);
+}
+
+interface SerializedResult {
+  opIndex: number;
+  status: string;
+  code?: string;
+  message?: string;
+  serverVersion?: number;
+  serverRow?: string;
+  conflictColumns?: string;
+  retryable?: boolean;
+  details?: RejectionDetails;
+}
+
+/**
+ * Convert a push result to the JSON-able object both SQL backends store.
+ * `serverRow` bytes are base64-encoded: JSON cannot hold raw bytes.
+ */
+export function pushResultToJson(result: StoredPushResult): unknown {
+  return {
+    status: result.status,
+    ...(result.commitSeq !== undefined ? { commitSeq: result.commitSeq } : {}),
+    ...(result.recordedAtMs !== undefined
+      ? { recordedAtMs: result.recordedAtMs }
+      : {}),
+    ...(result.cacheIdentity !== undefined
+      ? { cacheIdentity: result.cacheIdentity }
+      : {}),
+    ...(result.conflictAuthorization !== undefined
+      ? { conflictAuthorization: result.conflictAuthorization }
+      : {}),
+    results: result.results.map((record) => {
+      if (record.status === 'conflict') {
+        return {
+          opIndex: record.opIndex,
+          status: record.status,
+          code: record.code,
+          message: record.message,
+          serverVersion: record.serverVersion,
+          serverRow: bytesToBase64(record.serverRow),
+          conflictColumns: bytesToBase64(record.conflictColumns),
+        };
+      }
+      if (record.status === 'error') {
+        return {
+          opIndex: record.opIndex,
+          status: record.status,
+          code: record.code,
+          message: record.message,
+          retryable: record.retryable,
+          ...(record.details !== undefined ? { details: record.details } : {}),
+        };
+      }
+      return { opIndex: record.opIndex, status: record.status };
+    }),
+  };
+}
+
+export function pushResultFromJson(value: unknown): StoredPushResult {
+  const parsed = value as {
+    status: 'applied' | 'rejected';
+    commitSeq?: number;
+    recordedAtMs?: number;
+    cacheIdentity?: string;
+    conflictAuthorization?: StoredPushResult['conflictAuthorization'];
+    results: SerializedResult[];
+  };
+  const results: PushOperationResult[] = parsed.results.map((record) => {
+    if (record.status === 'conflict') {
+      return {
+        opIndex: record.opIndex,
+        status: 'conflict',
+        code: record.code ?? '',
+        message: record.message ?? '',
+        serverVersion: record.serverVersion ?? 0,
+        serverRow: base64ToBytes(record.serverRow ?? ''),
+        conflictColumns: base64ToBytes(record.conflictColumns ?? ''),
+      };
+    }
+    if (record.status === 'error') {
+      return {
+        opIndex: record.opIndex,
+        status: 'error',
+        code: record.code ?? '',
+        message: record.message ?? '',
+        retryable: record.retryable ?? false,
+        ...(record.details !== undefined ? { details: record.details } : {}),
+      };
+    }
+    return { opIndex: record.opIndex, status: 'applied' };
+  });
+  return {
+    status: parsed.status,
+    ...(parsed.commitSeq !== undefined ? { commitSeq: parsed.commitSeq } : {}),
+    ...(parsed.recordedAtMs !== undefined
+      ? { recordedAtMs: parsed.recordedAtMs }
+      : {}),
+    ...(parsed.cacheIdentity !== undefined
+      ? { cacheIdentity: parsed.cacheIdentity }
+      : {}),
+    ...(parsed.conflictAuthorization !== undefined
+      ? { conflictAuthorization: parsed.conflictAuthorization }
+      : {}),
+    results,
+  };
+}
+
+/** Row shapes the SQL backends' `SELECT`s return; values are driver-typed. */
+export interface StoredRowRecord {
+  row_id: string;
+  server_version: unknown;
+  scopes: unknown;
+  payload: unknown;
+  column_versions: unknown;
+}
+
+export interface StoredChangeRecord {
+  tbl: string;
+  row_id: string;
+  op: unknown;
+  row_version: unknown;
+  scopes: unknown;
+  payload: unknown;
+}
+
+export interface StoredReactionRecord {
+  idempotency_key: string;
+  type: string;
+  version: unknown;
+  payload: unknown;
+  source_client_id: string;
+  source_client_commit_id: string;
+  source_commit_seq: unknown;
+  created_at_ms: unknown;
+  available_at_ms: unknown;
+  status: StoredReaction['status'];
+  attempts: unknown;
+  max_attempts: unknown;
+  lease_owner: string | null;
+  lease_expires_at_ms: unknown | null;
+  completed_at_ms: unknown | null;
+  last_failure: unknown | null;
+}
+
+export interface ClientRowRecord {
+  client_id: string;
+  actor_id: string;
+  wire_version: unknown;
+  cursor: unknown;
+  updated_at_ms: unknown;
+  schema_version: unknown;
+  units: unknown;
+  registration_digest: unknown;
+  catching_up: unknown;
+  last_round_at_ms: unknown;
+  last_error_code: string | null;
+  consecutive_failures: unknown;
+}
+
+export function toStoredRow(record: StoredRowRecord): StoredRow {
+  return {
+    rowId: record.row_id,
+    serverVersion: asNumber(record.server_version),
+    scopes: asJson<Record<string, string>>(record.scopes),
+    payload: asUint8Array(record.payload),
+    ...(record.column_versions === null || record.column_versions === undefined
+      ? {}
+      : { columnVersions: asUint8Array(record.column_versions) }),
+  };
+}
+
+export function toTombstone(record: {
+  commit_seq: unknown;
+  server_version: unknown;
+  scopes: unknown;
+}): Tombstone {
+  return {
+    commitSeq: asNumber(record.commit_seq),
+    ...(record.server_version === null || record.server_version === undefined
+      ? {}
+      : { serverVersion: asNumber(record.server_version) }),
+    ...(record.scopes === null || record.scopes === undefined
+      ? {}
+      : { scopes: asJson<Record<string, string>>(record.scopes) }),
+  };
+}
+
+export function toStoredChange(record: StoredChangeRecord): StoredChange {
+  return {
+    table: record.tbl,
+    rowId: record.row_id,
+    op: asNumber(record.op) === 1 ? 'upsert' : 'delete',
+    ...(record.row_version !== null && record.row_version !== undefined
+      ? { rowVersion: asNumber(record.row_version) }
+      : {}),
+    scopes: asJson<Record<string, string>>(record.scopes),
+    ...(record.payload !== null && record.payload !== undefined
+      ? { payload: asUint8Array(record.payload) }
+      : {}),
+  };
+}
+
+export function toStoredReaction(record: StoredReactionRecord): StoredReaction {
+  return {
+    idempotencyKey: record.idempotency_key,
+    type: record.type,
+    version: asNumber(record.version),
+    payload: asJson(record.payload) as DurableJsonValue,
+    sourceClientId: record.source_client_id,
+    sourceClientCommitId: record.source_client_commit_id,
+    sourceCommitSeq: asNumber(record.source_commit_seq),
+    createdAtMs: asNumber(record.created_at_ms),
+    maxAttempts: asNumber(record.max_attempts),
+    status: record.status,
+    attempts: asNumber(record.attempts),
+    availableAtMs: asNumber(record.available_at_ms),
+    ...(record.lease_owner !== null ? { leaseOwner: record.lease_owner } : {}),
+    ...(record.lease_expires_at_ms !== null
+      ? { leaseExpiresAtMs: asNumber(record.lease_expires_at_ms) }
+      : {}),
+    ...(record.completed_at_ms !== null
+      ? { completedAtMs: asNumber(record.completed_at_ms) }
+      : {}),
+    ...(record.last_failure !== null
+      ? { lastFailure: asJson(record.last_failure) as ReactionFailure }
+      : {}),
+  };
+}
+
+export const CLIENT_RECORD_COLUMNS =
+  'client_id, actor_id, wire_version, cursor, updated_at_ms, schema_version, units, registration_digest, catching_up, last_round_at_ms, last_error_code, consecutive_failures';
+
+export function toClientRecord(record: ClientRowRecord): ClientRecord {
+  return {
+    clientId: record.client_id,
+    actorId: record.actor_id,
+    wireVersion: asNumber(record.wire_version),
+    cursor: asNumber(record.cursor),
+    updatedAtMs: asNumber(record.updated_at_ms),
+    ...(record.schema_version === null
+      ? {}
+      : { schemaVersion: asNumber(record.schema_version) }),
+    ...(record.units === null || record.registration_digest === null
+      ? {}
+      : {
+          registration: {
+            units: asJson<UnitScopes[]>(record.units),
+            digest: asUint8Array(record.registration_digest),
+          },
+        }),
+    catchingUp: asJson<ClientRecord['catchingUp']>(record.catching_up),
+    ...clientRoundState(
+      record.last_round_at_ms === null
+        ? null
+        : asNumber(record.last_round_at_ms),
+      record.last_error_code,
+      asNumber(record.consecutive_failures),
+    ),
   };
 }
 

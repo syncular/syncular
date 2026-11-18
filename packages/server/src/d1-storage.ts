@@ -79,7 +79,6 @@ import {
 import type { CompiledSchema, CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import {
-  asUint8Array,
   deserializePushResult,
   placeholders,
   type SqliteRowRecord,
@@ -90,8 +89,6 @@ import {
   sqliteDdlStatements,
   SQLITE_UPGRADE_PROBE,
   sqliteUpgradeDdl,
-  toStoredRow,
-  toTombstone,
 } from './sqlite-dialect';
 import type { SqliteValue } from './sqlite-driver';
 import type {
@@ -116,7 +113,12 @@ import type {
   StoredRow,
   Tombstone,
 } from './storage';
-import { commitDeleteFloor } from './storage';
+import {
+  asUint8Array,
+  commitDeleteFloor,
+  toStoredRow,
+  toTombstone,
+} from './storage';
 import {
   isD1ConstraintError,
   StorageConstraintError,
