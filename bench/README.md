@@ -147,6 +147,24 @@ SQL text), `db.exec`, and `db.run` over a push and a pull per round. The steady
 state issues 42 cached statements and 3 `exec` statements (`BEGIN IMMEDIATE`,
 `SAVEPOINT`, `COMMIT`) per round, over 21 distinct SQL texts.
 
+## Segment put lane
+
+```sh
+bun run --cwd bench bench:segment-puts -- --latency-ms 1000 --runs 1
+```
+
+`segment-put-lane.ts` serves a cold pull of four units through
+`handleSyncRequest`: 4,000 rows of about 875 bytes per unit, 1,000-row pages
+and four pages per unit, so sixteen rows segments of about 875 KB go to a
+memory segment store that waits `--latency-ms` before every put. It times the
+pull with `maxConcurrentSegmentPuts` 1 (the sequential pull before 0.95.0) and
+6 (the default). Bun 1.4.4, macOS arm64, Apple M5 Pro:
+
+| Put latency | 1 put in flight | 6 puts in flight |
+| --- | --- | --- |
+| 250 ms (median of 3) | 4,074 ms | 771 ms |
+| 1,000 ms (one run) | 16,082 ms | 3,022 ms |
+
 ## Diagnostic workloads
 
 Select a workload to write a separate JSON artifact. Diagnostic runs leave

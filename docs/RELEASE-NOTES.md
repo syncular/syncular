@@ -1,5 +1,33 @@
 # Syncular release notes
 
+## 0.95.0 release notes
+
+0.95.0 stores a cold pull's segments concurrently
+(SYNCULAR-SEGMENT-BUILD-SERIAL-001). SSP2 and the wire version are unchanged.
+
+### Concurrent segment puts
+
+A pull waited for each rows segment's `put` before it scanned the next page,
+so a cold pull took the sum of its puts. A pull after a schema bump on
+`R2SegmentStore` stored 16 segments of about 875 KB one after another, and
+17.6 s of its 19.0 s went to R2. The pull now keeps up to
+`limits.maxConcurrentSegmentPuts` puts in flight (default 6) across every unit
+it bootstraps, and scans and encodes the next page meanwhile. Pages are still
+scanned in order. The pull writes its unit sections once every put has
+completed, with the same frames in the same order as a pull with one put in
+flight. A failed put fails the pull with the error of the first failed page,
+and the pull scans no further page. Puts still in flight finish unobserved;
+each store writes a segment's bytes before its record. The pull holds the
+encoded bytes of its puts in flight, about 5 MB at the default with 875 KB
+segments.
+SQLite range images are still built and stored one at a time, because the next
+range starts after the last row the builder took.
+
+Sixteen segments to a store with 1,000 ms per put take 3.0 s instead of
+16.1 s (`bench/src/segment-put-lane.ts`). A custom `SegmentStore` must
+accept concurrent `put` calls, including two of the same bytes under
+different scope digests.
+
 ## 0.94.0 release notes
 
 0.94.0 lets the server set columns of a pushed row inside the push

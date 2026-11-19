@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A cold pull stores its segments concurrently',
+    body: 'A pull stores up to `maxConcurrentSegmentPuts` rows segments in the segment store at once (default 6) while it scans the next bootstrap page, across every unit it bootstraps. Before, it waited for each put before scanning the next page, so a cold pull took the sum of its puts. Sixteen segments to a store with 1,000 ms per put take 3.0 s instead of 16.1 s. The response carries the same frames in the same order, and a failed put fails the pull with the error of the first failed page. A custom segment store must accept concurrent puts.',
+    links: [
+      {
+        href: '/guide-server/#request-limits',
+        label: 'Request limits',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'The server sets server-owned columns inside the push',
     body: "A column listed in a table's `serverColumns` in `syncular.json` is server-owned: a `serverColumns` hook on the sync config sets it for every accepted upsert inside the push transaction, after scope authorization and before the validators, and can read the commit's candidate state. The row is stored and delivered with the server's values in the same commit, and on an insert its scopes are taken from them, so a row reaches the units of a server-set scope value at once. The server discards a pushed value of such a column, so apps built before the column existed or before it became server-owned keep pushing; a current client refuses the column in mutation values with `sync.invalid_request`. A schema window may mark an existing column server-owned and may add a scope pattern over an appended server-owned column without flooring older apps.",
     links: [

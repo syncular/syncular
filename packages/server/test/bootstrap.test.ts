@@ -1448,3 +1448,153 @@ describe('range images (§5.3)', () => {
     expect(images.length).toBe(ids.length - 10);
   });
 });
+
+/**
+ * A segment store whose puts wait until the test releases them, so a test
+ * controls the order in which puts complete.
+ */
+class GatedSegmentStore extends MemorySegmentStore {
+  readonly waiting: (() => void)[] = [];
+  readonly order: number[] = [];
+  inFlight = 0;
+  maxInFlight = 0;
+  #calls = 0;
+  #arrival: (() => void) | undefined;
+  constructor(readonly failAt?: number) {
+    super();
+  }
+
+  /** Resolves once `count` puts wait for release. */
+  untilWaiting(count: number): Promise<void> {
+    if (this.waiting.length >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#arrival = () => {
+        if (this.waiting.length >= count) resolve();
+      };
+    });
+  }
+
+  /** Release every waiting put, the latest first. */
+  releaseAll(): void {
+    for (const release of this.waiting.splice(0).reverse()) release();
+  }
+
+  override async put(
+    ...args: Parameters<MemorySegmentStore['put']>
+  ): ReturnType<MemorySegmentStore['put']> {
+    this.#calls += 1;
+    const call = this.#calls;
+    this.inFlight += 1;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      await new Promise<void>((resolve) => {
+        this.waiting.push(resolve);
+        this.#arrival?.();
+      });
+      this.order.push(call);
+      if (call === this.failAt) throw new Error('segment store unavailable');
+      return await super.put(...args);
+    } finally {
+      this.inFlight -= 1;
+    }
+  }
+}
+
+describe('segment puts in flight (§5.4)', () => {
+  const projects = ['p1', 'p2', 'p3', 'p4'];
+  const units = projects.map((project) => ({ project_id: project }));
+
+  // Four units of five tasks, one row per page and the default four pages
+  // per unit: sixteen rows segments, every one delivered by reference.
+  async function seeded(
+    store: GatedSegmentStore | MemorySegmentStore,
+    maxConcurrentSegmentPuts?: number,
+  ): Promise<TestContext> {
+    const t = makeContext({
+      segments: store,
+      limits: {
+        inlineSegmentMaxBytes: 0,
+        ...(maxConcurrentSegmentPuts !== undefined
+          ? { maxConcurrentSegmentPuts }
+          : {}),
+      },
+    });
+    t.scopes.value = { project_id: projects };
+    for (const project of projects) {
+      for (let i = 0; i < 5; i++) {
+        const id = `${project}-t${i}`;
+        await seedTask(t, `c-${id}`, id, project);
+      }
+    }
+    return t;
+  }
+
+  const frames = () =>
+    pullFrames(units, { accept: 0b0010, limitSnapshotRows: 1 });
+
+  test('a cold pull keeps at most six puts in flight and completes in three rounds', async () => {
+    const store = new GatedSegmentStore();
+    const t = await seeded(store);
+    const response = sync(t, frames());
+    // Each round stands for one put latency: every put in flight completes.
+    for (const round of [6, 6, 4]) {
+      await store.untilWaiting(round);
+      expect(store.waiting).toHaveLength(round);
+      store.releaseAll();
+    }
+    const message = await response;
+    expect(store.maxInFlight).toBe(6);
+    // The latest put of a round completes first, and the frames still
+    // follow page order.
+    expect(store.order.slice(0, 6)).toEqual([6, 5, 4, 3, 2, 1]);
+    const refs = units.flatMap((unit) =>
+      refSegments(section(message, unit).body),
+    );
+    expect(refs).toHaveLength(16);
+    for (const [i, unit] of units.entries()) {
+      const unitRefs = refSegments(section(message, unit).body);
+      expect(unitRefs.map((ref) => ref.rowCursor ?? null)).toEqual([
+        null,
+        `${projects[i]}-t0`,
+        `${projects[i]}-t1`,
+        `${projects[i]}-t2`,
+      ]);
+    }
+  });
+
+  test('a pull emits the same frames with one put in flight as with six', async () => {
+    const responses = [];
+    for (const limit of [1, 6]) {
+      const t = await seeded(new MemorySegmentStore(), limit);
+      responses.push(await sync(t, frames()));
+    }
+    expect(responses[1]!.frames).toEqual(responses[0]!.frames);
+  });
+
+  test('a failed put fails the pull with its error', async () => {
+    const outcomes = [];
+    for (const limit of [1, 6]) {
+      const store = new GatedSegmentStore(5);
+      const t = await seeded(store, limit);
+      const response = sync(t, frames()).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      // Release every put as it arrives until the pull settles.
+      for (;;) {
+        const settled = await Promise.race([
+          store.untilWaiting(1).then(() => false),
+          response.then(() => true),
+        ]);
+        store.releaseAll();
+        if (settled) break;
+      }
+      outcomes.push({ error: await response, puts: store.order.length });
+    }
+    expect(outcomes[0]!.error).toEqual(new Error('segment store unavailable'));
+    expect(outcomes[1]!.error).toEqual(outcomes[0]!.error);
+    // Both pulls stop at the failed put: the sequential one after it, the
+    // concurrent one after the six puts in flight when it failed.
+    expect(outcomes.map((outcome) => outcome.puts)).toEqual([5, 6]);
+  });
+});

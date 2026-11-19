@@ -886,7 +886,7 @@ async function* streamResponse(
               /** The join cursor (§4.7): the pin, or the kept cursor. */
               pin: number;
               restricted: boolean;
-              frames: ResponseFrame[];
+              frames: (ResponseFrame | Promise<ResponseFrame>)[];
               token: string | undefined;
             };
         const states: UnitState[] = units.map(
@@ -941,6 +941,12 @@ async function* streamResponse(
           1,
           Math.floor(100_000 / (limits.limitSnapshotRows + 1)),
         );
+        // The segment puts of every bootstrap section, in frame order. A
+        // pull holds the encoded bytes of the puts in flight.
+        const puts: Promise<ResponseFrame>[] = [];
+        const inFlight = new Set<Promise<void>>();
+        const maxPuts = limitsOf(ctx).maxConcurrentSegmentPuts;
+        let failed = false;
         for (let next = 0; next < bootstrapping.length;) {
           const window: number[] = [];
           let pages = 0;
@@ -986,7 +992,7 @@ async function* streamResponse(
             };
           });
           for (const { index, plan: bootstrap } of batch) {
-            const frames: ResponseFrame[] = [];
+            const frames: (ResponseFrame | Promise<ResponseFrame>)[] = [];
             const segments = bootstrapSegments(
               ctx,
               schema,
@@ -997,7 +1003,29 @@ async function* streamResponse(
             );
             let step = await segments.next();
             while (!step.done) {
-              frames.push(step.value);
+              const frame = step.value;
+              if (frame.type === 'PENDING_REF') {
+                // A rows segment's put runs while later pages are scanned;
+                // the next page waits while `maxPuts` puts are in flight.
+                const settled: Promise<void> = frame.ref.then(
+                  () => void inFlight.delete(settled),
+                  () => {
+                    failed = true;
+                    inFlight.delete(settled);
+                  },
+                );
+                inFlight.add(settled);
+                puts.push(frame.ref);
+                frames.push(frame.ref);
+                while (inFlight.size >= maxPuts) {
+                  await Promise.race(inFlight);
+                  if (failed) break;
+                }
+                // A failed put ends the pull before it scans another page.
+                if (failed) for (const put of puts) await put;
+              } else {
+                frames.push(frame);
+              }
               step = await segments.next();
             }
             const restrict = units[index]!.restrict;
@@ -1010,6 +1038,12 @@ async function* streamResponse(
             };
           }
         }
+        // Every put completes before the live read, as in a pull with one put
+        // in flight. A failed put fails the pull with the error of the first
+        // failed page, and the puts still in flight finish unobserved: each
+        // stores its bytes before its record, so no record points at missing
+        // bytes.
+        for (const put of puts) await put;
         const bound = (state: UnitState): number | undefined =>
           state.kind === 'live'
             ? R
@@ -1107,7 +1141,7 @@ async function* streamResponse(
             );
             if (state.kind === 'bootstrap') {
               for (const frame of state.frames) {
-                yield encodeResponseFrame(frame, plan.wireVersion);
+                yield encodeResponseFrame(await frame, plan.wireVersion);
               }
             }
             yield encodeResponseFrame(

@@ -10,6 +10,7 @@
     "bench:image-range": "bun src/image-range-lane.ts",
     "bench:patch": "bun src/patch-lane.ts",
     "bench:rekey": "bun src/rekey-lane.ts",
+    "bench:segment-puts": "bun src/segment-put-lane.ts",
     "bench:responsiveness": "bun src/responsiveness.ts",
     "bench:server-sqlite": "bun src/server-sqlite-lane.ts"
   },

@@ -113,6 +113,24 @@ export function runSegmentStoreContract(
       expect(got?.record.scopeDigests).toEqual(['digest-a']);
     });
 
+    test('concurrent puts of identical bytes from two scopes keep both digests (§5.1)', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([5, 5, 5]);
+      const [first] = await Promise.all([
+        store.put(PAGED_META, bytes, CONTRACT_NOW),
+        store.put(
+          { ...PAGED_META, scopeDigest: 'digest-b' },
+          bytes,
+          CONTRACT_NOW,
+        ),
+      ]);
+      const got = await store.get(first.segmentId);
+      expect([...(got?.record.scopeDigests ?? [])].sort()).toEqual([
+        'digest-a',
+        'digest-b',
+      ]);
+    });
+
     test('identical bytes from two scopes keep every digest (§5.1/§5.5)', async () => {
       const store = await makeStore();
       const bytes = new Uint8Array([4, 4, 4]);

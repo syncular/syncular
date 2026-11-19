@@ -618,6 +618,14 @@ async function* sqliteImageSegment(
 }
 
 /**
+ * A section frame: a response frame, or a rows segment's `SEGMENT_REF`
+ * whose put is in flight. The consumer emits `ref` in its frame order.
+ */
+type SectionFrame =
+  | ResponseFrame
+  | { readonly type: 'PENDING_REF'; readonly ref: Promise<ResponseFrame> };
+
+/**
  * One table's segments within the page budget: range images while the table
  * is on the image lane, then rows pages. Returns the pages it used, the row
  * cursor to resume at (`null` once the table is exhausted) and whether that
@@ -635,7 +643,7 @@ async function* tableSegments(
   trace: PullSectionTrace | undefined,
   logEpoch: string,
 ): AsyncGenerator<
-  ResponseFrame,
+  SectionFrame,
   { pages: number; rows: number; rowCursor: string | null; image: boolean }
 > {
   const { storage, segments, partition } = ctx;
@@ -725,34 +733,40 @@ async function* tableSegments(
       });
       yield { type: 'SEGMENT_INLINE', payload: bytes };
     } else {
-      const record = await segments.put(
-        {
-          partition,
-          logEpoch,
-          table: pair.table.name,
-          schemaVersion: schema.version,
-          mediaType: 'rows',
-          scopeDigest: digest,
-          asOfCommitSeq: pin,
-          rowCount: pageRows.length,
-          rowCursor,
-          nextRowCursor,
-        },
-        bytes,
-        now,
-      );
+      // The page's put runs while the next page is scanned; the caller keeps
+      // `maxConcurrentSegmentPuts` in flight and emits the frames in order.
       trace?.segments.push({
         mediaType: 'rows',
         delivery: 'ref',
         origin: 'built',
-        bytes: record.byteLength,
-        rows: record.rowCount,
+        bytes: bytes.length,
+        rows: pageRows.length,
       });
-      yield segmentRefFrame(
-        record,
-        digest,
-        await signedUrlFields(ctx, limits, record.segmentId, digest, now),
-      );
+      const ref = segments
+        .put(
+          {
+            partition,
+            logEpoch,
+            table: pair.table.name,
+            schemaVersion: schema.version,
+            mediaType: 'rows',
+            scopeDigest: digest,
+            asOfCommitSeq: pin,
+            rowCount: pageRows.length,
+            rowCursor,
+            nextRowCursor,
+          },
+          bytes,
+          now,
+        )
+        .then(async (record) =>
+          segmentRefFrame(
+            record,
+            digest,
+            await signedUrlFields(ctx, limits, record.segmentId, digest, now),
+          ),
+        );
+      yield { type: 'PENDING_REF', ref };
     }
     if (!hasMore)
       return { pages: page + 1, rows, rowCursor: null, image: false };
@@ -876,7 +890,7 @@ export async function* bootstrapSegments(
   plan: BootstrapPlan,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
-): AsyncGenerator<ResponseFrame, string | undefined> {
+): AsyncGenerator<SectionFrame, string | undefined> {
   const { unit, pin } = plan;
   let { tableIndex, rowCursor, image } = plan;
   let pages = 0;
@@ -1028,7 +1042,8 @@ export async function publishSqliteImage(
     trace,
     logEpoch,
   )) {
-    if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
+    if (frame.type === 'PENDING_REF') await frame.ref;
+    else if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
       refs.push(frame);
     }
   }
