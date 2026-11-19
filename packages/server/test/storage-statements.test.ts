@@ -9,12 +9,17 @@
 import { Database } from 'bun:sqlite';
 import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { encodeRow } from '@syncular/core';
+import {
+  canonicalScopeJson,
+  encodeRow,
+  type SegmentRefFrame,
+} from '@syncular/core';
 import {
   compileSchema,
   countRowsSql,
   D1ServerStorage,
   type D1PreparedStatement,
+  handleSegmentDownload,
   type PgExecutor,
   PostgresServerStorage,
   scanRowPageSql,
@@ -31,8 +36,11 @@ import { deleteSqliteRowScopesSql } from '../src/relational-rows';
 import { readLiveWindowPages } from '../src/storage-query';
 import {
   makeContext,
+  pullFrames,
   pushCommit,
   pushResults,
+  section,
+  seedTask,
   sync,
   taskRow,
   TEST_LOG_EPOCH,
@@ -949,4 +957,35 @@ test('a live page loads candidates only up to its cut, so a far-behind client re
   expect(over.calls).toEqual([[1, 2, 3], [4], [5]]);
   expect(over.window.throughSeq).toBe(5);
   expect(over.window.commits).toHaveLength(5);
+});
+
+test('a PostgreSQL segment download reads the registry and the checkpoint versions in one statement (§5.5)', async () => {
+  const db = await PGlite.create();
+  const counting = countingExecutor(pgliteExecutor(db));
+  const storage = new PostgresServerStorage(counting.executor);
+  await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+  const t = makeContext({ storage, limits: { inlineSegmentMaxBytes: 1 } });
+  await seedTask(t, 'seed', 't1', 'p1');
+  const unit = { project_id: 'p1' };
+  const ref = section(await sync(t, pullFrames([unit])), unit).body.find(
+    (frame): frame is SegmentRefFrame => frame.type === 'SEGMENT_REF',
+  );
+  if (ref === undefined) throw new Error('expected SEGMENT_REF');
+  const download = () =>
+    handleSegmentDownload(t.ctx, {
+      segmentId: ref.segmentId,
+      scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+    });
+  counting.texts.length = 0;
+  await download();
+  // 0.91.0 ran two: the registry read, then `readCheckpoints`.
+  expect(counting.texts).toHaveLength(1);
+  expect(counting.texts[0]).toContain('sync_partition_registry');
+  expect(counting.texts[0]).toContain('sync_backfill_checkpoints');
+
+  // The same statement still refuses a descriptor older than a checkpoint.
+  await storage.declareCheckpoint(PARTITION, 'tasks-projection', 2, NOW);
+  await expect(download()).rejects.toMatchObject({
+    code: 'sync.segment_expired',
+  });
 });

@@ -1436,6 +1436,15 @@ On every pull (and on realtime connect), per (unit, covered table) pair:
    A resolver that reads its authority from the sync storage reads it in a
    host-owned read transaction (§6.8): one snapshot, no partition lock, so
    resolving a pull's scopes never waits on a push.
+   On a direct segment download (§5.5) the server passes the download's
+   requested scopes with `phase: 'segment-download'`, and the resolver MAY
+   answer for those values only. Such an answer is valid when, for each
+   requested variable, it holds `'*'` exactly when the full answer does
+   and otherwise the same requested values the full answer holds. When it
+   grants `'*'` for a requested variable, it MUST also carry the full
+   allowed list of every other variable, because the wildcard fence
+   (rule 4) adds those. A valid limited answer yields the same effective
+   scopes, digest and outcome as the full answer.
 4. **Effective = requested ∩ allowed**, computed per requested key —
    the intersection therefore runs over this table's declared variables
    only, since requested keys were validated in rule 2 (a key present
@@ -3185,6 +3194,14 @@ for clients without signed-URL support.
   status, or resolution failure ⇒ HTTP
   403 `sync.forbidden`. A segment reference obtained earlier is not a
   bearer capability; only signed URLs are (deliberately, with short TTL).
+- The re-authorization costs one `resolveScopes` call per download, so a
+  bootstrap that references N segments resolves N times. The server passes
+  the download's requested scopes and `phase: 'segment-download'` to the
+  resolver, which MAY answer for those values only (§3.2 step 3). A host
+  whose resolution is expensive issues signed URLs instead (§5.4): the pull
+  mints them after its one resolution, and a download through a signed URL
+  resolves nothing. A revocation then takes effect on those URLs only when
+  their TTL elapses.
 - A client whose download is refused with `sync.forbidden` MUST NOT fail
   the round for it: access changed after the server built the response.
   The client applies no further segment of that unit's section, does not

@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A segment download names its requested scopes to resolveScopes',
+    body: "Every `GET /segments/:id` calls `resolveScopes` for the actor's whole scope set, so a resolver that walks an authority graph paid the whole walk once per segment of a bootstrap. The call now carries `phase: 'segment-download'` and `requested`, the download's `X-Syncular-Scopes` map, and the resolver may answer for those values only; the download reaches the same 200, 403 or 404. On PostgreSQL a download reads the partition registry and the backfill checkpoint versions in one statement instead of two. Signed URLs remove the per-download `resolveScopes` call: the pull mints them after its one resolution, and a revocation reaches them when their TTL elapses.",
+    links: [
+      {
+        href: '/guide-auth/#segment-downloads',
+        label: 'Segment downloads',
+      },
+      {
+        href: '/server-storage-reference/#cost-of-a-direct-download',
+        label: 'Cost of a direct download',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Claims made in reaction to a round ride its confirming round',
     body: "A drive to idle sends one more round after a round that applied rows, to confirm idle, and it went out at once, so the units an app claims in reaction to those rows waited for the drive after it. With `coalesceMs` that confirming round now starts `coalesceMs` later and carries the claims made in between. `installSyncScheduler` and the worker `autoSync` loop pass their `coalesceMs`, the worker applies the handle's value to the realtime supervisor's catch-up drive, and `syncUntilIdle({ coalesceMs })` sets it on an app drive. Rounds that continue a bootstrap start at once.",
     links: [

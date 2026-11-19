@@ -131,6 +131,27 @@ export interface ScopeHolder {
   error: boolean;
 }
 
+/**
+ * A segment-download answer limited to the requested values (§3.2 step 3):
+ * each requested variable keeps `'*'` or the requested values the actor
+ * holds. A `'*'` for a requested variable keeps the whole map, because the
+ * wildcard fence adds every other declared variable.
+ */
+export function limitToRequested(
+  allowed: ScopeMap,
+  requested: ScopeMap,
+): ScopeMap {
+  const keys = Object.keys(requested);
+  if (keys.some((key) => allowed[key]?.includes('*'))) return allowed;
+  const limited: ScopeMap = {};
+  for (const key of keys) {
+    const values = allowed[key];
+    if (values === undefined) continue;
+    limited[key] = values.filter((value) => requested[key]!.includes(value));
+  }
+  return limited;
+}
+
 export interface TestContext {
   ctx: SyncRequestContext;
   storage: SqliteServerStorage;

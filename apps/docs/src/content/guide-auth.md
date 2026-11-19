@@ -98,6 +98,35 @@ rejects the request before calling `resolveScopes`, reports an error with the
 code `sync.auth_context_too_large` to `onError`, and answers the client
 `sync.internal_error`.
 
+## Segment downloads
+
+Every `GET /segments/:id` calls `resolveScopes` again, once per segment. On
+that call the arguments carry `phase: 'segment-download'` and `requested`, the
+download's `X-Syncular-Scopes` map with one value per variable. The resolver
+may answer for those values only, which spares a resolver that walks an
+authority graph the rest of the walk:
+
+```ts
+resolveScopes: async ({ actorId, phase, requested }) => {
+  if (phase === 'segment-download' && requested?.facility_id !== undefined) {
+    const [facility] = requested.facility_id;
+    return {
+      facility_id: (await db.isMember(actorId, facility)) ? [facility] : [],
+    };
+  }
+  return { facility_id: await db.facilityIdsForMember(actorId) };
+},
+```
+
+A limited answer gives each requested variable `'*'` exactly when the full
+answer does, and otherwise the requested values the actor holds. An answer that
+grants `'*'` for a requested variable must list every other variable in full,
+because the wildcard fence adds those to the download's effective scopes
+([SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective)).
+Such an answer reaches the same 200, 403, or 404 as the full one. To remove the
+per-download call altogether, issue signed URLs
+([cost of a direct download](/server-storage-reference/#cost-of-a-direct-download)).
+
 ## Steps
 
 :::::steps

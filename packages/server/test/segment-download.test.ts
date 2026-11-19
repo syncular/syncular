@@ -11,6 +11,7 @@ import {
 } from '@syncular/core';
 import {
   handleSegmentDownload,
+  RESOLVER_OUTAGE,
   MemorySegmentStore,
   scopeDigest,
   type SegmentStore,
@@ -18,6 +19,7 @@ import {
 } from '@syncular/server';
 import {
   docRow,
+  limitToRequested,
   makeContext,
   pushCommit,
   pullFrames,
@@ -47,303 +49,366 @@ async function bootstrapRef(t: TestContext): Promise<SegmentRefFrame> {
   return ref;
 }
 
-describe('segment download (§5.5)', () => {
-  test('re-authorizes and serves matching scopes with §5.5 headers', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    const result = await handleSegmentDownload(t.ctx, {
-      segmentId: ref.segmentId,
-      scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-    });
-    expect(result.record.segmentId).toBe(ref.segmentId);
-    expect(result.headers.ETag).toBe(`"${ref.segmentId}"`);
-    expect(result.headers['Cache-Control']).toBe('private, max-age=0');
-    const segment = decodeRowsSegment(result.bytes);
-    expect(segment.table).toBe('tasks');
-    expect(segment.blocks.flat()).toHaveLength(1);
-  });
+// Every §5.5 case runs with the full resolver answer and with one limited
+// to the download's requested values: both reach the same outcome.
+for (const resolver of ['full', 'limited'] as const) {
+  const context = (overrides?: Parameters<typeof makeContext>[0]) => {
+    const t = makeContext(overrides);
+    if (resolver === 'limited') {
+      const full = t.ctx.resolveScopes;
+      t.ctx = {
+        ...t.ctx,
+        resolveScopes: async (args) => {
+          const allowed = await full(args);
+          if (args.phase !== 'segment-download') return allowed;
+          if (allowed === RESOLVER_OUTAGE || args.requested === undefined)
+            throw new Error('expected requested scopes on a download');
+          return limitToRequested(allowed, args.requested);
+        },
+      };
+    }
+    return t;
+  };
 
-  test('a descriptor minted before the backfill checkpoint is rejected', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    await t.ctx.storage.declareCheckpoint(
-      'part-1',
-      'tasks-projection',
-      2,
-      t.now.ms,
-    );
-    await expect(
-      handleSegmentDownload(t.ctx, {
+  describe(`segment download (§5.5), ${resolver} resolver`, () => {
+    test('re-authorizes and serves matching scopes with §5.5 headers', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      const result = await handleSegmentDownload(t.ctx, {
         segmentId: ref.segmentId,
         scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.segment_expired' });
-  });
+      });
+      expect(result.record.segmentId).toBe(ref.segmentId);
+      expect(result.headers.ETag).toBe(`"${ref.segmentId}"`);
+      expect(result.headers['Cache-Control']).toBe('private, max-age=0');
+      const segment = decodeRowsSegment(result.bytes);
+      expect(segment.table).toBe('tasks');
+      expect(segment.blocks.flat()).toHaveLength(1);
+    });
 
-  test('a scope-digest mismatch is forbidden — a ref is not a bearer capability', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    t.scopes.value = { project_id: ['p1', 'p2'] };
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p2'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.forbidden' });
-  });
-
-  test('the scopes header is a unit scope map: one value per variable (§5.5)', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    for (const header of [
-      { project_id: ['p1', 'p2'] },
-      { project_id: [] },
-      { project_id: 'p1' },
-    ]) {
+    test('a descriptor minted before the backfill checkpoint is rejected', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      await t.ctx.storage.declareCheckpoint(
+        'part-1',
+        'tasks-projection',
+        2,
+        t.now.ms,
+      );
       await expect(
         handleSegmentDownload(t.ctx, {
           segmentId: ref.segmentId,
-          scopesHeader: JSON.stringify(header),
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
         }),
-      ).rejects.toMatchObject({ code: 'sync.invalid_request' });
-    }
-  });
-
-  test('revoked scopes at download time are forbidden (§3.2 rule 5)', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    t.scopes.value = { org_id: ['o1'] }; // project access revoked
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.forbidden' });
-  });
-
-  test('a throwing resolver at download time is forbidden', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    t.scopes.error = true;
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.forbidden' });
-  });
-
-  test('unknown segments are sync.not_found', async () => {
-    const t = makeContext();
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId:
-          'sha256:0000000000000000000000000000000000000000000000000000000000000000',
-        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.not_found' });
-  });
-
-  test('segments from another partition are sync.not_found (no existence leak)', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    const otherPartition = { ...t.ctx, partition: 'part-2' };
-    await expect(
-      handleSegmentDownload(otherPartition, {
-        segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.not_found' });
-  });
-
-  test('identical empty segments from two partitions both download', async () => {
-    const segments = new MemorySegmentStore();
-    const emptyFirst = { project_id: ['p-empty-a'] };
-    const emptySecond = { project_id: ['p-empty-b'] };
-    const first = makeContext({
-      segments,
-      limits: { inlineSegmentMaxBytes: 1 },
+      ).rejects.toMatchObject({ code: 'sync.segment_expired' });
     });
-    const second = makeContext({
-      segments,
-      partition: 'part-2',
-      limits: { inlineSegmentMaxBytes: 1 },
+
+    test('a scope-digest mismatch is forbidden — a ref is not a bearer capability', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      t.scopes.value = { project_id: ['p1', 'p2'] };
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p2'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.forbidden' });
     });
-    first.scopes.value = emptyFirst;
-    second.scopes.value = emptySecond;
-    const refOfPull = async (
-      t: TestContext,
-      scopes: Record<string, string[]>,
-    ): Promise<SegmentRefFrame> => {
-      const unit = Object.fromEntries(
-        Object.entries(scopes).map(([key, [value]]) => [key, value!]),
-      );
-      return refOf(await sync(t, pullFrames([unit])), unit);
-    };
-    const firstRef = await refOfPull(first, emptyFirst);
-    const secondRef = await refOfPull(second, emptySecond);
-    // No rows in scope: both partitions encode the same bytes, so both
-    // publications are one content address — but each partition keeps its
-    // own grant.
-    expect(firstRef.segmentId).toBe(secondRef.segmentId);
-    const stored = await segments.get(firstRef.segmentId);
-    expect(stored?.record.publications).toHaveLength(2);
-    expect(stored?.record.scopeDigests).toHaveLength(2);
 
-    const firstResult = await handleSegmentDownload(first.ctx, {
-      segmentId: firstRef.segmentId,
-      scopesHeader: canonicalScopeJson(emptyFirst),
+    test('the scopes header is a unit scope map: one value per variable (§5.5)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      for (const header of [
+        { project_id: ['p1', 'p2'] },
+        { project_id: [] },
+        { project_id: 'p1' },
+      ]) {
+        await expect(
+          handleSegmentDownload(t.ctx, {
+            segmentId: ref.segmentId,
+            scopesHeader: JSON.stringify(header),
+          }),
+        ).rejects.toMatchObject({ code: 'sync.invalid_request' });
+      }
     });
-    const secondResult = await handleSegmentDownload(second.ctx, {
-      segmentId: secondRef.segmentId,
-      scopesHeader: canonicalScopeJson(emptySecond),
+
+    test('revoked scopes at download time are forbidden (§3.2 rule 5)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      t.scopes.value = { org_id: ['o1'] }; // project access revoked
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.forbidden' });
     });
-    expect(decodeRowsSegment(firstResult.bytes).blocks.flat()).toHaveLength(0);
-    expect(firstResult.bytes).toEqual(secondResult.bytes);
-    // The returned record is projected onto the caller's publication.
-    expect(firstResult.record.partition).toBe('part-1');
-    expect(firstResult.record.scopeDigests).toEqual([firstRef.scopeDigest]);
-    expect(secondResult.record.partition).toBe('part-2');
-    expect(secondResult.record.scopeDigests).toEqual([secondRef.scopeDigest]);
-  });
 
-  test('a rotated log epoch denies the descriptor minted under the old one', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    await t.storage.rotatePartitionLogEpoch(
-      t.ctx.partition,
-      'rotated-epoch',
-      t.now.ms,
-    );
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.not_found' });
-  });
-
-  test('a different actor without the publishing scope is forbidden', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    t.scopes.value = { project_id: ['p2'] };
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId: ref.segmentId,
-        scopesHeader: canonicalScopeJson({ project_id: ['p2'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.forbidden' });
-  });
-
-  test('a newer publication for another table does not hide the valid one', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const digest = await scopeDigest({ project_id: ['p1'] });
-    const bytes = new Uint8Array([9, 9, 9]);
-    const meta = {
-      partition: t.ctx.partition,
-      logEpoch: TEST_LOG_EPOCH,
-      schemaVersion: 1,
-      mediaType: 'rows' as const,
-      scopeDigest: digest,
-      asOfCommitSeq: 0,
-      rowCount: 0,
-      rowCursor: null,
-      nextRowCursor: null,
-    };
-    // Synthetic same-bytes record: the in-tree encoders put the table name in
-    // the segment bytes, so this shape is reachable only from a malformed or
-    // custom store entry. The newer publication (docs) does not declare
-    // project_id; the earlier valid one (tasks) does.
-    await t.segments.put({ ...meta, table: 'tasks' }, bytes, t.now.ms);
-    const newest = await t.segments.put(
-      { ...meta, table: 'docs' },
-      bytes,
-      t.now.ms + 1,
-    );
-    const result = await handleSegmentDownload(t.ctx, {
-      segmentId: newest.segmentId,
-      scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+    test('a throwing resolver at download time is forbidden', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      t.scopes.error = true;
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.forbidden' });
     });
-    expect(result.record.table).toBe('tasks');
-    expect(result.record.scopeDigests).toEqual([digest]);
-  });
 
-  test('an expired pin does not shadow a live publication of the same bytes (§5.1)', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const scopes = { project_id: ['p-none'] };
-    // p-none drives the empty bootstrap; p1/o1 let the intervening commit
-    // advance the pin without landing in that scope.
-    t.scopes.value = {
-      project_id: ['p-none'],
-      projectId: ['p1'],
-      org_id: ['o1'],
-    };
-    const pullEmpty = async (): Promise<SegmentRefFrame> => {
-      return refOf(await sync(t, pullFrames([{ project_id: 'p-none' }])), {
-        project_id: 'p-none',
+    test('unknown segments are sync.not_found', async () => {
+      const t = context();
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId:
+            'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.not_found' });
+    });
+
+    test('segments from another partition are sync.not_found (no existence leak)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      const otherPartition = { ...t.ctx, partition: 'part-2' };
+      await expect(
+        handleSegmentDownload(otherPartition, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.not_found' });
+    });
+
+    test('identical empty segments from two partitions both download', async () => {
+      const segments = new MemorySegmentStore();
+      const emptyFirst = { project_id: ['p-empty-a'] };
+      const emptySecond = { project_id: ['p-empty-b'] };
+      const first = context({
+        segments,
+        limits: { inlineSegmentMaxBytes: 1 },
       });
-    };
-    const firstRef = await pullEmpty();
-    await sync(t, [
-      pushCommit('c1', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
-    ]);
-    t.now.ms += 60 * 60 * 1000;
-    const secondRef = await pullEmpty();
-    expect(secondRef.segmentId).toBe(firstRef.segmentId);
-    const stored = await t.ctx.segments.get(firstRef.segmentId);
-    expect(stored?.record.publications).toHaveLength(2);
-    const firstExpiry = stored?.record.publications[0]?.expiresAtMs;
-    const secondExpiry = stored?.record.publications[1]?.expiresAtMs;
-    expect(secondExpiry).toBeGreaterThan(firstExpiry ?? 0);
+      const second = context({
+        segments,
+        partition: 'part-2',
+        limits: { inlineSegmentMaxBytes: 1 },
+      });
+      first.scopes.value = emptyFirst;
+      second.scopes.value = emptySecond;
+      const refOfPull = async (
+        t: TestContext,
+        scopes: Record<string, string[]>,
+      ): Promise<SegmentRefFrame> => {
+        const unit = Object.fromEntries(
+          Object.entries(scopes).map(([key, [value]]) => [key, value!]),
+        );
+        return refOf(await sync(t, pullFrames([unit])), unit);
+      };
+      const firstRef = await refOfPull(first, emptyFirst);
+      const secondRef = await refOfPull(second, emptySecond);
+      // No rows in scope: both partitions encode the same bytes, so both
+      // publications are one content address — but each partition keeps its
+      // own grant.
+      expect(firstRef.segmentId).toBe(secondRef.segmentId);
+      const stored = await segments.get(firstRef.segmentId);
+      expect(stored?.record.publications).toHaveLength(2);
+      expect(stored?.record.scopeDigests).toHaveLength(2);
 
-    // Past the first pin's 24 h TTL, inside the second's: the download
-    // selects the live publication, not the expired first one.
-    t.now.ms = (firstExpiry ?? 0) + 1;
-    const result = await handleSegmentDownload(t.ctx, {
-      segmentId: firstRef.segmentId,
-      scopesHeader: canonicalScopeJson(scopes),
+      const firstResult = await handleSegmentDownload(first.ctx, {
+        segmentId: firstRef.segmentId,
+        scopesHeader: canonicalScopeJson(emptyFirst),
+      });
+      const secondResult = await handleSegmentDownload(second.ctx, {
+        segmentId: secondRef.segmentId,
+        scopesHeader: canonicalScopeJson(emptySecond),
+      });
+      expect(decodeRowsSegment(firstResult.bytes).blocks.flat()).toHaveLength(
+        0,
+      );
+      expect(firstResult.bytes).toEqual(secondResult.bytes);
+      // The returned record is projected onto the caller's publication.
+      expect(firstResult.record.partition).toBe('part-1');
+      expect(firstResult.record.scopeDigests).toEqual([firstRef.scopeDigest]);
+      expect(secondResult.record.partition).toBe('part-2');
+      expect(secondResult.record.scopeDigests).toEqual([secondRef.scopeDigest]);
     });
-    expect(result.record.asOfCommitSeq).toBe(secondRef.asOfCommitSeq);
 
-    // An unrelated refresh is a NEW publication context. Prune-on-put forgets
-    // the elapsed pin (SPEC §5.5 lets the cache forget expired grants), so no
-    // stored publication carries its expiry any more; the still-live grant is
-    // retained with its own expiry and is NOT extended by the unrelated
-    // refresh.
-    await sync(t, [
-      pushCommit('c2', [upsert('docs', 'd2', docRow('d2', 'o1', 'p1'))]),
-    ]);
-    const thirdRef = await pullEmpty();
-    const after = await t.ctx.segments.get(firstRef.segmentId);
-    expect(
-      after?.record.publications.some(
-        (publication) => publication.expiresAtMs === firstExpiry,
-      ),
-    ).toBe(false);
-    const liveAfter = after?.record.publications.find(
-      (publication) => publication.asOfCommitSeq === secondRef.asOfCommitSeq,
-    );
-    expect(liveAfter?.expiresAtMs).toBe(secondExpiry);
-
-    // The live grant for this context is still downloadable after the prune.
-    const refreshed = await handleSegmentDownload(t.ctx, {
-      segmentId: firstRef.segmentId,
-      scopesHeader: canonicalScopeJson(scopes),
+    test('a rotated log epoch denies the descriptor minted under the old one', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      await t.storage.rotatePartitionLogEpoch(
+        t.ctx.partition,
+        'rotated-epoch',
+        t.now.ms,
+      );
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.not_found' });
     });
-    expect(refreshed.record.asOfCommitSeq).toBe(thirdRef.asOfCommitSeq);
-  });
 
-  test('expired segments are sync.segment_expired (retryable, §5.1)', async () => {
-    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
-    const ref = await bootstrapRef(t);
-    t.now.ms += 25 * 60 * 60 * 1000; // past the 24 h TTL
-    await expect(
-      handleSegmentDownload(t.ctx, {
-        segmentId: ref.segmentId,
+    test('a different actor without the publishing scope is forbidden', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      t.scopes.value = { project_id: ['p2'] };
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p2'] }),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.forbidden' });
+    });
+
+    test('a newer publication for another table does not hide the valid one', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const digest = await scopeDigest({ project_id: ['p1'] });
+      const bytes = new Uint8Array([9, 9, 9]);
+      const meta = {
+        partition: t.ctx.partition,
+        logEpoch: TEST_LOG_EPOCH,
+        schemaVersion: 1,
+        mediaType: 'rows' as const,
+        scopeDigest: digest,
+        asOfCommitSeq: 0,
+        rowCount: 0,
+        rowCursor: null,
+        nextRowCursor: null,
+      };
+      // Synthetic same-bytes record: the in-tree encoders put the table name in
+      // the segment bytes, so this shape is reachable only from a malformed or
+      // custom store entry. The newer publication (docs) does not declare
+      // project_id; the earlier valid one (tasks) does.
+      await t.segments.put({ ...meta, table: 'tasks' }, bytes, t.now.ms);
+      const newest = await t.segments.put(
+        { ...meta, table: 'docs' },
+        bytes,
+        t.now.ms + 1,
+      );
+      const result = await handleSegmentDownload(t.ctx, {
+        segmentId: newest.segmentId,
         scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
-      }),
-    ).rejects.toMatchObject({ code: 'sync.segment_expired', retryable: true });
+      });
+      expect(result.record.table).toBe('tasks');
+      expect(result.record.scopeDigests).toEqual([digest]);
+    });
+
+    test('an expired pin does not shadow a live publication of the same bytes (§5.1)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const scopes = { project_id: ['p-none'] };
+      // p-none drives the empty bootstrap; p1/o1 let the intervening commit
+      // advance the pin without landing in that scope.
+      t.scopes.value = {
+        project_id: ['p-none'],
+        projectId: ['p1'],
+        org_id: ['o1'],
+      };
+      const pullEmpty = async (): Promise<SegmentRefFrame> => {
+        return refOf(await sync(t, pullFrames([{ project_id: 'p-none' }])), {
+          project_id: 'p-none',
+        });
+      };
+      const firstRef = await pullEmpty();
+      await sync(t, [
+        pushCommit('c1', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
+      ]);
+      t.now.ms += 60 * 60 * 1000;
+      const secondRef = await pullEmpty();
+      expect(secondRef.segmentId).toBe(firstRef.segmentId);
+      const stored = await t.ctx.segments.get(firstRef.segmentId);
+      expect(stored?.record.publications).toHaveLength(2);
+      const firstExpiry = stored?.record.publications[0]?.expiresAtMs;
+      const secondExpiry = stored?.record.publications[1]?.expiresAtMs;
+      expect(secondExpiry).toBeGreaterThan(firstExpiry ?? 0);
+
+      // Past the first pin's 24 h TTL, inside the second's: the download
+      // selects the live publication, not the expired first one.
+      t.now.ms = (firstExpiry ?? 0) + 1;
+      const result = await handleSegmentDownload(t.ctx, {
+        segmentId: firstRef.segmentId,
+        scopesHeader: canonicalScopeJson(scopes),
+      });
+      expect(result.record.asOfCommitSeq).toBe(secondRef.asOfCommitSeq);
+
+      // An unrelated refresh is a NEW publication context. Prune-on-put forgets
+      // the elapsed pin (SPEC §5.5 lets the cache forget expired grants), so no
+      // stored publication carries its expiry any more; the still-live grant is
+      // retained with its own expiry and is NOT extended by the unrelated
+      // refresh.
+      await sync(t, [
+        pushCommit('c2', [upsert('docs', 'd2', docRow('d2', 'o1', 'p1'))]),
+      ]);
+      const thirdRef = await pullEmpty();
+      const after = await t.ctx.segments.get(firstRef.segmentId);
+      expect(
+        after?.record.publications.some(
+          (publication) => publication.expiresAtMs === firstExpiry,
+        ),
+      ).toBe(false);
+      const liveAfter = after?.record.publications.find(
+        (publication) => publication.asOfCommitSeq === secondRef.asOfCommitSeq,
+      );
+      expect(liveAfter?.expiresAtMs).toBe(secondExpiry);
+
+      // The live grant for this context is still downloadable after the prune.
+      const refreshed = await handleSegmentDownload(t.ctx, {
+        segmentId: firstRef.segmentId,
+        scopesHeader: canonicalScopeJson(scopes),
+      });
+      expect(refreshed.record.asOfCommitSeq).toBe(thirdRef.asOfCommitSeq);
+    });
+
+    test('expired segments are sync.segment_expired (retryable, §5.1)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      t.now.ms += 25 * 60 * 60 * 1000; // past the 24 h TTL
+      await expect(
+        handleSegmentDownload(t.ctx, {
+          segmentId: ref.segmentId,
+          scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+        }),
+      ).rejects.toMatchObject({
+        code: 'sync.segment_expired',
+        retryable: true,
+      });
+    });
+
+    test('a wildcard grant downloads under the fenced digest (§3.2 rule 4)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      t.scopes.value = { org_id: ['*'], projectId: ['p1'] };
+      await sync(t, [
+        pushCommit('c1', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
+      ]);
+      const ref = refOf(await sync(t, pullFrames([{ org_id: 'o1' }])), {
+        org_id: 'o1',
+      });
+      const result = await handleSegmentDownload(t.ctx, {
+        segmentId: ref.segmentId,
+        scopesHeader: canonicalScopeJson({ org_id: ['o1'] }),
+      });
+      expect(decodeRowsSegment(result.bytes).blocks.flat()).toHaveLength(1);
+    });
   });
+}
+
+test('an answer that drops the fenced variables is refused (§3.2 step 3)', async () => {
+  const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+  t.scopes.value = { org_id: ['*'], projectId: ['p1'] };
+  await sync(t, [
+    pushCommit('c1', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
+  ]);
+  const ref = refOf(await sync(t, pullFrames([{ org_id: 'o1' }])), {
+    org_id: 'o1',
+  });
+  // Only the requested variable: the fence no longer adds projectId, so the
+  // digest differs from the one the pull published under.
+  t.scopes.value = { org_id: ['*'] };
+  await expect(
+    handleSegmentDownload(t.ctx, {
+      segmentId: ref.segmentId,
+      scopesHeader: canonicalScopeJson({ org_id: ['o1'] }),
+    }),
+  ).rejects.toMatchObject({ code: 'sync.forbidden' });
 });
 
 /**

@@ -341,6 +341,8 @@ export class SqliteServerStorage
 {
   readonly db: SqliteDatabase;
   protected readonly maxBindParams = Number.POSITIVE_INFINITY;
+  protected readonly checkpointSchemaVersionSql =
+    '(SELECT max(schema_version) FROM sync_backfill_checkpoints WHERE partition=?1)';
   /**
    * §6.4: one SQLite connection serves one caller at a time. A transaction
    * holds it from `begin` until commit or rollback; every other call waits

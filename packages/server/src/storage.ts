@@ -889,6 +889,16 @@ export interface PartitionRegistryEntry {
   readonly lastAuthenticatedAtMs: number;
 }
 
+/** `touchPartition`: the registry entry, read in the same statement as the checkpoints. */
+export interface PartitionTouch extends PartitionRegistryEntry {
+  /**
+   * RFC 0007: the highest `schemaVersion` among the partition's declared
+   * backfill checkpoints, `undefined` when it declares none. A segment
+   * download refuses a publication older than it (§5.5).
+   */
+  readonly checkpointSchemaVersion: number | undefined;
+}
+
 /**
  * Commit-log metadata (no change payloads) for the admin/console read
  * surface. `changeCount` is the number of changes the commit carries;
@@ -1270,7 +1280,7 @@ export interface ServerStorage {
     partition: string,
     authenticatedAtMs: number,
     initialLogEpoch: string,
-  ): Promise<PartitionRegistryEntry>;
+  ): Promise<PartitionTouch>;
   /**
    * Rotate log continuity after restore and delete the partition's client
    * records. Watermark rows stay (§6.3.2).

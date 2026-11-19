@@ -46,6 +46,7 @@ import {
   remoteCommand,
   RESOLVER_OUTAGE,
   type RealtimeHub,
+  type ResolveScopesArgs,
   type SegmentUrlConfig,
   openLocalAuthority,
   type ServerSchema,
@@ -543,7 +544,7 @@ class TsServerInstance implements ServerInstance {
         ? { schemaWindow: this.#schemaWindow }
         : {}),
       storage: this.#wrapped,
-      resolveScopes: (args) => this.#resolveScopes(args.actorId),
+      resolveScopes: (args) => this.#resolveScopes(args),
       clock: () => this.#now.ms,
       // §8.7: socket sync rounds share the HTTP binding's segment store
       // and limits (one handler, two framings).
@@ -575,7 +576,7 @@ class TsServerInstance implements ServerInstance {
     this.#hub = this.#createHub();
   }
 
-  #resolveScopes(actorId: string): ScopeMap | typeof RESOLVER_OUTAGE {
+  #resolveScopes(args: ResolveScopesArgs): ScopeMap | typeof RESOLVER_OUTAGE {
     if (this.#resolverFailing) {
       throw new Error('injected: resolveScopes failure');
     }
@@ -583,7 +584,26 @@ class TsServerInstance implements ServerInstance {
     // (a signal, never a throw).
     if (this.#resolverOutage) return RESOLVER_OUTAGE;
     // Unset actors hold nothing — subscriptions revoke, writes deny.
-    return this.#allowed.get(actorId) ?? {};
+    const allowed = this.#allowed.get(args.actorId) ?? {};
+    // A segment download is answered for its requested values only (§3.2
+    // step 3), so every download scenario checks that a limited answer
+    // reaches the full answer's outcome. A requested `'*'` keeps the whole
+    // map: the wildcard fence adds the other declared variables.
+    const requested = args.requested;
+    if (
+      requested === undefined ||
+      Object.keys(requested).some((key) => allowed[key]?.includes('*'))
+    ) {
+      return allowed;
+    }
+    return Object.fromEntries(
+      Object.keys(requested)
+        .filter((key) => allowed[key] !== undefined)
+        .map((key) => [
+          key,
+          allowed[key]!.filter((value) => requested[key]!.includes(value)),
+        ]),
+    );
   }
 
   /** Storage with the optional idempotency-lookup fault (§6.3). */
@@ -712,7 +732,7 @@ class TsServerInstance implements ServerInstance {
         : {}),
       // §5.10.2: the reference yjs-doc merger, kept out of core/server.
       crdtMergers: yjsCrdtMergers,
-      resolveScopes: (args) => this.#resolveScopes(args.actorId),
+      resolveScopes: (args) => this.#resolveScopes(args),
       clock: () => this.#now.ms,
       limits: this.#limits,
       ...(this.#signedUrls !== undefined
