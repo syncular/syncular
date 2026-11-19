@@ -6,8 +6,11 @@ import { describe, expect, spyOn, test } from 'bun:test';
 import {
   type CommitFrame,
   decodeMessage,
+  encodeMessage,
   parseRealtimeServerEvent,
   REALTIME_TAG_ROUND,
+  type RequestFrame,
+  type ResponseMessage,
   registrationDigest,
   type ScopeMap,
   type UnitScopes,
@@ -32,6 +35,8 @@ import {
   pushResults,
   requestBytes,
   sync,
+  TASK_COLUMNS,
+  TEST_SCHEMA,
   type TestContext,
   taskRow,
   upsert,
@@ -1889,5 +1894,130 @@ describe('socket round size (§1.7, §8.7)', () => {
     expect(closed).toBe(1);
     expect(hub.sessionCount).toBe(0);
     expect(wire.binaries).toHaveLength(0);
+  });
+});
+
+describe('a round of an older client (SPEC §1.2 rule 2)', () => {
+  /**
+   * Frame types 0.83.0 defines: a reader of that release decodes every other
+   * type as UNKNOWN and skips it.
+   */
+  const V083_FRAME_TYPES = new Set([
+    'REQ_HEADER',
+    'PULL_HEADER',
+    'UNIT',
+    'PROGRESS',
+    'PUSH_COMMIT',
+    'RESP_HEADER',
+    'PUSH_RESULT',
+    'PUSH_RESULT_DETAILS',
+    'LEASE',
+    'ROUND_FAILURE',
+    'SUB_START',
+    'SEGMENT_INLINE',
+    'SEGMENT_REF',
+    'SUB_END',
+    'LIVE_START',
+    'COMMIT',
+    'LIVE_END',
+    'ERROR',
+  ]);
+
+  /** One socket round: the response is every chunk after the 0x01 tag. */
+  async function socketRound(
+    session: { handleBinary(bytes: Uint8Array): Promise<void> | undefined },
+    wire: Wire,
+    frames: RequestFrame[],
+  ): Promise<ResponseMessage> {
+    const request = requestBytes(frames, 'client-1');
+    const tagged = new Uint8Array(request.length + 1);
+    tagged[0] = REALTIME_TAG_ROUND;
+    tagged.set(request, 1);
+    const from = wire.binaries.length;
+    await session.handleBinary(tagged);
+    const chunks = wire.binaries
+      .slice(from)
+      .filter((chunk) => chunk[0] === REALTIME_TAG_ROUND)
+      .map((chunk) => chunk.subarray(1));
+    const message = decodeMessage(Buffer.concat(chunks));
+    if (message.msgKind !== 'response') throw new Error('not a response');
+    return message;
+  }
+
+  test('a 0.83-shaped bootstrap round completes on the socket; dropping the frames 0.83 skips leaves a whole response', async () => {
+    // A second covered table, so a RESTRICT round can name one of them.
+    const t = makeContext({
+      schema: {
+        ...TEST_SCHEMA,
+        tables: [
+          ...TEST_SCHEMA.tables,
+          {
+            name: 'subtasks',
+            columns: TASK_COLUMNS,
+            primaryKey: 'id',
+            scopes: ['project:{project_id}'],
+          },
+        ],
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])],
+      {
+        clientId: 'writer',
+      },
+    );
+    const hub = makeHub(t);
+    const wire = makeWire();
+    let closes = 0;
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+      closeSocket: () => {
+        closes += 1;
+      },
+    });
+    // 0.83 sends only frame types it defines: no RESTRICT.
+    const response = await socketRound(
+      session,
+      wire,
+      pullFrames([{ project_id: 'p1' }]),
+    );
+    const types = response.frames.map((frame) => frame.type);
+    expect(types.filter((type) => !V083_FRAME_TYPES.has(type))).toEqual([
+      'UNIT_EXTENT',
+    ]);
+    const asRead = decodeMessage(
+      encodeMessage({
+        ...response,
+        frames: response.frames.filter((frame) =>
+          V083_FRAME_TYPES.has(frame.type),
+        ),
+      }),
+    );
+    expect(asRead.frames.map((frame) => frame.type)).toEqual([
+      'RESP_HEADER',
+      'SUB_START',
+      // One rows segment per covered table: tasks, then subtasks.
+      'SEGMENT_INLINE',
+      'SEGMENT_INLINE',
+      'SUB_END',
+      'LIVE_START',
+      'LIVE_END',
+    ]);
+    // A current client's RESTRICT round on the same socket completes too.
+    const restricted = await socketRound(session, wire, [
+      ...pullFrames([{ project_id: 'p1' }], { progress: [] }),
+      progressFrame({ project_id: 'p1' }, -1),
+      { type: 'RESTRICT', cursor: 1, tables: ['subtasks'] },
+    ]);
+    expect(restricted.frames.at(-1)?.type).toBe('LIVE_END');
+    expect(restricted.frames.some((frame) => frame.type === 'ERROR')).toBe(
+      false,
+    );
+    expect(closes).toBe(0);
+    session.close();
   });
 });
