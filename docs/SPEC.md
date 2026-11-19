@@ -8163,21 +8163,21 @@ pinned, never interpreted.
   driver/host contract, not the protocol.
 - **Empty replicas and coalescing in the TypeScript host loops.**
   `installSyncScheduler`, the browser worker's `autoSync` loop and the
-  realtime supervisor drive with `syncUntilIdle({ skipEmpty: true })`. Such a
-  drive ends without a round, and clears sync-needed, when the replica has
+  realtime supervisor run host drives, which the client surface does not
+  offer an app. A host drive ends without a round, and clears sync-needed, when the replica has
   no unit record, no outbox commit, no retained row awaiting its server
   version, no pending eviction, and no unit list the server may still hold
   (no log epoch yet, or a stored registration digest equal to the empty
-  list's). Every other drive runs its rounds as before; a drive without the
-  option, a single `sync()` and the conformance driver always send a request,
-  and the native bridge does not forward the option. Such a round has no
+  list's). Every other drive runs its rounds as before: an app's
+  `syncUntilIdle()`, a single `sync()` and the conformance driver always send
+  a request, and the native bridge runs every drive as an app drive. Such a round has no
   duty left: §8.1 `requiresSync` protects continuity of registered units and
   there are none; a lease (§7.3) protects offline work and there is none; the
   log-epoch adoption or acquisition (§2.1) runs as the first round of the
   drive that carries the first unit or commit. A replica that releases its last unit
   still runs the round that sends the empty list. In both host loops a
   drive queued by an intent starts 50 ms later, and every intent in between
-  joins it. Background deadlines are unaffected. A `skipEmpty` drive holds a
+  joins it. Background deadlines are unaffected. A host drive holds a
   round for the same 50 ms: the round that follows a round which applied
   rows, commits or resets, and left no unit bootstrapping, no deferred commit
   and sync-needed clear. That round only confirms idle, so claims and writes

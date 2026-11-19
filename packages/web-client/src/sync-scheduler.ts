@@ -1,6 +1,6 @@
 import type { WakeReason } from '@syncular/core';
 import type { SecurityLifecycle, SyncIdleOptions } from './client';
-import { HOST_COALESCE_MS } from './host-drive';
+import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import type { SyncIntent } from './invalidation';
 
 export interface SyncSchedulerClient {
@@ -90,7 +90,7 @@ export function installSyncScheduler(
     void client
       .syncUntilIdle({
         maxRounds: options.maxRounds,
-        skipEmpty: true,
+        [HOST_DRIVE]: true,
       })
       .then((result) => {
         retryDelayMs = 250;

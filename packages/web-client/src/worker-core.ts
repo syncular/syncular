@@ -15,7 +15,7 @@
  */
 import { definedObject } from '@syncular/core';
 import type { defineAuthorityReads } from './authority';
-import { HOST_COALESCE_MS } from './host-drive';
+import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
 import {
@@ -275,7 +275,7 @@ export function startSyncWorkerCore(
       // let every wake-up that arrives while this round waits behind the
       // running one queue its own full drive (§8.4 coalescing).
       autoSyncScheduled = false;
-      return running.syncUntilIdle({ skipEmpty: true });
+      return running.syncUntilIdle({ [HOST_DRIVE]: true });
     })
       .then((summary) => {
         retryDelayMs = 250;
@@ -578,9 +578,20 @@ export function startSyncWorkerCore(
       const running = requireClient();
       return serializedSync(() => running.sync());
     },
-    syncUntilIdle: (options) => {
+    syncUntilIdle: (options, host) => {
       const running = requireClient();
-      return drive(() => running.syncUntilIdle(options));
+      return drive(() =>
+        running.syncUntilIdle(
+          host === true
+            ? {
+                ...(typeof options === 'number'
+                  ? { maxRounds: options }
+                  : options),
+                [HOST_DRIVE]: true,
+              }
+            : options,
+        ),
+      );
     },
     proveCurrentBase: (outcome, options) => {
       const running = requireClient();

@@ -8,6 +8,7 @@ import {
   type SyncSchedulerClient,
 } from '@syncular/client';
 import { decodeMessage, type WakeReason } from '@syncular/core';
+import { HOST_DRIVE } from '../src/host-drive';
 import {
   makeClient,
   makeServer,
@@ -103,7 +104,7 @@ test('a queued drive waits 50 ms on one deadline that later intents share', asyn
   expect(client.runs).toBe(0);
   timers[0]!.callback();
   await flushPromises();
-  expect(client.options).toEqual([{ maxRounds: 3, skipEmpty: true }]);
+  expect(client.options).toEqual([{ maxRounds: 3, [HOST_DRIVE]: true }]);
 
   scheduler.stop();
 });
@@ -354,7 +355,7 @@ test('two setWindow calls 10 ms apart ride one pull', async () => {
   }
 });
 
-test('a skipEmpty drive on an empty replica sends nothing until it has a unit or a list to clear', async () => {
+test('a host drive on an empty replica sends nothing until it has a unit or a list to clear', async () => {
   const server = makeServer();
   const { client, db, httpRounds } = await makeClient(server, {
     clientId: 'scheduler-empty',
@@ -362,26 +363,26 @@ test('a skipEmpty drive on an empty replica sends nothing until it has a unit or
   // A fresh replica: no log epoch, no unit list stored on the server.
   db.exec("DELETE FROM _syncular_meta WHERE key = 'logEpoch'");
   try {
-    const empty = await client.syncUntilIdle({ skipEmpty: true });
+    const empty = await client.syncUntilIdle({ [HOST_DRIVE]: true });
     expect(httpRounds.count).toBe(0);
     expect(empty).toMatchObject({ budgetExhausted: false, pushed: 0 });
     expect(client.diagnosticsSnapshot().lastRound).toBeUndefined();
 
     const id = client.subscribe({ project_id: 'p1' });
-    await client.syncUntilIdle({ skipEmpty: true });
+    await client.syncUntilIdle({ [HOST_DRIVE]: true });
     const withUnit = httpRounds.count;
     expect(withUnit).toBeGreaterThan(0);
 
     // The server still holds the unit: the release must reach it.
     client.unsubscribe(id);
-    await client.syncUntilIdle({ skipEmpty: true });
+    await client.syncUntilIdle({ [HOST_DRIVE]: true });
     const cleared = httpRounds.count;
     expect(cleared).toBeGreaterThan(withUnit);
     expect(client.statusSnapshot().syncNeeded).toBe(false);
 
-    await client.syncUntilIdle({ skipEmpty: true });
+    await client.syncUntilIdle({ [HOST_DRIVE]: true });
     expect(httpRounds.count).toBe(cleared);
-    // An explicit drive without the option still runs its round.
+    // An app's drive still runs its round.
     await client.syncUntilIdle();
     expect(httpRounds.count).toBe(cleared + 1);
   } finally {

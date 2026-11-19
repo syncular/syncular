@@ -5,15 +5,16 @@ import type {
   ClientDiagnosticsSnapshot,
 } from './diagnostics';
 import { ClientSyncError } from './errors';
+import { HOST_DRIVE } from './host-drive';
 
 type CancelTimer = () => void;
 
 export interface RealtimeSupervisorClient {
   connectRealtime(): Promise<void>;
   disconnectRealtime(): void | Promise<void>;
-  /** Receives `{ skipEmpty: true }` (§8.4); a numeric-budget signature also fits. */
+  /** Receives a §8.4 host drive; a numeric-budget signature also fits. */
   syncUntilIdle(
-    options?: number | { readonly skipEmpty?: boolean },
+    options?: number | { readonly [HOST_DRIVE]?: true },
   ): unknown | Promise<unknown>;
   diagnosticsSnapshot():
     | ClientDiagnosticsSnapshot
@@ -503,7 +504,7 @@ export class RealtimeSupervisor {
       return;
     }
     this.#round = Promise.resolve()
-      .then(() => this.#client.syncUntilIdle({ skipEmpty: true }))
+      .then(() => this.#client.syncUntilIdle({ [HOST_DRIVE]: true }))
       .then(
         () => undefined,
         () => undefined,
@@ -673,7 +674,7 @@ export class RealtimeSupervisor {
         }
         revision = this.#diagnosticRevision;
         if (generation === this.#generation)
-          await this.#client.syncUntilIdle({ skipEmpty: true });
+          await this.#client.syncUntilIdle({ [HOST_DRIVE]: true });
         caughtUp = generation === this.#generation && this.#transport;
       } catch (error) {
         // A refused socket or a failed catch-up round fails the attempt. A

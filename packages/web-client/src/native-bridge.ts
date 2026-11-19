@@ -1094,7 +1094,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return this.command('sync', {});
   }
 
-  /** The Rust core has no §8.4 host policy: `skipEmpty` is not sent. */
+  /** The Rust core has no §8.4 host drive: `HOST_DRIVE` is not sent. */
   async syncUntilIdle(
     options?: number | SyncIdleOptions,
     timeoutMs?: number,

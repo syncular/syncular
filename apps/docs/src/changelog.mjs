@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: '`syncUntilIdle` loses `skipEmpty`',
+    body: "`SyncIdleOptions.skipEmpty` is removed. The scheduler, the worker's `autoSync` loop and the realtime supervisor still skip the round on a replica with nothing to exchange; an app's `syncUntilIdle()` and `sync()` always send a request.",
+    links: [
+      {
+        href: '/guide-server-clients/#set-up-a-local-replica',
+        label: 'Set up a local replica',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Host drives hold for a fixed 50 ms',
     body: "`coalesceMs` is removed from `installSyncScheduler`, the browser worker handle and `syncUntilIdle`. The scheduler and the worker's `autoSync` loop start a queued drive 50 ms after the first intent, and their drives hold the round that confirms idle for 50 ms, so the claims an app makes in one burst or in reaction to applied rows ride in one pull. `sync()` and an app's `syncUntilIdle()` start at once.",
     links: [

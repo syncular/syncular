@@ -63,6 +63,7 @@ import {
 } from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
 import { ClientSyncError, invalidRequest } from './errors';
+import { HOST_DRIVE } from './host-drive';
 import {
   ChangeEmitter,
   type ClientChangeListener,
@@ -718,7 +719,14 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   syncUntilIdle(options?: number | SyncIdleOptions): Promise<SyncIdleResult> {
-    return this.#call('syncUntilIdle', [options]);
+    // A structured clone drops the symbol key, so the host flag travels as
+    // its own argument.
+    return this.#call(
+      'syncUntilIdle',
+      typeof options === 'object' && options[HOST_DRIVE] === true
+        ? [options, true]
+        : [options],
+    );
   }
 
   proveCurrentBase(

@@ -215,7 +215,11 @@ export interface WorkerApi extends Omit<
   /** RFC 0005 D9: the executable rollback step — drop the container. */
   previousVersionDiscard(): { present: boolean; discarded: boolean };
   sync(): Promise<SyncSummary>;
-  syncUntilIdle(options?: number | SyncIdleOptions): Promise<SyncIdleResult>;
+  /** `host`: a §8.4 host drive; a structured clone drops `HOST_DRIVE`. */
+  syncUntilIdle(
+    options?: number | SyncIdleOptions,
+    host?: true,
+  ): Promise<SyncIdleResult>;
   proveCurrentBase(
     outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
     maxRounds?: number,

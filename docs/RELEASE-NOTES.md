@@ -311,6 +311,16 @@ automatic drives start 50 ms after a write; `sync()` and an app's
 also drops its `queueMicrotask` option, which only the immediate start used;
 tests inject `schedule`.
 
+### `skipEmpty` removed from `syncUntilIdle`
+
+`SyncIdleOptions.skipEmpty` is gone. The scheduler, the worker's `autoSync`
+loop and the realtime supervisor still end their drives without a request on
+a replica with no unit, no outbox commit and no unit list to clear (SPEC
+§8.4); an app's `syncUntilIdle()` and `sync()` always send one. Delete
+`skipEmpty` from `syncUntilIdle` calls. An app that passed it to avoid an
+empty round leaves the drive to the scheduler or the `autoSync` loop, or
+checks `units()` and `pendingCommits()` before it calls.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

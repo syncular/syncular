@@ -194,9 +194,9 @@ read, ride in one pull.
 
 The same hold applies inside a drive. After a round that applied rows, the
 drive's next round only confirms idle; it starts 50 ms later, so the units an
-app claims in reaction to those rows ride in it. This covers the `autoSync` loop and every `handle.syncUntilIdle({
-skipEmpty: true })` drive, which is how the realtime supervisor drives its
-catch-up. `activateSecurity()` on a replica without units, outbox commits,
+app claims in reaction to those rows ride in it. This covers the `autoSync`
+loop and the realtime supervisor's catch-up drive; a `handle.syncUntilIdle()`
+the app calls holds no round. `activateSecurity()` on a replica without units, outbox commits,
 retained rows or pending evictions queues no drive at all.
 
 The worker loop and the supervisor skip drives on an empty replica. With no

@@ -1,4 +1,4 @@
-import { HOST_COALESCE_MS } from './host-drive';
+import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { BLOB_COMMIT_REFS } from './blob';
 import type { AuthorityReadPolicy, AuthoritySnapshot } from './authority';
 import { hasUniqueIndex, pkSqlValue } from './schema';
@@ -400,12 +400,8 @@ export interface SyncIdleOptions {
    * `Infinity` disables the bound.
    */
   readonly timeoutMs?: number;
-  /**
-   * §8.4 host policy: end the drive without a round when the replica has no
-   * unit, no outbox commit, and no unit list to clear on the server. The
-   * shipped host loops pass it; the native bridge ignores it.
-   */
-  readonly skipEmpty?: boolean;
+  /** §8.4: set by the shipped host loops only; see `HOST_DRIVE`. */
+  readonly [HOST_DRIVE]?: true;
 }
 
 export type CurrentBaseProof =
@@ -4885,18 +4881,18 @@ export class SyncClient {
       !(Number.isFinite(timeoutMs) && timeoutMs > 0)
     )
       throw invalidRequest('timeoutMs must be a positive number or Infinity');
-    const skipEmpty = typeof options === 'object' && options.skipEmpty === true;
-    const key = `${maxRounds ?? 'default'}:${timeoutMs}:${skipEmpty}`;
+    const host = typeof options === 'object' && options[HOST_DRIVE] === true;
+    const key = `${maxRounds ?? 'default'}:${timeoutMs}:${host}`;
     const pending = this.#syncIdlePending.get(key);
     if (pending !== undefined) return pending;
     const previous = this.#syncIdleTail;
     let drive: Promise<SyncIdleResult>;
     if (previous === undefined) {
-      drive = this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty);
+      drive = this.#syncIdleRounds(maxRounds, timeoutMs, host);
     } else {
       drive = previous.then(() => {
         this.#syncIdlePending.delete(key);
-        return this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty);
+        return this.#syncIdleRounds(maxRounds, timeoutMs, host);
       });
       this.#syncIdlePending.set(key, drive);
     }
@@ -4915,7 +4911,7 @@ export class SyncClient {
   async #syncIdleRounds(
     maxRounds: number | undefined,
     timeoutMs: number,
-    skipEmpty: boolean,
+    host: boolean,
   ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
@@ -4937,7 +4933,7 @@ export class SyncClient {
     // to clear has nothing to exchange; a host drive ends without a round.
     this.#requireActive();
     if (
-      skipEmpty &&
+      host &&
       this.#schemaFloor === undefined &&
       !this.#hasStartupWork() &&
       loadUnits(this.#db).length === 0 &&
@@ -5055,7 +5051,7 @@ export class SyncClient {
       // §8.4: the next round only confirms idle; in a host drive, claims and
       // writes made in reaction to the data this round applied join it.
       if (
-        skipEmpty &&
+        host &&
         round + 1 < budget &&
         last.bootstrapping.length === 0 &&
         !aggregate.deferredCommits &&

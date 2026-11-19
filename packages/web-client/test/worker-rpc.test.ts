@@ -40,6 +40,7 @@ import {
 } from './helpers';
 import { computeBlobId } from '../src/blob';
 import { createSyncProfiler } from '../src/dev-profiler';
+import { HOST_DRIVE } from '../src/host-drive';
 import { type HttpTestServer, serveOverHttp } from './http-server';
 
 const WORKER_URL = new URL('./rpc-worker.ts', import.meta.url).href;
@@ -1987,7 +1988,7 @@ test('activating an empty replica in the worker sends no request (§8.4)', async
   await handle.beginSecurityPreflight();
   await handle.activateSecurity();
   // A host drive serializes behind every drive the activation queued.
-  await handle.syncUntilIdle({ skipEmpty: true });
+  await handle.syncUntilIdle({ [HOST_DRIVE]: true });
   expect(http.syncAuthorizations.length).toBe(before);
   expect(events.synced).toHaveLength(1);
   expect(events.synced[0]?.summary).toMatchObject({ pushed: 0 });
@@ -2031,8 +2032,8 @@ test('a host drive through the worker handle holds its idle-confirming round for
     await handle.subscribe({ project_id: 'p-host' });
     const before = http.syncAuthorizations.length;
     let settled = false;
-    // The realtime supervisor's catch-up drive names only skipEmpty.
-    const drive = handle.syncUntilIdle({ skipEmpty: true }).finally(() => {
+    // The realtime supervisor's catch-up drive.
+    const drive = handle.syncUntilIdle({ [HOST_DRIVE]: true }).finally(() => {
       settled = true;
     });
     await waitFor(() => timers.includes(50), observe, 'the held round');
