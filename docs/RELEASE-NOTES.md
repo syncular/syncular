@@ -1,6 +1,13 @@
 # Syncular release notes
 
-## Unreleased (draft)
+## 0.93.0 release notes
+
+0.93.0 stops incomplete live queries from re-reading after every import commit
+(SYNCULAR-READ-STARVES-IMPORT-001). SSP2, the wire version and the multi-tab
+protocol are unchanged; complete queries behave as before. On Diego's first
+load the plan became visible in 3,600 to 3,912 ms instead of 4,386 to
+4,858 ms, and four live queries over 87 importing units read 4 times instead
+of 20.
 
 ### An incomplete live query waits for the import that completes it
 
