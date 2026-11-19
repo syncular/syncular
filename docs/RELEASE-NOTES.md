@@ -20,6 +20,16 @@ the name as `details.vfsErrorName` beside `details.sqliteCode`, which stays
 later, unrelated failure. Bun, Node, Rust, and native clients are unchanged:
 their disk exhaustion arrives as `SQLITE_FULL` (13).
 
+The binding gets the name by wrapping `write`, `flush`, and `truncate` on
+`FileSystemSyncAccessHandle.prototype` in the sync worker, at the first
+persistent open. The wrapper records the exception's name and rethrows it
+unchanged. sqlite-wasm 3.53.0-build1 offers no other way: the pool keeps its
+stored error private, and SQLite pops it through `xGetLastError` on
+`SQLITE_IOERR` before the failure reaches JavaScript. A browser test against
+a real `opfs-sahpool` pool throws a synthetic `QuotaExceededError` during an
+image import and fails if a sqlite-wasm upgrade stops writing through the
+handle.
+
 ## 0.97.0 release notes
 
 0.97.0 answers a segment store outage as retryable unavailability
