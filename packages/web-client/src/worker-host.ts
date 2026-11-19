@@ -225,11 +225,6 @@ export interface SyncClientHandleConfig {
   /** Worker-side host loop (§8.4); default true. */
   readonly autoSync?: boolean;
   /**
-   * §8.4: milliseconds a queued `autoSync` drive waits before it starts, so
-   * the claims and writes of one burst ride in one round. Default 0.
-   */
-  readonly coalesceMs?: number;
-  /**
    * Default: Web Locks. A runtime without Web Locks refuses the handle with
    * `client.web_locks_unavailable` unless the host injects a lock.
    */
@@ -1108,9 +1103,6 @@ function buildInitConfig(
       ? { previousVersionContext: config.previousVersionContext }
       : {}),
     ...(config.autoSync !== undefined ? { autoSync: config.autoSync } : {}),
-    ...(config.coalesceMs !== undefined
-      ? { coalesceMs: config.coalesceMs }
-      : {}),
   };
 }
 
@@ -1134,11 +1126,6 @@ export async function createSyncClientHandle(
   config: SyncClientHandleConfig,
 ): Promise<SyncClientHandle> {
   const resolvedConfig = resolveReplicaConfig(config);
-  if (
-    config.coalesceMs !== undefined &&
-    !(Number.isFinite(config.coalesceMs) && config.coalesceMs >= 0)
-  )
-    throw invalidRequest('coalesceMs must be a non-negative finite number');
   const lock = resolvedConfig.leaderLock ?? defaultLeaderLock();
   const lockName = resolvedConfig.lockName ?? 'syncular-leader';
   // The coordinator, created before the handle, reports through it.

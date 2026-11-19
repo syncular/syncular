@@ -294,6 +294,23 @@ reads `_sync_sealed_key` instead
 (`SELECT id FROM patients WHERE _sync_sealed_key IS NOT NULL`), and renders
 the NULL encrypted columns of a sealed row as locked.
 
+### `coalesceMs` removed: host drives hold for 50 ms
+
+`installSyncScheduler`, the browser worker handle and `syncUntilIdle` no
+longer take `coalesceMs`. The scheduler and the worker's `autoSync` loop
+start a queued drive 50 ms after the first intent, and a `skipEmpty` drive
+(the scheduler's, the `autoSync` loop's and the realtime supervisor's catch-up)
+holds the round that confirms idle for 50 ms (SPEC §8.4). Delete
+`coalesceMs` from `installSyncScheduler`, `createSyncClientHandle` and
+`syncUntilIdle` calls. 50 ms is the value Diego ran since 0.86.0: a view
+registers its queries over one React commit and its effects, a few to a few
+dozen milliseconds apart, and 50 ms gathers them while staying under the
+100 ms a person notices. An app that kept the default 0 now sees its
+automatic drives start 50 ms after a write; `sync()` and an app's
+`syncUntilIdle()` start at once and hold no round. `installSyncScheduler`
+also drops its `queueMicrotask` option, which only the immediate start used;
+tests inject `schedule`.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

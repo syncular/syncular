@@ -88,13 +88,14 @@ test('a deadline that elapses across completed rounds ends the drive as an exhau
   );
   expect(failed).toEqual([]);
 
-  // The scheduler queues the next drive at once; it resumes the bootstrap.
+  // The scheduler queues the next drive; it resumes the bootstrap.
   const queued: Array<() => void> = [];
   let requeued = Promise.withResolvers<void>();
   const scheduler = installSyncScheduler(local.client, {
-    queueMicrotask: (callback) => {
+    schedule: (callback) => {
       queued.push(callback);
       requeued.resolve();
+      return () => {};
     },
   });
   await requeued.promise;

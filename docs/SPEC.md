@@ -8175,20 +8175,19 @@ pinned, never interpreted.
   there are none; a lease (§7.3) protects offline work and there is none; the
   log-epoch adoption or acquisition (§2.1) runs as the first round of the
   drive that carries the first unit or commit. A replica that releases its last unit
-  still runs the round that sends the empty list. Both hosts also accept
-  `coalesceMs` (default 0): a drive queued by an intent starts that many
-  milliseconds later instead of in the next microtask, and every intent in
-  between joins it. Background deadlines are unaffected. The same value holds
-  a round inside such a drive: `syncUntilIdle({ coalesceMs })` starts the
-  round that follows a round which applied rows, commits or resets, and left
-  no unit bootstrapping, no deferred commit and sync-needed clear, that many
-  milliseconds later. That round only confirms idle, so claims and writes made
-  in reaction to the applied data ride in it. A round that continues a
+  still runs the round that sends the empty list. In both host loops a
+  drive queued by an intent starts 50 ms later, and every intent in between
+  joins it. Background deadlines are unaffected. A `skipEmpty` drive holds a
+  round for the same 50 ms: the round that follows a round which applied
+  rows, commits or resets, and left no unit bootstrapping, no deferred commit
+  and sync-needed clear. That round only confirms idle, so claims and writes
+  made in reaction to the applied data ride in it. A round that continues a
   bootstrap, or that a claim arriving during the previous round made owed,
-  starts at once. The scheduler and the worker's `autoSync` loop pass their
-  `coalesceMs`; the worker also gives it to a `skipEmpty` drive requested
-  through the handle without one, which is how the realtime supervisor drives
-  its catch-up. `activateSecurity` queues a drive only when the replica holds
+  starts at once. DECISION (2026-11-19): the window is fixed at 50 ms. A view
+  registers its queries over one React commit and its effects, a few to a few
+  dozen milliseconds apart; 50 ms gathers them and stays under the 100 ms a
+  person notices. It is the value the only app that set the former
+  `coalesceMs` option ran in production. `activateSecurity` queues a drive only when the replica holds
   an outbox commit, a retained row awaiting its server version, a pending
   eviction or an active unit.
 - **The TypeScript realtime supervisor** (`installRealtimeSupervisor`, used

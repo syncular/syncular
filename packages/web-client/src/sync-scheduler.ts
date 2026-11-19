@@ -1,6 +1,6 @@
 import type { WakeReason } from '@syncular/core';
 import type { SecurityLifecycle, SyncIdleOptions } from './client';
-import { invalidRequest } from './errors';
+import { HOST_COALESCE_MS } from './host-drive';
 import type { SyncIntent } from './invalidation';
 
 export interface SyncSchedulerClient {
@@ -15,15 +15,8 @@ export interface SyncSchedulerClient {
 
 export interface SyncSchedulerOptions {
   readonly maxRounds?: number;
-  /**
-   * §8.4: milliseconds a queued drive waits before it starts, so the claims
-   * and writes of one burst ride in one round. Default 0: the drive starts
-   * in the next microtask.
-   */
-  readonly coalesceMs?: number;
   readonly onError?: (error: unknown) => void;
   readonly now?: () => number;
-  readonly queueMicrotask?: (callback: () => void) => void;
   readonly schedule?: (callback: () => void, delayMs: number) => () => void;
 }
 
@@ -37,11 +30,7 @@ export function installSyncScheduler(
   client: SyncSchedulerClient,
   options: SyncSchedulerOptions = {},
 ): SyncScheduler {
-  const coalesceMs = options.coalesceMs ?? 0;
-  if (!(Number.isFinite(coalesceMs) && coalesceMs >= 0))
-    throw invalidRequest('coalesceMs must be a non-negative finite number');
   const now = options.now ?? Date.now;
-  const enqueue = options.queueMicrotask ?? globalThis.queueMicrotask;
   const schedule =
     options.schedule ??
     ((callback: () => void, delayMs: number): (() => void) => {
@@ -87,8 +76,7 @@ export function installSyncScheduler(
       immediatePending = false;
       run();
     };
-    if (coalesceMs > 0) schedule(start, coalesceMs);
-    else enqueue(start);
+    schedule(start, HOST_COALESCE_MS);
   };
 
   const run = (): void => {
@@ -103,7 +91,6 @@ export function installSyncScheduler(
       .syncUntilIdle({
         maxRounds: options.maxRounds,
         skipEmpty: true,
-        coalesceMs,
       })
       .then((result) => {
         retryDelayMs = 250;

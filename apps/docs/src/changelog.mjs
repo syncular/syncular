@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'Host drives hold for a fixed 50 ms',
+    body: "`coalesceMs` is removed from `installSyncScheduler`, the browser worker handle and `syncUntilIdle`. The scheduler and the worker's `autoSync` loop start a queued drive 50 ms after the first intent, and their drives hold the round that confirms idle for 50 ms, so the claims an app makes in one burst or in reaction to applied rows ride in one pull. `sync()` and an app's `syncUntilIdle()` start at once.",
+    links: [
+      {
+        href: '/guide-server-clients/#set-up-a-local-replica',
+        label: 'Set up a local replica',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A row under a missing key always lands sealed',
     body: "The keyring option `missingKey` is removed on every client. A delivered row under a key id the keyring does not hold lands sealed: its encrypted columns are NULL, `_sync_sealed_key` names the key, the round goes on, and the client reveals the row once the key is installed. A round no longer fails with `client.encryption_key_missing`; that code now marks a write to a sealed row. Delete `missingKey` from every keyring.",
     links: [

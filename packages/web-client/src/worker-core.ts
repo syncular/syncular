@@ -15,6 +15,7 @@
  */
 import { definedObject } from '@syncular/core';
 import type { defineAuthorityReads } from './authority';
+import { HOST_COALESCE_MS } from './host-drive';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
 import {
@@ -236,7 +237,6 @@ export function startSyncWorkerCore(
 
   // -- SPEC §7.5 host loop: event-driven intents, no interactive polling --
   let autoSync = true;
-  let coalesceMs = 0;
   let autoSyncScheduled = false;
   let cancelBackground: (() => void) | undefined;
   let backgroundDue = Number.POSITIVE_INFINITY;
@@ -275,7 +275,7 @@ export function startSyncWorkerCore(
       // let every wake-up that arrives while this round waits behind the
       // running one queue its own full drive (§8.4 coalescing).
       autoSyncScheduled = false;
-      return running.syncUntilIdle({ skipEmpty: true, coalesceMs });
+      return running.syncUntilIdle({ skipEmpty: true });
     })
       .then((summary) => {
         retryDelayMs = 250;
@@ -346,8 +346,7 @@ export function startSyncWorkerCore(
       return;
     }
     autoSyncScheduled = true;
-    if (coalesceMs > 0) scheduleBackground(runAutoSync, coalesceMs);
-    else queueMicrotask(runAutoSync);
+    scheduleBackground(runAutoSync, HOST_COALESCE_MS);
   }
 
   function requireClient(): SyncClient {
@@ -386,7 +385,6 @@ export function startSyncWorkerCore(
       );
     }
     autoSync = config.autoSync ?? true;
-    coalesceMs = config.coalesceMs ?? 0;
     headers = config.headers ?? {};
     const http = { headers: () => headers };
 
@@ -582,17 +580,7 @@ export function startSyncWorkerCore(
     },
     syncUntilIdle: (options) => {
       const running = requireClient();
-      // §8.4: a host drive through this handle (the realtime supervisor's)
-      // takes the handle's coalesceMs unless it names its own.
-      return drive(() =>
-        running.syncUntilIdle(
-          typeof options === 'object' &&
-            options.skipEmpty === true &&
-            options.coalesceMs === undefined
-            ? { ...options, coalesceMs }
-            : options,
-        ),
-      );
+      return drive(() => running.syncUntilIdle(options));
     },
     proveCurrentBase: (outcome, options) => {
       const running = requireClient();

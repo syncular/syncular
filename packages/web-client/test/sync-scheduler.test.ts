@@ -72,7 +72,7 @@ test('coalesces wake and intent signals into one immediate round', async () => {
   const client = new FakeSchedulerClient();
   const queued: Array<() => void> = [];
   const scheduler = installSyncScheduler(client, {
-    queueMicrotask: (callback) => queued.push(callback),
+    schedule: (callback) => (queued.push(callback), () => {}),
   });
 
   client.wake();
@@ -85,15 +85,11 @@ test('coalesces wake and intent signals into one immediate round', async () => {
   scheduler.stop();
 });
 
-test('coalesceMs holds a queued drive on one deadline that later intents share', async () => {
+test('a queued drive waits 50 ms on one deadline that later intents share', async () => {
   const client = new FakeSchedulerClient();
   const timers: Array<{ callback: () => void; delayMs: number }> = [];
   const scheduler = installSyncScheduler(client, {
-    coalesceMs: 25,
     maxRounds: 3,
-    queueMicrotask: () => {
-      throw new Error('a coalesced drive never takes the microtask path');
-    },
     schedule: (callback, delayMs) => {
       timers.push({ callback, delayMs });
       return () => {};
@@ -103,22 +99,13 @@ test('coalesceMs holds a queued drive on one deadline that later intents share',
   client.intent({ kind: 'interactive' });
   client.wake();
   client.intent({ kind: 'interactive' });
-  expect(timers.map((timer) => timer.delayMs)).toEqual([25]);
+  expect(timers.map((timer) => timer.delayMs)).toEqual([50]);
   expect(client.runs).toBe(0);
   timers[0]!.callback();
   await flushPromises();
-  expect(client.options).toEqual([
-    { maxRounds: 3, skipEmpty: true, coalesceMs: 25 },
-  ]);
+  expect(client.options).toEqual([{ maxRounds: 3, skipEmpty: true }]);
 
   scheduler.stop();
-});
-
-test('an invalid coalesceMs fails at install', () => {
-  for (const coalesceMs of [-1, Number.NaN, Number.POSITIVE_INFINITY])
-    expect(() =>
-      installSyncScheduler(new FakeSchedulerClient(), { coalesceMs }),
-    ).toThrow('coalesceMs must be a non-negative finite number');
 });
 
 test('runs one sync at a time and preserves an interactive signal mid-round', async () => {
@@ -130,7 +117,7 @@ test('runs one sync at a time and preserves an interactive signal mid-round', as
       release = resolve;
     });
   const scheduler = installSyncScheduler(client, {
-    queueMicrotask: (callback) => queued.push(callback),
+    schedule: (callback) => (queued.push(callback), () => {}),
   });
 
   client.intent({ kind: 'interactive' });
@@ -159,8 +146,11 @@ test('the newest background intent replaces the pending deadline', async () => {
     cancelled: boolean;
   }> = [];
   const scheduler = installSyncScheduler(client, {
-    queueMicrotask: (callback) => queued.push(callback),
     schedule: (callback, delayMs) => {
+      if (delayMs === 50) {
+        queued.push(callback);
+        return () => {};
+      }
       const timer = { callback, delayMs, cancelled: false };
       timers.push(timer);
       return () => {
@@ -199,8 +189,11 @@ test('a drive deadline rejection schedules a background retry with backoff', asy
   const errors: unknown[] = [];
   const scheduler = installSyncScheduler(client, {
     onError: (error) => errors.push(error),
-    queueMicrotask: (callback) => queued.push(callback),
     schedule: (callback, delayMs) => {
+      if (delayMs === 50) {
+        queued.push(callback);
+        return () => {};
+      }
       const timer = { callback, delayMs, cancelled: false };
       timers.push(timer);
       return () => {
@@ -253,7 +246,7 @@ test('budget exhaustion schedules another batch without an external wake', async
   client.run = async () => ({ budgetExhausted: client.runs < 3 });
   const scheduler = installSyncScheduler(client, {
     maxRounds: 1,
-    queueMicrotask: (callback) => queued.push(callback),
+    schedule: (callback) => (queued.push(callback), () => {}),
   });
   client.wake();
   for (let round = 1; round <= 3; round++) {
@@ -284,7 +277,7 @@ test('installs on a real SyncClient and runs the startup catch-up round', async 
     const queued: Array<() => void> = [];
     // No `SyncSchedulerClient` cast: the real client satisfies the interface.
     const scheduler = installSyncScheduler(client, {
-      queueMicrotask: (callback) => queued.push(callback),
+      schedule: (callback) => (queued.push(callback), () => {}),
     });
     try {
       // Install-time catch-up: queued work is the startup wake-up.
@@ -312,7 +305,7 @@ test('installs on a real SyncClient and runs the startup catch-up round', async 
   }
 });
 
-test('two setWindow calls 10 ms apart ride one pull with coalesceMs 25', async () => {
+test('two setWindow calls 10 ms apart ride one pull', async () => {
   const server = makeServer();
   const { client, db, requests } = await makeClient(server, {
     clientId: 'scheduler-coalesce',
@@ -326,7 +319,6 @@ test('two setWindow calls 10 ms apart ride one pull with coalesceMs 25', async (
       else timers.push(timer);
   };
   const scheduler = installSyncScheduler(client, {
-    coalesceMs: 25,
     now: () => nowMs,
     schedule: (callback, delayMs) => {
       timers.push({ callback, dueMs: nowMs + delayMs });
@@ -339,7 +331,7 @@ test('two setWindow calls 10 ms apart ride one pull with coalesceMs 25', async (
     advance(10);
     await client.setWindow(base, ['p1', 'p2']);
     expect(requests).toHaveLength(0);
-    advance(15);
+    advance(40);
     await waitFor(
       () => client.windowState(base).pending.length === 0,
       (notify) => client.onChange(notify),
@@ -399,7 +391,7 @@ test('a skipEmpty drive on an empty replica sends nothing until it has a unit or
   }
 });
 
-test('with coalesceMs the round confirming idle waits and carries a claim made in reaction to the data', async () => {
+test('the round confirming idle waits 50 ms and carries a claim made in reaction to the data', async () => {
   const server = makeServer();
   const writer = await makeClient(server, { clientId: 'coalesce-writer' });
   writer.client.mutate([
@@ -428,7 +420,6 @@ test('with coalesceMs the round confirming idle waits and carries a claim made i
     schedule,
   });
   const scheduler = installSyncScheduler(client, {
-    coalesceMs: 25,
     now: () => nowMs,
     schedule,
   });
@@ -441,12 +432,12 @@ test('with coalesceMs the round confirming idle waits and carries a claim made i
   try {
     const base = { variable: 'project_id' };
     await client.setWindow(base, ['p1']);
-    advance(25);
+    advance(50);
     // The first round lands t1; the drive then holds its next round.
     await waitFor(
       () =>
         tableRows(db, 'tasks').length === 1 &&
-        timers.some((timer) => timer.dueMs === nowMs + 25),
+        timers.some((timer) => timer.dueMs === nowMs + 50),
       (notify) => {
         scheduled = notify;
         return client.onChange(notify);
@@ -455,7 +446,7 @@ test('with coalesceMs the round confirming idle waits and carries a claim made i
     );
     expect(unitFrames()).toEqual([1]);
     await client.setWindow(base, ['p1', 'p2']);
-    advance(25);
+    advance(50);
     await waitFor(
       () => client.windowState(base).pending.length === 0,
       (notify) => client.onChange(notify),

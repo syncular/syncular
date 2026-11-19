@@ -188,16 +188,13 @@ immediate sync intent. With `autoSync` the worker coalesces those intents; the
 page reacts to revisioned changes and re-queries. On a direct `SyncClient`,
 provide `onSyncNeeded` and call `sync()` when it fires.
 
-Set `coalesceMs` on the handle to hold each queued `autoSync` drive for that
-many milliseconds, so the claims an app makes in one burst, such as the
-`setWindow` calls that follow an access read, ride in one pull. The default 0
-starts the drive in the next microtask. A negative or non-finite value fails
-`createSyncClientHandle` with `sync.invalid_request`.
+The worker holds each queued `autoSync` drive for 50 ms, so the claims an
+app makes in one burst, such as the `setWindow` calls that follow an access
+read, ride in one pull.
 
 The same hold applies inside a drive. After a round that applied rows, the
-drive's next round only confirms idle; with `coalesceMs` it starts that many
-milliseconds later, so the units an app claims in reaction to those rows ride
-in it. This covers the `autoSync` loop and every `handle.syncUntilIdle({
+drive's next round only confirms idle; it starts 50 ms later, so the units an
+app claims in reaction to those rows ride in it. This covers the `autoSync` loop and every `handle.syncUntilIdle({
 skipEmpty: true })` drive, which is how the realtime supervisor drives its
 catch-up. `activateSecurity()` on a replica without units, outbox commits,
 retained rows or pending evictions queues no drive at all.

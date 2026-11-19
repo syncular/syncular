@@ -1639,8 +1639,17 @@ test('wake-ups during a queued round share one follow-up drive', async () => {
       id: parked.id,
       bytes: await handleSyncRequest(parked.bytes, server.ctxFor('actor-1')),
     });
-    // `sync()` runs on the host's serialized queue, so it starts after every
-    // drive the wake-ups queued. One parked drive plus one follow-up drive.
+    // One parked drive plus one follow-up drive.
+    await waitFor(
+      () => synced.length === 2,
+      (next) => {
+        notify = next;
+        return () => {
+          notify = () => {};
+        };
+      },
+      'one follow-up drive',
+    );
     await handle.sync();
     expect(synced).toHaveLength(2);
     expect(await handle.pendingCommits()).toHaveLength(0);
@@ -1695,14 +1704,17 @@ test('a drive deadline rejection re-arms the worker host loop', async () => {
   await handle.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('retry', 'p-retry') },
   ]);
+  // The write's drive starts 50 ms after the intent.
+  await waitFor(() => backgrounds.length === 1, observe, 'the queued drive');
+  worker.postMessage({ t: 'fire-background' });
   await waitFor(
-    () => backgrounds.length === 1,
+    () => backgrounds.length === 2,
     observe,
     'the loop schedules a retry after the deadline',
   );
   // §7.8: the deadline is retryable, so the loop owes another drive.
   expect(events.synced[0]?.error?.code).toBe('sync.idle_timeout');
-  expect(backgrounds).toEqual([250]);
+  expect(backgrounds).toEqual([50, 250]);
   expect(await handle.pendingCommits()).toHaveLength(1);
 
   worker.postMessage({ t: 'fire-background' });
@@ -1872,10 +1884,7 @@ test('a runtime without Web Locks refuses the handle before spawning a worker', 
   expect(spawned).toBe(0);
 });
 
-test('the worker autoSync loop holds a queued drive for coalesceMs', async () => {
-  await expect(
-    makeHandle({ clientId: 'rpc-coalesce-invalid', coalesceMs: -1 }),
-  ).rejects.toThrow('coalesceMs must be a non-negative finite number');
+test('the worker autoSync loop holds a queued drive for 50 ms', async () => {
   const worker = new Worker(
     new URL('./heartbeat-worker.ts', import.meta.url).href,
   );
@@ -1897,7 +1906,6 @@ test('the worker autoSync loop holds a queued drive for coalesceMs', async () =>
     worker: () => worker,
     autoSync: true,
     realtimePolicy: 'off',
-    coalesceMs: 25,
   });
   handle.onSynced(() => notify());
   for (const id of ['first', 'second'])
@@ -1905,7 +1913,7 @@ test('the worker autoSync loop holds a queued drive for coalesceMs', async () =>
       { table: 'tasks', op: 'upsert', values: taskValues(id, 'p-coalesce') },
     ]);
   // Both writes queued behind the one held drive.
-  expect(timers).toEqual([25]);
+  expect(timers).toEqual([50]);
   expect(events.synced).toEqual([]);
   worker.postMessage({ t: 'fire-timer' });
   await waitFor(() => events.synced.length === 1, observe, 'one drive');
@@ -1985,7 +1993,7 @@ test('activating an empty replica in the worker sends no request (§8.4)', async
   expect(events.synced[0]?.summary).toMatchObject({ pushed: 0 });
 });
 
-test('a host drive through the worker handle holds its idle-confirming round for coalesceMs', async () => {
+test('a host drive through the worker handle holds its idle-confirming round for 50 ms', async () => {
   // An earlier test of this file narrows actor-1; this one restores it.
   const allowed = server.allowed['actor-1'];
   server.allowed['actor-1'] = { project_id: ['p-host'] };
@@ -2019,7 +2027,6 @@ test('a host drive through the worker handle holds its idle-confirming round for
       worker: () => worker,
       autoSync: false,
       realtimePolicy: 'off',
-      coalesceMs: 25,
     });
     await handle.subscribe({ project_id: 'p-host' });
     const before = http.syncAuthorizations.length;
@@ -2028,7 +2035,7 @@ test('a host drive through the worker handle holds its idle-confirming round for
     const drive = handle.syncUntilIdle({ skipEmpty: true }).finally(() => {
       settled = true;
     });
-    await waitFor(() => timers.includes(25), observe, 'the held round');
+    await waitFor(() => timers.includes(50), observe, 'the held round');
     // §2.1: one adoption round registers the unit and lands h1.
     expect(http.syncAuthorizations.length).toBe(before + 1);
     expect(settled).toBe(false);
