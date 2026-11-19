@@ -27,6 +27,8 @@ export interface SyncStatusSnapshot {
   readonly currentSchemaVersion: number;
   readonly outbox: number;
   readonly upgrading: boolean;
+  /** §7.4.5: `upgrading` and the reset kept at least one readable table. */
+  readonly upgradeKeptTables: boolean;
   readonly leaseState: LeaseState | undefined;
   readonly schemaFloor: SchemaFloor | undefined;
   readonly syncNeeded: boolean;

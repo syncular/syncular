@@ -28,7 +28,9 @@ without replacing the provider. A retryable `ClientSyncError` such as
 competing app or tab and retry. Do not wipe the local database for this error.
 
 `renderBoundary` also receives `migrating` and `blocked` states, which are not
-startup errors:
+startup errors. `migrating` lasts while a schema reset has left no synced table
+readable; a reset that kept tables reports `ready`, and queries over the rebuilt
+tables report their own phase ([Schema upgrades](/concepts-schema-upgrades/#what-the-app-sees)).
 
 | `blocked` reason | Meaning |
 |---|---|

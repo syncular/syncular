@@ -516,6 +516,7 @@ struct Rollback {
     lease_state: Option<LeaseState>,
     stopped: bool,
     upgrading: bool,
+    upgrade_kept_tables: bool,
     sync_needed: bool,
     active_round: Option<(uuid::Uuid, i64, u64)>,
     overlay_dirty: Option<BTreeSet<String>>,
@@ -543,6 +544,8 @@ pub struct SyncClient {
     stopped: bool,
     /// §7.4.5: true while a schema-bump reset + first re-bootstrap is in flight.
     upgrading: bool,
+    /// §7.4.5: the running reset kept at least one table.
+    upgrade_kept_tables: bool,
     /// §8.4 coalesced sync-needed signal.
     sync_needed: bool,
     /// §8.8: how sync rounds treat the realtime binding, and its exact
@@ -2115,6 +2118,7 @@ impl SyncClient {
             lease_state: None,
             stopped: false,
             upgrading: false,
+            upgrade_kept_tables: false,
             sync_needed: false,
             realtime_policy: RealtimePolicy::Optional,
             realtime_state: RealtimeState::Disconnected,
@@ -2876,6 +2880,7 @@ impl SyncClient {
             current_schema_version: self.schema.version,
             outbox: self.outbox.len(),
             upgrading: self.upgrading,
+            upgrade_kept_tables: self.upgrade_kept_tables,
             lease_state: self.lease_state.clone(),
             schema_floor: self.schema_floor.clone(),
             sync_needed: self.sync_needed,
@@ -3404,6 +3409,7 @@ impl SyncClient {
             lease_state: self.lease_state.clone(),
             stopped: self.stopped,
             upgrading: self.upgrading,
+            upgrade_kept_tables: self.upgrade_kept_tables,
             sync_needed: self.sync_needed,
             active_round: self.active_round,
             overlay_dirty: self.overlay_dirty.snapshot(),
@@ -3422,6 +3428,7 @@ impl SyncClient {
         self.lease_state = rollback.lease_state;
         self.stopped = rollback.stopped;
         self.upgrading = rollback.upgrading;
+        self.upgrade_kept_tables = rollback.upgrade_kept_tables;
         self.sync_needed = rollback.sync_needed;
         self.active_round = rollback.active_round;
         self.overlay_dirty.restore(rollback.overlay_dirty);
@@ -4082,6 +4089,7 @@ impl SyncClient {
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         self.upgrading = true;
+        self.upgrade_kept_tables = !kept.is_empty();
         batch.status = true;
         // RFC 0005 D6: classify the pending outbox against the NEW compiled
         // schema BEFORE the wipe, and record the advisory audit. This pass
@@ -7342,6 +7350,7 @@ impl SyncClient {
             return;
         }
         self.upgrading = value;
+        self.upgrade_kept_tables &= value;
         let batch = ChangeAccumulator {
             status: true,
             ..ChangeAccumulator::default()

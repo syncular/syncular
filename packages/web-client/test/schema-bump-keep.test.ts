@@ -9,7 +9,7 @@ import { decodeMessage, unitId, type RowColumn } from '@syncular/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ClientSchema } from '@syncular/client';
+import { classifySyncAvailability, type ClientSchema } from '@syncular/client';
 import type { ServerSchema } from '@syncular/server';
 import { makeClient, makeServer, type TestServer } from './helpers';
 
@@ -206,6 +206,55 @@ describe('schema bump keeps tables with unchanged generations (§7.4.3)', () => 
     bumped.db.close();
   });
 
+  test('a bump that keeps a table reports ready while the reset unit rebuilds (§7.4.5)', async () => {
+    const { v1, v2, server } = schemas(true);
+    const { reader, databasePath } = await seededReplica(server, v1);
+    await reader.client.setWindow({ variable: 'lib_id' }, ['l1']);
+    await reader.client.setWindow({ variable: 'owner_id' }, ['u1']);
+    await reader.client.syncUntilIdle();
+    await reader.client.close();
+    reader.db.close();
+
+    const bumped = await makeClient(server, {
+      clientId: 'reader',
+      databasePath,
+      schema: v2,
+    });
+    const catalogRead = () =>
+      bumped.client.querySnapshot({
+        sql: 'SELECT id FROM catalog ORDER BY id',
+        coverage: [{ base: { variable: 'lib_id' }, units: ['l1'] }],
+      });
+    const notesRead = () =>
+      bumped.client.querySnapshot({
+        sql: 'SELECT id FROM notes',
+        coverage: [{ base: { variable: 'owner_id' }, units: ['u1'] }],
+      });
+    const status = bumped.client.statusSnapshot();
+    expect(status).toMatchObject({ upgrading: true, upgradeKeptTables: true });
+    expect(classifySyncAvailability(status)).toEqual({ state: 'ready' });
+    expect(catalogRead()).toMatchObject({
+      rows: [{ id: 'c1' }, { id: 'c2' }, { id: 'kept' }],
+      coverage: { complete: true },
+    });
+    expect(notesRead()).toMatchObject({
+      rows: [],
+      coverage: { complete: false },
+    });
+
+    await bumped.client.syncUntilIdle();
+    expect(notesRead()).toMatchObject({
+      rows: [{ id: 'n1' }],
+      coverage: { complete: true },
+    });
+    expect(bumped.client.statusSnapshot()).toMatchObject({
+      upgrading: false,
+      upgradeKeptTables: false,
+    });
+    await bumped.client.close();
+    bumped.db.close();
+  });
+
   test('a schema without generations resets every table and unit', async () => {
     const { v1, v2, server } = schemas(false);
     const { reader, databasePath } = await seededReplica(server, v1);
@@ -220,6 +269,12 @@ describe('schema bump keeps tables with unchanged generations (§7.4.3)', () => 
     expect(bumped.client.units().map((unit) => unit.cursor)).toEqual([
       -1, -1, -1,
     ]);
+    const status = bumped.client.statusSnapshot();
+    expect(status).toMatchObject({ upgrading: true, upgradeKeptTables: false });
+    expect(classifySyncAvailability(status)).toEqual({
+      state: 'migrating',
+      currentSchemaVersion: 2,
+    });
     expect(bumped.db.query('SELECT id FROM catalog')).toEqual([]);
     await bumped.client.syncUntilIdle();
     const first = pullOf(bumped.requests[0]!);

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A schema bump that keeps tables reports ready',
+    body: 'Availability reports `migrating` only while no synced table is readable: before the reset commits, and for a reset that kept no table. A bump that keeps tables reports `ready` as soon as the reset commits, online and offline, and the status snapshot carries `upgradeKeptTables` beside `upgrading`. Queries over kept tables answer `ready` with their rows; a query whose window coverage names a rebuilt unit stays `loading` until that unit completes. Before, a bump that changed 2 tables kept an app on its start screen for minutes with the rest of its replica on the device, and offline the screen never cleared. Apps that waited for `ready` now open during such a bump; render rebuilt tables from the query phase. The multi-tab protocol is 6.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#what-the-app-sees',
+        label: 'Schema upgrades',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A cold pull stores its segments concurrently',
     body: 'A pull stores up to `maxConcurrentSegmentPuts` rows segments in the segment store at once (default 6) while it scans the next bootstrap page, across every unit it bootstraps. Before, it waited for each put before scanning the next page, so a cold pull took the sum of its puts. Sixteen segments to a store with 1,000 ms per put take 3.0 s instead of 16.1 s. The response carries the same frames in the same order, and a failed put fails the pull with the error of the first failed page. A custom segment store must accept concurrent puts.',
     links: [

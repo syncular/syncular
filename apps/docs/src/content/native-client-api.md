@@ -121,7 +121,7 @@ An HTTP error body adds `recommendedAction` and its `details` to a failed outcom
 | Method | Returns |
 |---|---|
 | `querySnapshot(sql, params, coverage)` | Rows, window coverage, and the local revision from one read transaction. |
-| `statusSnapshot()` | `currentSchemaVersion`, `outbox` count, `upgrading`, `leaseState`, `schemaFloor`, `syncNeeded`, and `previousVersionContext`. |
+| `statusSnapshot()` | `currentSchemaVersion`, `outbox` count, `upgrading`, `upgradeKeptTables`, `leaseState`, `schemaFloor`, `syncNeeded`, and `previousVersionContext`. |
 | `diagnosticsSnapshot()` | Bounded support evidence, version 2: `units` (counts per state), `activeUnits` (the units the next registration list carries), `replicaCursor`, last round, last change, query failures. |
 | `commitOutcome(clientCommitId)` | The terminal outcome of one commit, or null while the commit is pending. |
 | `commitOutcomes(query)` | The durable outcome journal. |

@@ -1815,6 +1815,10 @@ fn a_bump_keeps_a_table_with_an_unchanged_generation_and_the_units_covering_only
     )
     .unwrap();
     let mut h = Harness::over(client);
+    // §7.4.5: the kept table is readable, so the reset reports it beside
+    // `upgrading` and availability stays ready.
+    let status = h.client.status_snapshot();
+    assert!(status.upgrading && status.upgrade_kept_tables);
     assert_eq!(
         h.ids("notes"),
         vec!["n1", "n2"],
@@ -1884,6 +1888,8 @@ fn a_bump_keeps_a_table_with_an_unchanged_generation_and_the_units_covering_only
     // §5.6: the notes first page is a whole bootstrap from a server that
     // predates RESTRICT; it ends the restriction.
     assert_eq!(h.unit(&p1()).restriction, None);
+    let status = h.client.status_snapshot();
+    assert!(!status.upgrading && !status.upgrade_kept_tables);
     drop(h);
     std::fs::remove_file(path).unwrap();
 }
@@ -1907,6 +1913,8 @@ fn a_bump_without_generations_resets_every_table_and_unit() {
             SyncClient::open_path("units-client".into(), &new, ClientLimits::default(), &path)
                 .unwrap();
         let h = Harness::over(client);
+        let status = h.client.status_snapshot();
+        assert!(status.upgrading && !status.upgrade_kept_tables);
         assert_eq!(
             h.ids("notes"),
             vec!["n2"],

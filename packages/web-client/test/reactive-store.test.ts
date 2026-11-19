@@ -30,6 +30,7 @@ const STATUS: SyncStatusSnapshot = {
   currentSchemaVersion: 1,
   outbox: 0,
   upgrading: false,
+  upgradeKeptTables: false,
   leaseState: undefined,
   schemaFloor: undefined,
   syncNeeded: false,
@@ -2360,5 +2361,67 @@ describe('security preflight gate (SPEC §5.11)', () => {
     offLate();
     store.dispose();
     await local.client.close();
+  });
+});
+
+describe('schema bump availability (SPEC §7.4.5)', () => {
+  test('a reset that kept tables keeps entries ready; a reset unit stays loading', async () => {
+    const client = new FakeReactiveClient();
+    client.currentStatus = {
+      ...STATUS,
+      upgrading: true,
+      upgradeKeptTables: true,
+    };
+    const pending = {
+      revision: 1n,
+      rows: [],
+      coverage: {
+        complete: false,
+        pending: [{ baseKey: 'project_id\0{}', unit: 'p2' }],
+        missing: [],
+      },
+    };
+    // The reset entry reads again once its window claim settles.
+    client.snapshots.push(
+      { revision: 1n, rows: [{ id: 'a1', title: 'kept' }], coverage: COMPLETE },
+      pending,
+      pending,
+    );
+    const store = new ReactiveClientStore(client);
+    const kept = store.query<Row>(querySpec());
+    const reset = store.query<Row>(
+      querySpec({
+        id: 'queries:listReset:hash',
+        params: ['p2'],
+        coverage: [{ base: BASE, units: ['p2'] }],
+      }),
+    );
+    const offKept = kept.subscribe(() => {});
+    const offReset = reset.subscribe(() => {});
+    await drainMicrotasks();
+
+    expect(kept.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      rows: [{ id: 'a1', title: 'kept' }],
+      availability: { state: 'ready' },
+    });
+    expect(reset.getSnapshot()).toMatchObject({
+      phase: 'loading',
+      availability: { state: 'ready' },
+    });
+
+    client.emit(
+      batch(2n, {
+        status: { ...STATUS, upgrading: true, upgradeKeptTables: false },
+      }),
+    );
+    await drainMicrotasks();
+    expect(kept.getSnapshot().availability).toEqual({
+      state: 'migrating',
+      currentSchemaVersion: 1,
+    });
+    offKept();
+    offReset();
+    store.dispose();
   });
 });

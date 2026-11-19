@@ -208,8 +208,8 @@ in turn.
 
 Syncular 0.59.0 to 0.91.0 announce protocol 3, although the forwarded API
 changed between them (`replaceCommitOutcome`, `commitDelivery`, the
-`coalesceMs` option). 0.92.0 and 0.93.0 announce protocol 4, and 0.94.0
-announces protocol 5. During a deploy, the first tab of the new build takes
+`coalesceMs` option). 0.92.0 and 0.93.0 announce protocol 4, 0.94.0 to 0.96.0
+announce protocol 5, and 0.97.0 announces protocol 6. During a deploy, the first tab of the new build takes
 the lock from a tab of an older protocol with the same schema version, and that tab stays `blocked` with
 `leader: 'newer'` until it reloads. A newer tab never binds to an older
 leader, so it never receives that leader's events and never reports that

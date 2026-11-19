@@ -5928,8 +5928,8 @@ configuration, the worker events and the tab messages. Every change to that
 surface MUST bump it. The TypeScript client enforces this with a test that pins
 a fingerprint of the surface's declarations, and every type they name, to the
 constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
-changed between them; protocol 4 covers 0.92.0 and 0.93.0, and protocol 5
-starts with 0.94.0.
+changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
+0.94.0 to 0.96.0, and protocol 6 starts with 0.97.0.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
@@ -6706,7 +6706,9 @@ one of a unit's tables resets that unit whole.
 3. Rewrite the persisted marker (§7.4.1) to the new generated version,
    with the declaration evidence and table generations.
 4. Surface the `upgrading` state (§7.4.5) across steps 1–3; clear it
-   when the first post-reset bootstrap round completes.
+   when the first post-reset bootstrap round completes. When the step 2
+   transaction commits with at least one kept table, raise
+   `upgradeKeptTables` (§7.4.5) in that same transaction.
 
 The outbox is never touched by the reset. If the process dies mid-reset,
 the marker still reads the old version, so the next boot re-runs the
@@ -6788,15 +6790,38 @@ and know when it is safe to render:
   unit past its fresh or restricted bootstrap, or the round reaching idle,
   §4.5). A restricted unit (§7.4.3) clears it after its bootstrap tables. It is the schema-bump mirror of `schemaFloor` / `leaseState`:
   a small, queryable client state, not a wire concept.
+- `upgradeKeptTables`: true while `upgrading` is true and the reset's
+  step 2 transaction committed with at least one kept table (§7.4.3). It
+  is false before that commit, for a reset that kept no table (a schema
+  without generations, a bump that changed every table, the §2.1 log-epoch
+  reset, a local rebootstrap), and whenever `upgrading` is false. Both
+  fields are part of the status snapshot (§7.5).
+- Availability: a client that classifies its status into an availability
+  state reports `migrating` only while `upgrading` is true and
+  `upgradeKeptTables` is false, because no synced table is readable yet. A
+  reset that kept a table reports `ready`: the kept tables answer with
+  their rows, and a query whose required coverage (§7.5) names a unit the
+  reset rebuilt stays incomplete until that unit's bootstrap completes. The
+  rule holds offline, where `upgrading` stays true until a round completes
+  the rebuilt units online.
 - A completion signal fires when `upgrading` clears — the app's cue to
   re-run its live queries against the rebuilt tables. In the worker
   transport it rides the existing event channel
   as an `upgrading` event `{ upgrading: boolean }`, so the UI thread
   learns of the reset and its completion without polling.
-- While `upgrading` is true, local reads see the (possibly empty,
-  mid-bootstrap) rebuilt tables plus the optimistic outbox overlay
-  (§7.1) — pending offline writes stay visible across the bump, since
-  the outbox was preserved.
+- While `upgrading` is true, local reads see the kept tables, the
+  (possibly empty, mid-bootstrap) rebuilt tables, and the optimistic
+  outbox overlay (§7.1) — pending offline writes stay visible across the
+  bump, since the outbox was preserved.
+
+DECISION (2026-11-19): availability follows the readable tables, and
+`upgrading` stays the status detail of the rebuild. Before this, a bump that
+kept tables still reported `migrating` for the whole client until every
+rebuilt unit completed. A bump that changed 2 tables kept a Mac app on its
+start screen for minutes with every other table on the device, and offline
+the screen never cleared. Per-unit progress and query coverage already show
+the rebuild where it matters, so the classifier needs only one more bit: whether
+the reset kept a table.
 
 The `upgrading` state is purely client-local; nothing about it crosses
 the wire. A server sees a post-reset client as an ordinary fresh
@@ -7050,7 +7075,8 @@ MUST NOT be described as safe or bounded.
 `diagnosticsSnapshot`, `conflicts`, `rejections`, `commitOutcome`,
 `commitOutcomes`, and `resolveCommitOutcome` are methods on direct and hosted
 clients. Direct TypeScript reads return values; worker and JavaScript native
-bridges return promises. `schemaFloor`, `leaseState`, `upgrading`, and
+bridges return promises. `schemaFloor`, `leaseState`, `upgrading`,
+`upgradeKeptTables`, and
 `syncNeeded` are fields of one status snapshot. Hosts MUST preserve the
 snapshot boundary and MUST NOT reconstruct those fields from separate calls.
 The native command dispatcher uses the same method names. Runtime-specific

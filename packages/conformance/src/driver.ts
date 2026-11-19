@@ -1276,6 +1276,7 @@ export interface ClientInstance {
     readonly currentSchemaVersion: number;
     readonly outbox: number;
     readonly upgrading: boolean;
+    readonly upgradeKeptTables: boolean;
     readonly syncNeeded: boolean;
   }>;
   querySnapshot?(

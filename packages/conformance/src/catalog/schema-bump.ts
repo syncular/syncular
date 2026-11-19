@@ -305,9 +305,10 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   {
     // §7.4.3: a bump keeps the table whose generation is unchanged, with its
     // rows and the live unit that covers only it; the changed table is
-    // recreated and its unit bootstraps again.
+    // recreated and its unit bootstraps again. §7.4.5: the status reports the
+    // kept table beside `upgrading` until the changed unit completes.
     name: 'schema-bump/unchanged-generation-keeps-table-and-unit',
-    specRefs: ['§7.4.3', '§7.4.4', '§4.5'],
+    specRefs: ['§7.4.3', '§7.4.4', '§7.4.5', '§4.5'],
     requires: ['schema-window'],
     server: { schema: KEEP_V2, schemaWindow: [KEEP_V2, KEEP_V1] },
     async run(ctx) {
@@ -330,6 +331,15 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       ]);
 
       await ctx.recreateClient(a, KEEP_V2);
+      const upgrade = async () => {
+        const status = await a.api.statusSnapshot?.();
+        return [status?.upgrading, status?.upgradeKeptTables];
+      };
+      checkEqual(
+        await upgrade(),
+        [true, true],
+        'the reset is upgrading and reports the kept table',
+      );
       checkEqual(
         await unitProgress(a, U1),
         kept,
@@ -377,6 +387,11 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         (await a.api.readRows('docs')).map((row) => row.values),
         [{ ...doc('d1', 'o1', 'p1'), note: 'n' }],
         'the changed table bootstraps under the new schema',
+      );
+      checkEqual(
+        await upgrade(),
+        [false, false],
+        'the completed bootstrap clears the upgrade',
       );
       await expectConverged(ctx, 'tasks', [a], {
         variable: 'project_id',
@@ -492,7 +507,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   {
     // §7.4.3: without generations every table and unit resets.
     name: 'schema-bump/no-generations-resets-every-table',
-    specRefs: ['§7.4.3'],
+    specRefs: ['§7.4.3', '§7.4.5'],
     requires: ['schema-window'],
     server: {
       schema: TASKS_WITH_NOTE,
@@ -510,6 +525,12 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       await syncIdle(a);
       await ctx.recreateClient(a, TASKS_WITH_NOTE);
       checkEqual(await a.api.replicaCursor(), -1, 'no unit stays live');
+      const status = await a.api.statusSnapshot?.();
+      checkEqual(
+        [status?.upgrading, status?.upgradeKeptTables],
+        [true, false],
+        'a reset that kept no table reports none',
+      );
       checkEqual(
         await a.api.readRows('docs'),
         [],

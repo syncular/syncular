@@ -247,6 +247,8 @@ pub struct SyncStatusSnapshot {
     pub current_schema_version: i32,
     pub outbox: usize,
     pub upgrading: bool,
+    /// §7.4.5: `upgrading` and the reset kept at least one readable table.
+    pub upgrade_kept_tables: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_state: Option<LeaseState>,
     #[serde(skip_serializing_if = "Option::is_none")]

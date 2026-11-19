@@ -1058,8 +1058,9 @@ export class SyncClient {
   #devtoolsUnregister: (() => void) | undefined;
   #schemaFloor: SchemaFloor | undefined;
   #leaseState: LeaseState | undefined;
-  /** §7.4.5: true while a schema-bump reset + first bootstrap is in flight. */
-  #upgrading = false;
+  /** §7.4.5: truthy while a schema-bump reset + first bootstrap is in flight;
+   * `'kept'` once the reset committed with at least one kept table. */
+  #upgrading: boolean | 'kept' = false;
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #socket: RealtimeSocket | undefined;
@@ -1472,7 +1473,6 @@ export class SyncClient {
     const previousVersion = Number(
       getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY) ?? this.#schema.version,
     );
-    this.#setUpgrading(true);
     // D5 step 1: the container file is swept FIRST, then captured into its own
     // transaction, then the reset transaction runs with the marker LAST. A
     // crash before the reset commit leaves the OLD marker, so the next boot
@@ -1499,9 +1499,13 @@ export class SyncClient {
         this.#replayOutbox();
         this.#stampSchema(true);
       });
+      this.#upgrading =
+        changed.length < this.#schema.tables.size ? 'kept' : true;
+      batch.status();
       // Every table the reset dropped changed (I1 eviction-shaped).
       for (const table of changed) batch.table(table);
     });
+    this.#config.onUpgrading?.(true);
     // The stop state is over: this client now ships a servable schema.
     // The reset transaction already replayed pending intent before committing
     // its marker and visible rows (§7.4.5).
@@ -2323,7 +2327,7 @@ export class SyncClient {
       securityLifecycle: this.#securityLifecycle,
       schema: definedObject({
         currentVersion: this.#config.schema.version,
-        upgrading: this.#upgrading,
+        upgrading: !!this.#upgrading,
         requiredVersion: this.#schemaFloor?.requiredSchemaVersion,
         latestVersion: this.#schemaFloor?.latestSchemaVersion,
       }),
@@ -2446,7 +2450,8 @@ export class SyncClient {
     return {
       currentSchemaVersion: this.#config.schema.version,
       outbox: outboxCount ?? countOutbox(this.#db),
-      upgrading: this.#upgrading,
+      upgrading: !!this.#upgrading,
+      upgradeKeptTables: this.#upgrading === 'kept',
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#needsPull,

@@ -35,6 +35,7 @@ export async function reactiveChurn(count = 10_000) {
       currentSchemaVersion: 1,
       outbox: 0,
       upgrading: false,
+      upgradeKeptTables: false,
       leaseState: undefined,
       schemaFloor: undefined,
       syncNeeded: false,

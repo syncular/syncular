@@ -656,6 +656,7 @@ class TsClientInstance implements ClientInstance {
     readonly currentSchemaVersion: number;
     readonly outbox: number;
     readonly upgrading: boolean;
+    readonly upgradeKeptTables: boolean;
     readonly syncNeeded: boolean;
   }> {
     const status = this.#client.statusSnapshot();
@@ -663,6 +664,7 @@ class TsClientInstance implements ClientInstance {
       currentSchemaVersion: status.currentSchemaVersion,
       outbox: status.outbox,
       upgrading: status.upgrading,
+      upgradeKeptTables: status.upgradeKeptTables,
       syncNeeded: status.syncNeeded,
     };
   }

@@ -10,6 +10,7 @@ When your schema changes, you bump `schemaVersions` in the manifest and regenera
 - **Reset**: Wipe the changed local tables, bootstrap them at the new version, replay the outbox.
 - **Table generation**: An opaque string `typegen` emits per table. It changes whenever the table's declaration changes or a migration names the table.
 - **`upgrading`**: The client state that is `true` from the reset until the first post-reset bootstrap round is idle.
+- **`upgradeKeptTables`**: The status field that is `true` while `upgrading` is `true` and the reset kept at least one table.
 - **Compatibility window**: The set of older schema versions a server still serves.
 :::
 
@@ -122,7 +123,9 @@ The client classifies incompatible commits before it collects their pending blob
 
 ## What the app sees
 
-`upgrading` is a small, queryable client state. Show an "upgrading…" affordance while it is `true`, and re-run live queries against the rebuilt tables when it ends. The worker transport emits it as an `upgrading` event on the event channel. Nothing about the flow crosses the wire.
+`upgrading` and `upgradeKeptTables` are fields of `statusSnapshot()`. The worker transport also emits `upgrading` as an `upgrading` event on the event channel. Nothing about the flow crosses the wire.
+
+Availability (`useSyncStatus().availability`, `useQuery().availability`, and the React `renderBoundary`) reports `migrating` only while no synced table is readable: from the start of the reset until its transaction commits, and for the whole rebuild when the reset kept no table (a schema without generations, a bump that changed every table). A reset that kept a table reports `ready` as soon as it commits, online and offline. Queries over kept tables answer `ready` with their rows. A query whose window coverage names a unit the reset rebuilt stays `loading` (or `partial`) until that unit's bootstrap completes, so render rebuilt tables from the query phase and keep `upgrading` for an "updating…" indicator.
 
 Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, image-lane re-bootstrap, a kept table with its unit beside a changed one, a relaxed required column with queued writes and an earlier client at the floor, a restricted unit that transfers only its changed table, a server that skips `RESTRICT`, and a kept cursor below the pruning horizon.
 

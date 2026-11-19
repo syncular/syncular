@@ -22,12 +22,13 @@ afterEach(() => {
 function status(
   currentSchemaVersion: number,
   schemaFloor?: SchemaFloor,
-  upgrading = false,
+  upgrading: boolean | 'kept' = false,
 ) {
   return {
     currentSchemaVersion,
     outbox: 0,
-    upgrading,
+    upgrading: upgrading !== false,
+    upgradeKeptTables: upgrading === 'kept',
     leaseState: undefined,
     schemaFloor,
     syncNeeded: false,
@@ -58,6 +59,9 @@ describe('availability classification', () => {
     expect(classifySyncAvailability(status(1, undefined, true))).toEqual({
       state: 'migrating',
       currentSchemaVersion: 1,
+    });
+    expect(classifySyncAvailability(status(1, undefined, 'kept'))).toEqual({
+      state: 'ready',
     });
     expect(
       classifySyncAvailability(
@@ -198,6 +202,15 @@ describe('SyncProvider availability boundary', () => {
       view.unmount();
     });
   }
+
+  test('renders the application while a reset that kept tables rebuilds', async () => {
+    const client = new FakeClient();
+    client.setUpgrading('kept');
+    const view = render(<BoundaryApp client={client} />);
+    await waitFor(() => expect(view.getByText('application')).toBeDefined());
+    expect(view.queryByText(/boundary=/)).toBeNull();
+    view.unmount();
+  });
 
   test('automatically restores children when compatibility returns', async () => {
     const client = new FakeClient();

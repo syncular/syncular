@@ -56,7 +56,8 @@ Typegen puts these facts on the descriptor:
 
 `useQuery` returns `{ rows, phase, revision, isLoading, isRefreshing, error,
 availability, refresh }`. `availability` is the typed `ready`, `migrating`, or
-`blocked` state shared by every client host. `phase` is:
+`blocked` state shared by every client host. A schema reset that kept tables
+reports `ready`; `migrating` means no synced table is readable yet. `phase` is:
 
 - `loading`: there is not yet a complete answer and there are no partial rows;
 - `partial`: rows exist, but some required window coverage is incomplete;

@@ -67,7 +67,7 @@ export class FakeClient implements SyncClientLike {
   #rejections: RejectionRecord[] = [];
   #outcomes: CommitOutcome[] = [];
   #pending: OutboxCommit[] = [];
-  #upgrading = false;
+  #upgrading: boolean | 'kept' = false;
   #leaseState: LeaseState | undefined;
   #schemaFloor: SchemaFloor | undefined;
   #syncNeeded = false;
@@ -103,7 +103,7 @@ export class FakeClient implements SyncClientLike {
     this.#outcomes = outcomes;
   }
 
-  setUpgrading(value: boolean): void {
+  setUpgrading(value: boolean | 'kept'): void {
     this.#upgrading = value;
   }
 
@@ -238,7 +238,7 @@ export class FakeClient implements SyncClientLike {
       securityLifecycle: this.#securityLifecycle,
       schema: {
         currentVersion: this.#currentSchemaVersion,
-        upgrading: this.#upgrading,
+        upgrading: this.#upgrading !== false,
       },
       replica: {
         localRevision: this.#revision.toString(),
@@ -357,7 +357,8 @@ export class FakeClient implements SyncClientLike {
     return {
       currentSchemaVersion: this.#currentSchemaVersion,
       outbox: this.#pending.length,
-      upgrading: this.#upgrading,
+      upgrading: this.#upgrading !== false,
+      upgradeKeptTables: this.#upgrading === 'kept',
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#syncNeeded,

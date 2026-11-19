@@ -1,5 +1,42 @@
 # Syncular release notes
 
+## 0.97.0 release notes
+
+0.97.0 reports a schema bump that kept tables as `ready`
+(SYNCULAR-BUMP-MIGRATING-WHOLE-REPLICA-001). SSP2 and the wire version are
+unchanged; the multi-tab protocol is 6.
+
+### Availability during a schema bump
+
+A bump keeps every table whose `typegen` generation is unchanged, but both
+clients still raised `upgrading` for the whole client, and availability
+mapped `upgrading` to `migrating` until every rebuilt unit completed. A bump
+that changed 2 tables kept a Mac app on its start screen for minutes with the
+rest of its replica on the device; offline, `upgrading` never clears and the
+screen stayed. The status snapshot now carries `upgradeKeptTables`: `true`
+while `upgrading` is `true` and the reset kept at least one table. Availability
+reports `migrating` only while `upgrading` is `true` and `upgradeKeptTables`
+is `false`, that is before the reset transaction commits and for the whole
+rebuild of a reset that kept no table. A reset that kept a table reports
+`ready`, online and offline. Queries over kept tables answer `ready` with
+their rows, and a query whose window coverage names a rebuilt unit stays
+`loading` until that unit's bootstrap completes. `upgrading` keeps its
+meaning and still clears after the first post-reset round with no unit
+catching up. SPEC §7.4.3 and §7.4.5 define the rule; both cores emit the field,
+and the `schema-bump/unchanged-generation-keeps-table-and-unit` and
+`schema-bump/no-generations-resets-every-table` conformance scenarios lock it.
+
+Upgrade notes:
+
+- An app that waits for availability `ready` (or renders a `migrating`
+  boundary) before it reads now opens during a bump that kept tables. Render
+  rebuilt tables from the query phase (`loading`, `partial`, `ready`), and
+  use `upgrading` for an "updating" indicator.
+- A hand-built `SyncStatusSnapshot` (a test double, a custom host) must set
+  `upgradeKeptTables`.
+- Multi-tab protocol 6: the first tab of this release makes a 0.94.0 to 0.96.0
+  leader with the same schema version step down. Reload the older tabs.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

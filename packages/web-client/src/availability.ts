@@ -84,7 +84,7 @@ export function classifySyncAvailability(
       retryable: false,
     };
   }
-  if (status.upgrading) {
+  if (status.upgrading && !status.upgradeKeptTables) {
     return { state: 'migrating', currentSchemaVersion };
   }
   return { state: 'ready' };
