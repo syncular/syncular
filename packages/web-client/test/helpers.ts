@@ -339,6 +339,7 @@ export interface MakeClientOptions {
   readonly schema?: ClientSchema;
   readonly limits?: SyncClientLimits;
   readonly encryption?: EncryptionConfig;
+  readonly securityPreflight?: boolean;
   readonly retainFailedCommits?: boolean;
   readonly blobs?: BlobTransport;
   /** Override only the realtime seam for focused ownership/lifecycle tests. */
@@ -393,6 +394,9 @@ export async function makeClient(
       : {}),
     ...(options.encryption !== undefined
       ? { encryption: options.encryption }
+      : {}),
+    ...(options.securityPreflight !== undefined
+      ? { securityPreflight: options.securityPreflight }
       : {}),
     ...(options.blobs !== undefined ? { blobs: options.blobs } : {}),
     ...(options.previousVersionContext !== undefined

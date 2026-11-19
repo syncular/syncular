@@ -28,6 +28,18 @@ export const changelog = [
   },
   {
     date: '2026-11-19',
+    title:
+      'The realtime supervisor waits while another tab holds the security gate',
+    body: "Tabs of a shared replica share one core, so one tab's `beginSecurityPreflight()` gates every tab until its `activateSecurity()`. A realtime supervisor whose first diagnostics read, connect or catch-up round meets that gate with `client.security_preflight_required` now stays in phase `protected` and counts no retry; the diagnostics report the activation emits makes it read again and connect without a retry delay. Before, the refused read latched `realtime.diagnostics_unavailable`, and the tab never connected realtime again. Any other non-retryable read failure still latches.",
+    links: [
+      {
+        href: '/platform-web-realtime/#install-the-supervisor',
+        label: 'Realtime & lifecycle',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A cold pull stores its segments concurrently',
     body: 'A pull stores up to `maxConcurrentSegmentPuts` rows segments in the segment store at once (default 6) while it scans the next bootstrap page, across every unit it bootstraps. Before, it waited for each put before scanning the next page, so a cold pull took the sum of its puts. Sixteen segments to a store with 1,000 ms per put take 3.0 s instead of 16.1 s. The response carries the same frames in the same order, and a failed put fails the pull with the error of the first failed page. A custom segment store must accept concurrent puts.',
     links: [

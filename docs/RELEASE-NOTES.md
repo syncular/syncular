@@ -1,6 +1,6 @@
 # Syncular release notes
 
-## 0.97.0 release notes
+## 0.96.0 release notes
 
 0.97.0 reports a schema bump that kept tables as `ready`
 (SYNCULAR-BUMP-MIGRATING-WHOLE-REPLICA-001). SSP2 and the wire version are
@@ -36,6 +36,25 @@ Upgrade notes:
   `upgradeKeptTables`.
 - Multi-tab protocol 6: the first tab of this release makes a 0.94.0 to 0.96.0
   leader with the same schema version step down. Reload the older tabs.
+
+### The realtime supervisor waits for another tab's activation
+
+Tabs of a shared replica share one core and its security gate
+(SYNCULAR-SUPERVISOR-PREFLIGHT-LATCH-001). When two tabs bootstrap at once, the
+tab whose `beginSecurityPreflight()` runs last holds the gate until its
+`activateSecurity()`. The other tab's realtime supervisor read
+`diagnosticsSnapshot()` once, met `client.security_preflight_required`
+(non-retryable), and latched phase `unsupported` with
+`realtime.diagnostics_unavailable`. That tab never connected realtime
+again, though its client was ready.
+
+`RealtimeSupervisor` now treats `client.security_preflight_required` from
+its diagnostics read, a connect, or a catch-up round as a wait. It publishes
+phase `protected`, counts no retry, and makes no attempt. The client emits
+diagnostics only while its gate is open, and activation emits one, so that
+report makes the supervisor read again and connect without a retry delay. Any
+other non-retryable read failure still latches
+`realtime.diagnostics_unavailable` (SPEC §8.4).
 
 ## 0.95.0 release notes
 

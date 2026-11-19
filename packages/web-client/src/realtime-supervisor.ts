@@ -111,6 +111,7 @@ export interface DocumentLifecycleSignalOptions {
 const REALTIME_SUPERVISOR_KEY = Symbol.for('syncular.realtime-supervisor.v1');
 const CLEANUP_FAILED = 'realtime.cleanup_failed';
 const DIAGNOSTICS_UNAVAILABLE = 'realtime.diagnostics_unavailable';
+const PREFLIGHT_REQUIRED = 'client.security_preflight_required';
 const DEFAULT_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_MAXIMUM_DELAY_MS = 30_000;
 const MAXIMUM_CONFIGURED_DELAY_MS = 300_000;
@@ -291,8 +292,11 @@ export class RealtimeSupervisorError extends ClientSyncError {
  * protected suspensions. While no socket is connected, each failed connect,
  * each host `online` report and each foreground return drives one HTTP round
  * (§1.8). A refused disconnect counts one retry and names its cause in the
- * snapshot. A diagnostics or cleanup failure latches phase `unsupported` with
- * its `failureCode`, and `stop()` rejects with it.
+ * snapshot. A read, connect or catch-up refused with
+ * `client.security_preflight_required` holds phase `protected` until the
+ * client's next diagnostics report, which its activation emits. Any other
+ * diagnostics failure, and a cleanup failure, latches phase `unsupported`
+ * with its `failureCode`, and `stop()` rejects with it.
  */
 export class RealtimeSupervisor {
   readonly #client: RealtimeSupervisorClient;
@@ -316,6 +320,8 @@ export class RealtimeSupervisor {
   #gateClosed = false;
   #diagnosticSecurity: RealtimeSupervisorProtectionState = 'unknown';
   #diagnosticRevision = 0;
+  /** The diagnostics read met a held security gate; the next live report re-reads. */
+  #readHeld = false;
   /** A socket is open, whether this supervisor or the host opened it. */
   #transport = false;
   /** The open socket completed its catch-up round. */
@@ -376,7 +382,10 @@ export class RealtimeSupervisor {
     this.#unsubscribers.push(
       this.#client.onDiagnostics((snapshot) => {
         this.#diagnosticRevision += 1;
-        this.#observe(snapshot);
+        // The client reports only while its security gate is open, so a
+        // report ends a security wait like a fresh read.
+        if (this.#readHeld) this.#read();
+        else this.#observe(snapshot, this.#diagnosticSecurity === 'preflight');
       }),
     );
     const connectivity = this.#connectivity?.subscribe((state) => {
@@ -392,6 +401,12 @@ export class RealtimeSupervisor {
       if (unsubscribe) this.#unsubscribers.push(unsubscribe);
     }
     this.#reconcile();
+    this.#read();
+  }
+
+  /** The initial diagnostics read, repeated after a held security gate opens. */
+  #read(): void {
+    this.#readHeld = false;
     const revision = this.#diagnosticRevision;
     void Promise.resolve()
       .then(() => this.#client.diagnosticsSnapshot())
@@ -407,6 +422,14 @@ export class RealtimeSupervisor {
       })
       .catch((error: unknown) => {
         if (this.#stopped) return;
+        if (causeCode(error) === PREFLIGHT_REQUIRED) {
+          // §8.4: another holder of a shared replica's gate is a wait. A
+          // report since the call means the gate opened meanwhile.
+          if (revision !== this.#diagnosticRevision) return this.#read();
+          this.#readHeld = true;
+          this.#diagnosticSecurity = 'preflight';
+          return this.#reconcile();
+        }
         if (!retryable(error)) return this.#fail(DIAGNOSTICS_UNAVAILABLE);
         // A leader handover or follower timeout: start on the retry schedule
         // and let the live reports and the connect result stand in.
@@ -570,9 +593,14 @@ export class RealtimeSupervisor {
     if (block) {
       if (this.#snapshot.phase !== block) {
         this.#generation += 1;
-        // An interrupted attempt counts, so flaps keep the backoff. A gate
-        // refusal is the attempt's own result, not an interruption.
-        if (this.#attemptJob && !this.#connected && !this.#gateClosed) {
+        // An interrupted attempt counts, so flaps keep the backoff. A
+        // transport or security gate refusal is the attempt's own result.
+        if (
+          this.#attemptJob &&
+          !this.#connected &&
+          !this.#gateClosed &&
+          this.#diagnosticSecurity !== 'preflight'
+        ) {
           this.#retry();
         }
       }
@@ -624,6 +652,8 @@ export class RealtimeSupervisor {
   }
 
   async #connect(generation: number): Promise<void> {
+    // The report count before the call that failed (§8.4 security wait).
+    let revision = this.#diagnosticRevision;
     try {
       if (generation !== this.#generation) return;
       this.#publish({ phase: 'connecting', attempt: this.#attempt });
@@ -633,18 +663,27 @@ export class RealtimeSupervisor {
           await new Promise<void>((resolve) =>
             resolve(this.#client.connectRealtime()),
           ).catch((error: unknown) => {
-            if (causeCode(error) === 'sync.offline') this.#gateClosed = true;
+            const code = causeCode(error);
+            if (code === 'sync.offline') this.#gateClosed = true;
             // §1.8: a refused socket still brings one round over HTTP.
-            else this.#drive();
+            else if (code !== PREFLIGHT_REQUIRED) this.#drive();
             throw error;
           });
           this.#transport = true;
         }
+        revision = this.#diagnosticRevision;
         if (generation === this.#generation)
           await this.#client.syncUntilIdle({ skipEmpty: true });
         caughtUp = generation === this.#generation && this.#transport;
-      } catch {
-        // A refused socket or a failed catch-up round fails the attempt.
+      } catch (error) {
+        // A refused socket or a failed catch-up round fails the attempt. A
+        // held security gate waits for the report its activation emits,
+        // unless one arrived since the call.
+        if (
+          causeCode(error) === PREFLIGHT_REQUIRED &&
+          revision === this.#diagnosticRevision
+        )
+          this.#diagnosticSecurity = 'preflight';
       }
       if (caughtUp) {
         this.#connected = true;
@@ -654,7 +693,12 @@ export class RealtimeSupervisor {
         this.#publish({ phase: 'connected', attempt: 0 });
         return;
       }
-      if (generation === this.#generation && !this.#gateClosed) this.#retry();
+      if (
+        generation === this.#generation &&
+        !this.#gateClosed &&
+        this.#diagnosticSecurity !== 'preflight'
+      )
+        this.#retry();
       // A stale attempt releases the late socket before a successor may open.
       await this.#disconnect();
     } finally {
@@ -699,7 +743,8 @@ export class RealtimeSupervisor {
     return this.#disconnecting;
   }
 
-  #observe(snapshot: ClientDiagnosticsSnapshot, initial = false): void {
+  /** `fresh`: a read, or a report that ends a security wait, owns no loss. */
+  #observe(snapshot: ClientDiagnosticsSnapshot, fresh = false): void {
     if (this.#stopped) return;
     this.#diagnosticSecurity = snapshot.securityLifecycle;
     // A closed transport gate always reports offline, so any other report
@@ -728,7 +773,7 @@ export class RealtimeSupervisor {
       const held = this.#transport || this.#connected;
       this.#transport = false;
       this.#connected = false;
-      if (this.#supported && !this.#disconnecting && !initial) {
+      if (this.#supported && !this.#disconnecting && !fresh) {
         // The attempt in flight owns a loss during its catch-up; a report
         // beside a pending retry keeps that retry's count.
         if (!this.#attemptJob && (held || !this.#cancelTimer)) this.#retry();

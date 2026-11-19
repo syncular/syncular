@@ -26,6 +26,7 @@ import {
   MULTI_TAB_PROTOCOL_VERSION,
   type MultiTabMessage,
   NOT_LEADER_CODE,
+  RealtimeSupervisor,
   registerDevtools,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SyncClientHandle,
@@ -638,6 +639,65 @@ test('a follower preflight request gates the already-running shared leader', asy
   await follower.activateSecurity();
   expect(await leader.securityLifecycle()).toBe('active');
   expect(await leader.query('SELECT id FROM tasks')).toEqual([]);
+});
+
+test('a supervisor installed while another tab holds preflight connects after that tab activates', async () => {
+  const group = makeGroup();
+  const a = await group.make({
+    clientId: 'mt-supervise-lead',
+    securityPreflight: true,
+  });
+  await a.activateSecurity();
+  const b = await group.make({ securityPreflight: true });
+  expect(b.role).toBe('follower');
+  await b.activateSecurity();
+  await b.subscribe({ project_id: 'supervised' });
+  await b.syncUntilIdle();
+  // Tab A's bootstrap preflight comes last: it holds the shared gate.
+  await a.beginSecurityPreflight();
+
+  const timers: (() => void)[] = [];
+  const supervisor = new RealtimeSupervisor(b, {
+    sharedTransport: true,
+    random: () => 0,
+    schedule: (callback) => {
+      timers.push(callback);
+      return noop;
+    },
+  });
+  // A latched failure settles the wait too, so the assertion names it.
+  const reached = (phase: string) =>
+    new Promise<void>((resolve) => {
+      const check = () => {
+        const current = supervisor.snapshot().phase;
+        if (current !== phase && current !== 'unsupported') return;
+        off();
+        resolve();
+      };
+      const off = supervisor.subscribe(check);
+      check();
+    });
+  const opened = http.realtimeOpened;
+  let rounds = 0;
+  b.onProgress((progress) => {
+    if (progress.state === 'complete') rounds += 1;
+  });
+  supervisor.start();
+  await reached('protected');
+  expect(supervisor.snapshot()).toEqual({ phase: 'protected', attempt: 0 });
+  expect(timers).toHaveLength(0);
+
+  const connecting = reached('connecting');
+  await a.activateSecurity();
+  await connecting;
+  const connected = reached('connected');
+  timers.shift()!();
+  await connected;
+  expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+  expect(http.realtimeOpened).toBe(opened + 1);
+  // The catch-up round ran before the supervisor claimed connected.
+  expect(rounds).toBeGreaterThan(0);
+  await supervisor.stop();
 });
 
 test('events fan out from the leader to two followers', async () => {

@@ -76,6 +76,14 @@ explicit protection signal keeps the supervisor suspended until it reports
 `active`. A protected app passes a signal that publishes `preflight` before it
 drains keys.
 
+Tabs of a shared replica share one core and its security gate, so another
+tab's `beginSecurityPreflight()` also gates this tab. When the supervisor's
+first `diagnosticsSnapshot()` read, a connect, or a catch-up round meets that
+gate with `client.security_preflight_required`, the supervisor stays in phase
+`protected` and counts no retry. The other tab's `activateSecurity()` emits a
+diagnostics report; the supervisor then reads again and connects without a
+retry delay.
+
 ::checkpoint[`realtimeSupervisorSnapshot(handle).phase` reads `connected` after the socket opens.]
 ::::
 
@@ -121,7 +129,7 @@ with a `RealtimeSupervisorError` carrying that code:
 
 | `failureCode` | Cause |
 |---|---|
-| `realtime.diagnostics_unavailable` | The first `diagnosticsSnapshot()` read failed with a non-retryable error |
+| `realtime.diagnostics_unavailable` | The first `diagnosticsSnapshot()` read failed with a non-retryable error other than `client.security_preflight_required` |
 | `realtime.cleanup_failed` | A timer cancel or signal unsubscribe threw |
 
 A retryable failure, such as `client.leader_handover` when another tab closes,

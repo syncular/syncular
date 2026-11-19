@@ -4356,6 +4356,9 @@ MUST NOT overtake that barrier. Entering preflight clears pending automatic
 sync/retry intents; activation emits one startup intent when persisted active
 units or outbox work exist. A Worker follower requesting preflight
 applies it to the one shared origin leader, not merely to its local proxy.
+Every tab of that replica then meets the gate until the requesting tab
+activates; the TypeScript realtime supervisor waits for that activation
+(§8.4).
 
 Native key buffers MUST be overwritten before replacement/drop where the
 runtime permits deterministic memory ownership. JavaScript hosts release every
@@ -5929,7 +5932,7 @@ surface MUST bump it. The TypeScript client enforces this with a test that pins
 a fingerprint of the surface's declarations, and every type they name, to the
 constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
 changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
-0.94.0 to 0.96.0, and protocol 6 starts with 0.97.0.
+0.94.0 and 0.95.0, and protocol 6 starts with 0.96.0.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
@@ -8076,13 +8079,27 @@ pinned, never interpreted.
   the next phase `connected`. A socket the client kept open reports
   `connected` in the client diagnostics, and the supervisor adopts it after
   the catch-up round, or releases it again while suspended.
+- **A held security gate is a wait.** Tabs of a shared Worker replica share
+  one core, so another tab can hold its gate with `beginSecurityPreflight()`
+  (§5.11) while this tab's supervisor starts or connects. A diagnostics read,
+  connect or catch-up round that rejects with
+  `client.security_preflight_required` therefore latches nothing and counts
+  no retry. The supervisor publishes phase `protected`, makes no attempt and
+  drives no round. The client emits diagnostics only while the gate is open,
+  and activation emits one (§7.5), so the next diagnostics report ends the
+  wait: after a refused read the supervisor reads the snapshot again, and
+  after a refused attempt it starts the next attempt without a retry delay. A
+  report that arrives while the refused call is in flight means the gate
+  opened meanwhile; the supervisor then reads again at once, or counts the
+  attempt's ordinary retry.
 - **Supervisor failures latch.** A diagnostics read that rejects with a stable
   code marked `retryable` (`client.leader_handover`,
   `client.follower_timeout`) latches nothing: it counts one retry on the
   ordinary schedule, the supervisor starts without the snapshot, and `stop()`
   does not surface it. A routine leader handover therefore never ends realtime
   in a follower tab. A diagnostics read that rejects without a retryable
-  stable code, or a host timer cancel that throws, latches phase
+  stable code (other than the held security gate above), or a host timer
+  cancel that throws, latches phase
   `unsupported` with `failureCode` `realtime.diagnostics_unavailable` or
   `realtime.cleanup_failed` (§10.3). The supervisor then makes no further
   attempt and releases any open socket; `online` and foreground reports still

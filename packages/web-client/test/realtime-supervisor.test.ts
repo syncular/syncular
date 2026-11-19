@@ -719,6 +719,49 @@ describe('supported realtime host supervisor', () => {
     await b.client.close();
   });
 
+  test('a supervisor installed under security preflight connects after activation (§8.4)', async () => {
+    const server = makeServer();
+    const writer = await makeClient(server, { clientId: 'preflight-writer' });
+    const reader = await makeClient(server, {
+      clientId: 'preflight-reader',
+      securityPreflight: true,
+    });
+    writer.client.subscribe({ project_id: 'p1' });
+    writer.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('held', 'p1', 'written while the gate was held'),
+      },
+    ]);
+    await writer.client.syncUntilIdle();
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(reader.client, {
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    expect(supervisor.snapshot()).toEqual({ phase: 'protected', attempt: 0 });
+    expect(timers.pending()).toBe(0);
+
+    await reader.client.activateSecurity();
+    reader.client.subscribe({ project_id: 'p1' });
+    await settle();
+    expect(timers.runNext()).toBe(0);
+    await waitFor(
+      () =>
+        tableRows(reader.db, 'tasks').length === 1 &&
+        supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
+      'connected after activation',
+    );
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    await supervisor.stop();
+    await writer.client.close();
+    await reader.client.close();
+  });
+
   test('a socket that never connects drives one HTTP round per attempt and on foreground', async () => {
     const app = signal<RealtimeSupervisorLifecycleState>('active');
     const timers = scheduler();
@@ -973,14 +1016,22 @@ function lifecycle(random: () => number = () => 0) {
     maximumConnecting: 0,
     connect: 0,
     sync: 0,
+    reads: 0,
     close: 0,
   };
   const remote: number[] = [];
   const local: number[] = [];
-  const emit = () => listener?.(diagnostics(state));
+  /** Another holder of a shared replica's security gate (§8.4). */
+  let gateHeld = false;
+  const requireOpenGate = () => {
+    if (gateHeld) throw preflightRequired();
+  };
+  // The client reports only while its security gate is open.
+  const emit = () => gateHeld || listener?.(diagnostics(state));
   const client = {
     async connectRealtime() {
       counts.connect += 1;
+      requireOpenGate();
       connecting += 1;
       counts.maximumConnecting = Math.max(counts.maximumConnecting, connecting);
       try {
@@ -1003,11 +1054,15 @@ function lifecycle(random: () => number = () => 0) {
     async syncUntilIdle() {
       counts.sync += 1;
       await pullGate;
+      requireOpenGate();
       if (pullFailures-- > 0) throw new Error('injected pull');
       local.splice(0, local.length, ...remote);
     },
-    diagnosticsSnapshot: async (): Promise<ClientDiagnosticsSnapshot> =>
-      diagnostics(state),
+    diagnosticsSnapshot: async (): Promise<ClientDiagnosticsSnapshot> => {
+      counts.reads += 1;
+      requireOpenGate();
+      return diagnostics(state);
+    },
     onDiagnostics(next: ClientDiagnosticsListener): () => void {
       listener = next;
       return () => {
@@ -1054,6 +1109,11 @@ function lifecycle(random: () => number = () => 0) {
     failPull() {
       pullFailures = 1;
     },
+    /** Hold the gate, or release it with the report activation emits. */
+    holdGate(held: boolean) {
+      gateHeld = held;
+      emit();
+    },
     closeSocket() {
       counts.sockets = 0;
       state = 'disconnected';
@@ -1076,6 +1136,13 @@ function lifecycle(random: () => number = () => 0) {
     },
   };
 }
+
+const preflightRequired = () =>
+  new ClientSyncError(
+    'client.security_preflight_required',
+    'protected reads require activateSecurity',
+    false,
+  );
 
 const rejection = (promise: Promise<unknown>) =>
   promise.then(
@@ -1525,6 +1592,65 @@ describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {
     expect(await f.next()).toBe(1_000);
     expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
     await f.supervisor.stop();
+  });
+
+  test('a diagnostics read refused by a held security gate waits for the activation report', async () => {
+    const f = lifecycle();
+    f.holdGate(true);
+    await f.start();
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'protected', attempt: 0 });
+    expect(f.timers.pending()).toBe(0);
+    expect(f.counts).toMatchObject({ reads: 1, connect: 0, sync: 0 });
+
+    // Host evidence does not re-read; the client's report does.
+    f.network.emit('online');
+    await settle();
+    expect(f.counts).toMatchObject({ reads: 1, sync: 0 });
+
+    f.holdGate(false);
+    await settle();
+    expect(f.counts.reads).toBe(2);
+    expect(f.supervisor.snapshot()).toEqual({
+      phase: 'connecting',
+      attempt: 0,
+    });
+    expect(await f.next()).toBe(0);
+    expect(f.counts).toMatchObject({ connect: 1, sync: 1, sockets: 1 });
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(await rejection(f.supervisor.stop())).toBeUndefined();
+  });
+
+  test('a connect or catch-up refused by a held security gate waits without counting a retry', async () => {
+    const f = lifecycle();
+    await f.start();
+    f.holdGate(true);
+    expect(await f.next()).toBe(0);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'protected', attempt: 0 });
+    expect(f.timers.pending()).toBe(0);
+    // No HTTP round runs against the held gate.
+    expect(f.counts.sync).toBe(0);
+    f.holdGate(false);
+    await settle();
+    expect(await f.next()).toBe(0);
+    expect(f.counts).toMatchObject({ connect: 2, sync: 1, sockets: 1 });
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+
+    // A socket loss counts one retry; its catch-up then meets the gate,
+    // and the wait adds no delay.
+    f.closeSocket();
+    await settle();
+    const pull = f.blockPull();
+    expect(await f.next()).toBe(1_000);
+    f.holdGate(true);
+    pull.resolve();
+    await settle();
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'protected', attempt: 1 });
+    expect(f.counts.sockets).toBe(0);
+    f.holdGate(false);
+    await settle();
+    expect(await f.next()).toBe(0);
+    expect(f.supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(await rejection(f.supervisor.stop())).toBeUndefined();
   });
 
   test('a non-retryable diagnostics failure latches; a refused disconnect retries', async () => {

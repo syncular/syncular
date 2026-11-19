@@ -156,10 +156,12 @@ It owns one connection attempt at a time, retries initial failure and later
 socket loss with bounded exponential jitter, suspends while
 offline/background/protected without resetting that backoff, runs
 `syncUntilIdle()` before reporting `connected`, and settles its attempt and
-disconnect before `close()` closes the client. A failed disconnect, an
-unreadable first diagnostics read, or a throwing timer cancel latches phase
-`unsupported` with a `failureCode`, and `close()` rejects with a
-`RealtimeSupervisorError` of that code.
+disconnect before `close()` closes the client. A refused disconnect counts
+one retry. A first diagnostics read, connect or catch-up round that another
+tab's security preflight refuses waits in phase `protected` until that tab
+activates. Any other unreadable first diagnostics read, or a throwing timer
+cancel, latches phase `unsupported` with a `failureCode`, and `close()`
+rejects with a `RealtimeSupervisorError` of that code.
 
 Multi-tab handles share ONE leader socket across every tab, so pass
 `sharedTransport: true` (the templates do): backgrounding this tab then
