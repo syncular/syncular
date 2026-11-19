@@ -1,5 +1,34 @@
 # Syncular release notes
 
+## 0.91.0 release notes
+
+0.91.0 applies encrypted rows segments faster and lets `coalesceMs` hold the
+round that confirms idle (SYNCULAR-APPLY-ROWS-RATE-001,
+SYNCULAR-ROUND-CLAIM-COALESCE-001). SSP2 and the wire version are unchanged.
+
+Applying a rows segment imported the key into WebCrypto for every encrypted
+value and decrypted a block's rows one after another. `@syncular/core` now
+imports each key array once and reuses the `CryptoKey` until the array
+changes, and a block's rows decrypt concurrently; the first failing row in
+block order still decides the error. With 34 columns of which 17 are
+encrypted, a segment applies at 9,600 rows/s in the OPFS worker (7,300 in
+0.90.0) and 15,500 rows/s on Bun (5,600). Unencrypted tables apply as before:
+39,000 to 42,000 rows/s at 12 columns and 2 indexes, 22,000 at 41 columns and
+4 indexes, in the OPFS worker through a `SyncClient`.
+
+`SyncIdleOptions.coalesceMs` holds the round that confirms idle after a round
+that applied data and left nothing pending (SPEC §8.4), so units an app claims
+in reaction to that data ride the next pull. `installSyncScheduler`, the
+worker's `autoSync` loop and the worker's `skipEmpty` host drives pass the
+handle's `coalesceMs`. Explicit `sync()` and `syncUntilIdle()` without the
+option are unchanged. A negative or non-finite value fails with
+`sync.invalid_request`. The Tauri and React Native bridges do not send
+`coalesceMs` or `skipEmpty`: both are host policy, and the Rust host loops
+schedule their own rounds.
+
+Upgrade note: with `coalesceMs` set, a drive that applied data ends
+`coalesceMs` later.
+
 ## 0.90.0 release notes
 
 0.90.0 collects the work prepared as 0.87.0 to 0.89.0, which were not
