@@ -2506,10 +2506,8 @@ describe('push capacity limits (§7.1)', () => {
     }
   });
 
-  test('invalid push and prefetch limits fail loudly with a static message', () => {
+  test('invalid push limits fail loudly with a static message', () => {
     for (const limits of [
-      { segmentPrefetch: 0 },
-      { segmentPrefetch: 2.5 },
       { maxPushOperationsPerRequest: 0 },
       { maxPushCommitsPerRequest: -1 },
       { maxPushRequestBytes: 1.5 },

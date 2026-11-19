@@ -3046,11 +3046,8 @@ token and continues with the §5.6 applied-segment rule. Peak memory then
 follows `maxImageSegmentBytes`, never the table size.
 
 The TypeScript client queues every segment download of a pull response and
-runs at most `limits.segmentPrefetch` of them at once (a positive integer up to
-4294967295, default 4; anything else is `sync.invalid_request` at
-construction). The image bound above applies inside that window whatever its
-size. The Rust client downloads a response's segments one at a time; its
-`limits` parser ignores the key like every other key it does not know.
+runs at most eight of them at once. The image bound above applies inside that
+window. The Rust client downloads a response's segments one at a time.
 
 DECISION (2026-11-17): an image copy filters held rows out of its `SELECT`.
 The TypeScript client up to 0.78.1 copied with `ON CONFLICT … DO UPDATE … WHERE`

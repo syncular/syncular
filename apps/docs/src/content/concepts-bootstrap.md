@@ -45,16 +45,7 @@ The client holds at most two image bodies at once, the one it applies and the ne
 
 ### Parallel downloads
 
-The TypeScript client queues every segment download of a pull response and runs `limits.segmentPrefetch` of them at once, default 4. A body that finishes early waits for the bodies before it, because the client applies segments in frame order, and each applied body frees one slot. Raise the limit when a cold start brings many small rows segments: on a production cold load, 8 rows segments of 15 to 44 KB took 3.3 s to download in two waves of four. The two-image bound above holds at any limit. The value is a positive integer; anything else fails construction with `sync.invalid_request`.
-
-```ts
-const client = new SyncClient({
-  // database, schema, transport, segments
-  limits: { segmentPrefetch: 8 },
-});
-```
-
-The browser worker handle forwards `limits` to its core unchanged. The Rust core downloads a response's segments one at a time and ignores the key, so a native `limits.segmentPrefetch` has no effect.
+The TypeScript client queues every segment download of a pull response and runs eight of them at once. A body that finishes early waits for the bodies before it, because the client applies segments in frame order, and each applied body frees one slot. At most two of the eight are images, per the bound above. On a production cold load, 8 rows segments of 15 to 44 KB took 3.3 s to download in two waves of four, the default before 0.97.0. The Rust core downloads a response's segments one at a time.
 
 ## Where segments are delivered
 

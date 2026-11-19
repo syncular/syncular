@@ -204,6 +204,16 @@ connection limit of a Workers invocation, and a host above it gains nothing
 from R2. A custom `SegmentStore` that cannot take concurrent puts serializes
 them itself.
 
+### `limits.segmentPrefetch` removed
+
+The TypeScript client runs eight segment downloads of a pull response at once,
+of which at most two are SQLite images. Delete `segmentPrefetch` from the
+client's `limits`; a client that passes it fails to typecheck. The default
+was four; eight is what the apps that set the limit ran, because a cold load
+brings dozens of rows segments and took 3.3 s for eight small ones in two
+waves of four. A client that kept the default holds up to eight rows bodies
+instead of four.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

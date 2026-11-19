@@ -463,11 +463,6 @@ export interface SyncClientLimits {
    */
   readonly maxPushRequestBytes?: number;
   /**
-   * §5.4: rows segment downloads one pull response runs at once. Default 4.
-   * SQLite images keep their own bound of two (§5.3).
-   */
-  readonly segmentPrefetch?: number;
-  /**
    * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
    * exceeds it, unreferenced bodies without pending work are evicted oldest
    * first after each cache write. Referenced bodies stay cached even past the
@@ -1134,7 +1129,6 @@ export class SyncClient {
       'maxPushCommitsPerRequest',
       'maxPushOperationsPerRequest',
       'maxPushRequestBytes',
-      'segmentPrefetch',
     ] as const) {
       const value = config.limits?.[name];
       if (
@@ -5599,12 +5593,12 @@ export class SyncClient {
 
     // §5.4/§5.5: queue every segment download of this response, so a paged
     // bootstrap overlaps its page fetches instead of paying one blocking round
-    // trip per page. `limits.segmentPrefetch` downloads run at once, by
-    // default four, the Rust native transport's pool size: enough to overlap
-    // round trips, while the client holds that many bodies, the one being
+    // trip per page. Eight downloads run at once: a cold load brings dozens of
+    // rows segments, and eight halve the waves of four that took 3.3 s for
+    // eight small segments. The client holds that many bodies, the one being
     // applied and the rest ahead. An image starts only beside at most one
-    // other body, so at most two are images (§5.3 client memory) whatever the
-    // limit; later descriptors wait in order. The
+    // other body, so at most two are images (§5.3 client memory); later
+    // descriptors wait in order. The
     // loop takes each body out of the map before applying it and tops the
     // window up at the next descriptor. Eligibility mirrors the loop: a
     // descriptor outside an applied section or from an unconfigured
@@ -5616,7 +5610,7 @@ export class SyncClient {
     const prefetch = () => {
       for (
         let next;
-        prefetched.size < (this.#config.limits?.segmentPrefetch ?? 4) &&
+        prefetched.size < 8 &&
         !(queued[0]?.[0].mediaType === 'sqlite' && prefetched.size > 1) &&
         (next = queued.shift());
       ) {

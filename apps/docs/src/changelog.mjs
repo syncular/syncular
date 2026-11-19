@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'The client runs eight segment downloads at once',
+    body: 'The client limit `segmentPrefetch` is removed: the TypeScript client runs eight segment downloads of a pull response at once, of which at most two are SQLite images. Delete the key from `limits`.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#parallel-downloads',
+        label: 'Parallel downloads',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A pull keeps six segment puts in flight',
     body: 'The server limit `maxConcurrentSegmentPuts` is removed: a pull keeps up to six rows segment puts in flight, the connection limit of a Workers invocation. Delete the key from `limits`.',
     links: [
