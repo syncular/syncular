@@ -258,25 +258,8 @@ export interface SyncClientHandleConfig {
    * `takeOver()` is allowed. Default twice `followerCallTimeoutMs`.
    */
   readonly takeOverAfterMs?: number;
-  /** Start and end of every `leader-unreachable` period, for host telemetry. */
-  readonly onLeaderUnreachable?: (event: LeaderUnreachableEvent) => void;
   /** Time source for the follower timers; injectable for tests. */
   readonly tabClock?: TabClock;
-  /** Fires when this handle's role changes (follower → leader on promotion). */
-  readonly onRoleChange?: (role: HandleRole) => void;
-  /** Fires when reachability or ownership changes without replacing the handle. */
-  readonly onLeadershipChange?: (state: LeadershipState) => void;
-  readonly onSyncNeeded?: (reason: 'startup' | 'hello' | WakeReason) => void;
-  readonly onConflict?: (conflict: ConflictRecord) => void;
-  /** A drive to idle in the leader worker ended (leader tab only). */
-  readonly onSynced?: SyncedListener;
-  /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
-  readonly onUpgrading?: (upgrading: boolean) => void;
-  /** §8.6: presence on a scope key changed, or the server refused this
-   * client's publish on it (`error`, §8.6.2). */
-  readonly onPresence?: (scopeKey: string, error?: PresenceErrorCode) => void;
-  /** Atomic privacy-safe diagnostics changed. */
-  readonly onDiagnostics?: (snapshot: ClientDiagnosticsSnapshot) => void;
 }
 
 /**
@@ -353,18 +336,22 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   readonly #tabs: TabCoordinator | undefined;
   /** The `multiTab: false` leader's own core. */
   #core: LeaderCore | undefined;
-  readonly #invalidation: InvalidationEmitter;
+  readonly #invalidation = new InvalidationEmitter();
   readonly #progress = new ProgressEmitter();
-  readonly #synced = new Set<SyncedListener>();
-  readonly #changes: ChangeEmitter;
-  readonly #presence: Set<
-    (scopeKey: string, error?: PresenceErrorCode) => void
-  >;
-  readonly #diagnostics: ClientDiagnosticsEmitter;
+  readonly #synced = new ChangeEmitter<Parameters<SyncedListener>[0]>();
+  readonly #changes = new ChangeEmitter();
+  readonly #presence = new ChangeEmitter<{
+    readonly scopeKey: string;
+    readonly error?: PresenceErrorCode | undefined;
+  }>();
+  readonly #syncNeeded = new ChangeEmitter<'startup' | 'hello' | WakeReason>();
+  readonly #conflicts = new ChangeEmitter<ConflictRecord>();
+  readonly #upgrading = new ChangeEmitter<boolean>();
+  readonly #diagnostics = new ClientDiagnosticsEmitter();
   readonly #scopesChanged = new ChangeEmitter<void>();
-  readonly #roleListeners: Set<(role: HandleRole) => void>;
-  readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
-  readonly #unreachableListeners: Set<(event: LeaderUnreachableEvent) => void>;
+  readonly #roles = new ChangeEmitter<HandleRole>();
+  readonly #leaderships = new ChangeEmitter<LeadershipState>();
+  readonly #unreachable: ChangeEmitter<LeaderUnreachableEvent>;
   readonly #devtoolsUnregister: (() => void) | undefined;
   #closed = false;
   #closing: Promise<void> | undefined;
@@ -376,13 +363,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     currentSchemaVersion: number;
     core?: LeaderCore;
     tabs?: TabCoordinator;
-    invalidation: InvalidationEmitter;
-    changes: ChangeEmitter;
-    presence: Set<(scopeKey: string, error?: PresenceErrorCode) => void>;
-    diagnostics: ClientDiagnosticsEmitter;
-    roleListeners?: Set<(role: HandleRole) => void>;
-    leadershipListeners?: Set<(state: LeadershipState) => void>;
-    unreachableListeners?: Set<(event: LeaderUnreachableEvent) => void>;
+    unreachable: ChangeEmitter<LeaderUnreachableEvent>;
     leadership?: LeadershipState;
     devtools?: DevtoolsRegistrar;
   }) {
@@ -402,13 +383,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
           });
     this.#core = internals.core;
     this.#tabs = internals.tabs;
-    this.#invalidation = internals.invalidation;
-    this.#changes = internals.changes;
-    this.#presence = internals.presence;
-    this.#diagnostics = internals.diagnostics;
-    this.#roleListeners = internals.roleListeners ?? new Set();
-    this.#leadershipListeners = internals.leadershipListeners ?? new Set();
-    this.#unreachableListeners = internals.unreachableListeners ?? new Set();
+    this.#unreachable = internals.unreachable;
     // Console introspection is a no-op outside a dev page.
     this.#devtoolsUnregister = internals.devtools?.({
       kind: 'handle',
@@ -440,23 +415,11 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     ) {
       this.#pullDiagnostics();
     }
-    for (const listener of this.#leadershipListeners) {
-      try {
-        listener(state);
-      } catch {
-        /* a UI listener must never break leadership transitions */
-      }
-    }
+    this.#leaderships.emit(state);
     const role = state.state === 'leader' ? 'leader' : 'follower';
     if (role === this.#role) return;
     this.#role = role;
-    for (const listener of this.#roleListeners) {
-      try {
-        listener(role);
-      } catch {
-        /* a UI listener must never break a promotion or a handover */
-      }
-    }
+    this.#roles.emit(role);
   }
 
   /** @internal — dispatch a worker/relayed event to handle-local listeners. */
@@ -464,13 +427,13 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     if (event.kind === 'progress') {
       this.#progress.emit(event.progress);
     } else if (event.kind === 'presence') {
-      for (const listener of this.#presence) {
-        try {
-          listener(event.scopeKey, event.error);
-        } catch {
-          /* a UI listener must never break event dispatch */
-        }
-      }
+      this.#presence.emit(event);
+    } else if (event.kind === 'sync-needed') {
+      this.#syncNeeded.emit(event.reason);
+    } else if (event.kind === 'conflict') {
+      this.#conflicts.emit(event.conflict);
+    } else if (event.kind === 'upgrading') {
+      this.#upgrading.emit(event.upgrading);
     } else if (event.kind === 'scopes-changed') {
       this.#scopesChanged.emit();
     } else if (event.kind === 'change') {
@@ -478,13 +441,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
       const legacy = invalidationFromChange(event.batch);
       if (legacy !== undefined) this.#invalidation.emit(legacy);
     } else if (event.kind === 'synced') {
-      for (const listener of this.#synced) {
-        try {
-          listener(syncedResult(event));
-        } catch {
-          /* a UI listener must never break event dispatch */
-        }
-      }
+      this.#synced.emit(syncedResult(event));
     } else if (event.kind === 'diagnostics') {
       this.#diagnostics.emit(
         withClientDiagnosticsHost(event.snapshot, {
@@ -539,10 +496,34 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   onPresence(
     listener: (scopeKey: string, error?: PresenceErrorCode) => void,
   ): () => void {
-    this.#presence.add(listener);
-    return () => {
-      this.#presence.delete(listener);
-    };
+    return this.#presence.on((event) => listener(event.scopeKey, event.error));
+  }
+
+  /**
+   * Subscribe to the leader core's wake signals (§8.4): startup found queued
+   * work, the server's hello asked for a sync, or realtime announced commits.
+   * The leader worker drives itself under `autoSync`; a host that set
+   * `autoSync: false` calls `sync()` when this fires. Returns an
+   * unsubscribe function.
+   */
+  onSyncNeeded(
+    listener: (reason: 'startup' | 'hello' | WakeReason) => void,
+  ): () => void {
+    return this.#syncNeeded.on(listener);
+  }
+
+  /** Subscribe to every conflict the leader core records. */
+  onConflict(listener: (conflict: ConflictRecord) => void): () => void {
+    return this.#conflicts.on(listener);
+  }
+
+  /**
+   * §7.4.5: subscribe to the schema-bump `upgrading` state: `true` when a
+   * reset began, `false` when its first bootstrap reached idle. A reset that
+   * began before the handle resolved shows in `statusSnapshot().upgrading`.
+   */
+  onUpgrading(listener: (upgrading: boolean) => void): () => void {
+    return this.#upgrading.on(listener);
   }
 
   /**
@@ -562,35 +543,24 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
    * bound is not replayed. Returns an unsubscribe function.
    */
   onSynced(listener: SyncedListener): () => void {
-    this.#synced.add(listener);
-    return () => {
-      this.#synced.delete(listener);
-    };
+    return this.#synced.on(listener);
   }
 
   /** Subscribe to role transitions (follower → leader on promotion). */
   onRoleChange(listener: (role: HandleRole) => void): () => void {
-    this.#roleListeners.add(listener);
-    return () => {
-      this.#roleListeners.delete(listener);
-    };
+    return this.#roles.on(listener);
   }
 
+  /** Reachability or ownership changed without replacing the handle. */
   onLeadershipChange(listener: (state: LeadershipState) => void): () => void {
-    this.#leadershipListeners.add(listener);
-    return () => {
-      this.#leadershipListeners.delete(listener);
-    };
+    return this.#leaderships.on(listener);
   }
 
   /** Start and end of every `leader-unreachable` period, with its duration. */
   onLeaderUnreachable(
     listener: (event: LeaderUnreachableEvent) => void,
   ): () => void {
-    this.#unreachableListeners.add(listener);
-    return () => {
-      this.#unreachableListeners.delete(listener);
-    };
+    return this.#unreachable.on(listener);
   }
 
   /**
@@ -1070,20 +1040,6 @@ async function startWorkerCore(options: {
         } as MainToWorkerMessage);
       },
     );
-    // A config callback is a consumer from the first round. Under security
-    // preflight the core refuses the snapshot after the pull registered the
-    // worker as a push source, and activateSecurity() emits the first one.
-    if (config.onDiagnostics !== undefined) {
-      await invoke('diagnosticsSnapshot', []).catch((error: unknown) => {
-        if (
-          config.securityPreflight !== true ||
-          !(error instanceof ClientSyncError) ||
-          error.code !== 'client.security_preflight_required'
-        ) {
-          throw error;
-        }
-      });
-    }
     return {
       clientId: initResult.clientId,
       invoke,
@@ -1157,26 +1113,6 @@ function syncedResult(
   };
 }
 
-/** Route a worker event to the config-level callbacks (leader visibility). */
-function fireConfigCallbacks(
-  config: SyncClientHandleConfig,
-  event: SyncWorkerEvent,
-): void {
-  if (event.kind === 'sync-needed') {
-    config.onSyncNeeded?.(event.reason);
-  } else if (event.kind === 'conflict') {
-    config.onConflict?.(event.conflict);
-  } else if (event.kind === 'upgrading') {
-    config.onUpgrading?.(event.upgrading);
-  } else if (event.kind === 'presence') {
-    config.onPresence?.(event.scopeKey, event.error);
-  } else if (event.kind === 'synced') {
-    config.onSynced?.(syncedResult(event));
-  } else if (event.kind === 'diagnostics') {
-    config.onDiagnostics?.(event.snapshot);
-  }
-}
-
 /**
  * Acquire leadership, spawn the worker, initialize the core inside it.
  *
@@ -1195,38 +1131,15 @@ export async function createSyncClientHandle(
     throw invalidRequest('coalesceMs must be a non-negative finite number');
   const lock = resolvedConfig.leaderLock ?? defaultLeaderLock();
   const lockName = resolvedConfig.lockName ?? 'syncular-leader';
-  const invalidation = new InvalidationEmitter();
-  const changes = new ChangeEmitter();
-  const presence = new Set<
-    (scopeKey: string, error?: PresenceErrorCode) => void
-  >();
-  const diagnostics = new ClientDiagnosticsEmitter();
-  const roleListeners = new Set<(role: HandleRole) => void>();
-  if (resolvedConfig.onRoleChange !== undefined)
-    roleListeners.add(resolvedConfig.onRoleChange);
-  const leadershipListeners = new Set<(state: LeadershipState) => void>();
-  if (resolvedConfig.onLeadershipChange !== undefined) {
-    leadershipListeners.add(resolvedConfig.onLeadershipChange);
-  }
-  const unreachableListeners = new Set<
-    (event: LeaderUnreachableEvent) => void
-  >();
-  if (resolvedConfig.onLeaderUnreachable !== undefined) {
-    unreachableListeners.add(resolvedConfig.onLeaderUnreachable);
-  }
+  // The coordinator, created before the handle, reports through it.
+  const unreachable = new ChangeEmitter<LeaderUnreachableEvent>();
 
   const handleRef: { handle: SyncClientHandle | undefined } = {
     handle: undefined,
   };
   const parts = {
     currentSchemaVersion: resolvedConfig.schema.version,
-    invalidation,
-    changes,
-    presence,
-    diagnostics,
-    roleListeners,
-    leadershipListeners,
-    unreachableListeners,
+    unreachable,
     ...(resolvedConfig.devtools !== undefined
       ? { devtools: resolvedConfig.devtools }
       : {}),
@@ -1246,10 +1159,7 @@ export async function createSyncClientHandle(
       config: resolvedConfig,
       initConfig: buildInitConfig(resolvedConfig),
       lease,
-      dispatchEvent: (event) => {
-        fireConfigCallbacks(resolvedConfig, event);
-        handleRef.handle?.__dispatchEvent(event);
-      },
+      dispatchEvent: (event) => handleRef.handle?.__dispatchEvent(event),
     });
     const handle = new SyncClientHandle({
       role: 'leader',
@@ -1282,15 +1192,7 @@ export async function createSyncClientHandle(
     ...(resolvedConfig.tabClock !== undefined
       ? { clock: resolvedConfig.tabClock }
       : {}),
-    onLeaderUnreachable: (event) => {
-      for (const listener of unreachableListeners) {
-        try {
-          listener(event);
-        } catch {
-          /* a telemetry listener must never break cross-tab coordination */
-        }
-      }
-    },
+    onLeaderUnreachable: (event) => unreachable.emit(event),
     lead: async (context) => {
       const core = await startWorkerCore({
         config: resolvedConfig,
@@ -1303,10 +1205,7 @@ export async function createSyncClientHandle(
           ...(context.takeover ? { takeOverStorage: true } : {}),
         },
         lease: context.lease,
-        dispatchEvent: (event) => {
-          fireConfigCallbacks(resolvedConfig, event);
-          context.broadcast(event);
-        },
+        dispatchEvent: (event) => context.broadcast(event),
       });
       return {
         clientId: core.clientId,

@@ -213,19 +213,19 @@ const handle = await createSyncClientHandle({
     segmentsUrl: 'https://api.example.com/segments',
   },
   headers: { Authorization: `Bearer ${await auth.getAccessToken()}` },
-  onSynced: async ({ error }) => {
-    if (error?.code !== 'sync.auth_required') return;
-    await handle.setHeaders({
-      Authorization: `Bearer ${await auth.refreshAccessToken()}`,
-    });
-    await handle.sync();
-  },
+});
+handle.onSynced(async ({ error }) => {
+  if (error?.code !== 'sync.auth_required') return;
+  await handle.setHeaders({
+    Authorization: `Bearer ${await auth.refreshAccessToken()}`,
+  });
+  await handle.sync();
 });
 ```
 
 `setHeaders` replaces the whole header set, and the next request uses it. Call
 it whenever your auth library rotates the token, before the old token expires,
-so sync rounds never see a 401. The `onSynced` branch covers a token that
+so sync rounds never see a 401. The `onSynced` listener covers a token that
 expired first: `sync.auth_required` is retryable, so the worker keeps retrying
 with backoff, and `sync()` after the refresh runs the next round without waiting
 for the backoff.

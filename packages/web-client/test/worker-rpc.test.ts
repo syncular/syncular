@@ -149,7 +149,6 @@ afterAll(async () => {
 });
 
 interface HandleEvents {
-  wakes: string[];
   conflicts: number;
   synced: Array<{ summary?: unknown; error?: WorkerErrorShape }>;
 }
@@ -157,7 +156,7 @@ interface HandleEvents {
 async function makeHandle(
   options: Partial<SyncClientHandleConfig> & { clientId: string },
 ): Promise<{ handle: SyncClientHandle; events: HandleEvents }> {
-  const events: HandleEvents = { wakes: [], conflicts: 0, synced: [] };
+  const events: HandleEvents = { conflicts: 0, synced: [] };
   const handle = await createSyncClientHandle({
     leaderLock: singleOwnerLock(),
     worker: () => new Worker(WORKER_URL),
@@ -170,16 +169,13 @@ async function makeHandle(
     },
     // Distinct lock names: these handles coexist inside one test process.
     lockName: `rpc-test-${options.clientId}`,
-    onSyncNeeded: (reason) => {
-      events.wakes.push(reason);
-    },
-    onConflict: () => {
-      events.conflicts += 1;
-    },
-    onSynced: (result) => {
-      events.synced.push(result);
-    },
     ...options,
+  });
+  handle.onConflict(() => {
+    events.conflicts += 1;
+  });
+  handle.onSynced((result) => {
+    events.synced.push(result);
   });
   handles.push(handle);
   return { handle, events };
@@ -534,14 +530,14 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
   expect(await handle.query('SELECT id FROM tasks')).toEqual([]);
 });
 
-test('a preflight handle with a config onDiagnostics starts and gets its first snapshot at activation', async () => {
+test('a preflight handle with an onDiagnostics listener gets its first snapshot at activation', async () => {
   const seen: string[] = [];
   const { handle } = await makeHandle({
     clientId: 'rpc-preflight-diagnostics',
     securityPreflight: true,
     transportEnabled: false,
-    onDiagnostics: (snapshot) => seen.push(snapshot.replica.localRevision),
   });
+  handle.onDiagnostics((snapshot) => seen.push(snapshot.replica.localRevision));
   expect(await handle.securityLifecycle()).toBe('preflight');
   expect(seen).toEqual([]);
 
@@ -980,7 +976,7 @@ test('realtime wake-ups drive the worker-side host loop (§8.4)', async () => {
     clientId: 'rpc-rt-a',
     autoSync: false,
   });
-  const { handle: b, events } = await makeHandle({
+  const { handle: b } = await makeHandle({
     clientId: 'rpc-rt-b',
     autoSync: true,
   });
@@ -1007,7 +1003,24 @@ test('realtime wake-ups drive the worker-side host loop (§8.4)', async () => {
     'realtime propagation into worker B',
   );
   await b.disconnectRealtime();
-  expect(events.wakes.length).toBeGreaterThanOrEqual(0);
+});
+
+test('a realtime hello reaches handle.onSyncNeeded (§8.4)', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-hello-wake',
+    autoSync: false,
+  });
+  const wakes: string[] = [];
+  handle.onSyncNeeded((reason) => wakes.push(reason));
+  // A client the server has never registered gets `requiresSync`.
+  await handle.connectRealtime();
+  await waitFor(
+    () => wakes.length > 0,
+    (notify) => handle.onSyncNeeded(notify),
+    'the hello wake over the worker RPC',
+  );
+  expect(wakes[0]).toBe('hello');
+  await handle.disconnectRealtime();
 });
 
 test('worker realtime connect is single-owner across repeated RPC calls', async () => {
@@ -1031,12 +1044,10 @@ test('worker realtime connect is single-owner across repeated RPC calls', async 
   await handle.disconnectRealtime();
 });
 
-test('a refused presence publish crosses the worker to both presence surfaces (§8.6.2)', async () => {
-  const configured: Array<[string, string | undefined]> = [];
+test('a refused presence publish crosses the worker to handle.onPresence (§8.6.2)', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-presence-refused',
     autoSync: false,
-    onPresence: (scopeKey, error) => configured.push([scopeKey, error]),
   });
   const subscribed: Array<[string, string | undefined]> = [];
   const off = handle.onPresence((scopeKey, error) =>
@@ -1046,12 +1057,11 @@ test('a refused presence publish crosses the worker to both presence surfaces (�
   // The connection holds no scope key, so the hub refuses the publish.
   await handle.setPresence('project:unheld', { who: 'me' });
   await waitFor(
-    () => subscribed.length === 1 && configured.length === 1,
+    () => subscribed.length === 1,
     (notify) => handle.onPresence(notify),
     'presence rejection over the worker RPC',
   );
   expect(subscribed).toEqual([['project:unheld', 'presence.forbidden']]);
-  expect(configured).toEqual(subscribed);
   expect(await handle.presence('project:unheld')).toEqual([]);
   off();
   await handle.disconnectRealtime();
@@ -1472,10 +1482,10 @@ test('worker auto-sync continues after exhausting its round budget', async () =>
   let synced: (() => void) | undefined;
   const { handle } = await makeHandle({
     clientId: 'rpc-budget',
-    onSynced: () => synced?.(),
     autoSync: true,
     limits: { maxPushCommitsPerRequest: 1 },
   });
+  handle.onSynced(() => synced?.());
   await handle.setOffline(true);
   for (let i = 0; i < 22; i++) {
     await handle.mutate([
@@ -1539,10 +1549,10 @@ test('wake-ups during a queued round share one follow-up drive', async () => {
     multiTab: false,
     realtimePolicy: 'off',
     lockName: 'rpc-autosync-rounds',
-    onSynced: () => {
-      synced.push(rounds.length);
-      notify();
-    },
+  });
+  handle.onSynced(() => {
+    synced.push(rounds.length);
+    notify();
   });
   handles.push(handle);
   try {
@@ -1622,11 +1632,8 @@ test('a drive deadline rejection re-arms the worker host loop', async () => {
     worker: () => worker,
     autoSync: true,
     realtimePolicy: 'off',
-    onSynced: (result) => {
-      events.synced.push(result);
-      notify();
-    },
   });
+  handle.onSynced(() => notify());
   const observe = (next: () => void) => {
     notify = next;
     return () => {
@@ -1839,11 +1846,8 @@ test('the worker autoSync loop holds a queued drive for coalesceMs', async () =>
     autoSync: true,
     realtimePolicy: 'off',
     coalesceMs: 25,
-    onSynced: (result) => {
-      events.synced.push(result);
-      notify();
-    },
   });
+  handle.onSynced(() => notify());
   for (const id of ['first', 'second'])
     await handle.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues(id, 'p-coalesce') },

@@ -69,8 +69,8 @@ async function main(): Promise<void> {
     },
     autoSync: true,
     lockName: 'app-core',
-    onSynced: () => void refresh(),
   });
+  handle.onSynced(() => void refresh());
 
   // One unit per list: the scope map covers every table scoped by `list_id`.
   await handle.subscribe(todoListSubscription.scopes({ listId: LIST_ID }));

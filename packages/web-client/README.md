@@ -85,10 +85,11 @@ mutate / sync / query / conflicts / …), every method a promise. It
 acquires the Web Locks leader lock *before* spawning the worker — one
 core per origin. Wake-ups are handled inside the worker (`autoSync`,
 SPEC §8.4); the supported page-level realtime supervisor owns reconnect and
-resume policy. The main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
-events for rendering in the leader tab; `handle.onSynced(listener)` reports the
-end of each drive to idle, automatic or requested by any tab, in every tab,
-followers included.
+resume policy. The handle's listener methods (`onSyncNeeded`, `onConflict`,
+`onSynced`, `onUpgrading`, `onPresence`, `onDiagnostics`, `onRoleChange`,
+`onLeadershipChange`, `onLeaderUnreachable`) each return an unsubscribe
+function and fire in every tab, followers included. `handle.onSynced(listener)`
+reports the end of each drive to idle, automatic or requested by any tab.
 
 For a reviewed recovery from a retained conflict or rejection, call
 `await client.proveCurrentBase(outcome)`. The result contains bases for every
@@ -188,8 +189,8 @@ one sync loop, one WebSocket, one OPFS database, N tabs.
 const handle = await createSyncClientHandle({
   worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
   schema, database: { mode: 'persistent', name: 'app' }, endpoints,
-  onRoleChange: (role) => console.log('now', role), // 'follower' → 'leader'
 });
+handle.onRoleChange((role) => console.log('now', role)); // 'follower' → 'leader'
 // Compatibility: handle.role is 'leader' or 'follower'.
 // Detailed state: handle.leadership / handle.leadershipSnapshot().
 handle.onLeadershipChange((state) => renderConnectionState(state));

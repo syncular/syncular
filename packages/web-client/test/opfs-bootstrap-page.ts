@@ -20,7 +20,6 @@ declare global {
       ready: Promise<SyncClientHandle>;
       progress: SyncProgress[];
       diagnostics: ClientDiagnosticsSnapshot[];
-      configDiagnostics: number;
       changes: number;
       activated: Promise<void>;
       evidence: Promise<[SyncProgress, ClientDiagnosticsSnapshot]>;
@@ -48,7 +47,6 @@ let announceCrash: (receipt: CrashReceipt) => void;
 window.opfsTest = {
   progress: [],
   diagnostics: [],
-  configDiagnostics: 0,
   changes: 0,
   activated: new Promise(() => {}),
   evidence: new Promise(() => {}),
@@ -107,14 +105,7 @@ window.opfsTest = {
       schema,
       autoSync,
       retainFailedCommits: true,
-      ...(location.hash === '#navigate'
-        ? {
-            securityPreflight: true,
-            onDiagnostics: () => {
-              window.opfsTest.configDiagnostics += 1;
-            },
-          }
-        : {}),
+      ...(location.hash === '#navigate' ? { securityPreflight: true } : {}),
       endpoints: {
         syncUrl: `${location.origin}/${schema.version >= 200 ? 'sync-relax' : schema.version >= 100 ? 'sync-alternative' : schema.version >= 89 ? 'sync-scope' : location.search === '?fresh' ? 'sync-fresh' : location.search === '?signed' ? 'sync-signed' : 'sync'}`,
         segmentsUrl: `${location.origin}/${schema.version >= 200 ? 'relax-segments' : schema.version >= 100 ? 'alternative-segments' : schema.version >= 89 ? 'scope-segments' : location.search === '?fresh' ? 'fresh-segments' : 'segments'}`,

@@ -2399,7 +2399,6 @@ test('OPFS listeners of a page reached by navigation receive pushes', async () =
         rounds: window.opfsTest.diagnostics.map(
           (snapshot) => snapshot.lastRound?.status,
         ),
-        configDiagnostics: window.opfsTest.configDiagnostics,
         changes: window.opfsTest.changes,
       };
     });
@@ -2423,7 +2422,6 @@ test('OPFS listeners of a page reached by navigation receive pushes', async () =
       return {
         progress: window.opfsTest.progress.map((value) => value.state),
         rounds: window.opfsTest.diagnostics.length,
-        configDiagnostics: window.opfsTest.configDiagnostics,
         changes: window.opfsTest.changes,
         row: await client.query(
           "SELECT title FROM catalogue WHERE id = 'navigation-row'",
@@ -2435,7 +2433,6 @@ test('OPFS listeners of a page reached by navigation receive pushes', async () =
       'complete',
     );
     expect(pushed.rounds).toBeGreaterThan(settled.rounds.length);
-    expect(pushed.configDiagnostics).toBeGreaterThan(settled.configDiagnostics);
     expect(pushed.changes).toBeGreaterThan(settled.changes);
     expect(errors).toEqual([]);
     await page.evaluate(async () => (await window.opfsTest.ready).close());

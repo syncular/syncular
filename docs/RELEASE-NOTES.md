@@ -236,6 +236,27 @@ which fails closed when the resolver throws. A partition object's stored
 retry record from 0.95.0 that owes only an announcement is delivered as
 nothing; one that also owes a refresh delivers the refresh and its event.
 
+### Handle events through listener methods only
+
+`SyncClientHandleConfig` no longer has `onSynced`, `onConflict`,
+`onSyncNeeded`, `onUpgrading`, `onPresence`, `onDiagnostics`,
+`onRoleChange`, `onLeadershipChange` or `onLeaderUnreachable`. The handle
+has a listener method of the same name for each; `onSyncNeeded`,
+`onConflict` and `onUpgrading` are new. Move each callback to a call on the
+resolved handle:
+
+```ts
+const handle = await createSyncClientHandle({ worker, schema, database, endpoints });
+handle.onSynced(({ error }) => { /* … */ });
+```
+
+The listeners fire in every tab, followers included; the config callbacks
+fired in the leader tab only. An event the worker raised before the handle
+resolved reaches no listener: read `statusSnapshot().syncNeeded` and
+`statusSnapshot().upgrading` once after creation for the startup wake and a
+schema reset already under way. `SyncClientConfig` of a direct `SyncClient`
+is unchanged.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

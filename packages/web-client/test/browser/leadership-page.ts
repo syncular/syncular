@@ -71,10 +71,10 @@ const handle = await createSyncClientHandle({
     : { replica: { mode: 'isolated' as const, id: replicaId } }),
   ...(channelFactory === undefined ? {} : { channelFactory }),
   followerCallTimeoutMs: 180,
-  onLeadershipChange: renderLeadership,
 });
 
 renderLeadership(handle.leadership);
+handle.onLeadershipChange(renderLeadership);
 (window as Window & { syncularHandle?: typeof handle }).syncularHandle = handle;
 
 if (handle.leadership.state === 'blocked') {

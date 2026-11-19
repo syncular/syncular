@@ -139,9 +139,9 @@ validate a server-authoritative revocation directive and gate any unit
 that could download the rows again. For quarantine before data, create the
 handle with `securityPreflight: true`. A follower's request applies to the one
 shared origin leader. Diagnostics stay closed during preflight: an
-`onDiagnostics` callback in the handle config receives its first snapshot when
-`activateSecurity()` completes. The gate belongs to the shared core, so every
-tab meets it until the tab that requested preflight activates; a realtime
-supervisor in another tab waits in phase `protected` meanwhile
+`onDiagnostics` listener registered on the handle receives its first snapshot
+when `activateSecurity()` completes. The gate belongs to the shared core, so
+every tab meets it until the tab that requested preflight activates; a
+realtime supervisor in another tab waits in phase `protected` meanwhile
 ([Realtime & lifecycle](/platform-web-realtime/)). The lifecycle is defined in
 [Authorized local purge](/concepts-local-data-purge/).

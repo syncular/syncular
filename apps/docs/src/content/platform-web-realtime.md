@@ -209,12 +209,15 @@ without a request. A freshly signed-in tab therefore sends its first pull
 together with its first units. `handle.syncUntilIdle()` called by the app
 still sends a request.
 
-The handle's `onSyncNeeded`, `onConflict`, `onSynced`, `onUpgrading`,
-`onPresence`, and `onDiagnostics` configuration callbacks give the main thread the
-events it needs for rendering. They fire in the tab whose worker raised the
-event, which is the leader tab. `handle.onScopesChanged(listener)` fires in
-every tab when the server announces that the actor's grants changed
-([Grown grants](/concepts-realtime/#grown-grants)).
+The handle reports worker events through listener methods:
+`onSyncNeeded`, `onConflict`, `onSynced`, `onUpgrading`, `onPresence`,
+`onDiagnostics`, `onChange`, `onProgress`, and `onScopesChanged`. Each returns
+an unsubscribe function and fires in every tab, leader and follower.
+`handle.onScopesChanged(listener)` fires when the server announces that the
+actor's grants changed ([Grown grants](/concepts-realtime/#grown-grants)). The
+startup wake and a schema reset that began while the handle was being created
+fire before any listener exists; `statusSnapshot()` carries both as
+`syncNeeded` and `upgrading`.
 
 `handle.onSynced(listener)` fires in every tab, leader and follower, at the
 end of each drive to idle in the leader worker with `{ summary }` or

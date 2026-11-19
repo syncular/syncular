@@ -822,12 +822,7 @@ for (const preflight of [false, true]) {
     if (preflight) await leader.activateSecurity();
     await leader.subscribe({ project_id: 'np' });
     await leader.syncUntilIdle();
-    const configDiagnostics: string[] = [];
-    const follower = await group.make({
-      ...config,
-      onDiagnostics: (snapshot) =>
-        configDiagnostics.push(snapshot.replica.localRevision),
-    });
+    const follower = await group.make(config);
     expect(follower.role).toBe('follower');
     const progress: string[] = [];
     const diagnostics: string[] = [];
@@ -852,7 +847,6 @@ for (const preflight of [false, true]) {
       progress: progress.length,
       diagnostics: diagnostics.length,
       changes,
-      config: configDiagnostics.length,
     };
     await follower.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('pushed', 'np', 'x') },
@@ -860,7 +854,6 @@ for (const preflight of [false, true]) {
     await follower.syncUntilIdle();
     expect(progress.slice(seen.progress)).toContain('complete');
     expect(diagnostics.length).toBeGreaterThan(seen.diagnostics);
-    expect(configDiagnostics.length).toBeGreaterThan(seen.config);
     expect(changes).toBeGreaterThan(seen.changes);
   });
 }
@@ -870,10 +863,6 @@ test('every handle observes the end of each automatic drive of its current leade
   const lockName = `mt-synced-${lockSeq++}`;
   const partition = new ChannelPartition();
   const posts = new Map<string, Array<(data: unknown) => void>>();
-  const configSynced: Array<{
-    readonly tab: string;
-    readonly result: unknown;
-  }> = [];
   const make = async (tab: string): Promise<SyncClientHandle> => {
     const workerPosts: Array<(data: unknown) => void> = [];
     posts.set(tab, workerPosts);
@@ -886,7 +875,6 @@ test('every handle observes the end of each automatic drive of its current leade
       leaderLock: lock,
       lockName,
       channelFactory: partition.factory,
-      onSynced: (result) => configSynced.push({ tab, result }),
     });
     open.push(handle);
     return handle;
@@ -919,7 +907,6 @@ test('every handle observes the end of each automatic drive of its current leade
   drive('a', succeeded(1));
   await drain();
   expect(bSeen).toEqual([failed, succeeded(1)]);
-  expect(configSynced.map((entry) => entry.tab)).toEqual(['a', 'a']);
 
   // (3) Tab a closes; b promotes and keeps its listener. Tab c follows b and
   // drops a drive result stamped with a's epoch.
@@ -944,7 +931,6 @@ test('every handle observes the end of each automatic drive of its current leade
   await drain();
   expect(cSeen).toEqual([succeeded(2)]);
   expect(bSeen.at(-1)).toEqual(succeeded(2));
-  expect(configSynced.map((entry) => entry.tab)).toEqual(['a', 'a', 'b']);
 
   // Unsubscribing stops delivery.
   offB();
@@ -952,6 +938,51 @@ test('every handle observes the end of each automatic drive of its current leade
   await drain();
   expect(bSeen).toHaveLength(3);
   expect(cSeen).toHaveLength(2);
+});
+
+test('wake, conflict and upgrading events reach the listeners of every tab', async () => {
+  const lock = makeSharedLock();
+  const lockName = `mt-events-${lockSeq++}`;
+  const partition = new ChannelPartition();
+  const posts: Array<(data: unknown) => void> = [];
+  const make = async (tab: string): Promise<SyncClientHandle> => {
+    const handle = await createSyncClientHandle({
+      worker: () => fakeReadyWorker(tab, [], undefined, posts),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl },
+      autoSync: false,
+      leaderLock: lock,
+      lockName,
+      channelFactory: partition.factory,
+    });
+    open.push(handle);
+    return handle;
+  };
+  const a = await make('a');
+  const b = await make('b');
+  expect(b.role).toBe('follower');
+  const heard: Record<string, unknown[]> = { a: [], b: [] };
+  for (const [tab, handle] of [
+    ['a', a],
+    ['b', b],
+  ] as const) {
+    handle.onSyncNeeded((reason) => heard[tab]!.push(reason));
+    handle.onConflict((conflict) => heard[tab]!.push(conflict));
+    handle.onUpgrading((upgrading) => heard[tab]!.push(upgrading));
+  }
+  // The conflict record stays opaque: the handle forwards it unread.
+  const conflict = { table: 'tasks', rowId: 't1' };
+  for (const event of [
+    { kind: 'sync-needed', reason: 'hello' },
+    { kind: 'conflict', conflict },
+    { kind: 'upgrading', upgrading: true },
+  ]) {
+    for (const post of posts) post({ t: 'event', event });
+  }
+  await drain();
+  expect(heard.a).toEqual(['hello', conflict, true]);
+  expect(heard.b).toEqual(heard.a);
 });
 
 test('a tab promoted while its own core starts past the follower timeout returns as leader', async () => {
@@ -969,8 +1000,6 @@ test('a tab promoted while its own core starts past the follower timeout returns
     }
   }
   const clock = manualClock();
-  const states: LeadershipState[] = [];
-  const unreachable: LeaderUnreachableEvent[] = [];
   const making = group.make({
     worker: () => new HeldInitWorker(WORKER_URL),
     clientId: 'mt-slow-start',
@@ -984,8 +1013,6 @@ test('a tab promoted while its own core starts past the follower timeout returns
         return group.lock.acquire(name);
       },
     },
-    onLeadershipChange: (state) => states.push(state),
-    onLeaderUnreachable: (event) => unreachable.push(event),
   });
   await contested.promise;
   departed.release();
@@ -1000,8 +1027,6 @@ test('a tab promoted while its own core starts past the follower timeout returns
     state: 'leader',
     clientId: 'mt-slow-start',
   });
-  expect(states.some((state) => state.state === 'blocked')).toBe(false);
-  expect(unreachable).toEqual([]);
   expect(await handle.securityLifecycle()).toBe('preflight');
   await handle.activateSecurity();
   expect(await handle.query('SELECT id FROM tasks')).toEqual([]);

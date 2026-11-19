@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'The browser handle reports events only through listener methods',
+    body: '`createSyncClientHandle` no longer takes `onSynced`, `onConflict`, `onSyncNeeded`, `onUpgrading`, `onPresence`, `onDiagnostics`, `onRoleChange`, `onLeadershipChange` or `onLeaderUnreachable` in its config. The handle has a listener method for each, and each returns an unsubscribe function. `onSyncNeeded`, `onConflict` and `onUpgrading` are new on the handle and fire in every tab, followers included, where the config callbacks fired only in the leader tab. Register listeners after the handle resolves; `statusSnapshot()` carries a startup wake or a schema reset that began before then.',
+    links: [
+      {
+        href: '/platform-web-realtime/',
+        label: 'Realtime on the web',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'One host call after any grant change',
     body: "`RealtimeHub.refreshScopes(partition, actorId?)` re-resolves the matching sessions' registrations and then sends each of them one `scopes` event, so a host calls it after a grant shrinks or grows. `announceScopes` is removed from the hub and from the Workers notifier. A session that lost a registration still gets a `catchup-required` wake, and the client's `onScopesChanged` listeners run the app's unit discovery for units the actor may newly read.",
     links: [

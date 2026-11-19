@@ -48,10 +48,12 @@ window.localAuthorityTest = {
       localAuthority: true,
       autoSync: false,
       ...(followerCallTimeoutMs !== undefined ? { followerCallTimeoutMs } : {}),
-      onLeaderUnreachable: (event) =>
-        window.localAuthorityTest.unreachable.push(event),
     });
-    return (await window.localAuthorityTest.ready).role;
+    const handle = await window.localAuthorityTest.ready;
+    handle.onLeaderUnreachable((event) =>
+      window.localAuthorityTest.unreachable.push(event),
+    );
+    return handle.role;
   },
   probe: () =>
     new Promise((resolve, reject) => {
