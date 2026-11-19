@@ -84,7 +84,7 @@ export const changelog = [
   {
     date: '2026-11-19',
     title: 'mutate takes no commit ID from the app',
-    body: 'The `clientCommitId` option of `mutate` is gone from both clients, the worker handle, `useMutation`, the Tauri and React Native bridges, the native `mutate` command and the Kotlin, Swift and Flutter wrappers, along with the `client.commit_id_reused` error. The worker handle mints the ID before it calls the worker, and a rejected `mutate` carries it in `details.clientCommitId`, so a page whose reply was lost reads the commit through `pendingCommits` and `commitOutcome`. The Rust `mutate_with_commit_id` is removed; `mutate` mints the ID.',
+    body: 'The `clientCommitId` option of `mutate` is gone from both clients, the worker handle, `useMutation`, the Tauri and React Native bridges, the native `mutate` command and the Kotlin, Swift and Flutter wrappers, along with the `client.commit_id_reused` error. The worker handle mints the ID before it calls the worker, and a rejected `mutate` carries it in `details.clientCommitId`, so a page whose reply was lost reads the commit through `commitDelivery`. The Rust `mutate_with_commit_id` is removed; `mutate` mints the ID.',
     links: [
       {
         href: '/reference-outbox-outcomes/#lost-mutate-replies',
@@ -867,8 +867,8 @@ export const changelog = [
     body: '`mutate` accepts an optional `clientCommitId` in both clients and every binding. An app whose worker or bridge loses the reply reads the commit by that ID through `pendingCommits` and `commitOutcome` instead of guessing which applied outcome was its own. An ID the replica still holds throws `client.commit_id_reused` and writes nothing.',
     links: [
       {
-        href: '/reference-outbox-outcomes/#caller-supplied-commit-ids',
-        label: 'Caller-supplied commit IDs',
+        href: '/reference-outbox-outcomes/#lost-mutate-replies',
+        label: 'Lost mutate replies',
       },
     ],
   },
