@@ -10,6 +10,15 @@ write time with a download time per segment in progress
 unchanged; the error catalog gains one code, and the multi-tab protocol moves
 to 7.
 
+On PostgreSQL 17 a cold first rows-lane page of a 200,000-row release read in
+163 ms instead of 12.7 s, and a scan over tied scope variables took 6
+statements instead of 206. An OPFS import of 154,569 rows with a 200 ms flush
+finished in 22 s instead of 102 s.
+
+Upgrade notes: after deploying, reload tabs of 0.96.0 or older (multi-tab
+protocol 7). A segment store refusal now answers `503
+sync.segment_store_unavailable` with `Retry-After: 5`; clients retry it.
+
 ### A segment store outage is retryable
 
 R2 refused 38 object writes of segment puts with error 10043 within 90.6 s,
