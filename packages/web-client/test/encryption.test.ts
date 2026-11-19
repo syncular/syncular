@@ -21,7 +21,7 @@ import {
   type RowValue,
 } from '@syncular/core';
 import type { ServerSchema } from '@syncular/server';
-import { applySqliteSegment } from '../src/apply';
+import { applyRowsSegment, applySqliteSegment } from '../src/apply';
 import { BunClientDatabase } from '../src/bun-database';
 import { makeClient, makeServer, PARTITION, tableRows } from './helpers';
 
@@ -806,6 +806,74 @@ describe('§5.11 sealed apply', () => {
           "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='secrets' AND sql IS NOT NULL ORDER BY name",
         ),
       ).toEqual([{ name: '_syncular_sealed_secrets' }]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('§5.11 rows-segment decrypt', () => {
+  test('a block decrypts its rows together and fails on its first failing row', async () => {
+    const schema = compileClientSchema(CLIENT_SCHEMA);
+    const table = schema.tables.get('secrets')!;
+    const db = new BunClientDatabase();
+    ensureLocalSchema(db, schema);
+    const note = (key: Uint8Array) =>
+      encryptValue('string', 'n', 'secrets', key);
+    const segment = (values: readonly (readonly RowValue[])[]) => ({
+      table: 'secrets',
+      schemaVersion: 1,
+      columns: table.columns,
+      blocks: [values.map((row) => ({ serverVersion: 1, values: row }))],
+    });
+    const options = {
+      clearFirst: true,
+      effective: { project_id: ['p1'] },
+      owners: () => [],
+    };
+    try {
+      // Row s1 fails in WebCrypto after row s2 fails its type check; the
+      // block reports s1, the first in block order.
+      await expect(
+        applyRowsSegment(
+          db,
+          schema,
+          table,
+          segment([
+            ['s1', 'p1', await note(new Uint8Array(32).fill(0x99)), null],
+            ['s2', 'p1', 'not an envelope', null],
+          ]),
+          options,
+          { keyProvider: goodProvider },
+        ),
+      ).rejects.toThrow('GCM authentication failed');
+      expect(tableRows(db, 'secrets')).toHaveLength(0);
+      await applyRowsSegment(
+        db,
+        schema,
+        table,
+        segment(
+          await Promise.all(
+            ['s1', 's2', 's3'].map(async (id) => [
+              id,
+              'p1',
+              await note(KEY),
+              null,
+            ]),
+          ),
+        ),
+        options,
+        { keyProvider: goodProvider },
+      );
+      expect(
+        db
+          .query('SELECT id, note FROM secrets ORDER BY id')
+          .map((row) => [row.id, row.note]),
+      ).toEqual([
+        ['s1', 'n'],
+        ['s2', 'n'],
+        ['s3', 'n'],
+      ]);
     } finally {
       db.close();
     }

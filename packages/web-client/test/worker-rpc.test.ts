@@ -1911,3 +1911,76 @@ test('limits.blobCacheMaxBytes caps the worker core blob cache (§5.9.7 B1)', as
     await blobServer.stop(true);
   }
 });
+
+test('activating an empty replica in the worker sends no request (§8.4)', async () => {
+  const before = http.syncAuthorizations.length;
+  const { handle, events } = await makeHandle({
+    clientId: 'rpc-empty-activation',
+    securityPreflight: true,
+    autoSync: true,
+    realtimePolicy: 'off',
+  });
+  await handle.beginSecurityPreflight();
+  await handle.activateSecurity();
+  // A host drive serializes behind every drive the activation queued.
+  await handle.syncUntilIdle({ skipEmpty: true });
+  expect(http.syncAuthorizations.length).toBe(before);
+  expect(events.synced).toHaveLength(1);
+  expect(events.synced[0]?.summary).toMatchObject({ pushed: 0 });
+});
+
+test('a host drive through the worker handle holds its idle-confirming round for coalesceMs', async () => {
+  // An earlier test of this file narrows actor-1; this one restores it.
+  const allowed = server.allowed['actor-1'];
+  server.allowed['actor-1'] = { project_id: ['p-host'] };
+  try {
+    const { handle: writer } = await makeHandle({
+      clientId: 'rpc-coalesce-host-writer',
+      autoSync: false,
+    });
+    await writer.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('h1', 'p-host') },
+    ]);
+    await writer.syncUntilIdle();
+    const worker = new Worker(
+      new URL('./heartbeat-worker.ts', import.meta.url).href,
+    );
+    const timers: number[] = [];
+    let notify: () => void = () => {};
+    worker.addEventListener('message', (event) => {
+      const message = event.data as { readonly t?: string; delayMs?: number };
+      if (message.t === 'timer') timers.push(message.delayMs ?? -1);
+      notify();
+    });
+    const observe = (next: () => void) => {
+      notify = next;
+      return () => {
+        notify = () => {};
+      };
+    };
+    const { handle } = await makeHandle({
+      clientId: 'rpc-coalesce-host',
+      worker: () => worker,
+      autoSync: false,
+      realtimePolicy: 'off',
+      coalesceMs: 25,
+    });
+    await handle.subscribe({ project_id: 'p-host' });
+    const before = http.syncAuthorizations.length;
+    let settled = false;
+    // The realtime supervisor's catch-up drive names only skipEmpty.
+    const drive = handle.syncUntilIdle({ skipEmpty: true }).finally(() => {
+      settled = true;
+    });
+    await waitFor(() => timers.includes(25), observe, 'the held round');
+    // The registration round, then the bootstrap round that lands h1.
+    expect(http.syncAuthorizations.length).toBe(before + 2);
+    expect(settled).toBe(false);
+    worker.postMessage({ t: 'fire-timer' });
+    expect(await drive).toMatchObject({ segmentRowsApplied: 1 });
+    expect(http.syncAuthorizations.length).toBe(before + 3);
+  } finally {
+    if (allowed === undefined) delete server.allowed['actor-1'];
+    else server.allowed['actor-1'] = allowed;
+  }
+});

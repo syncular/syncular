@@ -1095,7 +1095,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return this.command('sync', {});
   }
 
-  /** The Rust core has no §8.4 empty-replica gate: `skipEmpty` is not sent. */
+  /** The Rust core has no §8.4 host policy: `skipEmpty` and `coalesceMs` are not sent. */
   async syncUntilIdle(
     options?: number | SyncIdleOptions,
     timeoutMs?: number,

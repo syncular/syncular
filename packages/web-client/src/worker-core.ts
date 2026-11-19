@@ -274,7 +274,7 @@ export function startSyncWorkerCore(
       // let every wake-up that arrives while this round waits behind the
       // running one queue its own full drive (§8.4 coalescing).
       autoSyncScheduled = false;
-      return running.syncUntilIdle({ skipEmpty: true });
+      return running.syncUntilIdle({ skipEmpty: true, coalesceMs });
     })
       .then((summary) => {
         retryDelayMs = 250;
@@ -600,7 +600,17 @@ export function startSyncWorkerCore(
     },
     syncUntilIdle: (options) => {
       const running = requireClient();
-      return drive(() => running.syncUntilIdle(options));
+      // §8.4: a host drive through this handle (the realtime supervisor's)
+      // takes the handle's coalesceMs unless it names its own.
+      return drive(() =>
+        running.syncUntilIdle(
+          typeof options === 'object' &&
+            options.skipEmpty === true &&
+            options.coalesceMs === undefined
+            ? { ...options, coalesceMs }
+            : options,
+        ),
+      );
     },
     proveCurrentBase: (outcome, options) => {
       const running = requireClient();

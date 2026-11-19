@@ -79,7 +79,10 @@ bun run --cwd bench bench:apply-rows -- --rows 10000 --runs 3 [--skip-browser]
 ```
 
 Each case runs on a fresh replica, without and with ten retained failed rows
-whose intents collide on the unique index. The lane prints one JSON object
+whose intents collide on the unique index. The `client` cases bootstrap the same
+number of rows through a real `SyncClient` from ten rows-segment references:
+a 12-column table with two indexes, a 41-column table with four, and a
+34-column table with 17 encrypted columns, sealed (no key) and decrypted. The lane prints one JSON object
 with rows per second per run and has no timing assertions. The results are in
 [the benchmarks page](../apps/docs/src/content/benchmarks.md#rows-segments-over-retained-failures).
 

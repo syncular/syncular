@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { build as viteBuild } from 'vite';
 
 // Minified browser graphs with SQLite external. On Bun 1.4.4 the client
-// measures 170685 bytes and the worker 191401 bytes. The ceilings are the
+// measures 170909 bytes and the worker 191800 bytes. The ceilings are the
 // values at the start of the core review program, raised by 2 KB and 3 KB for
 // §5.11 sealed apply and by 1 KB each for §7.4.3 kept tables; a change that
 // grows a lane removes code to stay under them. Independently assert that ordinary imports

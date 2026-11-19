@@ -100,7 +100,11 @@ export function installSyncScheduler(
     running = true;
     backgroundReady = false;
     void client
-      .syncUntilIdle({ maxRounds: options.maxRounds, skipEmpty: true })
+      .syncUntilIdle({
+        maxRounds: options.maxRounds,
+        skipEmpty: true,
+        coalesceMs,
+      })
       .then((result) => {
         retryDelayMs = 250;
         if (

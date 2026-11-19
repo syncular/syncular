@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import {
   type DeclaredType,
   DecryptError,
@@ -147,5 +147,26 @@ describe('§5.11 encrypt/decrypt', () => {
       message: 'no key for the envelope keyId',
       details: { keyId: 'k1' },
     });
+  });
+});
+
+describe('§5.11 key import', () => {
+  test('one WebCrypto import per key array, again after an in-place rewrite', async () => {
+    const key = new Uint8Array(32).fill(3);
+    const keys = (id: string) => (id === 'k1' ? key : undefined);
+    const env = await encryptValue('string', 'secret', 'k1', key, fixedNonce);
+    const imports = spyOn(crypto.subtle, 'importKey');
+    try {
+      for (let i = 0; i < 3; i++)
+        expect(await decryptValue('string', env, keys)).toBe('secret');
+      expect(imports).toHaveBeenCalledTimes(0);
+      key.fill(4);
+      await expect(decryptValue('string', env, keys)).rejects.toMatchObject({
+        code: 'client.decrypt_failed',
+      });
+      expect(imports).toHaveBeenCalledTimes(1);
+    } finally {
+      imports.mockRestore();
+    }
   });
 });

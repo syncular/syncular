@@ -7724,7 +7724,19 @@ pinned, never interpreted.
   still runs the round that sends the empty list. Both hosts also accept
   `coalesceMs` (default 0): a drive queued by an intent starts that many
   milliseconds later instead of in the next microtask, and every intent in
-  between joins it. Background deadlines are unaffected.
+  between joins it. Background deadlines are unaffected. The same value holds
+  a round inside such a drive: `syncUntilIdle({ coalesceMs })` starts the
+  round that follows a round which applied rows, commits or resets, and left
+  no unit bootstrapping, no deferred commit and sync-needed clear, that many
+  milliseconds later. That round only confirms idle, so claims and writes made
+  in reaction to the applied data ride in it. A round that continues a
+  bootstrap, or that a claim arriving during the previous round made owed,
+  starts at once. The scheduler and the worker's `autoSync` loop pass their
+  `coalesceMs`; the worker also gives it to a `skipEmpty` drive requested
+  through the handle without one, which is how the realtime supervisor drives
+  its catch-up. `activateSecurity` queues a drive only when the replica holds
+  an outbox commit, a retained row awaiting its server version, a pending
+  eviction or an active unit.
 - **The TypeScript realtime supervisor** (`installRealtimeSupervisor`, used
   by the browser, Tauri and React Native hosts) owns one attempt at a time.
   An attempt connects, then runs `syncUntilIdle`; only a socket still open

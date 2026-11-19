@@ -186,6 +186,14 @@ many milliseconds, so the claims an app makes in one burst, such as the
 starts the drive in the next microtask. A negative or non-finite value fails
 `createSyncClientHandle` with `sync.invalid_request`.
 
+The same hold applies inside a drive. After a round that applied rows, the
+drive's next round only confirms idle; with `coalesceMs` it starts that many
+milliseconds later, so the units an app claims in reaction to those rows ride
+in it. This covers the `autoSync` loop and every `handle.syncUntilIdle({
+skipEmpty: true })` drive, which is how the realtime supervisor drives its
+catch-up. `activateSecurity()` on a replica without units, outbox commits,
+retained rows or pending evictions queues no drive at all.
+
 The worker loop and the supervisor skip drives on an empty replica. With no
 unit, no outbox commit and no unit list left to clear on the server, the
 supervisor's catch-up round before `connected` and every automatic drive end

@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright';
 import { BunClientDatabase } from '../../packages/web-client/src/bun-database';
-import { runApplyRows, type ApplyRowsResult } from './apply-rows-fixture';
+import { runApplyRows, runClientApply } from './apply-rows-fixture';
 
 const { values } = parseArgs({
   options: {
@@ -33,15 +33,50 @@ const report: Record<string, unknown> = {
   rows,
 };
 
-const bun: Record<string, ApplyRowsResult[]> = { plain: [], retained: [] };
-for (const retained of [false, true])
+// The `client` cases run a real SyncClient over ten rows-segment references;
+// `sealed34` and `decrypted34` carry 17 encrypted columns, without and with
+// the key.
+const cases = {
+  plain: { retained: false },
+  retained: { retained: true },
+  client12: {
+    client: { columns: 12, indexes: 2, segments: 10, encrypted: 0, key: false },
+  },
+  client41: {
+    client: { columns: 41, indexes: 4, segments: 10, encrypted: 0, key: false },
+  },
+  sealed34: {
+    client: {
+      columns: 34,
+      indexes: 1,
+      segments: 10,
+      encrypted: 17,
+      key: false,
+    },
+  },
+  decrypted34: {
+    client: { columns: 34, indexes: 1, segments: 10, encrypted: 17, key: true },
+  },
+};
+const bun: Record<string, unknown[]> = {};
+for (const [name, input] of Object.entries(cases))
   for (let run = 0; run < runs; run++) {
     const database = new BunClientDatabase(
-      join(directory, `replica-${retained}-${run}.db`),
+      join(directory, `replica-${name}-${run}.db`),
     );
     try {
-      bun[retained ? 'retained' : 'plain']!.push(
-        await runApplyRows(database, rows, retained),
+      (bun[name] ??= []).push(
+        'client' in input
+          ? await runClientApply(
+              database,
+              input.client.columns,
+              input.client.indexes,
+              rows,
+              input.client.segments,
+              input.client.encrypted,
+              input.client.key,
+            )
+          : await runApplyRows(database, rows, input.retained),
       );
     } finally {
       database.close();
@@ -94,10 +129,10 @@ if (!values['skip-browser']) {
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(`http://127.0.0.1:${server.port}/`);
-    const browser: Record<string, unknown[]> = { plain: [], retained: [] };
-    for (const retained of [false, true])
+    const browser: Record<string, unknown[]> = {};
+    for (const [name, input] of Object.entries(cases))
       for (let run = 0; run < runs; run++)
-        browser[retained ? 'retained' : 'plain']!.push(
+        (browser[name] ??= []).push(
           await page.evaluate(
             (input) =>
               new Promise((resolve, reject) => {
@@ -110,7 +145,7 @@ if (!values['skip-browser']) {
                 worker.onerror = (event) => reject(new Error(event.message));
                 worker.postMessage(input);
               }),
-            { name: `apply-rows-${retained}-${run}`, rows, retained },
+            { ...input, name: `apply-rows-${name}-${run}`, rows },
           ),
         );
     report.browserOpfs = browser;

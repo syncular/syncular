@@ -405,6 +405,13 @@ export interface SyncIdleOptions {
    * shipped host loops pass it; the native bridge ignores it.
    */
   readonly skipEmpty?: boolean;
+  /**
+   * §8.4 host policy: after a round that applied data and left nothing
+   * pending, the round that confirms idle starts this many milliseconds
+   * later, so claims and writes made in reaction to that data ride in it.
+   * Default 0. The native bridge ignores it.
+   */
+  readonly coalesceMs?: number;
 }
 
 export type CurrentBaseProof =
@@ -4956,17 +4963,26 @@ export class SyncClient {
     )
       throw invalidRequest('timeoutMs must be a positive number or Infinity');
     const skipEmpty = typeof options === 'object' && options.skipEmpty === true;
-    const key = `${maxRounds ?? 'default'}:${timeoutMs}:${skipEmpty}`;
+    const coalesceMs = (typeof options === 'object' && options.coalesceMs) || 0;
+    // NaN and Infinity fail too.
+    if (!(coalesceMs >= 0 && coalesceMs < Number.POSITIVE_INFINITY))
+      throw invalidRequest('coalesceMs must be a non-negative finite number');
+    const key = `${maxRounds ?? 'default'}:${timeoutMs}:${skipEmpty}:${coalesceMs}`;
     const pending = this.#syncIdlePending.get(key);
     if (pending !== undefined) return pending;
     const previous = this.#syncIdleTail;
     let drive: Promise<SyncIdleResult>;
     if (previous === undefined) {
-      drive = this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty);
+      drive = this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty, coalesceMs);
     } else {
       drive = previous.then(() => {
         this.#syncIdlePending.delete(key);
-        return this.#syncIdleRounds(maxRounds, timeoutMs, skipEmpty);
+        return this.#syncIdleRounds(
+          maxRounds,
+          timeoutMs,
+          skipEmpty,
+          coalesceMs,
+        );
       });
       this.#syncIdlePending.set(key, drive);
     }
@@ -4986,6 +5002,7 @@ export class SyncClient {
     maxRounds: number | undefined,
     timeoutMs: number,
     skipEmpty: boolean,
+    coalesceMs: number,
   ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
@@ -5117,6 +5134,18 @@ export class SyncClient {
           continue;
         return result(false);
       }
+      // §8.4: the next round only confirms idle; claims and writes made in
+      // reaction to the data this round applied join it.
+      if (
+        coalesceMs > 0 &&
+        round + 1 < budget &&
+        last.bootstrapping.length === 0 &&
+        !aggregate.deferredCommits &&
+        !this.#needsPull
+      )
+        await new Promise<void>((resolve) => {
+          this.#schedule(resolve, coalesceMs);
+        });
     }
     return result(true);
   }

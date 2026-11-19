@@ -770,19 +770,25 @@ export async function applyRowsSegment(
     // §5.11: decrypt this block's rows before opening the sync transaction
     // (WebCrypto is async; the SQLite transaction is not). Decrypt failure
     // aborts before any write in this block.
-    const rows: {
+    // The rows decrypt concurrently; the first failing row in block order
+    // decides the error.
+    let rows: readonly {
       values: readonly RowValue[];
       serverVersion: number;
       sealed?: SealedRow | undefined;
-    }[] = [];
-    for (const row of block) {
-      if (table.hasEncryptedColumns) {
-        const { decryptOrSealRowValues } = await import('./encryption');
-        rows.push({
+    }[] = block;
+    if (table.hasEncryptedColumns) {
+      const { decryptOrSealRowValues } = await import('./encryption');
+      const settled = await Promise.allSettled(
+        block.map(async (row) => ({
           ...(await decryptOrSealRowValues(encryption, table, row.values)),
           serverVersion: row.serverVersion,
-        });
-      } else rows.push(row);
+        })),
+      );
+      rows = settled.map((result) => {
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      });
     }
     if (options.isCurrent?.() === false) break;
     const clearThisBlock = first && options.clearFirst;

@@ -294,14 +294,33 @@ function toBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-async function importAesKey(key: Uint8Array): Promise<CryptoKey> {
+/**
+ * One imported key per key array: an apply decrypts every encrypted value of a
+ * segment, and a WebCrypto import per value costs as much as the decrypt. The
+ * kept copy detects a caller that rewrites the array in place.
+ */
+const importedKeys = new WeakMap<
+  Uint8Array,
+  readonly [Uint8Array<ArrayBuffer>, Promise<CryptoKey>]
+>();
+
+function importAesKey(key: Uint8Array): Promise<CryptoKey> {
   if (key.length !== KEY_LENGTH) {
     throw new Error(`AES-256-GCM key must be ${KEY_LENGTH} bytes`);
   }
-  return crypto.subtle.importKey('raw', toBuffer(key), 'AES-GCM', false, [
-    'encrypt',
-    'decrypt',
-  ]);
+  let cached = importedKeys.get(key);
+  if (!cached?.[0].every((byte, i) => byte === key[i])) {
+    const copy = key.slice();
+    cached = [
+      copy,
+      crypto.subtle.importKey('raw', copy, 'AES-GCM', false, [
+        'encrypt',
+        'decrypt',
+      ]),
+    ];
+    importedKeys.set(key, cached);
+  }
+  return cached[1];
 }
 
 /**

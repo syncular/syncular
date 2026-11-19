@@ -17,6 +17,32 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'Claims made in reaction to a round ride its confirming round',
+    body: "A drive to idle sends one more round after a round that applied rows, to confirm idle, and it went out at once, so the units an app claims in reaction to those rows waited for the drive after it. With `coalesceMs` that confirming round now starts `coalesceMs` later and carries the claims made in between. `installSyncScheduler` and the worker `autoSync` loop pass their `coalesceMs`, the worker applies the handle's value to the realtime supervisor's catch-up drive, and `syncUntilIdle({ coalesceMs })` sets it on an app drive. Rounds that continue a bootstrap start at once.",
+    links: [
+      {
+        href: '/platform-web-realtime/#realtime-policy',
+        label: 'Realtime policy',
+      },
+      {
+        href: '/guide-server-clients/#set-up-a-local-replica',
+        label: 'Set up a local replica',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
+    title: 'Encrypted rows segments decrypt up to 2.8 times faster',
+    body: "Applying a rows segment imported the key into WebCrypto again for every encrypted value and decrypted the rows of a block one after another. The client now imports a key once per key array and decrypts a block's rows concurrently. A 10,000-row bootstrap of a 34-column table with 17 encrypted columns applies at 9,600 rows per second in the OPFS worker (0.90.0: 7,300) and 15,500 on Bun (5,600). Tables without encrypted columns apply as before: 39,000 to 42,000 rows per second for 12 columns and two indexes in the OPFS worker.",
+    links: [
+      {
+        href: '/benchmarks/#rows-segments-through-the-client',
+        label: 'Rows segments through the client',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A live page loads only the changes it delivers',
     body: "The live-section read loaded every candidate commit the 16 MiB byte budget admitted, delivered 1,000 changes and dropped the rest, so the next round read them again; a client 290 commits behind read 420,807 change rows to receive about 18,000. The candidate read now counts each candidate's changes per unit key, and the change read loads candidates only until those counts reach the rest of `limitCommits`. On SQLite, catching up 290 commits of 62 changes reads 17,980 change rows instead of 162,378, in the same 18 rounds with the same commits delivered.",
     links: [

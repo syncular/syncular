@@ -357,6 +357,32 @@ retained intent's unique conflicts, so the cost grew with rows times retained
 intents. Reproduce with `bun run --cwd bench bench:apply-rows`. The clock
 covers `applyRowsSegment` only: no download, decode or overlay replay.
 
+### Rows segments through the client
+
+The client cases run a real `SyncClient` on a fresh replica with no retained
+rows: one response with ten rows-segment references of 1,000 rows each,
+downloaded from memory, so the clock covers the content-address check, decode,
+apply, overlay replay and unit bookkeeping. The 34-column cases carry 17
+columns encrypted under one key (§5.11); without the key every row lands
+sealed. Same machine and runs as above, rows per second:
+
+| Replica | Table | 0.90.0 | Now |
+|---|---|---:|---:|
+| OPFS worker | 12 columns, 2 indexes | 36,684 to 40,128 | 39,479 to 41,771 |
+| OPFS worker | 41 columns, 4 indexes | 21,363 to 22,026 | 21,758 to 22,346 |
+| OPFS worker | 34 columns, 17 encrypted, sealed | 15,768 to 16,383 | 16,556 to 16,981 |
+| OPFS worker | 34 columns, 17 encrypted, decrypted | 7,325 to 7,374 | 9,609 to 9,652 |
+| Bun file | 12 columns, 2 indexes | 181,031 to 207,563 | 179,875 to 198,675 |
+| Bun file | 41 columns, 4 indexes | 91,498 to 95,765 | 89,675 to 95,659 |
+| Bun file | 34 columns, 17 encrypted, sealed | 19,927 to 27,314 | 26,569 to 28,155 |
+| Bun file | 34 columns, 17 encrypted, decrypted | 5,597 to 5,675 | 15,467 to 15,969 |
+
+In 0.90.0 every encrypted value imported its key into WebCrypto again, and the
+rows of a block decrypted one after another. The client now imports a key once
+per key array and decrypts the rows of a block concurrently; the first failing
+row in block order still decides the error. A decrypted row costs one
+WebCrypto call per non-null encrypted value, which bounds the decrypted case.
+
 ## Table-scoped overlay reconciliation
 
 The debug-build probe measures one task's base write, acknowledgement, and

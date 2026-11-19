@@ -107,7 +107,9 @@ test('coalesceMs holds a queued drive on one deadline that later intents share',
   expect(client.runs).toBe(0);
   timers[0]!.callback();
   await flushPromises();
-  expect(client.options).toEqual([{ maxRounds: 3, skipEmpty: true }]);
+  expect(client.options).toEqual([
+    { maxRounds: 3, skipEmpty: true, coalesceMs: 25 },
+  ]);
 
   scheduler.stop();
 });
@@ -393,6 +395,80 @@ test('a skipEmpty drive on an empty replica sends nothing until it has a unit or
   } finally {
     await client.close();
     db.close();
+    server.storage.db.close();
+  }
+});
+
+test('with coalesceMs the round confirming idle waits and carries a claim made in reaction to the data', async () => {
+  const server = makeServer();
+  const writer = await makeClient(server, { clientId: 'coalesce-writer' });
+  writer.client.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+  ]);
+  await writer.client.sync();
+  const timers: Array<{ callback: () => void; dueMs: number }> = [];
+  let nowMs = 0;
+  let scheduled = () => {};
+  const schedule = (callback: () => void, delayMs: number) => {
+    const timer = { callback, dueMs: nowMs + delayMs };
+    timers.push(timer);
+    scheduled();
+    return () => {
+      timers.splice(timers.indexOf(timer) >>> 0, 1);
+    };
+  };
+  const advance = (ms: number): void => {
+    nowMs += ms;
+    for (const timer of timers.splice(0))
+      if (timer.dueMs <= nowMs) timer.callback();
+      else timers.push(timer);
+  };
+  const { client, db, requests } = await makeClient(server, {
+    clientId: 'coalesce-reader',
+    schedule,
+  });
+  const scheduler = installSyncScheduler(client, {
+    coalesceMs: 25,
+    now: () => nowMs,
+    schedule,
+  });
+  const unitFrames = () =>
+    requests.map(
+      (request) =>
+        decodeMessage(request).frames.filter((frame) => frame.type === 'UNIT')
+          .length,
+    );
+  try {
+    const base = { variable: 'project_id' };
+    await client.setWindow(base, ['p1']);
+    advance(25);
+    // The first round lands t1; the drive then holds its next round.
+    await waitFor(
+      () =>
+        tableRows(db, 'tasks').length === 1 &&
+        timers.some((timer) => timer.dueMs === nowMs + 25),
+      (notify) => {
+        scheduled = notify;
+        return client.onChange(notify);
+      },
+      'the held confirming round',
+    );
+    expect(unitFrames()).toEqual([1]);
+    await client.setWindow(base, ['p1', 'p2']);
+    advance(25);
+    await waitFor(
+      () => client.windowState(base).pending.length === 0,
+      (notify) => client.onChange(notify),
+      'the claim rides the confirming round',
+    );
+    // The second and last request registers the list with both units.
+    expect(unitFrames()).toEqual([1, 2]);
+  } finally {
+    scheduler.stop();
+    await client.close();
+    await writer.client.close();
+    db.close();
+    writer.db.close();
     server.storage.db.close();
   }
 });
