@@ -94,7 +94,12 @@ describe('query plan findings', () => {
       sql: 'SELECT t.id FROM todos t JOIN tags g ON g.label = t.title',
       table: 'tags',
       columns: ['label'],
-      plan: ['SCAN t', 'SEARCH g USING AUTOMATIC COVERING INDEX (label=?)'],
+      // The SQLite in CI's latest Bun adds a `BLOOM FILTER ON g (label=?)`
+      // step to this plan; the finding rests on the automatic index line.
+      plan: expect.arrayContaining([
+        'SCAN t',
+        'SEARCH g USING AUTOMATIC COVERING INDEX (label=?)',
+      ]),
     });
   });
 
