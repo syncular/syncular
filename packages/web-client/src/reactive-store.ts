@@ -326,6 +326,8 @@ interface CachedObservation {
   reclaim?(): void;
   /** A leader serves this tab again (it leads or follows a bound leader). */
   reread(): void;
+  /** The running sync attempt stopped importing (SPEC §7.8). */
+  imported?(): void;
   reset(): void;
   dispose(): void;
 }
@@ -372,6 +374,9 @@ class ObservationCache {
   }
   reread(): void {
     for (const entry of this.#active) entry.reread();
+  }
+  imported(): void {
+    for (const entry of this.#active) entry.imported?.();
   }
   clear(): void {
     for (const entry of this.#entries.values()) entry.dispose();
@@ -438,6 +443,14 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   #running = false;
   #requested = false;
   #desiredRevision = 0n;
+  /** SPEC §7.8: the newest matching revision an incomplete answer may not lag. */
+  #currentRevision = 0n;
+  #complete = false;
+  /** Incomplete units of the last answer no window change has named since. */
+  #waiting = new Set<string>();
+  /** Units window changes named since the running read started. */
+  #named = new Set<string>();
+  #deferred = false;
   #claimError: Error | undefined;
   #claimPending = false;
   #claimGated = false;
@@ -553,6 +566,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#running = false;
     this.#requested = false;
     this.#desiredRevision = 0n;
+    this.#currentRevision = 0n;
+    this.#complete = false;
+    this.#waiting = new Set();
+    this.#named = new Set();
+    this.#deferred = false;
     this.#claimError = undefined;
     this.#claimPending = false;
     this.#claimGated = false;
@@ -586,11 +604,32 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     else this.#requestRead();
   }
 
+  imported(): void {
+    if (!this.#deferred) return;
+    this.#deferred = false;
+    this.#requestRead();
+  }
+
   onChange(batch: ClientChangeBatch): void {
     if (!batchMatches(batch, this.spec)) return;
     if (batch.revision > this.#desiredRevision) {
       this.#desiredRevision = batch.revision;
     }
+    // SPEC §7.8: while an attempt imports, an incomplete answer waits for
+    // the import unless the batch carries status (a local write) or names
+    // the last of its incomplete units.
+    for (const change of batch.windows)
+      for (const unit of change.units) {
+        this.#waiting.delete(`${change.baseKey}\0${unit}`);
+        this.#named.add(`${change.baseKey}\0${unit}`);
+      }
+    const lag =
+      this.store.importing &&
+      !this.#complete &&
+      batch.status === undefined &&
+      (batch.windows.length === 0 || this.#waiting.size > 0);
+    if (!lag && batch.revision > this.#currentRevision)
+      this.#currentRevision = batch.revision;
     if (this.#listeners.size === 0) return;
     // A committed row change of a dependency claims again; a window-only
     // batch, which a failed window edit can itself produce, does not.
@@ -600,6 +639,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       ),
     );
     if (rowChange && this.#claimError !== undefined) this.reclaim();
+    else if (lag) this.#deferred ||= !this.#running;
     // A running read reads again only when its snapshot predates the batch.
     else if (!this.#running) this.#requestRead();
   }
@@ -748,6 +788,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     try {
       do {
         this.#requested = false;
+        this.#deferred = false;
+        this.#named.clear();
         asked = this.#desiredRevision;
         if (localReadsBlocked(this.store.availabilitySnapshot())) break;
 
@@ -786,9 +828,22 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           break;
         }
         if (snapshot.revision < this.#desiredRevision) {
-          this.#requested = true;
-          continue;
+          if (
+            snapshot.coverage.complete ||
+            snapshot.revision < this.#currentRevision ||
+            !this.store.importing
+          ) {
+            this.#requested = true;
+            continue;
+          }
+          this.#deferred = true;
         }
+        this.#complete = snapshot.coverage.complete;
+        this.#waiting = new Set(
+          [...snapshot.coverage.pending, ...snapshot.coverage.missing]
+            .map((ref) => `${ref.baseKey}\0${ref.unit}`)
+            .filter((key) => !this.#named.has(key)),
+        );
         if (
           !snapshot.coverage.complete &&
           claimWasPending &&
@@ -1029,7 +1084,13 @@ export class ReactiveClientStore {
   readonly outcomes: ExternalStoreEntry<OutcomeStoreSnapshot>;
   /** The latest sync attempt's failure until the next attempt starts. */
   readonly roundFailure: ExternalStoreEntry<SyncRoundFailedError | undefined>;
+  #importing = false;
   #offProgress: (() => void) | undefined;
+
+  /** SPEC §7.8: a running sync attempt downloads or imports a response. */
+  get importing(): boolean {
+    return this.#importing;
+  }
 
   constructor(readonly client: ReactiveQueryClient) {
     const status = new ValueEntry<StatusStoreSnapshot>(
@@ -1353,6 +1414,12 @@ export class ReactiveClientStore {
     >;
     let claimedAttempt: number | undefined;
     this.#offProgress = this.client.onProgress((progress) => {
+      const importing =
+        progress.state === 'running' && progress.phase !== 'request';
+      if (this.#importing !== importing) {
+        this.#importing = importing;
+        if (!importing) this.#queries.imported();
+      }
       // A new sync attempt is the client's retry schedule (§7.7): window
       // claims that failed are claimed again once per attempt.
       if (progress.state === 'running' && progress.attempt !== claimedAttempt) {
@@ -1412,6 +1479,7 @@ export class ReactiveClientStore {
     this.#offLeadership = undefined;
     this.#offProgress?.();
     this.#offProgress = undefined;
+    this.#importing = false;
     (this.roundFailure as ValueEntry<SyncRoundFailedError | undefined>).set(
       undefined,
     );

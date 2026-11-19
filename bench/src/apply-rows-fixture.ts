@@ -21,6 +21,7 @@ import {
 import { computeBlobId } from '../../packages/web-client/src/blob';
 import { SyncClient } from '../../packages/web-client/src/client';
 import { applyRowsSegment } from '../../packages/web-client/src/apply';
+import { ReactiveClientStore } from '../../packages/web-client/src/reactive-store';
 import type { ClientDatabase } from '../../packages/web-client/src/database';
 import {
   type ClientSchema,
@@ -372,12 +373,15 @@ export interface PlanResult {
   setWindowTransactions: number;
   syncMs: number;
   rowsPerSecond: number;
-  /** Outermost transactions (BEGIN/COMMIT pairs) during `sync()`. */
+  /** Outermost transactions (BEGIN/COMMIT pairs) during `sync()`, live-query reads included. */
   transactions: number;
   /** `client.onChange` batches during `sync()`. */
   changeBatches: number;
   /** Browser lane only: FileSystemSyncAccessHandle calls during `sync()`. */
   sah?: SahStats;
+  /** With live queries: their reads during `sync()`, and their phases. */
+  liveReads?: number;
+  livePhases?: string[];
 }
 
 export type SahStats = Record<
@@ -412,6 +416,7 @@ function countTransactions(database: ClientDatabase): () => number {
 export async function runPlan(
   database: ClientDatabase,
   sah?: { reset(): void; read(): SahStats },
+  live = 0,
 ): Promise<PlanResult> {
   const tables = 16;
   const values = Array.from(
@@ -568,6 +573,41 @@ export async function runPlan(
     const off = client.onChange(() => {
       changeBatches++;
     });
+    // `live` reactive queries over every plan unit, each a UNION of the
+    // sixteen tables, observe the round the way an app's plan view does.
+    let liveReads = 0;
+    const read = client.querySnapshot.bind(client);
+    client.querySnapshot = ((spec) => {
+      liveReads++;
+      return read(spec);
+    }) as typeof client.querySnapshot;
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const entries = Array.from({ length: live }, (_, q) =>
+      store.query({
+        id: `plan:${q}`,
+        sql: Array.from(
+          { length: tables },
+          (_, t) =>
+            `SELECT id, name, rank FROM t${String(t).padStart(2, '0')} WHERE rank >= ${q}`,
+        ).join(' UNION ALL '),
+        dependencies: Array.from({ length: tables }, (_, t) => ({
+          table: `t${String(t).padStart(2, '0')}`,
+        })),
+        coverage: [{ base: { variable: 'plan_id' }, units: values }],
+        claimCoverage: false,
+      }),
+    );
+    const livePhases = entries.map(() => '');
+    const offLive = entries.map((entry, q) =>
+      entry.subscribe(() => {
+        const { phase } = entry.getSnapshot();
+        if (!livePhases[q]!.endsWith(phase))
+          livePhases[q] += livePhases[q] === '' ? phase : `>${phase}`;
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    liveReads = 0;
     const beforeSync = transactions();
     sah?.reset();
     const started = performance.now();
@@ -575,6 +615,10 @@ export async function runPlan(
     const syncMs = performance.now() - started;
     const sahStats = sah?.read();
     off();
+    const readsDuringSync = liveReads;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const offEntry of offLive) offEntry();
+    store.dispose();
     let stored = 0;
     for (let t = 0; t < tables; t++)
       stored += Number(
@@ -595,6 +639,7 @@ export async function runPlan(
       transactions: transactions() - beforeSync,
       changeBatches,
       ...(sahStats === undefined ? {} : { sah: sahStats }),
+      ...(live === 0 ? {} : { liveReads: readsDuringSync, livePhases }),
     };
   } finally {
     await client.close();

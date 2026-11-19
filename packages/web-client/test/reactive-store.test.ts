@@ -907,6 +907,237 @@ describe('failed sync rounds', () => {
   });
 });
 
+describe('reads during an import (SPEC §7.8)', () => {
+  const KEY = 'project_id\0{}';
+  const pending = (...units: string[]) => ({
+    complete: false,
+    pending: units.map((unit) => ({ baseKey: KEY, unit })),
+    missing: [],
+  });
+  const rows = (revision: bigint) =>
+    batch(revision, {
+      tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+    });
+  const unitEnd = (revision: bigint, unit: string) =>
+    batch(revision, { windows: [{ baseKey: KEY, units: new Set([unit]) }] });
+
+  /** Answers every read with the latest committed revision. */
+  class ImportingClient extends FakeReactiveClient {
+    revision = 1n;
+    coverage: QuerySnapshot<object>['coverage'] = pending('p1');
+    gate: Promise<void> | undefined;
+    override emit(change: ClientChangeBatch): void {
+      this.revision = change.revision;
+      super.emit(change);
+    }
+    override querySnapshot<Result = Record<string, never>>(
+      spec: QueryReadSpec,
+    ): Promise<QuerySnapshot<Result>> {
+      this.reads.push(spec);
+      const snapshot = {
+        revision: this.revision,
+        rows: [{ id: 't1', title: `at ${this.revision}` }] as Result[],
+        coverage: this.coverage,
+      };
+      return (this.gate ?? Promise.resolve()).then(() => snapshot);
+    }
+    importing(): void {
+      this.progress.emit({
+        epoch: 'e1',
+        attempt: 1,
+        state: 'running',
+        phase: 'request',
+        bytesReceived: 0,
+        rowsProcessed: 0,
+      });
+      this.progress.update({ phase: 'import' });
+    }
+  }
+
+  function mount(client: ImportingClient, units = ['p1']) {
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units }] }),
+    );
+    const phases: string[] = [];
+    const off = entry.subscribe(() => phases.push(entry.getSnapshot().phase));
+    return { store, entry, phases, off };
+  }
+
+  test('an incomplete entry reads once over an import of 50 blocks, then on its unit end', async () => {
+    const client = new ImportingClient();
+    client.importing();
+    const { store, entry, phases, off } = mount(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    expect(entry.getSnapshot().phase).toBe('partial');
+
+    for (let revision = 2n; revision <= 51n; revision += 1n) {
+      client.emit(rows(revision));
+      await drainMicrotasks();
+    }
+    expect(client.reads).toHaveLength(before);
+    expect(entry.getSnapshot().revision).toBeLessThan(51n);
+
+    client.coverage = COMPLETE;
+    client.emit(unitEnd(52n, 'p1'));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      revision: 52n,
+    });
+    expect(phases).toEqual(['partial', 'ready']);
+
+    // A complete answer was not deferred: the end of the import reads nothing.
+    client.progress.update({ state: 'complete' });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    off();
+    store.dispose();
+  });
+
+  test('a deferred entry reads once when the attempt stops importing', async () => {
+    const client = new ImportingClient();
+    client.importing();
+    const { store, entry, off } = mount(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    for (let revision = 2n; revision <= 11n; revision += 1n)
+      client.emit(rows(revision));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before);
+
+    client.progress.update({ state: 'complete' });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'partial',
+      revision: 11n,
+      rows: [{ id: 't1', title: 'at 11' }],
+    });
+    off();
+    store.dispose();
+  });
+
+  test('a read that the import overtook publishes partial and reads after the import', async () => {
+    const client = new ImportingClient();
+    client.importing();
+    const gate = deferred<void>();
+    client.gate = gate.promise;
+    // A claim that settles during the read refreshes it (§7.8); hold it.
+    client.setWindowGate = new Promise(() => {});
+    const { store, entry, off } = mount(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    for (let revision = 2n; revision <= 6n; revision += 1n)
+      client.emit(rows(revision));
+    client.gate = undefined;
+    gate.resolve();
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'partial',
+      revision: 1n,
+    });
+
+    client.progress.update({ state: 'complete' });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().revision).toBe(6n);
+    off();
+    store.dispose();
+  });
+
+  test('an entry over two units reads when the last of them ends', async () => {
+    const client = new ImportingClient();
+    client.coverage = pending('p1', 'p2');
+    client.importing();
+    const { store, entry, off } = mount(client, ['p1', 'p2']);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    client.coverage = pending('p2');
+    client.emit(unitEnd(2n, 'p1'));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before);
+    client.coverage = COMPLETE;
+    client.emit(unitEnd(3n, 'p2'));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 3n });
+    off();
+    store.dispose();
+  });
+
+  test('a unit that ends while the read runs still ends the wait', async () => {
+    const client = new ImportingClient();
+    client.coverage = pending('p1', 'p2');
+    client.importing();
+    const { store, entry, off } = mount(client, ['p1', 'p2']);
+    await drainMicrotasks();
+    const gate = deferred<void>();
+    client.gate = gate.promise;
+    entry.refresh();
+    await drainMicrotasks();
+    const before = client.reads.length;
+    // p1 ends after the running read's snapshot, which still reports it.
+    client.emit(unitEnd(2n, 'p1'));
+    client.gate = undefined;
+    gate.resolve();
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before);
+    expect(entry.getSnapshot().revision).toBe(1n);
+    client.coverage = COMPLETE;
+    client.emit(unitEnd(3n, 'p2'));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().phase).toBe('ready');
+    off();
+    store.dispose();
+  });
+
+  test('a local write and refresh read at once during the import', async () => {
+    const client = new ImportingClient();
+    client.importing();
+    const { store, entry, off } = mount(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    client.emit({ ...rows(2n), status: STATUS });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().revision).toBe(2n);
+    entry.refresh();
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 2);
+    off();
+    store.dispose();
+  });
+
+  test('a complete entry over another table reads on each of its changes', async () => {
+    const client = new ImportingClient();
+    client.coverage = COMPLETE;
+    client.importing();
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({
+        id: 'queries:notes:hash',
+        dependencies: [{ table: 'notes' }],
+      }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    const before = client.reads.length;
+    for (let revision = 2n; revision <= 6n; revision += 1n) {
+      client.emit(batch(revision, { tables: [{ table: 'notes' }] }));
+      await drainMicrotasks();
+    }
+    expect(client.reads).toHaveLength(before + 5);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 6n });
+    off();
+    store.dispose();
+  });
+});
+
 describe('local snapshots during window registration', () => {
   for (const complete of [true, false]) {
     test(`cached rows are ${complete ? 'ready' : 'partial'} while registration waits`, async () => {

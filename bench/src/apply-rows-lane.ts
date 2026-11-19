@@ -7,7 +7,9 @@
  *
  * The `plan` case ignores `--rows`: a plan-shaped round of 87 unit sections
  * over 16 tables (2,799 rows) through a real `SyncClient`, reporting the
- * round's transactions, change batches and (browser) SAH calls.
+ * round's transactions, change batches and (browser) SAH calls. The
+ * `planLive` case runs the same round under four live reactive queries whose
+ * coverage is the importing units, and adds their reads during the round.
  *
  *   bun run --cwd bench bench:apply-rows [--rows 10000] [--runs 3] [--case plan]
  */
@@ -62,7 +64,8 @@ const allCases = {
   decrypted34: {
     client: { columns: 34, indexes: 1, segments: 10, encrypted: 17, key: true },
   },
-  plan: { plan: true },
+  plan: { plan: true, live: 0 },
+  planLive: { plan: true, live: 4 },
 };
 const cases = Object.fromEntries(
   Object.entries(allCases).filter(
@@ -80,7 +83,7 @@ for (const [name, input] of Object.entries(cases))
     try {
       (bun[name] ??= []).push(
         'plan' in input
-          ? await runPlan(database)
+          ? await runPlan(database, undefined, input.live)
           : 'client' in input
             ? await runClientApply(
                 database,

@@ -50,7 +50,7 @@ scope.onmessage = async (event: MessageEvent) => {
     const database = await openPersistentWasmDatabase(event.data.name);
     const input = event.data;
     const result = input.plan
-      ? await runPlan(database, sah)
+      ? await runPlan(database, sah, input.live)
       : input.client === undefined
         ? await runApplyRows(database, input.rows, input.retained)
         : await runClientApply(

@@ -6962,7 +6962,8 @@ window coverage, and `localRevision` from one SQLite read transaction. Coverage
 names each required window base/unit and classifies it complete, pending, or
 missing by the §4.8 registry and unit state. A client MUST NOT compose
 rows from one read with coverage or revision from another. A result at revision
-`r` cannot be published as current after a matching change at revision `> r`;
+`r` cannot be published as current after a matching change at revision `> r`,
+except an incomplete answer during an import (§7.8);
 promise completion order, IPC order, frame scheduling, and render timing never
 override revision order.
 
@@ -7454,6 +7455,46 @@ and SQLite images. Rows blocks commit in coalesced apply transactions of at
 most 1,024 rows (§1.4 rule 4) and image chunks in their own transactions; the
 TypeScript client yields to local reads after each such COMMIT and never holds a
 transaction across an await.
+
+A reactive observation whose latest successful read has incomplete coverage
+does not read again for each import transaction. While the latest sync
+attempt's progress (§7.7) is `running` in phase `download` or `import`, a
+matching change batch starts no read for such an observation when it carries no
+status snapshot and either names no window value or leaves a unit unnamed that
+the last read reported pending or missing. The observation reads again when
+window changes have named every such unit, when a matching batch carries a
+status snapshot (a local write carries one), when progress leaves those phases
+(phase `request`, state `complete` or `failed`), on `refresh`, and on the other
+triggers of this section and §7.5. A read that such deferred batches overtook
+publishes its incomplete answer at its own revision instead of reading again,
+and the observation reads once more when progress leaves the import. This is
+the only exception to the revision rule of §7.5: it never publishes a complete
+answer, nor an answer older than a matching batch the observation did not
+defer. An observation whose latest read had complete coverage reads on every
+matching batch. The client core still yields to every queued read after each
+import COMMIT. This is host-side reactive-store behavior with no Rust
+counterpart, because the Rust client holds the whole round on its serialized
+owner.
+
+DECISION (2026-11-19): an incomplete observation waits for the import that
+completes it. On 0.92.0 an observation with incomplete coverage read again
+after every import COMMIT. A web app's first load in an OPFS worker (56,020
+rows, 54 segments, a Vite dev build) sent 225 reads to the worker during one
+pull's import, one `UNION` read 56 times at about 98 ms each, while that
+import's own transactions took 331 ms before COMMIT and 18 ms in it. The next
+pull waits for the import, so the pull started 1.7 s after the one before and
+the app's plan appeared at 4.3 to 4.5 s. Letting an incomplete observation
+read at most every 300 ms cut those reads to 9, the gap to 0.2 s and the plan
+to 3.7 to 4.2 s; a timer-based limit also delays a read the import does not
+compete with, so the observation keys on progress and window changes instead.
+With this rule the same load showed the plan at 3.6 to 3.9 s in three runs
+(4.4 to 4.9 s on 0.92.0), and the largest import ran under 90 to 143 reads instead of 259 to
+283, most of them first answers of observations that mounted during it.
+`bench:apply-rows --case planLive` runs the 87-section plan round under four
+live `UNION` queries over all its units in Chromium on an Apple M5 Pro: the
+queries read 20 times during the round and the round took 153 to 188 ms on
+0.92.0; they now read 4 times and the round takes 115 to 131 ms, against 106 to
+122 ms without the queries.
 
 DECISION (2026-11-19): the TypeScript client coalesces rows blocks. A web app's
 plan round on 0.90.0 applied 2,800 rows in 87 sections of about 11-row blocks in

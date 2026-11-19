@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## Unreleased (draft)
+
+### An incomplete live query waits for the import that completes it
+
+A live query whose last answer has incomplete coverage no longer reads again
+after every import COMMIT (SYNCULAR-READ-STARVES-IMPORT-001). While a round
+downloads or imports, `ReactiveClientStore` reads such a query again when
+every unit its last answer reported pending or missing has finished or changed
+state, when a local write changes one of its tables, when the round's import
+ends, and on `refresh()`. A read the import overtook publishes its `partial`
+answer at its own revision, and the query reads once more when the import
+ends. A query whose last answer was complete reads after every change of its
+tables, as before. SSP2, the wire version and the multi-tab protocol are
+unchanged.
+
+On a production-size first load in an OPFS worker, 0.92.0 sent 225 reads to
+the worker during one pull's import, and the next pull started 1.7 s after
+the one before; with this change the same load shows the plan at 3.6 to 3.9 s
+instead of 4.4 to 4.9 s. In `bench:apply-rows --case planLive` (an 87-section round
+under four live `UNION` queries over its units) the queries read 4 times
+instead of 20 and the OPFS round takes 115 to 131 ms instead of 153 to 188 ms.
+
 ## 0.92.0 release notes
 
 0.92.0 changes the multi-tab protocol, cuts write transactions during

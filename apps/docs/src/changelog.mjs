@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'An incomplete live query waits for the import that completes it',
+    body: "A live query whose last answer has incomplete coverage no longer reads again after every import transaction. While a round imports, it reads again when its pending units finish, when a local write changes its tables, when the import ends, and on `refresh()`; it shows `partial` until then. A production-size first load in an OPFS worker sent 225 such reads to the worker during one pull's import, and the next pull started 1.7 s later. Queries whose last answer was complete read after every change, as before.",
+    links: [
+      {
+        href: '/concepts-bootstrap/#reading-during-import',
+        label: 'Reading during import',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A tab of a new build no longer follows a leader of an older one',
     body: "Syncular 0.59.0 to 0.91.0 all announced multi-tab protocol 3 although the API a follower forwards changed between them, so with an unchanged schema version a new tab was served by an older tab's core and showed that core's failed rounds. Tabs now announce protocol 4: the first tab of the new build makes an older leader step down and takes the lead. A test fingerprints the forwarded surface (`WorkerApi`, the worker init configuration, worker events, tab messages and every type they name) and fails until the protocol is bumped with it.",
     links: [

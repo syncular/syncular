@@ -412,6 +412,24 @@ batches of one coalesced transaction arrive after its commit, and a query whose
 read is running reads again only when its snapshot predates the newest batch.
 Reproduce with `bun run --cwd bench bench:apply-rows --case plan`.
 
+### A round under live queries with incomplete coverage
+
+The `planLive` case runs the `plan` round under four live queries of a
+`ReactiveClientStore` in the same worker. Each query is a `UNION ALL` over the
+16 tables whose coverage is all 87 importing units, so every answer before the
+last section end is incomplete. The store defers such a query's reads while the
+round imports and reads it again when the last of its units ends ([SPEC §7.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#78-responsive-local-reads));
+0.92.0 read it again after every import commit. Five runs on fresh replicas:
+
+| Replica | Measure | 0.92.0 | Now | No live queries |
+|---|---|---:|---:|---:|
+| OPFS worker | round | 153 to 188 ms | 115 to 131 ms | 106 to 122 ms |
+| OPFS worker | live-query reads in the round | 20 | 4 | 0 |
+| Bun file | round | 60 to 95 ms | 39 to 60 ms | 37 to 60 ms |
+| Bun file | live-query reads in the round | 20 | 4 | 0 |
+
+Reproduce with `bun run --cwd bench bench:apply-rows --case planLive`.
+
 ## Table-scoped overlay reconciliation
 
 The debug-build probe measures one task's base write, acknowledgement, and
