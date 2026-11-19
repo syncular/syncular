@@ -874,10 +874,12 @@ if (!available) {
         if (proof.proven)
           expect(proof.rows[0]?.serverRow?.title).toBe('winner');
         source.allowed['native-fresh'] = { list_id: [] };
-        expect(await client.proveCurrentBase(reopenedDelivery.outcome)).toEqual({
-          proven: false,
-          reason: 'revoked',
-        });
+        expect(await client.proveCurrentBase(reopenedDelivery.outcome)).toEqual(
+          {
+            proven: false,
+            reason: 'revoked',
+          },
+        );
         expect(await client.commitDelivery(id)).not.toHaveProperty(
           'outcome.retainedRows',
         );
