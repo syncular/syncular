@@ -1,5 +1,32 @@
 # Syncular release notes
 
+## 0.94.0 release notes
+
+0.94.0 stops complete live queries from re-reading after every rows block of
+a bootstrap import (SYNCULAR-READ-STARVES-IMPORT-001, part 2, which stays
+open). SSP2, the wire version and the multi-tab protocol are unchanged.
+
+### Live queries wait for the rows a bootstrap import writes
+
+While a round downloads or imports, `ReactiveClientStore` no longer reads a
+live query again after a change batch that carries no status snapshot, names
+no window value and applies no server COMMIT: the batches of bootstrap rows
+blocks and image chunks, whose rows belong to units still bootstrapping. A
+query whose last answer was complete reads again on a server COMMIT or a local
+write into its tables, when a unit of its coverage changes state, when the
+import ends, and on `refresh()`. A complete read that such batches overtook
+publishes its answer at its own revision and reads once more when the import
+ends. Queries with incomplete coverage keep the 0.93.0 rule.
+
+In `bench:apply-rows --case planComplete` (the 87-section round under four
+incomplete and four complete live queries) the queries read 8 times instead of
+24 and the OPFS round takes 119 to 124 ms instead of 133 to 136 ms. On Diego's
+first load, when the large bootstrap of other units lands in the second pull,
+the change leaves that import's reads at 146 (148 to 157 on 0.93.0) and the
+third pull 1.1 to 1.3 s after the second: 3 of 119 logged reads followed an
+import row write, and most of the rest were first answers of queries that
+mounted during the import and the refresh after their window claim settled.
+
 ## 0.93.0 release notes
 
 0.93.0 stops incomplete live queries from re-reading after every import commit

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'Live queries wait for the rows a bootstrap import writes',
+    body: 'While a round imports, a live query no longer reads again after each rows block or image chunk of a bootstrap, whose rows belong to units still bootstrapping. A query whose last answer was complete reads again on a server COMMIT or a local write into its tables, when a unit of its coverage changes state, when the import ends, and on `refresh()`. In a round of 87 bootstrapping units under four complete and four incomplete live queries, the queries read 8 times instead of 24 and the round in an OPFS worker took 119 to 124 ms instead of 133 to 136 ms.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#reading-during-import',
+        label: 'Reading during import',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'An incomplete live query waits for the import that completes it',
     body: "A live query whose last answer has incomplete coverage no longer reads again after every import transaction. While a round imports, it reads again when its pending units finish, when a local write changes its tables, when the import ends, and on `refresh()`; it shows `partial` until then. A production-size first load in an OPFS worker sent 225 such reads to the worker during one pull's import, and the next pull started 1.7 s later. Queries whose last answer was complete read after every change, as before.",
     links: [

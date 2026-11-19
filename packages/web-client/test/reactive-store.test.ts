@@ -1113,10 +1113,14 @@ describe('reads during an import (SPEC §7.8)', () => {
     store.dispose();
   });
 
-  test('a complete entry over another table reads on each of its changes', async () => {
-    const client = new ImportingClient();
-    client.coverage = COMPLETE;
-    client.importing();
+  const notes = (revision: bigint) =>
+    batch(revision, { tables: [{ table: 'notes' }] });
+  const commit = (revision: bigint) =>
+    batch(revision, {
+      tables: [{ table: 'notes' }],
+      appliedCommits: [{ table: 'notes', commitSeq: 9, source: 'delta' }],
+    });
+  function mountNotes(client: ImportingClient) {
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
       querySpec({
@@ -1125,14 +1129,116 @@ describe('reads during an import (SPEC §7.8)', () => {
       }),
     );
     const off = entry.subscribe(() => {});
+    return { store, entry, off };
+  }
+
+  test('a complete entry reads once after other units import 50 blocks into its table', async () => {
+    const client = new ImportingClient();
+    client.coverage = COMPLETE;
+    client.importing();
+    const { store, entry, off } = mountNotes(client);
     await drainMicrotasks();
     const before = client.reads.length;
-    for (let revision = 2n; revision <= 6n; revision += 1n) {
-      client.emit(batch(revision, { tables: [{ table: 'notes' }] }));
+    for (let revision = 2n; revision <= 51n; revision += 1n) {
+      client.emit(notes(revision));
       await drainMicrotasks();
     }
-    expect(client.reads).toHaveLength(before + 5);
-    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 6n });
+    expect(client.reads).toHaveLength(before);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 1n });
+
+    client.progress.update({ state: 'complete' });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().revision).toBe(51n);
+    off();
+    store.dispose();
+  });
+
+  test('a complete entry reads at once on a server COMMIT and a local write during the import', async () => {
+    const client = new ImportingClient();
+    client.coverage = COMPLETE;
+    client.importing();
+    const { store, entry, off } = mountNotes(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    client.emit(notes(2n));
+    client.emit(commit(3n));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().revision).toBe(3n);
+    client.emit(notes(4n));
+    client.emit({ ...notes(5n), status: STATUS });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 2);
+    expect(entry.getSnapshot().revision).toBe(5n);
+
+    // Nothing was deferred since the last read: the import end reads nothing.
+    client.progress.update({ state: 'complete' });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 2);
+    off();
+    store.dispose();
+  });
+
+  test('a complete read that import blocks overtook publishes and reads after the import', async () => {
+    const client = new ImportingClient();
+    client.coverage = COMPLETE;
+    client.importing();
+    const gate = deferred<void>();
+    client.gate = gate.promise;
+    const { store, entry, off } = mountNotes(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    for (let revision = 2n; revision <= 6n; revision += 1n)
+      client.emit(notes(revision));
+    client.gate = undefined;
+    gate.resolve();
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 1n });
+
+    client.progress.update({ state: 'complete' });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().revision).toBe(6n);
+    off();
+    store.dispose();
+  });
+
+  test('a complete entry reads at once when a unit of its coverage changes state', async () => {
+    const client = new ImportingClient();
+    client.coverage = COMPLETE;
+    client.importing();
+    const { store, entry, off } = mount(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    client.emit(rows(2n));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before);
+    client.emit(unitEnd(3n, 'p1'));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 3n });
+    off();
+    store.dispose();
+  });
+
+  test('a complete read that a server COMMIT overtook reads again at once', async () => {
+    const client = new ImportingClient();
+    client.coverage = COMPLETE;
+    client.importing();
+    const gate = deferred<void>();
+    client.gate = gate.promise;
+    const { store, entry, off } = mountNotes(client);
+    await drainMicrotasks();
+    const before = client.reads.length;
+    client.emit(notes(2n));
+    client.emit(commit(3n));
+    client.gate = undefined;
+    gate.resolve();
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(before + 1);
+    expect(entry.getSnapshot().revision).toBe(3n);
     off();
     store.dispose();
   });

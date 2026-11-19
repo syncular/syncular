@@ -6963,7 +6963,7 @@ names each required window base/unit and classifies it complete, pending, or
 missing by the §4.8 registry and unit state. A client MUST NOT compose
 rows from one read with coverage or revision from another. A result at revision
 `r` cannot be published as current after a matching change at revision `> r`,
-except an incomplete answer during an import (§7.8);
+except an answer that deferred batches overtook during an import (§7.8);
 promise completion order, IPC order, frame scheduling, and render timing never
 override revision order.
 
@@ -7456,22 +7456,30 @@ most 1,024 rows (§1.4 rule 4) and image chunks in their own transactions; the
 TypeScript client yields to local reads after each such COMMIT and never holds a
 transaction across an await.
 
-A reactive observation whose latest successful read has incomplete coverage
-does not read again for each import transaction. While the latest sync
-attempt's progress (§7.7) is `running` in phase `download` or `import`, a
-matching change batch starts no read for such an observation when it carries no
-status snapshot and either names no window value or leaves a unit unnamed that
-the last read reported pending or missing. The observation reads again when
-window changes have named every such unit, when a matching batch carries a
-status snapshot (a local write carries one), when progress leaves those phases
-(phase `request`, state `complete` or `failed`), on `refresh`, and on the other
-triggers of this section and §7.5. A read that such deferred batches overtook
-publishes its incomplete answer at its own revision instead of reading again,
-and the observation reads once more when progress leaves the import. This is
-the only exception to the revision rule of §7.5: it never publishes a complete
-answer, nor an answer older than a matching batch the observation did not
-defer. An observation whose latest read had complete coverage reads on every
-matching batch. The client core still yields to every queued read after each
+While the latest sync attempt's progress (§7.7) is `running` in phase
+`download` or `import`, a reactive observation does not read again for the
+import's own row writes. A matching change batch that carries no status
+snapshot, names no window value and applies no server COMMIT (no
+`appliedCommits`) starts no read for any observation. The client core emits
+such batches for bootstrap rows blocks and image chunks, whose rows belong to
+units that are still bootstrapping, and for the other table-only writes
+(evicting a departed unit's rows, revealing sealed rows under a key that
+arrived). An observation whose latest successful read has incomplete coverage
+also starts no read for a matching batch that carries no status snapshot and
+either names no window value or leaves a unit unnamed that the last read
+reported pending or missing, so it waits on server COMMITs of the round too.
+An observation reads again when progress leaves those phases (phase `request`,
+state `complete` or `failed`), on `refresh`, on the other triggers of this
+section and §7.5, and on a matching batch it does not defer: one that carries
+a status snapshot (a local write carries one); for an incomplete answer, one
+whose window changes have named every unit the last read reported pending or
+missing; for a complete answer, one that applies a server COMMIT or names a
+window value, such as the end of a unit's bootstrap. A read
+that deferred batches overtook publishes its answer at its own revision
+instead of reading again, and the observation reads once more when progress
+leaves the import. This is the only exception to the revision rule of §7.5: an
+answer is never published older than a matching batch that its own coverage
+does not defer. The client core still yields to every queued read after each
 import COMMIT. This is host-side reactive-store behavior with no Rust
 counterpart, because the Rust client holds the whole round on its serialized
 owner.
@@ -7495,6 +7503,25 @@ live `UNION` queries over all its units in Chromium on an Apple M5 Pro: the
 queries read 20 times during the round and the round took 153 to 188 ms on
 0.92.0; they now read 4 times and the round takes 115 to 131 ms, against 106 to
 122 ms without the queries.
+
+DECISION (2026-11-19): every observation waits for the import's own row
+writes. A complete answer that reads a half-imported unit shows it block by
+block, so the observation keys on batch shape: a batch without status
+snapshot, window change and server COMMIT is an import row write or a
+table-only maintenance write, and it waits for the import end; a server
+COMMIT, a local write and a window change still read at once. A per-unit
+trigger for units outside the observation's coverage would need the units a
+batch wrote, which batches do not carry, and would read once per finished
+unit. `bench:apply-rows --case planComplete` adds four complete live queries
+over the same tables to `planLive`: the eight queries read 24 times during the
+round and the round took 133 to 136 ms on 0.93.0; they now read 8 times and
+the round takes 119 to 124 ms. The rule does not shorten the first load of
+the decision above when its bootstrap of about 80 other units lands in
+the second pull: that import ran under 146 to 157 reads on 0.93.0 and under
+146 with the rule, and the third pull started 1.1 to 1.4 s after the second
+in both. Of 119 reads logged in that import, 3 followed an import row write;
+91 were first answers of observations that subscribed during the import and
+the refresh after their claim settled, and 25 followed window changes.
 
 DECISION (2026-11-19): the TypeScript client coalesces rows blocks. A web app's
 plan round on 0.90.0 applied 2,800 rows in 87 sections of about 11-row blocks in

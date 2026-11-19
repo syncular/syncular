@@ -430,6 +430,25 @@ round imports and reads it again when the last of its units ends ([SPEC §7.8](h
 
 Reproduce with `bun run --cwd bench bench:apply-rows --case planLive`.
 
+### A round under complete live queries
+
+The `planComplete` case adds four live queries to `planLive` that read the same
+16 tables without window coverage, so each answer is complete throughout the
+round and every rows block of the import matches it. The store defers those
+reads while the round imports and reads each query once when the import ends
+([SPEC §7.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#78-responsive-local-reads));
+0.93.0 read each complete query again after every import commit. Five runs on
+fresh replicas, Chromium on an Apple M5 Pro:
+
+| Replica | Measure | 0.93.0 | Now | `planLive` now |
+|---|---|---:|---:|---:|
+| OPFS worker | round | 133 to 136 ms | 119 to 124 ms | 112 to 115 ms |
+| OPFS worker | live-query reads in the round | 24 | 8 | 4 |
+| Bun file | round | 35 to 51 ms | 33 to 53 ms | 34 to 47 ms |
+| Bun file | live-query reads in the round | 24 | 8 | 4 |
+
+Reproduce with `bun run --cwd bench bench:apply-rows --case planComplete`.
+
 ## Table-scoped overlay reconciliation
 
 The debug-build probe measures one task's base write, acknowledgement, and
