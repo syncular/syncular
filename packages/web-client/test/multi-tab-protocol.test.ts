@@ -18,7 +18,7 @@ import { MULTI_TAB_PROTOCOL_VERSION } from '../src/multi-tab';
 const PINNED = {
   protocol: 4,
   fingerprint:
-    '906b09566f8901309512896b9abea223b08afb864bf6e7573e2a214fb5ae4666',
+    '7133b53dc78ed43a081aeefe23b9dd5d56ef3075baaf0809b009f429a6540aa0',
 };
 
 const ROOTS = [
@@ -73,10 +73,12 @@ function surfaceFingerprint(): { fingerprint: string; types: string[] } {
     join(import.meta.dir, '../src'),
     join(import.meta.dir, '../../core/src'),
   ]) {
+    // Sorted: readdir order is filesystem-specific (APFS sorts, ext4 does not),
+    // and a type declared in several files hashes its bodies in file order.
     for (const file of readdirSync(dir, {
       recursive: true,
       encoding: 'utf8',
-    })) {
+    }).sort()) {
       if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue;
       const text = readFileSync(join(dir, file), 'utf8');
       for (const match of text.matchAll(
