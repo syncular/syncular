@@ -2362,6 +2362,89 @@ describe('security preflight gate (SPEC §5.11)', () => {
     store.dispose();
     await local.client.close();
   });
+
+  test('journal and window entries refused in preflight read on activation without an app call', async () => {
+    const { makeClient, makeServer } = await import('./helpers');
+    const local = await makeClient(makeServer(), { clientId: 'gate-journal' });
+    await local.client.beginSecurityPreflight();
+    const store = new ReactiveClientStore(local.client);
+    const window = store.window(BASE);
+    const offWindow = window.subscribe(() => {});
+    await drainMicrotasks(24);
+    // The first reads ran inside the gate: no entry reports the refusal.
+    expect(store.outcomes.getSnapshot()).toEqual({
+      outcomes: [],
+      error: undefined,
+      isLoading: true,
+    });
+    expect(store.conflicts.getSnapshot()).toMatchObject({
+      error: undefined,
+      isLoading: true,
+    });
+    expect(window.getSnapshot().loaded).toBe(false);
+
+    await local.client.activateSecurity();
+    await drainMicrotasks(24);
+    expect(store.outcomes.getSnapshot()).toEqual({
+      outcomes: [],
+      error: undefined,
+      isLoading: false,
+    });
+    expect(store.conflicts.getSnapshot()).toEqual({
+      conflicts: [],
+      rejections: [],
+      error: undefined,
+      isLoading: false,
+    });
+    expect(window.getSnapshot()).toEqual({
+      units: [],
+      pending: [],
+      loaded: true,
+    });
+    offWindow();
+    store.dispose();
+    await local.client.close();
+  });
+
+  test('a journal refusal that raced activation reads again; another error does not', async () => {
+    const client = new FakeReactiveClient();
+    const refused = new ClientSyncError(
+      'client.security_preflight_required',
+      'protected reads require activateSecurity',
+    );
+    // The refusal lands after the client already reports `active`.
+    client.commitOutcomes = () => {
+      client.outcomeCalls += 1;
+      if (client.outcomeCalls === 1) throw refused;
+      return [];
+    };
+    const failure = new ClientSyncError('sync.local_corrupt', 'corrupt');
+    client.conflicts = () => {
+      client.conflictCalls += 1;
+      throw failure;
+    };
+    const store = new ReactiveClientStore(client);
+    await drainMicrotasks();
+    expect(client.outcomeCalls).toBe(2);
+    expect(store.outcomes.getSnapshot()).toEqual({
+      outcomes: [],
+      error: undefined,
+      isLoading: false,
+    });
+    expect(store.conflicts.getSnapshot().error).toBe(failure);
+    expect(client.conflictCalls).toBe(1);
+
+    // Activation re-reads only entries the gate refused.
+    client.emit(
+      batch(1n, { status: { ...STATUS, securityLifecycle: 'preflight' } }),
+    );
+    client.emit(batch(2n, { status: STATUS }));
+    await drainMicrotasks();
+    expect(client.conflictCalls).toBe(1);
+    expect(client.outcomeCalls).toBe(2);
+    expect(store.conflicts.getSnapshot().error).toBe(failure);
+    store.dispose();
+  });
 });
 
 describe('schema bump availability (SPEC §7.4.5)', () => {

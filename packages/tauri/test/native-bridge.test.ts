@@ -1607,6 +1607,49 @@ if (!available) {
       }
     });
 
+    test('real Rust activation clears store journal entries the preflight refused', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({
+          schema,
+          securityPreflight: true,
+          tauri: host.api,
+        });
+        const store = new ReactiveClientStore(client);
+        const window = store.window({ variable: 'list_id' });
+        const offWindow = window.subscribe(() => {});
+        await waitFor(
+          store.status,
+          (snapshot) => snapshot.status?.securityLifecycle === 'preflight',
+        );
+        expect(store.outcomes.getSnapshot()).toMatchObject({
+          error: undefined,
+          isLoading: true,
+        });
+        // The host emits the `active` status batch before the activation
+        // reply, while the bridge still gates reads.
+        await client.activateSecurity();
+        const outcomes = await waitFor(
+          store.outcomes,
+          (snapshot) => !snapshot.isLoading,
+        );
+        const conflicts = await waitFor(
+          store.conflicts,
+          (snapshot) => !snapshot.isLoading,
+        );
+        expect(outcomes.error).toBeUndefined();
+        expect(conflicts.error).toBeUndefined();
+        expect((await waitFor(window, (state) => state.loaded)).units).toEqual(
+          [],
+        );
+        offWindow();
+        store.dispose();
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
+
     test('warm native querySnapshot round trips meet the local-view budget', async () => {
       const host = nativeTauri();
       try {

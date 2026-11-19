@@ -4416,9 +4416,14 @@ therefore implements the same two-state lifecycle:
 
 `statusSnapshot().securityLifecycle` reports the state. Entering preflight
 and activation each emit one change batch that carries the status snapshot
-(§7.5), on every host. A live query of the reactive store whose read or window
-claim the gate refuses keeps its last snapshot (rows, phase and revision) and
-reports no error; it reads and claims again when a status reports `active`.
+(§7.5), on every host. A reactive store entry whose read or window edit the
+gate refuses keeps its last snapshot and reports no error: a live query keeps
+its rows, phase and revision, and the outcome, conflict and window entries keep
+their last value and loading state. The entry reads or edits again when a
+status reports `active`. A refusal that arrives after the client reports
+`active` (a native bridge clears its own gate when the activation reply
+lands, after the host's status batch) reads again at once. An entry that failed
+with any other error is not read again by activation.
 
 Construction with `securityPreflight: true` MUST NOT accept an `encryption`
 keyring in the same call. During preflight the host MAY inspect

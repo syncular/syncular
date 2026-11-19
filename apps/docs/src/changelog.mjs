@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'Store entries refused in preflight read on activation',
+    body: 'A reactive store entry whose first read ran inside the security preflight kept `client.security_preflight_required` after activation when it was an outcome or conflict journal entry, so `useCommitOutcomes().error` stayed set until the app refreshed it. Every refused store entry (live queries, window claims, the outcome and conflict journals, window state) now keeps its last snapshot without an error and reads again when the client reports `active`, on direct, Worker and native hosts.',
+    links: [
+      {
+        href: '/concepts-local-data-purge/#race-free-security-bootstrap',
+        label: 'Race-free security bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'OPFS quota exhaustion reports client.storage_full',
     body: 'On the `opfs-sahpool` VFS a `QuotaExceededError` from a sync access handle write, flush or truncate reaches SQLite as plain `SQLITE_IOERR` (10), so a browser replica at its origin quota reported `client.storage_io`. The browser binding now records the name of the `DOMException` the handle threw during the failing statement: `QuotaExceededError` raises `client.storage_full`, any other name stays `client.storage_io`, and both carry the name as `details.vfsErrorName`.',
     links: [

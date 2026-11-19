@@ -70,8 +70,9 @@ unit-gating workflow in
 The shared client also exposes `securityLifecycle()`,
 `beginSecurityPreflight()`, and keyless `activateSecurity()`. Install a portable
 or direct keyring through the concrete client before you mount the ordinary
-provider tree. React must not render protected hooks while the client reports
-`preflight`.
+provider tree. A protected hook rendered while the client reports `preflight`
+stays loading without an error and reads when the client turns active
+([Authorized local purge](/concepts-local-data-purge/#race-free-security-bootstrap)).
 
 ## Router transition scheduling
 

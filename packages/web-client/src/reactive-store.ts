@@ -703,11 +703,6 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   #onAvailabilityChange(): void {
-    if (
-      this.#gated &&
-      this.store.status.getSnapshot().status?.securityLifecycle !== 'preflight'
-    )
-      this.#resume();
     const availability = this.store.availabilitySnapshot();
     if (localReadsBlocked(availability)) {
       this.#publish({
@@ -732,27 +727,16 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   /** §5.11: the security gate refused this entry's read or claim. The
-   * entry keeps its snapshot and reads again when the status reports
-   * activation; a refusal that raced activation finds the client active. */
+   * entry keeps its snapshot and reads and claims again on activation. */
   #gate(claim = false): void {
     this.#gated = true;
     if (claim) this.#claimGated = true;
     if (this.#state.isRefreshing)
       this.#publish({ ...this.#state, isRefreshing: false });
-    const generation = this.#generation;
-    void Promise.resolve(this.store.client.statusSnapshot()).then(
-      (status) => {
-        if (
-          generation === this.#generation &&
-          status.securityLifecycle !== 'preflight'
-        )
-          this.#resume();
-      },
-      () => {},
-    );
+    this.store.afterActivation(this.#resume);
   }
 
-  #resume(): void {
+  readonly #resume = (): void => {
     if (!this.#gated) return;
     this.#gated = false;
     if (this.#claimGated) {
@@ -760,7 +744,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       this.#claimCoverage();
     }
     this.#requestRead();
-  }
+  };
 
   /** SPEC §7.5 failed transfer: incomplete coverage stops waiting on a failed
    * sync attempt and resumes waiting when the next attempt starts. */
@@ -1072,9 +1056,11 @@ class WindowEntry implements ExternalStoreEntry<
           for (const listener of this.#listeners) listener();
         }
       } while (this.#requested && this.#listeners.size > 0);
-    } catch {
+    } catch (error) {
       // WindowState predates the error-bearing query result. Keep the last
-      // coherent snapshot; a later exact window event or refresh retries.
+      // coherent snapshot; a later exact window event or refresh retries,
+      // and activation retries a read the security gate refused (§5.11).
+      if (refusedByPreflight(error)) this.store.afterActivation(this.refresh);
     } finally {
       if (generation === this.#generation) {
         this.#running = false;
@@ -1090,6 +1076,8 @@ export class ReactiveClientStore {
   readonly #windowClaims = new Map<string, WindowClaimGroup>();
   #offChange: (() => void) | undefined;
   #offLeadership: (() => void) | undefined;
+  #offActivation: (() => void) | undefined;
+  readonly #activation = new Set<() => void>();
   readonly status: ExternalStoreEntry<StatusStoreSnapshot>;
   readonly conflicts: ExternalStoreEntry<ConflictStoreSnapshot>;
   readonly outcomes: ExternalStoreEntry<OutcomeStoreSnapshot>;
@@ -1131,7 +1119,7 @@ export class ReactiveClientStore {
     );
     const conflicts = new ValueEntry<ConflictStoreSnapshot>(
       { conflicts: [], rejections: [], error: undefined, isLoading: true },
-      async () => {
+      async (): Promise<ConflictStoreSnapshot> => {
         try {
           const [found, rejected] = await Promise.all([
             client.conflicts(),
@@ -1144,6 +1132,11 @@ export class ReactiveClientStore {
             isLoading: false,
           };
         } catch (error) {
+          // §5.11: a refused read keeps the snapshot and reads on activation.
+          if (refusedByPreflight(error)) {
+            this.afterActivation(conflicts.refresh);
+            return conflicts.getSnapshot();
+          }
           return {
             conflicts: [],
             rejections: [],
@@ -1155,7 +1148,7 @@ export class ReactiveClientStore {
     );
     const outcomes = new ValueEntry<OutcomeStoreSnapshot>(
       { outcomes: [], error: undefined, isLoading: true },
-      async () => {
+      async (): Promise<OutcomeStoreSnapshot> => {
         try {
           return {
             outcomes: await client.commitOutcomes(),
@@ -1163,6 +1156,10 @@ export class ReactiveClientStore {
             isLoading: false,
           };
         } catch (error) {
+          if (refusedByPreflight(error)) {
+            this.afterActivation(outcomes.refresh);
+            return outcomes.getSnapshot();
+          }
           return { outcomes: [], error: errorOf(error), isLoading: false };
         }
       },
@@ -1364,7 +1361,10 @@ export class ReactiveClientStore {
     } catch (error) {
       // §5.11: the gate refused the edit before it changed anything. The
       // claim waits; activation applies it again.
-      if (refusedByPreflight(error)) return;
+      if (refusedByPreflight(error)) {
+        this.afterActivation(() => this.#scheduleWindow(group));
+        return;
+      }
       // A failed window edit may already have committed its first eviction chunk.
       // Reconcile through the core before acknowledging any later claim.
       group.appliedKey = '';
@@ -1397,23 +1397,43 @@ export class ReactiveClientStore {
     };
   }
 
+  /** SPEC §5.11: run `retry` once a status reports `active`. Every store
+   * entry whose read or edit the security gate refused waits here. A
+   * refusal that raced activation finds the client active. */
+  afterActivation(retry: () => void): void {
+    this.#activation.add(retry);
+    void Promise.resolve()
+      .then(() => this.client.statusSnapshot())
+      .then(
+        (status) => {
+          if (status.securityLifecycle === 'active') this.#activate();
+        },
+        () => {},
+      );
+  }
+
+  #activate(): void {
+    const retries = [...this.#activation];
+    this.#activation.clear();
+    for (const retry of retries) retry();
+  }
+
   start(): void {
     if (this.#offChange !== undefined) return;
+    this.#offActivation = this.status.subscribe(() => {
+      if (this.status.getSnapshot().status?.securityLifecycle === 'active')
+        this.#activate();
+    });
     this.#offChange = this.client.onChange((batch) => {
       this.#queries.onChange(batch);
       this.#windows.onChange(batch);
       if (batch.status !== undefined) {
-        const held =
-          this.status.getSnapshot().status?.securityLifecycle === 'preflight';
         (this.status as ValueEntry<StatusStoreSnapshot>).set({
           status: batch.status,
           leadership: this.client.leadershipSnapshot?.(),
           error: undefined,
           isLoading: false,
         });
-        // Window edits held through the preflight apply on activation.
-        if (held && batch.status.securityLifecycle === 'active')
-          this.#reclaimWindows();
       }
       if (batch.conflictsChanged || batch.rejectionsChanged) {
         this.conflicts.refresh();
@@ -1488,6 +1508,9 @@ export class ReactiveClientStore {
     this.#offChange = undefined;
     this.#offLeadership?.();
     this.#offLeadership = undefined;
+    this.#offActivation?.();
+    this.#offActivation = undefined;
+    this.#activation.clear();
     this.#offProgress?.();
     this.#offProgress = undefined;
     this.#importing = false;

@@ -30,6 +30,26 @@ a real `opfs-sahpool` pool throws a synthetic `QuotaExceededError` during an
 image import and fails if a sqlite-wasm upgrade stops writing through the
 handle.
 
+### Store entries refused in preflight read on activation
+
+On an iOS Simulator host the reactive store read the outcome and conflict
+journals before `activateSecurity`. Both entries stored
+`client.security_preflight_required` and kept it after activation, so
+`useCommitOutcomes().error` stayed set until the app called
+`store.outcomes.refresh()` (SYNCULAR-STORE-JOURNAL-PREFLIGHT-001). Live
+queries and window claims already waited for activation; the journal entries
+and the window state behind `useWindow()` did not.
+
+Every store entry the gate refuses now registers with one store-level
+activation wait, which live queries and window claim groups also use. A
+refused entry keeps its last snapshot and loading state and reports no error.
+When the store's status reports `active`, every waiting entry reads or edits
+once more. An entry refused after the client already reports `active` reads
+again at once. A native bridge needs this: the host emits the `active` status
+batch before the activation reply, and the bridge clears its own gate only when
+the reply lands. An entry that failed with any other error is not read again.
+The multi-tab protocol is unchanged.
+
 ## 0.97.0 release notes
 
 0.97.0 answers a segment store outage as retryable unavailability
