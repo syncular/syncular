@@ -8376,7 +8376,7 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
 #[test]
 fn image_chunks_double_and_roll_back_whole_on_failure() {
     let mut client = client();
-    client.image_chunk_ms.set(Some(0.0));
+    client.image_chunk_ms.set(Some((0.0, 0.0)));
     let image = Connection::open_in_memory().unwrap();
     // Row 5000 lies in the second 1,024 rows of the third chunk.
     image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
@@ -8436,7 +8436,7 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
         (400.0, 3000, vec![0, 1024, 2048, 3000]),
     ] {
         let mut client = client();
-        client.image_chunk_ms.set(Some(chunk_ms));
+        client.image_chunk_ms.set(Some((chunk_ms, 0.0)));
         let image = Connection::open_in_memory().unwrap();
         image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{total})
@@ -8456,6 +8456,34 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
             Ok(applied) if i64::from(applied) == total
         ));
         assert_eq!(*seen.lock().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_slow_image_commit_leaves_the_chunk_doubling() {
+    // §5.3: a 1 s COMMIT (four slow flushes) after 10 ms of writing doubles
+    // the chunks: 1,024, 2,048, 4,096 and the last 832 rows. With 1 ms of
+    // writing the doubling stops at 65,536 rows.
+    for (write_ms, total, chunks, next) in [(10.0, 8000, 4, 8192), (1.0, 200_000, 9, 65_536)] {
+        let mut client = client();
+        client.image_chunk_ms.set(Some((write_ms, 1000.0)));
+        let image = Connection::open_in_memory().unwrap();
+        image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+            WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{total})
+            INSERT INTO tasks SELECT printf('%06d',x),'p1',1 FROM n;
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',{total});")).unwrap();
+        let table = client.schema.table("tasks").unwrap().clone();
+        let scopes = vec![("project_id".into(), vec!["p1".into()])];
+        client.progress.start(&client.epoch);
+        assert!(matches!(
+            client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, total, 7, "digest"),
+            Ok(applied) if i64::from(applied) == total
+        ));
+        assert_eq!(client.drain_change_batches().len(), chunks);
+        assert_eq!(client.image_chunk_rows.get("tasks"), Some(&next));
+        let progress = client.progress.snapshot().unwrap();
+        assert_eq!(progress.import_commit_ms, Some(1000 * chunks as u64));
     }
 }
 
@@ -12089,7 +12117,7 @@ fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
     // §5.3: the first range runs 1,024 then 2,000 rows at 128 ms a chunk;
     // the second range of the table starts at 2,000 instead of 1,024.
     let mut client = client();
-    client.image_chunk_ms.set(Some(128.0));
+    client.image_chunk_ms.set(Some((128.0, 0.0)));
     let table = client.schema.table("tasks").unwrap().clone();
     let scopes = vec![("project_id".into(), vec!["p1".into()])];
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

@@ -972,6 +972,7 @@ const NO_PAYLOAD: Partial<SyncProgress> = {
   rowsTotal: undefined,
   importWriteMs: undefined,
   importCommitMs: undefined,
+  downloadMs: undefined,
 };
 
 export class SyncClient {
@@ -5558,7 +5559,10 @@ export class SyncClient {
     // loop awaits it. A promise left over because an earlier frame ended
     // apply is handled at creation, never unhandled.
     const queued: [SegmentRefFrame, UnitScopes][] = [];
-    const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
+    const prefetched = new Map<
+      SegmentRefFrame,
+      Promise<{ bytes: Uint8Array; downloadMs: number }>
+    >();
     const prefetch = () => {
       for (
         let next;
@@ -5742,6 +5746,7 @@ export class SyncClient {
                 'unadvertised or paged sqlite segment (§4.2, §5.3)',
               );
             let bytes: Uint8Array;
+            let downloadMs: number;
             let appliedRows: number | undefined;
             if (frame.type === 'SEGMENT_REF') {
               // §5.6: rows an earlier attempt at this position applied. A
@@ -5769,14 +5774,14 @@ export class SyncClient {
               if (pending !== undefined) reporting = frame;
               const { scopes } = section.unit;
               try {
-                bytes = (yield () =>
+                ({ bytes, downloadMs } = (yield () =>
                   pending ??
                   this.#downloadSegment(
                     frame,
                     scopes,
                     (bytesReceived) => this.#progress.update({ bytesReceived }),
                     signal,
-                  )) as Uint8Array;
+                  )) as { bytes: Uint8Array; downloadMs: number });
               } catch (error) {
                 // §5.5: access changed since the response. The unit stays
                 // catching up with its cursor unpersisted, and the next
@@ -5786,7 +5791,7 @@ export class SyncClient {
                 section.skip = true;
                 break;
               }
-              this.#progress.update({ phase: 'import' });
+              this.#progress.update({ phase: 'import', downloadMs });
             } else {
               bytes = frame.payload;
             }
@@ -6495,7 +6500,7 @@ export class SyncClient {
     scopes: UnitScopes,
     onProgress: (bytesReceived: number) => void,
     signal: AbortSignal | undefined,
-  ): Promise<Uint8Array> {
+  ): Promise<{ bytes: Uint8Array; downloadMs: number }> {
     const downloader = this.#config.segments;
     if (downloader === undefined) {
       throw invalidRequest(
@@ -6503,6 +6508,8 @@ export class SyncClient {
       );
     }
     let bytes: Uint8Array;
+    // §7.7: from the request's start to its last body byte.
+    const started = performance.now();
     if (frame.url !== undefined) {
       // §5.4: a url-carrying descriptor MUST be fetched from that URL —
       // no fall-through to the direct endpoint; any failure invalidates
@@ -6547,6 +6554,7 @@ export class SyncClient {
         ...definedObject({ signal }),
       });
     }
+    const downloadMs = Math.round(performance.now() - started);
     // §5.4: the descriptor's byteLength caps the body; §5.1: verify the
     // content address before applying. On either failure the segment is
     // discarded and the cursor/resume token stay unpersisted, so the next
@@ -6561,7 +6569,7 @@ export class SyncClient {
         true,
       );
     }
-    return bytes;
+    return { bytes, downloadMs };
   }
 
   /** Returns whether SUB_END state was persisted (section applied). */

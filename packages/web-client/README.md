@@ -873,7 +873,8 @@ up to 65,536, and yield after each commit. Earlier committed transactions
 survive a later interruption. A SQLite image payload also reports
 `importWriteMs` (time before COMMIT: row statements with index maintenance)
 and `importCommitMs` (COMMIT and revision publication), each summed over the
-payload's transactions. `complete` follows checkpoint persistence
+payload's transactions, and a `SEGMENT_REF` payload reports `downloadMs`
+(segment request to last body byte) from its first import snapshot. `complete` follows checkpoint persistence
 and optimistic-state reconciliation for the round. More bootstrap pages can
 remain; use window coverage to determine whether a query is complete.
 Listener exceptions do not fail sync. Listeners should hand UI work off and avoid

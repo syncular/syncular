@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'Image transactions are sized by their write time',
+    body: 'Both clients size the next SQLite image transaction by the rows the one before wrote per 250 ms before its COMMIT. Before, the COMMIT counted too, and a commit on the OPFS replica flushes the file four times whatever its row count: once a flush took 100 ms or more, every transaction stayed at 1,024 rows. With 200 ms per flush, 154,569 rows in 12 range images took 102 s in 156 commits and now take 22 s in 24; with 500 ms, 252 s and now 53 s. Progress carries `downloadMs` on a `SEGMENT_REF` payload, from its segment request to its last body byte, beside `importWriteMs` and `importCommitMs`. The multi-tab protocol moves to 7.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#reading-during-import',
+        label: 'Reading during import',
+      },
+      {
+        href: '/platform-web-realtime/#sync-progress',
+        label: 'Sync progress',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A rows-lane page reads one page of the scope index',
     body: 'A `scanRows` page reads at most `limit` scope-index entries per value, in `row_id` order, on PostgreSQL, SQLite and D1. Before, a page read and sorted every entry after the cursor: on PostgreSQL 17 a 1,000-row page of a 200,000-row release took 114 to 121 ms warm and 12.7 s cold, and now takes 13 to 14 ms warm and 163 ms cold. The scan-variable count no longer stops at 65,536 entries, so a catalogue unit whose variables all pass it seeks its release instead of its availability: the first page of an 80,000-row release took 206 statements and 17.1 to 18.0 s, and takes 6 statements and 60 to 81 ms warm. The Rust local authority picks the variable the same way.',
     links: [

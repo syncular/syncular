@@ -22,6 +22,8 @@ export interface SyncProgress {
   readonly importWriteMs?: number | undefined;
   /** Time committing them and publishing their changes, in ms. */
   readonly importCommitMs?: number | undefined;
+  /** Time from this payload's segment request to its last byte, in ms. */
+  readonly downloadMs?: number | undefined;
   readonly errorCode?: string;
   readonly causeKind?: TransportCauseKind;
   readonly httpStatus?: number;

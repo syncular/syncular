@@ -598,9 +598,9 @@ pub struct SyncClient {
     /// once per response rather than once per acknowledgement.
     #[cfg(test)]
     outcome_prune_count: Cell<usize>,
-    /// Test-only pinned duration of every §5.3 image chunk, in ms.
+    /// Test-only pinned write and commit time of every §5.3 image chunk, in ms.
     #[cfg(test)]
-    image_chunk_ms: Cell<Option<f64>>,
+    image_chunk_ms: Cell<Option<(f64, f64)>>,
     /// Exact observer-transaction output drained by command/FFI hosts.
     progress: ProgressObserver,
     /// §7.6: random per core instance, never persisted or sent.
@@ -9995,6 +9995,7 @@ impl SyncClient {
             p.rows_total = None;
             p.import_write_ms = None;
             p.import_commit_ms = None;
+            p.download_ms = None;
         });
         let Some(unit) = unit else {
             return Ok(false);
@@ -10037,6 +10038,7 @@ impl SyncClient {
                                 Some(segment.blocks.iter().map(|block| block.len() as u64).sum());
                             p.import_write_ms = None;
                             p.import_commit_ms = None;
+                            p.download_ms = None;
                         });
                         let (pair, clear, effective) =
                             self.segment_pair(&unit, &echo, &seeded, &segment.table)?;
@@ -10096,6 +10098,7 @@ impl SyncClient {
                                 p.rows_total = u64::try_from(row_count).ok();
                                 p.import_write_ms = None;
                                 p.import_commit_ms = None;
+                                p.download_ms = None;
                             });
                             self.progress.update(|p| {
                                 p.rows_processed = u64::try_from(row_count).unwrap_or(0)
@@ -10119,9 +10122,12 @@ impl SyncClient {
                             p.rows_total = u64::try_from(row_count).ok();
                             p.import_write_ms = None;
                             p.import_commit_ms = None;
+                            p.download_ms = None;
                         });
                         let observer = self.progress.clone();
                         let mut on_progress = |bytes| observer.update(|p| p.bytes_received = bytes);
+                        // §7.7: from the request's start to its last body byte.
+                        let requested = std::time::Instant::now();
                         let bytes = if let Some(url) = url {
                             // §5.4: a url-carrying descriptor MUST be fetched
                             // from that URL; failure invalidates the whole
@@ -10178,6 +10184,7 @@ impl SyncClient {
                                     }
                                 })?
                         };
+                        let download_ms = u64::try_from(requested.elapsed().as_millis()).ok();
                         // §5.4: the descriptor's byteLength caps the body before
                         // §5.1 verifies the content address; the client discards
                         // the segment and re-pulls on either failure.
@@ -10201,7 +10208,10 @@ impl SyncClient {
                                 "segment bytes do not match the content address (§5.1)".to_owned(),
                             ));
                         }
-                        self.progress.update(|p| p.phase = ProgressPhase::Import);
+                        self.progress.update(|p| {
+                            p.phase = ProgressPhase::Import;
+                            p.download_ms = download_ms;
+                        });
                         if media_type == MediaType::Sqlite {
                             // §5.3: a range image keeps its position in the resume
                             // token; a descriptor row cursor is invalid.
@@ -11307,7 +11317,7 @@ impl SyncClient {
             // starts at the size its previous range reached. A later chunk holds at
             // least 1,024 rows, at most twice the rows of the one before, at
             // most 65,536, and at most the rows the one before applied per
-            // 250 ms from its start to its COMMIT; a chunk that replays local
+            // 250 ms of its time before COMMIT; a chunk that replays local
             // writes holds at most 1,024.
             let chunk = if pending || protected {
                 limit.min(1024)
@@ -11431,8 +11441,16 @@ impl SyncClient {
                 self.commit_coalesced_apply()
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             }
-            write += written - started;
-            commit += written.elapsed();
+            let spent = (written - started, written.elapsed());
+            #[cfg(test)]
+            let spent = self.image_chunk_ms.get().map_or(spent, |(write, commit)| {
+                (
+                    std::time::Duration::from_secs_f64(write / 1000.0),
+                    std::time::Duration::from_secs_f64(commit / 1000.0),
+                )
+            });
+            write += spent.0;
+            commit += spent.1;
             applied += processed;
             let last = processed < chunk || i64::from(applied) == actual_count;
             // A file replica's WAL keeps its high-water size until truncated.
@@ -11450,9 +11468,7 @@ impl SyncClient {
                 p.import_write_ms = u64::try_from(write.as_millis()).ok();
                 p.import_commit_ms = u64::try_from(commit.as_millis()).ok();
             });
-            let duration = started.elapsed().as_secs_f64() * 1000.0;
-            #[cfg(test)]
-            let duration = self.image_chunk_ms.get().unwrap_or(duration);
+            let duration = spent.0.as_secs_f64() * 1000.0;
             std::thread::yield_now();
             if last {
                 break;

@@ -2988,9 +2988,9 @@ later range image of the table holds the size the rule below gave the previous
 range's next chunk, when the client still knows it (1,024 rows otherwise).
 Each later chunk holds at least 1,024 rows, at most
 twice the rows of the chunk before, at most 65,536 rows, and at most the rows
-the chunk before applied per 250 ms of its duration, measured on a monotonic
-clock from the chunk's start to its `COMMIT`. While local writes to the
-table need replay (§7.1), a chunk holds at most 1,024 rows. When the image is
+the chunk before applied per 250 ms of its write time, measured on a monotonic
+clock from the chunk's start to the start of its `COMMIT`. While local writes
+to the table need replay (§7.1), a chunk holds at most 1,024 rows. When the image is
 the table's first page (§5.6), the fresh-bootstrap clear runs in its first
 transaction, then primary-key upserts for every image row with
 `_syncular_version` landing as the row's last-known `server_version`.
@@ -3122,7 +3122,32 @@ ephemeral browser profile or a private window), each write slows as the file
 grows: doubling took 19 s with transactions of up to 9.0 s, the 100 ms rule
 took more than 140 s in chunks of 22 to 98 rows, and the 250 ms rule took
 64 s with transactions of up to 881 ms. The floor bounds the commit count at
-one per 1,024 rows on any storage.
+one per 1,024 rows on any storage. The 2026-11-19 decision below takes the
+`COMMIT` out of the duration.
+
+DECISION (2026-11-19): a chunk is sized from its write time, without its
+`COMMIT`. A commit on the OPFS SAH-pool replica costs four
+`FileSystemSyncAccessHandle.flush()` calls whatever its row count: two for the
+rollback journal, one for the database, and one when the pool deletes the
+journal. A web app's first load of 201,449 catalogue rows in 13 range images
+took 151 to 358 s on five of 91 browser rounds (452 to 1,071 rows/s), and the
+client asked for the next image only after one image's import ended, up to
+103 s later. `bench/src/image-range-lane.ts` reproduces it by holding every
+flush longer (`--sync-delay-ms`) on 154,569 rows in 12 range images (Apple
+M5 Pro, Chromium). At 200 ms per flush, a 1,024-row chunk took more than
+250 ms in its `COMMIT` alone, so the duration rule held every chunk at the
+floor: 156 commits, 102 s, 1,510 rows/s. At 500 ms per flush the import took
+252 s (614 rows/s). Smaller chunks cannot shorten a read's wait when the
+commit alone exceeds the budget; they only add commits. Sized from write time,
+the import commits 24 times at any flush cost: 22 s (6,953 rows/s) at
+200 ms per flush, 53 s (2,924 rows/s) at 500 ms, and 2.1 s against 1.9 s
+before without a delay. A CPU six times slower took 6.8 s before and 6.7 s
+after, at 25 commits both times: the write time sees a proportional cost.
+FTS5 writes its pending terms at `COMMIT`, which the 2026-11-16 decision
+counted; with the codes' FTS5 projection the lane commits 24 times either
+way, and its longest image took 140 ms before and 128 ms after.
+Journal modes `TRUNCATE` and `PERSIST` flushed more (136 calls against
+102), so the replica keeps `DELETE` with `synchronous=FULL`.
 
 A client whose replica lives in OPFS creates a new database with 64 KiB pages:
 the TypeScript client in `openPersistentWasmDatabase`, the Rust client when it
@@ -6057,7 +6082,7 @@ surface MUST bump it. The TypeScript client enforces this with a test that pins
 a fingerprint of the surface's declarations, and every type they name, to the
 constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
 changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
-0.94.0 and 0.95.0, and protocol 6 starts with 0.96.0.
+0.94.0 and 0.95.0, protocol 6 covers 0.96.0, and protocol 7 starts with 0.97.0.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
@@ -7631,8 +7656,8 @@ when the current payload changes. They are not an aggregate percentage across
 units or rounds. Unknown totals remain absent. A response's `SUB_START` moves
 progress to `import`, sets `unitId` to the section's unit (absent for a
 section the client skips), and clears `table`, `segmentId`, `bytesTotal`,
-`rowsTotal` and the import timings; `bytesReceived` and `rowsProcessed`
-restart at 0, the work done for the new section so far. Its `SUB_END` clears
+`rowsTotal`, `downloadMs` and the import timings; `bytesReceived` and
+`rowsProcessed` restart at 0, the work done for the new section so far. Its `SUB_END` clears
 `unitId`, `table` and `segmentId` and keeps the counters and totals of the
 section's last payload, which `complete` and `failed` report. No snapshot
 names the unit, table or segment of a section that already ended.
@@ -7664,6 +7689,14 @@ rows within the current chunk remain uncommitted until that chunk commits.
 Progress MUST NOT advance a cursor. Rows blocks commit in coalesced apply
 transactions (§1.4 rule 4); SQLite images commit in growing chunks (§5.3,
 §7.8). Earlier committed transactions survive a later interruption.
+
+A `SEGMENT_REF` payload carries `downloadMs` from the snapshot that moves
+it to `import` until the payload changes: the whole milliseconds from the
+start of its segment request to its last body byte, before the content
+address check (§5.1). A download that began ahead of its payload (§5.3
+client memory) counts from its own start. An inline segment and a payload an
+earlier attempt imported carry none. Comparing `downloadMs` with the import
+counters below tells a slow network from a slow import.
 
 A payload's `import` progress carries `importWriteMs` and
 `importCommitMs` once its first image chunk or rows block has committed:

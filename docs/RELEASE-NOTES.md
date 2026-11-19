@@ -3,9 +3,12 @@
 ## 0.97.0 release notes
 
 0.97.0 answers a segment store outage as retryable unavailability
-(SYNCULAR-SEGMENT-STORE-OUTAGE-001) and bounds a rows-lane page read by the
-page (SYNCULAR-ROWS-PAGE-READ-001). SSP2 and the wire version are unchanged;
-the error catalog gains one code.
+(SYNCULAR-SEGMENT-STORE-OUTAGE-001), bounds a rows-lane page read by the
+page (SYNCULAR-ROWS-PAGE-READ-001), and sizes image transactions by their
+write time with a download time per segment in progress
+(SYNCULAR-IMAGE-IMPORT-THROUGHPUT-001). SSP2 and the wire version are
+unchanged; the error catalog gains one code, and the multi-tab protocol moves
+to 7.
 
 ### A segment store outage is retryable
 
@@ -55,6 +58,36 @@ at the first cap above the smallest count. The Rust local authority sought
 the alphabetically first variable without counting; it now picks the
 variable the same way, once per bootstrap section. Its page statement already
 read one index range in `_sync_row_id` order, with no sort.
+
+### Image transactions are sized by their write time
+
+On five of 91 browser first loads of Diego's public catalogue (201,449 rows
+in 13 SQLite range images), Firefox, Edge and Chrome on Windows and one
+Android device imported 452 to 1,071 rows/s and took 151 to 358 s. The pull
+answered within 3.5 s; the gaps between the segment requests were import
+times, up to 103 s. A commit on the OPFS replica flushes the file four times
+whatever its row count, and the SPEC §5.3 rule sized the next transaction by
+the whole duration of the one before, COMMIT included. Once a flush takes
+100 ms or more, a 1,024-row transaction exceeds the 250 ms budget in its
+COMMIT alone, so every transaction stayed at the 1,024-row floor: the most
+commits, each paying the same flushes. Both clients now size the next
+transaction by the time before its COMMIT. `bench/src/image-range-lane.ts`
+holds every flush longer with `--sync-delay-ms` (154,569 rows in 12 range
+images, Apple M5 Pro, Chromium): at 200 ms per flush the import took 102 s in
+156 commits and now takes 22 s in 24; at 500 ms it took 252 s and now takes
+53 s. Without a delay, with a CPU six times slower and with an FTS5
+projection, the commit count stays the same and the import time moves by
+0.2 s at most. On a slow-flush device a transaction holds the worker for
+250 ms of writing plus its commit; before, its commit alone took as long, and
+there were six times as many.
+
+Progress carries `downloadMs` on a `SEGMENT_REF` payload: the milliseconds
+from its segment request to its last body byte, set when the payload moves to
+`import` and kept beside `importWriteMs` and `importCommitMs` until the
+payload changes. An app reports per segment whether the download or the
+import took the time. `SyncProgress` crosses the worker boundary, so the
+multi-tab protocol moves to 7, and tabs of a 0.96 build and a 0.97 build do
+not serve each other.
 
 ## 0.96.0 release notes
 

@@ -111,6 +111,53 @@ until the replica closes. `--skip-browser` and `--skip-bun` run one half. The
 lane has no timing assertions; SPEC §5.3 records the numbers behind the
 growing image transactions.
 
+## Image range lane
+
+`bench:image-range` seeds the same catalogue into a `SqliteServerStorage` and
+bootstraps it through the reference server's pull path in 32 MiB range images
+(9 for the codes, 3 for the relations at scale 1) into the production OPFS
+SAH-pool replica, in a module worker on a persistent browser profile:
+
+```sh
+bun run --cwd bench bench:image-range -- --runs 1
+bun run --cwd bench bench:image-range -- --runs 1 --sync-delay-ms 200
+```
+
+Flags that emulate a slower device:
+
+- `--browser firefox`: Firefox instead of Chromium.
+- `--cpu-throttle <n>`: stops the Chromium renderer processes for
+  `(n - 1) × 10` ms after every 10 ms. DevTools CPU throttling applies to
+  pages only, not to the dedicated worker that runs the import.
+- `--sync-delay-ms <n>`: holds every VFS `xSync` (one
+  `FileSystemSyncAccessHandle.flush()`) `n` ms longer, the way a slow disk or
+  an on-access scanner stretches a flush.
+
+Each run reports the import time, `cpuProbeMs` (a fixed loop in the worker,
+which shows the throttle took effect), the `xSync` count and time, the read
+lag of a 50 ms worker timer, and `perImage`: per range image its rows,
+transactions, largest transaction, `importWriteMs`, `importCommitMs`, wall
+time, and the `downloadMs` of its segment. A run with `--sync-delay-ms`
+blocks the worker inside each flush, so the downloads that run on the same
+worker report longer times too.
+
+Before and after the 2026-11-19 change to the §5.3 chunk rule, one run each
+(Apple M5 Pro, Chromium, scale 1, 154,569 rows):
+
+| Flags | Commits before | Import before | Commits after | Import after |
+|---|---|---|---|---|
+| none | 24 | 1.9 s | 24 | 2.1 s |
+| `--sync-delay-ms 50` | 29 | 7.7 s | 24 | 7.0 s |
+| `--sync-delay-ms 200` | 156 | 102.3 s | 24 | 22.2 s |
+| `--sync-delay-ms 500` | 156 | 251.7 s | 24 | 52.9 s |
+| `--cpu-throttle 6` | 25 | 6.8 s | 25 | 6.7 s |
+| `--fts` | 24 | 2.3 s | 24 | 2.1 s |
+| `--browser firefox` | 24 | 2.2 s | | |
+
+The import sized each transaction by its whole duration before, so a flush
+of 200 ms held every transaction at 1,024 rows; sized by the time before
+`COMMIT`, the commit count stays at 24 whatever a flush costs (SPEC §5.3).
+
 ## Server SQLite lanes
 
 Two standalone scripts measure `SqliteServerStorage` on `bun:sqlite`:

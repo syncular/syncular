@@ -36,6 +36,9 @@ pub struct SyncProgress {
     /// Time committing them (a savepoint release inside a coalesced apply) and publishing their changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_commit_ms: Option<u64>,
+    /// Time from this payload's segment request to its last body byte, in ms (§7.7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +155,7 @@ impl ProgressObserver {
             unit_rows_processed: None,
             import_write_ms: None,
             import_commit_ms: None,
+            download_ms: None,
             error_code: None,
             cause_kind: None,
             http_status: None,

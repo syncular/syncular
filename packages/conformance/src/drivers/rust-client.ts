@@ -720,6 +720,9 @@ function progressValue(value: JsonValue): DriverSyncProgress {
     ...(typeof object.importCommitMs === 'number'
       ? { importCommitMs: object.importCommitMs }
       : {}),
+    ...(typeof object.downloadMs === 'number'
+      ? { downloadMs: object.downloadMs }
+      : {}),
     ...(typeof object.errorCode === 'string'
       ? { errorCode: object.errorCode }
       : {}),

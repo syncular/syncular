@@ -2,7 +2,8 @@
  * Browser half of the image range lane: a module worker bootstraps through the
  * real `SyncClient` over HTTP into the production OPFS SAH-pool replica, and
  * reports the import time, the pull rounds, the image refs per table and the
- * final wasm heap size. Phase messages let the page tag its memory samples.
+ * final wasm heap size, per image apply its transactions and times, and the
+ * VFS flush totals. Phase messages let the page tag its memory samples.
  */
 import { decodeMessage } from '../../packages/core/src/index';
 import { SyncClient } from '../../packages/web-client/src/client';
@@ -10,11 +11,13 @@ import {
   httpSegmentDownloader,
   httpSyncTransport,
 } from '../../packages/web-client/src/http';
+import type { SyncProgress } from '../../packages/web-client/src/progress';
 import { openPersistentWasmDatabase } from '../../packages/web-client/src/wasm-database';
 import { IMAGE_SCHEMA } from './image-import-fixture';
 
 const scope = globalThis as typeof globalThis & {
   __sqlite3?: { wasm: { heap8u(): Uint8Array } };
+  __vfs?: { syncMs: number; syncCalls: number };
   postMessage(message: unknown): void;
 };
 
@@ -52,6 +55,23 @@ scope.onmessage = async (event: MessageEvent) => {
     // segment downloads and of image applies inside it.
     const roundStarts: { at: number; httpMs: number }[] = [];
     const downloads: [number, number][] = [];
+    const downloadMs = new Map<string, number>();
+    // Per image apply: first import progress, last chunk commit, chunks, the
+    // largest chunk, and the rows and write+commit time at the last chunk.
+    const perImage = new Map<
+      string,
+      {
+        table: string;
+        first: number;
+        last: number;
+        chunks: number;
+        maxChunkRows: number;
+        rows: number;
+        writeMs: number;
+        commitMs: number;
+      }
+    >();
+    let current: SyncProgress | undefined;
     const applies = new Map<string, [number, number, number]>();
     let chunks = 0;
     const images: Record<string, number> = {};
@@ -66,6 +86,7 @@ scope.onmessage = async (event: MessageEvent) => {
         return await fetchSegment(request);
       } finally {
         downloads.push([at, performance.now()]);
+        downloadMs.set(request.segmentId, performance.now() - at);
       }
     };
     const client = new SyncClient({
@@ -88,11 +109,39 @@ scope.onmessage = async (event: MessageEvent) => {
         ? {}
         : { limits: { maxSnapshotPages } }),
     });
-    client.onChange(() => chunks++);
+    client.onChange(() => {
+      chunks++;
+      const progress = current;
+      if (progress?.segmentId === undefined) return;
+      const image = perImage.get(progress.segmentId);
+      if (image === undefined) return;
+      image.last = performance.now();
+      image.chunks++;
+      image.maxChunkRows = Math.max(
+        image.maxChunkRows,
+        progress.rowsProcessed - image.rows,
+      );
+      image.rows = progress.rowsProcessed;
+    });
     client.onProgress((progress) => {
+      current = progress;
       if (progress.phase !== 'import' || progress.segmentId === undefined)
         return;
       const now = performance.now();
+      if (!perImage.has(progress.segmentId))
+        perImage.set(progress.segmentId, {
+          table: progress.table ?? '',
+          first: now,
+          last: now,
+          chunks: 0,
+          maxChunkRows: 0,
+          rows: progress.rowsProcessed,
+          writeMs: 0,
+          commitMs: 0,
+        });
+      const image = perImage.get(progress.segmentId)!;
+      image.writeMs = progress.importWriteMs ?? 0;
+      image.commitMs = progress.importCommitMs ?? 0;
       const apply = applies.get(progress.segmentId);
       const spent =
         (progress.importWriteMs ?? 0) + (progress.importCommitMs ?? 0);
@@ -111,6 +160,14 @@ scope.onmessage = async (event: MessageEvent) => {
     roundStarts.length = 0;
     downloads.length = 0;
     applies.clear();
+    perImage.clear();
+    downloadMs.clear();
+    // A fixed amount of JavaScript work, to show the worker's CPU rate.
+    let probe = performance.now();
+    let sink = 0;
+    for (let i = 0; i < 2e7; i++) sink = (sink + i * 7) % 1_000_003;
+    probe = performance.now() - probe + (sink < 0 ? 1 : 0);
+    const vfsBefore = { ...(scope.__vfs ?? { syncMs: 0, syncCalls: 0 }) };
     for (const table of Object.keys(images)) delete images[table];
     scope.postMessage({ t: 'phase', phase: 'import' });
     const started = performance.now();
@@ -172,6 +229,7 @@ scope.onmessage = async (event: MessageEvent) => {
       ]),
     );
     await client.close();
+    const vfs = scope.__vfs ?? { syncMs: 0, syncCalls: 0 };
     scope.postMessage({
       t: 'done',
       value: {
@@ -183,6 +241,24 @@ scope.onmessage = async (event: MessageEvent) => {
         rows,
         firstUnitMs,
         readLagMs,
+        cpuProbeMs: Math.round(probe),
+        vfs: {
+          syncCalls: vfs.syncCalls - vfsBefore.syncCalls,
+          syncMs: Math.round(vfs.syncMs - vfsBefore.syncMs),
+        },
+        perImage: [...perImage].map(([segmentId, image]) => ({
+          table: image.table,
+          rows: image.rows,
+          chunks: image.chunks,
+          maxChunkRows: image.maxChunkRows,
+          writeMs: image.writeMs,
+          commitMs: image.commitMs,
+          wallMs: Math.round(image.last - image.first),
+          outsideMs: Math.round(
+            image.last - image.first - image.writeMs - image.commitMs,
+          ),
+          downloadMs: Math.round(downloadMs.get(segmentId) ?? 0),
+        })),
         wasmHeapBytes: scope.__sqlite3!.wasm.heap8u().byteLength,
       },
     });

@@ -507,8 +507,8 @@ function imageInvalid(detail: string): never {
 
 /**
  * Apply a §5.3 sqlite image in committed chunks of at most 65,536 rows,
- * each sized from the time the chunk before took: validate the in-file
- * metadata against the descriptor, validate the data table's column names/order against the generated schema, run the
+ * each sized from the time the chunk before took until its COMMIT: validate
+ * the in-file metadata against the descriptor, validate the data table's column names/order against the generated schema, run the
  * §5.6 first-page clear when fresh, then bulk-copy 1,024-row ranges through a
  * primary-key upsert — `_syncular_version` lands in
  * `_sync_version` exactly like a rows segment's per-row `serverVersion`.
@@ -641,8 +641,8 @@ export async function applySqliteSegment(
     // §5.3: a table's first chunk holds 1,024 rows; a later range image
     // starts at the size its previous range reached. A later chunk holds at least
     // 1,024 rows, at most twice the rows of the one before, at most 65,536,
-    // and at most the rows the one before applied per 250 ms from its start
-    // to its COMMIT; a replaying chunk holds one statement.
+    // and at most the rows the one before applied per 250 ms of its time
+    // before COMMIT; a replaying chunk holds one statement.
     for (
       let size =
         (!options.clearFirst && options.chunkRows?.get(table.name)) || 1024;
@@ -650,6 +650,7 @@ export async function applySqliteSegment(
     ) {
       if (options.isCurrent?.() === false) return applied - resumed;
       const started = now();
+      let written = started;
       let chunk = 0;
       const first = applied === 0;
       const replay = countOutbox(db) || retainsRows(db, table);
@@ -723,14 +724,19 @@ export async function applySqliteSegment(
           ),
         );
         options.onChunk?.(applied);
-        return rebaseScope(scope, kept, skipped);
+        const rebased = rebaseScope(scope, kept, skipped);
+        written = now();
+        return rebased;
       });
-      const duration = now() - started;
       await yieldToHost();
       if (boundary === undefined || applied === count) break;
       size = Math.max(
         1024,
-        Math.min(2 * chunk, 65_536, Math.floor((chunk * 250) / duration)),
+        Math.min(
+          2 * chunk,
+          65_536,
+          Math.floor((chunk * 250) / (written - started)),
+        ),
       );
       options.chunkRows?.set(table.name, size);
       [boundary, where, params] = range(boundary, Math.min(1024, size));

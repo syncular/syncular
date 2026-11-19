@@ -8,6 +8,7 @@
  *
  *   bun run --cwd bench bench:image-range [--config before|after] [--runs 2] [--scale 1]
  *     [--units 7] [--fts] [--ephemeral] [--max-pages 1]
+ *     [--browser firefox] [--cpu-throttle 6] [--sync-delay-ms 200]
  *
  * `before` lifts `maxImageSegmentBytes` to 4 GiB (one image per table), `after`
  * keeps the 32 MiB default.
@@ -16,6 +17,14 @@
  * memory, like a private window), and `--max-pages` limits the image ranges per
  * unit and round. `firstUnitMs` is when the first unit finished, `readLagMs` how
  * late a 50 ms timer in the worker ran during the import.
+ * `--browser` picks Chromium (default) or Firefox. `--cpu-throttle` slows
+ * the renderer processes by that factor (persistent Chromium only). `--sync-delay-ms` holds every VFS `xSync` (a
+ * `FileSystemSyncAccessHandle.flush()`) that long on top of its own time, the
+ * way a slow disk or a scanning antivirus stretches a flush.
+ * `perImage` lists each image apply: rows, chunks, the largest chunk, the
+ * write and commit time of its chunks, its wall time from the first progress
+ * to the last chunk, the time between chunk commits outside them, and the
+ * download time of its segment; `vfs` totals the `xSync` calls.
  * The first run builds the images; later runs find them in the segment store,
  * so `serverSyncMs` shows the build cost.
  * Memory, sampled during the import only (`measureUserAgentSpecificMemory`
@@ -29,7 +38,7 @@
 import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { chromium } from 'playwright';
+import { chromium, firefox } from 'playwright';
 import { encodeRow } from '../../packages/core/src/index';
 import { createSyncularHono } from '../../packages/server-hono/src/index';
 import {
@@ -52,10 +61,20 @@ const { values } = parseArgs({
     'max-pages': { type: 'string' },
     runs: { type: 'string', default: '2' },
     scale: { type: 'string', default: '1' },
+    browser: { type: 'string', default: 'chromium' },
+    'cpu-throttle': { type: 'string', default: '1' },
+    'sync-delay-ms': { type: 'string', default: '0' },
   },
 });
 if (values.config !== 'before' && values.config !== 'after')
   throw new Error('--config must be before or after');
+if (values.browser !== 'chromium' && values.browser !== 'firefox')
+  throw new Error('--browser must be chromium or firefox');
+const engine = values.browser === 'firefox' ? firefox : chromium;
+const cpuThrottle = Number(values['cpu-throttle']);
+const syncDelayMs = Number(values['sync-delay-ms']);
+if (cpuThrottle !== 1 && (values.browser !== 'chromium' || values.ephemeral))
+  throw new Error('--cpu-throttle needs a persistent Chromium context');
 const scale = Number(values.scale);
 if (!(scale > 0)) throw new Error('--scale must be positive');
 
@@ -181,12 +200,33 @@ const vendor = dirname(
     join(import.meta.dir, '../../packages/web-client'),
   ),
 );
-// Exposes the module so the worker can read the wasm heap size.
+// Exposes the module so the worker can read the wasm heap size, and wraps
+// the xSync of every VFS file (replica and journal) to count it and to hold
+// it ${syncDelayMs} ms longer.
 const shim = `
 import realInit from '/vendor/index.mjs';
 export default async function init(config) {
   const sqlite3 = await realInit(config);
   globalThis.__sqlite3 = sqlite3;
+  const totals = (globalThis.__vfs = { syncMs: 0, syncCalls: 0 });
+  const Methods = sqlite3.capi.sqlite3_io_methods;
+  const wrapped = new Set();
+  sqlite3.capi.sqlite3_io_methods = function (pointer) {
+    const methods = new Methods(pointer);
+    if (wrapped.has(pointer)) return methods;
+    wrapped.add(pointer);
+    const sync = sqlite3.wasm.functionEntry(methods.$xSync);
+    methods.installMethod('xSync', (file, flags) => {
+      const started = performance.now();
+      try { return sync(file, flags); }
+      finally {
+        while (performance.now() - started < ${syncDelayMs});
+        totals.syncMs += performance.now() - started;
+        totals.syncCalls++;
+      }
+    });
+    return methods;
+  };
   return sqlite3;
 }`;
 
@@ -232,15 +272,28 @@ for (let run = 1; run <= Number(values.runs); run++) {
   mkdirSync(directory, { recursive: true });
   const profile = join(directory, 'profile');
   // An ephemeral context keeps OPFS in memory, like a private window.
-  const browser = values.ephemeral ? await chromium.launch() : undefined;
+  const browser = values.ephemeral ? await engine.launch() : undefined;
   const context = browser
     ? await browser.newContext()
-    : await chromium.launchPersistentContext(profile);
+    : await engine.launchPersistentContext(profile);
   let importing = false;
   let rssStart: number | undefined;
   let rssPeak = 0;
+  const renderers = new Set<number>();
+  // DevTools CPU throttling covers pages, not dedicated workers, so the lane
+  // stops the renderer processes for (rate - 1) * 10 ms after every 10 ms.
+  const throttling = { on: cpuThrottle !== 1 };
+  const throttle = (async () => {
+    while (throttling.on) {
+      await Bun.sleep(10);
+      const stopped = [...renderers];
+      for (const pid of stopped) process.kill(pid, 'SIGSTOP');
+      await Bun.sleep((cpuThrottle - 1) * 10);
+      for (const pid of stopped) process.kill(pid, 'SIGCONT');
+    }
+  })();
   const poll = setInterval(async () => {
-    if (!importing) return;
+    if (!importing && !throttling.on) return;
     const ps = Bun.spawn(['ps', '-axo', 'pid=,ppid=,rss=,command='], {
       stdout: 'pipe',
     });
@@ -254,6 +307,8 @@ for (let run = 1; run <= Number(values.runs); run++) {
     )?.[1];
     for (const m of table)
       if (m[2] === browser && m[4]!.includes('--type=renderer')) {
+        renderers.add(Number(m[1]));
+        if (!importing) continue;
         rssStart ??= Number(m[3]) / 1024;
         rssPeak = Math.max(rssPeak, Number(m[3]) / 1024);
       }
@@ -299,6 +354,8 @@ for (let run = 1; run <= Number(values.runs); run++) {
     });
   } finally {
     clearInterval(poll);
+    throttling.on = false;
+    await throttle;
     await context.close();
     await browser?.close();
   }
@@ -309,6 +366,9 @@ console.log(
   JSON.stringify(
     {
       config: values.config,
+      browser: values.browser,
+      cpuThrottle,
+      syncDelayMs,
       units,
       ephemeral: values.ephemeral,
       fts: values.fts,

@@ -100,7 +100,7 @@ export const TAKEOVER_REFUSED_CODE = 'client.takeover_refused';
  * or result, so tabs of different builds never serve each other;
  * test/multi-tab-protocol.test.ts pins the surface's fingerprint to it.
  */
-export const MULTI_TAB_PROTOCOL_VERSION = 6;
+export const MULTI_TAB_PROTOCOL_VERSION = 7;
 
 /** What a tab must share with its leader to be served by it. */
 export interface TabIdentity {

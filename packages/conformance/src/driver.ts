@@ -1246,6 +1246,7 @@ export interface DriverSyncProgress {
   readonly unitRowsProcessed?: number | undefined;
   readonly importWriteMs?: number | undefined;
   readonly importCommitMs?: number | undefined;
+  readonly downloadMs?: number | undefined;
   readonly errorCode?: string;
   readonly causeKind?: string;
   readonly httpStatus?: number;

@@ -104,9 +104,13 @@ export const sqliteImageScenarios: readonly Scenario[] = [
       const progress = await image.api.progressSnapshot?.();
       if (progress !== undefined)
         checkEqual(
-          [typeof progress.importWriteMs, typeof progress.importCommitMs],
-          ['number', 'number'],
-          'the image payload reports its write and commit time (§7.7)',
+          [
+            typeof progress.importWriteMs,
+            typeof progress.importCommitMs,
+            typeof progress.downloadMs,
+          ],
+          ['number', 'number', 'number'],
+          'the image payload reports its write, commit and download time (§7.7)',
         );
       const pin = await ctx.server.getMaxCommitSeq();
       checkEqual(

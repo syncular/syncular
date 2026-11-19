@@ -315,12 +315,21 @@ describe('CREATE INDEX subset — client local DDL', () => {
 
   test.each([
     // 1,024 rows, then 1,024 × 250 / 128 = 2,000 and 2,000 × 250 / 128 = 3,906.
-    [128, 8000, [1024, 3024, 6930, 8000]],
+    [128, 0, 8000, [1024, 3024, 6930, 8000]],
     // 1,024 × 250 / 400 = 640 rows stays at the 1,024-row floor.
-    [400, 3000, [1024, 2048, 3000]],
+    [400, 0, 3000, [1024, 2048, 3000]],
+    // A 1 s COMMIT (four slow flushes) leaves the doubling.
+    [10, 1000, 8000, [1024, 3072, 7168, 8000]],
+    // Doubling stops at 65,536 rows.
+    [
+      1,
+      1000,
+      200_000,
+      [1024, 3072, 7168, 15_360, 31_744, 64_512, 130_048, 195_584, 200_000],
+    ],
   ])(
-    'image chunks of %i ms each size the next one by the rows per 250 ms',
-    async (chunkMs, total, expected) => {
+    'image chunks writing %i ms and committing %i ms size the next one by the rows per 250 ms of writing',
+    async (writeMs, commitMs, total, expected) => {
       const db = new BunClientDatabase();
       const image = new BunClientDatabase();
       const compiled = compileClientSchema(SCHEMA);
@@ -357,8 +366,11 @@ describe('CREATE INDEX subset — client local DDL', () => {
               effective: { project_id: ['p1'] },
               owners: () => [],
               transaction: (fn) => {
-                const result = db.transaction(fn);
-                clock += chunkMs;
+                const result = db.transaction(() => {
+                  clock += writeMs;
+                  return fn();
+                });
+                clock += commitMs;
                 committed.push(
                   Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n),
                 );
@@ -422,8 +434,10 @@ describe('CREATE INDEX subset — client local DDL', () => {
               owners: () => [],
               chunkRows,
               transaction: (fn) => {
-                const result = db.transaction(fn);
-                clock += 128;
+                const result = db.transaction(() => {
+                  clock += 128;
+                  return fn();
+                });
                 committed.push(
                   Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n),
                 );
@@ -916,16 +930,26 @@ test('image and rows payloads report their import cost; the next payload starts 
     const tasks = seen.filter(
       (progress) => progress.table === 'tasks' && progress.phase === 'import',
     );
-    // The cost appears once the first transaction committed.
+    // The cost appears once the first transaction committed; the download
+    // time once the body arrived.
     expect(tasks[0]?.importWriteMs).toBeUndefined();
+    expect(tasks[0]?.downloadMs).toEqual(expect.any(Number));
+    expect(
+      seen.find((progress) => progress.phase === 'download')?.downloadMs,
+    ).toBeUndefined();
     expect(tasks.at(-1)).toMatchObject({
       rowsProcessed: 3000,
       importWriteMs: expect.any(Number),
       importCommitMs: expect.any(Number),
+      downloadMs: expect.any(Number),
     });
     const notes = seen.filter((progress) => progress.table === 'notes');
     expect(notes[0]?.importWriteMs).toBeUndefined();
     expect(notes[0]?.importCommitMs).toBeUndefined();
+    // An inline segment downloads nothing.
+    expect(notes.every((progress) => progress.downloadMs === undefined)).toBe(
+      true,
+    );
     expect(notes.at(-1)).toMatchObject({
       rowsProcessed: 1,
       importWriteMs: expect.any(Number),
