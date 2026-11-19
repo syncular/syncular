@@ -124,9 +124,15 @@ export interface RoundFailureFrame {
   code: string;
 }
 
+/** §2.1: the sender holds nothing bound to a log epoch and adopts the current one. */
+export interface AdoptEpochFrame {
+  type: 'ADOPT_EPOCH';
+}
+
 export type RequestFrame =
   | ReqHeaderFrame
   | RoundFailureFrame
+  | AdoptEpochFrame
   | PushCommitFrame
   | PullHeaderFrame
   | UnitFrame
@@ -841,6 +847,9 @@ function decodeRequestFrame(
     case FrameType.ROUND_FAILURE:
       frame = decodeRoundFailure(r);
       break;
+    case FrameType.ADOPT_EPOCH:
+      frame = { type: 'ADOPT_EPOCH' };
+      break;
     case FrameType.PUSH_COMMIT:
       frame = decodePushCommit(r);
       break;
@@ -936,6 +945,11 @@ function validateRequestSequence(frames: readonly RequestFrame[]): void {
           invalid('ROUND_FAILURE frame must immediately follow REQ_HEADER');
         }
         sawRoundFailure = true;
+        break;
+      case 'ADOPT_EPOCH':
+        // §1.5: at most one, immediately after REQ_HEADER or ROUND_FAILURE.
+        if (index > (sawRoundFailure ? 2 : 1))
+          invalid('misplaced ADOPT_EPOCH frame');
         break;
       case 'PUSH_COMMIT':
         if (hasPull) invalid('PUSH_COMMIT frame after PULL_HEADER');

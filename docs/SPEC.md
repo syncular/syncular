@@ -420,6 +420,7 @@ Frame type registry (wire version 4):
 | `0x05` | `ROUND_FAILURE` | request | 1.5 |
 | `0x06` | `PROGRESS` | request | 4.3 |
 | `0x07` | `RESTRICT` | request | 4.3 |
+| `0x08` | `ADOPT_EPOCH` | request | 2.1 |
 | `0x10` | `RESP_HEADER` | response | 1.6 |
 | `0x11` | `PUSH_RESULT` | response | 6.3 |
 | `0x12` | `SUB_START` | response | 4.4 |
@@ -512,6 +513,7 @@ must not persist them earlier anyway.
 ```
 REQ_HEADER                      exactly once, first
 ROUND_FAILURE                   0 or 1, immediately after REQ_HEADER
+ADOPT_EPOCH                     0 or 1, immediately after REQ_HEADER or ROUND_FAILURE (§2.1)
 PUSH_COMMIT × N                 N ≥ 0, in outbox order
 PULL_HEADER                     0 or 1
 UNIT × M                        M ≥ 0, only if PULL_HEADER present (§4.1)
@@ -533,7 +535,7 @@ envelope codec rejects a no-content request as a **decode error** under
 |---|---|---|---|
 | `clientId` | `str` | 3 | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
 | `schemaVersion` | `i32` | 3 | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
-| `logEpoch` | `opt(str)` | 3 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames |
+| `logEpoch` | `opt(str)` | 3 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames; with `ADOPT_EPOCH` it requests adoption (§2.1) |
 | `outboxId` | `opt(str)` | 4 | The identity of the sender's outbox sequence (§6.3.2, §7.1). Present on every request of a client replica; absent for a sender without an outbox (§6.10, §12.3). When present, non-empty and at most 64 bytes; any other value is a decode error |
 
 **`ROUND_FAILURE` payload:**
@@ -601,7 +603,7 @@ depend on the request and stay producer conformance rules.
 | `requiredSchemaVersion` | `opt(i32)` | 3 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
 | `latestSchemaVersion` | `opt(i32)` | 3 | Informational: newest schema version the server knows. MUST NOT block syncing |
 | `logEpoch` | `str` | 3 | The current partition log identity (§2.1), non-empty |
-| `resetRequired` | `bool` | 3 | True when the request omitted `logEpoch` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
+| `resetRequired` | `bool` | 3 | True when the request omitted `logEpoch` without `ADOPT_EPOCH` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
 
 `logEpoch` and `resetRequired` are present in every response. A
 schema-floor response carries both schema-version fields next to them;
@@ -882,11 +884,35 @@ push application, pull reads, or client-record updates:
 2. An absent value is epoch acquisition. The request MUST carry no
    `PUSH_COMMIT`; the server returns `RESP_HEADER.resetRequired = true` and
    the current `logEpoch`, then `END`.
-3. A different value is a log discontinuity. The server returns the same
+3. An absent value with an `ADOPT_EPOCH` frame is epoch adoption. The
+   request MUST carry no `PUSH_COMMIT`. The server serves it as a request
+   bound to the current `logEpoch` and returns that value with
+   `resetRequired = false`.
+4. A different value is a log discontinuity. The server returns the same
    reset response and performs no other request work.
 
-If the replica has never stored a `logEpoch`, the client persists the acquired
-value and schedules the next round. Acquisition MUST NOT raise `upgrading`,
+**`ADOPT_EPOCH`** (`0x08`) has an empty payload; a non-empty payload is a
+decode error. It states that the sender holds nothing bound to a log epoch:
+no cursor at or above `0`, no resume token, no row a server sent and no
+`PUSH_COMMIT` sent under an epoch. A replica that has never stored a
+`logEpoch` is in that state, because only an epoch-bound response delivers
+cursors and rows, and only an epoch-bound request pushes. Its client therefore
+sends `ADOPT_EPOCH` in every request without `logEpoch`. A request that
+carries `ADOPT_EPOCH` and a `logEpoch` fails with `sync.invalid_request`.
+The server needs no further check of the request: a client could acquire the
+epoch first and send any cursor with it, so the rule protects the sender's own
+replica, and only the sender can know its state.
+
+The client stores the adopted `logEpoch` before it applies the response's
+sections. A response that fails after that point leaves every unit at the
+cursor it held, and the next request is epoch-bound. A fresh replica's first
+round therefore carries its units' sections, and its outbox pushes in the next
+round. A server that predates `ADOPT_EPOCH` skips it as an unknown frame
+(§1.2 rule 2) and answers acquisition; a client that predates it never sends
+it and receives acquisition from every server.
+
+If the replica has never stored a `logEpoch` and the response requires a
+reset, the client persists the acquired value and schedules the next round. Acquisition MUST NOT raise `upgrading`,
 drop synced tables, alter rows or reset unit progress. Existing local
 outbox intent remains visible and is sent only in the next epoch-bound request.
 
@@ -7719,8 +7745,8 @@ pinned, never interpreted.
   and the native bridge does not forward the option. Such a round has no
   duty left: §8.1 `requiresSync` protects continuity of registered units and
   there are none; a lease (§7.3) protects offline work and there is none; the
-  log-epoch handshake (§2.1) runs as the first round of the drive that
-  carries the first unit or commit. A replica that releases its last unit
+  log-epoch adoption or acquisition (§2.1) runs as the first round of the
+  drive that carries the first unit or commit. A replica that releases its last unit
   still runs the round that sends the empty list. Both hosts also accept
   `coalesceMs` (default 0): a drive queued by an intent starts that many
   milliseconds later instead of in the next microtask, and every intent in
@@ -8496,7 +8522,8 @@ object's single thread orders a registration before or after each relay.
   version 4: a peer that predates one skips it, and a server that predates
   one never emits it. `RESTRICT` (§4.3) is the request-side frame of this
   kind: a server that predates it skips it and answers the restricted unit
-  with a whole bootstrap, which the client applies (§5.6).
+  with a whole bootstrap, which the client applies (§5.6). `ADOPT_EPOCH`
+  (§2.1) is another: a server that predates it answers epoch acquisition.
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
@@ -9031,7 +9058,8 @@ byte-identical output):
 | 35 | `registration/digests` | JSON only, one object `{"units":[{"scopes","canonicalJson","id"}],"registrations":[{"units","canonicalJson","digest"}],"echoes":[{"units","canonicalJson","digest"}]}`: scope maps with their unit ids, lists with their registration digests (the §4.1 golden example plus non-BMP keys and an integer-text value), and effective lists with their echo digests (§4.4). Digests render as 64 lowercase hex characters |
 | 36 | `response/bootstrap-unit-extent` | Two unit sections: a fresh bootstrap whose `UNIT_EXTENT` states `rowsDone = 0` and a resumed one with `rowsDone` above 0, each immediately after its `SUB_START` (§4.4) |
 | 37 | `request/pull-restrict` | Two restricted units (§4.3 `RESTRICT`, §4.7): a first round with `PROGRESS` cursor `-1` and the kept cursor in `RESTRICT`, and a resumed round at the join cursor with a token over the bootstrap tables |
-| — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1`; `RESTRICT` not immediately after `PROGRESS`, `RESTRICT.cursor = -1`, an empty `RESTRICT.tables`, `RESTRICT.tables` out of order |
+| 38 | `request/epoch-adopt` | A fresh replica's first request: no `logEpoch`, `ADOPT_EPOCH`, a pull with one `UNIT` and its `PROGRESS` at cursor `-1` (§2.1) |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1`; `RESTRICT` not immediately after `PROGRESS`, `RESTRICT.cursor = -1`, an empty `RESTRICT.tables`, `RESTRICT.tables` out of order; `ADOPT_EPOCH` with a payload byte, twice, or after `PULL_HEADER` or before `ROUND_FAILURE` |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest`, `UNIT_EXTENT` after a non-bootstrap `SUB_START`, after a segment frame, or with `rowsTotal = -1` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |

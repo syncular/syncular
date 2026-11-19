@@ -322,7 +322,9 @@ Start the server, then restart maintenance and the reaction runners.
 
 ### Client behavior after traffic resumes
 
-A replica without a stored log epoch acquires it in its first round. The client persists the epoch and schedules the next round without raising `upgrading`, dropping tables, or resetting unit progress. Local outbox rows stay visible throughout acquisition.
+A replica without a stored log epoch holds no cursor and no server row, so it adopts the epoch in its first round. The client sends that round's pull without an epoch and with the `ADOPT_EPOCH` frame ([SPEC §2.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#21-commits-and-the-log)). The server serves it under the current epoch and returns the epoch with the units' sections; the client stores the epoch before it applies them. The outbox waits for the next round, which carries the epoch. Local outbox rows stay visible throughout.
+
+A server from 0.91.0 or earlier skips `ADOPT_EPOCH` and answers with the current epoch and no sections. The client then persists the epoch and schedules the next round without raising `upgrading`, dropping tables, or resetting unit progress, so a fresh replica's first sync takes one extra round trip against such a server.
 
 A client sends its stored partition log epoch on every round. A differing stored epoch resets the replica: the server answers with a header-only response that carries the current epoch and `resetRequired: true`. The client clears server rows, the replica cursor, every unit's cursor and bootstrap state, and downloaded segment metadata. It keeps the client ID, the registration list, local-only tables, and the durable outbox, and it sends the registration list in its next round. The next rounds bootstrap the current server state and replay pending outbox commits against it.
 

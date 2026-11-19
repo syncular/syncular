@@ -51,6 +51,51 @@ impl Transport for Server {
     }
 }
 
+/// §2.1: a fresh replica adopts the epoch in its first round and applies its
+/// unit's bootstrap from the same response; its outbox pushes next round.
+#[test]
+fn a_fresh_replica_adopts_the_epoch_and_bootstraps_in_one_round() {
+    let mut server = Server(LocalAuthority::open(":memory:", &schema()).unwrap());
+    let scopes = UnitScopes::from([("list_id".to_owned(), "one".to_owned())]);
+    let mut peer = SyncClient::new("peer".into(), &schema(), ClientLimits::default()).unwrap();
+    peer.subscribe(scopes.clone()).unwrap();
+    peer.mutate(vec![Mutation::Upsert {
+        table: "notes".into(),
+        values: Map::from_iter([
+            ("id".into(), json!("n1")),
+            ("list_id".into(), json!("one")),
+            ("title".into(), json!("first")),
+            ("body".into(), json!("first")),
+        ]),
+        base_version: None,
+    }])
+    .unwrap();
+    idle(&mut peer, &mut server);
+    let mut fresh = SyncClient::new("fresh".into(), &schema(), ClientLimits::default()).unwrap();
+    fresh.subscribe(scopes).unwrap();
+    let id = fresh
+        .mutate(vec![Mutation::Upsert {
+            table: "notes".into(),
+            values: Map::from_iter([
+                ("id".into(), json!("n2")),
+                ("list_id".into(), json!("one")),
+                ("title".into(), json!("mine")),
+                ("body".into(), json!("mine")),
+            ]),
+            base_version: None,
+        }])
+        .unwrap();
+    let SyncOutcome::Ok(report) = fresh.sync(&mut server) else {
+        panic!("the adoption round failed");
+    };
+    assert_eq!((report.pushed, report.resets.len()), (0, 0));
+    assert!(fresh.get_meta(LOG_EPOCH_KEY).unwrap().is_some());
+    assert_eq!(fresh.read_rows("notes").unwrap().len(), 2);
+    assert_eq!(fresh.pending_commit_ids(), vec![id.clone()]);
+    idle(&mut fresh, &mut server);
+    assert!(fresh.pending_commit_ids().is_empty());
+}
+
 /// A server, a peer that writes ahead, and a reader whose patch conflicts.
 struct Setup {
     server: Server,

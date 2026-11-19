@@ -612,14 +612,15 @@ export class ScenarioContext {
         sync: async (bytes) => {
           sentRequests.push(bytes);
           let request = bytes;
-          if (faults.skipRestrict) {
+          if (faults.skipRequestFrames.length > 0) {
             const message = decodeMessage(bytes);
             if (message.msgKind !== 'request')
               throw new Error('expected request');
             request = encodeMessage({
               ...message,
               frames: message.frames.filter(
-                (frame) => frame.type !== 'RESTRICT',
+                (frame) =>
+                  !faults.skipRequestFrames.some((type) => type === frame.type),
               ),
             });
           }

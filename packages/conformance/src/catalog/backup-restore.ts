@@ -1,4 +1,4 @@
-import { unitId } from '@syncular/core';
+import { decodeMessage, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
 import type { Scenario } from '../scenario';
@@ -8,94 +8,112 @@ const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
 
 export const backupRestoreScenarios: readonly Scenario[] = [
-  {
-    name: 'backup-restore/first-epoch-acquisition-preserves-ready-replica',
-    specRefs: ['§2.1', '§7.1', '§7.5'],
-    async run(ctx) {
-      const a = await ctx.newClient({
-        actorId: 'actor-a',
-        clientId: 'client-a',
-        allowed: P1,
-      });
-      await a.api.subscribe(U1);
-      const id = await a.api.mutate([
-        {
-          op: 'upsert',
-          table: 'tasks',
-          values: task('offline', 'p1', 'before epoch'),
-        },
-      ]);
-      const before = await unitProgress(a, U1);
-      check(
-        a.api.drainChangeBatches !== undefined &&
-          a.api.executeStorageSql !== undefined &&
-          a.api.querySnapshot !== undefined &&
-          a.api.upgrading !== undefined &&
-          a.api.prepareRound !== undefined &&
-          a.api.completeRound !== undefined,
-        'client supplies storage and observation evidence',
-      );
-      await a.api.executeStorageSql(
-        'CREATE TRIGGER epoch_table_identity AFTER INSERT ON tasks BEGIN SELECT 1; END',
-      );
-      await a.api.drainChangeBatches();
-      await a.api.prepareRound();
-      const acquisition = await a.api.completeRound();
-      check(acquisition.ok, 'epoch acquisition completes');
-      const acquired = acquisition.report;
-      checkEqual(
-        acquired.resets,
-        [],
-        'first epoch acquisition reports no reset',
-      );
-      checkEqual(
-        await a.api.upgrading(),
-        false,
-        'acquisition leaves the ready replica available',
-      );
-      check(
-        (await a.api.drainChangeBatches()).every(
-          (batch) => !batch.status?.upgrading,
-        ),
-        'every acquisition status avoids migrating',
-      );
-      checkEqual(
-        await unitProgress(a, U1),
-        before,
-        'acquisition preserves subscription progress',
-      );
-      checkEqual(
-        await a.api.pendingCommitIds(),
-        [id],
-        'handshake does not send or discard pending intent',
-      );
-      checkEqual(
-        (await a.api.readRows('tasks'))[0]?.values.title,
-        'before epoch',
-        'local intent stays visible',
-      );
-      checkEqual(
-        (
-          await a.api.querySnapshot(
-            "SELECT name FROM sqlite_master WHERE name='epoch_table_identity'",
-          )
-        ).rows.length,
-        1,
-        'acquisition does not drop the table',
-      );
-      await syncIdle(a);
-      checkEqual(
-        await a.api.pendingCommitIds(),
-        [],
-        'the epoch-bound follow-up sends pending intent',
-      );
-      checkEqual(
-        await a.api.upgrading(),
-        false,
-        'convergence never raises upgrading',
-      );
-    },
-  },
+  // §2.1: a fresh replica adopts the epoch, so its first round carries its
+  // unit's sections. A server that predates ADOPT_EPOCH skips the frame and
+  // answers acquisition; the first round then changes nothing but the epoch.
+  ...[false, true].map(
+    (older): Scenario => ({
+      name: older
+        ? 'backup-restore/older-server-acquisition-preserves-ready-replica'
+        : 'backup-restore/fresh-replica-adopts-epoch-in-one-round',
+      specRefs: ['§2.1', '§7.1', '§7.5', '§9'],
+      async run(ctx) {
+        const a = await ctx.newClient({
+          actorId: 'actor-a',
+          clientId: 'client-a',
+          allowed: P1,
+        });
+        if (older) a.faults.skipRequestFrames = ['ADOPT_EPOCH'];
+        await seedTasks(ctx, [task('served', 'p1', 'from server')]);
+        await a.api.subscribe(U1);
+        const id = await a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('offline', 'p1', 'before epoch'),
+          },
+        ]);
+        const before = await unitProgress(a, U1);
+        check(
+          a.api.drainChangeBatches !== undefined &&
+            a.api.executeStorageSql !== undefined &&
+            a.api.querySnapshot !== undefined &&
+            a.api.upgrading !== undefined &&
+            a.api.prepareRound !== undefined &&
+            a.api.completeRound !== undefined,
+          'client supplies storage and observation evidence',
+        );
+        await a.api.executeStorageSql(
+          'CREATE TRIGGER epoch_table_identity AFTER INSERT ON tasks BEGIN SELECT 1; END',
+        );
+        await a.api.drainChangeBatches();
+        await a.api.prepareRound();
+        const first = await a.api.completeRound();
+        check(first.ok, 'the first round completes');
+        const request = decodeMessage(a.sentRequests[0]!);
+        checkEqual(
+          request.frames[1]?.type,
+          'ADOPT_EPOCH',
+          'a replica without an epoch sends ADOPT_EPOCH',
+        );
+        checkEqual(first.report.resets, [], 'the first round reports no reset');
+        checkEqual(
+          await a.api.upgrading(),
+          false,
+          'the first round leaves the ready replica available',
+        );
+        check(
+          (await a.api.drainChangeBatches()).every(
+            (batch) => !batch.status?.upgrading,
+          ),
+          'every first-round status avoids migrating',
+        );
+        checkEqual(
+          (await a.api.readRows('tasks')).map((row) => row.rowId),
+          older ? ['offline'] : ['offline', 'served'],
+          older
+            ? 'acquisition applies no section'
+            : 'adoption applies the unit section in the first round',
+        );
+        if (older)
+          checkEqual(
+            await unitProgress(a, U1),
+            before,
+            'acquisition preserves subscription progress',
+          );
+        checkEqual(
+          await a.api.pendingCommitIds(),
+          [id],
+          'the first round does not send or discard pending intent',
+        );
+        checkEqual(
+          (
+            await a.api.querySnapshot(
+              "SELECT name FROM sqlite_master WHERE name='epoch_table_identity'",
+            )
+          ).rows.length,
+          1,
+          'the first round does not drop the table',
+        );
+        await syncIdle(a);
+        checkEqual(
+          await a.api.pendingCommitIds(),
+          [],
+          'the epoch-bound follow-up sends pending intent',
+        );
+        checkEqual(
+          (await a.api.readRows('tasks')).map((row) => row.rowId),
+          ['offline', 'served'],
+          'the replica converges',
+        );
+        checkEqual(
+          await a.api.upgrading(),
+          false,
+          'convergence never raises upgrading',
+        );
+      },
+    }),
+  ),
   {
     name: 'backup-restore/log-epoch-resets-ahead-client',
     specRefs: ['§2.1', '§6.3'],

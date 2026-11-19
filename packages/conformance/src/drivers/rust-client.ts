@@ -1500,13 +1500,12 @@ class RustClientInstance implements ClientInstance {
 
   async sync(): Promise<ClientSyncResult> {
     const first = parseClientSyncResult(await this.#shim.call('sync', {}));
-    if (
-      !this.#epochEstablished &&
-      first.ok &&
-      first.report.schemaFloor === undefined
-    ) {
+    if (first.ok && first.report.schemaFloor === undefined) {
+      const adopting = !this.#epochEstablished;
       this.#epochEstablished = true;
-      return parseClientSyncResult(await this.#shim.call('sync', {}));
+      // §2.1: the adoption round withholds the outbox; one sync() pushes.
+      if (adopting && (first.report.deferredCommits ?? 0) > 0)
+        return parseClientSyncResult(await this.#shim.call('sync', {}));
     }
     return first;
   }

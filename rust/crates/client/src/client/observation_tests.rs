@@ -4227,7 +4227,15 @@ fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
             client.set_meta(LOG_EPOCH_KEY, epoch).unwrap();
         }
         let before = client.unit(&unit).unwrap();
-        let (_, meta) = client.build_request(false).unwrap();
+        let (request, meta) = client.build_request(false).unwrap();
+        // §2.1: only an epoch-less request carries ADOPT_EPOCH, and it
+        // withholds the outbox; a server that predates the frame answers it
+        // with acquisition.
+        assert_eq!(
+            request.frames.contains(&Frame::AdoptEpoch),
+            stored.is_none()
+        );
+        assert_eq!(meta.pushed_ids.is_empty(), stored.is_none());
         client.drain_change_batches();
         client.drain_sync_intents();
         let response = Message {

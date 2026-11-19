@@ -1973,12 +1973,12 @@ test('a host drive through the worker handle holds its idle-confirming round for
       settled = true;
     });
     await waitFor(() => timers.includes(25), observe, 'the held round');
-    // The registration round, then the bootstrap round that lands h1.
-    expect(http.syncAuthorizations.length).toBe(before + 2);
+    // §2.1: one adoption round registers the unit and lands h1.
+    expect(http.syncAuthorizations.length).toBe(before + 1);
     expect(settled).toBe(false);
     worker.postMessage({ t: 'fire-timer' });
     expect(await drive).toMatchObject({ segmentRowsApplied: 1 });
-    expect(http.syncAuthorizations.length).toBe(before + 3);
+    expect(http.syncAuthorizations.length).toBe(before + 2);
   } finally {
     if (allowed === undefined) delete server.allowed['actor-1'];
     else server.allowed['actor-1'] = allowed;

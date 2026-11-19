@@ -32,6 +32,7 @@ pub mod frame_type {
     pub const ROUND_FAILURE: u8 = 0x05;
     pub const PROGRESS: u8 = 0x06;
     pub const RESTRICT: u8 = 0x07;
+    pub const ADOPT_EPOCH: u8 = 0x08;
     pub const RESP_HEADER: u8 = 0x10;
     pub const PUSH_RESULT: u8 = 0x11;
     pub const SUB_START: u8 = 0x12;
@@ -54,6 +55,7 @@ pub mod frame_type {
         ROUND_FAILURE,
         PROGRESS,
         RESTRICT,
+        ADOPT_EPOCH,
     ];
     pub const RESPONSE_TYPES: &[u8] = &[
         RESP_HEADER,
@@ -313,6 +315,10 @@ pub enum Frame {
     /// §1.5: the code of the client's last round that failed where the server
     /// could not see it. Optional, at most one, immediately after REQ_HEADER.
     RoundFailure { code: String },
+    /// §2.1: the sender holds nothing bound to a log epoch and adopts the
+    /// current one. Empty payload, at most one, immediately after REQ_HEADER
+    /// or its ROUND_FAILURE.
+    AdoptEpoch,
     /// §4.3: one unit of a traveling registration list.
     Unit { scopes: Vec<(String, String)> },
     /// §4.3: the progress of one catching-up unit.

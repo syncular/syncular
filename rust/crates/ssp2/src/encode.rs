@@ -31,6 +31,14 @@ pub fn encode_message(msg: &Message) -> Vec<u8> {
                 || matches!(prev, Some(Frame::Progress { .. })),
             "RESTRICT frame must immediately follow a PROGRESS frame"
         );
+        assert!(
+            !matches!(frame, Frame::AdoptEpoch)
+                || matches!(
+                    prev,
+                    Some(Frame::ReqHeader { .. } | Frame::RoundFailure { .. })
+                ),
+            "misplaced ADOPT_EPOCH frame"
+        );
         prev = Some(frame);
         let (ty, payload) = encode_frame(frame);
         w.u8(ty);
@@ -123,6 +131,7 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             w.str(code);
             ft::ROUND_FAILURE
         }
+        Frame::AdoptEpoch => ft::ADOPT_EPOCH,
         Frame::Unit { scopes } => {
             w.str_map(scopes);
             ft::UNIT

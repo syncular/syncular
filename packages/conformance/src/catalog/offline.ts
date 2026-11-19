@@ -1311,7 +1311,8 @@ export const offlineScenarios: readonly Scenario[] = [
         checkEqual(drive.budgetExhausted, true, 'the drive reports exhaustion');
         checkEqual(
           drive.report.segmentRowsApplied,
-          2,
+          3,
+          // §2.1: the first round adopts the epoch and already carries a page.
           'the drive keeps the rows of the rounds it completed',
         );
         checkEqual(

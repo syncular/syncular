@@ -280,7 +280,15 @@ async function planRequest(
       'epoch acquisition requests must not carry push commits (§2.1)',
     );
   }
-  const epochReset = header.logEpoch !== registry.logEpoch;
+  const adopt = request.frames.some((frame) => frame.type === 'ADOPT_EPOCH');
+  if (adopt && header.logEpoch !== undefined) {
+    throw syncError(
+      'sync.invalid_request',
+      'epoch adoption requests must not carry logEpoch (§2.1)',
+    );
+  }
+  // §2.1: adoption serves the request under the current epoch.
+  const epochReset = !adopt && header.logEpoch !== registry.logEpoch;
   const unserved = {
     wireVersion: request.wireVersion,
     logEpoch: registry.logEpoch,

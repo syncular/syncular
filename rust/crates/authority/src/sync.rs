@@ -563,8 +563,16 @@ fn respond(
             "epoch acquisition requests must not carry push commits (§2.1)",
         ));
     }
+    let adopt = message.frames.contains(&Frame::AdoptEpoch);
+    if adopt && log_epoch.is_some() {
+        return Err(AuthorityError::new(
+            "sync.invalid_request",
+            "epoch adoption requests must not carry logEpoch (§2.1)",
+        ));
+    }
     let log = store::log_state(conn)?;
-    let epoch_reset = log_epoch.as_deref() != Some(log.log_epoch.as_str());
+    // §2.1: adoption serves the request under the current epoch.
+    let epoch_reset = !adopt && log_epoch.as_deref() != Some(log.log_epoch.as_str());
     let header = |required_schema_version: Option<i32>| Frame::RespHeader {
         required_schema_version,
         latest_schema_version: Some(schema.version),

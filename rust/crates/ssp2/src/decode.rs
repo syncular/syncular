@@ -165,6 +165,15 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 seen_body = true;
                 seen_failure = true;
             }
+            ft::ADOPT_EPOCH => {
+                if frames.len() > if seen_failure { 2 } else { 1 } {
+                    return Err(DecodeError::invalid("misplaced ADOPT_EPOCH frame"));
+                }
+                frames.push(frame_payload(payload, "ADOPT_EPOCH", |_| {
+                    Ok(Frame::AdoptEpoch)
+                })?);
+                seen_body = true;
+            }
             ft::PUSH_COMMIT => {
                 if seen_pull {
                     return Err(DecodeError::invalid(

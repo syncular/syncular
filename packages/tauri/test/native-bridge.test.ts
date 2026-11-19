@@ -203,7 +203,7 @@ if (!available) {
   });
 } else {
   describe('native Tauri bridge', () => {
-    test('native first epoch preserves ready readers; stored epoch changes reset', async () => {
+    test('a native fresh replica adopts the epoch and keeps ready readers; stored epoch changes reset', async () => {
       for (const stored of [undefined, 'old-epoch']) {
         const source = makeServer(schema);
         source.allowed['actor-1'] = { list_id: ['one'] };
@@ -273,7 +273,10 @@ if (!available) {
           ).toBe(stored === undefined ? 1 : 0);
           if (stored === undefined) {
             expect(statuses.every((upgrading) => !upgrading)).toBe(true);
-            expect((await client.diagnosticsSnapshot()).units).toEqual(before);
+            // §2.1 adoption: the first round already carries the unit section.
+            expect((await client.diagnosticsSnapshot()).units).not.toEqual(
+              before,
+            );
           } else expect(statuses).toContain(true);
           await client.syncUntilIdle();
           expect((await client.statusSnapshot()).upgrading).toBe(false);

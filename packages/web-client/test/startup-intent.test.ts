@@ -5,7 +5,14 @@ import { join } from 'node:path';
 import { ClientSyncError, SyncClient, type SyncIntent } from '@syncular/client';
 import { PROTOCOL_WIRE_VERSION, unitId } from '@syncular/core';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { CLIENT_SCHEMA } from './helpers';
+import {
+  CLIENT_SCHEMA,
+  makeClient,
+  makeServer,
+  tableRows,
+  TEST_LOG_EPOCH,
+  taskValues,
+} from './helpers';
 
 const roots: string[] = [];
 
@@ -109,10 +116,16 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
       transport: async (bytes) => {
         const request = decodeMessage(bytes);
         expect(request.msgKind).toBe('request');
-        if (request.msgKind === 'request')
+        if (request.msgKind === 'request') {
           expect(
             request.frames.filter((frame) => frame.type === 'PUSH_COMMIT'),
           ).toHaveLength(storedEpoch === undefined ? 0 : 1);
+          // §2.1: a server that predates ADOPT_EPOCH skips it and answers
+          // acquisition, as this transport does.
+          expect(request.frames[1]?.type === 'ADOPT_EPOCH').toBe(
+            storedEpoch === undefined,
+          );
+        }
         return encodeMessage({
           wireVersion: PROTOCOL_WIRE_VERSION,
           msgKind: 'response',
@@ -189,6 +202,82 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
     }
   });
 }
+
+test('a fresh replica adopts the log epoch: its first round carries its unit sections', async () => {
+  const { decodeMessage } = await import('@syncular/core');
+  const server = makeServer();
+  const writer = await makeClient(server, { clientId: 'writer' });
+  const fresh = await makeClient(server, { clientId: 'fresh' });
+  try {
+    writer.client.subscribe({ project_id: 'p1' });
+    writer.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hello') },
+    ]);
+    await writer.client.syncUntilIdle();
+
+    fresh.db.exec("DELETE FROM _syncular_meta WHERE key = 'logEpoch'");
+    fresh.client.subscribe({ project_id: 'p1' });
+    const commit = fresh.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t2', 'p1', 'local') },
+    ]);
+    const first = await fresh.client.sync();
+    expect(first.resets).toEqual([]);
+    expect(first.pushed).toBe(0);
+    expect(
+      tableRows(fresh.db, 'tasks')
+        .map((row) => row.title)
+        .sort(),
+    ).toEqual(['hello', 'local']);
+    expect(
+      fresh.db.query("SELECT value FROM _syncular_meta WHERE key='logEpoch'")[0]
+        ?.value,
+    ).toBe(TEST_LOG_EPOCH);
+    const request = decodeMessage(fresh.requests[0]!);
+    expect(request.frames.map((frame) => frame.type)).toEqual([
+      'REQ_HEADER',
+      'ADOPT_EPOCH',
+      'PULL_HEADER',
+      'UNIT',
+      'PROGRESS',
+    ]);
+
+    // The outbox waits for the first epoch-bound request.
+    const second = await fresh.client.sync();
+    expect(second.applied).toEqual([commit]);
+    const bound = decodeMessage(fresh.requests[1]!);
+    expect(bound.frames[0]).toMatchObject({ logEpoch: TEST_LOG_EPOCH });
+    expect(bound.frames.some((frame) => frame.type === 'ADOPT_EPOCH')).toBe(
+      false,
+    );
+  } finally {
+    await writer.client.close();
+    await fresh.client.close();
+    writer.db.close();
+    fresh.db.close();
+    server.storage.db.close();
+  }
+});
+
+test('a fresh replica with only outbox work pushes it in the same drive', async () => {
+  const server = makeServer();
+  const fresh = await makeClient(server, { clientId: 'fresh-outbox' });
+  try {
+    fresh.db.exec("DELETE FROM _syncular_meta WHERE key = 'logEpoch'");
+    fresh.client.subscribe({ project_id: 'p1' });
+    const commit = fresh.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'local') },
+    ]);
+    // The adoption round applies no row and withholds the outbox (§2.1); the
+    // drive still runs the epoch-bound round that pushes it.
+    const report = await fresh.client.syncUntilIdle();
+    expect(report.applied).toEqual([commit]);
+    expect(fresh.client.pendingCommits()).toEqual([]);
+  } finally {
+    await fresh.client.close();
+    fresh.db.close();
+    server.storage.db.close();
+  }
+});
 
 test('subscribeMany registers all units or none, with one intent', async () => {
   const db = new BunClientDatabase();

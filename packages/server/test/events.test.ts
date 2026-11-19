@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  decodeMessage,
   echoDigest,
   encodeMessage,
   PROTOCOL_WIRE_VERSION,
@@ -34,6 +35,7 @@ import {
   sync,
   TEST_SCHEMA,
   type TestContext,
+  TEST_LOG_EPOCH,
   taskRow,
   upsert,
 } from './helpers';
@@ -92,6 +94,45 @@ describe('request outcomes', () => {
       'epoch_acquired',
       'reset',
     ]);
+  });
+
+  test('a round without logEpoch and with ADOPT_EPOCH is served under the current epoch', async () => {
+    const t = eventsContext();
+    await seedTask(t, 'seed', 't1', 'p1', 'hello');
+    const unit = { project_id: 'p1' };
+    const response = decodeMessage(
+      await handleSyncRequest(
+        encodeMessage({
+          wireVersion: PROTOCOL_WIRE_VERSION,
+          msgKind: 'request',
+          frames: [
+            { type: 'REQ_HEADER', clientId: 'client-2', schemaVersion: 1 },
+            { type: 'ADOPT_EPOCH' },
+            ...pullFrames([unit]),
+          ],
+        }),
+        t.ctx,
+      ),
+    );
+    expect(response.frames[0]).toMatchObject({
+      type: 'RESP_HEADER',
+      logEpoch: TEST_LOG_EPOCH,
+      resetRequired: false,
+    });
+    expect(response.frames.map((frame) => frame.type)).toContain('SUB_START');
+    expect(response.frames.map((frame) => frame.type)).toContain('LIVE_END');
+    expect(ofType(t.events, 'request.handled').at(-1)?.outcome).toBe('ok');
+  });
+
+  test('ADOPT_EPOCH next to a logEpoch is an invalid request', async () => {
+    const t = eventsContext();
+    await expectSyncError(
+      handleSyncRequest(
+        requestBytes([{ type: 'ADOPT_EPOCH' }, pullHeader()]),
+        t.ctx,
+      ),
+      'sync.invalid_request',
+    );
   });
 });
 

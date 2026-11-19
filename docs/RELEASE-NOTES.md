@@ -1,5 +1,32 @@
 # Syncular release notes
 
+## Unreleased (draft)
+
+A fresh replica's first sync takes one round trip
+(SYNCULAR-ROUND-CLAIM-COALESCE-001, part 4). The wire version stays 4; SSP2
+gains the optional `ADOPT_EPOCH` request frame (0x08, empty payload).
+
+A replica without a stored log epoch sent its first pull without `logEpoch`,
+received a header-only `resetRequired` response with the epoch, and repeated
+the pull. The TypeScript and Rust clients now send `ADOPT_EPOCH` in every
+request without `logEpoch` (SPEC §2.1). The frame states that the replica
+holds no cursor, resume token, server row or pushed commit. The TypeScript
+server and the Rust authority serve such a request under the current epoch
+with `resetRequired: false`, and the client stores the epoch before it applies
+the response's sections. The request still carries no `PUSH_COMMIT`; the outbox
+pushes in the next, epoch-bound round. That round's report counts the withheld outbox in
+`deferredCommits`, so `syncUntilIdle` runs the epoch-bound round even when the
+adoption round applies no row. A request that carries `ADOPT_EPOCH`
+and a `logEpoch` fails with `sync.invalid_request`. A stored epoch that
+differs from the server's still resets the replica.
+
+Upgrade notes: upgrade servers before clients. A 0.91.0 or older server skips
+`ADOPT_EPOCH` as an unknown frame and answers epoch acquisition, which the new
+clients handle as before, at the cost of the extra round trip. Old clients
+never send the frame and receive acquisition from new servers. The conformance
+harness fault `skipRestrict` is now `skipRequestFrames`, a list of request
+frame types to drop.
+
 ## 0.91.0 release notes
 
 0.91.0 applies encrypted rows segments faster and lets `coalesceMs` hold the
