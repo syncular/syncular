@@ -347,16 +347,16 @@ pub(crate) fn delete_row(
 
 /// Up to `limit` rows after `after` in `_sync_row_id` order whose stored
 /// scopes match the unit's scope map (the reference `scanRows`). Candidates
-/// seek the scope index of the unit's first variable in key order; the
-/// stored scopes decide, so the seek only has to keep every match.
+/// come from `seek` (see `scope_seek`) in key order; the stored scopes
+/// decide, so the seek only has to keep every match.
 pub(crate) fn scan_rows(
     conn: &Connection,
     table: &Table,
+    (column, key): &(&str, SqlValue),
     unit: &[(String, String)],
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<StoredRow>, AuthorityError> {
-    let (column, key) = scope_seek(table, unit)?;
     let sql = format!(
         "SELECT {ROW_COLUMNS} FROM {} WHERE _sync_partition=?1 AND {}=?4 AND _sync_row_id>?2 ORDER BY _sync_row_id LIMIT ?3",
         quote(&table.name),
@@ -399,15 +399,15 @@ pub(crate) fn scan_rows(
 pub(crate) fn count_rows(
     conn: &Connection,
     table: &Table,
+    (column, key): &(&str, SqlValue),
     unit: &[(String, String)],
 ) -> Result<i64, AuthorityError> {
-    let (column, key) = scope_seek(table, unit)?;
     let mut sql = format!(
         "SELECT COUNT(*) FROM {} WHERE _sync_partition=?1 AND {}=?2",
         quote(&table.name),
         quote(column)
     );
-    let mut bindings = vec![SqlValue::Text(PARTITION.to_owned()), key];
+    let mut bindings = vec![SqlValue::Text(PARTITION.to_owned()), key.clone()];
     for (variable, value) in unit {
         sql.push_str(&format!(
             " AND json_extract(_sync_scopes, ?{}) IS ?{}",
@@ -427,27 +427,68 @@ pub(crate) fn count_rows(
         .db()
 }
 
-/// The scope-index seek of a unit's first variable: the column and its typed
-/// key. The stored scopes decide, so the seek only has to keep every match.
-fn scope_seek<'a>(
+/// The scope-index seek of a unit: the column and typed key of the variable
+/// whose scope index holds the fewest rows for its value, ties broken by
+/// variable name, as the TS storages' `chooseScanVariable` picks. Each round
+/// counts up to `cap` index entries per still-tied variable; the cap starts
+/// at 64 and grows fourfold while the fewest count reaches it, so the probe
+/// ends at the first cap above the smallest count `n`, at most 4n entries
+/// per variable in the last round. The stored scopes decide, so the seek
+/// only has to keep every match.
+pub(crate) fn scope_seek<'a>(
+    conn: &Connection,
     table: &'a Table,
     unit: &[(String, String)],
 ) -> Result<(&'a str, SqlValue), AuthorityError> {
-    let (variable, value) = unit.iter().min().ok_or_else(|| corrupt("unit scopes"))?;
-    let column = &table.columns[table
-        .scopes
+    let mut seeks = unit
         .iter()
-        .find(|scope| &scope.variable == variable)
-        .ok_or_else(|| corrupt("unit scopes"))?
-        .column];
-    // The column holds the typed value its stored scope renders from.
-    let key = match (column.ty, value.as_str()) {
-        (ColumnType::Integer, _) => value
-            .parse()
-            .map_or_else(|_| SqlValue::Text(value.clone()), SqlValue::Integer),
-        _ => SqlValue::Text(value.clone()),
-    };
-    Ok((&column.name, key))
+        .map(|(variable, value)| {
+            let column = &table.columns[table
+                .scopes
+                .iter()
+                .find(|scope| &scope.variable == variable)
+                .ok_or_else(|| corrupt("unit scopes"))?
+                .column];
+            // The column holds the typed value its stored scope renders from.
+            let key = match (column.ty, value.as_str()) {
+                (ColumnType::Integer, _) => value
+                    .parse()
+                    .map_or_else(|_| SqlValue::Text(value.clone()), SqlValue::Integer),
+                _ => SqlValue::Text(value.clone()),
+            };
+            Ok((variable, column.name.as_str(), key))
+        })
+        .collect::<Result<Vec<_>, AuthorityError>>()?;
+    seeks.sort_by(|a, b| a.0.cmp(b.0));
+    let mut cap = 64_i64;
+    while seeks.len() > 1 {
+        let counts = seeks
+            .iter()
+            .map(|(_, column, key)| {
+                conn.prepare_cached(&format!(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM {} WHERE _sync_partition=?1 AND {}=?2 LIMIT ?3)",
+                    quote(&table.name),
+                    quote(column)
+                ))
+                .and_then(|mut statement| {
+                    statement.query_row(params![PARTITION, key, cap], |row| row.get::<_, i64>(0))
+                })
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .db()?;
+        let fewest = counts.iter().copied().min().unwrap_or(0);
+        let mut counts = counts.into_iter();
+        seeks.retain(|_| counts.next() == Some(fewest));
+        if fewest < cap {
+            break;
+        }
+        cap *= 4;
+    }
+    let (_, column, key) = seeks
+        .into_iter()
+        .next()
+        .ok_or_else(|| corrupt("unit scopes"))?;
+    Ok((column, key))
 }
 
 /// Up to `limit` rows of `child` after `after` whose reference `column`

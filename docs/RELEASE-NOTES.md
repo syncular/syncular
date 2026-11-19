@@ -3,7 +3,8 @@
 ## 0.97.0 release notes
 
 0.97.0 answers a segment store outage as retryable unavailability
-(SYNCULAR-SEGMENT-STORE-OUTAGE-001). SSP2 and the wire version are unchanged;
+(SYNCULAR-SEGMENT-STORE-OUTAGE-001) and bounds a rows-lane page read by the
+page (SYNCULAR-ROWS-PAGE-READ-001). SSP2 and the wire version are unchanged;
 the error catalog gains one code.
 
 ### A segment store outage is retryable
@@ -21,6 +22,39 @@ reaches `onError` and never the message, and `mapError` no longer sees it.
 A fault in the server's own segment encoding still answers
 `sync.internal_error`. Both clients retry the code in the background on
 their own backoff; neither reads `Retry-After`.
+
+### A rows-lane page reads one page of the scope index
+
+A bootstrap page of Diego's public catalogue spent 0.5 to 2.1 s per
+1,000-row `sync_row_scopes` read on PostgreSQL, and a round 13 reads for
+5,060 rows. Measured on PostgreSQL 17 with a copy of the catalogue tables
+(a 200,000-row release among 880,000 catalogue rows and 300,000 other rows),
+it had two causes.
+
+The batched page statement matched the scope value with `value = ANY(...)`
+over a JSON array. The planner cannot know that array holds one value, so it
+read every index entry after the cursor, sorted them (on disk past 4 MB) and
+then applied the LIMIT. A page cost grew with the entries left, which made a
+bootstrap quadratic. Each page now reads one LIMITed index range per value and
+merges them. The first page of the release took 12.7 s after a restart with
+the page cache dropped and 160 ms warm; it now takes 163 ms cold and 13 to
+14 ms warm. The page at row 150,000 took 4.5 s cold and 69 ms warm; it now
+takes 0.73 s cold and 13 ms warm. SQLite and D1 also read every entry after
+the cursor, for one value as for several; they now end the read at the page.
+With 1,000,000 entries their first page took 58 to 84 ms and now takes 0.5 to
+0.7 ms. No index changes.
+
+The scan seeks the scope variable with the fewest index entries, and its
+count stopped at 65,536 entries. Every variable of a catalogue unit has more,
+so they tied and the alphabetically first won: `catalogue_availability`, which
+covers every offered release. The scan then read the other releases' entries
+and discarded their rows. The first page of an 80,000-row release took 206
+statements and 17.1 to 18.0 s; it now takes 6 statements, 935 ms cold and 60
+to 81 ms warm. The count keeps growing fourfold while variables tie and stops
+at the first cap above the smallest count. The Rust local authority sought
+the alphabetically first variable without counting; it now picks the
+variable the same way, once per bootstrap section. Its page statement already
+read one index range in `_sync_row_id` order, with no sort.
 
 ## 0.96.0 release notes
 

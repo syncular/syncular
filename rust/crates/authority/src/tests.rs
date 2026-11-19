@@ -2334,7 +2334,8 @@ fn a_bootstrap_scan_seeks_one_scope_value_of_any_column_type() {
             .iter()
             .map(|(variable, value)| ((*variable).to_owned(), (*value).to_owned()))
             .collect();
-        store::scan_rows(&authority.conn, &compiled, &unit, after, limit)
+        let seek = store::scope_seek(&authority.conn, &compiled, &unit).unwrap();
+        store::scan_rows(&authority.conn, &compiled, &seek, &unit, after, limit)
             .unwrap()
             .into_iter()
             .map(|row| row.row_id)
@@ -2360,6 +2361,83 @@ fn a_bootstrap_scan_seeks_one_scope_value_of_any_column_type() {
     let first = scan(&[("rank", "1")], None, 10);
     let next = scan(&[("rank", "1")], first.last().map(String::as_str), 10);
     assert_eq!([first, next].concat(), expected(|i| i % 3 == 1)[..20]);
+}
+
+#[test]
+fn a_bootstrap_scan_seeks_the_variable_with_the_fewest_rows() {
+    // A catalogue release unit: every variable ties at the first cap, and
+    // the alphabetically first one covers every release.
+    let schema = json!({ "version": 1, "tables": [{
+        "name": "codes",
+        "primaryKey": "id",
+        "columns": [
+            column("id", "string", false),
+            column("availability", "string", false),
+            column("release_id", "string", false),
+            column("set_id", "string", false),
+        ],
+        "scopes": [
+            { "pattern": "availability:{catalogue_availability}", "column": "availability" },
+            { "pattern": "release:{catalogue_release_id}", "column": "release_id" },
+            { "pattern": "set:{catalogue_set_id}", "column": "set_id" },
+        ],
+    }]});
+    let mut authority = LocalAuthority::open(":memory:", &schema).unwrap();
+    let client = Session::new(&mut authority, "c1");
+    let compiled = authority.schema.table("codes").unwrap().clone();
+    let operations = (0..400)
+        .map(|i| Operation {
+            table: "codes".to_owned(),
+            row_id: format!("r{i:03}"),
+            op: Op::Upsert,
+            base_version: None,
+            payload: Some(encode_sparse_row(
+                &compiled.columns,
+                compiled.pk,
+                &[
+                    format!("r{i:03}"),
+                    "offered".to_owned(),
+                    format!("R{}", u8::from(i >= 150)),
+                    format!("S{}", u8::from(i >= 300)),
+                ]
+                .into_iter()
+                .map(|value| SparseSlot::Value(ColumnValue::String(value)))
+                .collect::<Vec<_>>(),
+            )),
+        })
+        .collect();
+    client.push(&mut authority, "a", operations);
+    let unit: Vec<(String, String)> = [
+        ("catalogue_availability", "offered"),
+        ("catalogue_release_id", "R0"),
+        ("catalogue_set_id", "S0"),
+    ]
+    .into_iter()
+    .map(|(variable, value)| (variable.to_owned(), value.to_owned()))
+    .collect();
+    let seek = store::scope_seek(&authority.conn, &compiled, &unit).unwrap();
+    assert_eq!(
+        seek,
+        ("release_id", rusqlite::types::Value::Text("R0".to_owned()))
+    );
+    let rows = store::scan_rows(&authority.conn, &compiled, &seek, &unit, None, 1000).unwrap();
+    assert_eq!(rows.len(), 150);
+    // A page seeks that index between the cursor and the LIMIT, with no
+    // sort over the rows after the cursor.
+    let plan: Vec<String> = authority
+        .conn
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM codes WHERE _sync_partition=?1 AND release_id=?4 AND _sync_row_id>?2 ORDER BY _sync_row_id LIMIT ?3")
+        .unwrap()
+        .query_map(params!["p", "", 64, "R0"], |row| row.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        plan,
+        [
+            r#"SEARCH codes USING INDEX sync_sx_["codes","release_id"] (_sync_partition=? AND release_id=? AND _sync_row_id>?)"#
+        ]
+    );
 }
 
 #[cfg(not(feature = "crdt-yjs"))]

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A rows-lane page reads one page of the scope index',
+    body: 'A `scanRows` page reads at most `limit` scope-index entries per value, in `row_id` order, on PostgreSQL, SQLite and D1. Before, a page read and sorted every entry after the cursor: on PostgreSQL 17 a 1,000-row page of a 200,000-row release took 114 to 121 ms warm and 12.7 s cold, and now takes 13 to 14 ms warm and 163 ms cold. The scan-variable count no longer stops at 65,536 entries, so a catalogue unit whose variables all pass it seeks its release instead of its availability: the first page of an 80,000-row release took 206 statements and 17.1 to 18.0 s, and takes 6 statements and 60 to 81 ms warm. The Rust local authority picks the variable the same way.',
+    links: [
+      {
+        href: '/server-storage-reference/#pull-path',
+        label: 'Pull path',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A segment store outage is retryable',
     body: "A rejected segment store call answers the retryable `sync.segment_store_unavailable`: a pull's segment puts and image reuse lookups, and the segment download's reads. Before a pull's header frames went out the server answers HTTP 503 with `Retry-After: 5`; after them, an in-band `ERROR`. Both clients retry it in the background. Before, an R2 outage that refused 38 writes within 90.6 s answered each pull with HTTP 500 `sync.internal_error`, which clients reported as a server error. `details.operation` names the call, and the store's own error reaches `onError`. A fault in the server's own segment encoding still answers `sync.internal_error`.",
     links: [

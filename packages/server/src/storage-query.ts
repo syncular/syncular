@@ -35,8 +35,11 @@ export interface ScanProbe {
  *
  * A single-variable filter needs no probe. Otherwise `count` counts each
  * variable's entries in one statement, up to `cap`. The cap starts at
- * max(64, limit) and grows fourfold, to at most 65,536, while the fewest
- * count is shared by several variables at the cap.
+ * max(64, limit) and grows fourfold while the fewest count is shared by
+ * several variables at the cap. A round runs only while every tied variable
+ * has at least `cap` entries, so the probe ends at the first cap above the
+ * smallest count `n`: at most 4n entries per variable in the last round, and
+ * the pick is the variable with the fewest entries whatever the starting cap.
  *
  * `chosen` memoizes the pick per (partition, table, filter), at most 1,024
  * entries, so the page loop of a bootstrap probes once. A stale pick only
@@ -78,7 +81,7 @@ export async function chooseScanVariable(
   const cached = chosen.get(key);
   if (cached !== undefined) return cached;
   let tied = variables;
-  for (let cap = Math.max(64, query.limit); ; cap = Math.min(cap * 4, 65_536)) {
+  for (let cap = Math.max(64, query.limit); ; cap *= 4) {
     const counts = tied.map(() => 0);
     const probes = tied.map((variable, i) => ({
       i,
@@ -92,7 +95,7 @@ export async function chooseScanVariable(
     const fewest = Math.min(...counts);
     if (fewest === 0) return undefined;
     tied = tied.filter((_, i) => counts[i] === fewest);
-    if (fewest < cap || tied.length === 1 || cap >= 65_536) break;
+    if (fewest < cap || tied.length === 1) break;
   }
   if (chosen.size >= 1_024) chosen.delete(chosen.keys().next().value!);
   chosen.set(key, tied[0]!);

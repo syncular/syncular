@@ -1740,6 +1740,50 @@ export function runStorageContract(
       expect(page2.map((r) => r.rowId)).toEqual(['r4']);
     });
 
+    test('scanRows over several values pages in rowId order whatever each value holds', async () => {
+      const storage = await make();
+      // 150, 40 and 10 rows interleaved: a page ends at the bound of the
+      // largest value, the smaller ones never reach the page size, and the
+      // last pages have no bound at all.
+      const project = (i: number) =>
+        i % 20 === 0 ? 'p3' : i % 5 === 0 ? 'p2' : 'p1';
+      const tx = await storage.begin(PARTITION);
+      for (let i = 0; i < 200; i++) {
+        await tx.upsertRow(
+          'tasks',
+          taskRow(`r${String(i).padStart(3, '0')}`, project(i)),
+        );
+      }
+      await tx.upsertRow('tasks', taskRow('r999', 'p4'));
+      const expected = Array.from(
+        { length: 200 },
+        (_, i) => `r${String(i).padStart(3, '0')}`,
+      );
+      const query = (afterRowId: string | null) => ({
+        table: 'tasks',
+        scopeFilter: { project_id: ['p2', 'p1', 'p3'] },
+        afterRowId,
+        limit: 70,
+      });
+      const pages = async (
+        scan: (q: ReturnType<typeof query>) => Promise<StoredRow[]>,
+      ) => {
+        const ids: string[] = [];
+        for (let page = await scan(query(null)); page.length > 0;) {
+          ids.push(...page.map((row) => row.rowId));
+          page = await scan(query(ids.at(-1)!));
+        }
+        return ids;
+      };
+      if (tx.scanRows !== undefined) {
+        expect(await pages((q) => tx.scanRows!(q))).toEqual(expected);
+      }
+      await tx.commit();
+      expect(await pages((q) => storage.scanRows(PARTITION, q))).toEqual(
+        expected,
+      );
+    });
+
     test('scanRows over several variables keeps rows matching every one, whichever it seeks', async () => {
       const storage = await make();
       const doc = (rowId: string, org: string, project: string) => ({

@@ -443,7 +443,6 @@ class D1Transaction
           JSON.stringify(values),
           afterRowId,
           batchSize,
-          this.partition,
         )
         .all<SqliteRowRecord & { payload: Uint8Array | null }>();
       if (records.length === 0) break;

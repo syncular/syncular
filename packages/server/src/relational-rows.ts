@@ -675,12 +675,22 @@ export function indexRowPageStatement(
 
 /**
  * One-round-trip page scan for `scanRows`: candidates from the inverted
- * scope index (ordered + LIMITed at the covering `sync_row_scopes` PK —
- * exactly the old candidate query, so the index-first posture is unchanged)
- * LEFT JOINed to the row table, so a whole page arrives in ONE statement
- * instead of one lookup per candidate. That per-candidate lookup was the
- * cold-bootstrap hot path: a 100k-row snapshot on Postgres paid ~100k
- * network round-trips (~10 s at 0.1 ms each) before this join.
+ * scope index LEFT JOINed to the row table, so a whole page arrives in ONE
+ * statement instead of one lookup per candidate. That per-candidate lookup
+ * was the cold-bootstrap hot path: a 100k-row snapshot on Postgres paid
+ * ~100k network round-trips (~10 s at 0.1 ms each) before this join.
+ *
+ * The candidates read at most `limit` entries of the covering
+ * `sync_row_scopes` PK per scope value. A bare `value IN (...)` (or
+ * `= ANY`) predicate gives up the PK's `row_id` order whenever the planner
+ * cannot prove a single value, and then every entry after the cursor is read
+ * and sorted before the LIMIT: a cost that grows with the entries left, so a
+ * bootstrap is quadratic. PostgreSQL reads one ordered, LIMITed range per
+ * value through a LATERAL join and merges them. SQLite has no LATERAL; it
+ * bounds the ranges from above instead: the smallest of the values' `limit`th
+ * entries after the cursor. That value alone has `limit` entries up to its
+ * bound, so the page ends there; a value with fewer entries has no bound, and
+ * when no value has one the empty blob `x''` sorts after every TEXT row id.
  *
  * LEFT JOIN (not INNER): a candidate whose row vanished (index entry
  * without a row) must still reach the caller — its `row_id` advances the
@@ -688,11 +698,9 @@ export function indexRowPageStatement(
  * disappearing from the page.
  *
  * Bind order:
- *   - postgres: [partition, tbl, var, ...values, afterRowId, limit]
- *     (the join reuses `$1` for the partition);
+ *   - postgres: [partition, tbl, var, ...values, afterRowId, limit];
  *   - sqlite:   [partition, tbl, var, values as JSON array text, afterRowId,
- *     limit, partition] (positional `?`; the partition binds again for the
- *     join). The values expand through `json_each`, so the statement text and
+ *     limit]. The values expand through `json_each`, so the statement text and
  *     parameter count do not depend on `valueCount` and D1's 100-parameter
  *     cap is unreachable through scope values.
  */
@@ -701,21 +709,26 @@ export function scanRowPageSql(
   valueCount: number,
   dialect: RelationalDialect,
 ): string {
-  const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
-  const values =
+  const after = dialect === 'sqlite' ? '?5' : `$${4 + valueCount}`;
+  const limit = dialect === 'sqlite' ? '?6' : `$${5 + valueCount}`;
+  const candidates =
     dialect === 'sqlite'
-      ? 'SELECT value FROM json_each(?)'
-      : Array.from({ length: valueCount }, (_, i) => p(4 + i)).join(',');
-  const after = p(4 + valueCount);
-  const limit = p(5 + valueCount);
-  const joinPartition = dialect === 'sqlite' ? '?' : '$1';
+      ? `SELECT DISTINCT row_id FROM sync_row_scopes
+       WHERE partition=?1 AND tbl=?2 AND var=?3 AND value IN (SELECT value FROM json_each(?4))
+         AND row_id>?5
+         AND row_id<=coalesce((SELECT min((SELECT row_id FROM sync_row_scopes
+           WHERE partition=?1 AND tbl=?2 AND var=?3 AND value=v.value AND row_id>?5
+           ORDER BY row_id LIMIT 1 OFFSET ?6-1)) FROM json_each(?4) v), x'')
+       ORDER BY row_id LIMIT ?6`
+      : `SELECT DISTINCT x.row_id FROM (VALUES ${Array.from({ length: valueCount }, (_, i) => `($${4 + i})`).join(',')}) v(value)
+       CROSS JOIN LATERAL (SELECT row_id FROM sync_row_scopes
+         WHERE partition=$1 AND tbl=$2 AND var=$3 AND value=v.value AND row_id>${after}
+         ORDER BY row_id LIMIT ${limit}) x
+       ORDER BY x.row_id LIMIT ${limit}`;
   return `SELECT c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
-     FROM (SELECT DISTINCT row_id FROM sync_row_scopes
-       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values})
-         AND row_id>${after}
-       ORDER BY row_id LIMIT ${limit}) c
+     FROM (${candidates}) c
      LEFT JOIN ${quoteIdent(table.name)} r
-       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${joinPartition} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
+       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${dialect === 'sqlite' ? '?1' : '$1'} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
      ORDER BY c.row_id`;
 }
 
@@ -774,7 +787,7 @@ export function scanProbeSql(dialect: RelationalDialect): string {
  * PostgreSQL set-based form of `scanRowPageSql`: one statement answers the
  * page of every subscription scanning any table in a pull. `$2` is a JSON
  * array of `{i, tbl, var, vals, after, lim}` records; each record runs the
- * same index-first candidate subquery through a LATERAL join, so every
+ * same per-value candidate ranges through a LATERAL join, so every
  * subscription keeps its own keyset cursor and LIMIT. The candidate side is
  * table-agnostic (a spec names its table), so the statement joins the row
  * table once per table present in the batch through a UNION ALL branch that
@@ -800,10 +813,11 @@ export function scanRowBatchSql(tables: readonly CompiledTable[]): string {
   return `WITH cand AS (
        SELECT s.i AS sub, c.row_id AS row_id, s.tbl AS tbl
          FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], after text, lim int)
-         CROSS JOIN LATERAL (SELECT DISTINCT row_id FROM sync_row_scopes
-           WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=ANY(s.vals)
-             AND row_id>s.after
-           ORDER BY row_id LIMIT s.lim) c)
+         CROSS JOIN LATERAL (SELECT DISTINCT x.row_id FROM unnest(s.vals) v(value)
+           CROSS JOIN LATERAL (SELECT row_id FROM sync_row_scopes
+             WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=v.value AND row_id>s.after
+             ORDER BY row_id LIMIT s.lim) x
+           ORDER BY x.row_id LIMIT s.lim) c)
      ${projection}
      ORDER BY sub, row_id`;
 }

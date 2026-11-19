@@ -214,6 +214,56 @@ test('batched scanRows pages stay index-driven per subscription', async () => {
   await db.close();
 });
 
+test('scanRows pages read at most the page per scope value, with no sort to disk', async () => {
+  const { db } = await seededStorage();
+  const table = compileSchema(SCHEMA).tables.get('tasks');
+  if (table === undefined) throw new Error('tasks not compiled');
+  // Each project holds 100 index entries; a page of 10 must read 10 per
+  // value whatever follows the cursor. `value = ANY(...)` read all 100 and
+  // sorted them before the LIMIT.
+  const scopeReads = async (sql: string, params: unknown[]) => {
+    const { rows } = await db.query<{ 'QUERY PLAN': string }>(
+      `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${sql}`,
+      params,
+    );
+    const plan = rows.map((row) => row['QUERY PLAN']).join('\n');
+    expect(plan).not.toContain('external merge');
+    return [
+      ...plan.matchAll(
+        /Index Only Scan using sync_row_scopes_pkey? on sync_row_scopes.*rows=(\d+)(?:\.\d+)? loops=(\d+)/g,
+      ),
+    ].map((match) => ({ rows: Number(match[1]), loops: Number(match[2]) }));
+  };
+  for (const values of [['p3'], ['p3', 'p4', 'p5']]) {
+    expect(
+      await scopeReads(scanRowPageSql(table, values.length, 'postgres'), [
+        PARTITION,
+        'tasks',
+        'project_id',
+        ...values,
+        '',
+        10,
+      ]),
+    ).toEqual([{ rows: 10, loops: values.length }]);
+    expect(
+      await scopeReads(scanRowBatchSql([table]), [
+        PARTITION,
+        JSON.stringify([
+          {
+            i: 0,
+            tbl: 'tasks',
+            var: 'project_id',
+            vals: values,
+            after: '',
+            lim: 10,
+          },
+        ]),
+      ]),
+    ).toEqual([{ rows: 10, loops: values.length }]);
+  }
+  await db.close();
+});
+
 test('the scan-variable probe counts on the scope primary key', async () => {
   const { db } = await seededStorage();
   const plan = await explain(db, scanProbeSql('postgres'), [

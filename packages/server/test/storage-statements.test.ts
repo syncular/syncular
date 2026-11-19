@@ -596,7 +596,7 @@ for (const kind of KINDS) {
   });
 }
 
-test('SQLite-family scope scans seek the inverted index for 1, 2 and 5 values (D6)', async () => {
+test('SQLite-family scope scans read a bounded range of the inverted index for 1, 2 and 5 values (D6)', async () => {
   const native = new Database(':memory:');
   const storage = new SqliteServerStorage(new BunSqliteDatabase(native));
   await storage.ensureSchema(COMPILED);
@@ -625,14 +625,19 @@ test('SQLite-family scope scans seek the inverted index for 1, 2 and 5 values (D
       .query<{ detail: string }, string[]>(
         `EXPLAIN QUERY PLAN ${scanRowPageSql(table, count, 'sqlite')}`,
       )
-      .all(PARTITION, 'tasks', 'project_id', values, '', '64', PARTITION);
-    const search = plan.filter(({ detail }) =>
-      detail.includes('sync_row_scopes'),
-    );
-    expect(search).toHaveLength(1);
-    expect(search[0]?.detail).toContain(
-      'SEARCH sync_row_scopes USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 (partition=? AND tbl=? AND var=? AND value=?',
-    );
+      .all(PARTITION, 'tasks', 'project_id', values, '', '64');
+    // The candidates range between the cursor and the bound (the smallest
+    // of the values' 64th entries, one seek each), so a page reads at most
+    // 64 entries per value however many follow the cursor.
+    expect(
+      plan
+        .filter(({ detail }) => detail.includes('sync_row_scopes'))
+        .map(({ detail }) => detail),
+    ).toEqual([
+      'SEARCH sync_row_scopes USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 (partition=? AND tbl=? AND var=? AND value=? AND row_id>? AND row_id<?)',
+      'SEARCH sync_row_scopes USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 (partition=? AND tbl=? AND var=? AND value=? AND row_id>?)',
+    ]);
+    expect(plan.some(({ detail }) => detail.includes('ORDER BY'))).toBe(false);
     expect(plan.some(({ detail }) => detail.includes('_by_row'))).toBe(false);
   }
   // The per-row scope replacement binds the full key.

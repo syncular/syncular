@@ -1161,7 +1161,6 @@ export abstract class SqliteFamilyStorage {
         JSON.stringify(values),
         afterRowId,
         batchSize,
-        partition,
       ]);
       if (records.length === 0) break;
       for (const record of records) {

@@ -36,7 +36,7 @@ test('the variable with the fewest entries wins after one probe', async () => {
   expect(calls).toEqual([{ vars: ['a', 'b', 'c'], cap: 64 }]);
 });
 
-test('the cap grows fourfold for the tied variables up to 65,536', async () => {
+test('the cap grows fourfold while variables tie at it', async () => {
   const { calls, count } = counter({ a: 300, b: 70, c: 1_000 });
   expect(
     await chooseScanVariable(
@@ -63,19 +63,51 @@ test('the cap grows fourfold for the tied variables up to 65,536', async () => {
     { vars: ['a', 'b', 'c'], cap: 256 },
     { vars: ['a', 'b', 'c'], cap: 1_024 },
   ]);
+});
 
-  const ceiling = counter({ a: 1_000_000, b: 1_000_000, c: 70_000 });
+test('a three-way tie past 65,536 entries goes to the fewest entries', async () => {
+  // A catalogue release unit: every variable has more than 65,536 entries,
+  // and the alphabetically first one covers every release.
+  const catalogue = counter({
+    catalogue_availability: 330_000,
+    catalogue_content_release_id: 200_000,
+    catalogue_content_set_id: 300_000,
+  });
   expect(
     await chooseScanVariable(
       'p',
-      query({ a: ['x'], b: ['y'], c: ['z'] }),
+      query(
+        {
+          catalogue_availability: ['offered'],
+          catalogue_content_release_id: ['R1'],
+          catalogue_content_set_id: ['S1'],
+        },
+        1_000,
+      ),
       new Map(),
-      ceiling.count,
+      catalogue.count,
+    ),
+  ).toBe('catalogue_content_release_id');
+  // The probe stops at the first cap above the fewest entries.
+  expect(catalogue.calls.map((call) => call.cap)).toEqual([
+    1_000, 4_000, 16_000, 64_000, 256_000,
+  ]);
+
+  // Equal counts end the growth once the cap passes them; the
+  // alphabetically first variable wins.
+  const equal = counter({ a: 1_000_000, b: 1_000_000, c: 2_000_000 });
+  expect(
+    await chooseScanVariable(
+      'p',
+      query({ c: ['z'], b: ['y'], a: ['x'] }),
+      new Map(),
+      equal.count,
     ),
   ).toBe('a');
-  expect(ceiling.calls.map((call) => call.cap)).toEqual([
-    64, 256, 1_024, 4_096, 16_384, 65_536,
-  ]);
+  expect(equal.calls.at(-1)).toEqual({
+    vars: ['a', 'b', 'c'],
+    cap: 1_048_576,
+  });
 });
 
 test('an empty intersection needs at most one probe', async () => {

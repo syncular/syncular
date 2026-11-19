@@ -122,13 +122,18 @@ fn bootstrap(
         (same_tables && (floor..=max_seq).contains(&as_of) && index < tables.len())
             .then_some((as_of, index, row_cursor, extent))
     });
+    // One seek per table for the whole section, so a page never probes.
+    let seeks = tables
+        .iter()
+        .map(|table| store::scope_seek(conn, table, scopes))
+        .collect::<Result<Vec<_>, AuthorityError>>()?;
     let (pin, mut index, mut row_cursor, extent) = match resume {
         Some(resume) => resume,
         // A fresh pin counts the rows the bootstrap delivers.
         None => {
             let mut total = 0;
-            for table in tables {
-                total += store::count_rows(conn, table, scopes)?;
+            for (table, seek) in tables.iter().zip(&seeks) {
+                total += store::count_rows(conn, table, seek, scopes)?;
             }
             (max_seq, 0, None, Some((total, 0)))
         }
@@ -160,6 +165,7 @@ fn bootstrap(
         let mut rows = store::scan_rows(
             conn,
             table,
+            &seeks[index],
             scopes,
             row_cursor.as_deref(),
             limits.snapshot_rows + 1,
