@@ -2,9 +2,36 @@
 
 ## 0.96.0 release notes
 
-0.97.0 reports a schema bump that kept tables as `ready`
-(SYNCULAR-BUMP-MIGRATING-WHOLE-REPLICA-001). SSP2 and the wire version are
-unchanged; the multi-tab protocol is 6.
+0.96.0 stops a table re-key from resetting every device
+(SYNCULAR-REKEY-PARTITION-HORIZON-001), reports a schema bump that kept tables
+as `ready` (SYNCULAR-BUMP-MIGRATING-WHOLE-REPLICA-001), lets the realtime
+supervisor wait for another tab's activation
+(SYNCULAR-SUPERVISOR-PREFLIGHT-LATCH-001), keeps a pull alive while the server
+builds segments (SYNCULAR-PULL-SILENT-SEGMENT-BUILD-001), and removes options
+and duplicate APIs: one fixed default or one way for each. The wire version
+stays 4; SSP2 gains the optional `KEEPALIVE` response frame (0x30).
+
+Upgrade order: servers first, then clients. A 0.95.0 or older client skips
+`KEEPALIVE`, which arrives only where every wire-4 decoder skips unknown
+frames.
+
+Breaking changes, each with its subsection below:
+
+- Multi-tab protocol 6: the first tab of this release makes an older leader
+  with the same schema version step down. Reload the older tabs.
+- A custom `ServerStorage` implements `getHorizons(partition)` returning
+  `{ seq, tables }`, and `pruneCommitsThrough` deletes table horizons.
+- Removed options: `limits.maxConcurrentSegmentPuts` (fixed 6),
+  `limits.segmentPrefetch` (fixed 8), `coalesceMs` (host drives hold 50 ms),
+  `skipEmpty` (internal to host drives), `missingKey` (a row under a missing
+  key always lands sealed), and the app-supplied commit id on `mutate`.
+- Merged APIs: `announceScopes` folds into `refreshScopes`; handle events are
+  listener methods only (the `SyncClientHandleConfig` callbacks are gone);
+  `commitOutcome` gives way to `commitDelivery`; the `serverColumns` hook
+  becomes the row validator's return value, for push and command writes.
+- Workers: D1 runs rounds in the partition's Durable Object, PostgreSQL in the
+  Worker with sharded sockets; a mismatched setup throws
+  `workers.topology_mismatch`.
 
 ### Availability during a schema bump
 
