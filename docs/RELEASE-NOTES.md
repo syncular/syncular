@@ -196,6 +196,10 @@ client against an older server sees no keepalives and behaves as before.
 The multi-tab protocol moves to 6 (SPEC §7.1): the forwarded response frame
 union gained `KEEPALIVE`.
 
+`MULTI_TAB_PROTOCOL_VERSION` is 6: tabs of 0.96.0 never serve or follow tabs of
+an earlier build (SPEC §7.1). During a deploy the first tab of the new build
+takes the leader lock, and older tabs stay `blocked` until they reload.
+
 ### `limits.maxConcurrentSegmentPuts` removed
 
 A pull keeps six segment puts in flight; the server limit is gone. Delete
