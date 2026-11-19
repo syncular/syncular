@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'Workers: one topology per storage',
+    body: "On Workers, D1 runs every round in the partition's Durable Object and PostgreSQL runs every round in the Worker, with sockets in shard objects. The form that ran PostgreSQL rounds in the partition's object is removed. `SyncularRealtimeHost` over PostgreSQL requires `namespace` and takes no `operations`; a wiring of the other topology throws `WorkersTopologyError` (`workers.topology_mismatch`). Move such a deployment to `shard`, `durableObjectRealtimeNotifier` and the Worker config's `operations`.",
+    links: [
+      {
+        href: '/server-workers/#postgresql-rounds-in-the-worker-sockets-in-shards',
+        label: 'PostgreSQL on Workers',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'The row validator sets server-owned columns',
     body: "The `serverColumns` hook on the sync config is removed. A table's row validator returns the values of its server-owned columns on an insert or update, of a push or a registered command, with the rules of the 0.94.0 hook. Its context carries the candidate reader as `read` in place of `queryAuthoritative`. The `syncular.json` `serverColumns` declaration is unchanged.",
     links: [
@@ -2162,7 +2173,7 @@ export const changelog = [
     body: '`SyncularRealtimeHost` takes a storage in place of the D1 binding, such as a `PostgresServerStorage` over Hyperdrive, and `RealtimeDOConfig<S>` hands that storage to `syncConfig`. The partition FIFO, socket hub, admin routes, pruning, and scope-value erasure run unchanged over it. A D1 binding still builds the coordinated `D1ServerStorage`.',
     links: [
       {
-        href: '/server-workers/#postgresql-behind-hyperdrive',
+        href: '/server-workers/#postgresql-rounds-in-the-worker-sockets-in-shards',
         label: 'Cloudflare Workers',
       },
     ],

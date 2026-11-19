@@ -88,17 +88,19 @@
  * sessions, and re-arms while sockets remain. The host owns the alarm: a
  * subclass that needs another alarm schedule cannot share it.
  *
- * ## Fanout between objects (§8.9)
+ * ## One topology per storage (§8.9)
  *
- * Ordinary HTTP `/sync` and `/operations` (with `RealtimeDOConfig.operations`)
- * are forwarded into this DO and fan out in-process. A commit applied
- * elsewhere reaches the partition's object through
- * `durableObjectRealtimeNotifier`: a POST to the fanout path carrying the
- * commit, which the object delivers to its hub as a delta.
+ * On D1 the Worker forwards HTTP `/sync` and `/operations` (with
+ * `RealtimeDOConfig.operations`) into this DO, which fans their commits out
+ * in-process. A commit applied elsewhere reaches the partition's object
+ * through `durableObjectRealtimeNotifier`: a POST to the fanout path carrying
+ * the commit, which the object delivers to its hub as a delta.
  *
- * On PostgreSQL the Worker may shard sockets over several objects
- * (`WorkersRealtimeOptions.shard`) and run every round itself. The
- * partition's object (`idFromName(partition)`) then holds no socket: it keeps
+ * On PostgreSQL the Worker runs every round itself and shards sockets over
+ * several objects (`WorkersRealtimeOptions.shard`); the host is built with
+ * `RealtimeDOConfig.namespace` and refuses forwarded rounds, unsharded
+ * upgrades and `operations` with `WorkersTopologyError`. The
+ * partition's object (`idFromName(partition)`) holds no socket: it keeps
  * the names of the shard objects that registered with it in its storage and
  * relays every fanout message to each of them. A shard registers when it
  * accepts a socket, before its hub connects it; a shard that answers a relay with 404 (no socket
@@ -243,23 +245,53 @@ export type RealtimeDOConfig<S extends RealtimeHostStorage = D1ServerStorage> =
      */
     readonly heartbeatIntervalMs?: number;
     /**
-     * Registered remote queries and commands (REMOTE.md). The Worker forwards
-     * `POST <mount>/operations` here, so a command applies on the partition
-     * FIFO and fans out to the partition's sockets like a pushed commit. A
-     * `RemoteOperationResolver` chooses the registry, the commit actor, and
-     * the scope resolver per request (REMOTE.md §5.1).
+     * D1 only: registered remote queries and commands (REMOTE.md). The Worker
+     * forwards `POST <mount>/operations` here, so a command applies on the
+     * partition FIFO and fans out to the partition's sockets like a pushed
+     * commit. A `RemoteOperationResolver` chooses the registry, the commit
+     * actor, and the scope resolver per request (REMOTE.md §5.1). On
+     * PostgreSQL the Worker config's `operations` serves commands.
      */
     readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
     /**
-     * The namespace this class is bound to. Required when the Worker shards
-     * sockets (`WorkersRealtimeOptions.shard`, §8.9): a shard registers with
-     * the partition's object through it, the partition's object relays every
-     * commit to the registered shards, and a shard's own rounds send their
-     * commits through the partition's object. The storage must lock
-     * partitions in the database (PostgreSQL); a D1 host refuses it.
+     * The namespace this class is bound to: required for a storage that locks
+     * partitions in the database (PostgreSQL), refused for D1 (§8.9). A shard
+     * registers with the partition's object through it, the partition's
+     * object relays every commit to the registered shards, and a shard's own
+     * rounds send their commits through the partition's object.
      */
     readonly namespace?: DurableObjectNamespaceLike;
   };
+
+/**
+ * A Workers wiring that does not match its storage's topology (§8.9). D1
+ * runs every round in the partition's object, which holds the sockets and
+ * takes no `namespace`; PostgreSQL runs every round in the Worker and holds
+ * sockets in shard objects built with `namespace`.
+ */
+export class WorkersTopologyError extends Error {
+  readonly code = 'workers.topology_mismatch';
+
+  constructor(
+    readonly details: {
+      readonly storage: 'd1' | 'database-lock';
+      readonly wiring:
+        | 'namespace'
+        | 'no-namespace'
+        | 'operations'
+        | 'forwarded-round'
+        | 'sharded-upgrade'
+        | 'unsharded-upgrade'
+        | 'coordinator'
+        | 'no-notifier';
+    },
+  ) {
+    super(
+      'Workers wiring does not match the storage topology: D1 runs rounds in the partition object, PostgreSQL runs rounds in the Worker and sockets in shards (§8.9)',
+    );
+    this.name = 'WorkersTopologyError';
+  }
+}
 
 /**
  * The subset of `RealtimeHubConfig` the DO host supplies (storage is wired by
@@ -595,10 +627,10 @@ export class SyncularRealtimeHost<
 
   /**
    * Host a partition over a D1 binding (the host builds the coordinated
-   * `D1ServerStorage`) or over a storage the caller built, such as a
-   * `PostgresServerStorage` behind Hyperdrive. The host owns the storage's
-   * serialization: every HTTP and socket round enters the partition FIFO
-   * before the storage is used.
+   * `D1ServerStorage`, and every forwarded round and socket round enters the
+   * partition FIFO before the storage is used), or a shard over a storage
+   * the caller built that locks partitions in the database, such as a
+   * `PostgresServerStorage` behind Hyperdrive (§8.9).
    */
   constructor(
     state: DurableObjectStateLike,
@@ -608,7 +640,10 @@ export class SyncularRealtimeHost<
   constructor(
     state: DurableObjectStateLike,
     storage: S,
-    config: RealtimeDOConfig<S>,
+    config: RealtimeDOConfig<S> & {
+      readonly namespace: DurableObjectNamespaceLike;
+      readonly operations?: never;
+    },
   );
   constructor(
     state: DurableObjectStateLike,
@@ -616,10 +651,17 @@ export class SyncularRealtimeHost<
     config: RealtimeDOConfig<D1ServerStorage> | RealtimeDOConfig<S>,
   ) {
     this.#state = state;
-    if (config.namespace !== undefined && 'prepare' in storage) {
-      throw new Error(
-        'RealtimeDOConfig.namespace needs a storage that locks partitions in the database; D1 pushes need the partition FIFO',
-      );
+    if ('prepare' in storage && config.namespace !== undefined) {
+      throw new WorkersTopologyError({ storage: 'd1', wiring: 'namespace' });
+    }
+    if (
+      !('prepare' in storage) &&
+      (config.namespace === undefined || config.operations !== undefined)
+    ) {
+      throw new WorkersTopologyError({
+        storage: 'database-lock',
+        wiring: config.namespace === undefined ? 'no-namespace' : 'operations',
+      });
     }
     this.#storage =
       'prepare' in storage
@@ -698,8 +740,19 @@ export class SyncularRealtimeHost<
    * commits applied elsewhere arrive at the fanout path (§8.9).
    */
   async fetch(request: Request): Promise<Response> {
-    await this.#rehydrateSockets();
     const url = new URL(request.url);
+    if (
+      this.#config.namespace !== undefined &&
+      (url.pathname === SYNC_DO_REQUEST_PATH ||
+        url.pathname === OPERATIONS_DO_REQUEST_PATH)
+    ) {
+      // §8.9: on a storage that locks partitions the Worker runs rounds.
+      throw new WorkersTopologyError({
+        storage: 'database-lock',
+        wiring: 'forwarded-round',
+      });
+    }
+    await this.#rehydrateSockets();
     if (url.pathname === SYNC_DO_REQUEST_PATH) {
       let bytes: Uint8Array | undefined;
       try {
@@ -1103,6 +1156,16 @@ export class SyncularRealtimeHost<
 
   /** The WebSocket upgrade: accept a hibernatable socket, connect the hub. */
   async #handleUpgrade(request: Request): Promise<Response> {
+    // §8.9: D1 sockets live in the partition's object, PostgreSQL sockets in
+    // shards.
+    const shard = request.headers.get(REALTIME_SHARD_HEADER);
+    const namespace = this.#config.namespace;
+    if ((shard === null) !== (namespace === undefined)) {
+      throw new WorkersTopologyError({
+        storage: namespace === undefined ? 'd1' : 'database-lock',
+        wiring: shard === null ? 'unsharded-upgrade' : 'sharded-upgrade',
+      });
+    }
     const identity = readIdentityHeaders(request);
     if (identity === undefined) {
       return new Response('missing realtime identity', { status: 400 });
@@ -1138,14 +1201,11 @@ export class SyncularRealtimeHost<
       // the socket (so a relay meanwhile does not find it empty and drop it)
       // and before the hub reads the latest sequence, so a commit relayed
       // after that read reaches the session.
-      const shard = request.headers.get(REALTIME_SHARD_HEADER);
-      if (shard !== null && this.#registeredShard !== shard) {
-        const namespace = this.#config.namespace;
-        if (namespace === undefined) {
-          throw new Error(
-            'a sharded realtime upgrade needs RealtimeDOConfig.namespace',
-          );
-        }
+      if (
+        shard !== null &&
+        namespace !== undefined &&
+        this.#registeredShard !== shard
+      ) {
         const registered = await namespace
           .get(namespace.idFromName(identity.partition))
           .fetch(

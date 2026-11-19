@@ -1590,6 +1590,65 @@ describe('hibernation rehydration (§8.1)', () => {
     ).toBe(true);
   });
 
+  test('a pull-only round runs beside the partition FIFO; a push waits for it', async () => {
+    const ns = new FakeDurableObjectNamespace(await makeDb(), {
+      syncConfig: (storage) => ({
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ list_id: ['*'] }),
+      }),
+    });
+    const do_ = ns.get(ns.idFromName(PARTITION));
+    const release = Promise.withResolvers<void>();
+    const held = do_.host.serialized(() => release.promise);
+    let pushed = false;
+    const push = do_
+      .fetch(
+        forwardedSync(
+          [
+            {
+              type: 'PUSH_COMMIT',
+              clientCommitId: 'behind-fifo',
+              clientSeq: 0,
+              operations: [
+                {
+                  table: 'tasks',
+                  rowId: 't1',
+                  op: 'upsert',
+                  payload: taskRow('t1', 'L', 'queued'),
+                },
+              ],
+            },
+          ],
+          'writer',
+        ),
+      )
+      .then((response) => {
+        pushed = true;
+        return response;
+      });
+    const pulled = decodeMessage(
+      new Uint8Array(
+        await (
+          await do_.fetch(forwardedSync(SUBSCRIBE, 'reader'))
+        ).arrayBuffer(),
+      ),
+    ).frames;
+    expect(pulled.some((frame) => frame.type === 'ERROR')).toBe(false);
+    expect(pulled).toContainEqual(
+      expect.objectContaining({ type: 'SUB_START' }),
+    );
+    expect(pushed).toBe(false);
+    release.resolve();
+    await held;
+    expect(
+      decodeMessage(new Uint8Array(await (await push).arrayBuffer())).frames,
+    ).toContainEqual(
+      expect.objectContaining({ type: 'PUSH_RESULT', status: 'applied' }),
+    );
+  });
+
   test('a wake reads the partition once and each client record once', async () => {
     const db = await makeDb();
     const calls = { touch: 0, maxSeq: 0, record: 0 };

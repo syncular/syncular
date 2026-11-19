@@ -29,7 +29,12 @@ Deploy the sync server on Cloudflare: D1 for storage, R2 for segment and blob by
 
 `@syncular/server-workers` is thin. The server core is runtime-neutral TypeScript (Web `Request`, `Response`, `fetch`, and Web Crypto only, enforced by a static import-graph test), so the Workers lane runs the same HTTP handler as Bun and Node, wired to `env` bindings. The routes match [Server setup](/guide-server/#the-route-surface): `POST /sync`, `GET /segments/:id`, `PUT` and `GET /blobs/:id`, plus `GET /realtime` when you enable the Durable Object.
 
-When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on the binding that sync storage, authentication, and scope resolution use. A serialized coordinator cannot make a cached SELECT fresh ([Read freshness](/server-storage-reference/#read-freshness)). The Durable Object host takes that storage in place of the D1 binding ([PostgreSQL behind Hyperdrive](#postgresql-behind-hyperdrive)), or the Worker runs every round itself and Durable Objects hold only sockets ([PostgreSQL: rounds in the Worker, sockets in shards](#postgresql-rounds-in-the-worker-sockets-in-shards)).
+The storage decides the topology, and each storage has one:
+
+- D1: the partition's Durable Object runs every `/sync` and `/operations` round on its FIFO and holds the partition's sockets. The steps below build it.
+- PostgreSQL behind Hyperdrive: the Worker runs every round, and Durable Objects hold only sockets, spread over shard objects ([PostgreSQL: rounds in the Worker, sockets in shards](#postgresql-rounds-in-the-worker-sockets-in-shards)).
+
+`SyncularRealtimeHost` refuses a wiring of the other topology with `WorkersTopologyError` (code `workers.topology_mismatch`; `details` names the storage and the wiring): a D1 host given `namespace` or a sharded upgrade, and a PostgreSQL host without `namespace`, with `operations`, or asked to run a forwarded round or an unsharded upgrade.
 
 ## Steps
 
@@ -170,39 +175,6 @@ const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
 
 For an HTTP-only deployment, keep the Durable Object binding and migration, and pass `coordinator: (env) => ({ namespace: env.REALTIME })` in place of `realtime`. Only the WebSocket route goes away; the FIFO stays mandatory for D1 pushes.
 
-### PostgreSQL behind Hyperdrive
-
-`SyncularRealtimeHost` also takes a storage the Worker built instead of a D1 binding. `RealtimeDOConfig<S>` then hands that storage to `syncConfig`. The host runs the same partition FIFO, socket hub, and maintenance methods over it. `PostgresServerStorage` locks partitions in the database, so it needs no `pushApplySerialized` flag. Enable `nodejs_compat` for `pg`, wire it through a [`PgExecutor`](/server-storage-reference/#driver-wiring), and connect through a Hyperdrive binding with query caching disabled. Point the binding at the database's direct hostname: Hyperdrive pools connections itself, and Neon's pooled `-pooler` endpoint would pool them twice.
-
-```ts title="src/realtime-do.ts"
-import { PostgresServerStorage } from '@syncular/server';
-import {
-  SyncularRealtimeHost,
-  type RealtimeDOConfig,
-} from '@syncular/server-workers';
-import { DurableObject } from 'cloudflare:workers';
-
-const realtimeDOConfig = (env: Env): RealtimeDOConfig<PostgresServerStorage> => ({
-  syncConfig: (storage) => canonicalSyncConfig(env, storage),
-});
-
-export class SyncularRealtimeDO extends DurableObject<Env> {
-  // `pgExecutor` is your `PgExecutor` over `pg` and the Hyperdrive
-  // connection string (see Driver wiring on the storage reference).
-  #host = new SyncularRealtimeHost(
-    this.ctx,
-    new PostgresServerStorage(pgExecutor(this.env.HYPERDRIVE.connectionString)),
-    realtimeDOConfig(this.env),
-  );
-  fetch(request: Request) { return this.#host.fetch(request); }
-  // webSocketMessage, webSocketClose, webSocketError, alarm as in the D1 example
-}
-```
-
-Every statement a round issues is a network round trip from the Durable Object to the database. A new storage instance on a ready database costs two statements, and a catch-up pull costs the same statement count for any number of covered tables ([Postgres storage](/server-storage-reference/#postgres)).
-
-This shape puts every round of a partition on one object's thread. To run rounds in the Worker and spread sockets over several objects, use [PostgreSQL: rounds in the Worker, sockets in shards](#postgresql-rounds-in-the-worker-sockets-in-shards).
-
 The package declares the platform types (`DurableObjectState`, `WebSocket`, `D1Database`) structurally, so it takes no `@cloudflare/workers-types` dependency. Your Worker's own types are structurally compatible.
 
 ::checkpoint[`wrangler dev` answers `POST /sync` through the Durable Object, and a WebSocket client connects to `/realtime`.]
@@ -283,7 +255,7 @@ Retention windows, eligibility rules, and what to alert on are in [Operations an
 
 On PostgreSQL the database serializes pushes: `preparePushApply` takes a row lock on the partition before it reads anything, in whichever process runs the round, and a pull-only round takes no lock ([SPEC §6.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#63-push_result-frame), [§8.9](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#89-several-hosts-of-one-partition)). The Worker therefore runs every `POST /sync` round, pushes included, every `POST /operations` request, every segment and blob download, and every scope resolution itself. No round enters a Durable Object, so a long bootstrap or a slow push of one client does not hold up another client's pull.
 
-Sockets still need a Durable Object. `shard` in the `realtime` options names the object a socket goes to, for example the Facility the session works in, so one partition's sockets spread over several objects. The partition's own object (`idFromName(partition)`) then holds no socket: it keeps the names of the shard objects that registered with it and relays every commit to each of them. A commit applied in the Worker reaches the partition's object through `durableObjectRealtimeNotifier`, which you set as the Worker config's `realtime`. A commit applied in a socket round inside a shard reaches it through the shard's own hub, because `RealtimeDOConfig.namespace` is set. Each shard's hub delivers the commit to its matching sockets as a delta, with no database read.
+Sockets still need a Durable Object. `shard` in the `realtime` options is required on PostgreSQL and names the object a socket goes to, for example the Facility the session works in, so one partition's sockets spread over several objects. The partition's own object (`idFromName(partition)`) then holds no socket: it keeps the names of the shard objects that registered with it and relays every commit to each of them. A commit applied in the Worker reaches the partition's object through `durableObjectRealtimeNotifier`, which you set as the Worker config's `realtime`. A commit applied in a socket round inside a shard reaches it through the shard's own hub, because `RealtimeDOConfig.namespace` is set. Each shard's hub delivers the commit to its matching sockets as a delta, with no database read.
 
 ```ts title="src/worker.ts"
 import {
@@ -366,7 +338,9 @@ export default {
 };
 ```
 
-`shard` receives the authenticated identity and the upgrade request and returns a string; the object's name is `JSON.stringify([partition, shard])`. With `shard` set, the handler throws on a request when the Worker config has no `realtime` notifier or when a `coordinator` is also passed, and `SyncularRealtimeHost` throws at construction when it gets a D1 binding together with `namespace`: D1 has no database lock and needs the partition's FIFO for every push.
+`shard` receives the authenticated identity and the upgrade request and returns a string; the object's name is `JSON.stringify([partition, shard])`. With `shard` set, the handler throws `WorkersTopologyError` on a request when the Worker config has no `realtime` notifier or when a `coordinator` is also passed. `SyncularRealtimeHost` over PostgreSQL requires `namespace` and takes no `operations`: the Worker config's `operations` serves commands, and a request forwarded to the object fails. D1 has no database lock and needs the partition's FIFO for every push, so a D1 host refuses `namespace`.
+
+Enable `nodejs_compat` for `pg` and wire it through a [`PgExecutor`](/server-storage-reference/#driver-wiring). Every statement a round issues is a network round trip from the Worker to the database. A new storage instance on a ready database costs two statements, and a catch-up pull costs the same statement count for any number of covered tables ([Postgres storage](/server-storage-reference/#postgres)).
 
 ### Read authority without the push lock
 
@@ -423,7 +397,7 @@ Create the Hyperdrive configuration with caching disabled: sync storage, authent
 
 ## Transport compression
 
-Cloudflare's edge does not compress `application/vnd.syncular.*` or `application/octet-stream` bodies, so the Worker compresses them (SPEC §1.3). `POST /sync` and `POST /operations` are answered by the partition's Durable Object as identity bodies. The Worker is the outermost hop, so it declares `Content-Encoding: gzip` on a 200 response whose body declares no encoding when the request accepts gzip, and leaves `encodeBody` at its default: workerd gzips the body once as it leaves the edge. A response that already declares an encoding passes through unchanged, so no body is encoded twice.
+Cloudflare's edge does not compress `application/vnd.syncular.*` or `application/octet-stream` bodies, so the Worker compresses them (SPEC §1.3). On D1, `POST /sync` and `POST /operations` are answered by the partition's Durable Object as identity bodies. The Worker is the outermost hop, so it declares `Content-Encoding: gzip` on a 200 response whose body declares no encoding when the request accepts gzip, and leaves `encodeBody` at its default: workerd gzips the body once as it leaves the edge. A response that already declares an encoding passes through unchanged, so no body is encoded twice.
 
 Segment routes run inside `createSyncularHono`, which encodes its own bodies from `Accept-Encoding` and marks them `encodeBody: 'manual'`. On Workers the only codec is gzip through `CompressionStream`; a Bun deployment of the same adapter prefers zstd. Every response whose body was negotiated carries `Vary: Accept-Encoding`. Blob downloads stream the stored bytes with identity encoding and declare no `Content-Encoding`, so workerd does not encode them either.
 

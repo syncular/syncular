@@ -29,9 +29,11 @@
  * `/sync`. An HTTP-only D1 deployment uses the `coordinator` option instead:
  * WebSockets are optional, the per-partition push queue is not.
  *
- * On PostgreSQL, `WorkersRealtimeOptions.shard` spreads sockets over several
- * objects and leaves every HTTP round, segment and blob download to the
- * Worker; the database lock serializes pushes (§6.3, §8.9).
+ * Each storage has one topology (§8.9). On PostgreSQL,
+ * `WorkersRealtimeOptions.shard` is required with `realtime`: sockets live in
+ * shard objects and every HTTP round, segment and blob download runs in the
+ * Worker; the database lock serializes pushes (§6.3). A PostgreSQL Durable
+ * Object refuses forwarded rounds with `WorkersTopologyError`.
  */
 import {
   acceptsEncoding,
@@ -55,6 +57,7 @@ import {
   REALTIME_DO_UPGRADE_PATH,
   type RealtimeUpgradeIdentity,
   SYNC_DO_REQUEST_PATH,
+  WorkersTopologyError,
   writeIdentityHeaders,
   writeRequestIdentityHeaders,
 } from './realtime-do';
@@ -83,8 +86,8 @@ export interface ExecutionContextLike {
 
 /**
  * Realtime wiring for `createWorkersFetchHandler`. Supplying it mounts the
- * `GET <mount>/realtime` upgrade route. Without `shard`, the same namespace
- * is the `/sync` coordinator.
+ * `GET <mount>/realtime` upgrade route. On D1 (no `shard`), the same
+ * namespace is the `/sync` coordinator.
  */
 export interface WorkersRealtimeOptions {
   /** The DO namespace binding (wrangler `[[durable_objects.bindings]]`). */
@@ -112,11 +115,10 @@ export interface WorkersRealtimeOptions {
    */
   readonly allowedOrigins?: readonly string[];
   /**
-   * §8.9: hold the partition's sockets in several objects, one per value this
-   * returns for an authenticated upgrade (for example the Facility the
-   * session works in).
-   * The Worker then runs every `/sync` and `/operations` request itself, so
-   * the storage must lock partitions in the database (PostgreSQL), the
+   * §8.9, required on PostgreSQL and refused on D1: hold the partition's
+   * sockets in several objects, one per value this returns for an
+   * authenticated upgrade (for example the Facility the session works in).
+   * The Worker runs every `/sync` and `/operations` request itself, the
    * Worker config's `realtime` must be `durableObjectRealtimeNotifier` over
    * this namespace (or call it), and `RealtimeDOConfig.namespace` must be
    * set. Presence reaches only peers in the same object.
@@ -133,7 +135,8 @@ export type WorkersRealtimeFactory<Env = unknown> = (
   ctx: ExecutionContextLike,
 ) => WorkersRealtimeOptions | Promise<WorkersRealtimeOptions>;
 
-/** Per-partition Durable Object boundary for D1 sync rounds without WS. */
+/** Per-partition Durable Object boundary for D1 sync rounds without WS. A
+ * PostgreSQL Durable Object refuses the forwarded rounds (§8.9). */
 export interface WorkersCoordinatorOptions {
   readonly namespace: DurableObjectNamespaceLike;
 }
@@ -248,9 +251,11 @@ export function createWorkersFetchHandler<Env = unknown>(
       (options.coordinator !== undefined ||
         honoOptions.config.realtime === undefined)
     ) {
-      throw new Error(
-        'createWorkersFetchHandler: sharded realtime runs /sync in the Worker; pass no coordinator and set config.realtime to durableObjectRealtimeNotifier(namespace)',
-      );
+      throw new WorkersTopologyError({
+        storage: 'database-lock',
+        wiring:
+          options.coordinator !== undefined ? 'coordinator' : 'no-notifier',
+      });
     }
     const coordinator =
       options.coordinator !== undefined

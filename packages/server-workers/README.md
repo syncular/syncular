@@ -12,8 +12,8 @@ runs unmodified on `workerd`, and speaks only Web `Request`/`Response`/
 same HTTP handler wired to `env` bindings.
 
 PostgreSQL hosts using Hyperdrive must disable query caching on the binding used
-for sync storage, authentication and scope resolution. Durable Object serialization
-cannot invalidate cached SELECT results. See the
+for sync storage, authentication and scope resolution, because a cached SELECT
+stays stale after a write. See the
 [storage freshness contract](https://syncular.dev/server-storage/#read-freshness).
 
 ## What it mounts
@@ -340,10 +340,16 @@ compatible with the host's declared subset.
 
 Add the DO binding + migration to `wrangler.toml` (see `wrangler.toml.example`).
 
-For PostgreSQL behind Hyperdrive, pass the storage instead of the D1 binding:
-`new SyncularRealtimeHost(this.ctx, new PostgresServerStorage(executor), config)`
-with `config: RealtimeDOConfig<PostgresServerStorage>`. The host runs the same
-partition FIFO over it; `syncConfig` receives that storage.
+Each storage has one topology (SPEC §8.9). D1 runs every round in the
+partition's Durable Object, as above. PostgreSQL behind Hyperdrive runs every
+round in the Worker and keeps sockets in shard objects:
+`WorkersRealtimeOptions.shard` names the shard, and the Durable Object is built
+as `new SyncularRealtimeHost(this.ctx, new PostgresServerStorage(executor),
+{ syncConfig, namespace: this.env.REALTIME })`. A PostgreSQL host refuses
+forwarded `/sync` and `/operations` rounds, an unsharded upgrade and
+`operations` with `WorkersTopologyError` (`workers.topology_mismatch`); a D1
+host refuses `namespace` and a sharded upgrade the same way. See
+[PostgreSQL: rounds in the Worker, sockets in shards](https://syncular.dev/server-workers/#postgresql-rounds-in-the-worker-sockets-in-shards).
 
 ### Real-workerd smoke: a manual recipe (why no automated lane)
 

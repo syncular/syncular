@@ -294,7 +294,7 @@ See [Bootstrap & segments](/concepts-bootstrap/).
 
 Hyperdrive caches SELECT results by default and a write does not invalidate them. The default cache can serve an older result for 60 s plus a 15 s revalidation window. A cached commit maximum below an accepted sequence fails with `sync.storage_stale_read` (the push stays committed). Pass a cache-disabled binding to `PostgresServerStorage`, `authenticate`, and scope resolution. Point the binding at the direct database hostname (for Neon, the one without `-pooler`), because Hyperdrive pools connections itself; both [Neon](https://neon.com/docs/guides/cloudflare-workers) and [Cloudflare](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/neon) tell you to clear the pooled option.
 
-See [Read freshness](/server-storage-reference/#read-freshness) and [PostgreSQL behind Hyperdrive](/server-workers/#postgresql-behind-hyperdrive).
+See [Read freshness](/server-storage-reference/#read-freshness) and [PostgreSQL: rounds in the Worker, sockets in shards](/server-workers/#postgresql-rounds-in-the-worker-sockets-in-shards).
 
 ### Do give the Postgres fanout a direct Neon connection
 

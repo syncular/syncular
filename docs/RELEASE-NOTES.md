@@ -395,6 +395,30 @@ A host that calls its validators from its own commit validator passes
 `queryAuthoritative: (query) => input.read.queryAuthoritative(query)`. Diego's
 `activity-window-push` and `activity-window-grant` tests pass on this shape.
 
+### Workers: one topology per storage
+
+On Workers the storage fixes the topology (SPEC §8.9). D1 runs every `/sync`
+and `/operations` round in the partition's Durable Object, which also holds
+the sockets. PostgreSQL runs every round in the Worker and keeps sockets in
+shard objects (`WorkersRealtimeOptions.shard`, 0.79.0). The third form,
+`SyncularRealtimeHost` over PostgreSQL serving forwarded rounds in the
+partition's object, is removed: it ran every round of a partition on one
+thread, and the database lock already serializes pushes in the Worker.
+
+`SyncularRealtimeHost` over a storage other than D1 now requires
+`RealtimeDOConfig.namespace` and takes no `operations`, and refuses a
+forwarded `/sync` or `/operations` request and an upgrade without a shard. A
+D1 host refuses `namespace` and a sharded upgrade. Each refusal throws
+`WorkersTopologyError` (code `workers.topology_mismatch`, `details` names the
+storage and the wiring); the handler's existing refusal of `shard` beside a
+`coordinator` or without the relay notifier throws the same error.
+
+A PostgreSQL deployment that forwarded rounds to its Durable Object moves to
+the sharded form: pass `durableObjectRealtimeNotifier` as the Worker
+config's `realtime`, set `shard` in the `realtime` options, pass
+`namespace` to the host, and move `operations` from `RealtimeDOConfig` to
+the Worker config. The Durable Object class and its migration stay.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

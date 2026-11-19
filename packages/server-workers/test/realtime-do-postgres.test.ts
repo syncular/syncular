@@ -1,28 +1,18 @@
 /**
  * `SyncularRealtimeHost` over a caller-built `PostgresServerStorage` (PGlite
- * stands in for PostgreSQL behind Hyperdrive): the host coordinates the
- * storage it was given, and a fresh host over the same database (a Durable
- * Object wake) serves the committed rows. The partition's object relays
- * commits to the shard objects registered with it (§8.9).
+ * stands in for PostgreSQL behind Hyperdrive): the partition's object relays
+ * commits to the shard objects registered with it, and each storage refuses
+ * the other's topology (§8.9).
  */
 import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import {
-  decodeMessage,
-  encodeMessage,
-  encodeSparseRow,
-  PROTOCOL_WIRE_VERSION,
-  registrationDigest,
-  type RequestFrame,
-  type RowColumn,
-  unitId,
-} from '@syncular/core';
+import { encodeSparseRow, type RowColumn } from '@syncular/core';
 import {
   compileSchema,
   MemorySegmentStore,
   PostgresServerStorage,
+  RemoteOperationRegistry,
   type ServerSchema,
-  SSP2_CONTENT_TYPE,
   type SyncularServerEvent,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -33,10 +23,15 @@ import {
   type DurableObjectNamespaceLike,
   type DurableObjectStubLike,
   durableObjectRealtimeNotifier,
+  OPERATIONS_DO_REQUEST_PATH,
   REALTIME_DO_SHARDS_PATH,
+  REALTIME_DO_UPGRADE_PATH,
   type RealtimeDOConfig,
+  type RealtimeHostStorage,
   SYNC_DO_REQUEST_PATH,
   SyncularRealtimeHost,
+  WorkersTopologyError,
+  writeIdentityHeaders,
   writeRequestIdentityHeaders,
 } from '../src/index';
 import { FakeDurableObjectState } from './do-double';
@@ -57,140 +52,6 @@ const SCHEMA: ServerSchema = {
     },
   ],
 };
-
-const STATE = new FakeDurableObjectState();
-
-const PULL: RequestFrame[] = [
-  {
-    type: 'PULL_HEADER',
-    limitCommits: 100,
-    limitSnapshotRows: 100,
-    maxSnapshotPages: 4,
-    accept: 0b0011,
-    cursor: -1,
-    registrationDigest: registrationDigest([{ list_id: 'L' }]),
-    echoDigest: new Uint8Array(),
-  },
-  { type: 'UNIT', scopes: { list_id: 'L' } },
-  { type: 'PROGRESS', id: unitId({ list_id: 'L' }), cursor: -1 },
-];
-
-function pushFrame(id: string): RequestFrame {
-  return {
-    type: 'PUSH_COMMIT',
-    clientCommitId: id,
-    clientSeq: 0,
-    operations: [
-      {
-        table: 'tasks',
-        rowId: id,
-        op: 'upsert',
-        payload: encodeSparseRow(COLUMNS, 0, [id, 'L']),
-      },
-    ],
-  };
-}
-
-async function round(
-  host: SyncularRealtimeHost<PostgresServerStorage>,
-  clientId: string,
-  frames: RequestFrame[],
-) {
-  const request = new Request(new URL(SYNC_DO_REQUEST_PATH, 'https://do'), {
-    method: 'POST',
-    headers: { 'content-type': SSP2_CONTENT_TYPE },
-    body: encodeMessage({
-      wireVersion: PROTOCOL_WIRE_VERSION,
-      msgKind: 'request',
-      frames: [
-        { type: 'REQ_HEADER', clientId, schemaVersion: 1, logEpoch: 'epoch' },
-        ...frames,
-      ],
-    }).slice().buffer as ArrayBuffer,
-  });
-  writeRequestIdentityHeaders(request.headers, {
-    partition: 'part-1',
-    actorId: 'actor-1',
-  });
-  const response = await host.fetch(request);
-  expect(response.status).toBe(200);
-  return decodeMessage(new Uint8Array(await response.arrayBuffer())).frames;
-}
-
-test('the host serves rounds over a PostgreSQL storage it was given', async () => {
-  const db = await PGlite.create();
-  const received: PostgresServerStorage[] = [];
-  const config: RealtimeDOConfig<PostgresServerStorage> = {
-    syncConfig: (storage) => {
-      received.push(storage);
-      return {
-        schema: SCHEMA,
-        storage,
-        resolveScopes: () => ({ list_id: ['L'] }),
-        segments: new MemorySegmentStore(),
-      };
-    },
-  };
-  const storage = new PostgresServerStorage(pgliteExecutor(db));
-  await storage.ensureSchema(compileSchema(SCHEMA));
-  await storage.touchPartition('part-1', 0, 'epoch');
-  const pushed = await round(
-    new SyncularRealtimeHost(STATE, storage, config),
-    'writer',
-    [pushFrame('t1')],
-  );
-  expect(pushed).toContainEqual(
-    expect.objectContaining({ type: 'PUSH_RESULT', status: 'applied' }),
-  );
-  expect(received).toEqual([storage]);
-  // A wake builds a new host and storage over the same database.
-  const woken = new PostgresServerStorage(pgliteExecutor(db));
-  const pulled = await round(
-    new SyncularRealtimeHost(STATE, woken, config),
-    'reader',
-    PULL,
-  );
-  expect(received).toEqual([storage, woken]);
-  expect(pulled.some((frame) => frame.type === 'ERROR')).toBe(false);
-  expect(pulled).toContainEqual(expect.objectContaining({ type: 'SUB_START' }));
-  await db.close();
-});
-
-test('a pull-only round runs beside the partition FIFO; a push waits for it', async () => {
-  const db = await PGlite.create();
-  const storage = new PostgresServerStorage(pgliteExecutor(db));
-  await storage.ensureSchema(compileSchema(SCHEMA));
-  await storage.touchPartition('part-1', 0, 'epoch');
-  const host = new SyncularRealtimeHost(STATE, storage, {
-    syncConfig: (coordinated) => ({
-      schema: SCHEMA,
-      storage: coordinated,
-      resolveScopes: () => ({ list_id: ['L'] }),
-      segments: new MemorySegmentStore(),
-    }),
-  });
-  let release!: () => void;
-  const held = host.serialized(
-    async () =>
-      new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-  );
-  let pushed = false;
-  const push = round(host, 'writer', [pushFrame('t1')]).then((frames) => {
-    pushed = true;
-    return frames;
-  });
-  const pulled = await round(host, 'reader', PULL);
-  expect(pulled.some((frame) => frame.type === 'ERROR')).toBe(false);
-  expect(pushed).toBe(false);
-  release();
-  await held;
-  expect(await push).toContainEqual(
-    expect.objectContaining({ type: 'PUSH_RESULT', status: 'applied' }),
-  );
-  await db.close();
-});
 
 test('the partition object drops a shard without sockets unless it registered again', async () => {
   const db = await PGlite.create();
@@ -258,24 +119,95 @@ test('the partition object drops a shard without sockets unless it registered ag
   await db.close();
 });
 
-test('sharded realtime refuses D1 and a Worker without the relay notifier', async () => {
+test('each storage refuses the other topology with workers.topology_mismatch', async () => {
+  const db = await PGlite.create();
+  const postgres = new PostgresServerStorage(pgliteExecutor(db));
   const namespace: DurableObjectNamespaceLike = {
     idFromName: () => ({}),
     get: () => ({ fetch: async () => new Response() }),
   };
-  const syncConfig: RealtimeDOConfig['syncConfig'] = (storage) => ({
+  const syncConfig: RealtimeDOConfig<RealtimeHostStorage>['syncConfig'] = (
+    storage,
+  ) => ({
     schema: SCHEMA,
     storage,
     resolveScopes: () => ({ list_id: ['L'] }),
     segments: new MemorySegmentStore(),
   });
+  const refusal = async (run: () => unknown) => {
+    try {
+      await run();
+    } catch (error) {
+      if (!(error instanceof WorkersTopologyError)) throw error;
+      return error.details;
+    }
+    throw new Error('expected a topology refusal');
+  };
+  const state = new FakeDurableObjectState();
   expect(
-    () =>
-      new SyncularRealtimeHost(STATE, new D1DatabaseDouble(), {
-        syncConfig,
-        namespace,
-      }),
-  ).toThrow('RealtimeDOConfig.namespace needs a storage');
+    await refusal(
+      () =>
+        new SyncularRealtimeHost(state, new D1DatabaseDouble(), {
+          syncConfig,
+          namespace,
+        }),
+    ),
+  ).toEqual({ storage: 'd1', wiring: 'namespace' });
+  expect(
+    await refusal(
+      () =>
+        // @ts-expect-error: a PostgreSQL host needs the namespace.
+        new SyncularRealtimeHost(state, postgres, { syncConfig }),
+    ),
+  ).toEqual({ storage: 'database-lock', wiring: 'no-namespace' });
+  expect(
+    await refusal(
+      () =>
+        new SyncularRealtimeHost(state, postgres, {
+          syncConfig,
+          namespace,
+          // @ts-expect-error: commands run in the Worker on PostgreSQL.
+          operations: new RemoteOperationRegistry([]),
+        }),
+    ),
+  ).toEqual({ storage: 'database-lock', wiring: 'operations' });
+  const shardHost = new SyncularRealtimeHost(state, postgres, {
+    syncConfig,
+    namespace,
+  });
+  const identity = { partition: 'part-1', actorId: 'actor-1' };
+  for (const path of [SYNC_DO_REQUEST_PATH, OPERATIONS_DO_REQUEST_PATH]) {
+    const forwarded = new Request(new URL(path, 'https://do'), {
+      method: 'POST',
+    });
+    writeRequestIdentityHeaders(forwarded.headers, identity);
+    expect(await refusal(() => shardHost.fetch(forwarded))).toEqual({
+      storage: 'database-lock',
+      wiring: 'forwarded-round',
+    });
+  }
+  const upgrade = (shard?: string) => {
+    const request = new Request(
+      new URL(REALTIME_DO_UPGRADE_PATH, 'https://do'),
+    );
+    writeIdentityHeaders(
+      request.headers,
+      { ...identity, clientId: 'client-1' },
+      shard,
+    );
+    return request;
+  };
+  expect(await refusal(() => shardHost.fetch(upgrade()))).toEqual({
+    storage: 'database-lock',
+    wiring: 'unsharded-upgrade',
+  });
+  const d1Host = new SyncularRealtimeHost(state, new D1DatabaseDouble(), {
+    syncConfig,
+  });
+  expect(await refusal(() => d1Host.fetch(upgrade('["part-1","a"]')))).toEqual({
+    storage: 'd1',
+    wiring: 'sharded-upgrade',
+  });
   const handler = createWorkersFetchHandler({
     config: () => ({
       config: syncConfig(new D1ServerStorage(new D1DatabaseDouble())),
@@ -287,13 +219,16 @@ test('sharded realtime refuses D1 and a Worker without the relay notifier', asyn
       shard: () => 'facility-a',
     }),
   });
-  await expect(
-    handler(
-      new Request('https://worker/sync', { method: 'POST' }),
-      {},
-      { waitUntil: () => {} },
+  expect(
+    await refusal(() =>
+      handler(
+        new Request('https://worker/sync', { method: 'POST' }),
+        {},
+        { waitUntil: () => {} },
+      ),
     ),
-  ).rejects.toThrow('sharded realtime runs /sync in the Worker');
+  ).toEqual({ storage: 'database-lock', wiring: 'no-notifier' });
+  await db.close();
 });
 
 test('a failed relay is owed to the shard and retried from the alarm until it answers', async () => {

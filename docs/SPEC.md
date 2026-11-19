@@ -8855,8 +8855,16 @@ retry lands.
 partition's sockets chooses its spread so that peers sharing a presence key
 connect to the same host.
 
-**The Workers form.** The Worker runs every round, segment and blob request
-itself against PostgreSQL. Sockets live in shard objects, one per value of a
+**The Workers form.** On Workers the storage fixes the topology. On D1 the
+partition's Durable Object (named by the partition) runs every `/sync` and
+`/operations` request on its FIFO and holds every socket of the partition;
+the Worker forwards those requests to it. On PostgreSQL the Worker runs every
+round, command, segment and blob request itself, and no round enters a
+Durable Object. A host refuses a wiring of the other topology with
+`workers.topology_mismatch`, a host configuration error that never reaches
+the wire. The rest of this section describes the PostgreSQL form.
+
+On PostgreSQL, sockets live in shard objects, one per value of a
 key the host chooses at upgrade, named `JSON.stringify([partition, shard])`.
 The partition's object (named by the partition) holds no socket: it keeps
 the names of the shards that registered with it in its durable storage and
@@ -8905,6 +8913,13 @@ nothing on PostgreSQL: `preparePushApply` takes the partition row lock whether
 the round runs in the object or in a Worker, so a forwarded push would pay a
 second hop and still queue in the database. A round that carries both pushes
 and pulls therefore needs no routing decision either.
+
+DECISION (2026-11-19): one topology per storage on Workers. The PostgreSQL
+form that forwarded every round into the partition's object is removed. It
+put every round of a partition on one object's thread (the bottleneck the
+2026-11-17 decision measured) and bought no ordering, because the database
+lock serializes pushes in either place. D1 keeps the object's FIFO because it
+has no database lock.
 
 DECISION (2026-11-17): the partition's object relays the commit itself to the
 shards instead of a wake. A wake makes every socket of the partition run a
