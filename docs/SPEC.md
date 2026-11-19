@@ -173,8 +173,9 @@ rationale; the referenced sections carry the normative detail.
 - [x] **Pruning horizon is normative.** The server maintains a
       per-partition `horizonSeq`
       (§4.6). A pull whose replica cursor or unit cursor is behind the
-      horizon gets `status = reset` on the live section or the unit section
-      with reason code `sync.cursor_expired` (category `reset-required`,
+      horizon, or a unit cursor behind the table horizon of a re-keyed table
+      the unit covers, gets `status = reset` on the live section or the unit
+      section with reason code `sync.cursor_expired` (category `reset-required`,
       action `rebootstrap`), and the reset units MUST re-bootstrap.
       Retention floors (≥1000 newest commits, 14-day active window,
       30-day age force) are normative minimum-behavior.
@@ -1372,7 +1373,7 @@ using the previous schema layout. A re-key (§3.1) checks every row of the
 table for its new scope values in the prepare phase, before any DDL; a refusal
 deletes the migration claim, so the database keeps its previous version and
 serves again. It clears the table's row scope index entries and tombstones and
-raises the horizons in the DDL phase, then writes each rewritten row's scopes
+raises the table horizons in the DDL phase, then writes each rewritten row's scopes
 and index entries in the batch of its rewrite. The published schema version advances only
 after all DDL, rewrites, and retired-table cleanup finish.
 
@@ -1458,8 +1459,8 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   writer fence", §2.4). The storage recomputes every stored row's scopes
   from the row's own column values under the new patterns, replaces the
   row's entries in the row scope index, deletes the table's tombstones
-  (§2.2), and raises the horizon of every partition to its `maxCommitSeq`
-  (§4.6). It then records the new patterns. A table whose patterns are
+  (§2.2), and raises the table's horizon in every partition (§4.6). It then
+  records the new patterns. A table whose patterns are
   unchanged is not re-keyed. A NULL column of a variable outside the owner
   set re-keys to no stored scope for that variable. A row whose newly
   mapped scope column is empty, or NULL for an owner-set variable, has no
@@ -1471,11 +1472,12 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   moves into the owner set keeps no stored scope for it, and only the
   sets it satisfies admit writes to it (§3.4). Move a variable into the
   owner set only after every stored row holds a value for it.
-- Logged changes keep the scopes they were written under, and the horizon
-  raise keeps them from being served under the new patterns. Client resets
+- Logged changes keep the scopes they were written under, and the table
+  horizon keeps them from being served under the new patterns. Client resets
   alone do not cover this: a client may send an old cursor, and a pattern
   that keeps its variable but maps another column would match foreign rows'
-  history. A deleted row's column values are gone, so its tombstone's scopes
+  history. The partition's `horizonSeq` stays where pruning left it, so a
+  unit that covers no re-keyed table keeps its cursor. A deleted row's column values are gone, so its tombstone's scopes
   cannot be recomputed; after the bump an unversioned upsert of a row
   deleted before the bump inserts it again above the delete floor instead of
   answering `sync.row_deleted`, as it does once pruning has passed the
@@ -2082,8 +2084,8 @@ the scan and does not hold back `R`.
 `L < commitSeq ≤ T` that carries at least one change matching the scan set,
 one `COMMIT` frame per commit. A change of table `t` matches when some unit
 of the scan set covers `t`, its pair for `t` is active, the change's stored
-scopes match the pair's effective scopes, and `commitSeq` exceeds that
-unit's lower bound. A `COMMIT` frame holds every matching change of its
+scopes match the pair's effective scopes, and `commitSeq` exceeds both that
+unit's lower bound and the table horizon of `t` (§4.6). A `COMMIT` frame holds every matching change of its
 commit once, in the commit's change order, across tables; the frame's table
 dictionary carries every table it names. `T` is `maxCommitSeq` read at the
 start of the pull, or, when a budget cut the section, the `commitSeq` of the
@@ -2172,11 +2174,13 @@ them. The client observes a cut section only implicitly by pulling again;
 there is no `hasMore` flag. Clients SHOULD pull again immediately whenever
 a response contained commits.
 
-**Order of work.** The server reads `maxCommitSeq` and `horizonSeq` once,
+**Order of work.** The server reads `maxCommitSeq`, `horizonSeq` and the
+table horizons once,
 resolves the effective list (§4.1), decides the live status and each
 catching-up unit's status (§4.6, §4.7), plans every unit section including
 whether its bootstrap completes, reads and buffers the live section, then
-rechecks `horizonSeq` (§4.6) before it emits the first unit section.
+rechecks `horizonSeq` and the table horizons (§4.6) before it emits the first
+unit section.
 
 **The client record.** The server persists per (partition, `clientId`): the
 actor binding, the accepted wire version, the stored registration list
@@ -2229,10 +2233,20 @@ Servers prune the commit log. The contract:
   force-advance past commits older than the **age force limit** (default 30
   days) regardless of laggard cursors. A server MUST always retain at least
   the newest **1000** commits. (Hosts may raise any of the defaults.)
-  A schema-version bump that re-keys a table (§3.1) is the one exception:
-  it raises `horizonSeq` of every partition to its `maxCommitSeq` regardless
-  of client cursors and the retained minimum, and the next pruning pass
-  deletes the commits below it.
+- **Table horizon.** A re-key (§3.1) takes a commit sequence number of its
+  own. In the upgrade transaction the storage raises `maxCommitSeq` of every
+  partition by one, writes no commit under the new value, and records that
+  value as the **table horizon** of every table the bump re-keys, per
+  partition. The changes of a table logged at or below its table horizon are
+  never served. A table without a recorded table horizon has `horizonSeq` as
+  its table horizon, and a recorded one never counts below `horizonSeq`; the
+  pruning pass that advances `horizonSeq` to or past a recorded table horizon
+  deletes it. A re-key leaves `horizonSeq` unchanged. The re-key takes its
+  own sequence number because a replica whose cursor equals `maxCommitSeq`
+  at the bump holds the table's rows under the previous patterns: with the
+  table horizon at the previous `maxCommitSeq`, its cursor would equal the
+  pin of a bootstrap completed after the bump, and no rule could tell the
+  two apart.
 - **Replica reset.** A pull with a live unit and `R < horizonSeq` (including
   `R = -1`), or with `R > maxCommitSeq` (corrupt client state), cannot be
   answered from the log. The server MUST answer `LIVE_START.status = reset`
@@ -2240,20 +2254,30 @@ Servers prune the commit log. The contract:
   `LIVE_END.throughSeq = -1`. On `reset` the client MUST move every live unit
   to catching up with cursor `-1` and set `R = -1`; post-bootstrap units keep
   their cursors, and the next round bootstraps every reset unit (§4.7).
-- **Unit reset.** A post-bootstrap unit with `0 ≤ P < horizonSeq` gets
+- **Unit reset.** A post-bootstrap unit with `0 ≤ P < horizonSeq`, a
+  post-bootstrap unit whose `P` lies below the table horizon of a table of
+  one of its active pairs (§3.2), and, when the live section is not answered
+  `reset`, a live unit whose `R` lies below such a table horizon get
   `SUB_START.status = reset` with `reasonCode = "sync.cursor_expired"`, no
-  segments, and its request cursor echoed in `SUB_END`. On `reset` the client
-  MUST discard the unit's cursor, resume token and first-page record and
-  send cursor `-1` next. It keeps the unit's persisted echo: a revocation or
-  eviction before the next bootstrap completes still matches the rows the
-  unit held.
+  segments, and the request cursor echoed in `SUB_END`. On `reset` the
+  client MUST discard the unit's cursor, resume token and first-page record
+  and send cursor `-1` next; a live unit answered `reset` leaves the live
+  units, and the replica cursor stays with the others. It keeps the unit's
+  persisted echo: a revocation or eviction before the next bootstrap
+  completes still matches the rows the unit held. A re-key therefore resets
+  exactly the units that cover the re-keyed table.
 - **Restricted unit reset.** A unit whose `RESTRICT` (§4.3) carries a kept
-  cursor `C` with `C < horizonSeq` or `C > maxCommitSeq` cannot join at
-  `C` (§4.7). The server answers it `SUB_START.status = reset` with
-  `reasonCode = "sync.cursor_expired"`, no segments and its `PROGRESS`
-  cursor echoed in `SUB_END`, before and at the horizon recheck below. On
-  that `reset` the client discards the restriction together with the state
-  the unit reset above discards; the next round bootstraps the whole unit.
+  cursor `C` with `C < horizonSeq` or `C > maxCommitSeq`, or with `C` below
+  the table horizon of a table of one of its active pairs outside the
+  `RESTRICT` tables, cannot join at `C` (§4.7). The server answers it
+  `SUB_START.status = reset` with `reasonCode = "sync.cursor_expired"`, no
+  segments and its `PROGRESS` cursor echoed in `SUB_END`, before and at the
+  horizon recheck below. On that `reset` the client discards the restriction
+  together with the state the unit reset above discards; the next round
+  bootstraps the whole unit. A `RESTRICT` table whose table horizon lies
+  above `C` does not reset the unit: its snapshot is read at a pin at or
+  above the table horizon (§4.7), and the scan serves the table only above
+  its table horizon (§4.5).
 - A reset unit SHOULD keep its local rows until bootstrap application
   replaces them (§5.6): `reset` is a staleness signal, not a purge signal;
   only `revoked` purges (§3.3).
@@ -2289,16 +2313,35 @@ Servers prune the commit log. The contract:
 A pull MUST read its live section and then recheck the horizon before it
 emits the first unit section (§4.5). A post-bootstrap unit whose cursor lies
 below the rechecked horizon is answered `reset` and leaves the scan set; when
-`R` lies below it, the live section is answered `reset`. The server MUST NOT
+`R` lies below it, the live section is answered `reset`. The recheck applies
+the rechecked table horizons by the unit reset rules above. A table horizon
+that rose during the round also resets a completing restricted bootstrap
+whose `RESTRICT` tables include the table, because its segments were read
+before the re-key. The server MUST NOT
 emit an active section followed by a non-retryable cursor-expiry error. Once
 the live section is buffered and continuity is verified, later pruning cannot
 remove its frames.
 
+**No change at or below a table horizon is served.** Take a table `t` with
+table horizon `H`. A live unit, a post-bootstrap unit, and a restricted
+bootstrap whose `RESTRICT` tables exclude `t`, each with an active pair for
+`t`, hold a lower bound of at least `H` or are answered `reset`. A whole
+bootstrap pins at `maxCommitSeq ≥ H`, and a resume token pinned below `H`
+restarts (§4.7), so a whole bootstrap joins at or above `H`. A restricted
+bootstrap over `t` reads `t` at a pin of at least `H`, and the scan serves
+`t` only above `H` (§4.5). A realtime delta (§8.2) carries one commit
+written after the re-key. No commit carries `H`, so the first commit after
+the re-key is not adjacent to a connection whose cursor lies below `H`; the
+connection receives `catchup-required` and the client pulls. The scope pin
+of the sqlite lane never lies below `H` (§4.7), so no image read before the
+re-key is reused after it. The re-key therefore needs no `horizonSeq` raise,
+and pruning removes the table's earlier log on its ordinary schedule.
+
 Pruning MUST capture the partition log epoch before reading retention inputs.
 The storage operation `pruneCommitsThrough(partition, { logEpoch, throughSeq })`
 MUST verify that epoch, advance the horizon to the greater of its current value
-and `throughSeq`, and delete commit/change/scope-index records through that
-horizon in one transaction. It returns `previousHorizonSeq`, `horizonSeq`, and
+and `throughSeq`, and delete commit/change/scope-index records and table
+horizons (above) through that horizon in one transaction. It returns `previousHorizonSeq`, `horizonSeq`, and
 `removedCommits` from that transaction. Concurrent passes cannot lower the
 horizon. Retry the operation even when the horizon does not advance, so older
 incomplete cleanup can finish. Application rows and durable reactions survive
@@ -2367,8 +2410,9 @@ A catching-up unit **bootstraps** when any of: its `PROGRESS` is followed by a
 bootstrap mode, since its cursor already equals the pin); its cursor is
 `-1`; its cursor is above `maxCommitSeq` (a client from the future, treated
 as corrupt state); or the server has declared its log discontinuous
-(host-initiated resync). A unit whose cursor lies below `horizonSeq` first
-takes the §4.6 `reset` round trip.
+(host-initiated resync). A unit whose cursor lies below `horizonSeq`, or
+below the table horizon of a table of one of its active pairs, first takes
+the §4.6 `reset` round trip.
 
 Bootstrap is **resumable, pinned, and paged**:
 
@@ -2382,8 +2426,8 @@ Bootstrap is **resumable, pinned, and paged**:
   `accept` bit 2 and the table has no encrypted column) is served at its
   **scope pin** when the bootstrap reaches the table's start: the newest
   commit whose changes to the table carry every value of the unit's scope
-  map in the inverted change-scope index, raised to `horizonSeq` and capped
-  at `maxCommitSeq`. A change the unit receives for the table carries all of
+  map in the inverted change-scope index, raised to the table's horizon
+  (§4.6) and capped at `maxCommitSeq`. A change the unit receives for the table carries all of
   the unit's values in its stored scopes (§3.1), and so does each half of a
   scope move that takes a row into or out of the unit, whichever variable
   moves (§2.2: the delete under the old scopes, the upsert under the new). No
@@ -2425,9 +2469,10 @@ Bootstrap is **resumable, pinned, and paged**:
   table's ranges serves the remaining ranges at the newer scope pin. Each
   range holds the snapshot at its own scope pin, and the live section after
   the unit's pin delivers every change in between (§4.5).
-- If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
-  bootstrap from scratch (fresh pin) rather than resume across pruned
-  history.
+- If a resumed `asOfCommitSeq` lies below `horizonSeq` or below the table
+  horizon of one of the unit's bootstrap tables (§4.6), the server MUST
+  restart the bootstrap from scratch (fresh pin) rather than resume across
+  pruned history or across a re-key.
 - A `bootstrapState` that does not parse as the shape above, whose
   `asOfCommitSeq` is not an integer in `[0, maxCommitSeq]`, whose
   `tableIndex` is not an index into `tables`, whose `tables` differ from
@@ -2471,7 +2516,9 @@ changes nothing. An upsert in `(C, S]` of a row a later write removed
 re-creates it until the scan reaches that write, as for any unit (§4.5).
 The scan from `C` needs the log above `C`: the record cursor holds the
 horizon at `C` (§4.5), and a kept cursor below the horizon answers the
-unit `reset` (§4.6). A `RESTRICT` whose `PROGRESS` carries a token of a
+unit `reset` (§4.6). A bootstrap table re-keyed above `C` (§3.1) needs
+no log below its table horizon: the scan serves it only above its table
+horizon, and its snapshot at `S` already holds its state there. A `RESTRICT` whose `PROGRESS` carries a token of a
 whole bootstrap fails the token check above and restarts as a restricted
 bootstrap with a fresh pin.
 
@@ -6691,9 +6738,21 @@ bootstrapping the changed tables (§4.7), so it needs no per-table cursor.
 it and serves the whole bootstrap that the client's cursor `-1` asks for,
 which the client applies by the ordinary rules, so the frame ships inside
 wire version 4 (§9). A kept cursor below the horizon cannot join, and the
-unit takes the `reset` round trip to a whole bootstrap (§4.6). Re-keying a
-table raises the horizon to `maxCommitSeq` (§4.6), so a bump that re-keys
-one of a unit's tables resets that unit whole.
+unit takes the `reset` round trip to a whole bootstrap (§4.6).
+
+DECISION (2026-11-19): a re-key raises the horizon of the re-keyed table only
+(§4.6). Before this, a re-key raised `horizonSeq` of every partition to its
+`maxCommitSeq`, and every unit of every client bootstrapped again: a bump
+that added a second scope pattern to one table of one app made every device
+download its whole replica, including clients of an earlier schema version
+that the schema window declared compatible. The table horizon resets the
+units with an active pair for the re-keyed table and no other. A client that
+takes the bump bootstraps the re-keyed table, whose generation changed,
+through a restricted bootstrap and keeps its other tables: the scan serves
+the re-keyed table only above its table horizon, so the restriction needs no
+log below it. A unit of an earlier schema version that covers the re-keyed
+table bootstraps whole, because it holds the table's rows under the previous
+patterns and has no restriction to replace them with.
 
 **Order (all in one durable step where the storage allows):**
 
@@ -8113,7 +8172,8 @@ pinned, never interpreted.
 - **Catch-up replays the log.** A recovery pull whose replica cursor lies
   at or above `horizonSeq` is answered from the log in live sections of at
   most `limitCommits` changes, one round after another; only a replica
-  cursor below the horizon re-bootstraps (§4.6). A backlog in one unit
+  cursor below the horizon, and a unit cursor below a table horizon of the
+  unit's tables, re-bootstrap (§4.6). A backlog in one unit
   therefore delays newer changes of every live unit until it drains (§0).
 
 ### 8.5 Heartbeat
@@ -8960,7 +9020,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes or `UNIT` frames per request (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
-| `sync.cursor_expired` | reset-required | no | rebootstrap | Replica cursor or unit cursor behind the pruning horizon (§4.6) — *new in SSP2*; delivered as `LIVE_START` or `SUB_START` reason code |
+| `sync.cursor_expired` | reset-required | no | rebootstrap | Replica cursor or unit cursor behind the pruning horizon, or a unit cursor behind the table horizon of a re-keyed table (§4.6) — *new in SSP2*; delivered as `LIVE_START` or `SUB_START` reason code |
 | `sync.scope_revoked` | scope-revoked | no | checkPermissions | Unit revoked (§3.3) — delivered as `SUB_START` reason code; a revoked (unit, table) pair travels as a revoked fenced record (§4.4) |
 | `sync.rate_limited` | rate-limited | yes | retryLater | Request or connection rate cap |
 | `sync.schema_mismatch` | schema-mismatch | no | regenerateClient | Generated client artifacts incompatible with the server (e.g., segment column-table mismatch, §5.2) |
@@ -9821,3 +9881,19 @@ Each is a driver-interface script, not a prose test.
     bootstraps every row, a pull with the old cursor gets
     `sync.cursor_expired`, and no change logged before the bump reaches a
     unit of the new variable. Both pairings and the Rust authority.
+    (b) **A re-key resets only its units**
+    (`schema-bump/rekey-resets-only-units-over-the-table`): a client holds
+    a live unit over table A and a live unit over table B, both at
+    `maxCommitSeq`; a bump re-keys B. The next pull answers the unit over B
+    `reset` and bootstraps it, the live section stays `active` and
+    delivers a change of A written after the bump, and the unit over A keeps
+    the replica cursor. A client that takes the bump downloads B only and
+    resets no unit. Both pairings and the Rust authority.
+    (c) **A restriction over a re-keyed table**
+    (`schema-bump/rekey-restricts-a-unit-to-the-rekeyed-table`): a unit over
+    A and B holds a cursor below a bump that adds a pattern to B; the client
+    that takes the bump restricts the unit to B at its kept cursor and
+    downloads B only. A second bump maps B's variable to another column; a
+    restricted pull at a cursor below it bootstraps B, and the live section
+    carries no change of B logged before the bump, although that change names
+    the unit's scope value. Both pairings and the Rust authority.

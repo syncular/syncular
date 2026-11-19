@@ -46,8 +46,10 @@ import type { CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import type { SqliteValue } from './sqlite-driver';
 import {
+  asJson,
   type ClientRowRecord,
   CLIENT_RECORD_COLUMNS,
+  type PartitionHorizons,
   PARTITION_TOUCH_INTERVAL_MS,
   pushResultFromJson,
   pushResultToJson,
@@ -257,6 +259,20 @@ const SQLITE_ADDED_COLUMNS = [
   ['sync_partitions', 'delete_floor', 'INTEGER NOT NULL DEFAULT 0'],
 ] as const;
 
+/**
+ * Core tables that `sqliteUpgradeDdl` creates, keyed by one of their columns,
+ * so a D1 database at an unchanged schema version gains them at its first
+ * open. `sync_table_horizons` holds the §4.6 table horizons.
+ */
+const SQLITE_ADDED_TABLES = [
+  [
+    'sync_table_horizons',
+    'commit_seq',
+    // One line: D1's `exec` runs each line as a statement.
+    'CREATE TABLE IF NOT EXISTS sync_table_horizons(partition TEXT NOT NULL, tbl TEXT NOT NULL, commit_seq INTEGER NOT NULL, PRIMARY KEY(partition, tbl))',
+  ],
+] as const;
+
 /** Core-table columns wire version 4 deleted: the version 3 subscription list. */
 const SQLITE_DROPPED_COLUMNS = [['sync_clients', 'subscriptions']] as const;
 
@@ -294,9 +310,11 @@ export const SQLITE_UPGRADE_PROBE: SqliteStatementSpec = {
   params: [
     JSON.stringify([
       ...new Set(
-        [...SQLITE_ADDED_COLUMNS, ...SQLITE_DROPPED_COLUMNS].map(
-          ([table]) => table,
-        ),
+        [
+          ...SQLITE_ADDED_COLUMNS,
+          ...SQLITE_DROPPED_COLUMNS,
+          ...SQLITE_ADDED_TABLES,
+        ].map(([table]) => table),
       ),
     ]),
     JSON.stringify([
@@ -309,7 +327,7 @@ export const SQLITE_UPGRADE_PROBE: SqliteStatementSpec = {
 /**
  * The statements that bring the core tables of a database from an earlier
  * release to the current DDL, given the `SQLITE_UPGRADE_PROBE` rows: missing
- * columns, dropped columns, dropped indexes, then missing indexes. Empty for
+ * tables and columns, dropped columns, dropped indexes, then missing indexes. Empty for
  * a current database. Run after `SQLITE_DDL`: on every `SqliteServerStorage`
  * construction, and on D1 in `migrate()`, the core phase of `migrateSchema`
  * and the first open of a database at the current schema version.
@@ -320,6 +338,9 @@ export function sqliteUpgradeDdl(
   const has = (table: string, name: string) =>
     present.some((row) => row.tbl === table && row.name === name);
   return [
+    ...SQLITE_ADDED_TABLES.filter(([table, name]) => !has(table, name)).map(
+      ([, , ddl]) => ddl,
+    ),
     ...SQLITE_ADDED_COLUMNS.filter(([table, name]) => !has(table, name)).map(
       ([table, name, definition]) =>
         `ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`,
@@ -605,6 +626,20 @@ export abstract class SqliteFamilyStorage {
     return row?.horizon_seq ?? 0;
   }
 
+  async getHorizons(partition: string): Promise<PartitionHorizons> {
+    const [row] = await this.all<{ seq: number; tables: string }>(
+      `SELECT coalesce((SELECT horizon_seq FROM sync_partitions WHERE partition=?),0) AS seq,
+              (SELECT json_group_object(tbl, commit_seq) FROM sync_table_horizons WHERE partition=?) AS tables`,
+      [partition, partition],
+    );
+    return {
+      seq: row?.seq ?? 0,
+      tables: new Map(
+        Object.entries(asJson<Record<string, number>>(row?.tables ?? '{}')),
+      ),
+    };
+  }
+
   async setHorizonSeq(partition: string, seq: number): Promise<void> {
     await this.all(
       `INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?)
@@ -649,8 +684,14 @@ export abstract class SqliteFamilyStorage {
               AND ${epochGuard}`,
         params: [partition, partition, partition, query.logEpoch],
       },
-      // §4.6: tombstones prune in the same pass as the commit log.
-      ...['sync_commits', 'sync_changes', 'sync_tombstones'].map((table) => ({
+      // §4.6: tombstones and table horizons prune in the same pass as the
+      // commit log.
+      ...[
+        'sync_commits',
+        'sync_changes',
+        'sync_tombstones',
+        'sync_table_horizons',
+      ].map((table) => ({
         sql: `DELETE FROM ${table} WHERE partition=? AND commit_seq<=${horizon} AND ${epochGuard}`,
         params: [partition, partition, partition, query.logEpoch],
       })),

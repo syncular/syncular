@@ -19,6 +19,8 @@ import {
   PROTOCOL_WIRE_VERSION,
   type PushOperation,
   type PushResultFrame,
+  type RequestFrame,
+  type ResponseMessage,
   type RowColumn,
   type WakeReason,
 } from '@syncular/core';
@@ -38,6 +40,19 @@ import {
   ValidationRejection,
   type StorageTransaction,
 } from '@syncular/server';
+import {
+  docRow,
+  live,
+  liveChanges,
+  pullFrames,
+  pushCommit,
+  requestBytes,
+  section,
+  taskRow,
+  TEST_LOG_EPOCH,
+  TEST_SCHEMA,
+  upsert,
+} from './helpers';
 import { BunSQL, PG_URL, resetPublicSchema } from './pg-real';
 
 const gate =
@@ -654,6 +669,107 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     const partition = `it-${crypto.randomUUID()}`;
     await fanout.notifyCommit(partition, 1);
     expect(await delivered.promise).toBe(partition);
+  });
+
+  test('a re-key records a table horizon and resets only the units over the table', async () => {
+    // Earlier tests leave their own `tasks` table at version 1.
+    await resetPublicSchema(admin);
+    // The admin connection: another pool would crowd the listener tests.
+    const executor = bunSqlExecutor(admin);
+    const partition = `rekey-${crypto.randomUUID()}`;
+    // Version 2 adds a second scope pattern to `docs` (§3.1).
+    const v1: ServerSchema = {
+      ...TEST_SCHEMA,
+      tables: [
+        TEST_SCHEMA.tables[0]!,
+        { ...TEST_SCHEMA.tables[1]!, scopes: ['org:{org_id}'] },
+      ],
+    };
+    const v2: ServerSchema = { ...TEST_SCHEMA, version: 2 };
+    const round = async (
+      schema: ServerSchema,
+      frames: RequestFrame[],
+      clientId: string,
+    ): Promise<ResponseMessage> => {
+      const message = decodeMessage(
+        await handleSyncRequest(
+          requestBytes(frames, clientId, schema.version),
+          {
+            partition,
+            actorId: 'actor-1',
+            schema,
+            // A new storage instance per round, as after a deploy.
+            storage: new PostgresServerStorage(executor),
+            segments: new MemorySegmentStore(),
+            // A resolver names only variables the schema declares (§3.2).
+            resolveScopes: () => ({
+              project_id: ['p1'],
+              org_id: ['o1'],
+              ...(schema === v2 ? { projectId: ['p1'] } : {}),
+            }),
+          },
+        ),
+      );
+      if (message.msgKind !== 'response') throw new Error('not a response');
+      return message;
+    };
+    const storage = new PostgresServerStorage(executor);
+    await storage.migrate();
+    await storage.ensureSchema(compileSchema(v1));
+    await storage.touchPartition(partition, Date.now(), TEST_LOG_EPOCH);
+    await round(
+      v1,
+      [
+        pushCommit('seed', [
+          upsert('tasks', 't1', taskRow('t1', 'p1')),
+          upsert('docs', 'd1', docRow('d1', 'o1', 'p1')),
+        ]),
+      ],
+      'writer',
+    );
+    await round(
+      v1,
+      [pushCommit('t2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      'writer',
+    );
+    const head = await storage.getMaxCommitSeq(partition);
+
+    // The upgrade transaction raises max_commit_seq and records the table
+    // horizon of docs; horizon_seq stays.
+    await new PostgresServerStorage(executor).ensureSchema(compileSchema(v2));
+    expect(
+      (
+        await executor.query(
+          'SELECT p.max_commit_seq, p.horizon_seq, h.tbl, h.commit_seq FROM sync_partitions p JOIN sync_table_horizons h USING (partition) WHERE partition=$1',
+          [partition],
+        )
+      ).rows.map((row) => Object.values(row).map(String)),
+    ).toEqual([[String(head + 1), '0', 'docs', String(head + 1)]]);
+    expect((await storage.getHorizons(partition)).tables).toEqual(
+      new Map([['docs', head + 1]]),
+    );
+
+    await round(
+      v2,
+      [pushCommit('t3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      'writer',
+    );
+    // A replica live on a unit over tasks and a unit over docs at the head
+    // before the bump.
+    const tasksUnit = { project_id: 'p1' };
+    const docsUnit = { org_id: 'o1' };
+    const pulled = await round(
+      v2,
+      pullFrames([tasksUnit, docsUnit], { cursor: head, progress: [] }),
+      'reader',
+    );
+    expect(section(pulled, tasksUnit).start.status).toBe('active');
+    expect(section(pulled, docsUnit).start).toMatchObject({
+      status: 'reset',
+      reasonCode: 'sync.cursor_expired',
+    });
+    expect(live(pulled).start.status).toBe('active');
+    expect(liveChanges(pulled)).toEqual(['tasks/t3/upsert']);
   });
 });
 

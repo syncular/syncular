@@ -28,7 +28,7 @@ import {
   responsePushResults,
   responseSection,
 } from '../raw';
-import type { DriverSchema, DriverTable } from '../driver';
+import type { DriverRow, DriverSchema, DriverTable } from '../driver';
 import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
 import {
   expectConverged,
@@ -69,6 +69,71 @@ const TASKS_BY_TEAM: DriverSchema = {
       scopes: [{ pattern: 'team:{team_id}', column: 'project_id' }],
     },
     FIXTURE_SCHEMA.tables[1] as DriverTable,
+  ],
+};
+
+/** §3.1 re-key: version 2 adds a second scope pattern to `docs`; `tasks`
+ * keeps its patterns and its generation. */
+const REKEY_V1: DriverSchema = {
+  version: 1,
+  tables: [
+    { ...(FIXTURE_SCHEMA.tables[0] as DriverTable), generation: 'tasks-1' },
+    {
+      ...(FIXTURE_SCHEMA.tables[1] as DriverTable),
+      generation: 'docs-1',
+      scopes: [{ pattern: 'org:{org_id}' }],
+    },
+  ],
+};
+const REKEY_V2: DriverSchema = {
+  version: 2,
+  tables: [
+    REKEY_V1.tables[0] as DriverTable,
+    { ...(FIXTURE_SCHEMA.tables[1] as DriverTable), generation: 'docs-2' },
+  ],
+};
+
+/** §3.1 re-key inside a unit: `docs` also declares `project_id`, so U1
+ * covers `tasks` and `docs`. Version 2 adds a pattern to `docs`; version 3
+ * maps its `project_id` to `body`, so the history of `docs` names the
+ * project of rows the pattern no longer matches. */
+const sharedDocs = (
+  generation: string,
+  scopes: DriverTable['scopes'],
+): DriverTable => ({
+  ...(FIXTURE_SCHEMA.tables[1] as DriverTable),
+  generation,
+  scopes,
+});
+const REKEY_SHARED_V1: DriverSchema = {
+  version: 1,
+  tables: [
+    REKEY_V1.tables[0] as DriverTable,
+    sharedDocs('docs-1', [
+      { pattern: 'org:{org_id}' },
+      { pattern: 'project:{project_id}' },
+    ]),
+  ],
+};
+const REKEY_SHARED_V2: DriverSchema = {
+  version: 2,
+  tables: [
+    REKEY_V1.tables[0] as DriverTable,
+    sharedDocs('docs-2', [
+      { pattern: 'org:{org_id}' },
+      { pattern: 'project:{project_id}' },
+      { pattern: 'doc:{doc_id}', column: 'id' },
+    ]),
+  ],
+};
+const REKEY_SHARED_V3: DriverSchema = {
+  version: 3,
+  tables: [
+    REKEY_V1.tables[0] as DriverTable,
+    sharedDocs('docs-3', [
+      { pattern: 'org:{org_id}' },
+      { pattern: 'project:{project_id}', column: 'body' },
+    ]),
   ],
 };
 
@@ -547,7 +612,8 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   {
     // §3.1 re-key: the server bump recomputes stored scopes from row columns,
     // so a unit of the new variable bootstraps every row with no data step;
-    // §4.6: the history logged under the old variable is behind the horizon.
+    // §4.6: the history logged under the old variable lies at or below the
+    // table horizon.
     name: 'schema-bump/scope-pattern-change-rekeys-stored-rows',
     specRefs: ['§3.1', '§4.6', '§2.2', '§7.4.3'],
     async run(ctx) {
@@ -608,27 +674,30 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         'a unit of the new variable bootstraps every stored row (§3.1)',
       );
 
-      // A cursor into the history logged under `project_id` is reset.
+      // A cursor into the history logged under `project_id` is reset. The
+      // re-key took commit sequence number 3 as the table horizon (§4.6).
       const pull = (cursor: number) =>
         ctx.rawSync(
           'writer',
           [...rawPull([{ scopes: { team_id: 'p1' } }], { cursor })],
           { clientId: 'reader', schemaVersion: TASKS_BY_TEAM.version },
         );
-      const old = await pull(1);
-      check(old.ok, 'the old-cursor pull answers');
-      if (!old.ok) return;
-      const expired = responseLive(old.message);
-      checkEqual(
-        {
-          status: expired.start.status,
-          reasonCode: expired.start.reasonCode,
-          commits: expired.commits.length,
-        },
-        { status: 'reset', reasonCode: 'sync.cursor_expired', commits: 0 },
-        'a cursor below the raised horizon gets the ordinary reset (§4.6)',
-      );
-      const head = await pull(2);
+      for (const cursor of [1, 2]) {
+        const old = await pull(cursor);
+        check(old.ok, 'the old-cursor pull answers');
+        if (!old.ok) return;
+        const expired = responseSection(old.message, { team_id: 'p1' }).start;
+        checkEqual(
+          {
+            status: expired.status,
+            reasonCode: expired.reasonCode,
+            commits: responseLive(old.message).commits.length,
+          },
+          { status: 'reset', reasonCode: 'sync.cursor_expired', commits: 0 },
+          `cursor ${cursor}, below the table horizon, resets the unit (§4.6)`,
+        );
+      }
+      const head = await pull(3);
       check(head.ok, 'the head-cursor pull answers');
       if (!head.ok) return;
       checkEqual(
@@ -652,6 +721,254 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         (await b.api.readRows('tasks')).map((row) => row.rowId).sort(),
         ['t1', 't2', 't3'],
         'the recreated row reaches the new variable',
+      );
+    },
+  },
+  {
+    // §4.6 table horizon: a re-key resets the units over the re-keyed table
+    // and no other; §7.4.3: a client that takes the bump downloads only the
+    // re-keyed table.
+    name: 'schema-bump/rekey-resets-only-units-over-the-table',
+    specRefs: ['§3.1', '§4.6', '§4.5', '§4.7', '§7.4.3'],
+    server: { schema: REKEY_V1 },
+    async run(ctx) {
+      const DOCS = { org_id: 'o1' } as const;
+      const allowed = { project_id: ['p1'], org_id: ['o1'] };
+      await seedTasks(ctx, [task('t1', 'p1', 'one')]);
+      await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: REKEY_V1,
+        allowed,
+      });
+      await a.api.subscribeMany([U1, DOCS]);
+      await syncIdle(a);
+      // t2 commits above A's replica cursor before the bump.
+      await seedTasks(ctx, [task('t2', 'p1', 'two')]);
+      const head = await ctx.server.getMaxCommitSeq();
+      const horizon = await ctx.server.getHorizonSeq();
+
+      await ctx.server.restart(REKEY_V2);
+      checkEqual(
+        {
+          max: await ctx.server.getMaxCommitSeq(),
+          horizon: await ctx.server.getHorizonSeq(),
+        },
+        { max: head + 1, horizon },
+        'the re-key takes a commit sequence number and leaves horizonSeq',
+      );
+      // The seed helpers push at the scenario's starting version.
+      await ctx.server.setAllowedScopes('reader', allowed);
+      const t3 = await ctx.rawSync(
+        'reader',
+        [
+          rawPushCommit('t3', [
+            rawUpsert(REKEY_V2, 'tasks', task('t3', 'p1', 'three')),
+          ]),
+        ],
+        { clientId: 'writer', schemaVersion: REKEY_V2.version },
+      );
+      checkEqual(
+        t3.ok ? responsePushResults(t3.message)[0]?.status : undefined,
+        'applied',
+        't3 commits after the bump',
+      );
+
+      // A replica live on both units at the head before the bump.
+      const pull = (units: Parameters<typeof rawPull>[0], cursor: number) =>
+        ctx.rawSync('reader', [...rawPull(units, { cursor })], {
+          clientId: 'reader',
+          schemaVersion: REKEY_V2.version,
+        });
+      const first = await pull([{ scopes: U1 }, { scopes: DOCS }], head);
+      check(first.ok, 'the pull at the pre-bump head answers');
+      if (!first.ok) return;
+      const live = responseLive(first.message);
+      checkEqual(
+        {
+          tasks: responseSection(first.message, U1).start.status,
+          docs: [
+            responseSection(first.message, DOCS).start.status,
+            responseSection(first.message, DOCS).start.reasonCode,
+          ],
+          live: live.start.status,
+          rows: live.commits.flatMap((commit) =>
+            commit.changes.map(
+              (change) => `${commit.tables[change.tableIndex]}/${change.rowId}`,
+            ),
+          ),
+        },
+        {
+          tasks: 'active',
+          docs: ['reset', 'sync.cursor_expired'],
+          live: 'active',
+          rows: ['tasks/t3'],
+        },
+        'only the unit over the re-keyed table resets; the other stays live',
+      );
+      const second = await pull(
+        [{ scopes: U1 }, { scopes: DOCS, cursor: -1 }],
+        live.end.throughSeq,
+      );
+      check(second.ok, 'the pull after the reset answers');
+      if (!second.ok) return;
+      const docs = responseSection(second.message, DOCS);
+      checkEqual(
+        {
+          bootstrap: docs.start.bootstrap,
+          complete: docs.end.bootstrapState === undefined,
+          live: responseLive(second.message).start.status,
+        },
+        { bootstrap: true, complete: true, live: 'active' },
+        'the reset unit bootstraps while the other stays live',
+      );
+
+      // A takes the bump: `tasks` keeps its rows and its cursor, `docs`
+      // bootstraps under the new patterns.
+      await ctx.recreateClient(a, REKEY_V2);
+      const report = await syncIdle(a);
+      checkEqual(report.resets, [], 'no unit of A resets');
+      checkEqual(
+        report.segmentRowsApplied,
+        1,
+        'A downloads the re-keyed table only',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1', 't2', 't3'],
+        'the unit over tasks caught up from its kept cursor',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+      await expectConverged(ctx, 'docs', [a], {
+        variable: 'org_id',
+        values: ['o1'],
+      });
+    },
+  },
+  {
+    // §4.6, §4.7: a unit over a kept table and a re-keyed one bootstraps the
+    // re-keyed table only, and the scan serves that table only above its
+    // table horizon.
+    name: 'schema-bump/rekey-restricts-a-unit-to-the-rekeyed-table',
+    specRefs: ['§3.1', '§4.6', '§4.5', '§4.7', '§7.4.3'],
+    server: { schema: REKEY_SHARED_V1 },
+    async run(ctx) {
+      const allowed = { project_id: ['p1'], org_id: ['o1'] };
+      // The seed helpers push at the scenario's starting version.
+      const push = async (
+        schema: DriverSchema,
+        table: string,
+        row: DriverRow,
+      ) => {
+        // The default write set holds every declared variable (§3.1).
+        await ctx.server.setAllowedScopes(
+          'writer',
+          schema === REKEY_SHARED_V2 ? { ...allowed, doc_id: ['*'] } : allowed,
+        );
+        const result = await ctx.rawSync(
+          'writer',
+          [
+            rawPushCommit(`${table}-${row.id}`, [
+              rawUpsert(schema, table, row),
+            ]),
+          ],
+          { clientId: 'writer', schemaVersion: schema.version },
+        );
+        checkEqual(
+          result.ok
+            ? responsePushResults(result.message)[0]?.status
+            : undefined,
+          'applied',
+          `${String(row.id)} commits`,
+        );
+      };
+      await push(REKEY_SHARED_V1, 'tasks', task('t1', 'p1', 'one'));
+      await push(REKEY_SHARED_V1, 'docs', doc('d1', 'o1', 'p1', 'p1'));
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: REKEY_SHARED_V1,
+        allowed,
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      const cursor = await a.api.replicaCursor();
+      await push(REKEY_SHARED_V1, 'tasks', task('t2', 'p1', 'two'));
+      await push(REKEY_SHARED_V1, 'docs', doc('d2', 'o1', 'p1', 'p2'));
+      await ctx.server.restart(REKEY_SHARED_V2);
+      await push(REKEY_SHARED_V2, 'tasks', task('t3', 'p1', 'three'));
+
+      // A takes the bump: U1 bootstraps docs at its kept cursor, below the
+      // table horizon of docs, and keeps its tasks.
+      await ctx.recreateClient(a, REKEY_SHARED_V2);
+      const sent = a.sentRequests.length;
+      const report = await syncIdle(a);
+      checkEqual(
+        restrictsSent(a, sent)[0],
+        { type: 'RESTRICT', cursor, tables: ['docs'] },
+        'the first pull restricts U1 to docs at its kept cursor',
+      );
+      checkEqual(report.resets, [], 'U1 joins at its kept cursor');
+      checkEqual(
+        report.segmentRowsApplied,
+        2,
+        'only the two docs rows were transferred',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1', 't2', 't3'],
+        'the kept table caught up through the scan',
+      );
+      await expectConverged(ctx, 'docs', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+
+      // d4 commits above a cursor K and leaves U1 at the next bump, which
+      // maps project_id of docs to body. A restricted pull at K bootstraps
+      // docs, and the scan from K never serves the change of d4 logged under
+      // the previous mapping.
+      const kept = await ctx.server.getMaxCommitSeq();
+      await push(REKEY_SHARED_V2, 'docs', doc('d4', 'o1', 'p1', 'p2'));
+      await ctx.server.restart(REKEY_SHARED_V3);
+      await push(REKEY_SHARED_V3, 'tasks', task('t5', 'p1', 'five'));
+      await ctx.server.setAllowedScopes('reader', allowed);
+      const pulled = await ctx.rawSync(
+        'reader',
+        [
+          ...rawPull([{ scopes: U1, cursor: kept }], { cursor: -1 }),
+          { type: 'RESTRICT', cursor: kept, tables: ['docs'] },
+        ],
+        { clientId: 'reader', schemaVersion: REKEY_SHARED_V3.version },
+      );
+      check(pulled.ok, 'the restricted pull answers');
+      if (!pulled.ok) return;
+      const section = responseSection(pulled.message, U1);
+      const live = responseLive(pulled.message);
+      checkEqual(
+        {
+          status: section.start.status,
+          bootstrap: section.start.bootstrap,
+          complete: section.end.bootstrapState === undefined,
+          live: live.start.status,
+          rows: live.commits.flatMap((commit) =>
+            commit.changes.map(
+              (change) => `${commit.tables[change.tableIndex]}/${change.rowId}`,
+            ),
+          ),
+        },
+        {
+          status: 'active',
+          bootstrap: true,
+          complete: true,
+          live: 'active',
+          rows: ['tasks/t5'],
+        },
+        'the scan serves docs only above its table horizon',
       );
     },
   },

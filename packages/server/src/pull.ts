@@ -26,7 +26,12 @@ import {
 import { computeEffective, type ResolvedScopes, scopeDigest } from './scopes';
 import type { SegmentRecord, SegmentStore } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
-import type { ServerStorage, StoredCommit, StoredRow } from './storage';
+import type {
+  PartitionHorizons,
+  ServerStorage,
+  StoredCommit,
+  StoredRow,
+} from './storage';
 import { projectRowPayload, projectRowValues } from './schema-window';
 
 // One artifact build per owning storage pair and complete immutable identity.
@@ -433,9 +438,9 @@ async function readTableStart(
     return { firstPage: await scan };
   }
   // §4.7: a sqlite-lane table pins at the newest commit carrying all of the
-  // unit's values (never below the horizon, never above maxCommitSeq), so a
-  // stored image stays the reuse key's match until this scope changes
-  // (§5.3). The server computes the pin; a client token never supplies it.
+  // unit's values (never below the table's horizon, never above
+  // maxCommitSeq), so a stored image stays the reuse key's match until this
+  // scope changes (§5.3). The server computes the pin; a client token never supplies it.
   const [firstPage, latest] = await Promise.all([
     scan,
     ctx.storage.latestScopedChangeSeq(ctx.partition, {
@@ -806,17 +811,22 @@ export function planBootstrap(
   unit: UnitPlan,
   bootstrapState: string | undefined,
   maxSeq: number,
-  horizonSeq: number,
+  horizon: PartitionHorizons,
   logEpoch: string,
   keptCursor = 0,
 ): BootstrapPlan {
   // §4.7: resume at the token's pin unless the token is unusable, or the pin
-  // fell behind the horizon or a restricted bootstrap's kept cursor; then
-  // restart from a fresh pin.
+  // fell behind the horizon, the table horizon of a bootstrap table, or a
+  // restricted bootstrap's kept cursor; then restart from a fresh pin.
   const token = parseBootstrapToken(bootstrapState, unit.tables, maxSeq);
   const resume =
     token !== undefined &&
-    token.asOfCommitSeq >= Math.max(horizonSeq, keptCursor)
+    token.asOfCommitSeq >=
+      Math.max(
+        horizon.seq,
+        keptCursor,
+        ...unit.tables.map((table) => horizon.tables.get(table.name) ?? -1),
+      )
       ? token
       : undefined;
   const tableIndex = resume?.tableIndex ?? 0;
@@ -840,7 +850,7 @@ export function planBootstrap(
       index === tableIndex ? rowCursor : null,
       index === tableIndex && image,
       maxSeq,
-      horizonSeq,
+      Math.max(horizon.seq, horizon.tables.get(table.name) ?? -1),
       logEpoch,
     );
     // A section that stops early never awaits the later starts.
@@ -1021,7 +1031,7 @@ export async function publishSqliteImage(
     accept: ACCEPT_SQLITE,
   };
   const maxSeq = await config.storage.getMaxCommitSeq(partition);
-  const horizonSeq = await config.storage.getHorizonSeq(partition);
+  const horizons = await config.storage.getHorizons(partition);
   const trace: PullSectionTrace = { segments: [] };
   const plan = planBootstrap(
     ctx,
@@ -1030,7 +1040,7 @@ export async function publishSqliteImage(
     unit,
     undefined,
     maxSeq,
-    horizonSeq,
+    horizons,
     logEpoch,
   );
   const refs: SegmentRefFrame[] = [];

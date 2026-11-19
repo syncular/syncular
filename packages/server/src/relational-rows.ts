@@ -1010,8 +1010,10 @@ export function assertStoredScopePatterns(
 
 /**
  * §3.1 re-key, before the row walk: drop the re-keyed tables' row scope index
- * entries and tombstones, and raise every partition's horizon past the
- * changes logged under the previous patterns. Empty when nothing re-keys.
+ * entries and tombstones. The re-key takes a commit sequence number of its
+ * own in every partition and records it as each re-keyed table's horizon
+ * (§4.6), past the changes logged under the previous patterns. Empty when
+ * nothing re-keys.
  */
 export function rekeyCleanupSql(tables: readonly string[]): string[] {
   if (tables.length === 0) return [];
@@ -1019,7 +1021,12 @@ export function rekeyCleanupSql(tables: readonly string[]): string[] {
   return [
     `DELETE FROM sync_row_scopes WHERE tbl IN (${names.join(',')})`,
     `DELETE FROM sync_tombstones WHERE tbl IN (${names.join(',')})`,
-    'UPDATE sync_partitions SET horizon_seq=max_commit_seq WHERE horizon_seq<max_commit_seq',
+    'UPDATE sync_partitions SET max_commit_seq=max_commit_seq+1',
+    ...names.map(
+      (name) => `INSERT INTO sync_table_horizons(partition, tbl, commit_seq)
+    SELECT partition, ${name}, max_commit_seq FROM sync_partitions WHERE true
+    ON CONFLICT(partition, tbl) DO UPDATE SET commit_seq=excluded.commit_seq`,
+    ),
   ];
 }
 

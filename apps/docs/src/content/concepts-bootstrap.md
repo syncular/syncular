@@ -114,7 +114,7 @@ Without a builder, the server can reuse a matching stored SQLite image. Cold boo
 
 ### Publishing images from another host
 
-A Workers host has no SQLite engine and cannot build images. It serves an image only when one is already stored under the key its pull looks up: table, schema version, scope digest, log epoch, pin, and the range's start. A bootstrap on the sqlite lane pins at its **scope pin**: the newest commit that changed a row in its scope, capped at the round's `maxCommitSeq` and raised to the pruning horizon ([SPEC §4.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#47-bootstrap-state-machine)). Commits to other tables or other scopes leave the pin, and so the stored image, current.
+A Workers host has no SQLite engine and cannot build images. It serves an image only when one is already stored under the key its pull looks up: table, schema version, scope digest, log epoch, pin, and the range's start. A bootstrap on the sqlite lane pins at its **scope pin**: the newest commit that changed a row in its scope, capped at the round's `maxCommitSeq` and raised to the pruning horizon, or to the table's horizon after a re-key ([SPEC §4.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#47-bootstrap-state-machine)). Commits to other tables or other scopes leave the pin, and so the stored image, current.
 
 The pull reads the store only when the table's snapshot exceeds one rows page. A smaller snapshot arrives as rows, so the reuse lookup costs nothing on small tables.
 

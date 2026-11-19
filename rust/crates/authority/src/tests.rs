@@ -1936,7 +1936,13 @@ fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
     assert_eq!(scopes(&authority, "n1"), r#"{"team":"n1"}"#);
     assert_eq!(scopes(&authority, "n2"), r#"{"team":"n2"}"#);
     assert_eq!(tombstone(&authority, "nodes", "n3"), None);
-    assert_eq!(horizon(&authority), (4, 4));
+    // §4.6: the re-key takes commit sequence number 5 as the table horizon
+    // and leaves horizonSeq.
+    assert_eq!(horizon(&authority), (0, 5));
+    assert_eq!(
+        store::table_horizons(&authority.conn).unwrap(),
+        std::collections::HashMap::from([("nodes".to_owned(), 5)])
+    );
     let s = authority.schema.clone();
     let client = Session::new(&mut authority, "c2");
     let team = vec![("team".to_owned(), "n1".to_owned())];
@@ -1953,11 +1959,19 @@ fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
         .map(|row| row.values[0].clone())
         .collect();
     assert_eq!(rows, vec![text("n1")]);
-    // §4.6: a cursor into the history logged under `org` gets the reset.
-    let mut pull = vec![pull_header(2, units, None, 0, 0)];
-    pull.extend(unit_frames(units));
-    let (status, through, _, commits) = live(&client.round(&mut authority, pull));
-    assert_eq!((status, through, commits.len()), (LiveStatus::Reset, -1, 0));
+    // §4.6: a cursor into the history logged under `org`, the last commit
+    // before the bump included, resets the unit; the live section stays.
+    for cursor in [2, 4] {
+        let mut pull = vec![pull_header(cursor, units, None, 0, 0)];
+        pull.extend(unit_frames(units));
+        let frames = client.round(&mut authority, pull);
+        let (status, through, _, commits) = live(&frames);
+        assert_eq!((status, through, commits.len()), (LiveStatus::Active, 5, 0));
+        assert_eq!(
+            sections(&frames),
+            vec![(ssp2::unit_id(&team), SubStatus::Reset, false, cursor, None)]
+        );
+    }
     // The tombstone left with the re-key: an unversioned upsert inserts again.
     let (status, results, _) = client.push(&mut authority, "again", vec![node(&s, "n3", None)]);
     assert_eq!(status, PushStatus::Applied, "{results:?}");
@@ -1965,7 +1979,7 @@ fn a_bump_that_changes_a_scope_pattern_rekeys_the_table() {
     drop(authority);
     // A bump with unchanged patterns re-keys nothing.
     let authority = LocalAuthority::open(&path, &rescoped(3, "id")).unwrap();
-    assert_eq!(horizon(&authority), (4, 6));
+    assert_eq!(horizon(&authority), (0, 7));
     assert!(tombstone(&authority, "nodes", "n2").is_some());
     drop(authority);
     let _ = std::fs::remove_file(&path);

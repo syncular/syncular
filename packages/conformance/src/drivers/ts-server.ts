@@ -653,6 +653,7 @@ class TsServerInstance implements ServerInstance {
       },
       getMaxCommitSeq: (p) => this.#storage.getMaxCommitSeq(p),
       getHorizonSeq: (p) => this.#storage.getHorizonSeq(p),
+      getHorizons: (p) => this.#storage.getHorizons(p),
       readCheckpoints: (p) => this.#storage.readCheckpoints(p),
       declareCheckpoint: (p, n, v, at) =>
         this.#storage.declareCheckpoint(p, n, v, at),

@@ -855,7 +855,8 @@ async function* streamResponse(
             );
         }
       } else {
-        const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
+        const horizons = await ctx.storage.getHorizons(ctx.partition);
+        const { seq: horizonSeq, tables: tableHorizons } = horizons;
         const R = pull.header.cursor;
         const echo = echoDigest(
           units.map(({ plan: unit }) => ({
@@ -875,6 +876,20 @@ async function* streamResponse(
         );
         // §4.6 replica reset: a live unit with R outside [horizon, max].
         let liveReset = liveUnits && (R < horizonSeq || R > maxSeq);
+        // §4.6 unit reset: `cursor` lies below the table horizon of one of
+        // the unit's active pairs outside its RESTRICT tables.
+        const belowTable = (
+          index: number,
+          cursor: number,
+          horizons: ReadonlyMap<string, number>,
+        ): boolean => {
+          const { plan: unit, restrict } = units[index]!;
+          return [...unit.pairs.keys()].some(
+            (table) =>
+              cursor < (horizons.get(table) ?? -1) &&
+              restrict?.tables.includes(table) !== true,
+          );
+        };
         // Per unit: its section kind and its scan-set bound (§4.5).
         type UnitState =
           | { kind: 'revoked' }
@@ -890,12 +905,17 @@ async function* streamResponse(
               token: string | undefined;
             };
         const states: UnitState[] = units.map(
-          ({ plan: unit, progress, restrict }): UnitState => {
+          ({ plan: unit, progress, restrict }, index): UnitState => {
             if (unit.status === 'revoked') return { kind: 'revoked' };
-            if (progress === undefined) return { kind: 'live' };
+            if (progress === undefined)
+              return !liveReset && belowTable(index, R, tableHorizons)
+                ? { kind: 'reset' }
+                : { kind: 'live' };
             // §4.6: a kept cursor outside [horizon, max] cannot join.
             if (restrict !== undefined)
-              return restrict.cursor < horizonSeq || restrict.cursor > maxSeq
+              return restrict.cursor < horizonSeq ||
+                restrict.cursor > maxSeq ||
+                belowTable(index, restrict.cursor, tableHorizons)
                 ? { kind: 'reset' }
                 : {
                     kind: 'bootstrap',
@@ -910,7 +930,8 @@ async function* streamResponse(
               progress.cursor >= 0 &&
               progress.cursor <= maxSeq
             ) {
-              return progress.cursor < horizonSeq
+              return progress.cursor < horizonSeq ||
+                belowTable(index, progress.cursor, tableHorizons)
                 ? { kind: 'reset' }
                 : { kind: 'post', cursor: progress.cursor };
             }
@@ -985,7 +1006,7 @@ async function* streamResponse(
                     },
                 progress?.bootstrapState,
                 maxSeq,
-                horizonSeq,
+                horizons,
                 plan.logEpoch,
                 restrict?.cursor,
               ),
@@ -1058,10 +1079,27 @@ async function* streamResponse(
         let live: LiveWindow | undefined;
         for (;;) {
           const scanned = units.flatMap(({ plan: unit }, index) => {
-            const afterSeq = bound(states[index]!);
-            return afterSeq === undefined
-              ? []
-              : [{ index, scopes: unit.scopes, afterSeq, tables: unit.pairs }];
+            const bounded = bound(states[index]!);
+            if (bounded === undefined) return [];
+            // §4.5: a table reaches the unit only above its table horizon,
+            // which lies above the bound only for a RESTRICT table.
+            const byBound = new Map<number, Map<string, ScopeMap>>();
+            for (const [table, scopes] of unit.pairs) {
+              const afterSeq = Math.max(
+                bounded,
+                tableHorizons.get(table) ?? -1,
+              );
+              byBound.set(
+                afterSeq,
+                (byBound.get(afterSeq) ?? new Map()).set(table, scopes),
+              );
+            }
+            return [...byBound].map(([afterSeq, tables]) => ({
+              index,
+              scopes: unit.scopes,
+              afterSeq,
+              tables,
+            }));
           });
           if (liveReset || scanned.length === 0) break;
           live = await ctx.storage.readLiveWindow(ctx.partition, {
@@ -1081,18 +1119,33 @@ async function* streamResponse(
             live = undefined;
             continue;
           }
-          const recheck = await ctx.storage.getHorizonSeq(ctx.partition);
+          const { seq: recheck, tables: recheckTables } =
+            await ctx.storage.getHorizons(ctx.partition);
           let expired = false;
           for (const [index, state] of states.entries()) {
-            // §4.6: a restricted bootstrap's kept cursor is rechecked too.
+            // §4.6: a restricted bootstrap's kept cursor is rechecked too,
+            // and a table horizon that rose during the round resets it: its
+            // segments were read before the re-key.
+            const restricted = state.kind === 'bootstrap' && state.restricted;
             const afterSeq =
-              bound(state) ??
-              (state.kind === 'bootstrap' && state.restricted
-                ? state.pin
-                : undefined);
-            if (afterSeq === undefined || afterSeq >= recheck) continue;
+              bound(state) ?? (restricted ? state.pin : undefined);
+            if (
+              afterSeq === undefined ||
+              (afterSeq >= recheck &&
+                !belowTable(index, afterSeq, recheckTables) &&
+                !(
+                  restricted &&
+                  [...units[index]!.plan.pairs.keys()].some(
+                    (table) =>
+                      (recheckTables.get(table) ?? -1) >
+                      (tableHorizons.get(table) ?? -1),
+                  )
+                ))
+            )
+              continue;
             expired = true;
-            if (state.kind === 'live') liveReset = true;
+            // A live unit below a table horizon alone takes a unit reset.
+            if (state.kind === 'live' && afterSeq < recheck) liveReset = true;
             else states[index] = { kind: 'reset' };
           }
           if (!expired) break;

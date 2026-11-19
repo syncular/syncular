@@ -40,6 +40,17 @@ export const changelog = [
   },
   {
     date: '2026-11-19',
+    title: 'A re-key resets only the units over the re-keyed table',
+    body: "A schema bump that changes a table's scope patterns no longer raises the pruning horizon of every partition. The re-key takes a commit sequence number of its own and records it as the table's horizon, and the server never serves a change of that table logged at or below it. A unit over the re-keyed table whose cursor lies below the table horizon resets and bootstraps again; units over other tables keep their cursors. Before, every unit of every client bootstrapped again, including clients of an earlier version kept by a schema window: one app's bump that added a second scope pattern to one table made every device download its whole replica. A client that takes the bump downloads the re-keyed table and keeps its other tables. A custom server storage implements `getHorizons`.",
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#changing-a-tables-scope-patterns',
+        label: "Changing a table's scope patterns",
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A cold pull stores its segments concurrently',
     body: 'A pull stores up to `maxConcurrentSegmentPuts` rows segments in the segment store at once (default 6) while it scans the next bootstrap page, across every unit it bootstraps. Before, it waited for each put before scanning the next page, so a cold pull took the sum of its puts. Sixteen segments to a store with 1,000 ms per put take 3.0 s instead of 16.1 s. The response carries the same frames in the same order, and a failed put fails the pull with the error of the first failed page. A custom segment store must accept concurrent puts.',
     links: [

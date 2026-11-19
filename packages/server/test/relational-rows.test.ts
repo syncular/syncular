@@ -282,7 +282,7 @@ describe('same-version schema readiness', () => {
     return {
       open: () =>
         d1 !== undefined
-          ? new D1ServerStorage(d1)
+          ? new D1ServerStorage(d1, { pushApplySerialized: true })
           : new SqliteServerStorage(db),
       exec: async (statements) => {
         for (const sql of statements) db.exec(sql);
@@ -521,10 +521,16 @@ describe('same-version schema readiness', () => {
         row_id,
       }));
       expect(await scopeIndex(db)).toEqual(keyed);
-      // A deleted row's scopes cannot be recomputed: its tombstone goes, and
-      // the horizon passes every change logged under the previous pattern.
+      // A deleted row's scopes cannot be recomputed: its tombstone goes. The
+      // re-key takes commit sequence number 2 as the table's horizon, past
+      // every change logged under the previous pattern, and leaves
+      // horizonSeq (§4.6).
       expect(await tombstone(bumped, 't3')).toBeUndefined();
-      expect(await bumped.getHorizonSeq(PARTITION)).toBe(1);
+      expect(await bumped.getHorizonSeq(PARTITION)).toBe(0);
+      expect(await bumped.getMaxCommitSeq(PARTITION)).toBe(2);
+      expect((await bumped.getHorizons(PARTITION)).tables).toEqual(
+        new Map([['tasks', 2]]),
+      );
       // A host's own recommit under the new scopes changes nothing.
       await upsert(bumped, PARTITION, 'tasks', {
         ...rows[0]!,
@@ -536,9 +542,28 @@ describe('same-version schema readiness', () => {
       await commit(bumped, 'delete', [], ['t2']);
       const unchanged = db.open();
       await ensure(unchanged, rescoped(3));
-      expect(await unchanged.getHorizonSeq(PARTITION)).toBe(1);
-      expect(await unchanged.getMaxCommitSeq(PARTITION)).toBe(2);
+      expect(await unchanged.getHorizonSeq(PARTITION)).toBe(0);
+      expect(await unchanged.getMaxCommitSeq(PARTITION)).toBe(3);
+      expect((await unchanged.getHorizons(PARTITION)).tables).toEqual(
+        new Map([['tasks', 2]]),
+      );
       expect(await tombstone(unchanged, 't2')).toBeDefined();
+      // Pruning deletes a table horizon once horizonSeq reaches it.
+      const { logEpoch } = await unchanged.touchPartition(PARTITION, 1, 'e');
+      await unchanged.pruneCommitsThrough(PARTITION, {
+        logEpoch,
+        throughSeq: 1,
+      });
+      expect((await unchanged.getHorizons(PARTITION)).tables).toEqual(
+        new Map([['tasks', 2]]),
+      );
+      await unchanged.pruneCommitsThrough(PARTITION, {
+        logEpoch,
+        throughSeq: 2,
+      });
+      expect((await unchanged.getHorizons(PARTITION)).tables).toEqual(
+        new Map(),
+      );
       await db.close();
     });
 
@@ -546,13 +571,15 @@ describe('same-version schema readiness', () => {
       const db = await database(backend);
       const storage = db.open();
       await ensure(storage, SCHEMA);
-      await upsert(
+      await commit(
         storage,
-        PARTITION,
-        'tasks',
-        taskRow('t1', 'p1', 'one', { priority: 5 }),
+        'seed',
+        [
+          taskRow('t1', 'p1', 'one', { priority: 5 }),
+          taskRow('t2', 'p1', 'two'),
+        ],
+        [],
       );
-      await upsert(storage, PARTITION, 'tasks', taskRow('t2', 'p1', 'two'));
       const byPriority: ServerSchema = {
         version: 2,
         tables: [
@@ -572,6 +599,10 @@ describe('same-version schema readiness', () => {
       expect((await reopened.getRow(PARTITION, 'tasks', 't1'))?.scopes).toEqual(
         { project_id: 'p1' },
       );
+      // The table horizon and its commit sequence number roll back with the
+      // upgrade transaction.
+      expect(await reopened.getMaxCommitSeq(PARTITION)).toBe(1);
+      expect((await reopened.getHorizons(PARTITION)).tables).toEqual(new Map());
       expect(await scopeIndex(db)).toEqual(
         ['t1', 't2'].map((row_id) => ({
           var: 'project_id',

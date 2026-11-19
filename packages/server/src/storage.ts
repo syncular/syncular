@@ -792,6 +792,17 @@ export function toClientRecord(record: ClientRowRecord): ClientRecord {
   };
 }
 
+/** A partition's pruning horizon and its table horizons (§4.6). */
+export interface PartitionHorizons {
+  /** `horizonSeq`. */
+  readonly seq: number;
+  /**
+   * Re-keyed table → the commit sequence number its re-key took. The changes
+   * of a table at or below it are never served.
+   */
+  readonly tables: ReadonlyMap<string, number>;
+}
+
 /** One unit of the §4.5 scan set. */
 export interface LiveScanUnit {
   /** The unit's scope map; its first variable (keys sorted) is its index key. */
@@ -1313,6 +1324,8 @@ export interface ServerStorage {
 
   getMaxCommitSeq(partition: string): Promise<number>;
   getHorizonSeq(partition: string): Promise<number>;
+  /** `horizonSeq` and the table horizons (§4.6) in one read. */
+  getHorizons(partition: string): Promise<PartitionHorizons>;
   /** Monotonic within the current epoch; use atomic pruning for maintenance. */
   setHorizonSeq(partition: string, seq: number): Promise<void>;
   /**

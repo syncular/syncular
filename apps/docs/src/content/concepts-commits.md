@@ -96,7 +96,7 @@ Per-device namespacing and content binding are not implemented. Each needs an in
 
 ## The pruning horizon
 
-The log does not grow forever. The server maintains a per-partition `horizonSeq`, and commits at or below it may be pruned. A replica whose cursor falls behind the horizon receives a `reset` and bootstraps every live unit again ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)).
+The log does not grow forever. The server maintains a per-partition `horizonSeq`, and commits at or below it may be pruned. A replica whose cursor falls behind the horizon receives a `reset` and bootstraps every live unit again ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)). A bump that changes a table's scope patterns gives that table a horizon of its own, one commit sequence number above the last commit, and only units over that table with a cursor below it bootstrap again ([Changing a table's scope patterns](/concepts-schema-upgrades/#changing-a-tables-scope-patterns)).
 
 The server prunes delete tombstones at or below `horizonSeq` in the same pass. Retention therefore bounds delete precedence: a delete beats a concurrent unversioned upsert only while its tombstone is inside the horizon. Past it, the ordinary insert rule applies ([Conflicts](/concepts-conflicts/#delete-precedence)).
 

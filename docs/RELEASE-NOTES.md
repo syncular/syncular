@@ -56,6 +56,75 @@ report makes the supervisor read again and connect without a retry delay. Any
 other non-retryable read failure still latches
 `realtime.diagnostics_unavailable` (SPEC §8.4).
 
+0.96.0 makes a schema bump that re-keys a table reset only the units over that
+table (SYNCULAR-REKEY-PARTITION-HORIZON-001). SSP2 and the wire version are
+unchanged, and clients need no update.
+
+Breaking changes:
+
+- `ServerStorage` has a new method, `getHorizons(partition)`, which returns
+  `horizonSeq` and the table horizons in one read; a pull calls it instead of
+  `getHorizonSeq`. `pruneCommitsThrough` deletes the table horizons at or
+  below the new horizon. A custom storage implements both (SPEC §4.6).
+- A re-key raises `maxCommitSeq` of every partition by one without writing a
+  commit, so `maxCommitSeq` can exceed the newest `commit_seq` in
+  `sync_commits` by one per re-keying bump.
+
+### Table horizons
+
+A bump that changes a table's scope patterns re-keys the table's stored rows
+(SPEC §3.1). Until now the re-key also raised `horizonSeq` of every partition
+to its `maxCommitSeq`, so every client's replica cursor fell below the horizon,
+and the next pull answered the live section and every unit `reset` with
+`sync.cursor_expired`. Every unit bootstrapped again, including units over
+tables the bump did not touch and clients of an earlier version that the
+schema window kept. One app's bump added a second scope pattern to one table,
+and every device downloaded its whole replica again.
+
+The re-key now takes a commit sequence number of its own: in the upgrade
+transaction the storage raises `maxCommitSeq` of every partition by one and
+records the new value in `sync_table_horizons` as the horizon of each re-keyed
+table. `horizonSeq` stays where pruning left it. The server never serves a
+change of a table logged at or below that table's horizon:
+
+- A live or post-bootstrap unit over the table with a cursor below its table
+  horizon gets `SUB_START` `reset` with `sync.cursor_expired` and bootstraps
+  again. The live section stays `active`, and the other live units keep the
+  replica cursor.
+- A restricted bootstrap (`RESTRICT`, SPEC §4.7) over the re-keyed table joins
+  at its kept cursor, and the live section serves the re-keyed table only
+  above its table horizon. A client that takes the bump therefore downloads
+  the re-keyed table and keeps its other tables. Its cursor below the table
+  horizon of a covered table outside the restriction resets the unit.
+- A resume token pinned below the table horizon of a bootstrap table restarts
+  the bootstrap, and the sqlite-lane scope pin never lies below it, so no
+  image read before the re-key is reused after it.
+- A realtime connection whose cursor lies below the table horizon finds no
+  commit at it, receives `catchup-required` for the next commit and pulls.
+
+The re-key takes its own sequence number because a replica at `maxCommitSeq`
+during the bump holds the table's rows under the old patterns, and its cursor
+would otherwise equal the pin of a bootstrap completed after the bump. Before
+this release such a replica of an earlier schema version kept its cursor and
+its rows under the old patterns.
+
+The TypeScript server (SQLite, D1, PostgreSQL) and the Rust local authority
+implement the rule. The conformance scenarios
+`schema-bump/rekey-resets-only-units-over-the-table` and
+`schema-bump/rekey-restricts-a-unit-to-the-rekeyed-table` run against both, with
+both client cores.
+
+Upgrade notes:
+
+- Upgrade the server; no client change is needed. Both client cores handle a
+  `reset` section for a live unit.
+- `SqliteServerStorage` creates `sync_table_horizons` on construction,
+  `D1ServerStorage` on the first open of each instance, in `migrate()` and in
+  the core phase of a schema migration, and `PostgresServerStorage` in
+  `migrate()`, which `ensureSchema` runs.
+- Partitions re-keyed before 0.96.0 had their horizon raised then; nothing to
+  repair.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

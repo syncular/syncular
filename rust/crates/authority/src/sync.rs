@@ -80,7 +80,7 @@ fn scopes_value(scopes: &[(String, String)]) -> Value {
 /// the extent of `tables`, the unit's bootstrap tables; returns the pin, the
 /// frames and the advanced token, `None` once every table is exhausted. A
 /// token pinned below `floor` (the horizon, or a restricted unit's kept
-/// cursor) restarts.
+/// cursor, raised to the table horizons of `tables`) restarts.
 #[allow(clippy::too_many_arguments)]
 fn bootstrap(
     conn: &Connection,
@@ -222,22 +222,37 @@ fn pull(
 ) -> Result<(i64, Vec<(String, i64)>), AuthorityError> {
     let log = store::log_state(conn)?;
     let (max_seq, horizon) = (log.max_seq, log.horizon);
+    // §4.6 table horizons: a table's changes at or below its own are never
+    // served.
+    let table_horizons = store::table_horizons(conn)?;
+    let table_horizon = |table: &Table| table_horizons.get(&table.name).copied().unwrap_or(-1);
     let r = replica_cursor;
     // §4.6 replica reset: a live unit with R outside [horizon, max].
     let live_reset = units
         .iter()
         .any(|unit| !progress.contains_key(unit.id.as_str()))
         && (r < horizon || r > max_seq);
+    // §4.6 unit reset: `cursor` lies below the table horizon of one of the
+    // unit's tables outside its `RESTRICT` tables.
+    let below = |unit: &Unit<'_>, cursor: i64, restricted: &[String]| {
+        unit.tables
+            .iter()
+            .any(|table| cursor < table_horizon(table) && !restricted.contains(&table.name))
+    };
     let states = units
         .iter()
         .map(|unit| {
             let Some((cursor, token, restrict)) = progress.get(unit.id.as_str()) else {
-                return Ok(State::Live);
+                return Ok(if !live_reset && below(unit, r, &[]) {
+                    State::Reset
+                } else {
+                    State::Live
+                });
             };
             // §4.7 restricted bootstrap: only the `RESTRICT` tables, joining at
             // the kept cursor; a kept cursor the log cannot serve resets (§4.6).
             if let Some((kept, names)) = restrict {
-                if *kept < horizon || *kept > max_seq {
+                if *kept < horizon || *kept > max_seq || below(unit, *kept, names) {
                     return Ok(State::Reset);
                 }
                 let tables: Vec<&Table> = unit
@@ -254,7 +269,10 @@ fn pull(
                     &tables,
                     *token,
                     max_seq,
-                    *kept,
+                    tables
+                        .iter()
+                        .map(|table| table_horizon(table))
+                        .fold(*kept, i64::max),
                 )?;
                 return Ok(State::Bootstrap {
                     join: *kept,
@@ -264,7 +282,7 @@ fn pull(
             }
             // §4.7: a token, cursor -1 or a cursor from the future bootstraps.
             if token.is_none() && (0..=max_seq).contains(cursor) {
-                return Ok(if *cursor < horizon {
+                return Ok(if *cursor < horizon || below(unit, *cursor, &[]) {
                     State::Reset
                 } else {
                     State::Post(*cursor)
@@ -278,7 +296,10 @@ fn pull(
                 &unit.tables,
                 *token,
                 max_seq,
-                horizon,
+                unit.tables
+                    .iter()
+                    .map(|table| table_horizon(table))
+                    .fold(horizon, i64::max),
             )?;
             Ok(State::Bootstrap {
                 join,
@@ -307,9 +328,11 @@ fn pull(
             max_seq,
             limits.commits,
             |seq, table, scopes| {
+                // §4.5: a table reaches a unit only above its table horizon.
                 units.iter().zip(&bounds).any(|(unit, bound)| {
-                    bound.is_some_and(|bound| seq > bound)
-                        && unit.tables.iter().any(|covered| covered.name == table)
+                    bound.is_some_and(|bound| {
+                        seq > bound.max(table_horizons.get(table).copied().unwrap_or(-1))
+                    }) && unit.tables.iter().any(|covered| covered.name == table)
                         && unit
                             .scopes
                             .iter()

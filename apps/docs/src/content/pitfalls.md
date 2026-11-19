@@ -240,7 +240,7 @@ See [Retire tables and indexes](/guide-schema/#retire-tables-and-indexes).
 
 ### Do change a table's scope patterns only in a schema-version bump
 
-Before 0.63, renaming `log:{log_scope}` to `history:{history_scope}` over the same column left 13,041 existing rows indexed under `log_scope`, and a unit of `history_scope` bootstrapped none of them, with no error. A bump that changes a table's patterns now re-keys every stored row from its own column values and raises the pruning horizon past the history logged under the old patterns. The app needs no data step; a recommit of rows already re-keyed changes no scopes. The same change at an unchanged schema version is refused with `sync.storage.scope_patterns_changed`.
+Before 0.63, renaming `log:{log_scope}` to `history:{history_scope}` over the same column left 13,041 existing rows indexed under `log_scope`, and a unit of `history_scope` bootstrapped none of them, with no error. A bump that changes a table's patterns now re-keys every stored row from its own column values and raises the table's horizon past the history logged under the old patterns, so only units over that table bootstrap again. The app needs no data step; a recommit of rows already re-keyed changes no scopes. The same change at an unchanged schema version is refused with `sync.storage.scope_patterns_changed`.
 
 Map a changed pattern to a column that holds a value in every row before the bump. A NULL or empty value refuses the bump with `sync.storage.scope_value_missing`, so a pattern cannot move to a column the same bump appends: append the column in one bump, write its values, and change the pattern in a later one.
 

@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS sync_log(
   max_commit_seq INTEGER NOT NULL,
   horizon_seq INTEGER NOT NULL,
   delete_floor INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS sync_table_horizons(
+  tbl TEXT PRIMARY KEY,
+  commit_seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_commits(
   commit_seq INTEGER PRIMARY KEY,
   client_id TEXT NOT NULL,
@@ -535,6 +538,20 @@ pub(crate) fn log_state(conn: &Connection) -> Result<LogState, AuthorityError> {
     .db()
 }
 
+/// §4.6 table horizons: re-keyed table → the commit sequence number its
+/// re-key took.
+pub(crate) fn table_horizons(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, i64>, AuthorityError> {
+    conn.prepare_cached("SELECT tbl, commit_seq FROM sync_table_horizons")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .db()
+}
+
 /// Append an applied commit and its changes; every delete the same commit
 /// does not follow with an upsert of the row leaves a tombstone and raises
 /// the delete floor to its version (§2.2).
@@ -987,7 +1004,12 @@ pub(crate) fn prune(
     transaction(conn, || {
         conn.execute("UPDATE sync_log SET horizon_seq=?1 WHERE id=1", [horizon])
             .db()?;
-        for table in ["sync_commits", "sync_changes", "sync_tombstones"] {
+        for table in [
+            "sync_commits",
+            "sync_changes",
+            "sync_tombstones",
+            "sync_table_horizons",
+        ] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE commit_seq<=?1"),
                 [horizon],
@@ -1194,6 +1216,7 @@ fn upgrade(
         ))
         .db()
     };
+    let mut rekeyed = Vec::new();
     for table in &schema.tables {
         let Some(old) = stored.get(&table.name) else {
             create(&table.name, table)?;
@@ -1283,15 +1306,30 @@ fn upgrade(
         }
         if old["scopes"] != new["scopes"] {
             rekey(conn, table)?;
+            rekeyed.push(table.name.as_str());
         }
         create_indexes(conn, table)?;
+    }
+    // §4.6: the re-key takes a commit sequence number of its own, the table
+    // horizon of every table it re-keyed.
+    if !rekeyed.is_empty() {
+        conn.execute("UPDATE sync_log SET max_commit_seq=max_commit_seq+1", [])
+            .db()?;
+        for name in rekeyed {
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_table_horizons(tbl, commit_seq) SELECT ?1, max_commit_seq FROM sync_log",
+                [name],
+            )
+            .db()?;
+        }
     }
     Ok(())
 }
 
 /// §3.1: recompute every row's stored scopes under the table's patterns. A
-/// deleted row's scopes cannot be recomputed, so its tombstone goes, and the
-/// horizon passes the changes logged under the previous patterns (§4.6).
+/// deleted row's scopes cannot be recomputed, so its tombstone goes; the
+/// caller raises the table horizon past the changes logged under the
+/// previous patterns (§4.6).
 fn rekey(conn: &Connection, table: &Table) -> Result<(), AuthorityError> {
     let sql = format!(
         "UPDATE {} SET _sync_scopes=?1 WHERE _sync_partition=?2 AND _sync_row_id=?3",
@@ -1316,10 +1354,6 @@ fn rekey(conn: &Connection, table: &Table) -> Result<(), AuthorityError> {
     }
     conn.execute("DELETE FROM sync_tombstones WHERE tbl=?1", [&table.name])
         .db()?;
-    conn.execute_batch(
-        "UPDATE sync_log SET horizon_seq=max_commit_seq WHERE horizon_seq<max_commit_seq",
-    )
-    .db()?;
     Ok(())
 }
 

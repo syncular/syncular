@@ -1,6 +1,10 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
-import type { CommitPruneQuery, CommitPruneResult } from './storage';
+import type {
+  CommitPruneQuery,
+  CommitPruneResult,
+  PartitionHorizons,
+} from './storage';
 import {
   asJson,
   CLIENT_RECORD_COLUMNS,
@@ -221,6 +225,11 @@ CREATE TABLE IF NOT EXISTS sync_partition_registry(
   log_epoch TEXT NOT NULL,
   epoch_required BOOLEAN NOT NULL DEFAULT FALSE,
   last_authenticated_at_ms BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_table_horizons(
+  partition TEXT NOT NULL, tbl TEXT NOT NULL,
+  commit_seq BIGINT NOT NULL,
+  PRIMARY KEY(partition, tbl)
 );
 CREATE TABLE IF NOT EXISTS sync_row_scopes(
   partition TEXT NOT NULL, tbl TEXT NOT NULL,
@@ -2794,6 +2803,20 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     return rows[0] === undefined ? 0 : asNumber(rows[0].horizon_seq);
   }
 
+  async getHorizons(partition: string): Promise<PartitionHorizons> {
+    const { rows } = await this.#exec.query<{ seq: unknown; tables: string }>(
+      `SELECT coalesce((SELECT horizon_seq FROM sync_partitions WHERE partition=$1),0) AS seq,
+              coalesce((SELECT jsonb_object_agg(tbl, commit_seq) FROM sync_table_horizons WHERE partition=$1),'{}')::text AS tables`,
+      [partition],
+    );
+    return {
+      seq: asNumber(rows[0]?.seq),
+      tables: new Map(
+        Object.entries(asJson<Record<string, number>>(rows[0]?.tables ?? '{}')),
+      ),
+    };
+  }
+
   async setHorizonSeq(partition: string, seq: number): Promise<void> {
     await this.#exec.query(
       `INSERT INTO sync_partitions(partition, horizon_seq) VALUES ($1,$2)
@@ -2845,11 +2868,14 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         'DELETE FROM sync_changes WHERE partition=$1 AND commit_seq<=$2',
         [partition, horizonSeq],
       );
-      // §4.6: tombstones prune in the same pass as the commit log.
-      await client.query(
-        'DELETE FROM sync_tombstones WHERE partition=$1 AND commit_seq<=$2',
-        [partition, horizonSeq],
-      );
+      // §4.6: tombstones and table horizons prune in the same pass as the
+      // commit log.
+      for (const table of ['sync_tombstones', 'sync_table_horizons']) {
+        await client.query(
+          `DELETE FROM ${table} WHERE partition=$1 AND commit_seq<=$2`,
+          [partition, horizonSeq],
+        );
+      }
       return {
         previousHorizonSeq,
         horizonSeq,

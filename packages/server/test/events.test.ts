@@ -515,6 +515,7 @@ function wrapStorage(
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
+    getHorizons: (p) => storage.getHorizons(p),
     readCheckpoints: (p) => storage.readCheckpoints(p),
     declareCheckpoint: (p, n, v, at) => storage.declareCheckpoint(p, n, v, at),
     activateCheckpoint: (p, n, e, w, s, at) =>

@@ -137,6 +137,43 @@ describe('cursors behind the horizon (§4.6)', () => {
   });
 });
 
+describe('table horizons (§4.6)', () => {
+  test('a table horizon that rises during the round resets only the live unit over the table', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    // A re-key of tasks lands between the round's first read and its recheck.
+    let reads = 0;
+    t.ctx = {
+      ...t.ctx,
+      storage: new Proxy(t.storage, {
+        get(target, property) {
+          if (property === 'getHorizons')
+            return async () => ({
+              seq: 0,
+              tables: (reads += 1) === 1 ? new Map() : new Map([['tasks', 2]]),
+            });
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }),
+    };
+    const docs = { org_id: 'o1' };
+    const message = await sync(
+      t,
+      pullFrames([P1, docs], { cursor: 1, progress: [] }),
+    );
+    // The first read, the recheck that resets the unit, and the recheck of
+    // the section read again.
+    expect(reads).toBe(3);
+    expect(section(message, P1).start).toMatchObject({
+      status: 'reset',
+      reasonCode: 'sync.cursor_expired',
+    });
+    expect(section(message, docs).start.status).toBe('active');
+    expect(live(message).start.status).toBe('active');
+  });
+});
+
 describe('commits past the live byte budget (§4.6)', () => {
   const P2 = { project_id: 'p2' };
   const budget = () => {

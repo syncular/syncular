@@ -14,6 +14,7 @@ import {
   registrationDigest,
 } from '@syncular/core';
 import {
+  compileSchema,
   D1ServerStorage,
   handleSyncRequest,
   MemorySegmentStore,
@@ -180,12 +181,17 @@ const fixtures: ReadonlyArray<{
   },
   {
     name: 'D1',
-    open: async () => ({
-      storage: new D1ServerStorage(new D1DatabaseDouble(), {
+    open: async () => {
+      const storage = new D1ServerStorage(new D1DatabaseDouble(), {
         pushApplySerialized: true,
-      }),
-      close: async () => {},
-    }),
+      });
+      // A fresh database takes more than the one default-budget step that
+      // `ensureSchema` runs.
+      await storage.migrateSchema(compileSchema(SCHEMA), {
+        maxStatements: 1000,
+      });
+      return { storage, close: async () => {} };
+    },
   },
 ];
 
