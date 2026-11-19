@@ -59,8 +59,9 @@ fourth.
 :::::steps
 ::::step{title="Write the first migration" time="2 min"}
 Create `migrations/0001_initial/up.sql`. Typegen parses a strict SQL subset:
-`CREATE TABLE`, `ALTER TABLE ADD COLUMN`, `CREATE INDEX`, `DROP INDEX`, and
-`DROP TABLE`, with one single-column primary key per table. It reads only the
+`CREATE TABLE`, `ALTER TABLE ADD COLUMN`, `ALTER TABLE ALTER COLUMN … DROP NOT
+NULL`, `CREATE INDEX`, `DROP INDEX`, and `DROP TABLE`, with one single-column
+primary key per table. It reads only the
 head table shape. Your host runs the migration SQL; the server manages its own
 internal tables. Column types map case-insensitively:
 
@@ -243,22 +244,49 @@ result:
 syncular migrations upgrade-lock --manifest-dir .
 ```
 
-Changes to existing tables follow three rules:
+Changes to existing tables follow four rules:
 
 - An addition to an existing table is a trailing nullable column. A SQL
   `DEFAULT` does not backfill existing Syncular row payloads, so a required
   appended column is rejected even when it has a literal default.
+- A required column becomes nullable through a new migration (below).
 - Renames, reordering, type changes, and nullability changes in locked history
   are not upgrades.
-- A synced appended column stays nullable. Do not tighten its SQL nullability
+- A nullable column never becomes required. Do not tighten its SQL nullability
   later.
 
-A required column cannot become nullable in place. The server's current-row
-tables carry `NOT NULL` for it, and SQLite offers no `ALTER COLUMN`. Add a
-trailing nullable column, backfill it, move readers and writers to it, and retire
-the old column in a later version (the five steps under
-[Data changes and backfills](#data-changes-and-backfills)). A table whose key
-or scope column changes follows the same path through a successor table.
+### Make a required column nullable
+
+Declare the change in a migration of its own version:
+
+```sql title="migrations/0139_surgery_start_optional/up.sql"
+ALTER TABLE surgeries ALTER COLUMN starts_at_ms DROP NOT NULL;
+```
+
+Typegen refuses the statement for the primary key, an unknown column, and a
+column that is already nullable. The generated row type changes from `number`
+to `number | null` (`Option<i64>` in Rust), and a NULL is distinct from every
+stored value of the column.
+
+The server upgrades its store in place at the bump and keeps every stored value.
+The row payloads keep their bytes, because the row codec carries a null bit for
+every column. PostgreSQL drops the column's `NOT NULL`. SQLite, D1 and the local
+authority rebuild the table without it and recreate its indexes and triggers,
+operator-added ones included.
+
+A client at an earlier version would refuse a NULL in that column, so the
+relaxation is a floor ([SPEC §2.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#relaxing-a-required-column)).
+A `schemaWindow` that still lists the earlier version fails at startup with
+`sync.schema_window.incompatible_schema`, and a client at that version receives
+the floor until the app updates. On the updated client the relaxed table takes a
+new generation, so it downloads that table again and keeps every other table.
+Pending writes queued before the update carry a value for the column or leave
+it out, and they replay unchanged.
+
+A table whose key or scope column changes moves to a successor table: add it,
+backfill it, move readers and writers to it, and retire the old table in a later
+version (the five steps under
+[Data changes and backfills](#data-changes-and-backfills)).
 
 There is no client-side migration engine. On a version change a client keeps its
 outbox, wipes every local table whose generation changed, re-bootstraps those

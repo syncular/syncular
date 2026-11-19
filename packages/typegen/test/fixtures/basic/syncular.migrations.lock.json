@@ -25,6 +25,11 @@
       "name": "0005_add_doc_revision_fk",
       "sha256": "cf5246eecfb3246d4f39ef818e9a71055aaa3cc567d268bfd90f83c34eac545a",
       "schemaVersion": 5
+    },
+    {
+      "name": "0006_relax_doc_body",
+      "sha256": "e7b9c54a3ebf96ea42ff33f0cbaabcc83cb1c2c645f1dbc1db1154c717ce15ec",
+      "schemaVersion": 6
     }
   ],
   "head": {
@@ -82,7 +87,7 @@
           {
             "name": "body",
             "type": "string",
-            "nullable": false
+            "nullable": true
           },
           {
             "name": "score",

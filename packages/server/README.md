@@ -1420,6 +1420,8 @@ Pass `schemaWindow: [compileSchema(schema), compileSchema(previousSchema)]` to
 serve the prior codec through the current storage and validation rules. Entries
 are newest first, with the compiled current schema first. Added tables and
 appended nullable columns are supported. Removed/renamed columns, changed codecs,
-primary keys, references or scopes reject the window before serving. Hosts must
+primary keys, references or scopes reject the window before serving; a
+required column relaxed to nullable is a changed column, so the window cannot
+hold the version before the relaxation (SPEC §2.4). Hosts must
 exclude semantically incompatible prior versions. The [schema upgrade guide](https://syncular.dev/concepts-schema-upgrades/#serving-a-compatibility-window)
 owns the pull, segment, push and realtime contract.

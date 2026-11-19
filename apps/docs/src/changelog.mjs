@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A required column can become nullable',
+    body: 'A migration can make a required column nullable with `ALTER TABLE t ALTER COLUMN c DROP NOT NULL`; it was rejected before. Typegen types the column `number | null` (`Option<i64>` in Rust). At the bump the server keeps every stored value and payload: PostgreSQL drops the constraint, and SQLite, D1 and the local authority rebuild the table with its indexes. Clients download the relaxed table again and replay their queued writes. A client of an earlier version would refuse a NULL, so it receives the schema floor until it updates.',
+    links: [
+      {
+        href: '/guide-schema/#make-a-required-column-nullable',
+        label: 'Make a required column nullable',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'An incomplete live query waits for the import that completes it',
     body: "A live query whose last answer has incomplete coverage no longer reads again after every import transaction. While a round imports, it reads again when its pending units finish, when a local write changes its tables, when the import ends, and on `refresh()`; it shows `partial` until then. A production-size first load in an OPFS worker sent 225 such reads to the worker during one pull's import, and the next pull started 1.7 s later. Queries whose last answer was complete read after every change, as before.",
     links: [

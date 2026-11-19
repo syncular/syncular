@@ -30,7 +30,8 @@
     { "version": 2, "through": "0002_add_task_estimate" },
     { "version": 3, "through": "0003_add_doc_crdt" },
     { "version": 4, "through": "0004_add_doc_blob_ref" },
-    { "version": 5, "through": "0005_add_doc_revision_fk" }
+    { "version": 5, "through": "0005_add_doc_revision_fk" },
+    { "version": 6, "through": "0006_relax_doc_body" }
   ],
   "tables": [
     { "name": "tasks", "scopes": ["project:{project_id}"] },

@@ -124,7 +124,7 @@ The client classifies incompatible commits before it collects their pending blob
 
 `upgrading` is a small, queryable client state. Show an "upgrading…" affordance while it is `true`, and re-run live queries against the rebuilt tables when it ends. The worker transport emits it as an `upgrading` event on the event channel. Nothing about the flow crosses the wire.
 
-Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, image-lane re-bootstrap, a kept table with its unit beside a changed one, a restricted unit that transfers only its changed table, a server that skips `RESTRICT`, and a kept cursor below the pruning horizon.
+Both client cores follow this flow, and the `schema-bump/*` conformance scenarios lock it: local-bump replay, floor-triggered convergence, dropped-column rejection, image-lane re-bootstrap, a kept table with its unit beside a changed one, a relaxed required column with queued writes and an earlier client at the floor, a restricted unit that transfers only its changed table, a server that skips `RESTRICT`, and a kept cursor below the pruning horizon.
 
 ## What a bump costs
 
@@ -138,7 +138,7 @@ The server keeps N-version codec support for transition windows if it chooses. W
 
 Storage, authorization, validators, and the writer fence use the current schema. Old clients push with their own codec. Their pulls, conflict rows, segments, and realtime deltas contain only columns their codec knows. New nullable columns are null on old inserts and stay unchanged on old patches.
 
-The window permits added tables and appended nullable columns. It rejects removed or renamed columns and changed codecs, primary keys, references, and scope patterns before serving. The host must also exclude older clients across semantic changes that these structural checks cannot detect. A client outside the window receives a floor naming its oldest version and the latest server version.
+The window permits added tables and appended nullable columns. It rejects removed or renamed columns and changed codecs, primary keys, references, and scope patterns before serving. A required column relaxed to nullable is a changed column, so the version that relaxes it is the oldest the window can hold ([Make a required column nullable](/guide-schema/#make-a-required-column-nullable)). The host must also exclude older clients across semantic changes that these structural checks cannot detect. A client outside the window receives a floor naming its oldest version and the latest server version.
 
 ## Advanced: previous-version context
 

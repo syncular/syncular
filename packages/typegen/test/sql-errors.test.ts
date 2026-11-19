@@ -52,6 +52,39 @@ describe('supported subset', () => {
     ]);
   });
 
+  test('ALTER COLUMN … DROP NOT NULL relaxes a required column in place', () => {
+    const tables = parse(`
+      CREATE TABLE surgeries (id TEXT PRIMARY KEY, starts_at_ms INTEGER NOT NULL, ward TEXT NOT NULL);
+      ALTER TABLE surgeries ALTER COLUMN starts_at_ms DROP NOT NULL;
+      alter table surgeries alter ward drop not null;
+    `);
+    expect(tables.get('surgeries')?.columns).toEqual([
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'starts_at_ms', type: 'integer', nullable: true },
+      { name: 'ward', type: 'string', nullable: true },
+    ]);
+  });
+
+  test('ALTER COLUMN … DROP NOT NULL refuses the primary key, an unknown and a nullable column', () => {
+    const base =
+      'CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER, m INTEGER NOT NULL);';
+    expect(() =>
+      parse(`${base} ALTER TABLE t ALTER COLUMN id DROP NOT NULL;`),
+    ).toThrow('primary-key column "id" cannot become nullable');
+    expect(() =>
+      parse(`${base} ALTER TABLE t ALTER COLUMN gone DROP NOT NULL;`),
+    ).toThrow('column "gone" does not exist at this point');
+    expect(() =>
+      parse(`${base} ALTER TABLE t ALTER COLUMN n DROP NOT NULL;`),
+    ).toThrow('column "n" is already nullable');
+    expect(() =>
+      parse(`${base} ALTER TABLE t ALTER COLUMN m SET NOT NULL;`),
+    ).toThrow('expected DROP after ALTER COLUMN m');
+    expect(() =>
+      parse(`${base} ALTER TABLE t ALTER COLUMN m TYPE TEXT;`),
+    ).toThrow('expected DROP after ALTER COLUMN m');
+  });
+
   test('table-level single-column PRIMARY KEY forces non-null', () => {
     const tables = parse('CREATE TABLE t (id TEXT, PRIMARY KEY (id))');
     expect(tables.get('t')?.columns[0]?.nullable).toBe(false);

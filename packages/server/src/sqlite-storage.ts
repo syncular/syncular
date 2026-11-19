@@ -33,6 +33,9 @@ import {
   rekeyRowScopesSql,
   retiredTableNames,
   rewritePlan,
+  SQLITE_TABLE_REBUILD_SQL,
+  type SqliteRebuildColumnRow,
+  sqliteRelaxRebuildDdl,
   rewriteRowSql,
   rewriteValues,
   SCHEMA_META_DDL_SQLITE,
@@ -654,6 +657,26 @@ END`);
             .query('DELETE FROM sync_blob_refs WHERE tbl=?')
             .run(tableName);
           this.db.exec(dropTableDdl(tableName));
+        }
+        // A relaxed column loses its NOT NULL before the bump's other DDL
+        // (SPEC §2.4), so the index diff below sees the rebuilt table.
+        for (const table of schema.tables.values()) {
+          const { relaxed } = rewritePlan(
+            table,
+            layouts[table.name],
+            existing.get(table.name),
+          );
+          if (relaxed.length === 0) continue;
+          const columns = this.db
+            .query<SqliteRebuildColumnRow, [string]>(SQLITE_TABLE_REBUILD_SQL)
+            .all(table.name);
+          for (const statement of sqliteRelaxRebuildDdl(
+            table.name,
+            columns,
+            relaxed,
+          )) {
+            this.db.exec(statement);
+          }
         }
         for (const statement of schemaDdl(
           schema,

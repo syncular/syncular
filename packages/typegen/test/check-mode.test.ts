@@ -47,7 +47,7 @@ function replaceInFile(path: string, before: string, after: string): void {
 }
 
 function appendNullableMigration(dir: string): void {
-  const migrationDir = join(dir, 'migrations', '0006_add_task_reviewer');
+  const migrationDir = join(dir, 'migrations', '0007_add_task_reviewer');
   cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
     recursive: true,
   });
@@ -61,14 +61,14 @@ function appendNullableMigration(dir: string): void {
     schemaVersions: Array<{ version: number; through: string }>;
   };
   manifest.schemaVersions.push({
-    version: 6,
-    through: '0006_add_task_reviewer',
+    version: 7,
+    through: '0007_add_task_reviewer',
   });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
 function appendRequiredMigration(dir: string): void {
-  const migrationDir = join(dir, 'migrations', '0006_add_task_reviewer');
+  const migrationDir = join(dir, 'migrations', '0007_add_task_reviewer');
   cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
     recursive: true,
   });
@@ -82,14 +82,14 @@ function appendRequiredMigration(dir: string): void {
     schemaVersions: Array<{ version: number; through: string }>;
   };
   manifest.schemaVersions.push({
-    version: 6,
-    through: '0006_add_task_reviewer',
+    version: 7,
+    through: '0007_add_task_reviewer',
   });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
 function appendOverlongIndexMigration(dir: string): string {
-  const migrationName = '0006_add_overlong_index';
+  const migrationName = '0007_add_overlong_index';
   const migrationDir = join(dir, 'migrations', migrationName);
   cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
     recursive: true,
@@ -104,7 +104,7 @@ function appendOverlongIndexMigration(dir: string): string {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     schemaVersions: Array<{ version: number; through: string }>;
   };
-  manifest.schemaVersions.push({ version: 6, through: migrationName });
+  manifest.schemaVersions.push({ version: 7, through: migrationName });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   return indexName;
 }
@@ -238,7 +238,7 @@ describe('syncular generate', () => {
     const indexName = appendOverlongIndexMigration(dir);
     const run = runCli(['generate', '--manifest-dir', dir]);
     expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain('0006_add_overlong_index/up.sql');
+    expect(run.stderr).toContain('0007_add_overlong_index/up.sql');
     expect(run.stderr).toContain(`index name "${indexName}"`);
     expect(run.stderr).toContain('actual UTF-8 length: 64 bytes');
     for (const [path, content] of before) {
@@ -309,7 +309,7 @@ describe('immutable migration history', () => {
         mutate: (dir) =>
           renameSync(
             join(dir, 'migrations', '0002_add_task_estimate'),
-            join(dir, 'migrations', '0006_add_task_estimate'),
+            join(dir, 'migrations', '0007_add_task_estimate'),
           ),
         evidence: 'cannot be removed, renamed, or reordered',
       },
@@ -399,7 +399,7 @@ describe('immutable migration history', () => {
     ]) {
       const run = runCli(args);
       expect(run.exitCode).toBe(1);
-      expect(run.stderr).toContain('0006_add_task_reviewer/up.sql');
+      expect(run.stderr).toContain('0007_add_task_reviewer/up.sql');
       expect(run.stderr).toContain('added column "reviewer" must be nullable');
       expect(run.stderr).toContain('SQL defaults do not backfill');
       expect(run.stderr).not.toContain(upgradeDir);
@@ -424,7 +424,7 @@ describe('immutable migration history', () => {
   test('an appended migration cannot join a locked schema version', () => {
     const dir = freshDir();
     appendNullableMigration(dir);
-    // Fold the new migration into the locked version 5 instead of adding 6.
+    // Fold the new migration into the locked version 6 instead of adding 7.
     const manifestPath = join(dir, 'syncular.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
       schemaVersions: Array<{ version: number; through: string }>;
@@ -432,13 +432,13 @@ describe('immutable migration history', () => {
     manifest.schemaVersions.pop();
     const last = manifest.schemaVersions.at(-1);
     if (last === undefined) throw new Error('fixture has no schema version');
-    last.through = '0006_add_task_reviewer';
+    last.through = '0007_add_task_reviewer';
     writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
     for (const action of [['generate'], ['migrations', 'check']]) {
       const run = runCli([...action, '--manifest-dir', dir]);
       expect(run.exitCode).toBe(1);
       expect(run.stderr).toContain('typegen.schema_version_locked');
-      expect(run.stderr).toContain('"migration":"0006_add_task_reviewer"');
+      expect(run.stderr).toContain('"migration":"0007_add_task_reviewer"');
     }
   });
 
@@ -488,15 +488,15 @@ describe('immutable migration history', () => {
       runCli(['migrations', 'upgrade-lock', '--manifest-dir', dir]).exitCode,
     ).toBe(0);
     expect(JSON.parse(readFileSync(lockPath, 'utf8')).migrations).toHaveLength(
-      5,
+      6,
     );
     expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
     expect(
       JSON.parse(readFileSync(lockPath, 'utf8')).migrations.at(-1),
     ).toEqual(
       expect.objectContaining({
-        name: '0006_add_task_reviewer',
-        schemaVersion: 6,
+        name: '0007_add_task_reviewer',
+        schemaVersion: 7,
       }),
     );
   });

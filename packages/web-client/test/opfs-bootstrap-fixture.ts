@@ -43,6 +43,21 @@ export const OPFS_SCOPE_SCHEMAS = [89, 90, 91].map((version) => ({
   })),
 }));
 
+/** SPEC §2.4: version 201 relaxes `catalogue.title` to nullable. */
+export const OPFS_RELAX_SCHEMAS = [200, 201].map((version) => ({
+  ...OPFS_SCHEMA,
+  version,
+  tables: OPFS_SCHEMA.tables.map((table) => ({
+    ...table,
+    generation: `catalogue-${version}`,
+    columns: table.columns.map((column) =>
+      column.name === 'title' && version === 201
+        ? { ...column, nullable: true }
+        : column,
+    ),
+  })),
+}));
+
 export const OPFS_ALTERNATIVE_SCOPE_SCHEMA: ClientSchema = {
   ...OPFS_SCHEMA,
   version: 100,

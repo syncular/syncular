@@ -59,6 +59,9 @@ import {
   rekeyRowScopesSql,
   retiredTableNames,
   rewritePlan,
+  SQLITE_TABLE_REBUILD_SQL,
+  type SqliteRebuildColumnRow,
+  sqliteRelaxRebuildDdl,
   rewriteRowSql,
   rewriteValues,
   SCHEMA_META_DDL_SQLITE,
@@ -870,6 +873,9 @@ interface D1MigrationState {
   columns: Record<string, string[]>;
   indexes: Record<string, Record<string, string>>;
   ddl: string[];
+  /** Rebuilds of tables with a relaxed column (SPEC §2.4), run before the
+   * other DDL. */
+  rebuilds?: string[];
   rewrites: Array<{
     table: string;
     oldLayout?: readonly StoredColumnLayout[];
@@ -1350,14 +1356,15 @@ export class D1ServerStorage
           }
           statementsExecuted += 2;
           const columns = await this.#db
-            .prepare(`PRAGMA table_info(${quoteIdent(table.name)})`)
-            .all<{ name: string }>();
+            .prepare(SQLITE_TABLE_REBUILD_SQL)
+            .bind(table.name)
+            .all<SqliteRebuildColumnRow>();
           const indexes = await this.#db
             .prepare(SQLITE_TABLE_INDEXES_SQL)
             .bind(table.name)
             .all<SqliteTableIndexRow>();
           // Validate the old codec before any application DDL or row rewrite.
-          rewritePlan(
+          const { relaxed } = rewritePlan(
             table,
             sourceLayouts[table.name],
             columns.results.length > 0
@@ -1368,6 +1375,14 @@ export class D1ServerStorage
             !(await save(
               {
                 ...state,
+                rebuilds: [
+                  ...(state.rebuilds ?? []),
+                  ...sqliteRelaxRebuildDdl(
+                    table.name,
+                    columns.results,
+                    relaxed,
+                  ),
+                ],
                 offset: state.offset + 1,
                 afterPartition: '',
                 afterRowId: '',
@@ -1429,6 +1444,7 @@ export class D1ServerStorage
             `DELETE FROM sync_blob_refs WHERE tbl='${name.replaceAll("'", "''")}'`,
             dropTableDdl(name),
           ]),
+          ...(state.rebuilds ?? []),
           ...schemaDdl(schema, columns, 'sqlite', indexes),
           ...rekeyCleanupSql(rekeyed),
         ];
@@ -1439,6 +1455,7 @@ export class D1ServerStorage
               phase: 'ddl',
               offset: 0,
               ddl,
+              rebuilds: [],
               rewrites,
               columns: {},
               indexes: {},

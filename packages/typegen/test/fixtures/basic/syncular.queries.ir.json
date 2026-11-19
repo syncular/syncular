@@ -111,7 +111,7 @@
           "name": "body",
           "langName": "body",
           "type": "string",
-          "nullable": false,
+          "nullable": true,
           "fidelity": "exact",
           "origin": {
             "table": "docs",
@@ -268,7 +268,7 @@
           "name": "body",
           "langName": "body",
           "type": "string",
-          "nullable": false,
+          "nullable": true,
           "fidelity": "exact",
           "origin": {
             "table": "docs",
@@ -354,7 +354,7 @@
           "name": "body",
           "langName": "body",
           "type": "string",
-          "nullable": false,
+          "nullable": true,
           "fidelity": "exact",
           "origin": {
             "table": "docs",
@@ -1302,7 +1302,7 @@
           "name": "body",
           "langName": "body",
           "type": "string",
-          "nullable": false,
+          "nullable": true,
           "fidelity": "exact",
           "origin": {
             "table": "docs",
@@ -1445,7 +1445,7 @@
           "name": "body",
           "langName": "body",
           "type": "string",
-          "nullable": false,
+          "nullable": true,
           "fidelity": "exact",
           "origin": {
             "table": "docs",

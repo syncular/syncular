@@ -56,7 +56,7 @@ describe('golden fixtures', () => {
   test('IR shape: versioned, extension slots present, no TS types', () => {
     const ir = JSON.parse(generate(FIXTURE).irJson);
     expect(ir.irVersion).toBe(1);
-    expect(ir.schemaVersion).toBe(5);
+    expect(ir.schemaVersion).toBe(6);
     expect(ir.extensions).toEqual({});
     expect(ir.tables[0].extensions).toEqual({});
     expect(ir.schemaVersions).toEqual([
@@ -65,6 +65,7 @@ describe('golden fixtures', () => {
       { version: 3, migrations: ['0003_add_doc_crdt'] },
       { version: 4, migrations: ['0004_add_doc_blob_ref'] },
       { version: 5, migrations: ['0005_add_doc_revision_fk'] },
+      { version: 6, migrations: ['0006_relax_doc_body'] },
     ]);
     // §5.10.1: the CRDT keyword became a crdt column carrying a crdtType.
     const bodyDoc = ir.tables[1].columns.find(

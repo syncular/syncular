@@ -96,6 +96,23 @@ const KEEP_V2: DriverSchema = {
   ],
 };
 
+/** §2.4 relaxing a required column: version 2 makes `docs.body` nullable,
+ * so `docs` takes a new generation and `tasks` keeps its own. */
+const RELAX_V2: DriverSchema = {
+  version: 2,
+  tables: [
+    KEEP_V1.tables[0] as DriverTable,
+    {
+      ...(FIXTURE_SCHEMA.tables[1] as DriverTable),
+      generation: 'docs-relaxed',
+      columns: (FIXTURE_SCHEMA.tables[1] as DriverTable).columns.map(
+        (column) =>
+          column.name === 'body' ? { ...column, nullable: true } : column,
+      ),
+    },
+  ],
+};
+
 /** §7.4.3 restriction: `docs` also declares `project_id`, so U1 covers
  * `tasks` (kept) and `docs` (changed: a new nullable `note`). */
 const docsByProject = (generation: string): DriverTable => ({
@@ -361,6 +378,111 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         [{ ...doc('d1', 'o1', 'p1'), note: 'n' }],
         'the changed table bootstraps under the new schema',
       );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    // §2.4: the server upgrades its populated store in place, an earlier
+    // client meets the floor, and the upgraded client re-downloads only the
+    // relaxed table and replays the writes it queued under the old schema.
+    name: 'schema-bump/required-column-relaxed-to-nullable',
+    specRefs: ['§2.4', '§1.6', '§7.4.3', '§7.4.4'],
+    server: { schema: KEEP_V1 },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'one')]);
+      await seedRows(ctx, 'docs', [
+        doc('d1', 'o1', 'p1', 'first'),
+        doc('d2', 'o1', 'p1', 'second'),
+        doc('d3', 'o1', 'p1', 'third'),
+      ]);
+      const docsUnit = { org_id: 'o1' };
+      const allowed = {
+        project_id: ['p1'],
+        org_id: ['o1'],
+        projectId: ['p1'],
+      };
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: KEEP_V1,
+        allowed,
+      });
+      await a.api.subscribeMany([U1, docsUnit]);
+      await syncIdle(a);
+      const kept = await unitProgress(a, U1);
+      // Queued under version 1: a full upsert and a sparse patch.
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'docs',
+          values: doc('d1', 'o1', 'p1', 'offline'),
+        },
+        { op: 'patch', table: 'docs', values: { id: 'd2', body: 'patched' } },
+      ]);
+
+      await ctx.server.restart(RELAX_V2);
+      const old = await ctx.newClient({
+        actorId: 'actor-old',
+        clientId: 'client-old',
+        schema: KEEP_V1,
+        allowed,
+      });
+      await old.api.subscribe(docsUnit);
+      checkEqual(
+        (await syncOk(old)).schemaFloor?.requiredSchemaVersion,
+        2,
+        'a client that would refuse a NULL body meets the floor',
+      );
+
+      await ctx.recreateClient(a, RELAX_V2);
+      checkEqual(
+        await unitProgress(a, U1),
+        kept,
+        'the unit over the unchanged table keeps its state',
+      );
+      checkEqual(
+        (await a.api.unitState(unitId(docsUnit)))?.cursor,
+        -1,
+        'the relaxed table bootstraps again',
+      );
+      await syncIdle(a);
+      checkEqual(await a.api.rejections(), [], 'both queued writes apply');
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'docs',
+          values: { ...doc('d4', 'o1', 'p1'), body: null },
+        },
+      ]);
+      await syncIdle(a);
+      checkEqual(
+        (await ctx.server.readRows('docs')).map((row) => row.values),
+        [
+          doc('d1', 'o1', 'p1', 'offline'),
+          doc('d2', 'o1', 'p1', 'patched'),
+          doc('d3', 'o1', 'p1', 'third'),
+          { ...doc('d4', 'o1', 'p1'), body: null },
+        ],
+        'stored values survive, queued writes land, and a NULL is stored',
+      );
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        schema: RELAX_V2,
+        allowed,
+      });
+      await b.api.subscribe(docsUnit);
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('docs')).find((row) => row.rowId === 'd4')?.values
+          .body,
+        null,
+        'a NULL reads back as NULL',
+      );
+      await expectConverged(ctx, 'docs', [a, b]);
       await expectConverged(ctx, 'tasks', [a], {
         variable: 'project_id',
         values: ['p1'],
