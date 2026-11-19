@@ -166,7 +166,7 @@ const client = new SyncClient({
 });
 ```
 
-The key id travels inside the envelope, so rotation and per-scope keys need no schema change. On decrypt, the client reads the key id from the envelope and asks the keyring for it. A key id the keyring does not hold fails the round with `client.encryption_key_missing`; `details.table` and `details.keyId` name the table and the key id. A wrong key or a corrupt envelope fails it with `client.decrypt_failed`. Both codes are local to the client and not retryable. The code reaches the rejected `sync()` call, the failed progress snapshot and `lastRound.errorCode` in diagnostics, on a worker handle as on a direct client. Install the key, or keep the table out of that client's units ([A protected value shares a row with shared data](#a-protected-value-shares-a-row-with-shared-data)).
+The key id travels inside the envelope, so rotation and per-scope keys need no schema change. On decrypt, the client reads the key id from the envelope and asks the keyring for it. A row under a key id the keyring does not hold lands sealed ([Rows under a key the device lacks](#rows-under-a-key-the-device-lacks)). A wrong key or a corrupt envelope fails the round with `client.decrypt_failed`, which is local to the client and not retryable. The code reaches the rejected `sync()` call, the failed progress snapshot and `lastRound.errorCode` in diagnostics, on a worker handle as on a direct client. Install the key, or keep the table out of that client's units ([A protected value shares a row with shared data](#a-protected-value-shares-a-row-with-shared-data)).
 
 Functions do not cross a Web Worker or a native command bridge. The browser worker, Tauri, and React Native hosts therefore accept a portable keyring: raw keys plus an optional map from table to a plaintext string column that holds the active key id. The example in step 2 uses it; keep old keys in the ring while old envelopes remain.
 
@@ -186,17 +186,7 @@ When authentication or a signed revocation must run first, create the client wit
 
 ### Rows under a key the device lacks
 
-A table that selects its key per row (`keyIdColumns` or `keyIdFor`) can hold rows under keys a device never receives: imported rows, rotated rows, another practice's rows in a shared unit. Set `missingKey: 'seal'` on the keyring, or on a direct client's `encryption` config, to keep syncing past them. The default, `'fail'`, fails the round as described above.
-
-```ts title="src/sync.ts"
-const encryption = {
-  keys: { 'practice-key-v1': practiceKey },
-  keyIdColumns: { patients: 'encryption_key_id' },
-  missingKey: 'seal' as const,
-};
-```
-
-Under `'seal'`, a delivered row with an envelope under a key the keyring does not hold lands sealed: every encrypted column is NULL, the other columns hold their values, and the round goes on. The reserved column `_sync_sealed_key` holds the missing key id; read it with an alias, because `SELECT *` strips it like `_sync_version`:
+A table that selects its key per row (`keyIdColumns` or `keyIdFor`) can hold rows under keys a device never receives: imported rows, rotated rows, another practice's rows in a shared unit. A delivered row with an envelope under a key the keyring does not hold lands sealed: every encrypted column is NULL, the other columns hold their values, and the round goes on. The reserved column `_sync_sealed_key` holds the missing key id; read it with an alias, because `SELECT *` strips it like `_sync_version`:
 
 ```sql
 SELECT id, name, _sync_sealed_key AS sealed_key FROM patients
@@ -300,7 +290,7 @@ Put a signal for no-key clients in the plaintext primary or in another plaintext
 
 ### A no-key client holds a sidecar unit
 
-An undecryptable row fails the round with `client.encryption_key_missing` and starves unrelated frames in the same response. Register units on the sidecar's scope variable only on clients that hold the sidecar key, or set `missingKey: 'seal'` ([Rows under a key the device lacks](#rows-under-a-key-the-device-lacks)).
+A client without the sidecar key holds every sidecar row sealed, its encrypted columns NULL ([Rows under a key the device lacks](#rows-under-a-key-the-device-lacks)), and downloads them for nothing. Register units on the sidecar's scope variable only on clients that hold the sidecar key.
 
 ### Codegen gives no warning
 

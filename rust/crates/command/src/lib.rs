@@ -410,7 +410,7 @@ fn parse_realtime_policy(value: Option<&Value>) -> Result<RealtimePolicy, Comman
 
 /// §5.11: parse the `encryption` config into the client's portable keyring.
 /// Shape: `{ keys: { "<keyId>": {"$bytes": "<hex>"} },
-/// keyIdColumns: { "<table>": "<column>" }, missingKey: "fail" | "seal" }`.
+/// keyIdColumns: { "<table>": "<column>" } }`.
 /// Keys are 32 bytes.
 fn parse_encryption(value: &Value) -> Result<syncular_client::values::EncryptionConfig, String> {
     let mut config = syncular_client::values::EncryptionConfig::default();
@@ -444,12 +444,6 @@ fn parse_encryption(value: &Value) -> Result<syncular_client::values::Encryption
                 .insert(table.clone(), column.to_owned());
         }
     }
-    config.missing_key = match value.get("missingKey") {
-        None | Some(Value::Null) => syncular_client::values::MissingKey::Fail,
-        Some(Value::String(mode)) if mode == "fail" => syncular_client::values::MissingKey::Fail,
-        Some(Value::String(mode)) if mode == "seal" => syncular_client::values::MissingKey::Seal,
-        Some(_) => return Err("encryption missingKey must be 'fail' or 'seal'".to_owned()),
-    };
     Ok(config)
 }
 
@@ -874,8 +868,7 @@ pub fn dispatch<T: Transport>(
                 .unwrap_or(false);
             // §5.11: install client-side encryption keys. Shape:
             // { encryption: { keys: { "<keyId>": {"$bytes": "<hex>"} },
-            //                 keyIdColumns: { "<table>": "<column>" },
-            //                 missingKey: "fail" | "seal" } }.
+            //                 keyIdColumns: { "<table>": "<column>" } } }.
             let security_preflight = optional(
                 params.get("securityPreflight"),
                 "securityPreflight",
@@ -2139,18 +2132,6 @@ mod tests {
         .expect("portable keyring parses");
         assert_eq!(config.keys["practice-key-v1"], vec![0x2a; 32]);
         assert_eq!(config.key_id_columns["patients"], "encryption_key_id");
-    }
-
-    #[test]
-    fn parses_missing_key_mode_with_fail_as_default() {
-        use syncular_client::values::MissingKey;
-        let mode = |value: Value| parse_encryption(&value).map(|config| config.missing_key);
-        assert_eq!(mode(json!({})), Ok(MissingKey::Fail));
-        assert_eq!(mode(json!({ "missingKey": "fail" })), Ok(MissingKey::Fail));
-        assert_eq!(mode(json!({ "missingKey": "seal" })), Ok(MissingKey::Seal));
-        assert!(mode(json!({ "missingKey": "skip" }))
-            .expect_err("an unknown mode is refused")
-            .contains("missingKey"));
     }
 
     #[test]

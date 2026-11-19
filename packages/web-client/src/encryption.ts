@@ -51,11 +51,6 @@ export interface EncryptionConfig {
    */
   readonly keyIdColumns?: Readonly<Record<string, string>>;
   /**
-   * §5.11 sealed apply. `'fail'` (default) fails a round on an envelope whose
-   * key the provider lacks; `'seal'` lands that row sealed and continues.
-   */
-  readonly missingKey?: 'fail' | 'seal';
-  /**
    * Nonce source (§5.11). Production omits this (secure RNG). ONLY the crypto
    * golden-vector generator injects a fixed nonce — never a production path.
    */
@@ -66,7 +61,6 @@ export interface EncryptionConfig {
 export interface EncryptionKeyringConfig {
   readonly keys: Readonly<Record<string, Uint8Array>>;
   readonly keyIdColumns?: Readonly<Record<string, string>>;
-  readonly missingKey?: 'fail' | 'seal';
 }
 
 /**
@@ -91,10 +85,7 @@ export function encryptionConfigFromKeyring(
     // and take the clean DecryptError path.
     keyProvider: (keyId) =>
       Object.hasOwn(keyring.keys, keyId) ? keyring.keys[keyId] : undefined,
-    ...definedObject({
-      keyIdColumns: keyring.keyIdColumns,
-      missingKey: keyring.missingKey,
-    }),
+    ...definedObject({ keyIdColumns: keyring.keyIdColumns }),
   };
 }
 
@@ -207,8 +198,7 @@ export interface SealedRow {
 
 /**
  * The apply seam (§4.5 COMMIT, §5.6 rows segment): {@link decryptRowValues},
- * except that under `missingKey: 'seal'` a missing key leaves every
- * encrypted column NULL and `sealed` carries the first missing key id and
+ * except that a missing key leaves every encrypted column NULL and `sealed` carries the first missing key id and
  * the envelopes (§5.11).
  */
 export async function decryptOrSealRowValues(
@@ -220,7 +210,6 @@ export async function decryptOrSealRowValues(
     return { values: await decryptRowValues(config, table, values) };
   } catch (error) {
     if (
-      config?.missingKey !== 'seal' ||
       !(error instanceof DecryptError) ||
       error.code !== 'client.encryption_key_missing'
     )

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A row under a missing key always lands sealed',
+    body: "The keyring option `missingKey` is removed on every client. A delivered row under a key id the keyring does not hold lands sealed: its encrypted columns are NULL, `_sync_sealed_key` names the key, the round goes on, and the client reveals the row once the key is installed. A round no longer fails with `client.encryption_key_missing`; that code now marks a write to a sealed row. Delete `missingKey` from every keyring.",
+    links: [
+      {
+        href: '/concepts-encryption/#rows-under-a-key-the-device-lacks',
+        label: 'Rows under a key the device lacks',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'mutate takes no commit ID from the app',
     body: 'The `clientCommitId` option of `mutate` is gone from both clients, the worker handle, `useMutation`, the Tauri and React Native bridges, the native `mutate` command and the Kotlin, Swift and Flutter wrappers, along with the `client.commit_id_reused` error. The worker handle mints the ID before it calls the worker, and a rejected `mutate` carries it in `details.clientCommitId`, so a page whose reply was lost reads the commit through `pendingCommits` and `commitOutcome`. The Rust `mutate_with_commit_id` is removed; `mutate` mints the ID.',
     links: [

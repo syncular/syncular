@@ -792,15 +792,18 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         encryption: { keys: {} },
       });
       await locked.api.subscribe(U1);
-      await syncFails(
-        locked,
-        'client.encryption_key_missing',
-        'a client without the key',
-      );
+      await syncIdle(locked);
       checkEqual(
-        await locked.api.readRows('secrets'),
-        [],
-        'the undecryptable rows are not applied',
+        (await locked.api.readRows('secrets')).map((row) => ({
+          note: row.values.note,
+          amount: row.values.amount,
+          sealedKey: row.sealedKey,
+        })),
+        [
+          { note: null, amount: null, sealedKey: 'secrets' },
+          { note: null, amount: null, sealedKey: 'secrets' },
+        ],
+        'a client without the key holds the rows sealed',
       );
     },
   },

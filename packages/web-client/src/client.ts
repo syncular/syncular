@@ -4425,12 +4425,12 @@ export class SyncClient {
   }
 
   /**
-   * §5.11 reveal: under `missingKey: 'seal'`, decrypt every sealed row whose
+   * §5.11 reveal: decrypt every sealed row whose
    * envelope keys the keyring now holds and clear its reserved columns, one
    * revision per table.
    */
   async #revealSealed(): Promise<void> {
-    if (this.#encryption?.missingKey !== 'seal') return;
+    if (this.#encryption === undefined) return;
     const { decryptRowValues } = await import('./encryption');
     for (const table of this.#schema.tables.values()) {
       if (!table.hasEncryptedColumns) continue;

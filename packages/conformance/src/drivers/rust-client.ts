@@ -1546,9 +1546,6 @@ class RustClientInstance implements ClientInstance {
               ...(encryption.keyIdColumns !== undefined
                 ? { keyIdColumns: { ...encryption.keyIdColumns } }
                 : {}),
-              ...(encryption.missingKey !== undefined
-                ? { missingKey: encryption.missingKey }
-                : {}),
             },
           },
     );

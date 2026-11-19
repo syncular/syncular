@@ -96,7 +96,7 @@ See [Subscriptions & the outbox](/concepts-subscriptions/#a-unit).
 
 ### Do give a table encrypted with a key some readers lack its own variable
 
-When one scope variable spans a plaintext table and a table encrypted with a key that only some readers hold, a reader without the key receives the encrypted rows with every unit it registers on that variable. Its rounds fail with `client.encryption_key_missing`, `details.table` and `details.keyId` name the table and the key id, and its units stay `bootstrapping`. Give the encrypted table its own scope variable and register units on it only on devices that hold its key, or set `missingKey: 'seal'` on the keyring ([Rows under a key the device lacks](/concepts-encryption/#rows-under-a-key-the-device-lacks)).
+When one scope variable spans a plaintext table and a table encrypted with a key that only some readers hold, a reader without the key receives the encrypted rows with every unit it registers on that variable and holds them sealed, every encrypted column NULL ([Rows under a key the device lacks](/concepts-encryption/#rows-under-a-key-the-device-lacks)). Give the encrypted table its own scope variable and register units on it only on devices that hold its key.
 
 See [Client-side encryption](/concepts-encryption/#a-protected-value-shares-a-row-with-shared-data).
 

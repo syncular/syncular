@@ -471,8 +471,10 @@ fn a_commit_frame_decrypt_failure_keeps_its_identity() {
         ("note".into(), json!("secret")),
     ]);
     let payload = crate::values::encode_row_json(table, "5", &values, &client.encryption).unwrap();
-    // The receiving client holds no key for the envelope.
-    client.set_encryption(crate::values::EncryptionConfig::default());
+    // The receiving client holds a different key under the envelope's id.
+    let mut wrong = crate::values::EncryptionConfig::default();
+    wrong.keys.insert("k1".to_owned(), vec![0x99; 32]);
+    client.set_encryption(wrong);
     let change = ssp2::model::Change {
         table_index: 0,
         row_id: "5".into(),
@@ -484,12 +486,7 @@ fn a_commit_frame_decrypt_failure_keeps_its_identity() {
     let error = client
         .apply_commit_changes(&["patients".to_owned()], &[change])
         .expect_err("the envelope cannot be decrypted");
-    assert_eq!(error.code, "client.encryption_key_missing");
-    assert_eq!(error.message, "no key for the envelope keyId");
-    assert_eq!(
-        error.details,
-        Some(json!({ "table": "patients", "keyId": "k1" }))
-    );
+    assert_eq!(error.code, "client.decrypt_failed");
 }
 
 // R11
@@ -544,7 +541,7 @@ fn commit_frames_record_deliveries_only_for_rows_pinned_by_the_outbox() {
     assert_eq!(delivered, vec![("t1".to_owned(), 9)]);
 }
 
-// §5.11 sealed apply (`missingKey: Seal`).
+// §5.11 sealed apply.
 
 #[cfg(feature = "e2ee")]
 fn sealing_keyring(keys: &[(&str, u8)]) -> crate::values::EncryptionConfig {
@@ -555,11 +552,10 @@ fn sealing_keyring(keys: &[(&str, u8)]) -> crate::values::EncryptionConfig {
     config
         .key_id_columns
         .insert("patients".to_owned(), "encryption_key_id".to_owned());
-    config.missing_key = crate::values::MissingKey::Seal;
     config
 }
 
-/// A reader holding `k1` under `missingKey: Seal`, with an encrypted
+/// A reader holding `k1`, with an encrypted
 /// `patients` table and a plain `notes` table.
 #[cfg(feature = "e2ee")]
 fn sealing_client() -> SyncClient {

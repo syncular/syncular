@@ -124,7 +124,7 @@ test('worker keyring encrypts by a row key-id column and decrypts locally', asyn
   }
 });
 
-test('a worker round that meets a row without its key fails with client.encryption_key_missing', async () => {
+test('a worker round that meets a row under a wrong key fails with client.decrypt_failed', async () => {
   const server = makeServer(SERVER_SCHEMA);
   server.allowed['actor-1'] = { project_id: ['p1'] };
   const http = serveOverHttp(server);
@@ -143,7 +143,9 @@ test('a worker round that meets a row without its key fails with client.encrypti
   const writer = await makeHandle('worker-key-missing-writer', {
     'practice-key-v1': KEY,
   });
-  const reader = await makeHandle('worker-key-missing-reader', {});
+  const reader = await makeHandle('worker-key-missing-reader', {
+    'practice-key-v1': new Uint8Array(32).fill(0x99),
+  });
   try {
     await writer.subscribe({ project_id: 'p1' });
     await writer.syncUntilIdle();
@@ -167,17 +169,16 @@ test('a worker round that meets a row without its key fails with client.encrypti
       (error: unknown) => error,
     );
     expect(failure).toMatchObject({
-      code: 'client.encryption_key_missing',
+      code: 'client.decrypt_failed',
       retryable: false,
-      details: { table: 'secrets', keyId: 'practice-key-v1' },
     });
     expect((await reader.diagnosticsSnapshot()).lastRound).toMatchObject({
       status: 'failed',
-      errorCode: 'client.encryption_key_missing',
+      errorCode: 'client.decrypt_failed',
     });
     expect(reader.progressSnapshot()).toMatchObject({
       state: 'failed',
-      errorCode: 'client.encryption_key_missing',
+      errorCode: 'client.decrypt_failed',
     });
   } finally {
     await writer.close();
@@ -186,15 +187,11 @@ test('a worker round that meets a row without its key fails with client.encrypti
   }
 });
 
-test('a worker keyring with missingKey seal lands the row sealed and completes the round', async () => {
+test('a worker keyring without the key lands the row sealed and completes the round', async () => {
   const server = makeServer(SERVER_SCHEMA);
   server.allowed['actor-1'] = { project_id: ['p1'] };
   const http = serveOverHttp(server);
-  const makeHandle = (
-    clientId: string,
-    keys: Record<string, Uint8Array>,
-    missingKey?: 'seal',
-  ) =>
+  const makeHandle = (clientId: string, keys: Record<string, Uint8Array>) =>
     createSyncClientHandle({
       leaderLock: singleOwnerLock(),
       worker: () => new Worker(WORKER_URL),
@@ -204,16 +201,12 @@ test('a worker keyring with missingKey seal lands the row sealed and completes t
       clientId,
       autoSync: false,
       lockName: `worker-encryption-${clientId}`,
-      encryption: {
-        keys,
-        keyIdColumns: { secrets: 'encryption_key_id' },
-        ...(missingKey !== undefined ? { missingKey } : {}),
-      },
+      encryption: { keys, keyIdColumns: { secrets: 'encryption_key_id' } },
     });
   const writer = await makeHandle('worker-seal-writer', {
     'practice-key-v1': KEY,
   });
-  const reader = await makeHandle('worker-seal-reader', {}, 'seal');
+  const reader = await makeHandle('worker-seal-reader', {});
   try {
     await writer.subscribe({ project_id: 'p1' });
     await writer.syncUntilIdle();

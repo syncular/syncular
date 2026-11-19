@@ -23,7 +23,14 @@ import {
 import type { ServerSchema } from '@syncular/server';
 import { applyRowsSegment, applySqliteSegment } from '../src/apply';
 import { BunClientDatabase } from '../src/bun-database';
-import { drive, makeClient, makeServer, PARTITION, tableRows } from './helpers';
+import {
+  drive,
+  makeClient,
+  makeServer,
+  PARTITION,
+  tableRows,
+  outcomeOf,
+} from './helpers';
 
 const SECRETS_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -527,7 +534,9 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       ],
     });
     // The unrelated commit in the same round still applied.
-    expect(outcomeOf(handle.client.commitDelivery(goodId))?.status).toBe('applied');
+    expect(outcomeOf(handle.client.commitDelivery(goodId))?.status).toBe(
+      'applied',
+    );
   });
 
   test('an unencodable commit over the operation cap is dropped, not capacity-errored', async () => {
@@ -666,7 +675,6 @@ describe('§5.11 sealed apply', () => {
       schema: CLIENT_SCHEMA,
       encryption: {
         keyProvider: (id) => (id === 'secrets' ? key : undefined),
-        missingKey: 'seal',
       },
     });
     reader.client.subscribe({ project_id: 'p1' });
@@ -746,25 +754,17 @@ describe('§5.11 sealed apply', () => {
     ]);
   });
 
-  test('missingKey defaults to fail', async () => {
+  test('a wrong key is never sealed', async () => {
     const schema = compileClientSchema(CLIENT_SCHEMA);
     const table = schema.tables.get('secrets')!;
     const envelope = await encryptValue('string', 'x', 'secrets', KEY);
     await expect(
-      decryptOrSealRowValues({ keyProvider: () => undefined }, table, [
+      decryptOrSealRowValues({ keyProvider: wrongProvider }, table, [
         's1',
         'p1',
         envelope,
         null,
       ]),
-    ).rejects.toMatchObject({ code: 'client.encryption_key_missing' });
-    // A wrong key is never sealed.
-    await expect(
-      decryptOrSealRowValues(
-        { keyProvider: wrongProvider, missingKey: 'seal' },
-        table,
-        ['s1', 'p1', envelope, null],
-      ),
     ).rejects.toMatchObject({ code: 'client.decrypt_failed' });
   });
 

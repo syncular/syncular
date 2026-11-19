@@ -289,7 +289,6 @@ export async function runClientApply(
           encryption: {
             keyProvider: (keyId: string) =>
               key && keyId === 'k1' ? keyBytes : undefined,
-            missingKey: 'seal' as const,
           },
         }
       : {}),

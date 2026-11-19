@@ -80,9 +80,6 @@ function buildEncryption(
     ...(config.keyIdColumns !== undefined
       ? { keyIdColumns: config.keyIdColumns }
       : {}),
-    ...(config.missingKey !== undefined
-      ? { missingKey: config.missingKey }
-      : {}),
   };
 }
 

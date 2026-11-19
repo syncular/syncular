@@ -278,6 +278,22 @@ Code that recovered a lost reply by its own ID reads
 ignores a `clientCommitId` parameter on `mutate`. SSP2 and the wire version
 are unchanged; `PUSH_COMMIT.clientCommitId` still carries the ID.
 
+### Encryption: a row under a missing key always lands sealed
+
+The keyring option `missingKey` is removed from the browser client, the
+worker keyring, the Rust core and the native `encryption` command parameter.
+A delivered row whose envelope names a key id the keyring does not hold
+lands sealed, as `missingKey: 'seal'` did: its encrypted columns are NULL,
+`_sync_sealed_key` names the key, the round continues, writes to the row
+fail with `client.encryption_key_missing`, and the row is revealed once the
+key is installed (SPEC §5.11). A round no longer fails with
+`client.encryption_key_missing`; a wrong key or a corrupt envelope still
+fails it with `client.decrypt_failed`. Delete `missingKey` from every
+keyring. An app that relied on the failed round to notice a missing key
+reads `_sync_sealed_key` instead
+(`SELECT id FROM patients WHERE _sync_sealed_key IS NOT NULL`), and renders
+the NULL encrypted columns of a sealed row as locked.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

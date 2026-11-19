@@ -4341,9 +4341,8 @@ On encode the client resolves `keyId`, embeds it in the envelope, and encrypts w
 `keyProvider(keyId)`. On apply the client reads `keyId` **from the
 envelope** and decrypts with `keyProvider(keyId)` — so key rotation and
 per-scope keys work without a schema change: the envelope is
-self-describing. On apply, a `keyId` the provider does not know is
-`client.encryption_key_missing`; a wrong key (GCM tag mismatch) is
-`client.decrypt_failed`.
+self-describing. On apply, a `keyId` the provider does not know seals the
+row (below); a wrong key (GCM tag mismatch) is `client.decrypt_failed`.
 
 Worker-hosted clients accept a structured-clone-safe `{ keys, keyIdColumns }`
 keyring and install the provider inside the leader worker. Tauri and React
@@ -4475,32 +4474,29 @@ device lock policy, secure key storage, and the exact purge protocol remain
 mandatory application responsibilities.
 
 **`client.encryption_key_missing` and `client.decrypt_failed`
-(client-local, §10.3).** An envelope whose `keyId` the keyring does not hold
-surfaces as `client.encryption_key_missing`, with the structured details
-`{ table, keyId }`: the table the row belongs to and the envelope's `keyId`.
-A `keyId` names a key and carries no key material; the message is static
-text. The other decrypt failures (unknown envelope version, GCM
+(client-local, §10.3).** A write to a row sealed under a `keyId` the
+keyring does not hold fails with `client.encryption_key_missing`, with the
+structured details `{ table, keyId }`: the table the row belongs to and the
+sealing `keyId`. A `keyId` names a key and carries no key material; the
+message is static text. The decrypt failures (unknown envelope version, GCM
 authentication failure, malformed envelope, or a post-decrypt value-parse
 failure) surface as `client.decrypt_failed`. Both codes are client-local
 (never on the wire; the `client.` family is client-only per §10.3) and not
 retryable: a wrong or missing key does not fix itself. The client raises
-them at the apply seam (§4.5/§5.6), and the round fails with that code;
-under `missingKey: 'seal'` (below) a missing key seals the row instead. The
-code is the round's error identity on every host: the rejected `sync()`
+`client.decrypt_failed` at the apply seam (§4.5/§5.6), and the round fails
+with that code. The code is the round's error identity on every host: the rejected `sync()`
 call, the failed progress snapshot (`errorCode`), and the diagnostics
 `lastRound.errorCode` all carry it, and a Worker or native bridge MUST
 forward the code, `retryable` and details unchanged instead of replacing
 them with a generic host failure code. A unit covers every table that
 declares its variables (§4.1), so a reader that lacks the key of an
-encrypted table MUST NOT share that table's scope variable with the units it
-does register; the encrypted table takes its own variable (the sidecar shape
-above).
+encrypted table receives that table's rows sealed with every unit on its
+scope variable; an encrypted table that such a reader must not hold at all
+takes its own variable (the sidecar shape above).
 
-**Sealed apply (`missingKey: 'seal'`).** A table that selects its key per row
-(`keyIdColumns`, `keyIdFor`) can hold rows under keys a device never
-receives, and a reader cannot list them before it registers the unit. The
-keyring takes `missingKey: 'fail' | 'seal'`; `'fail'` is the default and keeps
-the rule above. Under `'seal'`, a delivered upsert (§4.5 `COMMIT`, §5.6 rows
+**Sealed apply.** A table that selects its key per row (`keyIdColumns`,
+`keyIdFor`) can hold rows under keys a device never receives, and a reader
+cannot list them before it registers the unit. A delivered upsert (§4.5 `COMMIT`, §5.6 rows
 segment) with at least one encrypted envelope whose `keyId` the keyring does
 not hold lands **sealed** and the round continues:
 
@@ -4594,10 +4590,10 @@ gives the full recipe.
 agree: an encrypted round-trip (TS writes / Rust reads via a shared fixture
 key and vice versa; a raw-driver assertion confirms the **server row holds a
 ciphertext envelope, not plaintext**), a wrong-key apply surfacing
-`client.decrypt_failed`, a missing-key apply surfacing
-`client.encryption_key_missing` with its details in the sync result,
-progress and last round, a sealed apply under `missingKey: 'seal'` that
-completes the round, marks the row and reveals it once the key is installed, and committed crypto **test vectors** (fixed-nonce
+`client.decrypt_failed` in the sync result, progress and last round, a
+missing-key apply that seals the row, completes the round, refuses a write
+to the row with `client.encryption_key_missing` and reveals the row once the
+key is installed, and committed crypto **test vectors** (fixed-nonce
 AES-GCM encrypt vectors and X25519 wrap/unwrap vectors under
 `spec/vectors/crypto/`) that both cores reproduce byte-for-byte.
 
@@ -5853,8 +5849,8 @@ documents: a JSON boolean for a `boolean` column.
   page lives on (a worker failure, a leader handover), so the handle mints
   the ID before the call and the core records the commit under it. When the handle's `mutate` rejects, the error carries the ID in
   `details.clientCommitId`; the app reads that commit by ID: `pendingCommits`
-  lists it while it is pending, `commitOutcome` returns its final outcome,
-  and neither knows it when the call recorded nothing. A native bridge
+  lists it while it is pending, `commitDelivery` reports `pending`, its
+  final outcome, or `unknown` when the call recorded nothing. A native bridge
   (Tauri, React Native) and the in-process FFI wrappers lose a reply only
   together with the JS context or the process that made the call, so the
   native core mints the ID.
@@ -6250,7 +6246,7 @@ base after the completed drive; it does not reserve the row against later
 writes. Native and TypeScript clients and their worker and bridge surfaces
 expose the same contract.
 
-The client exposes `commitOutcome(clientCommitId)` and
+The client exposes `commitDelivery(clientCommitId)` (§7.5) and
 `commitOutcomes({ limit?, activeOnly? })`. Active conflict/rejection entries
 are restored into the conflict surfaces on restart. Resolution is explicit,
 durable, and one-way:
@@ -7191,7 +7187,7 @@ MUST NOT be described as safe or bounded.
 ### 7.5 Local observation revisions and atomic reactive reads
 
 **Application read surface.** `querySnapshot`, `statusSnapshot`,
-`diagnosticsSnapshot`, `conflicts`, `rejections`, `commitOutcome`,
+`diagnosticsSnapshot`, `conflicts`, `rejections`, `commitDelivery`,
 `commitOutcomes`, and `resolveCommitOutcome` are methods on direct and hosted
 clients. Direct TypeScript reads return values; worker and JavaScript native
 bridges return promises. `schemaFloor`, `leaseState`, `upgrading`,
@@ -7291,9 +7287,11 @@ retained `CommitOutcome` (status `applied`, `cached`, `conflict`, or
 resolution preserved), otherwise an explicit `unknown`. `unknown` covers
 both an id the client never held and one whose outcome retention pruned.
 The read never reduces a multi-error outcome to one code, and the existing
-outcome-retention policy bounds what a later read can still resolve. The owning core additionally attaches in-memory
-retained-row images to its own outcomes; the sidecar reports the persisted
-outcome fields. Persisted outcome readers validate SQL field types, integral
+outcome-retention policy bounds what a later read can still resolve. `commitDelivery(clientCommitId)` is the
+application's single-commit read: it is this delivery read, and the owning
+core attaches its retained-row images (§7.2.2) to a `known` outcome. A
+native host routes `commitDelivery` to the owning core; a read-only sidecar
+`snapshotRead` reports the persisted outcome fields without retained rows. Persisted outcome readers validate SQL field types, integral
 indexes and safe-integer versions and timestamps, conflict-column arrays,
 and rejection details against their existing bounds. Applied and cached outcomes
 contain only applied results; conflict outcomes contain at least one conflict;
@@ -9158,8 +9156,8 @@ abandon rollback (`reason = undo_pending`); non-retryable, with the structured
 encode at the push seam: the key id resolved to no usable value or the
 selected key is unknown; category `crypto`, non-retryable, raised at the
 encode seam as a durable per-commit rejection, never on the wire], `client.encryption_key_missing` [§5.11 — an
-encrypted column's envelope names a `keyId` the keyring does not hold;
-category `crypto`, non-retryable, raised at the apply seam with details
+write names a row sealed under a `keyId` the keyring does not hold;
+category `crypto`, non-retryable, raised by `mutate`/`patch` with details
 `{ table, keyId }`, never on the wire], `client.decrypt_failed` [§5.11 — an
 encrypted column failed to decrypt on apply: unknown envelope version, GCM
 authentication failure (wrong key), a malformed envelope, or a post-decrypt
