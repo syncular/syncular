@@ -417,6 +417,7 @@ export async function runPlan(
   database: ClientDatabase,
   sah?: { reset(): void; read(): SahStats },
   live = 0,
+  complete = 0,
 ): Promise<PlanResult> {
   const tables = 16;
   const values = Array.from(
@@ -574,7 +575,8 @@ export async function runPlan(
       changeBatches++;
     });
     // `live` reactive queries over every plan unit, each a UNION of the
-    // sixteen tables, observe the round the way an app's plan view does.
+    // sixteen tables, observe the round the way an app's plan view does;
+    // `complete` more read the same tables without window coverage.
     let liveReads = 0;
     const read = client.querySnapshot.bind(client);
     client.querySnapshot = ((spec) => {
@@ -583,7 +585,7 @@ export async function runPlan(
     }) as typeof client.querySnapshot;
     const store = new ReactiveClientStore(client);
     store.start();
-    const entries = Array.from({ length: live }, (_, q) =>
+    const entries = Array.from({ length: live + complete }, (_, q) =>
       store.query({
         id: `plan:${q}`,
         sql: Array.from(
@@ -594,7 +596,9 @@ export async function runPlan(
         dependencies: Array.from({ length: tables }, (_, t) => ({
           table: `t${String(t).padStart(2, '0')}`,
         })),
-        coverage: [{ base: { variable: 'plan_id' }, units: values }],
+        ...(q < live
+          ? { coverage: [{ base: { variable: 'plan_id' }, units: values }] }
+          : {}),
         claimCoverage: false,
       }),
     );
@@ -639,7 +643,9 @@ export async function runPlan(
       transactions: transactions() - beforeSync,
       changeBatches,
       ...(sahStats === undefined ? {} : { sah: sahStats }),
-      ...(live === 0 ? {} : { liveReads: readsDuringSync, livePhases }),
+      ...(live + complete === 0
+        ? {}
+        : { liveReads: readsDuringSync, livePhases }),
     };
   } finally {
     await client.close();

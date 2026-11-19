@@ -445,6 +445,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   #desiredRevision = 0n;
   /** SPEC §7.8: the newest matching revision an incomplete answer may not lag. */
   #currentRevision = 0n;
+  /** SPEC §7.8: the newest matching revision a complete answer may not lag. */
+  #liveRevision = 0n;
   #complete = false;
   /** Incomplete units of the last answer no window change has named since. */
   #waiting = new Set<string>();
@@ -567,6 +569,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#requested = false;
     this.#desiredRevision = 0n;
     this.#currentRevision = 0n;
+    this.#liveRevision = 0n;
     this.#complete = false;
     this.#waiting = new Set();
     this.#named = new Set();
@@ -615,21 +618,27 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     if (batch.revision > this.#desiredRevision) {
       this.#desiredRevision = batch.revision;
     }
-    // SPEC §7.8: while an attempt imports, an incomplete answer waits for
-    // the import unless the batch carries status (a local write) or names
-    // the last of its incomplete units.
+    // SPEC §7.8: while an attempt imports, every answer waits for the
+    // import's own row writes. An incomplete answer also waits for server
+    // COMMITs, unless the batch carries status (a local write) or names the
+    // last of its incomplete units.
     for (const change of batch.windows)
       for (const unit of change.units) {
         this.#waiting.delete(`${change.baseKey}\0${unit}`);
         this.#named.add(`${change.baseKey}\0${unit}`);
       }
-    const lag =
-      this.store.importing &&
-      !this.#complete &&
-      batch.status === undefined &&
-      (batch.windows.length === 0 || this.#waiting.size > 0);
-    if (!lag && batch.revision > this.#currentRevision)
+    const importing = this.store.importing && batch.status === undefined;
+    const imported =
+      importing &&
+      batch.windows.length === 0 &&
+      batch.appliedCommits === undefined;
+    const incompleteLag =
+      importing && (batch.windows.length === 0 || this.#waiting.size > 0);
+    const lag = this.#complete ? imported : incompleteLag;
+    if (!incompleteLag && batch.revision > this.#currentRevision)
       this.#currentRevision = batch.revision;
+    if (!imported && batch.revision > this.#liveRevision)
+      this.#liveRevision = batch.revision;
     if (this.#listeners.size === 0) return;
     // A committed row change of a dependency claims again; a window-only
     // batch, which a failed window edit can itself produce, does not.
@@ -829,8 +838,10 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         }
         if (snapshot.revision < this.#desiredRevision) {
           if (
-            snapshot.coverage.complete ||
-            snapshot.revision < this.#currentRevision ||
+            snapshot.revision <
+              (snapshot.coverage.complete
+                ? this.#liveRevision
+                : this.#currentRevision) ||
             !this.store.importing
           ) {
             this.#requested = true;
