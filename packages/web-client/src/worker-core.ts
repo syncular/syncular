@@ -13,6 +13,7 @@
  * RPC-driven and auto-driven sync rounds serialize on one queue because
  * the core owns exactly one loop.
  */
+import { definedObject } from '@syncular/core';
 import type { defineAuthorityReads } from './authority';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
@@ -409,11 +410,8 @@ export function startSyncWorkerCore(
         // Retain the leader lease while the previous worker's OPFS handles
         // drain. Only opening is retried; core initialization has not started.
         const delayMs = Math.min(50 * 2 ** attempt, 1000);
-        if (overrides.waitForStorageRetry !== undefined) {
-          await overrides.waitForStorageRetry(delayMs);
-        } else {
-          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-        }
+        await (overrides.waitForStorageRetry?.(delayMs) ??
+          new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
       }
     }
     const remote =
@@ -442,14 +440,26 @@ export function startSyncWorkerCore(
     let realtimeConnector: RealtimeConnector | undefined;
     offline = config.transportEnabled === false;
     const started = new SyncClient({
+      ...definedObject({
+        segments: bindings.segments,
+        blobs,
+        clientId: config.clientId,
+        limits: config.limits,
+        retainFailedCommits: config.retainFailedCommits,
+        realtimePolicy: config.realtimePolicy,
+        realtimeHeartbeatMs: config.realtimeHeartbeatMs,
+        encryption:
+          config.encryption && encryptionConfigFromKeyring(config.encryption),
+        authorityReads:
+          config.authorityReads &&
+          overrides.createAuthorityReads!(config.authorityReads),
+        securityPreflight: config.securityPreflight,
+        previousVersionContext: config.previousVersionContext,
+      }),
       transportEnabled: !offline,
       database,
       schema: config.schema,
       transport: bindings.transport,
-      ...(bindings.segments !== undefined
-        ? { segments: bindings.segments }
-        : {}),
-      ...(blobs !== undefined ? { blobs } : {}),
       realtime: (handlers, clientId) => {
         // §12.2: a local authority has no realtime channel.
         if (realtimeConnector === undefined || local?.active()) {
@@ -457,34 +467,7 @@ export function startSyncWorkerCore(
         }
         return realtimeConnector(handlers, clientId);
       },
-      ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
-      ...(config.limits !== undefined ? { limits: config.limits } : {}),
-      ...(config.retainFailedCommits !== undefined
-        ? { retainFailedCommits: config.retainFailedCommits }
-        : {}),
-      ...(config.realtimePolicy !== undefined
-        ? { realtimePolicy: config.realtimePolicy }
-        : {}),
-      ...(config.realtimeHeartbeatMs !== undefined
-        ? { realtimeHeartbeatMs: config.realtimeHeartbeatMs }
-        : {}),
       schedule: scheduleBackground,
-      ...(config.encryption !== undefined
-        ? { encryption: encryptionConfigFromKeyring(config.encryption) }
-        : {}),
-      ...(config.authorityReads !== undefined
-        ? {
-            authorityReads: overrides.createAuthorityReads!(
-              config.authorityReads,
-            ),
-          }
-        : {}),
-      ...(config.securityPreflight !== undefined
-        ? { securityPreflight: config.securityPreflight }
-        : {}),
-      ...(config.previousVersionContext !== undefined
-        ? { previousVersionContext: config.previousVersionContext }
-        : {}),
       onSyncNeeded: (reason) => {
         emit({ kind: 'sync-needed', reason });
         consumeSyncIntent({ kind: 'interactive' });
@@ -731,10 +714,11 @@ async function defaultOpenDatabase(
       "database mode 'custom' requires startSyncWorker({ openDatabase })",
     );
   }
-  return openPersistentWasmDatabase(config.database.name, {
-    ...(config.database.directory !== undefined
-      ? { directory: config.database.directory }
-      : {}),
-    ...(config.takeOverStorage === true ? { takeOver: true } : {}),
-  });
+  return openPersistentWasmDatabase(
+    config.database.name,
+    definedObject({
+      directory: config.database.directory,
+      takeOver: config.takeOverStorage || undefined,
+    }),
+  );
 }

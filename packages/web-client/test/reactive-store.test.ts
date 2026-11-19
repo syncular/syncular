@@ -618,6 +618,58 @@ describe('revision race gates', () => {
     store.dispose();
   });
 
+  test('batches that arrive during a read its snapshot covers cost no second read', async () => {
+    const client = new FakeReactiveClient();
+    const first = deferred<QuerySnapshot<Row>>();
+    client.snapshots.push(first.promise);
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(querySpec());
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    // A coalesced apply transaction publishes its blocks' batches together.
+    for (const revision of [2n, 3n, 4n])
+      client.emit(
+        batch(revision, {
+          tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+        }),
+      );
+    first.resolve({
+      revision: 4n,
+      rows: [{ id: 'a', title: 'a' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(1);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 4n });
+    off();
+    store.dispose();
+  });
+
+  test('a batch that arrives during a failing read reads again', async () => {
+    const client = new FakeReactiveClient();
+    const failing = deferred<QuerySnapshot<Row>>();
+    client.snapshots.push(failing.promise, {
+      revision: 2n,
+      rows: [{ id: 'a', title: 'a' }],
+      coverage: COMPLETE,
+    });
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(querySpec());
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+      }),
+    );
+    failing.reject(new Error('read failed'));
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(2);
+    expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', revision: 2n });
+    off();
+    store.dispose();
+  });
+
   test('a failed refresh keeps rows and revision but leaves ready phase', async () => {
     const client = new FakeReactiveClient();
     client.snapshots.push({

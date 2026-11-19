@@ -20,6 +20,7 @@ import {
   type SyncTransport,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import type { ApplyStep } from '../src/apply';
 import { ClientSyncError } from '../src/errors';
 import {
   decodeMessage,
@@ -46,6 +47,20 @@ import {
   type SyncRequestContext,
   type ValidatorRegistry,
 } from '@syncular/server';
+
+/** Drive a generator-driven apply without a coalescing client (§1.4 rule
+ * 4): every block writes in its own transaction, async steps are awaited. */
+export async function drive<T>(
+  steps: Generator<ApplyStep, T, unknown>,
+): Promise<T> {
+  for (let step = steps.next(); ;) {
+    if (step.done) return step.value;
+    step =
+      typeof step.value === 'function'
+        ? steps.next(await step.value())
+        : steps.next();
+  }
+}
 
 export const PARTITION = 'part-1';
 export const TEST_LOG_EPOCH = 'test-log-epoch';

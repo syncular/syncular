@@ -20,7 +20,7 @@ A new [unit](/concepts-subscriptions/#a-unit) **bootstraps**: the client downloa
 <span class="d-arrow"></span>
 <div class="node hot"><span class="t">3 · Download</span>Inline, direct, or signed URL; client verifies the hash</div>
 <span class="d-arrow"></span>
-<div class="node ok"><span class="t">4 · Apply</span>One transaction per rows block or image chunk; the unit's cursor set at the end</div>
+<div class="node ok"><span class="t">4 · Apply</span>Rows blocks in transactions of up to 1,024 rows, one per image chunk; the unit's cursor set at the end</div>
 </div>
 
 ::caption[After the last page, the unit catches up from its pin and joins the live set: from then on the replica cursor covers it.]
@@ -68,7 +68,7 @@ Segments are the CDN and bulk path. They travel over HTTP only, so the sync sock
 </div>
 :::
 
-The client verifies every segment's content address after download and applies it in one transaction per rows block or image chunk. The Rust core runs consecutive frames and blocks of one response as savepoints of one transaction of at most 1,024 rows and publishes their change batches after it commits ([SPEC §1.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#14-streaming-contract)), so a response with many small sections pays for one SQLite commit. Bootstrap is resumable, paged, and pinned to the `commitSeq` at which it started.
+The client verifies every segment's content address after download and applies each image chunk in its own transaction. Both clients run consecutive rows blocks and section ends of one response as savepoints of one transaction of at most 1,024 rows and publish their change batches, one per block, after it commits ([SPEC §1.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#14-streaming-contract)), so a response with many small sections pays for a few SQLite commits. The TypeScript client lets local reads run after each of those commits. The Rust core also coalesces the other frames of the response. Bootstrap is resumable, paged, and pinned to the `commitSeq` at which it started.
 
 Segment bytes are content-addressed uncompressed. Compression is a transport and storage concern (zstd preferred, gzip fallback) and does not appear on the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#58-compression)). Clients rely on native fetch decoding, so the client bundle ships no decompression code. A client stops reading a segment body once it exceeds the descriptor's `byteLength` and fails the round with `sync.invalid_request`.
 

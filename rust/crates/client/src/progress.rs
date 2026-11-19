@@ -30,10 +30,10 @@ pub struct SyncProgress {
     pub unit_rows_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit_rows_processed: Option<u64>,
-    /// SQLite image payloads: time in import transactions before COMMIT, in ms.
+    /// Time in this payload's image chunks or rows blocks before their commit, in ms (§7.7).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_write_ms: Option<u64>,
-    /// SQLite image payloads: time committing them and publishing their changes.
+    /// Time committing them (a savepoint release inside a coalesced apply) and publishing their changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_commit_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

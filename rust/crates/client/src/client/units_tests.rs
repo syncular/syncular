@@ -968,7 +968,18 @@ fn a_window_and_an_explicit_subscribe_share_one_unit_and_the_last_release_evicts
 }
 
 #[test]
-fn a_widen_that_fails_at_one_value_keeps_the_values_before_it_and_the_same_call_converges() {
+fn a_widen_registers_all_its_values_in_one_transaction() {
+    let mut h = Harness::new();
+    let base = project_window();
+    let values: Vec<String> = ["p1", "p2", "p3", "p4"].map(String::from).to_vec();
+    h.client.drain_change_batches();
+    h.client.set_window(&base, &values).unwrap();
+    assert_eq!(h.client.drain_change_batches().len(), 1);
+    assert_eq!(h.client.window_state(&base).unwrap().units, values);
+}
+
+#[test]
+fn a_widen_that_fails_at_one_value_registers_none_of_them_and_the_same_call_converges() {
     let mut h = Harness::new();
     let base = project_window();
     let values: Vec<String> = ["p1", "p2", "p3", "p4"].map(String::from).to_vec();
@@ -992,8 +1003,8 @@ fn a_widen_that_fails_at_one_value_keeps_the_values_before_it_and_the_same_call_
         .unwrap();
     let error = h.client.set_window(&base, &values).unwrap_err();
     assert!(error.contains("widen failed"), "{error}");
-    assert_eq!(h.client.window_state(&base).unwrap().units, ["p1", "p2"]);
-    assert_eq!(held(&h), ["p1", "p2"]);
+    assert!(h.client.window_state(&base).unwrap().units.is_empty());
+    assert!(held(&h).is_empty());
     h.client.conn.execute_batch("DROP TRIGGER fail_p3").unwrap();
     h.client.set_window(&base, &values).unwrap();
     assert_eq!(h.client.window_state(&base).unwrap().units, values);

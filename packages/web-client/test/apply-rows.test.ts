@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { BunClientDatabase } from '@syncular/client/bun';
 import type { RowValue } from '@syncular/core';
 import { applyRowsSegment } from '../src/apply';
+import { drive } from './helpers';
 import type { SqlValue } from '../src/database';
 import { compileClientSchema, ensureLocalSchema } from '../src/schema';
 
@@ -76,21 +77,23 @@ async function apply(
   db.baseWrites.length = 0;
   db.journalWrites = 0;
   const compiled = schema.tables.get(table)!;
-  await applyRowsSegment(
-    db,
-    schema,
-    compiled,
-    {
-      table,
-      schemaVersion: 1,
-      columns: compiled.columns,
-      blocks: [rows.map((values) => ({ serverVersion: version, values }))],
-    },
-    {
-      clearFirst: false,
-      effective: { project_id: ['p1'] },
-      owners: () => [],
-    },
+  await drive(
+    applyRowsSegment(
+      db,
+      schema,
+      compiled,
+      {
+        table,
+        schemaVersion: 1,
+        columns: compiled.columns,
+        blocks: [rows.map((values) => ({ serverVersion: version, values }))],
+      },
+      {
+        clearFirst: false,
+        effective: { project_id: ['p1'] },
+        owners: () => [],
+      },
+    ),
   );
 }
 

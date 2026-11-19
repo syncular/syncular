@@ -68,6 +68,7 @@ import { EncryptError } from '@syncular/core';
 import { EncodeError } from '@syncular/core';
 import {
   applyCommitFrame,
+  type ApplyStep,
   applyRowsSegment,
   applySqliteSegment,
   deleteLocalRow,
@@ -106,7 +107,6 @@ import {
   type DiagnosticLastChange,
   type DiagnosticLastRound,
   type DiagnosticQueryFailure,
-  type DiagnosticRoundCounters,
   MAX_DIAGNOSTIC_DOMAINS,
   MAX_DIAGNOSTIC_QUERY_FAILURES,
   type RealtimePolicy,
@@ -967,6 +967,12 @@ function isFinalPushResult(frame: PushResultFrame): boolean {
   );
 }
 
+function transportFlag(value: unknown): boolean {
+  if (typeof value !== 'boolean')
+    throw invalidRequest('transportEnabled must be a boolean');
+  return value;
+}
+
 /** The stable `code` a thrown value carries, when it has one. */
 function thrownCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | undefined)?.code;
@@ -1138,6 +1144,9 @@ export class SyncClient {
   readonly #queryFailures = new Map<string, DiagnosticQueryFailure>();
   /** The batch accumulator; non-undefined only inside `#applyBatch`. */
   #batch: ChangeAccumulator | undefined;
+  /** §1.4 rule 4: the change batches an open coalesced apply transaction
+   * publishes after its COMMIT, in revision order. */
+  #held: (() => void)[] | undefined;
   /**
    * Operation-serialization mutex (the core owns one loop). Every
    * transaction-entering ASYNC operation — `sync`, the delta-apply body, and
@@ -1160,13 +1169,9 @@ export class SyncClient {
   #preflightBarrier: Promise<void> | undefined;
 
   constructor(config: SyncClientConfig) {
-    if (
-      config.transportEnabled !== undefined &&
-      typeof config.transportEnabled !== 'boolean'
-    ) {
-      throw invalidRequest('transportEnabled must be a boolean');
-    }
-    this.#transportEnabled = config.transportEnabled !== false;
+    this.#transportEnabled =
+      config.transportEnabled === undefined ||
+      transportFlag(config.transportEnabled);
     for (const name of [
       'maxPushCommitsPerRequest',
       'maxPushOperationsPerRequest',
@@ -1443,15 +1448,16 @@ export class SyncClient {
     // earlier WITHOUT a schema bump.
     this.#db.transaction(() => {
       ensureLocalSyncedSchema(this.#db, this.#schema);
-      if (marker === undefined)
-        setMeta(
-          this.#db,
-          LOCAL_SCHEMA_VERSION_KEY,
-          String(this.#schema.version),
-        );
-      setLocalSchemaDescriptor(this.#db, this.#schema);
-      saveUnitScopeSchema(this.#db, this.#schema);
+      this.#stampSchema(marker === undefined);
     });
+  }
+
+  /** Write the schema marker (when `version`), descriptor and unit scopes. */
+  #stampSchema(version: boolean): void {
+    if (version)
+      setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+    setLocalSchemaDescriptor(this.#db, this.#schema);
+    saveUnitScopeSchema(this.#db, this.#schema);
   }
 
   /**
@@ -1491,13 +1497,7 @@ export class SyncClient {
         }
         changed = resetLocalReplica(this.#db, this.#schema, true);
         this.#replayOutbox();
-        setMeta(
-          this.#db,
-          LOCAL_SCHEMA_VERSION_KEY,
-          String(this.#schema.version),
-        );
-        setLocalSchemaDescriptor(this.#db, this.#schema);
-        saveUnitScopeSchema(this.#db, this.#schema);
+        this.#stampSchema(true);
       });
       // Every table the reset dropped changed (I1 eviction-shaped).
       for (const table of changed) batch.table(table);
@@ -1695,9 +1695,7 @@ export class SyncClient {
   /** Host-owned transport policy; the local replica remains available. */
   setTransportEnabled(enabled: boolean): void {
     this.#requireStarted();
-    if (typeof enabled !== 'boolean')
-      throw invalidRequest('transportEnabled must be a boolean');
-    if (this.#transportEnabled === enabled) return;
+    if (this.#transportEnabled === transportFlag(enabled)) return;
     this.#transportEnabled = enabled;
     this.#transportEpoch += 1;
     this.#disarm();
@@ -1860,26 +1858,18 @@ export class SyncClient {
    */
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row>;
   querySnapshot(spec: QueryReadSpec): QuerySnapshot {
-    const read = this.#readSnapshot({
-      statements: [
-        {
-          sql: spec.sql,
-          ...(spec.params !== undefined ? { params: spec.params } : {}),
-        },
-      ],
-      ...(spec.coverage !== undefined ? { coverage: spec.coverage } : {}),
-      ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
-    });
-    const rows = read.queries[0];
-    if (read.queries.length !== 1 || rows === undefined) {
-      throw new ClientSyncError(
-        'client.failed',
-        'querySnapshot produced no statement result',
-      );
-    }
+    // A statement reads only `sql` and `params`; one statement yields one
+    // result.
+    const read = this.#readSnapshot(
+      definedObject({
+        statements: [spec],
+        coverage: spec.coverage,
+        owner: spec.owner,
+      }),
+    );
     return {
       revision: read.revision,
-      rows,
+      rows: read.queries[0]!,
       coverage: read.coverage,
     };
   }
@@ -2137,17 +2127,12 @@ export class SyncClient {
     return withPreviousVersionContainer(this.#db, readPreviousVersionContainer);
   }
 
-  /** RFC 0005 A2: presence for `statusSnapshot()`, without creating the file. */
-  #previousVersionStatus(): { present: boolean; createdAtMs?: number } {
-    const record = this.#readPreviousVersionRecord();
-    if (record === undefined) return { present: this.#previousVersionExists() };
-    return { present: true, createdAtMs: record.createdAtMs };
-  }
-
   #previousVersionLeaseInactive(nowMs: number): boolean {
     const lease = this.#leaseState;
-    if (lease?.errorCode !== undefined) return true;
-    return lease?.expiresAtMs !== undefined && lease.expiresAtMs <= nowMs;
+    return (
+      lease?.errorCode !== undefined ||
+      (lease?.expiresAtMs ?? Infinity) <= nowMs
+    );
   }
 
   /**
@@ -2316,12 +2301,13 @@ export class SyncClient {
       ? 'offline'
       : round?.status === 'succeeded'
         ? 'online'
-        : round?.status === 'failed' &&
-            (round.causeKind === 'network' || round.causeKind === 'connect')
-          ? 'offline'
-          : round?.status === 'failed' && round.httpStatus !== undefined
-            ? 'online'
-            : 'unknown';
+        : round?.status !== 'failed'
+          ? 'unknown'
+          : round.causeKind === 'network' || round.causeKind === 'connect'
+            ? 'offline'
+            : round.httpStatus !== undefined
+              ? 'online'
+              : 'unknown';
     return definedObject({
       version: CLIENT_DIAGNOSTICS_VERSION,
       capturedAtMs,
@@ -2359,7 +2345,7 @@ export class SyncClient {
           ),
         ].sort(),
       },
-      activeUnits: registered.filter((unit) => unit.status === 'active').length,
+      activeUnits: registered.length - units.revoked - units.failed,
       replicaCursor: replicaCursor(this.#db),
       lastRound: this.#lastRound,
       lastChange: this.#lastChange,
@@ -2386,12 +2372,9 @@ export class SyncClient {
 
   #diagnosticStorage(): ClientDiagnosticsStorage {
     try {
-      const pageCount = Number(
-        this.#db.query('PRAGMA page_count')[0]?.page_count ?? 0,
-      );
-      const pageSize = Number(
-        this.#db.query('PRAGMA page_size')[0]?.page_size ?? 0,
-      );
+      const pragma = (name: string) =>
+        Number(this.#db.query(`PRAGMA ${name}`)[0]?.[name] ?? 0);
+      const databaseBytes = pragma('page_count') * pragma('page_size');
       // One statement for the outbox and outcome-journal sums keeps the
       // snapshot at its pre-version-4 statement count.
       const sums = this.#db.query(
@@ -2409,7 +2392,7 @@ export class SyncClient {
       const size = (value: unknown) => Math.max(0, Number(value ?? 0));
       return {
         status: pressure ? 'pressure' : 'healthy',
-        databaseBytesApprox: Math.max(0, pageCount * pageSize),
+        databaseBytesApprox: Math.max(0, databaseBytes),
         pendingOutboxBytesApprox: size(sums?.outbox),
         retainedOutcomeBytesApprox: size(sums?.bytes),
         retainedOutcomeEntries: size(sums?.entries),
@@ -2458,6 +2441,8 @@ export class SyncClient {
   }
 
   #statusSnapshot(outboxCount?: number): SyncStatusSnapshot {
+    // RFC 0005 A2: previous-version presence, without creating the file.
+    const record = this.#readPreviousVersionRecord();
     return {
       currentSchemaVersion: this.#config.schema.version,
       outbox: outboxCount ?? countOutbox(this.#db),
@@ -2465,7 +2450,10 @@ export class SyncClient {
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#needsPull,
-      previousVersionContext: this.#previousVersionStatus(),
+      previousVersionContext:
+        record === undefined
+          ? { present: this.#previousVersionExists() }
+          : { present: true, createdAtMs: record.createdAtMs },
       securityLifecycle: this.#securityLifecycle,
     };
   }
@@ -2514,14 +2502,14 @@ export class SyncClient {
       onRollback?.(error);
       throw error;
     }
-    if (revision !== undefined) {
-      const event = batch.finish(revision, status);
+    const publish = () => {
+      const event = batch.finish(revision!, status);
       const tables = [...new Set(event.tables.map((entry) => entry.table))];
       const windows = [
         ...new Set(event.windows.map((entry) => entry.baseKey.split('\0')[0]!)),
       ];
       this.#lastChange = {
-        revision: revision.toString(),
+        revision: revision!.toString(),
         recordedAtMs: this.#now(),
         tables: tables.slice(0, MAX_DIAGNOSTIC_DOMAINS),
         windows: windows.slice(0, MAX_DIAGNOSTIC_DOMAINS),
@@ -2537,7 +2525,10 @@ export class SyncClient {
       const legacy = invalidationFromChange(event);
       if (legacy !== undefined) this.#invalidation.emit(legacy);
       this.#emitDiagnostics();
-    }
+    };
+    if (revision !== undefined)
+      if (this.#held) this.#held.push(publish);
+      else publish();
     return result;
   }
 
@@ -2587,28 +2578,23 @@ export class SyncClient {
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
     const owned = bytes.slice();
-    return this.#runProtectedAsync(() => this.#uploadBlob(owned, options));
-  }
-
-  async #uploadBlob(
-    bytes: Uint8Array,
-    options?: { readonly mediaType?: string; readonly name?: string },
-  ): Promise<BlobRef> {
-    if (this.#config.blobs === undefined) {
-      throw invalidRequest('uploadBlob requires a blob transport');
-    }
-    const blobId = await computeBlobId(bytes);
-    const nowMs = this.#now();
-    this.#db.transaction(() => {
-      putCachedBlob(this.#db, blobId, bytes, nowMs, options?.mediaType);
-      recordPendingUpload(this.#db, blobId, nowMs, options?.mediaType);
-    });
-    this.#enforceBlobCacheCap();
-    return definedObject({
-      blobId,
-      byteLength: bytes.length,
-      mediaType: options?.mediaType,
-      name: options?.name,
+    return this.#runProtectedAsync(async () => {
+      if (this.#config.blobs === undefined) {
+        throw invalidRequest('uploadBlob requires a blob transport');
+      }
+      const blobId = await computeBlobId(owned);
+      const nowMs = this.#now();
+      this.#db.transaction(() => {
+        putCachedBlob(this.#db, blobId, owned, nowMs, options?.mediaType);
+        recordPendingUpload(this.#db, blobId, nowMs, options?.mediaType);
+      });
+      this.#enforceBlobCacheCap();
+      return definedObject({
+        blobId,
+        byteLength: owned.length,
+        mediaType: options?.mediaType,
+        name: options?.name,
+      });
     });
   }
 
@@ -2624,65 +2610,63 @@ export class SyncClient {
    * Accepts a raw `blob_ref` column string or a bare `blobId`.
    */
   fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
-    return this.#runProtectedAsync(() => this.#fetchBlob(blobIdOrRef));
-  }
-
-  async #fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
-    // A BlobRef declares the size that caps the download (§5.9.5); a bare
-    // blobId declares none.
-    const ref = blobIdOrRef.startsWith('sha256:')
-      ? undefined
-      : parseBlobRef(blobIdOrRef);
-    const blobId = ref?.blobId ?? blobIdOrRef;
-    const cached = getCachedBlob(this.#db, blobId);
-    if (cached !== undefined) return cached;
-    const transport = this.#config.blobs;
-    if (transport === undefined) {
-      throw invalidRequest('fetchBlob requires a blob transport');
-    }
-    // §5.9.5: the authorized endpoint serves bytes inline OR (always-issue,
-    // presign configured) a signed url the client fetches directly. On a url
-    // arm the client MUST NOT attach host auth and MUST NOT fall through:
-    // failure => re-request, the caller's next fetchBlob mints a fresh url.
-    this.#requireTransport();
-    const response = await transport.download(blobId, ref?.byteLength);
-    let bytes: Uint8Array;
-    if (response.kind === 'url') {
-      if (transport.fetchUrl === undefined) {
-        throw invalidRequest('blob transport cannot fetch urls');
+    return this.#runProtectedAsync(async () => {
+      // A BlobRef declares the size that caps the download (§5.9.5); a bare
+      // blobId declares none.
+      const ref = blobIdOrRef.startsWith('sha256:')
+        ? undefined
+        : parseBlobRef(blobIdOrRef);
+      const blobId = ref?.blobId ?? blobIdOrRef;
+      const cached = getCachedBlob(this.#db, blobId);
+      if (cached !== undefined) return cached;
+      const transport = this.#config.blobs;
+      if (transport === undefined) {
+        throw invalidRequest('fetchBlob requires a blob transport');
       }
-      if (
-        response.urlExpiresAtMs !== undefined &&
-        response.urlExpiresAtMs <= this.#now()
-      ) {
-        // §5.9.5: MUST NOT start a fetch at/past expiry — re-request recovers.
-        throw new ClientSyncError(
-          'sync.segment_expired',
-          'blob url expired before fetch',
-          true,
-        );
+      // §5.9.5: the authorized endpoint serves bytes inline OR (always-issue,
+      // presign configured) a signed url the client fetches directly. On a url
+      // arm the client MUST NOT attach host auth and MUST NOT fall through:
+      // failure => re-request, the caller's next fetchBlob mints a fresh url.
+      this.#requireTransport();
+      const response = await transport.download(blobId, ref?.byteLength);
+      let bytes: Uint8Array;
+      if (response.kind === 'url') {
+        if (transport.fetchUrl === undefined) {
+          throw invalidRequest('blob transport cannot fetch urls');
+        }
+        if (
+          response.urlExpiresAtMs !== undefined &&
+          response.urlExpiresAtMs <= this.#now()
+        ) {
+          // §5.9.5: MUST NOT start a fetch at/past expiry — re-request recovers.
+          throw new ClientSyncError(
+            'sync.segment_expired',
+            'blob url expired before fetch',
+            true,
+          );
+        }
+        bytes = await transport.fetchUrl(response.url, ref?.byteLength);
+      } else {
+        bytes = response.bytes;
       }
-      bytes = await transport.fetchUrl(response.url, ref?.byteLength);
-    } else {
-      bytes = response.bytes;
-    }
-    // §5.9.5 inherits §5.1: the declared size caps the body and the content
-    // address must match. On the url path either failure invalidates the
-    // fetch (no fall-through); the next fetchBlob re-requests the endpoint.
-    if (bytes.byteLength > (ref?.byteLength ?? bytes.byteLength)) {
-      throw invalidRequest('blob exceeds its byteLength');
-    }
-    if ((await computeBlobId(bytes)) !== blobId) {
-      throw invalidRequest('blob content address mismatch');
-    }
-    putCachedBlob(this.#db, blobId, bytes, this.#now());
-    this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    this.#enforceBlobCacheCap();
-    const stored = getCachedBlob(this.#db, blobId);
-    if (stored === undefined) {
-      throw invalidRequest('blob cache write failed');
-    }
-    return stored;
+      // §5.9.5 inherits §5.1: the declared size caps the body and the content
+      // address must match. On the url path either failure invalidates the
+      // fetch (no fall-through); the next fetchBlob re-requests the endpoint.
+      if (bytes.byteLength > (ref?.byteLength ?? bytes.byteLength)) {
+        throw invalidRequest('blob exceeds its byteLength');
+      }
+      if ((await computeBlobId(bytes)) !== blobId) {
+        throw invalidRequest('blob content address mismatch');
+      }
+      putCachedBlob(this.#db, blobId, bytes, this.#now());
+      this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      this.#enforceBlobCacheCap();
+      const stored = getCachedBlob(this.#db, blobId);
+      if (stored === undefined) {
+        throw invalidRequest('blob cache write failed');
+      }
+      return stored;
+    });
   }
 
   /** §5.9.7 B1: trim the blob cache to the configured cap (no-op if unset). */
@@ -3193,12 +3177,10 @@ export class SyncClient {
         if (resolved === undefined) {
           throw outcomeNotFound();
         }
-        this.#conflicts = this.#conflicts.filter(
-          (record) => record.clientCommitId !== input.clientCommitId,
-        );
-        this.#rejections = this.#rejections.filter(
-          (record) => record.clientCommitId !== input.clientCommitId,
-        );
+        const kept = (record: { readonly clientCommitId: string }) =>
+          record.clientCommitId !== input.clientCommitId;
+        this.#conflicts = this.#conflicts.filter(kept);
+        this.#rejections = this.#rejections.filter(kept);
         pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
         this.#replayOutbox(scope, false);
         for (const operation of current.operations ?? [])
@@ -3434,21 +3416,25 @@ export class SyncClient {
     const baseKey = windowBaseKey(base);
     const wanted = new Set(units);
     const live = loadWindowUnits(this.#db, baseKey);
-    // §7.8: a widen registers like `subscribe` and never waits for a
-    // running round.
-    for (const value of wanted) {
-      if (live.some((entry) => entry.value === value)) continue;
+    // §7.8: a widen registers its values like `subscribeMany`, in one
+    // transaction, and never waits for a running round.
+    const added = [...wanted].filter(
+      (value) => !live.some((entry) => entry.value === value),
+    );
+    if (added.length > 0) {
       this.#applyBatch((batch) => {
-        const { id, changed: registered } = this.#holdUnit(
-          windowUnitScopes(base, value),
-          false,
-        );
-        this.#db.exec(
-          `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
-          [baseKey, value, id],
-        );
-        this.#needsPull ||= registered;
-        batch.window(baseKey, value);
+        for (const value of added) {
+          const { id, changed: registered } = this.#holdUnit(
+            windowUnitScopes(base, value),
+            false,
+          );
+          this.#db.exec(
+            `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
+            [baseKey, value, id],
+          );
+          this.#needsPull ||= registered;
+          batch.window(baseKey, value);
+        }
         batch.status();
       });
       changed = true;
@@ -3818,9 +3804,7 @@ export class SyncClient {
         );
         for (const operation of operations) {
           if (operation.op !== 'upsert') continue;
-          const table = this.#schema.tables.get(operation.table);
-          if (table === undefined) continue;
-          for (const column of table.columns) {
+          for (const column of this.#table(operation.table).columns) {
             if (column.type !== 'blob_ref') continue;
             const raw = operation.values?.[column.name];
             if (typeof raw !== 'string') continue;
@@ -4227,13 +4211,6 @@ export class SyncClient {
     if (next.errorCode !== undefined) this.#discardPreviousVersion();
   }
 
-  /** The request-level lease error codes (§7.3.4): stop-and-surface. */
-  #isLeaseErrorCode(code: string): boolean {
-    return (
-      code === 'sync.auth_lease_required' || code === 'sync.auth_lease_revoked'
-    );
-  }
-
   /**
    * §7.4.4: encode every pending outbox commit with the current codec. A
    * commit that cannot re-encode under the new schema (an
@@ -4407,7 +4384,7 @@ export class SyncClient {
         kind,
         limit,
         size,
-        ...(clientCommitId !== undefined ? { clientCommitId } : {}),
+        clientCommitId,
       }),
     );
   }
@@ -4591,7 +4568,20 @@ export class SyncClient {
           this.#lastRound = {
             status: 'succeeded',
             ...round(),
-            counters: this.#diagnosticRoundCounters(summary),
+            counters: {
+              pushed: summary.pushed,
+              applied: summary.applied.length,
+              rejected: summary.rejected.length,
+              retryable: summary.retryable.length,
+              conflicts: summary.conflicts.length,
+              commitsApplied: summary.commitsApplied,
+              segmentRowsApplied: summary.segmentRowsApplied,
+              bootstrapping: summary.bootstrapping.length,
+              resets: summary.resets.length,
+              revoked: summary.revoked.length,
+              failed: summary.failed.length,
+              deferredCommits: summary.deferredCommits ?? 0,
+            },
           };
           this.#emitDiagnostics();
           return summary;
@@ -4659,23 +4649,6 @@ export class SyncClient {
         if (!this.#transportEnabled) this.disconnectRealtime();
         this.#endDiagnosticsDeferral();
       });
-  }
-
-  #diagnosticRoundCounters(summary: SyncSummary): DiagnosticRoundCounters {
-    return {
-      pushed: summary.pushed,
-      applied: summary.applied.length,
-      rejected: summary.rejected.length,
-      retryable: summary.retryable.length,
-      conflicts: summary.conflicts.length,
-      commitsApplied: summary.commitsApplied,
-      segmentRowsApplied: summary.segmentRowsApplied,
-      bootstrapping: summary.bootstrapping.length,
-      resets: summary.resets.length,
-      revoked: summary.revoked.length,
-      failed: summary.failed.length,
-      deferredCommits: summary.deferredCommits ?? 0,
-    };
   }
 
   #diagnosticCode(code: string): string {
@@ -4874,8 +4847,20 @@ export class SyncClient {
     } catch (caught) {
       // §1.5: a round that ended without a complete, decodable response is a
       // failure the server could not see — keep its code for the next request.
-      const unseen = this.#unseenRoundFailureCode(caught);
-      if (unseen !== undefined) this.#roundFailureCode = unseen;
+      // An undecodable/truncated body, a rejected fetch, a failed body read,
+      // or a socket round lost mid-flight; an HTTP-status rejection and an
+      // in-band `ERROR` frame were recorded by the server and stay
+      // unreported. The frame carries only codes matching its grammar; a
+      // code that does not match would turn the whole request into a decode
+      // error.
+      if (
+        (caught instanceof DecodeError ||
+          (caught instanceof ClientSyncError &&
+            caught.code === 'sync.transport_failed' &&
+            caught.details?.['causeKind'] !== 'status')) &&
+        isRoundFailureCode(caught.code)
+      )
+        this.#roundFailureCode = caught.code;
       // §7.8: a round the drive deadline aborted ends with the deadline's
       // error, whichever transport call observed the abort.
       const error: unknown = signal?.aborted ? signal.reason : caught;
@@ -4884,8 +4869,12 @@ export class SyncClient {
       // silent retry: the app drives recovery to a live resolver. The
       // error may arrive as a ClientSyncError or as a transport error
       // carrying the server's `.code` (HTTP-JSON / loopback surface, §1.1).
+      // The request-level lease error codes (§7.3.4).
       const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && this.#isLeaseErrorCode(code)) {
+      if (
+        code === 'sync.auth_lease_required' ||
+        code === 'sync.auth_lease_revoked'
+      ) {
         this.#setLeaseState({
           ...(this.#leaseState ?? {}),
           errorCode: code,
@@ -5016,7 +5005,7 @@ export class SyncClient {
       return {
         ...summary,
         ...(deferredCommits > 0 ? { deferredCommits } : {}),
-        ...(schemaFloor !== undefined ? { schemaFloor } : {}),
+        ...definedObject({ schemaFloor }),
         budgetExhausted,
       };
     };
@@ -5193,7 +5182,12 @@ export class SyncClient {
     if (this.#realtimePolicy === 'required') {
       // §8.8: the designated realtime path is down. Refuse the round; the
       // HTTP binding is not an alternative for a `required` client.
-      throw this.#realtimeUnavailableError();
+      this.#realtimeRetryDelayMs = this.#retryDelayMs;
+      throw new RealtimeUnavailableError(
+        this.#realtimeState,
+        this.#realtimeReasonCode,
+        this.#retryDelayMs,
+      );
     }
     return Promise.resolve()
       .then(() => this.#config.transport(request, signal))
@@ -5208,27 +5202,6 @@ export class SyncClient {
           causeKind: 'unknown',
         });
       });
-  }
-
-  /**
-   * §1.5: the code to report for a round that ended without a complete,
-   * decodable response — an undecodable/truncated body, a rejected fetch, a
-   * failed body read, or a socket round lost mid-flight. An HTTP-status
-   * rejection and an in-band `ERROR` frame were recorded by the server and
-   * stay unreported.
-   */
-  #unseenRoundFailureCode(error: unknown): string | undefined {
-    const code =
-      error instanceof DecodeError
-        ? error.code
-        : error instanceof ClientSyncError &&
-            error.code === 'sync.transport_failed' &&
-            error.details?.['causeKind'] !== 'status'
-          ? error.code
-          : undefined;
-    // §1.5: the frame carries only codes matching its grammar; a code that
-    // does not match would turn the whole request into a decode error.
-    return code !== undefined && isRoundFailureCode(code) ? code : undefined;
   }
 
   /** Abort the in-flight socket round (socket closed or disconnected). */
@@ -5258,15 +5231,6 @@ export class SyncClient {
       this.#realtimeRetryDelayMs = undefined;
     }
     this.#emitDiagnostics();
-  }
-
-  #realtimeUnavailableError(): RealtimeUnavailableError {
-    this.#realtimeRetryDelayMs = this.#retryDelayMs;
-    return new RealtimeUnavailableError(
-      this.#realtimeState,
-      this.#realtimeReasonCode,
-      this.#retryDelayMs,
-    );
   }
 
   connectRealtime(): Promise<void> {
@@ -5556,12 +5520,6 @@ export class SyncClient {
       this.#socket?.send(JSON.stringify({ type: 'ack', cursor }));
   }
 
-  /** §8.2: after a pull round, ack the replica cursor while it is `>= 0`. */
-  #ackAfterPull(): void {
-    const cursor = replicaCursor(this.#db);
-    if (this.#socket !== undefined && cursor >= 0) this.#sendAck(cursor);
-  }
-
   // -- response processing ------------------------------------------------------
 
   /**
@@ -5715,13 +5673,19 @@ export class SyncClient {
       prefetch();
     }
 
-    // Each durable observer transaction emits its own revisioned batch.
-    // Async decrypt/download work happens outside SQLite transactions.
-    this.#beginDiagnosticsDeferral();
-    try {
+    // §1.4 rule 4: the frames of unit sections run in coalesced apply
+    // transactions of at most 1,024 rows, each frame or block in its own
+    // savepoint with its own revision, published after the COMMIT; the host
+    // yields to local reads after each COMMIT. Every other frame runs outside
+    // one, and downloads, decryption, images and COMMIT frames are awaited
+    // outside any transaction.
+    const steps = function* (
+      this: SyncClient,
+    ): Generator<ApplyStep, void, unknown> {
       for (let index = 1; index < message.frames.length; index += 1) {
         const frame = message.frames[index];
         if (frame === undefined) break;
+        if (!/^(SUB|SEGMENT|UNIT)_/.test(frame.type)) yield -1;
         switch (frame.type) {
           case 'RESP_HEADER':
             break;
@@ -5871,14 +5835,16 @@ export class SyncClient {
               const pending = prefetched.get(frame);
               prefetched.delete(frame);
               if (pending !== undefined) reporting = frame;
+              const { scopes } = section.unit;
               try {
-                bytes = await (pending ??
+                bytes = (yield () =>
+                  pending ??
                   this.#downloadSegment(
                     frame,
-                    section.unit.scopes,
+                    scopes,
                     (bytesReceived) => this.#progress.update({ bytesReceived }),
                     signal,
-                  ));
+                  )) as Uint8Array;
               } catch (error) {
                 // §5.5: access changed since the response. The unit stays
                 // catching up with its cursor unpersisted, and the next
@@ -5907,7 +5873,7 @@ export class SyncClient {
                   0,
                 ),
               });
-            await this.#applySegmentOrFail(
+            yield* this.#applySegmentOrFail(
               section,
               summary,
               image?.table ?? segment!.table,
@@ -5921,27 +5887,27 @@ export class SyncClient {
                     ? image.rowCount > 0
                     : segment!.blocks.some((block) => block.length > 0),
                   resetEpoch,
-                  image !== undefined,
                 );
                 return image !== undefined
-                  ? applySqliteSegment(
-                      this.#db,
-                      this.#schema,
-                      table,
-                      bytes,
-                      image,
-                      {
-                        ...options,
-                        appliedRows,
-                        onChunk: (rows) =>
-                          recordAppliedRows(
-                            this.#db,
-                            unitId,
-                            image.segmentId,
-                            rows,
-                          ),
-                      },
-                    )
+                  ? () =>
+                      applySqliteSegment(
+                        this.#db,
+                        this.#schema,
+                        table,
+                        bytes,
+                        image,
+                        {
+                          ...options,
+                          appliedRows,
+                          onChunk: (rows) =>
+                            recordAppliedRows(
+                              this.#db,
+                              unitId,
+                              image.segmentId,
+                              rows,
+                            ),
+                        },
+                      )
                   : applyRowsSegment(
                       this.#db,
                       this.#schema,
@@ -6033,7 +5999,8 @@ export class SyncClient {
               );
             });
             if (changes.length > 0)
-              await this.#applyCommit({ ...frame, changes }, summary, mode);
+              yield () =>
+                this.#applyCommit({ ...frame, changes }, summary, mode);
             break;
           }
           case 'LIVE_END': {
@@ -6125,6 +6092,52 @@ export class SyncClient {
         }
         if (errorFrame !== undefined) break;
       }
+    }.call(this);
+    this.#beginDiagnosticsDeferral();
+    try {
+      for (let step = steps.next(); !step.done;) {
+        const work = step.value;
+        if (typeof work === 'function') {
+          try {
+            step = steps.next(await work());
+          } catch (error) {
+            step = steps.throw(error);
+          }
+        } else if (work < 0) step = steps.next();
+        else {
+          const held: (() => void)[] = (this.#held = []);
+          const rejections = this.#rejections.length;
+          let failure: { error: unknown } | undefined;
+          try {
+            failure = this.#db.transaction(() => {
+              try {
+                for (let rows = work; ;) {
+                  step = steps.next();
+                  const next = step.value;
+                  if (
+                    typeof next !== 'number' ||
+                    next < 0 ||
+                    (rows > 0 && rows + next > 1024)
+                  )
+                    return undefined;
+                  rows += next;
+                }
+              } catch (error) {
+                // §1.4 rule 5: the frames before the failing one commit.
+                return { error };
+              }
+            });
+          } catch (error) {
+            this.#rejections.length = rejections;
+            throw error;
+          } finally {
+            this.#held = undefined;
+          }
+          for (const publish of held) publish();
+          if (failure) throw failure.error;
+          await yieldToHost();
+        }
+      }
     } finally {
       this.#endDiagnosticsDeferral();
     }
@@ -6138,7 +6151,9 @@ export class SyncClient {
         this.#emitSyncNeeded('catchup-required');
       }
     } else {
-      this.#ackAfterPull();
+      // §8.2: after a pull round, ack the replica cursor while it is `>= 0`.
+      const cursor = replicaCursor(this.#db);
+      if (this.#socket !== undefined && cursor >= 0) this.#sendAck(cursor);
     }
 
     const catchingUp = loadUnits(this.#db)
@@ -6343,7 +6358,23 @@ export class SyncClient {
       this.#encryption,
       (fn) =>
         this.#applyBatch((batch) => {
-          this.#recordCommitChanges(batch, frame);
+          // Record before + after scope keys while the transaction is open.
+          for (const change of frame.changes) {
+            const tableName = frame.tables[change.tableIndex];
+            if (tableName === undefined) continue;
+            const table = this.#schema.tables.get(tableName);
+            if (table === undefined) continue;
+            let precise = this.#recordStoredRowScopes(
+              batch,
+              table,
+              change.rowId,
+            );
+            for (const variable of Object.keys(change.scopes)) {
+              if (table.scopePrefixByVariable.has(variable)) precise = true;
+            }
+            batch.changeScopes(table, change.scopes);
+            if (!precise) batch.table(tableName);
+          }
           const result = fn();
           this.#replayOutbox(result, false);
           for (const table of new Set(
@@ -6360,22 +6391,6 @@ export class SyncClient {
         }),
     );
     summary.commitsApplied += 1;
-  }
-
-  /** Record before + after scope keys while the commit transaction is open. */
-  #recordCommitChanges(batch: ChangeAccumulator, frame: CommitFrame): void {
-    for (const change of frame.changes) {
-      const tableName = frame.tables[change.tableIndex];
-      if (tableName === undefined) continue;
-      const table = this.#schema.tables.get(tableName);
-      if (table === undefined) continue;
-      let precise = this.#recordStoredRowScopes(batch, table, change.rowId);
-      for (const variable of Object.keys(change.scopes)) {
-        if (table.scopePrefixByVariable.has(variable)) precise = true;
-      }
-      batch.changeScopes(table, change.scopes);
-      if (!precise) batch.table(tableName);
-    }
   }
 
   /** Add the currently materialized row's scope keys; returns whether known. */
@@ -6430,7 +6445,6 @@ export class SyncClient {
     owners: () => readonly ScopeMap[],
     hasRows: boolean,
     resetEpoch: number,
-    image: boolean,
   ): Parameters<typeof applySqliteSegment>[5] {
     let writeMs = 0;
     let commitMs = 0;
@@ -6458,14 +6472,13 @@ export class SyncClient {
           written = performance.now();
           return result;
         });
-        // §7.7: image payloads report their import cost.
+        // §7.7: a payload reports its import cost.
         writeMs += written - started;
         commitMs += performance.now() - written;
-        if (image)
-          this.#progress.update({
-            importWriteMs: Math.round(writeMs),
-            importCommitMs: Math.round(commitMs),
-          });
+        this.#progress.update({
+          importWriteMs: Math.round(writeMs),
+          importCommitMs: Math.round(commitMs),
+        });
         return result;
       },
     };
@@ -6477,7 +6490,7 @@ export class SyncClient {
    * pair's scope first (§5.6). A fail-closed error (no local scope-column
    * mapping) marks the unit `failed` without failing the whole response.
    */
-  async #applySegmentOrFail(
+  *#applySegmentOrFail(
     section: OpenSection,
     summary: MutableSummary,
     tableName: string,
@@ -6486,8 +6499,8 @@ export class SyncClient {
       clearFirst: boolean,
       effective: ScopeMap,
       owners: () => readonly ScopeMap[],
-    ) => number | Promise<number>,
-  ): Promise<void> {
+    ) => Generator<ApplyStep, number, unknown> | (() => Promise<number>),
+  ): Generator<ApplyStep, void, unknown> {
     const { unit } = section;
     const table = this.#table(tableName);
     const effective = covers(table, unit.scopes)
@@ -6506,7 +6519,7 @@ export class SyncClient {
         unit.id,
       ]);
     try {
-      summary.segmentRowsApplied += await apply(
+      const work = apply(
         table,
         clearFirst,
         effective,
@@ -6519,6 +6532,8 @@ export class SyncClient {
               ? unitOwners(loadUnits(this.#db), table, unit.id)
               : []),
       );
+      summary.segmentRowsApplied +=
+        typeof work === 'function' ? ((yield work) as number) : yield* work;
       section.seeded.add(tableName);
     } catch (error) {
       if (
@@ -6597,7 +6612,7 @@ export class SyncClient {
         ),
         byteLength: frame.byteLength,
         onProgress,
-        ...(signal !== undefined ? { signal } : {}),
+        ...definedObject({ signal }),
       });
     }
     // §5.4: the descriptor's byteLength caps the body; §5.1: verify the
@@ -6870,26 +6885,6 @@ export class SyncClient {
     upsertLocalRow(this.#db, table, values, image.syncVersion);
   }
 
-  #legacyUndoOptimisticRows(
-    commit: OutboxCommit,
-    batch: ChangeAccumulator,
-  ): void {
-    for (const operation of commit.operations) {
-      if (operation.op !== 'upsert') continue;
-      const table = this.#schema.tables.get(operation.table);
-      if (table === undefined) continue;
-      const row = this.#rowById(
-        table,
-        operation.rowId,
-        `${quoteIdent(SYNC_VERSION_COLUMN)} AS v`,
-      );
-      if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
-        batch.table(table.name);
-        deleteLocalRow(this.#db, table, operation.rowId);
-      }
-    }
-  }
-
   #rollbackFailedCommit(
     commit: OutboxCommit,
     batch: ChangeAccumulator,
@@ -6912,7 +6907,21 @@ export class SyncClient {
     } else {
       // Pending commits written by older clients have no before-images.
       // Preserve the old fail-closed behavior rather than guessing a base.
-      this.#legacyUndoOptimisticRows(commit, batch);
+      for (const operation of commit.operations) {
+        if (operation.op !== 'upsert') continue;
+        const table = this.#schema.tables.get(operation.table);
+        if (
+          table !== undefined &&
+          this.#rowById(
+            table,
+            operation.rowId,
+            `${quoteIdent(SYNC_VERSION_COLUMN)} AS v`,
+          )?.v === OPTIMISTIC_VERSION
+        ) {
+          batch.table(table.name);
+          deleteLocalRow(this.#db, table, operation.rowId);
+        }
+      }
     }
     deleteOutboxCommit(this.#db, commit.clientCommitId);
 
@@ -7268,9 +7277,7 @@ export class SyncClient {
 
 function requireRowId(value: unknown): string {
   if (typeof value === 'string' && value.length > 0) return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+  if (Number.isSafeInteger(value) || typeof value === 'boolean')
     return String(value);
-  }
-  if (typeof value === 'boolean') return String(value);
   throw invalidRequest('a mutation requires a non-empty primary key');
 }

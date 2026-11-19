@@ -5,20 +5,25 @@
  * worker in headless Chromium. Each lane runs `--runs` times on a fresh
  * replica, without and with a retained failed row on the table. Prints one JSON object; no timing assertions.
  *
- *   bun run --cwd bench bench:apply-rows [--rows 10000] [--runs 3]
+ * The `plan` case ignores `--rows`: a plan-shaped round of 87 unit sections
+ * over 16 tables (2,799 rows) through a real `SyncClient`, reporting the
+ * round's transactions, change batches and (browser) SAH calls.
+ *
+ *   bun run --cwd bench bench:apply-rows [--rows 10000] [--runs 3] [--case plan]
  */
 import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright';
 import { BunClientDatabase } from '../../packages/web-client/src/bun-database';
-import { runApplyRows, runClientApply } from './apply-rows-fixture';
+import { runApplyRows, runClientApply, runPlan } from './apply-rows-fixture';
 
 const { values } = parseArgs({
   options: {
     rows: { type: 'string', default: '10000' },
     runs: { type: 'string', default: '3' },
     'skip-browser': { type: 'boolean', default: false },
+    case: { type: 'string' },
   },
 });
 const rows = Number(values.rows);
@@ -36,7 +41,7 @@ const report: Record<string, unknown> = {
 // The `client` cases run a real SyncClient over ten rows-segment references;
 // `sealed34` and `decrypted34` carry 17 encrypted columns, without and with
 // the key.
-const cases = {
+const allCases = {
   plain: { retained: false },
   retained: { retained: true },
   client12: {
@@ -57,7 +62,15 @@ const cases = {
   decrypted34: {
     client: { columns: 34, indexes: 1, segments: 10, encrypted: 17, key: true },
   },
+  plan: { plan: true },
 };
+const cases = Object.fromEntries(
+  Object.entries(allCases).filter(
+    ([name]) => values.case === undefined || name === values.case,
+  ),
+);
+if (Object.keys(cases).length === 0)
+  throw new Error(`unknown --case ${values.case}`);
 const bun: Record<string, unknown[]> = {};
 for (const [name, input] of Object.entries(cases))
   for (let run = 0; run < runs; run++) {
@@ -66,17 +79,19 @@ for (const [name, input] of Object.entries(cases))
     );
     try {
       (bun[name] ??= []).push(
-        'client' in input
-          ? await runClientApply(
-              database,
-              input.client.columns,
-              input.client.indexes,
-              rows,
-              input.client.segments,
-              input.client.encrypted,
-              input.client.key,
-            )
-          : await runApplyRows(database, rows, input.retained),
+        'plan' in input
+          ? await runPlan(database)
+          : 'client' in input
+            ? await runClientApply(
+                database,
+                input.client.columns,
+                input.client.indexes,
+                rows,
+                input.client.segments,
+                input.client.encrypted,
+                input.client.key,
+              )
+            : await runApplyRows(database, rows, input.retained),
       );
     } finally {
       database.close();

@@ -1,4 +1,4 @@
-import { DecryptError } from '@syncular/core';
+import { DecryptError, definedObject } from '@syncular/core';
 import type { RealtimeState } from './diagnostics';
 import { WORKER_FAILED_CODE, type WorkerErrorShape } from './worker-protocol';
 
@@ -273,12 +273,12 @@ export function toErrorShape(caught: unknown): WorkerErrorShape {
       error instanceof ClientSyncError || error instanceof DecryptError
         ? error.details
         : undefined;
-    return {
+    return definedObject({
       code: error.code,
       message: error.message,
       retryable: 'retryable' in error && error.retryable === true,
-      ...(details !== undefined ? { details } : {}),
-    };
+      details,
+    });
   }
   return {
     code: WORKER_FAILED_CODE,

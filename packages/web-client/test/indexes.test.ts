@@ -819,7 +819,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
   });
 });
 
-test('an image payload reports its import cost and the next payload starts without it', async () => {
+test('image and rows payloads report their import cost; the next payload starts without it', async () => {
   const digest = createHash('sha256')
     .update(JSON.stringify({ project_id: ['p1'] }))
     .digest('hex');
@@ -923,15 +923,14 @@ test('an image payload reports its import cost and the next payload starts witho
       importWriteMs: expect.any(Number),
       importCommitMs: expect.any(Number),
     });
-    const later = seen.slice(seen.indexOf(tasks.at(-1)!) + 1);
-    expect(later.some((progress) => progress.table === 'notes')).toBe(true);
-    expect(
-      later.every(
-        (progress) =>
-          progress.importWriteMs === undefined &&
-          progress.importCommitMs === undefined,
-      ),
-    ).toBe(true);
+    const notes = seen.filter((progress) => progress.table === 'notes');
+    expect(notes[0]?.importWriteMs).toBeUndefined();
+    expect(notes[0]?.importCommitMs).toBeUndefined();
+    expect(notes.at(-1)).toMatchObject({
+      rowsProcessed: 1,
+      importWriteMs: expect.any(Number),
+      importCommitMs: expect.any(Number),
+    });
   } finally {
     await client.close();
     database.close();

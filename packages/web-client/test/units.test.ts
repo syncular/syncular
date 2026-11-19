@@ -65,6 +65,24 @@ const P1 = { project_id: 'p1' };
 const P2 = { project_id: 'p2' };
 const ECHO = new Uint8Array(32).fill(7);
 
+/** Counts outermost transactions and the `tasks` rows each one committed. */
+class CountingDatabase extends BunClientDatabase {
+  readonly committed: number[] = [];
+  #depth = 0;
+  override transaction<T>(fn: () => T): T {
+    this.#depth += 1;
+    try {
+      return super.transaction(fn);
+    } finally {
+      this.#depth -= 1;
+      if (this.#depth === 0)
+        this.committed.push(
+          Number(this.query('SELECT count(*) AS n FROM tasks')[0]?.n),
+        );
+    }
+  }
+}
+
 /** Chained microtasks: lets settled promise chains run, never a timer. */
 async function settle(): Promise<void> {
   for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
@@ -762,7 +780,20 @@ describe('§4.8 windows as sets of units', () => {
     expect(ids('tasks')).toEqual(['t1']);
   });
 
-  test('a widen that fails at one value keeps the values before it; the same call converges', async () => {
+  test('a widen registers all its values in one transaction', async () => {
+    const db = new CountingDatabase();
+    const { client } = await scripted(db);
+    const base = { variable: 'project_id' };
+    const batches: bigint[] = [];
+    client.onChange((batch) => batches.push(batch.revision));
+    db.committed.length = 0;
+    await client.setWindow(base, ['p1', 'p2', 'p3', 'p4']);
+    expect(db.committed).toHaveLength(1);
+    expect(batches).toHaveLength(1);
+    expect(client.windowState(base).units).toEqual(['p1', 'p2', 'p3', 'p4']);
+  });
+
+  test('a widen that fails at one value registers none of them; the same call converges', async () => {
     const db = new BunClientDatabase();
     const { client } = await scripted(db);
     const base = { variable: 'project_id' };
@@ -773,11 +804,8 @@ describe('§4.8 windows as sets of units', () => {
     await expect(client.setWindow(base, values)).rejects.toThrow(
       'widen failed',
     );
-    expect(client.windowState(base).units).toEqual(['p1', 'p2']);
-    expect(client.units().map((unit) => unit.scopes.project_id)).toEqual([
-      'p1',
-      'p2',
-    ]);
+    expect(client.windowState(base).units).toEqual([]);
+    expect(client.units()).toEqual([]);
     db.exec('DROP TRIGGER fail_p3');
     await client.setWindow(base, values);
     expect(client.windowState(base).units).toEqual(values);
@@ -912,7 +940,9 @@ describe('§4.8 windows as sets of units', () => {
   });
 
   /** p2's bootstrap with one committed chunk per tasks block. */
-  const p2Chunks = () => [
+  // `size` rows per block: 1,024 puts each block in its own coalesced apply
+  // transaction (§1.4 rule 4).
+  const p2Chunks = (size = 1) => [
     start(unitId(P2), { bootstrap: true }),
     rows('notes'),
     {
@@ -921,9 +951,12 @@ describe('§4.8 windows as sets of units', () => {
         table: 'tasks',
         schemaVersion: 1,
         columns: TASKS,
-        blocks: ['a', 'b', 'c'].map((id) => [
-          { serverVersion: 1, values: [`t2${id}`, 'p2', id] },
-        ]),
+        blocks: ['a', 'b', 'c'].map((id) =>
+          Array.from({ length: size }, (_, i) => ({
+            serverVersion: 1,
+            values: [`t2${id}${i || ''}`, 'p2', id],
+          })),
+        ),
       }),
     },
     { type: 'SUB_END' as const, nextCursor: 3 },
@@ -949,7 +982,7 @@ describe('§4.8 windows as sets of units', () => {
           widened = chunks;
         });
     });
-    await round(...p2Chunks());
+    await round(...p2Chunks(1024));
     expect(chunks).toBe(3);
     // p1 finished its bootstrap before: the widen alone makes it complete.
     expect(widened).toBe(1);
@@ -984,6 +1017,78 @@ describe('§4.8 windows as sets of units', () => {
       pending: [],
     });
     expect(ids('tasks')).toEqual(['t2a', 't2b', 't2c']);
+  });
+});
+
+describe('§1.4 rule 4 coalesced apply transactions', () => {
+  const task = (unit: number, i: number) => [`t${unit}-${i}`, `p${unit}`, 'x'];
+  const page = (unit: number, from: number, count: number) =>
+    rows(
+      'tasks',
+      ...Array.from({ length: count }, (_, i) => task(unit, from + i)),
+    );
+
+  test('unit sections share transactions of at most 1,024 rows; every block and section end keeps its revision', async () => {
+    const db = new CountingDatabase();
+    const { client, round } = await scripted(db);
+    const units = Array.from({ length: 60 }, (_, unit) => ({
+      project_id: `p${unit}`,
+    }));
+    client.subscribeMany(units);
+    const batches: bigint[] = [];
+    client.onChange((batch) => batches.push(batch.revision));
+    db.committed.length = 0;
+    // 60 sections of two 11-row pages: 1,320 rows in 120 blocks.
+    await round(
+      ...units.flatMap((scopes, unit) =>
+        bootstrap(scopes, 3, [page(unit, 0, 11), page(unit, 11, 11)]),
+      ),
+      ...live(3),
+    );
+    // The round start, two coalesced transactions (the 94th block would pass
+    // 1,024 rows), then LIVE_END in its own.
+    expect(db.committed).toEqual([0, 1023, 1320, 1320]);
+    // Each of the 120 blocks and LIVE_END publishes its own revision, in
+    // order; a SUB_END of an explicit unit changes nothing observable.
+    expect(batches).toHaveLength(121);
+    expect(batches).toEqual([...batches].sort((a, b) => (a < b ? -1 : 1)));
+    expect(client.units().every((unit) => unit.cursor === undefined)).toBe(
+      true,
+    );
+  });
+
+  test('a block that would pass the bound starts after the earlier ones commit', async () => {
+    const db = new CountingDatabase();
+    const { client, round } = await scripted(db);
+    client.subscribe(P1);
+    db.committed.length = 0;
+    await round(
+      ...bootstrap(
+        P1,
+        3,
+        [0, 500, 1000, 1500, 2000].map((from) => page(1, from, 500)),
+      ),
+      ...live(3),
+    );
+    expect(db.committed).toEqual([0, 1000, 2000, 2500, 2500]);
+  });
+
+  test('a failing frame rolls back its own block; the blocks before it commit', async () => {
+    const db = new CountingDatabase();
+    const { client, round } = await scripted(db);
+    client.subscribe(P1);
+    db.exec(
+      "CREATE TRIGGER fail_t1 BEFORE INSERT ON tasks WHEN new.id='t1-30' BEGIN SELECT RAISE(ABORT,'block failed'); END",
+    );
+    db.committed.length = 0;
+    await expect(
+      round(
+        ...bootstrap(P1, 3, [page(1, 0, 10), page(1, 10, 10), page(1, 20, 20)]),
+        ...live(3),
+      ),
+    ).rejects.toThrow('block failed');
+    expect(db.committed).toEqual([0, 20]);
+    expect(client.units()[0]?.cursor).toBe(-1);
   });
 });
 
