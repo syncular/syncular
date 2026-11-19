@@ -31,16 +31,27 @@ export function schemaWindowOf(
       if (
         next === undefined ||
         table.columns.length > next.columns.length ||
+        // §6.12: a version may mark an existing column server-owned; the flag
+        // never reaches the wire.
         table.columns.some(
           (column, i) =>
-            JSON.stringify(column) !== JSON.stringify(next.columns[i]),
+            JSON.stringify({ ...column, serverOwned: undefined }) !==
+            JSON.stringify({ ...next.columns[i], serverOwned: undefined }),
         ) ||
         next.columns
           .slice(table.columns.length)
           .some((column) => !column.nullable) ||
         table.primaryKeyIndex !== next.primaryKeyIndex ||
+        // §6.12: a pattern over an appended server-owned column is new to the
+        // current version; an older client neither holds nor writes it.
         JSON.stringify(table.scopePatterns) !==
-          JSON.stringify(next.scopePatterns) ||
+          JSON.stringify(
+            next.scopePatterns.filter(
+              (pattern) =>
+                pattern.columnIndex < table.columns.length ||
+                !next.serverOwnedColumnIndices.includes(pattern.columnIndex),
+            ),
+          ) ||
         JSON.stringify(table.references) !== JSON.stringify(next.references)
       ) {
         throw new Error('sync.schema_window.incompatible_schema');

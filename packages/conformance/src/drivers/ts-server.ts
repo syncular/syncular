@@ -57,6 +57,7 @@ import {
   BunSqliteDatabase,
   SqliteServerStorage,
   SyncError,
+  type ServerColumnsRegistry,
   type SyncRequestContext,
   ValidationRejection,
   type Validator,
@@ -83,6 +84,7 @@ import type {
   ServerDriver,
   ServerInstance,
   ServerLimitsOptions,
+  ServerColumnsInstallSpec,
   ServerRowState,
   ValidatorInstallSpec,
 } from '../driver';
@@ -448,6 +450,8 @@ class TsServerInstance implements ServerInstance {
   #validators: ValidatorRegistry | undefined;
   /** §6.8: installed transaction-scoped whole-commit validator. */
   #commitValidator: CommitValidator | undefined;
+  /** §6.12: installed server column hooks (absent ⇒ feature off). */
+  #serverColumns: ServerColumnsRegistry | undefined;
   readonly #signedUrls: SegmentUrlConfig | undefined;
   #signedUrlTtlSeconds: number;
   /** §5.9.3/§5.9.5 blob-presign toggle (default off; scenarios flip it). */
@@ -752,6 +756,9 @@ class TsServerInstance implements ServerInstance {
         : {}),
       ...(this.#commitValidator !== undefined
         ? { commitValidator: this.#commitValidator }
+        : {}),
+      ...(this.#serverColumns !== undefined
+        ? { serverColumns: this.#serverColumns }
         : {}),
       realtime: {
         notifyCommit: async (partition, commit) => {
@@ -1066,6 +1073,27 @@ class TsServerInstance implements ServerInstance {
       registry[spec.table] = compileValidatorRule(spec);
     }
     this.#validators = registry;
+  }
+
+  async installServerColumns(
+    specs: readonly ServerColumnsInstallSpec[],
+  ): Promise<void> {
+    this.#serverColumns =
+      specs.length === 0
+        ? undefined
+        : Object.fromEntries(
+            specs.map(({ table, actorLabel, scope }) => [
+              table,
+              ({ row, stored }, { actorId }) => ({
+                [actorLabel]: `actor:${actorId}`,
+                ...(stored === undefined
+                  ? {
+                      [scope.column]: `${scope.prefix}${String(row[scope.from])}`,
+                    }
+                  : {}),
+              }),
+            ]),
+          );
   }
 
   async installCommitValidator(
@@ -1497,6 +1525,7 @@ export const tsServerDriver: ServerDriver = {
     'leases',
     'validators',
     'commit-validators',
+    'server-columns',
     'backfill-checkpoints',
     'erasure',
     'local-authority',

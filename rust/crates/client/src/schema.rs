@@ -47,6 +47,10 @@ pub struct ColumnIr {
     /// §5.11: the app-side type of an encrypted column (`declaredType` in JSON).
     #[serde(default, rename = "declaredType")]
     pub declared_type: Option<String>,
+    /// §6.12: the server sets this column inside the push; a client never
+    /// authors it (`serverOwned` in JSON).
+    #[serde(default, rename = "serverOwned")]
+    pub server_owned: bool,
 }
 
 /// One local secondary index (the CREATE INDEX migration subset, §2.4).
@@ -126,6 +130,8 @@ pub struct TableSchema {
     pub fts_indexes: Vec<FtsIndexSchema>,
     /// §5.11: encrypted columns (index + declared type). Empty ⇒ no E2EE.
     pub encrypted_columns: Vec<EncryptedColumn>,
+    /// §6.12: indices of server-owned columns. Empty ⇒ every column is authored.
+    pub server_owned_columns: Vec<usize>,
     /// §7.4.3: a schema bump keeps the table while this equals the persisted one.
     pub generation: Option<String>,
 }
@@ -226,7 +232,12 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
         let mut wire_columns = Vec::with_capacity(table.columns.len());
         let mut columns = Vec::with_capacity(table.columns.len());
         let mut encrypted_columns = Vec::new();
+        let mut server_owned_columns = Vec::new();
         for (index, column) in table.columns.iter().enumerate() {
+            // §6.12: typegen and the servers refuse an ineligible column.
+            if column.server_owned {
+                server_owned_columns.push(index);
+            }
             let wire_ty = parse_column_type(&column.column_type)?;
             wire_columns.push(Column {
                 name: column.name.clone(),
@@ -400,6 +411,7 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
             indexes,
             fts_indexes,
             encrypted_columns,
+            server_owned_columns,
         });
     }
     Ok(ClientSchema {
@@ -479,6 +491,25 @@ mod tests {
         out_of_range["schemaVersion"] = json!(0);
         let error = parse_schema_json(&out_of_range).expect_err("out-of-range alias");
         assert!(error.starts_with("sync.invalid_request:"), "{error}");
+    }
+
+    #[test]
+    fn compiles_server_owned_column_indices() {
+        let compiled = parse_schema_json(&json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": true },
+                    { "name": "stamp", "type": "string", "nullable": true, "serverOwned": true }
+                ],
+                "scopes": []
+            }]
+        }))
+        .expect("compiles");
+        assert_eq!(compiled.tables[0].server_owned_columns, vec![2]);
     }
 
     #[test]

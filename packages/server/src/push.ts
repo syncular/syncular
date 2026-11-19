@@ -71,6 +71,7 @@ import type {
   CommitValidationRow,
   CommitValidator,
   ValidateCommitOperation,
+  ServerColumnsRegistry,
   ValidateOpKind,
   ValidatorRegistry,
 } from './validate';
@@ -289,6 +290,88 @@ async function runValidator(
 }
 
 /**
+ * §6.12: complete an accepted upsert with the table's server column hook.
+ * The returned values land in `values` and are marked present, so their
+ * column versions advance. A `ValidationRejection` keeps its host code; any
+ * other failure (an undeclared key, a value the column's type refuses, a
+ * changed scope column on an update) is `sync.constraint_violation`.
+ */
+async function runServerColumns(
+  hooks: ServerColumnsRegistry | undefined,
+  tx: StorageTransaction,
+  schema: CompiledSchema,
+  table: CompiledTable,
+  rowId: string,
+  values: RowValue[],
+  storedValues: readonly RowValue[] | undefined,
+  present: boolean[],
+  opIndex: number,
+  partition: string,
+  actorId: string,
+  context: string | undefined,
+): Promise<TerminatingOutcome | undefined> {
+  const hook = hooks?.[table.name];
+  if (hook === undefined) return undefined;
+  try {
+    const output = await hook(
+      {
+        table: table.name,
+        rowId,
+        row: toValidateRow(table.columns, values),
+        stored:
+          storedValues !== undefined
+            ? toValidateRow(table.columns, storedValues)
+            : undefined,
+      },
+      {
+        actorId,
+        partition,
+        ...(context !== undefined ? { context } : {}),
+        read: commitValidationReader(tx, schema),
+      },
+    );
+    for (const [name, value] of Object.entries(output)) {
+      const index = table.columnIndex.get(name);
+      if (
+        index === undefined ||
+        !table.serverOwnedColumnIndices.includes(index)
+      ) {
+        throw new Error(
+          'server column hook returned a column that is not server-owned',
+        );
+      }
+      // The column's own codec refuses a value of the wrong type.
+      encodeRow([table.columns[index]!], [value]);
+      if (
+        storedValues !== undefined &&
+        table.scopePatterns.some((pattern) => pattern.columnIndex === index) &&
+        value !== (storedValues[index] ?? null)
+      ) {
+        throw new Error('server column hook changed a scope column on update');
+      }
+      values[index] = value;
+      present[index] = true;
+    }
+  } catch (error) {
+    if (error instanceof ValidationRejection) {
+      return errorRecord(
+        opIndex,
+        error.code,
+        error.message,
+        false,
+        error.details,
+      );
+    }
+    return errorRecord(
+      opIndex,
+      'sync.constraint_violation',
+      'server column hook failed',
+    );
+  }
+  return undefined;
+}
+
+/**
  * §5.10.3: merge the row's `crdt` columns in place. For each crdt column,
  * replace the incoming value with `merge(stored, incoming)` (§5.10.2) —
  * never the raw pushed bytes. `storedValues` is undefined on insert (the
@@ -352,6 +435,7 @@ async function applyOperation(
   blobCtx: BlobApplyContext,
   crdtMergers: CrdtMergerRegistry | undefined,
   validators: ValidatorRegistry | undefined,
+  serverColumns: ServerColumnsRegistry | undefined,
   partition: string,
   actorId: string,
   context: string | undefined,
@@ -699,6 +783,11 @@ async function applyOperation(
       `row payload failed row-codec decode (§1.7): ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  // §6.12: the server discards a pushed value of a server-owned column, so an
+  // older client that still writes one stays valid.
+  for (const index of table.serverOwnedColumnIndices) {
+    sparse[index] = stored === undefined ? null : undefined;
+  }
   const pkValue = renderScopeValue(sparse[table.primaryKeyIndex] ?? null);
   if (pkValue !== op.rowId) {
     return errorRecord(
@@ -808,6 +897,21 @@ async function applyOperation(
       crdtMergers,
     );
     if ('kind' in mergeOutcome) return mergeOutcome;
+    const serverReject = await runServerColumns(
+      serverColumns,
+      tx,
+      schema,
+      table,
+      op.rowId,
+      values,
+      storedValues,
+      present,
+      opIndex,
+      partition,
+      actorId,
+      context,
+    );
+    if (serverReject !== undefined) return serverReject;
     const newVersion = stored.serverVersion + 1;
     const nextVersions = new Map<number, number>();
     for (let i = 0; i < table.columns.length; i++) {
@@ -974,6 +1078,31 @@ async function applyOperation(
     crdtMergers,
   );
   if ('kind' in insertMerge) return insertMerge;
+  const serverReject = await runServerColumns(
+    serverColumns,
+    tx,
+    schema,
+    table,
+    op.rowId,
+    values,
+    undefined,
+    present,
+    opIndex,
+    partition,
+    actorId,
+    context,
+  );
+  if (serverReject !== undefined) return serverReject;
+  // §6.12: the stored scopes and the change-scope index take the hook's
+  // values, so the row reaches a server-set scope's units in this commit.
+  const scoped = storedScopesForRow(table, values);
+  if ('missing' in scoped) {
+    return errorRecord(
+      opIndex,
+      'sync.constraint_violation',
+      'server column hook failed',
+    );
+  }
   // The stored payload is the full-row codec (§2.4); every column is
   // present on an insert.
   const insertPayload = encodeRow(table.columns, values);
@@ -1012,7 +1141,7 @@ async function applyOperation(
   const newRow = {
     rowId: op.rowId,
     serverVersion,
-    scopes: insert.scopes,
+    scopes: scoped.scopes,
     payload: insertPayload,
   };
   await tx.upsertRow(op.table, newRow, { opIndex });
@@ -1024,7 +1153,7 @@ async function applyOperation(
         rowId: op.rowId,
         op: 'upsert',
         rowVersion: serverVersion,
-        scopes: insert.scopes,
+        scopes: scoped.scopes,
         payload: insertPayload,
       },
     ],
@@ -2114,6 +2243,7 @@ async function applyPushCommits(
             blobCtx,
             crdtMergers,
             validators,
+            ctx.serverColumns,
             partition,
             ctx.actorId,
             ctx.context,

@@ -66,6 +66,12 @@ export interface ManifestTable {
    * an unknown column) are enforced at generate time.
    */
   readonly encryptedColumns: readonly string[];
+  /**
+   * §6.12: columns the server sets inside the push transaction. The IR marks
+   * each `serverOwned`. Hard errors (unknown, pk, non-nullable, crdt or
+   * encrypted column) are enforced at generate time.
+   */
+  readonly serverColumns: readonly string[];
 }
 
 export interface ManifestSubscription {
@@ -290,7 +296,7 @@ function parseTable(value: unknown, index: number): ManifestTable {
   const obj = asObject(value, context);
   rejectUnknownKeys(
     obj,
-    ['name', 'scopes', 'extensions', 'encryptedColumns'],
+    ['name', 'scopes', 'extensions', 'encryptedColumns', 'serverColumns'],
     context,
   );
   const name = asString(obj.name, `${context}.name`);
@@ -315,6 +321,24 @@ function parseTable(value: unknown, index: number): ManifestTable {
       seen.add(col);
     }
   }
+  let serverColumns: string[] = [];
+  if (obj.serverColumns !== undefined) {
+    if (!Array.isArray(obj.serverColumns)) {
+      fail(`table ${name}: serverColumns must be an array of column names`);
+    }
+    serverColumns = obj.serverColumns.map((c, i) =>
+      asString(c, `table ${name} serverColumns[${i}]`),
+    );
+    const seen = new Set<string>();
+    for (const col of serverColumns) {
+      if (seen.has(col)) {
+        fail(
+          `table ${name}: duplicate serverColumns entry ${JSON.stringify(col)}`,
+        );
+      }
+      seen.add(col);
+    }
+  }
   return {
     name,
     scopes: obj.scopes.map((spec, i) =>
@@ -322,6 +346,7 @@ function parseTable(value: unknown, index: number): ManifestTable {
     ),
     extensions: parseExtensions(obj.extensions, `table ${name}`),
     encryptedColumns,
+    serverColumns,
   };
 }
 

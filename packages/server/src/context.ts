@@ -25,7 +25,11 @@ import type {
   ServerStorage,
   StoredCommit,
 } from './storage';
-import type { CommitValidator, ValidatorRegistry } from './validate';
+import type {
+  CommitValidator,
+  ServerColumnsRegistry,
+  ValidatorRegistry,
+} from './validate';
 
 /** SSP2 body content type (§1.1). */
 export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
@@ -192,6 +196,14 @@ export interface SyncServerConfig {
    * process, never on the wire.
    */
   readonly validators?: ValidatorRegistry;
+  /**
+   * §6.12 per-table server column hooks (`table` → hook). Each accepted
+   * upsert on a listed table runs its hook inside the push transaction,
+   * after §3.4 authorization and before §6.7 validation; the returned values
+   * of the table's server-owned columns are stored and fanned out in the
+   * same commit.
+   */
+  readonly serverColumns?: ServerColumnsRegistry;
   /**
    * §6.8 whole-commit validator. When present, the storage serializes this
    * partition before operation reads/writes, then invokes the callback once

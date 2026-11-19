@@ -49,6 +49,10 @@ struct ColumnIr {
     nullable: bool,
     #[serde(default, rename = "crdtType")]
     crdt_type: Option<String>,
+    #[serde(default)]
+    encrypted: bool,
+    #[serde(default, rename = "serverOwned")]
+    server_owned: bool,
 }
 
 /// `'prefix:{variable}'` shorthand (column = variable) or the object form.
@@ -132,6 +136,8 @@ pub(crate) struct Table {
     pub crdt: Vec<(usize, String)>,
     /// `blob_ref` columns (§5.9).
     pub blob_refs: Vec<usize>,
+    /// Server-owned columns (§6.12): a pushed value is discarded.
+    pub server_owned: Vec<usize>,
 }
 
 impl Table {
@@ -334,6 +340,27 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
                 table.name
             )));
         }
+        // §6.12: the owner write set never depends on a server-owned column.
+        let mut server_owned = Vec::new();
+        for (index, column) in table.columns.iter().enumerate() {
+            if !column.server_owned {
+                continue;
+            }
+            if index == pk
+                || !column.nullable
+                || columns[index].ty == ColumnType::Crdt
+                || column.encrypted
+                || scopes
+                    .iter()
+                    .any(|scope| scope.column == index && write_sets[0].contains(&scope.variable))
+            {
+                return Err(invalid(format!(
+                    "table {:?}: server-owned column {:?} must be nullable and outside the primary key, the owner write set, crdt and encryption (§6.12)",
+                    table.name, column.name
+                )));
+            }
+            server_owned.push(index);
+        }
         let mut indexes: Vec<Index> = Vec::with_capacity(table.indexes.len());
         for index in &table.indexes {
             if index.columns.is_empty()
@@ -388,6 +415,7 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
             referenced_by: Vec::new(),
             crdt,
             blob_refs,
+            server_owned,
         });
         on_deletes.push(deletes);
     }

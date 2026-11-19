@@ -16,9 +16,9 @@ import { join } from 'node:path';
 import { MULTI_TAB_PROTOCOL_VERSION } from '../src/multi-tab';
 
 const PINNED = {
-  protocol: 4,
+  protocol: 5,
   fingerprint:
-    '7133b53dc78ed43a081aeefe23b9dd5d56ef3075baaf0809b009f429a6540aa0',
+    'a4366497a1c460f1b0daeb792f15d2b317774af45b03ca3e554aa47bf94cf1bd',
 };
 
 const ROOTS = [

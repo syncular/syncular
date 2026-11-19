@@ -3502,3 +3502,99 @@ fn a_store_from_0_59_migrates_to_the_fresh_schema() {
     drop(authority);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn server_owned_columns_stay_out_of_the_key_the_owner_set_crdt_and_encryption() {
+    let open = |columns: Vec<Value>, extra: Value| {
+        let schema = json!({ "version": 1, "tables": [table("items", columns, extra)] });
+        LocalAuthority::open(":memory:", &schema)
+    };
+    let owned = |mut column: Value| {
+        column["serverOwned"] = json!(true);
+        column
+    };
+    let base = || {
+        vec![
+            column("id", "string", false),
+            column("org", "string", false),
+        ]
+    };
+    let with = |extra_column: Value| {
+        let mut columns = base();
+        columns.push(extra_column);
+        columns
+    };
+    open(with(owned(column("stamp", "string", true))), json!({})).expect("a nullable column");
+    // A scope column outside the owner write set may be server-owned.
+    open(
+        with(owned(column("team", "string", true))),
+        json!({
+            "scopes": [{ "pattern": "org:{org}" }, { "pattern": "team:{team}" }],
+            "writeScopeVariables": ["org"],
+        }),
+    )
+    .expect("a scope column outside the owner set");
+    let mut crdt = owned(column("body", "crdt", true));
+    crdt["crdtType"] = json!("yjs-doc");
+    let mut encrypted = owned(column("secret", "bytes", true));
+    encrypted["encrypted"] = json!(true);
+    encrypted["declaredType"] = json!("string");
+    let mut key = base();
+    key[0]["serverOwned"] = json!(true);
+    for (columns, extra) in [
+        (with(owned(column("stamp", "string", false))), json!({})),
+        (with(crdt), json!({})),
+        (with(encrypted), json!({})),
+        (key, json!({})),
+        (
+            vec![
+                column("id", "string", false),
+                owned(column("org", "string", true)),
+            ],
+            json!({}),
+        ),
+    ] {
+        let error = open(columns, extra).err().expect("refused");
+        assert!(
+            error.details.unwrap().to_string().contains("(§6.12)"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn a_pushed_server_owned_value_is_discarded() {
+    let schema = json!({ "version": 1, "tables": [table(
+        "items",
+        vec![
+            column("id", "string", false),
+            column("org", "string", false),
+            column("stamp", "string", true),
+        ],
+        json!({}),
+    )] });
+    let mut authority = LocalAuthority::open(":memory:", &schema).expect("open");
+    let client = Session::new(&mut authority, "c1");
+    let s = authority.schema.clone();
+    let row = |id, stamp| upsert(&s, "items", &[Some(id), Some("o1"), Some(stamp)], None);
+    // Stored before the column became server-owned.
+    let (status, ..) = client.push(&mut authority, "k1", vec![row("a", "kept")]);
+    assert_eq!(status, PushStatus::Applied);
+    authority.schema.tables[0].server_owned = vec![2];
+    let (status, ..) = client.push(
+        &mut authority,
+        "k2",
+        vec![row("a", "client"), row("b", "client")],
+    );
+    assert_eq!(status, PushStatus::Applied);
+    // Update: the value is absent, the stored one stays. Insert: NULL.
+    assert_eq!(
+        stored(&authority, "items", "a"),
+        Some((2, vec![text("a"), text("o1"), text("kept")]))
+    );
+    assert_eq!(
+        stored(&authority, "items", "b"),
+        Some((1, vec![text("b"), text("o1"), None]))
+    );
+}

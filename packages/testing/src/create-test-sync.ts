@@ -19,6 +19,7 @@ import type { ClientSchema } from '@syncular/client';
 import type {
   CommitValidator,
   ResolveScopes,
+  ServerColumnsRegistry,
   ValidatorRegistry,
 } from '@syncular/server';
 import {
@@ -56,6 +57,8 @@ export interface CreateTestSyncOptions {
   readonly validators?: ValidatorRegistry;
   /** Optional §6.8 whole-commit validator, executed by the real test server. */
   readonly commitValidator?: CommitValidator;
+  /** Optional §6.12 server column hooks, executed by the real test server. */
+  readonly serverColumns?: ServerColumnsRegistry;
   /** Epoch ms the shared virtual clock starts at (default 1_750_000_000_000). */
   readonly startMs?: number;
 }
@@ -106,6 +109,9 @@ export async function createTestSync(
       : {}),
     ...(options.commitValidator !== undefined
       ? { commitValidator: options.commitValidator }
+      : {}),
+    ...(options.serverColumns !== undefined
+      ? { serverColumns: options.serverColumns }
       : {}),
   });
 

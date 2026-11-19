@@ -1,5 +1,57 @@
 # Syncular release notes
 
+## 0.94.0 release notes
+
+0.94.0 lets the server set columns of a pushed row inside the push
+(SYNCULAR-PUSH-SERVER-COLUMNS-001). SSP2 and the wire version are unchanged;
+the multi-tab protocol is 5.
+
+### Server-owned columns
+
+A table's `serverColumns` in `syncular.json` lists columns only the server
+decides, such as an author's display label or a scope value derived from other
+rows. The IR marks them `serverOwned` (metadata, never on the wire). A
+`serverColumns` hook on the sync config, keyed by table, returns their values
+for every accepted upsert of a client push or a registered command. It runs
+inside the push transaction after scope authorization and before the row
+validators, and reads the commit's candidate state through the same reader the
+whole-commit validator receives. The server stores and fans out the completed
+row in the same commit. On an insert it takes the row's scopes from the
+completed row, so a row whose scope value the server sets reaches that scope's
+units in the same commit. On an update the hook may not change a server-owned
+scope column. A failing hook rejects the commit with `sync.constraint_violation`
+(`server column hook failed`); a `ValidationRejection` keeps its host code
+(SPEC §6.12).
+
+The server discards every pushed value of a server-owned column: NULL on an
+insert, unchanged on an update. Apps built before the column existed, or
+before it became server-owned, stay valid. A schema window (§9) now admits two
+changes without a floor: marking an existing column server-owned, and a scope
+pattern over an appended server-owned column. Both client cores refuse a
+server-owned column in mutation values with `sync.invalid_request`; the
+optimistic row holds NULL until the server row arrives. Persisted outbox
+commits that name such a column still send. The local authorities, TypeScript
+and Rust, discard pushed values the same way and have no hook. `@syncular/testkit`
+forwards `serverColumns` to its test server.
+
+The Rust client no longer keeps an acknowledged patch over the row a completed
+bootstrap imported when a §7.4.3 reset dropped the patch's base row in the
+same round; it now proves the pair from the intent or the imported row, as the
+TypeScript client does.
+
+Upgrade notes:
+
+- Upgrade the server before the clients whose schema declares
+  `serverColumns`. A 0.93.0 server stores whatever a client pushes for those
+  columns and runs no hook.
+- Generated TypeScript `<Table>Insert` and `<Table>Update` types omit
+  server-owned columns; the row type keeps them as nullable.
+- Multi-tab protocol 5: the first tab of this release makes a 0.92.0 or 0.93.0
+  leader with the same schema version step down. Reload the older tabs.
+- `typegen` refuses a server-owned column that is unknown, the primary key,
+  `NOT NULL`, a CRDT column or encrypted (`typegen.server_column_*`). The
+  server additionally refuses one in the owner write set at schema compile.
+
 ## 0.93.0 release notes
 
 0.93.0 stops incomplete live queries from re-reading after every import commit

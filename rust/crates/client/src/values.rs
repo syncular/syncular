@@ -200,7 +200,7 @@ pub fn normalize_values_casing(
         }
     }
     for key in values.keys() {
-        if !table.columns.iter().any(|column| column.name == *key) {
+        let Some(index) = table.columns.iter().position(|column| column.name == *key) else {
             if key.starts_with("_sync_") {
                 return Err(format!(
                     "sync.invalid_request: table {:?}: {:?} is an internal sync column and cannot appear in mutation values",
@@ -209,6 +209,12 @@ pub fn normalize_values_casing(
             }
             return Err(format!(
                 "sync.invalid_request: table {:?}: unknown column {:?} in mutation values (snake_case and camelCase keys are accepted)",
+                table.name, key
+            ));
+        };
+        if table.server_owned_columns.contains(&index) {
+            return Err(format!(
+                "sync.invalid_request: table {:?}: a server-owned column is not a mutation value (§6.12): {:?}",
                 table.name, key
             ));
         }
@@ -1001,6 +1007,7 @@ mod naming_tests {
                 index: 2,
                 declared_type: "string".to_owned(),
             }],
+            server_owned_columns: Vec::new(),
             generation: None,
         };
         let mut config = EncryptionConfig::default();
@@ -1055,6 +1062,7 @@ mod naming_tests {
             indexes: Vec::new(),
             fts_indexes: Vec::new(),
             encrypted_columns: Vec::new(),
+            server_owned_columns: Vec::new(),
             generation: None,
         }
     }
@@ -1112,6 +1120,23 @@ mod naming_tests {
         let internal = normalize_values_casing(&t, map(&[("id", "x"), ("_sync_version", "1")]))
             .expect_err("internal field");
         assert!(internal.contains("internal sync column"), "{internal}");
+    }
+
+    #[test]
+    fn a_server_owned_column_is_not_a_mutation_value() {
+        let mut t = table(&["id", "title", "approved_by"]);
+        t.server_owned_columns = vec![2];
+        for key in ["approved_by", "approvedBy"] {
+            let err = normalize_values_casing(&t, map(&[("id", "x"), (key, "v")]))
+                .expect_err("server-owned key refused");
+            assert!(
+                err.starts_with("sync.invalid_request:")
+                    && err.contains("a server-owned column is not a mutation value (§6.12)"),
+                "{err}"
+            );
+        }
+        normalize_values_casing(&t, map(&[("id", "x"), ("title", "v")]))
+            .expect("authored columns pass");
     }
 }
 
@@ -1175,6 +1200,7 @@ mod sparse_key_tests {
                 index: 2,
                 declared_type: "string".to_owned(),
             }],
+            server_owned_columns: Vec::new(),
             generation: None,
         }
     }

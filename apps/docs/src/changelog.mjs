@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'The server sets server-owned columns inside the push',
+    body: "A column listed in a table's `serverColumns` in `syncular.json` is server-owned: a `serverColumns` hook on the sync config sets it for every accepted upsert inside the push transaction, after scope authorization and before the validators, and can read the commit's candidate state. The row is stored and delivered with the server's values in the same commit, and on an insert its scopes are taken from them, so a row reaches the units of a server-set scope value at once. The server discards a pushed value of such a column, so apps built before the column existed or before it became server-owned keep pushing; a current client refuses the column in mutation values with `sync.invalid_request`. A schema window may mark an existing column server-owned and may add a scope pattern over an appended server-owned column without flooring older apps.",
+    links: [
+      {
+        href: '/guide-server/#server-owned-columns',
+        label: 'Server-owned columns',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'An incomplete live query waits for the import that completes it',
     body: "A live query whose last answer has incomplete coverage no longer reads again after every import transaction. While a round imports, it reads again when its pending units finish, when a local write changes its tables, when the import ends, and on `refresh()`; it shows `partial` until then. A production-size first load in an OPFS worker sent 225 such reads to the worker during one pull's import, and the next pull started 1.7 s later. Queries whose last answer was complete read after every change, as before.",
     links: [

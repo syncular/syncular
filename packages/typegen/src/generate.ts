@@ -119,6 +119,7 @@ function buildTable(
     readonly scopes: readonly ManifestScopeSpec[];
     readonly extensions: Readonly<Record<string, unknown>>;
     readonly encryptedColumns: readonly string[];
+    readonly serverColumns: readonly string[];
   },
   parsed: ParsedTable,
 ): IrTable {
@@ -134,10 +135,10 @@ function buildTable(
       );
     }
   }
-  const columns = applyEncryption(
+  const columns = applyServerColumns(
     parsed,
-    scopes,
-    manifestTable.encryptedColumns,
+    manifestTable.serverColumns,
+    applyEncryption(parsed, scopes, manifestTable.encryptedColumns),
   );
   return {
     name: parsed.name,
@@ -225,6 +226,58 @@ function applyEncryption(
       declaredType: column.type,
     };
   });
+}
+
+/**
+ * §6.12: mark each `serverColumns` entry `serverOwned`. Hard errors: unknown
+ * column, primary key, non-nullable column (a client's optimistic row holds
+ * NULL until the server row arrives), crdt column, encrypted column.
+ */
+function applyServerColumns(
+  parsed: ParsedTable,
+  serverColumns: readonly string[],
+  columns: readonly IrColumn[],
+): readonly IrColumn[] {
+  if (serverColumns.length === 0) return columns;
+  const owned = new Set(serverColumns);
+  for (const name of owned) {
+    const column = columns.find((c) => c.name === name);
+    const fail = (message: string, code: string): never => {
+      throw new TypegenError(MANIFEST_FILENAME, message, code, {
+        table: parsed.name,
+        column: name,
+      });
+    };
+    if (column === undefined) {
+      fail(
+        'serverColumns names an unknown column',
+        'typegen.server_column_unknown',
+      );
+    } else if (name === parsed.primaryKey) {
+      fail(
+        'the primary key cannot be a server column',
+        'typegen.server_column_primary_key',
+      );
+    } else if (column.type === 'crdt') {
+      fail(
+        'a crdt column cannot be a server column',
+        'typegen.server_column_crdt',
+      );
+    } else if (column.encrypted === true) {
+      fail(
+        'an encrypted column cannot be a server column',
+        'typegen.server_column_encrypted',
+      );
+    } else if (!column.nullable) {
+      fail(
+        'a server column must be nullable (§6.12)',
+        'typegen.server_column_not_null',
+      );
+    }
+  }
+  return columns.map((column) =>
+    owned.has(column.name) ? { ...column, serverOwned: true } : column,
+  );
 }
 
 /**

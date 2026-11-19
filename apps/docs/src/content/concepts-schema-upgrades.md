@@ -138,7 +138,7 @@ The server keeps N-version codec support for transition windows if it chooses. W
 
 Storage, authorization, validators, and the writer fence use the current schema. Old clients push with their own codec. Their pulls, conflict rows, segments, and realtime deltas contain only columns their codec knows. New nullable columns are null on old inserts and stay unchanged on old patches.
 
-The window permits added tables and appended nullable columns. It rejects removed or renamed columns and changed codecs, primary keys, references, and scope patterns before serving. The host must also exclude older clients across semantic changes that these structural checks cannot detect. A client outside the window receives a floor naming its oldest version and the latest server version.
+The window permits added tables and appended nullable columns. It rejects removed or renamed columns and changed codecs, primary keys, references, and scope patterns before serving. Two changes keep older clients in the window: marking an existing column server-owned, and a scope pattern over an appended [server-owned column](/guide-server/#server-owned-columns), because an older client never holds or writes that column. The host must also exclude older clients across semantic changes that these structural checks cannot detect. A client outside the window receives a floor naming its oldest version and the latest server version.
 
 ## Advanced: previous-version context
 

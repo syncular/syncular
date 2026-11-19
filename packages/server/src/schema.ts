@@ -154,6 +154,9 @@ export interface CompiledTable {
    * image copies ciphertext wholesale with no per-row decrypt pass, so an
    * encrypted table MUST be served via the rows lane. Empty ⇒ no restriction. */
   readonly encryptedColumnIndices: readonly number[];
+  /** §6.12: column indices marked `serverOwned`. Empty ⇒ no server column
+   * hook output is accepted for the table. */
+  readonly serverOwnedColumnIndices: readonly number[];
 }
 
 export interface CompiledSchema {
@@ -381,6 +384,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     const blobRefColumnIndices: number[] = [];
     const crdtColumns: { index: number; crdtType: string }[] = [];
     const encryptedColumnIndices: number[] = [];
+    const serverOwnedColumnIndices: number[] = [];
     const references: CompiledReference[] = [];
     for (const reference of table.references ?? []) {
       const index = columnIndex.get(reference.column);
@@ -400,6 +404,26 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
       // §5.11: an encrypted column carries wire type `bytes` + `encrypted`.
       if (column.encrypted === true) encryptedColumnIndices.push(index);
+      // §6.12: the hook never changes who may write the row (owner set), and
+      // a client's optimistic row holds NULL until the server row arrives.
+      if (column.serverOwned === true) {
+        if (
+          index === primaryKeyIndex ||
+          !column.nullable ||
+          column.type === 'crdt' ||
+          column.encrypted === true ||
+          scopePatterns.some(
+            (pattern) =>
+              pattern.columnIndex === index &&
+              writeScopeSets[0]!.includes(pattern.variable),
+          )
+        ) {
+          throw new Error(
+            `table ${table.name}: server-owned column ${JSON.stringify(column.name)} must be nullable and outside the primary key, the owner write set, crdt and encryption (§6.12)`,
+          );
+        }
+        serverOwnedColumnIndices.push(index);
+      }
       if (column.type === 'crdt') {
         // §5.10.1: a crdt column MUST name a crdtType (schema-compile-time
         // requirement — a crdt column without one is a server bug).
@@ -443,6 +467,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       blobRefColumnIndices,
       crdtColumns,
       encryptedColumnIndices,
+      serverOwnedColumnIndices,
     });
   }
   // §6.11: resolve incoming references and enforce the declaration rules the

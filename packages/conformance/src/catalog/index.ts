@@ -30,6 +30,7 @@ import { roundFailureScenarios } from './round-failure';
 import { sparseRowScenarios } from './sparse-rows';
 import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
+import { serverColumnScenarios } from './server-columns';
 import { signedUrlScenarios } from './signed-url';
 import { sqliteImageScenarios } from './sqlite-image';
 import { unitScenarios } from './units';
@@ -72,6 +73,7 @@ export const CATALOG: readonly Scenario[] = [
   ...windowScenarios,
   ...validatorScenarios,
   ...commitValidatorScenarios,
+  ...serverColumnScenarios,
   ...errorScenarios,
   ...vectorScenarios,
 ];

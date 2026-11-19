@@ -223,7 +223,7 @@ The re-render comes from the client's real invalidation path, the same one produ
 |---|---|
 | `partition`, `actorId` | The partition and actor the test server authenticates. |
 | `resolveScopes` | Host authorization. The default grants every scope. |
-| `validators`, `commitValidator` | Server write validators and the whole-commit validator. |
+| `validators`, `commitValidator`, `serverColumns` | Server write validators, the whole-commit validator and [server column hooks](/guide-server/#server-owned-columns). |
 | `startMs` | Where the virtual clock starts. |
 
 The returned `TestSync` exposes `clock`, `server`, `clients`, `client()`, `syncAll()`, and `dispose()`. `client(id, { profiler })` records the client's queries, rounds, units and writes for budget assertions ([Profiling your app](/tooling-profiler/#lock-the-numbers-in-tests)). The [testkit README](https://github.com/syncular/syncular/blob/main/packages/testing/README.md) lists the full `TestSync` and `TestClient` surface.

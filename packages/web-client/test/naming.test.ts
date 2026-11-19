@@ -122,3 +122,46 @@ describe('recordToRowValues — two-casing normalization', () => {
     expect(values).toEqual(['w1', null, 'v']);
   });
 });
+
+describe('server-owned columns (§6.12)', () => {
+  const events = compileClientSchema({
+    version: 1,
+    tables: [
+      {
+        name: 'events',
+        primaryKey: 'id',
+        columns: [
+          { name: 'id', type: 'string', nullable: false },
+          {
+            name: 'actor_label',
+            type: 'string',
+            nullable: true,
+            serverOwned: true,
+          },
+        ],
+        scopes: ['e:{id}'],
+      },
+    ],
+  }).tables.get('events');
+  if (events === undefined) throw new Error('unreachable');
+
+  test('an insert leaves the column NULL until the server row arrives', () => {
+    expect(recordToRowValues(events, { id: 'e1' })).toEqual(['e1', null]);
+  });
+
+  test('a mutation value for the column is refused in either casing', () => {
+    for (const key of ['actor_label', 'actorLabel']) {
+      let error: unknown;
+      try {
+        recordToRowValues(events, { id: 'e1', [key]: null });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({
+        code: 'sync.invalid_request',
+        message: 'a server-owned column is not a mutation value (§6.12)',
+        details: { table: 'events', column: 'actor_label' },
+      });
+    }
+  });
+});

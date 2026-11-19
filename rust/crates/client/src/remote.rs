@@ -903,6 +903,7 @@ mod tests {
                         nullable: false,
                         encrypted: false,
                         declared_type: None,
+                        server_owned: false,
                     },
                     ColumnIr {
                         name: "project_id".to_owned(),
@@ -910,6 +911,7 @@ mod tests {
                         nullable: false,
                         encrypted: false,
                         declared_type: None,
+                        server_owned: false,
                     },
                 ],
                 primary_key: "id".to_owned(),

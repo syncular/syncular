@@ -314,13 +314,22 @@ fn apply_operation(
             "upsert without payload",
         ));
     };
-    let Ok(sparse) = decode_sparse_row(&table.columns, table.pk, payload) else {
+    let Ok(mut sparse) = decode_sparse_row(&table.columns, table.pk, payload) else {
         return Err(error(
             op_index,
             "sync.invalid_request",
             "row payload failed row-codec decode (§1.7)",
         ));
     };
+    // §6.12: the authority discards a pushed value of a server-owned column,
+    // so an older client that still writes one stays valid.
+    for index in &table.server_owned {
+        sparse[*index] = if stored.is_none() {
+            SparseSlot::Null
+        } else {
+            SparseSlot::Absent
+        };
+    }
     let present: Vec<bool> = sparse
         .iter()
         .map(|slot| !matches!(slot, SparseSlot::Absent))

@@ -142,6 +142,8 @@ scope for that variable. The server rejects the write unless the variable is
 outside the table's owner write set
 ([NULL scope columns](/concepts-scopes/#null-scope-columns)).
 
+A table entry also takes `serverColumns`, the columns the server sets inside the push transaction. List a nullable column there when a client never authors its value, such as a server-assigned timestamp. The generated insert and update types omit it, the generated row type keeps it, and the client refuses it in a mutation. `syncular generate` fails with a `typegen.server_column_*` code when the column is unknown, the primary key, `NOT NULL`, a `CRDT` column, or an encrypted column. The server enforces the rest ([Server-owned columns](/guide-server/#server-owned-columns)).
+
 ::checkpoint[`syncular.json` names every table that `up.sql` creates.]
 ::::
 

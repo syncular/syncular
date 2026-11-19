@@ -215,6 +215,56 @@ export const localAuthorityScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'local-authority/discards-pushed-server-owned-values',
+    specRefs: ['§12.2', '§6.12', '§7.4.4'],
+    requires: ['local-authority'],
+    async run(ctx) {
+      const notes = (serverOwned: boolean, version: number): DriverSchema => ({
+        version,
+        tables: [
+          {
+            name: 'notes',
+            columns: [
+              { name: 'id', type: 'string', nullable: false },
+              { name: 'project_id', type: 'string', nullable: false },
+              { name: 'label', type: 'string', nullable: true, serverOwned },
+            ],
+            primaryKey: 'id',
+            scopes: [{ pattern: 'project:{project_id}' }],
+          },
+        ],
+      });
+      const authority = await ctx.newLocalAuthority(notes(false, 1));
+      const a = await localClient(ctx, authority, notes(false, 1));
+      const note = (id: string, label: string): DriverRow => ({
+        id,
+        project_id: 'p1',
+        label,
+      });
+      await a.api.mutate([
+        { op: 'upsert', table: 'notes', values: note('n1', 'written') },
+      ]);
+      await syncIdle(a);
+      // Queued while `label` is client-written, sent after it became
+      // server-owned: the outbox still encodes it and the authority discards it.
+      await a.api.mutate([
+        { op: 'upsert', table: 'notes', values: note('n2', 'queued') },
+        { op: 'patch', table: 'notes', values: note('n1', 'patched') },
+      ]);
+      await authority.restart(notes(true, 2));
+      await ctx.recreateClient(a, notes(true, 2));
+      await syncIdle(a);
+      checkEqual(await a.api.rejections(), [], 'the queued commit applies');
+      checkEqual(
+        (await authority.readRows('notes')).map((row) => row.values.label),
+        ['written', null],
+        'the authority keeps the stored value and inserts NULL',
+      );
+      await expectLocalConverged(authority, a, 'notes');
+    },
+  },
+
+  {
     name: 'local-authority/round-trip-applies-server-rules',
     specRefs: ['§12.1', '§12.2', '§6.11', 'B.24'],
     requires: ['local-authority'],

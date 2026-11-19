@@ -194,7 +194,10 @@ UI. Unknown members, free-form tokens, malformed paths, and over-limit data
 fail at construction. Diagnostic prose stays in `message`; apps should map
 the stable code/details to localized copy instead of displaying that message.
 
-Validators are per-operation. A validator must not mutate the row it receives.
+Validators are per-operation. A validator must not mutate the row it receives;
+a value only the server decides belongs in a server-owned column, which a
+`serverColumns` hook sets before the validator runs
+([Server-owned columns](https://syncular.dev/guide-server/#server-owned-columns)).
 
 A validator that decides from other rows (a membership, a role, a grant) calls
 `context.queryAuthoritative` with the request `storage.queryAuthoritative`

@@ -865,7 +865,14 @@ export function normalizeRecordKeys(
         `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values`,
       );
     }
-    const sqlName = (table.columns[index] as RowColumn).name;
+    const { name: sqlName, serverOwned } = table.columns[index] as RowColumn;
+    if (serverOwned) {
+      throw invalidRequest(
+        'a server-owned column is not a mutation value (§6.12)',
+        false,
+        { table: table.name, column: sqlName },
+      );
+    }
     if (normalized.has(sqlName)) {
       throw invalidRequest(
         `table ${table.name}: column ${JSON.stringify(sqlName)} appears twice in mutation values`,

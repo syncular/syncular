@@ -462,3 +462,116 @@ fn a_registration_change_during_the_drive_keeps_the_decision_pending() {
         CommitOutcomeStatus::Applied
     );
 }
+
+/// §6.12 `notes` with a nullable `label`, server-owned when `owned`.
+fn labeled(owned: bool, version: i32) -> Value {
+    json!({
+        "version": version,
+        "tables": [{
+            "name": "notes",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "list_id", "type": "string", "nullable": false },
+                { "name": "label", "type": "string", "nullable": true, "serverOwned": owned }
+            ],
+            "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+        }]
+    })
+}
+
+fn labels(client: &SyncClient) -> Vec<(i64, Value)> {
+    client
+        .read_rows("notes")
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.version, row.values["label"].clone()))
+        .collect()
+}
+
+fn write_label(client: &mut SyncClient, label: &str) {
+    client
+        .mutate(vec![Mutation::Upsert {
+            table: "notes".into(),
+            values: Map::from_iter([
+                ("id".into(), json!("n1")),
+                ("list_id".into(), json!("one")),
+                ("label".into(), json!(label)),
+            ]),
+            base_version: None,
+        }])
+        .unwrap();
+}
+
+/// §6.12: the server stores a value the client did not push (here an older
+/// client writes a column the server owns) and the delivered change
+/// replaces the acknowledged intent.
+#[test]
+fn the_mirror_takes_the_stored_row_over_the_pushed_values() {
+    let mut server = Server(LocalAuthority::open(":memory:", &labeled(true, 1)).unwrap());
+    let mut client =
+        SyncClient::new("old".into(), &labeled(false, 1), ClientLimits::default()).unwrap();
+    client
+        .subscribe(UnitScopes::from([("list_id".to_owned(), "one".to_owned())]))
+        .unwrap();
+    write_label(&mut client, "written");
+    idle(&mut client, &mut server);
+    assert_eq!(labels(&client), vec![(1, Value::Null)]);
+    client
+        .patch(
+            "notes",
+            "n1",
+            Map::from_iter([("label".to_owned(), json!("patched"))]),
+            None,
+        )
+        .unwrap();
+    idle(&mut client, &mut server);
+    assert_eq!(labels(&client), vec![(2, Value::Null)]);
+}
+
+/// §7.1, §7.4.4: a patch acknowledged after a schema-bump reset carries no
+/// scope column and has no base row to merge over; the completed bootstrap
+/// still covers it through the bootstrapped row.
+#[test]
+fn a_bootstrap_covers_a_patch_acknowledged_after_a_schema_bump_reset() {
+    let dir = std::env::temp_dir();
+    let id = uuid::Uuid::new_v4();
+    let server_path = dir.join(format!("syncular-owned-server-{id}.db"));
+    let client_path = dir.join(format!("syncular-owned-client-{id}.db"));
+    let open = |owned, version| {
+        let mut client = SyncClient::open_path(
+            "c".into(),
+            &labeled(owned, version),
+            ClientLimits::default(),
+            client_path.to_str().unwrap(),
+        )
+        .unwrap();
+        client
+            .subscribe(UnitScopes::from([("list_id".to_owned(), "one".to_owned())]))
+            .unwrap();
+        client
+    };
+    let mut server =
+        Server(LocalAuthority::open(server_path.to_str().unwrap(), &labeled(false, 1)).unwrap());
+    let mut client = open(false, 1);
+    write_label(&mut client, "written");
+    idle(&mut client, &mut server);
+    client
+        .patch(
+            "notes",
+            "n1",
+            Map::from_iter([("label".to_owned(), json!("patched"))]),
+            None,
+        )
+        .unwrap();
+    drop((client, server));
+    let mut server =
+        Server(LocalAuthority::open(server_path.to_str().unwrap(), &labeled(true, 2)).unwrap());
+    let mut client = open(true, 2);
+    idle(&mut client, &mut server);
+    assert_eq!(labels(&client), vec![(2, json!("written"))]);
+    drop((client, server));
+    for path in [server_path, client_path] {
+        let _ = std::fs::remove_file(path);
+    }
+}

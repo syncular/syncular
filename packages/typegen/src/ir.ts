@@ -40,6 +40,10 @@ export interface IrColumn {
   readonly encrypted?: boolean;
   /** §5.11: the app-side type of an encrypted column. Present iff `encrypted`. */
   readonly declaredType?: IrColumnType;
+  /** §6.12: the server sets this column inside the push transaction and a
+   * client never authors it. IR metadata only (never on the wire). Present
+   * only for server-owned columns, so other columns stay byte-identical. */
+  readonly serverOwned?: boolean;
 }
 
 /** §5.11: the app-side type of a column. An encrypted column rides the wire
@@ -199,6 +203,7 @@ function serializeTableShape(
       ...(column.encrypted === true
         ? { encrypted: true, declaredType: column.declaredType }
         : {}),
+      ...(column.serverOwned === true ? { serverOwned: true } : {}),
     })),
     scopes,
     ...(table.references.length > 0

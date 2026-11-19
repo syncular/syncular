@@ -70,6 +70,7 @@ function emitRowInterfaces(table: IrTable, naming: NamingMode): string {
   lines.push(`/** Insert shape: nullable columns may be omitted. */`);
   lines.push(`export interface ${type}Insert {`);
   for (const column of table.columns) {
+    if (column.serverOwned === true) continue;
     const ts = TS_TYPE[appColumnType(column)];
     lines.push(
       column.nullable
@@ -84,6 +85,7 @@ function emitRowInterfaces(table: IrTable, naming: NamingMode): string {
   );
   lines.push(`export interface ${type}Update {`);
   for (const column of table.columns) {
+    if (column.serverOwned === true) continue;
     const ts = TS_TYPE[appColumnType(column)];
     if (column.name === table.primaryKey) {
       lines.push(`  ${key(column.name)}: ${ts};`);

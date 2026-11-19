@@ -10510,7 +10510,9 @@ impl SyncClient {
             return Ok(batch);
         }
         // §7.1: a completed bootstrap covers acknowledged intent of its pairs
-        // at or below its pin.
+        // at or below its pin. The intent or the bootstrapped row proves the
+        // pair: a patch omits its scope columns, and the base row it merged
+        // over may be gone (a §7.4.4 reset before the ACK).
         for table in self.schema.tables.clone() {
             let Some(effective) = covers(&table, &unit.scopes)
                 .then(|| pair_scopes(&unit.scopes, &table.name, Some(&echo)))
@@ -10533,7 +10535,19 @@ impl SyncClient {
                     row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 let values: Map<String, Value> =
                     serde_json::from_str(&intent).map_err(|_| "sync.local_corrupt".to_owned())?;
-                if owns_local_row(&table, &effective, &[], &values) {
+                let base = self.stored_row(&table, &id, true)?.map(|(row, _)| {
+                    table
+                        .columns
+                        .iter()
+                        .zip(&row)
+                        .map(|(column, value)| (column.name.clone(), column_value_to_json(value)))
+                        .collect()
+                });
+                if [Some(values), base]
+                    .iter()
+                    .flatten()
+                    .any(|values| owns_local_row(&table, &effective, &[], values))
+                {
                     covered.insert(id);
                 }
             }

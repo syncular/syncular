@@ -315,3 +315,35 @@ export function toValidateRow(
   });
   return row;
 }
+
+/** §6.12: the accepted upsert a server column hook completes. `row` is the
+ * merged row (present columns over stored values, crdt columns merged) with
+ * every server-owned column as stored, or NULL on an insert. */
+export interface ServerColumnsInput {
+  readonly table: string;
+  readonly rowId: string;
+  readonly row: ValidateRow;
+  readonly stored: ValidateRow | undefined;
+}
+
+export interface ServerColumnsContext {
+  readonly actorId: string;
+  readonly partition: string;
+  readonly context?: string;
+  /** The §6.8 candidate-state reader of the push transaction. */
+  readonly read: CommitValidationReader;
+}
+
+/**
+ * §6.12: returns values for the table's server-owned columns; a column it
+ * omits keeps its value in `row`. A key that names no server-owned column, a
+ * value the column's type refuses, or a changed scope column on an update
+ * rejects the commit with `sync.constraint_violation`, like any other throw
+ * that is not a {@link ValidationRejection}.
+ */
+export type ServerColumnsHook = (
+  input: ServerColumnsInput,
+  ctx: ServerColumnsContext,
+) => ValidateRow | Promise<ValidateRow>;
+
+export type ServerColumnsRegistry = Readonly<Record<string, ServerColumnsHook>>;
