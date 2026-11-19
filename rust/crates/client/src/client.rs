@@ -5613,23 +5613,28 @@ impl SyncClient {
         let base_key = window_base_key(base);
         let live = self.load_window_units(&base_key)?;
         let mut changed = false;
-        for value in units {
-            if live.iter().any(|(held, _)| held == value) {
-                continue;
-            }
+        // §7.8: the added values register in one transaction.
+        let added: Vec<&String> = units
+            .iter()
+            .filter(|value| !live.iter().any(|(held, _)| held == *value))
+            .collect();
+        if !added.is_empty() {
             let rollback = self.capture();
             self.begin_observation("syncular_window")?;
             let widened = (|| {
-                let (id, registered) = self.hold_unit(window_unit_scopes(base, value), false)?;
-                self.sync_needed |= registered;
-                self.conn
-                    .execute(
-                        "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
-                        rusqlite::params![base_key, value, id],
-                    )
-                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 let mut batch = ChangeAccumulator::default();
-                batch.window(&base_key, value);
+                for value in &added {
+                    let (id, registered) =
+                        self.hold_unit(window_unit_scopes(base, value), false)?;
+                    self.sync_needed |= registered;
+                    self.conn
+                        .execute(
+                            "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
+                            rusqlite::params![base_key, value, id],
+                        )
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+                    batch.window(&base_key, value);
+                }
                 batch.status = true;
                 self.finish_observation("syncular_window", batch)
             })();
@@ -10919,6 +10924,7 @@ impl SyncClient {
             }));
         }
         let mut applied = 0u32;
+        let (mut write, mut commit) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
         let empty = Vec::new();
         let blocks = if segment.blocks.is_empty() {
             std::slice::from_ref(&empty)
@@ -10940,6 +10946,7 @@ impl SyncClient {
             self.coalesce_unit(block.len())
                 .and_then(|()| self.begin_observation("syncular_segment_block"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let started = std::time::Instant::now();
             let outcome = (|| {
                 self.rebuild_overlay_if_dirty()
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -10996,17 +11003,28 @@ impl SyncClient {
                 }
                 self.reconcile_import(table, &mut changed_keys, protected, reconcile_pending)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+                let written = std::time::Instant::now();
                 self.finish_observation("syncular_segment_block", batch)
+                    .map(|()| written)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
             })();
-            if let Err(error) = outcome {
-                self.rollback_observation("syncular_segment_block");
-                self.restore(rollback);
-                return Err(error);
-            }
+            let written = match outcome {
+                Ok(written) => written,
+                Err(error) => {
+                    self.rollback_observation("syncular_segment_block");
+                    self.restore(rollback);
+                    return Err(error);
+                }
+            };
+            // §7.7: a payload reports its import cost.
+            write += written - started;
+            commit += written.elapsed();
             applied += block.len() as u32;
-            self.progress
-                .update(|p| p.rows_processed = u64::from(applied));
+            self.progress.update(|p| {
+                p.rows_processed = u64::from(applied);
+                p.import_write_ms = u64::try_from(write.as_millis()).ok();
+                p.import_commit_ms = u64::try_from(commit.as_millis()).ok();
+            });
             std::thread::yield_now();
         }
         self.progress

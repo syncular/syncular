@@ -383,6 +383,35 @@ per key array and decrypts the rows of a block concurrently; the first failing
 row in block order still decides the error. A decrypted row costs one
 WebCrypto call per non-null encrypted value, which bounds the decrypted case.
 
+### A round of many small unit sections
+
+In the OPFS worker a transaction costs about 25 sync-access-handle writes, 8
+reads and 7 size calls, about 120 µs each whatever their size, so a round of
+many small sections pays for its transactions, not its rows. The `plan` case
+reproduces such a round from a web app: a fresh replica claims 87 window values
+of one base in one `setWindow` call, then one response delivers 87 bootstrap
+sections over 16 tables, three inline rows segments of 9 rows per section, plus
+two segment references of 225 rows: 2,799 rows. The client runs the blocks and
+section ends of consecutive sections in coalesced apply transactions of at most
+1,024 rows ([SPEC §1.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#14-streaming-contract))
+and lets local reads run after each commit; 0.91.0 committed every block and
+every section end on its own. Same machine, three runs on fresh replicas:
+
+| Replica | Measure | 0.91.0 | Now |
+|---|---|---:|---:|
+| OPFS worker | round | 1,058 to 1,745 ms | 129 to 145 ms |
+| OPFS worker | rows per second | 1,600 to 2,600 | 19,000 to 22,000 |
+| OPFS worker | transactions in the round | 352 | 7 |
+| OPFS worker | sync-access-handle writes | 9,872 | 770 |
+| OPFS worker | time in sync-access-handle flushes | 755 to 1,388 ms | 17 to 19 ms |
+| Both | transactions of the `setWindow` call | 87 | 1 |
+| Bun file | rows per second | 27,000 to 33,000 | 30,000 to 54,000 |
+
+Every block still publishes its own change batch (351 in both versions); the
+batches of one coalesced transaction arrive after its commit, and a query whose
+read is running reads again only when its snapshot predates the newest batch.
+Reproduce with `bun run --cwd bench bench:apply-rows --case plan`.
+
 ## Table-scoped overlay reconciliation
 
 The debug-build probe measures one task's base write, acknowledgement, and

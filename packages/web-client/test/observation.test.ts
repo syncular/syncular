@@ -56,12 +56,20 @@ describe('revisioned local observation (SPEC §7.5)', () => {
                 table: 'tasks',
                 schemaVersion: 1,
                 columns: TASK_COLUMNS,
-                blocks: ['first', 'second'].map((id) => [
-                  {
+                // A full first block commits alone (§1.4 rule 4).
+                blocks: ['first', 'second'].map((id, block) =>
+                  Array.from({ length: 1024 - block * 1023 }, (_, i) => ({
                     serverVersion: 1,
-                    values: [id, 'p1', 'server', false, null, null],
-                  },
-                ]),
+                    values: [
+                      `${id}${i || ''}`,
+                      'p1',
+                      'server',
+                      false,
+                      null,
+                      null,
+                    ],
+                  })),
+                ),
               }),
             },
             { type: 'SUB_END', nextCursor: 1 },
@@ -91,7 +99,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       channel.port1.onmessage = () => {
         try {
           const snapshot = client.querySnapshot({
-            sql: 'SELECT id, title FROM tasks ORDER BY id',
+            sql: "SELECT id, title FROM tasks WHERE id IN ('first', 'second') ORDER BY id",
             coverage: [{ base: BASE, units: ['p1'] }],
           });
           expect(snapshot.rows).toEqual([
@@ -115,7 +123,11 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       await client.sync();
       await read;
       expect(queued).toBe(true);
-      expect(client.query('SELECT id, title FROM tasks ORDER BY id')).toEqual([
+      expect(
+        client.query(
+          "SELECT id, title FROM tasks WHERE id IN ('first', 'second') ORDER BY id",
+        ),
+      ).toEqual([
         { id: 'first', title: 'offline edit' },
         { id: 'second', title: 'server' },
       ]);

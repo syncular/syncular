@@ -16,7 +16,7 @@ import { ensureFailedOverlaySchema, RETAINED_ROWS } from './failed-overlay';
  * DDL, the generated row codec, mutation helpers, and the §3.3 purge
  * mapping (scope variable → local column).
  */
-import type { RowColumn, RowValue } from '@syncular/core';
+import { definedObject, type RowColumn, type RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { invalidRequest, localStateCorrupt } from './errors';
 import { snakeToCamel } from './naming';
@@ -250,9 +250,7 @@ export function compileClientSchema(
     }
     tables.set(table.name, {
       name: table.name,
-      ...(table.generation !== undefined
-        ? { generation: table.generation }
-        : {}),
+      ...definedObject({ generation: table.generation }),
       columns: table.columns,
       primaryKey: table.primaryKey,
       primaryKeyIndex,

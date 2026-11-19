@@ -488,6 +488,11 @@ a streaming reader needs:
    start, publishes none of its change batches, applies no further frame of
    the response, and fails the round with a storage error; the next pull
    re-delivers the window as under rule 5.
+   Both reference clients coalesce. The TypeScript client coalesces only
+   the frames of unit sections (`SUB_START` to `SUB_END`, rows blocks
+   included); every other frame runs in its own transaction, and it awaits
+   segment downloads, decryption, SQLite images and `COMMIT` frames after
+   the open coalesced transaction commits (§7.8).
 5. **Abort rule**: on a decode error, an in-band `ERROR` frame, or a
    truncated stream, the reader MUST abort the currently open section:
    roll back the *current in-progress* local transaction (the open
@@ -2703,7 +2708,8 @@ row together; it exists so segment-applied rows participate in §6.2
 
 Encoders SHOULD target blocks of ~1000 rows or ~256 KiB, whichever comes
 first. Blocks make the format streamable: a reader applies each block in
-one local transaction as it completes, holding only (header state +
+its own local transaction, or its own savepoint of a coalesced apply
+transaction (§1.4 rule 4), as it completes, holding only (header state +
 current partial block) in memory — this is the §1.4 requirement carried
 into segment application. The end marker (`rowCount = 0`) is mandatory;
 a segment that ends without it is truncated.
@@ -7307,17 +7313,19 @@ byte count. Both direct and signed-URL downloads follow this contract.
 `rowsProcessed` counts imported rows, with optional `rowsTotal`. Import reports
 intermediate updates every 1,024 rows and the final count. These are work counters:
 rows within the current chunk remain uncommitted until that chunk commits.
-Progress MUST NOT advance a cursor. Rows segments retain their
-per-block transactions; SQLite images commit in growing chunks (§5.3, §7.8).
-Earlier committed chunks survive a later interruption.
+Progress MUST NOT advance a cursor. Rows blocks commit in coalesced apply
+transactions (§1.4 rule 4); SQLite images commit in growing chunks (§5.3,
+§7.8). Earlier committed transactions survive a later interruption.
 
-A SQLite image payload's `import` progress carries `importWriteMs` and
-`importCommitMs` once its first chunk has committed: the whole milliseconds
-the payload's chunks spent before COMMIT (row statements, index maintenance,
-the first-page clear and replay of local writes) and in committing them and
-publishing their revisions. Each counter sums its chunks and resets with the
-payload. Index maintenance is part of the row statements, so no separate
-index time exists. Rows payloads omit both.
+A payload's `import` progress carries `importWriteMs` and
+`importCommitMs` once its first image chunk or rows block has committed:
+the whole milliseconds the payload's chunks or blocks spent before their
+COMMIT (row statements, index maintenance, the first-page clear and replay
+of local writes) and in committing them and publishing their revisions. A
+rows block inside a coalesced apply transaction commits by releasing its
+savepoint; the COMMIT of the coalesced transaction belongs to no payload.
+Each counter sums its chunks or blocks and resets with the payload. Index
+maintenance is part of the row statements, so no separate index time exists.
 
 `complete` is emitted only after the round has applied its section trailers
 and reconciled the optimistic read model. It means the round completed, not that
@@ -7377,9 +7385,10 @@ it by claiming it once and releasing the claim.
 
 A client core that yields to local reads during a sync round (the TypeScript
 client) MUST NOT hold a widening window change until the round ends. The widen
-registers its units the way `subscribe` does (§4.1), each value in its own
-transaction, so a claim that adds a unit whose bootstrap finished reads complete
-coverage before the import's next chunk. A shrink waits for the round, because
+registers its units the way `subscribeMany` does (§4.1), all added values of
+one call in one transaction, so a claim that adds a unit whose bootstrap
+finished reads complete coverage before the import's next transaction. A widen
+that fails registers none of its values. A shrink waits for the round, because
 eviction yields between its chunks (§4.8). A later change of the same base
 supersedes a shrink that has not started. The Rust client runs window changes on
 its serialized owner, which holds the whole round, so a native claim that widens
@@ -7397,8 +7406,25 @@ against 64 ms and 2 chunks. A query whose units the window already held was
 disk).
 
 The reference clients use the same automatic import behavior for rows segments
-and SQLite images. Each rows block or image chunk commits before the host yields
-to local reads. Pending optimistic edits MUST be reapplied before the chunk's
+and SQLite images. Rows blocks commit in coalesced apply transactions of at
+most 1,024 rows (§1.4 rule 4) and image chunks in their own transactions; the
+TypeScript client yields to local reads after each such COMMIT and never holds a
+transaction across an await.
+
+DECISION (2026-11-19): the TypeScript client coalesces rows blocks. A web app's
+plan round on 0.90.0 applied 2,800 rows in 87 sections of about 11-row blocks in
+1,055 ms (2,650 rows/s) in its OPFS worker: one transaction per block, per
+`SUB_END` and per claimed window value, each about 25 sync-access-handle
+writes, 8 reads and 7 size calls at about 120 µs per call whatever its size;
+those calls took 65 % of the round. `journal_mode=PERSIST` and 4 KiB pages did
+not help. `bench:apply-rows --case plan` reproduces the shape (87 sections over
+16 tables, 2,799 rows, one 87-value `setWindow`) in Chromium on an Apple M5 Pro:
+with coalesced apply transactions the round commits 7 transactions instead of
+352 and applies 19,000 to 22,000 rows/s instead of 1,600 to 2,600, and the
+widen commits 1 transaction instead of 87. Each block keeps its savepoint and
+its revision, so readers observe the same change batches in the same order;
+they observe them after the coalesced COMMIT. The Rust client already coalesced
+under rule 4 and is unchanged except that its widen also commits once. Pending optimistic edits MUST be reapplied before the chunk's
 revision becomes observable. A secondary unique index MUST NOT cause every import
 chunk to rebuild unrelated tables. The Rust reference client restores the chunk's
 rows and pending row identities from the authoritative local base, then replays

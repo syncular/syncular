@@ -64,6 +64,18 @@ export const sqliteImageScenarios: readonly Scenario[] = [
         limits: { limitSnapshotRows: 2, accept: ROWS_ONLY },
       });
       await control.api.subscribe(U1);
+      await syncOk(control);
+      // The first round's last payload is a rows segment.
+      const rowsProgress = await control.api.progressSnapshot?.();
+      if (rowsProgress !== undefined)
+        checkEqual(
+          [
+            typeof rowsProgress.importWriteMs,
+            typeof rowsProgress.importCommitMs,
+          ],
+          ['number', 'number'],
+          'a rows payload reports its write and commit time (§7.7)',
+        );
       await syncIdle(control);
 
       // Image lane: page limits that would take 3 pulls on the rows lane.
@@ -95,13 +107,6 @@ export const sqliteImageScenarios: readonly Scenario[] = [
           [typeof progress.importWriteMs, typeof progress.importCommitMs],
           ['number', 'number'],
           'the image payload reports its write and commit time (§7.7)',
-        );
-      const rowsProgress = await control.api.progressSnapshot?.();
-      if (rowsProgress !== undefined)
-        checkEqual(
-          [rowsProgress.importWriteMs, rowsProgress.importCommitMs],
-          [undefined, undefined],
-          'a rows payload reports no import time (§7.7)',
         );
       const pin = await ctx.server.getMaxCommitSeq();
       checkEqual(

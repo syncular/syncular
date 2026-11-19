@@ -5,6 +5,7 @@
  * protocol core conformance uses loopback.
  */
 import type { BlobTransport } from './blob';
+import { definedObject } from '@syncular/core';
 import { SSP2_CONTENT_TYPE } from './content-type';
 import { ClientSyncError, transportFailed } from './errors';
 import { hexToBytes } from './schema';
@@ -38,7 +39,7 @@ async function transfer<T>(
               : 'unknown';
     throw transportFailed(message, {
       causeKind,
-      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      ...definedObject({ httpStatus }),
     });
   }
 }
@@ -127,7 +128,7 @@ export function httpSyncTransport(
           ...hostHeaders(options),
         },
         body: request.slice().buffer as ArrayBuffer,
-        ...(signal !== undefined ? { signal } : {}),
+        ...definedObject({ signal }),
       }),
     );
     if (!response.ok) await throwHttpError(response);
@@ -326,7 +327,7 @@ export function httpSegmentDownloader(
           'X-Syncular-Scopes': request.requestedScopesJson,
           ...hostHeaders(options),
         },
-        ...(request.signal !== undefined ? { signal: request.signal } : {}),
+        ...definedObject({ signal: request.signal }),
       },
       request.onProgress,
       false,
@@ -338,14 +339,7 @@ export function httpSegmentDownloader(
     onProgress?: (bytesReceived: number) => void,
     signal?: AbortSignal,
     byteLength?: number,
-  ) =>
-    download(
-      url,
-      signal !== undefined ? { signal } : undefined,
-      onProgress,
-      true,
-      byteLength,
-    );
+  ) => download(url, signal && { signal }, onProgress, true, byteLength);
   return Object.assign(direct, { fetchUrl });
 }
 
@@ -372,7 +366,7 @@ export function httpBlobTransport(
             ...hostHeaders(options),
           },
           body: bytes.slice().buffer as ArrayBuffer,
-          ...(signal !== undefined ? { signal } : {}),
+          ...definedObject({ signal }),
         }),
       );
       if (!response.ok) await throwHttpError(response);
@@ -444,9 +438,9 @@ export function httpBlobTransport(
           },
           body: JSON.stringify({
             byteLength,
-            ...(mediaType !== undefined ? { mediaType } : {}),
+            mediaType,
           }),
-          ...(signal !== undefined ? { signal } : {}),
+          ...definedObject({ signal }),
         }),
       );
       if (!response.ok) await throwHttpError(response);
@@ -482,7 +476,7 @@ export function httpBlobTransport(
             'x-amz-checksum-sha256': checksum,
           },
           body,
-          ...(signal !== undefined ? { signal } : {}),
+          ...definedObject({ signal }),
         }),
       );
       if (!response.ok) {

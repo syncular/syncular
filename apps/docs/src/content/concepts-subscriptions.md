@@ -351,7 +351,7 @@ A round is one request and one response, over `POST /sync` or the
 </div>
 </div>
 </div>
-<div class="node"><span class="t">Then, on the client</span>Apply each block in its own transaction → advance the replica cursor → store commit outcomes → replay the remaining outbox on top</div>
+<div class="node"><span class="t">Then, on the client</span>Apply blocks in transactions of up to 1,024 rows → advance the replica cursor → store commit outcomes → replay the remaining outbox on top</div>
 
 ::caption[A response serves commits oldest first, bounded per response, and never splits one commit across two responses.]
 :::

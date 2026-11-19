@@ -23,7 +23,7 @@ import {
 import type { ServerSchema } from '@syncular/server';
 import { applyRowsSegment, applySqliteSegment } from '../src/apply';
 import { BunClientDatabase } from '../src/bun-database';
-import { makeClient, makeServer, PARTITION, tableRows } from './helpers';
+import { drive, makeClient, makeServer, PARTITION, tableRows } from './helpers';
 
 const SECRETS_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -835,35 +835,39 @@ describe('§5.11 rows-segment decrypt', () => {
       // Row s1 fails in WebCrypto after row s2 fails its type check; the
       // block reports s1, the first in block order.
       await expect(
+        drive(
+          applyRowsSegment(
+            db,
+            schema,
+            table,
+            segment([
+              ['s1', 'p1', await note(new Uint8Array(32).fill(0x99)), null],
+              ['s2', 'p1', 'not an envelope', null],
+            ]),
+            options,
+            { keyProvider: goodProvider },
+          ),
+        ),
+      ).rejects.toThrow('GCM authentication failed');
+      expect(tableRows(db, 'secrets')).toHaveLength(0);
+      await drive(
         applyRowsSegment(
           db,
           schema,
           table,
-          segment([
-            ['s1', 'p1', await note(new Uint8Array(32).fill(0x99)), null],
-            ['s2', 'p1', 'not an envelope', null],
-          ]),
+          segment(
+            await Promise.all(
+              ['s1', 's2', 's3'].map(async (id) => [
+                id,
+                'p1',
+                await note(KEY),
+                null,
+              ]),
+            ),
+          ),
           options,
           { keyProvider: goodProvider },
         ),
-      ).rejects.toThrow('GCM authentication failed');
-      expect(tableRows(db, 'secrets')).toHaveLength(0);
-      await applyRowsSegment(
-        db,
-        schema,
-        table,
-        segment(
-          await Promise.all(
-            ['s1', 's2', 's3'].map(async (id) => [
-              id,
-              'p1',
-              await note(KEY),
-              null,
-            ]),
-          ),
-        ),
-        options,
-        { keyProvider: goodProvider },
       );
       expect(
         db

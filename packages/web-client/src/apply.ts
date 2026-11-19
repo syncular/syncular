@@ -41,6 +41,14 @@ import {
 /** Lets the client wrap the physical write in its revision transaction. */
 export type ApplyTransaction = (fn: () => OverlayScope) => unknown;
 
+/**
+ * A step of a generator-driven apply (§1.4 rule 4): the row count of the
+ * block it writes next, a negative boundary before work that runs outside a
+ * coalesced apply transaction, or async work the driver awaits outside any
+ * transaction and whose result it passes back.
+ */
+export type ApplyStep = number | (() => Promise<unknown>);
+
 function upsertSql(table: CompiledClientTable): string {
   const names = [
     ...table.columns.map((column) => quoteIdent(column.name)),
@@ -601,13 +609,13 @@ export async function applySqliteSegment(
     if (count !== descriptor.rowCount)
       imageInvalid('image row count does not match descriptor');
     const names = table.columns.map((column) => quoteIdent(column.name));
-    const insertNames = [...names, quoteIdent(SYNC_VERSION_COLUMN)];
+    const version = quoteIdent(SYNC_VERSION_COLUMN);
+    const insertNames = [...names, version];
     const primaryKey = quoteIdent(table.primaryKey);
     const updates = insertNames
       .filter((name) => name !== primaryKey)
       .map((name) => `${name}=excluded.${name}`)
       .join(', ');
-    const version = quoteIdent(SYNC_VERSION_COLUMN);
     // A statement copies the `rows` rows after `from`; NULL keys cannot
     // hide between statements.
     const range = (from: SqlValue | undefined, rows: number) => {
@@ -677,7 +685,7 @@ export async function applySqliteSegment(
         );
         for (;;) {
           db.exec(
-            `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} AS image WHERE ${where} AND NOT EXISTS(SELECT 1 FROM ${quoteIdent(table.name)} AS held WHERE held.${primaryKey}=image.${primaryKey} AND held.${version}>=image._syncular_version) ON CONFLICT(${primaryKey})DO UPDATE SET ${updates}`,
+            `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${names.join(', ')}, "_syncular_version" FROM ${source} AS image WHERE ${where} AND NOT EXISTS(SELECT 1 FROM ${quoteIdent(table.name)} AS held WHERE held.${primaryKey}=image.${primaryKey} AND held.${version}>=image._syncular_version) ON CONFLICT(${primaryKey})DO UPDATE SET ${updates}`,
             params,
           );
           const copied = Number(
@@ -736,14 +744,17 @@ export async function applySqliteSegment(
 }
 
 /**
- * Apply a decoded rows segment: each block in one local transaction
+ * Apply a decoded rows segment: each block in its own transaction call
  * (§5.2/§1.4); `clearFirst` implements the §5.6 fresh-bootstrap first-page
- * delete inside the first block's transaction. Each row record carries its
+ * delete inside the first block's. Each row record carries its
  * `serverVersion` (§5.2), which lands in `_sync_version` exactly like a
  * `COMMIT` change's `rowVersion` (§5.6) — bootstrapped rows seed §6.2
- * `baseVersion` conflict detection immediately.
+ * `baseVersion` conflict detection immediately. The generator yields each
+ * block's row count before its write, so the caller can commit and yield to
+ * local reads there (§1.4 rule 4), and yields the async decryption as a step
+ * the caller awaits outside any transaction.
  */
-export async function applyRowsSegment(
+export function* applyRowsSegment(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   table: CompiledClientTable,
@@ -759,41 +770,47 @@ export async function applyRowsSegment(
     readonly isCurrent?: () => boolean;
   },
   encryption?: EncryptionConfig,
-): Promise<number> {
+): Generator<ApplyStep, number, unknown> {
   validateSegmentColumns(schema, table, segment);
   let applied = 0;
   let first = true;
-  const blocks: readonly (readonly SegmentRow[])[] =
+  type Row = SegmentRow & { readonly sealed?: SealedRow | undefined };
+  let blocks: readonly (readonly Row[])[] =
     segment.blocks.length > 0 ? segment.blocks : [[]];
-  for (const block of blocks) {
-    if (options.isCurrent?.() === false) break;
-    // §5.11: decrypt this block's rows before opening the sync transaction
-    // (WebCrypto is async; the SQLite transaction is not). Decrypt failure
-    // aborts before any write in this block.
-    // The rows decrypt concurrently; the first failing row in block order
-    // decides the error.
-    let rows: readonly {
-      values: readonly RowValue[];
-      serverVersion: number;
-      sealed?: SealedRow | undefined;
-    }[] = block;
-    if (table.hasEncryptedColumns) {
+  // §5.11: decrypt the segment's rows before any write (WebCrypto is async;
+  // the SQLite transaction is not). The rows decrypt concurrently; the first
+  // failing row in segment order decides the error, before any block writes.
+  if (table.hasEncryptedColumns)
+    blocks = (yield async () => {
       const { decryptOrSealRowValues } = await import('./encryption');
-      const settled = await Promise.allSettled(
-        block.map(async (row) => ({
-          ...(await decryptOrSealRowValues(encryption, table, row.values)),
-          serverVersion: row.serverVersion,
-        })),
+      return (
+        await Promise.all(
+          blocks.map((block) =>
+            Promise.allSettled(
+              block.map(async (row) => ({
+                ...(await decryptOrSealRowValues(
+                  encryption,
+                  table,
+                  row.values,
+                )),
+                serverVersion: row.serverVersion,
+              })),
+            ),
+          ),
+        )
+      ).map((block) =>
+        block.map((result) => {
+          if (result.status === 'rejected') throw result.reason;
+          return result.value;
+        }),
       );
-      rows = settled.map((result) => {
-        if (result.status === 'rejected') throw result.reason;
-        return result.value;
-      });
-    }
-    if (options.isCurrent?.() === false) break;
+    }) as readonly (readonly Row[])[];
+  for (const rows of blocks) {
     const clearThisBlock = first && options.clearFirst;
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
+    yield rows.length;
+    if (options.isCurrent?.() === false) break;
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
       const scope: OverlayScope = [
         ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
@@ -828,7 +845,6 @@ export async function applyRowsSegment(
       return rebaseScope(scope, kept, skipped);
     });
     options.onProgress?.(applied);
-    await yieldToHost();
   }
   options.onProgress?.(applied);
   return applied;

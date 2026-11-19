@@ -19,6 +19,7 @@ import {
   type PlainValue,
   type RowColumn,
   type RowValue,
+  definedObject,
 } from '@syncular/core';
 import { invalidRequest } from './errors';
 import type { CompiledClientTable } from './schema';
@@ -90,12 +91,10 @@ export function encryptionConfigFromKeyring(
     // and take the clean DecryptError path.
     keyProvider: (keyId) =>
       Object.hasOwn(keyring.keys, keyId) ? keyring.keys[keyId] : undefined,
-    ...(keyring.keyIdColumns !== undefined
-      ? { keyIdColumns: keyring.keyIdColumns }
-      : {}),
-    ...(keyring.missingKey !== undefined
-      ? { missingKey: keyring.missingKey }
-      : {}),
+    ...definedObject({
+      keyIdColumns: keyring.keyIdColumns,
+      missingKey: keyring.missingKey,
+    }),
   };
 }
 

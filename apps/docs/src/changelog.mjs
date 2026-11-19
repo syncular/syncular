@@ -28,6 +28,21 @@ export const changelog = [
   },
   {
     date: '2026-11-19',
+    title: 'A round of many small sections commits a few transactions',
+    body: "The TypeScript client committed every rows block and every section end of a bootstrap round in its own transaction, and `setWindow` one per added value. In the OPFS worker each commit costs about 40 sync-access-handle calls, so a web app's plan round of 87 small sections applied 2,650 rows per second. The client now runs the blocks and section ends of consecutive unit sections as savepoints of one transaction of at most 1,024 rows (SPEC §1.4 rule 4, which the Rust client already followed) and lets local reads run after each commit. The plan-shaped benchmark round commits 7 transactions instead of 352 and applies 19,000 to 22,000 rows per second instead of 1,600 to 2,600. `setWindow` registers all added values in one transaction; when it fails it now registers none of them. Rows payloads report `importWriteMs` and `importCommitMs` in progress like image payloads.",
+    links: [
+      {
+        href: '/benchmarks/#a-round-of-many-small-unit-sections',
+        label: 'A round of many small unit sections',
+      },
+      {
+        href: '/concepts-windowing/',
+        label: 'Windows',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Claims made in reaction to a round ride its confirming round',
     body: "A drive to idle sends one more round after a round that applied rows, to confirm idle, and it went out at once, so the units an app claims in reaction to those rows waited for the drive after it. With `coalesceMs` that confirming round now starts `coalesceMs` later and carries the claims made in between. `installSyncScheduler` and the worker `autoSync` loop pass their `coalesceMs`, the worker applies the handle's value to the realtime supervisor's catch-up drive, and `syncUntilIdle({ coalesceMs })` sets it on an app drive. Rounds that continue a bootstrap start at once.",
     links: [

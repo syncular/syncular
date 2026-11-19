@@ -600,7 +600,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       ),
     );
     if (rowChange && this.#claimError !== undefined) this.reclaim();
-    else this.#requestRead();
+    // A running read reads again only when its snapshot predates the batch.
+    else if (!this.#running) this.#requestRead();
   }
 
   #publish(next: LiveQueryResult<Row>): void {
@@ -743,9 +744,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     if (this.#running || this.#listeners.size === 0) return;
     const generation = this.#generation;
     this.#running = true;
+    let asked = this.#desiredRevision;
     try {
       do {
         this.#requested = false;
+        asked = this.#desiredRevision;
         if (localReadsBlocked(this.store.availabilitySnapshot())) break;
 
         if (generation !== this.#generation || this.#listeners.size === 0)
@@ -827,6 +830,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         this.#gate();
         return;
       }
+      // A batch that arrived during the failed read reads again.
+      if (this.#desiredRevision > asked) this.#requested = true;
       // SPEC §7.5: a failed latest read is never `ready`; the last
       // successful rows and revision stay available beside the error.
       this.#publish({

@@ -13,6 +13,7 @@ import {
   encodeRowsSegment,
   encryptValue,
   PROTOCOL_WIRE_VERSION,
+  type ResponseFrame,
   type RowsSegment,
   type RowValue,
   type SegmentRow,
@@ -119,10 +120,17 @@ export async function runApplyRows(
   const timed = async (version: number, clearFirst: boolean) => {
     const input = segment(rows, version);
     const started = performance.now();
-    const applied = await applyRowsSegment(db, schema, table, input, {
+    const steps = applyRowsSegment(db, schema, table, input, {
       ...options,
       clearFirst,
     });
+    let step = steps.next();
+    while (!step.done)
+      step =
+        typeof step.value === 'function'
+          ? steps.next(await step.value())
+          : steps.next();
+    const applied = step.value;
     const ms = performance.now() - started;
     if (applied !== rows) throw new Error(`applied ${applied} of ${rows}`);
     return ms;
@@ -350,6 +358,243 @@ export async function runClientApply(
       key,
       syncMs: Math.round(syncMs),
       rowsPerSecond: Math.round((rows / syncMs) * 1000),
+    };
+  } finally {
+    await client.close();
+  }
+}
+
+export interface PlanResult {
+  tables: number;
+  units: number;
+  rows: number;
+  /** Write transactions the one `setWindow` call takes. */
+  setWindowTransactions: number;
+  syncMs: number;
+  rowsPerSecond: number;
+  /** Outermost transactions (BEGIN/COMMIT pairs) during `sync()`. */
+  transactions: number;
+  /** `client.onChange` batches during `sync()`. */
+  changeBatches: number;
+  /** Browser lane only: FileSystemSyncAccessHandle calls during `sync()`. */
+  sah?: SahStats;
+}
+
+export type SahStats = Record<
+  'read' | 'write' | 'flush' | 'getSize' | 'truncate',
+  { calls: number; ms: number }
+>;
+
+/** Counts outermost `transaction()` calls, the only path that issues BEGIN. */
+function countTransactions(database: ClientDatabase): () => number {
+  const original = database.transaction.bind(database);
+  let depth = 0;
+  let count = 0;
+  database.transaction = (fn) => {
+    if (depth++ === 0) count++;
+    try {
+      return original(fn);
+    } finally {
+      depth--;
+    }
+  };
+  return () => count;
+}
+
+/**
+ * A plan-shaped bootstrap round through a real `SyncClient` on a fresh
+ * replica: 16 tables scoped by `plan_id`, 87 window values claimed by one
+ * `setWindow`, then one response of 87 unit sections (SUB_START bootstrap,
+ * three 9-row inline rows segments, SUB_END) plus two 225-row segment
+ * references in the first section: 2,799 rows. `sah` brackets the timed
+ * `sync()` in the browser lane.
+ */
+export async function runPlan(
+  database: ClientDatabase,
+  sah?: { reset(): void; read(): SahStats },
+): Promise<PlanResult> {
+  const tables = 16;
+  const values = Array.from(
+    { length: 87 },
+    (_, i) => `w${String(i).padStart(3, '0')}`,
+  );
+  const inlineRows = 9;
+  const refRows = 225;
+  const clientSchema: ClientSchema = {
+    version: 1,
+    tables: Array.from({ length: tables }, (_, t) => ({
+      name: `t${String(t).padStart(2, '0')}`,
+      primaryKey: 'id',
+      scopes: ['plan:{plan_id}'],
+      columns: [
+        { name: 'id', type: 'string' as const, nullable: false },
+        { name: 'plan_id', type: 'string' as const, nullable: false },
+        { name: 'name', type: 'string' as const, nullable: false },
+        { name: 'rank', type: 'integer' as const, nullable: false },
+      ],
+      indexes: [
+        {
+          name: `t${String(t).padStart(2, '0')}_rank`,
+          columns: ['plan_id', 'rank'],
+          unique: false,
+        },
+      ],
+    })),
+  };
+  const compiled = compileClientSchema(clientSchema);
+  const segmentOf = (
+    tableIndex: number,
+    plan: string,
+    prefix: string,
+    count: number,
+  ) => {
+    const name = `t${String(tableIndex).padStart(2, '0')}`;
+    return encodeRowsSegment({
+      table: name,
+      schemaVersion: 1,
+      columns: compiled.tables.get(name)!.columns,
+      blocks: [
+        Array.from({ length: count }, (_, i) => ({
+          serverVersion: 1,
+          values: [
+            `${plan}-${prefix}-${name}-${i}`,
+            plan,
+            `Row ${i} of ${name}`,
+            i,
+          ],
+        })),
+      ],
+    });
+  };
+  const digestOf = async (plan: string) =>
+    [
+      ...new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(JSON.stringify({ plan_id: [plan] })),
+        ),
+      ),
+    ]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  const payloads = new Map<string, Uint8Array>();
+  const refs: ResponseFrame[] = [];
+  for (const t of [0, 1]) {
+    const bytes = segmentOf(t, values[0]!, 'ref', refRows);
+    const segmentId = await computeBlobId(bytes);
+    payloads.set(segmentId, bytes);
+    refs.push({
+      type: 'SEGMENT_REF',
+      segmentId,
+      mediaType: 'rows',
+      table: `t${String(t).padStart(2, '0')}`,
+      byteLength: bytes.byteLength,
+      rowCount: refRows,
+      asOfCommitSeq: 1,
+      scopeDigest: await digestOf(values[0]!),
+    });
+  }
+  const sections = new Map<string, ResponseFrame[]>();
+  for (const [u, plan] of values.entries())
+    sections.set(plan, [
+      ...[0, 1, 2].map(
+        (k): ResponseFrame => ({
+          type: 'SEGMENT_INLINE',
+          payload: segmentOf((u * 3 + k) % tables, plan, 'in', inlineRows),
+        }),
+      ),
+      ...(u === 0 ? refs : []),
+    ]);
+  const rows = values.length * 3 * inlineRows + 2 * refRows;
+  let ids = new Map<string, string>();
+  let delivered = false;
+  const client = new SyncClient({
+    database,
+    schema: clientSchema,
+    segments: async (request) => payloads.get(request.segmentId)!,
+    transport: async () => {
+      const bootstrap = !delivered;
+      delivered = true;
+      return encodeMessage({
+        wireVersion: PROTOCOL_WIRE_VERSION,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'benchmark', resetRequired: false },
+          ...(bootstrap
+            ? values.flatMap((plan): ResponseFrame[] => [
+                {
+                  type: 'SUB_START',
+                  id: ids.get(plan)!,
+                  status: 'active',
+                  reasonCode: '',
+                  bootstrap: true,
+                  fenced: [],
+                },
+                ...sections.get(plan)!,
+                { type: 'SUB_END', nextCursor: 1 },
+              ])
+            : []),
+          { type: 'LIVE_START', status: 'active', reasonCode: '' },
+          {
+            type: 'LIVE_END',
+            throughSeq: 1,
+            echoDigest: echoDigest(
+              [...ids.values()].map((id) => ({
+                id,
+                status: 'active' as const,
+                fenced: [],
+              })),
+            ),
+          },
+        ],
+      });
+    },
+  });
+  const transactions = countTransactions(database);
+  try {
+    await client.start();
+    database.exec(
+      "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','benchmark')",
+    );
+    const beforeWindow = transactions();
+    await client.setWindow({ variable: 'plan_id' }, values);
+    const setWindowTransactions = transactions() - beforeWindow;
+    ids = new Map(
+      client.units().map((unit) => [String(unit.scopes.plan_id), unit.id]),
+    );
+    if (ids.size !== values.length)
+      throw new Error(`registered ${ids.size} units`);
+    let changeBatches = 0;
+    const off = client.onChange(() => {
+      changeBatches++;
+    });
+    const beforeSync = transactions();
+    sah?.reset();
+    const started = performance.now();
+    await client.sync();
+    const syncMs = performance.now() - started;
+    const sahStats = sah?.read();
+    off();
+    let stored = 0;
+    for (let t = 0; t < tables; t++)
+      stored += Number(
+        client.query(
+          `SELECT count(*) AS n FROM t${String(t).padStart(2, '0')}`,
+        )[0]?.n,
+      );
+    if (stored !== rows) throw new Error(`stored ${stored} of ${rows}`);
+    if (client.windowState({ variable: 'plan_id' }).pending.length > 0)
+      throw new Error('window still pending');
+    return {
+      tables,
+      units: values.length,
+      rows,
+      setWindowTransactions,
+      syncMs: Math.round(syncMs),
+      rowsPerSecond: Math.round((rows / syncMs) * 1000),
+      transactions: transactions() - beforeSync,
+      changeBatches,
+      ...(sahStats === undefined ? {} : { sah: sahStats }),
     };
   } finally {
     await client.close();

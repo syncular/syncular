@@ -1,5 +1,44 @@
 # Syncular release notes
 
+## Unreleased (draft)
+
+The TypeScript client commits a bootstrap round of many small unit sections
+in a few transactions (SYNCULAR-APPLY-ROWS-RATE-001). SSP2 and the wire
+version are unchanged.
+
+The client runs the rows blocks and `SUB_END` frames of consecutive unit
+sections as savepoints of one coalesced apply transaction of at most 1,024
+rows (SPEC §1.4 rule 4) and yields to local reads after each COMMIT. Segment
+downloads, decryption, SQLite images and `COMMIT` frames are awaited after
+the open transaction commits; every frame outside a unit section runs in its
+own transaction. Each block keeps its own revision and change batch, published
+in order after the COMMIT. In a plan-shaped round of 87 sections and 2,799
+rows the OPFS worker commits 7 transactions instead of 352 and applies 19,000
+to 22,000 rows/s instead of 1,600 to 2,600.
+
+`setWindow` registers all added values of a call in one transaction, in
+both cores. A widen that fails registers none of its values; 0.91.0 kept
+the values before the failing one. Call `setWindow` again with the same set
+either way.
+
+Rows payloads report `importWriteMs` and `importCommitMs` in progress,
+summed over their blocks, in both cores (SPEC §7.7). A block inside a
+coalesced apply transaction commits by releasing its savepoint; the COMMIT of
+the coalesced transaction belongs to no payload.
+
+An encrypted rows segment decrypts all its rows before its first block
+writes; the first failing row in segment order decides the error, and no
+block of that segment writes.
+
+A live query whose read is running when change batches arrive reads again
+only when its snapshot predates the newest batch, so a coalesced commit costs
+each affected query one read.
+
+Upgrade note: code that relied on a failed `setWindow` keeping the values
+before the failing one, or on one change batch arriving per committed
+transaction, sees all values unregistered after a failure and several batches
+after one commit.
+
 ## 0.91.0 release notes
 
 0.91.0 applies encrypted rows segments faster and lets `coalesceMs` hold the
