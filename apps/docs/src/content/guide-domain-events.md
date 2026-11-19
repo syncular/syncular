@@ -260,8 +260,8 @@ event ID.
 ## Related mechanisms
 
 - An event row whose author label or window scope only the server can decide
-  declares those columns server-owned: a `serverColumns` hook sets them inside
-  the push transaction, so the event is stored and delivered with them in the
+  declares those columns server-owned: the table's row validator returns them
+  inside the push transaction, so the event is stored and delivered with them in the
   same commit ([Server-owned columns](/guide-server/#server-owned-columns)).
 - `SyncularServerEvents` reports protocol and operational activity such as a
   rejected push, a segment download, or a resolver failure. It is an

@@ -40,7 +40,7 @@ export interface IrColumn {
   readonly encrypted?: boolean;
   /** §5.11: the app-side type of an encrypted column. Present iff `encrypted`. */
   readonly declaredType?: IrColumnType;
-  /** §6.12: the server sets this column inside the push transaction and a
+  /** §6.7: the server sets this column inside the push transaction and a
    * client never authors it. IR metadata only (never on the wire). Present
    * only for server-owned columns, so other columns stay byte-identical. */
   readonly serverOwned?: boolean;

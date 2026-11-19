@@ -895,7 +895,7 @@ gate(
               resolveScopes: () => ({ project_id: ['p1'] }),
               validators: {
                 tasks: async (_op, ctx) => {
-                  const { rows } = await ctx.queryAuthoritative(
+                  const { rows } = await ctx.read.queryAuthoritative(
                     roleOf(ctx.actorId),
                   );
                   if (rows[0]?.role !== 'editor') {

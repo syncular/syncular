@@ -58,7 +58,6 @@ import {
   BunSqliteDatabase,
   SqliteServerStorage,
   SyncError,
-  type ServerColumnsRegistry,
   type SyncRequestContext,
   ValidationRejection,
   type Validator,
@@ -453,8 +452,8 @@ class TsServerInstance implements ServerInstance {
   #validators: ValidatorRegistry | undefined;
   /** §6.8: installed transaction-scoped whole-commit validator. */
   #commitValidator: CommitValidator | undefined;
-  /** §6.12: installed server column hooks (absent ⇒ feature off). */
-  #serverColumns: ServerColumnsRegistry | undefined;
+  /** §6.7 validators that return server-owned values. */
+  #serverColumns: ValidatorRegistry | undefined;
   readonly #signedUrls: SegmentUrlConfig | undefined;
   #signedUrlTtlSeconds: number;
   /** §5.9.3/§5.9.5 blob-presign toggle (default off; scenarios flip it). */
@@ -767,14 +766,11 @@ class TsServerInstance implements ServerInstance {
         : {}),
       ...(this.#leases !== undefined ? { leases: this.#leases } : {}),
       // §6.7: pass the installed validators (undefined ⇒ feature off).
-      ...(this.#validators !== undefined
-        ? { validators: this.#validators }
+      ...(this.#validators !== undefined || this.#serverColumns !== undefined
+        ? { validators: { ...this.#serverColumns, ...this.#validators } }
         : {}),
       ...(this.#commitValidator !== undefined
         ? { commitValidator: this.#commitValidator }
-        : {}),
-      ...(this.#serverColumns !== undefined
-        ? { serverColumns: this.#serverColumns }
         : {}),
       realtime: {
         notifyCommit: async (partition, commit) => {
@@ -1133,7 +1129,7 @@ class TsServerInstance implements ServerInstance {
                 [actorLabel]: `actor:${actorId}`,
                 ...(stored === undefined
                   ? {
-                      [scope.column]: `${scope.prefix}${String(row[scope.from])}`,
+                      [scope.column]: `${scope.prefix}${String(row?.[scope.from])}`,
                     }
                   : {}),
               }),

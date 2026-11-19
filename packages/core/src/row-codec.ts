@@ -50,7 +50,7 @@ export interface RowColumn {
   /** §5.11: the app-side type of an encrypted column (its type before the
    * wire flip to `bytes`). Present iff `encrypted` is set. */
   readonly declaredType?: ColumnType;
-  /** §6.12: the server sets this column inside the push transaction and a
+  /** §6.7: the server sets this column inside the push transaction and a
    * client never authors it. Schema-IR metadata, never on the wire. */
   readonly serverOwned?: boolean;
 }

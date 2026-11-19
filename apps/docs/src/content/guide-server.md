@@ -185,14 +185,15 @@ A server-owned column holds a value only the server decides, such as the
 author's display label or a scope value derived from other rows. Declare it in
 the table's `serverColumns` in `syncular.json` ([Schema](/guide-schema/)); the
 column must be nullable and outside the primary key, the owner write set,
-`CRDT` columns and encrypted columns. Set it with a hook in `serverColumns` on
-the sync config, keyed by table:
+`CRDT` columns and encrypted columns. The table's row validator in
+`validators` sets it by returning the values:
 
 ```ts
-import type { ServerColumnsRegistry } from '@syncular/server';
+import type { ValidatorRegistry } from '@syncular/server';
 
-const serverColumns: ServerColumnsRegistry = {
+const validators: ValidatorRegistry = {
   domain_events: async ({ row, stored }, { actorId, read }) => {
+    if (row === undefined) return; // a delete
     const facility = await read.getRow('facilities', String(row.facility_id));
     return {
       actor_label: await labelFor(actorId),
@@ -207,32 +208,33 @@ const serverColumns: ServerColumnsRegistry = {
 
 const config: SyncServerConfig = {
   // schema, storage, segments, resolveScopes, ...
-  serverColumns,
+  validators,
 };
 ```
 
-The hook runs inside the push transaction for every accepted upsert on its
-table, from a client push or a registered command, after scope authorization
-and before the row validators. `row` is the merged row with the server-owned
-columns as stored (NULL on an insert), and `read` is the candidate-state reader
-the whole-commit validator receives, so it sees rows staged earlier in the same
-commit. The returned values are stored, and on an insert the row's scopes are
-taken from them, so the row reaches the units of a server-set scope value in
-the same commit. A column the hook omits keeps its value, so a patch leaves it
-as stored. Validators, the commit validator and reactions see the completed
-row.
+The validator runs inside the push transaction for every accepted upsert on
+its table, from a client push or a registered command, after scope
+authorization and the CRDT merge. `row` is the merged row with the
+server-owned columns as stored (NULL on an insert), and `read` is the
+candidate-state reader the whole-commit validator receives, so it sees rows
+staged earlier in the same commit. The returned values are stored, and on an
+insert the row's scopes are taken from them, so the row reaches the units of a
+server-set scope value in the same commit. A column the validator omits keeps
+its value, so a patch leaves it as stored. The commit validator and reactions
+see the completed row. On a delete, a `rescope` and a declared-reference
+cascade the server ignores returned values.
 
 The server discards every pushed value of a server-owned column. An app built
 before the column existed, or before it became server-owned, keeps pushing
 and its values are replaced; a current client refuses such a mutation value
 with `sync.invalid_request` and shows NULL until the server row arrives. On an
-update the hook cannot move a server-owned scope column; a different value
-rejects the commit, and a registered command's `rescope` moves the row. Throw
-`ValidationRejection` to refuse the write with your own code. Any other throw,
-a key that is not a server-owned column, or a value of the wrong type rejects
-the commit with `sync.constraint_violation`. The local authority has no hook
-and stores NULL. The rules are in
-[SPEC §6.12](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#612-server-owned-columns).
+update the validator cannot move a server-owned scope column; a different
+value rejects the commit, and a registered command's `rescope` moves the row.
+Throw `ValidationRejection` to refuse the write with your own code. Any other
+throw, a key that is not a server-owned column, or a value of the wrong type
+rejects the commit with `sync.constraint_violation`. The local authority has
+no validators and stores NULL. The rules are in
+[SPEC §6.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#67-write-validation-hooks).
 
 ## Add CORS and other host headers
 
@@ -284,7 +286,7 @@ const config: SyncServerConfig = {
 
 ## Advanced: wire the realtime hub
 
-Realtime is optional. `createRealtimeHub` builds the transport-agnostic hub, and passing it as `config.realtime` fans every applied commit out to connected sockets. Build the hub and the config from one capability object (storage, segments, blobs, CRDT mergers, validators, server column hooks, limits, leases, signed delivery, clock, events), so a socket round cannot run a narrower handler than `POST /sync`. `RealtimeHubConfig` inherits `SyncServerConfig` for that reason. The protocol is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
+Realtime is optional. `createRealtimeHub` builds the transport-agnostic hub, and passing it as `config.realtime` fans every applied commit out to connected sockets. Build the hub and the config from one capability object (storage, segments, blobs, CRDT mergers, validators, limits, leases, signed delivery, clock, events), so a socket round cannot run a narrower handler than `POST /sync`. `RealtimeHubConfig` inherits `SyncServerConfig` for that reason. The protocol is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
 
 ```ts title="src/server.ts"
 import {

@@ -19,7 +19,6 @@ import {
   type ServerSchema,
   SqliteServerStorage,
   type SyncRequestContext,
-  type ServerColumnsRegistry,
   type ValidatorRegistry,
 } from '@syncular/server';
 import type { VirtualClock } from './clock';
@@ -58,8 +57,6 @@ export interface TestServerOptions {
   readonly validators?: ValidatorRegistry;
   /** Optional §6.8 whole-commit validator, shared by both transports. */
   readonly commitValidator?: CommitValidator;
-  /** Optional §6.12 server column hooks, shared by both transports. */
-  readonly serverColumns?: ServerColumnsRegistry;
 }
 
 /**
@@ -89,9 +86,6 @@ export function createTestServer(options: TestServerOptions): TestServer {
       : {}),
     ...(options.commitValidator !== undefined
       ? { commitValidator: options.commitValidator }
-      : {}),
-    ...(options.serverColumns !== undefined
-      ? { serverColumns: options.serverColumns }
       : {}),
   };
   const hub = createRealtimeHub({

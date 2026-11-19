@@ -31,7 +31,7 @@ export function schemaWindowOf(
       if (
         next === undefined ||
         table.columns.length > next.columns.length ||
-        // §6.12: a version may mark an existing column server-owned; the flag
+        // §6.7: a version may mark an existing column server-owned; the flag
         // never reaches the wire.
         table.columns.some(
           (column, i) =>
@@ -42,7 +42,7 @@ export function schemaWindowOf(
           .slice(table.columns.length)
           .some((column) => !column.nullable) ||
         table.primaryKeyIndex !== next.primaryKeyIndex ||
-        // §6.12: a pattern over an appended server-owned column is new to the
+        // §6.7: a pattern over an appended server-owned column is new to the
         // current version; an older client neither holds nor writes it.
         JSON.stringify(table.scopePatterns) !==
           JSON.stringify(

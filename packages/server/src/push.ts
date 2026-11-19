@@ -71,7 +71,6 @@ import type {
   CommitValidationRow,
   CommitValidator,
   ValidateCommitOperation,
-  ServerColumnsRegistry,
   ValidateOpKind,
   ValidatorRegistry,
 } from './validate';
@@ -222,31 +221,36 @@ async function resolveBlobPresence(
 }
 
 /**
- * §6.7: run the table's write-validation hook, if configured, on the row
- * that WILL persist (post scope-strip, post CRDT-merge — the values the
- * store receives). Returns a terminating outcome iff the validator rejects
- * (its `ValidationRejection` code, or `sync.constraint_violation` for a
- * non-`ValidationRejection` throw), else `undefined` (accept / no hook).
- * A no-op for tables with no validator — the `undefined` short-circuit
- * keeps the feature zero-cost when off.
+ * §6.7: run the table's row hook, if configured, on the row that will persist
+ * (post scope-strip, post CRDT-merge). With `present` (an accepted insert or
+ * update of a pushed commit or a registered command) the hook's returned
+ * values for server-owned columns land in `values` and are marked present, so
+ * their column versions advance; elsewhere (a delete, a rescope, a §6.11
+ * cascade) the server ignores them. Returns a terminating outcome iff the
+ * hook fails: a `ValidationRejection` keeps its host code, and any other
+ * throw, a returned column that is not server-owned, a value the column's
+ * type refuses or a changed scope column on an update is
+ * `sync.constraint_violation`.
  */
 async function runValidator(
   validators: ValidatorRegistry | undefined,
+  tx: StorageTransaction,
+  schema: CompiledSchema,
   table: CompiledTable,
   op: ValidateOpKind,
   rowId: string,
-  values: readonly RowValue[] | undefined,
+  values: RowValue[] | undefined,
   storedValues: readonly RowValue[] | undefined,
   opIndex: number,
-  tx: StorageTransaction,
   partition: string,
   actorId: string,
   context: string | undefined,
+  present?: boolean[],
 ): Promise<TerminatingOutcome | undefined> {
   const validator = validators?.[table.name];
   if (validator === undefined) return undefined;
   try {
-    await validator(
+    const output = await validator(
       {
         op,
         table: table.name,
@@ -264,72 +268,11 @@ async function runValidator(
         actorId,
         partition,
         ...(context !== undefined ? { context } : {}),
-        queryAuthoritative: (query) => transactionQuery(tx, query),
-      },
-    );
-  } catch (error) {
-    if (error instanceof ValidationRejection) {
-      return errorRecord(
-        opIndex,
-        error.code,
-        error.message,
-        false,
-        error.details,
-      );
-    }
-    // §6.7: a non-ValidationRejection throw is still a rejection, mapped to
-    // the generic server-side constraint code (§10.2) — the validator's
-    // failure never crashes the request or leaks its message as a code.
-    return errorRecord(
-      opIndex,
-      'sync.constraint_violation',
-      'write validator failed',
-    );
-  }
-  return undefined;
-}
-
-/**
- * §6.12: complete an accepted upsert with the table's server column hook.
- * The returned values land in `values` and are marked present, so their
- * column versions advance. A `ValidationRejection` keeps its host code; any
- * other failure (an undeclared key, a value the column's type refuses, a
- * changed scope column on an update) is `sync.constraint_violation`.
- */
-async function runServerColumns(
-  hooks: ServerColumnsRegistry | undefined,
-  tx: StorageTransaction,
-  schema: CompiledSchema,
-  table: CompiledTable,
-  rowId: string,
-  values: RowValue[],
-  storedValues: readonly RowValue[] | undefined,
-  present: boolean[],
-  opIndex: number,
-  partition: string,
-  actorId: string,
-  context: string | undefined,
-): Promise<TerminatingOutcome | undefined> {
-  const hook = hooks?.[table.name];
-  if (hook === undefined) return undefined;
-  try {
-    const output = await hook(
-      {
-        table: table.name,
-        rowId,
-        row: toValidateRow(table.columns, values),
-        stored:
-          storedValues !== undefined
-            ? toValidateRow(table.columns, storedValues)
-            : undefined,
-      },
-      {
-        actorId,
-        partition,
-        ...(context !== undefined ? { context } : {}),
         read: commitValidationReader(tx, schema),
       },
     );
+    if (output === undefined || present === undefined || values === undefined)
+      return undefined;
     for (const [name, value] of Object.entries(output)) {
       const index = table.columnIndex.get(name);
       if (
@@ -337,7 +280,7 @@ async function runServerColumns(
         !table.serverOwnedColumnIndices.includes(index)
       ) {
         throw new Error(
-          'server column hook returned a column that is not server-owned',
+          'write validator returned a column that is not server-owned',
         );
       }
       // The column's own codec refuses a value of the wrong type.
@@ -347,7 +290,7 @@ async function runServerColumns(
         table.scopePatterns.some((pattern) => pattern.columnIndex === index) &&
         value !== (storedValues[index] ?? null)
       ) {
-        throw new Error('server column hook changed a scope column on update');
+        throw new Error('write validator changed a scope column on update');
       }
       values[index] = value;
       present[index] = true;
@@ -362,10 +305,13 @@ async function runServerColumns(
         error.details,
       );
     }
+    // §6.7: any other failure is still a rejection, mapped to the generic
+    // server-side constraint code (§10.2); the hook's failure never crashes
+    // the request or leaks its message.
     return errorRecord(
       opIndex,
       'sync.constraint_violation',
-      'server column hook failed',
+      'write validator failed',
     );
   }
   return undefined;
@@ -435,7 +381,6 @@ async function applyOperation(
   blobCtx: BlobApplyContext,
   crdtMergers: CrdtMergerRegistry | undefined,
   validators: ValidatorRegistry | undefined,
-  serverColumns: ServerColumnsRegistry | undefined,
   partition: string,
   actorId: string,
   context: string | undefined,
@@ -558,13 +503,14 @@ async function applyOperation(
     }
     const deleteReject = await runValidator(
       validators,
+      tx,
+      schema,
       table,
       'delete',
       op.rowId,
       undefined,
       storedValues,
       opIndex,
-      tx,
       partition,
       actorId,
       context,
@@ -572,13 +518,14 @@ async function applyOperation(
     if (deleteReject !== undefined) return deleteReject;
     const upsertReject = await runValidator(
       validators,
+      tx,
+      schema,
       table,
       'upsert',
       op.rowId,
       values,
       storedValues,
       opIndex,
-      tx,
       partition,
       actorId,
       context,
@@ -715,13 +662,14 @@ async function applyOperation(
     const storedValues = decodeRow(table.columns, stored.payload);
     const deleteReject = await runValidator(
       validators,
+      tx,
+      schema,
       table,
       'delete',
       op.rowId,
       undefined,
       storedValues,
       opIndex,
-      tx,
       partition,
       actorId,
       context,
@@ -783,7 +731,7 @@ async function applyOperation(
       `row payload failed row-codec decode (§1.7): ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  // §6.12: the server discards a pushed value of a server-owned column, so an
+  // §6.7: the server discards a pushed value of a server-owned column, so an
   // older client that still writes one stays valid.
   for (const index of table.serverOwnedColumnIndices) {
     sparse[index] = stored === undefined ? null : undefined;
@@ -897,21 +845,24 @@ async function applyOperation(
       crdtMergers,
     );
     if ('kind' in mergeOutcome) return mergeOutcome;
-    const serverReject = await runServerColumns(
-      serverColumns,
+    // §6.7: validate the merged row that will persist (for a crdt column the
+    // MERGED value, §5.10.3) and take its server-owned values.
+    const updateReject = await runValidator(
+      validators,
       tx,
       schema,
       table,
+      'upsert',
       op.rowId,
       values,
       storedValues,
-      present,
       opIndex,
       partition,
       actorId,
       context,
+      present,
     );
-    if (serverReject !== undefined) return serverReject;
+    if (updateReject !== undefined) return updateReject;
     const newVersion = stored.serverVersion + 1;
     const nextVersions = new Map<number, number>();
     for (let i = 0; i < table.columns.length; i++) {
@@ -936,23 +887,6 @@ async function applyOperation(
       blobCtx,
     );
     if (blobCheck !== undefined) return blobCheck;
-    // §6.7: validate the merged row that will persist — for a crdt column
-    // the validator sees the MERGED value (§5.10.3), the state the store
-    // holds, not the raw pushed update.
-    const updateReject = await runValidator(
-      validators,
-      table,
-      'upsert',
-      op.rowId,
-      values,
-      storedValues,
-      opIndex,
-      tx,
-      partition,
-      actorId,
-      context,
-    );
-    if (updateReject !== undefined) return updateReject;
     const columnVersions = encodeColumnVersions(nextVersions);
     const newRow = {
       rowId: op.rowId,
@@ -1078,29 +1012,33 @@ async function applyOperation(
     crdtMergers,
   );
   if ('kind' in insertMerge) return insertMerge;
-  const serverReject = await runServerColumns(
-    serverColumns,
+  // §6.7: validate the insert row (stored = undefined, so a validator can
+  // distinguish create from update; crdt columns are already merged against
+  // the empty document) and take its server-owned values.
+  const insertReject = await runValidator(
+    validators,
     tx,
     schema,
     table,
+    'upsert',
     op.rowId,
     values,
     undefined,
-    present,
     opIndex,
     partition,
     actorId,
     context,
+    present,
   );
-  if (serverReject !== undefined) return serverReject;
-  // §6.12: the stored scopes and the change-scope index take the hook's
+  if (insertReject !== undefined) return insertReject;
+  // §6.7: the stored scopes and the change-scope index take the validator's
   // values, so the row reaches a server-set scope's units in this commit.
   const scoped = storedScopesForRow(table, values);
   if ('missing' in scoped) {
     return errorRecord(
       opIndex,
       'sync.constraint_violation',
-      'server column hook failed',
+      'write validator failed',
     );
   }
   // The stored payload is the full-row codec (§2.4); every column is
@@ -1116,23 +1054,6 @@ async function applyOperation(
     blobCtx,
   );
   if (blobCheck !== undefined) return blobCheck;
-  // §6.7: validate the insert row (stored = undefined, so a validator can
-  // distinguish create from update); crdt columns are already merged
-  // against the empty document.
-  const insertReject = await runValidator(
-    validators,
-    table,
-    'upsert',
-    op.rowId,
-    values,
-    undefined,
-    opIndex,
-    tx,
-    partition,
-    actorId,
-    context,
-  );
-  if (insertReject !== undefined) return insertReject;
   // §2.2, §6.2: every insert starts one above the delete floor, over a
   // tombstone or not; without a column-versions blob every column sits at
   // that version.
@@ -1701,13 +1622,14 @@ async function enforceReferences(
           if (reference.onDelete === 'CASCADE') {
             const reject = await runValidator(
               validators,
+              tx,
+              schema,
               child,
               'delete',
               childRow.rowId,
               undefined,
               storedValues,
               item.originOpIndex,
-              tx,
               partition,
               actorId,
               context,
@@ -1737,13 +1659,14 @@ async function enforceReferences(
             values[reference.columnIndex] = null;
             const reject = await runValidator(
               validators,
+              tx,
+              schema,
               child,
               'upsert',
               childRow.rowId,
               values,
               storedValues,
               item.originOpIndex,
-              tx,
               partition,
               actorId,
               context,
@@ -2243,7 +2166,6 @@ async function applyPushCommits(
             blobCtx,
             crdtMergers,
             validators,
-            ctx.serverColumns,
             partition,
             ctx.actorId,
             ctx.context,

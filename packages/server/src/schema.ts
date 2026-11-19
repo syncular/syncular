@@ -154,8 +154,8 @@ export interface CompiledTable {
    * image copies ciphertext wholesale with no per-row decrypt pass, so an
    * encrypted table MUST be served via the rows lane. Empty ⇒ no restriction. */
   readonly encryptedColumnIndices: readonly number[];
-  /** §6.12: column indices marked `serverOwned`. Empty ⇒ no server column
-   * hook output is accepted for the table. */
+  /** §6.7: column indices marked `serverOwned`. Empty ⇒ no server column
+   * values are accepted from the table's validator. */
   readonly serverOwnedColumnIndices: readonly number[];
 }
 
@@ -404,7 +404,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
       // §5.11: an encrypted column carries wire type `bytes` + `encrypted`.
       if (column.encrypted === true) encryptedColumnIndices.push(index);
-      // §6.12: the hook never changes who may write the row (owner set), and
+      // §6.7: a validator never changes who may write the row (owner set), and
       // a client's optimistic row holds NULL until the server row arrives.
       if (column.serverOwned === true) {
         if (
@@ -419,7 +419,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
           )
         ) {
           throw new Error(
-            `table ${table.name}: server-owned column ${JSON.stringify(column.name)} must be nullable and outside the primary key, the owner write set, crdt and encryption (§6.12)`,
+            `table ${table.name}: server-owned column ${JSON.stringify(column.name)} must be nullable and outside the primary key, the owner write set, crdt and encryption (§6.7)`,
           );
         }
         serverOwnedColumnIndices.push(index);

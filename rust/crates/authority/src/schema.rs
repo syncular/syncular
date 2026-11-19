@@ -136,7 +136,7 @@ pub(crate) struct Table {
     pub crdt: Vec<(usize, String)>,
     /// `blob_ref` columns (§5.9).
     pub blob_refs: Vec<usize>,
-    /// Server-owned columns (§6.12): a pushed value is discarded.
+    /// Server-owned columns (§6.7): a pushed value is discarded.
     pub server_owned: Vec<usize>,
 }
 
@@ -340,7 +340,7 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
                 table.name
             )));
         }
-        // §6.12: the owner write set never depends on a server-owned column.
+        // §6.7: the owner write set never depends on a server-owned column.
         let mut server_owned = Vec::new();
         for (index, column) in table.columns.iter().enumerate() {
             if !column.server_owned {
@@ -355,7 +355,7 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
                     .any(|scope| scope.column == index && write_sets[0].contains(&scope.variable))
             {
                 return Err(invalid(format!(
-                    "table {:?}: server-owned column {:?} must be nullable and outside the primary key, the owner write set, crdt and encryption (§6.12)",
+                    "table {:?}: server-owned column {:?} must be nullable and outside the primary key, the owner write set, crdt and encryption (§6.7)",
                     table.name, column.name
                 )));
             }

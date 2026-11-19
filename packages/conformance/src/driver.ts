@@ -66,7 +66,7 @@ export interface DriverColumn {
    * is the app-side type. */
   readonly encrypted?: boolean;
   readonly declaredType?: DriverColumnType;
-  /** §6.12: the server sets this column; a client never authors it. */
+  /** §6.7: the server sets this column; a client never authors it. */
   readonly serverOwned?: boolean;
 }
 
@@ -280,7 +280,7 @@ export type ServerCapability =
   | 'leases'
   | 'validators'
   | 'commit-validators'
-  /** §6.12 server column hooks. */
+  /** §6.7 validators that set server-owned columns. */
   | 'server-columns'
   | 'backfill-checkpoints'
   | 'erasure'
@@ -343,7 +343,7 @@ export interface ValidatorInstallSpec {
 }
 
 /**
- * §6.12 declarative server column hook for one table: `actorLabel` receives
+ * §6.7 declarative server-owned values for one table's validator: `actorLabel` receives
  * `actor:<actorId>` on every accepted upsert, and on an insert `scope.column`
  * receives `scope.prefix` followed by the value of `scope.from`.
  */
@@ -539,8 +539,8 @@ export interface ServerInstance {
    * The validator observes all staged operations and candidate-state reads.
    */
   installCommitValidator?(spec?: CommitValidatorInstallSpec): Promise<void>;
-  /** `server-columns`: install (or, with an empty list, clear) §6.12 server
-   * column hooks for the server under test. */
+  /** `server-columns`: install (or, with an empty list, clear) §6.7 server
+   * server-owned values for the server under test. */
   installServerColumns?(
     specs: readonly ServerColumnsInstallSpec[],
   ): Promise<void>;

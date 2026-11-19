@@ -1150,7 +1150,7 @@ wire** (like `crdtType`), so the SSG2 column table still carries only
 name/type/nullable and the golden vectors are untouched. The codec neither
 encrypts nor decrypts — that is the client apply/encode seam (§5.11).
 
-**Server-owned columns (§6.12).** The IR records `serverOwned: true` on a
+**Server-owned columns (§6.7).** The IR records `serverOwned: true` on a
 column the server sets inside the push transaction. The flag is IR metadata,
 never on the wire, and the codec encodes the column like any other.
 
@@ -1805,8 +1805,8 @@ On every push operation:
    owner moves a row out of another set's units by rescoping that
    variable to NULL, which ends that set's reads and writes of the row.
    Scope columns are written only on insert and on an explicit
-   `rescope`, where authorization covered exactly those values. A server
-   column hook (§6.12) sets a server-owned scope column outside the owner set
+   `rescope`, where authorization covered exactly those values. A §6.7
+   validator sets a server-owned scope column outside the owner set
    on insert only; the server discards a pushed value of such a column.
 
 Rules 2 and 5 are load-bearing together: authorizing the pushed payload
@@ -4683,7 +4683,7 @@ For an upsert against an **absent** row, the tombstone table decides
 | absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
 
 An insert requires every column present: a partial payload names an
-update, and there is nothing to update. A server-owned column (§6.12) counts
+update, and there is nothing to update. A server-owned column (§6.7) counts
 as present with NULL whether or not the payload carries it. The server cannot tell a stale
 upsert from a deliberate recreate, so the `sync.row_deleted` row applies to
 every unversioned upsert, including one from the client that issued the
@@ -5090,7 +5090,8 @@ Scopes (§3.4) answer "may this actor write this row's scope?" — a
 coarse, structural grant. They cannot express a **business rule** on the
 row's contents: "title ≤ 200 chars", "amount ≥ 0", "status is one of a
 fixed set", "a closed invoice's total is immutable". §6.7 is the optional
-seam for exactly those rules.
+seam for exactly those rules, and for the values of server-owned columns
+(below), which the server decides instead of the client.
 
 **Shape.** A host MAY configure a per-table **validator**: a callback
 keyed by table name. It is a **host callback, not wire protocol** — like
@@ -5107,8 +5108,15 @@ on update) — and **inside the commit transaction** (§6.4), immediately
 before the row's write. Running after §3.4 means a validator never sees a row the
 actor is not authorized to write; running inside the transaction means a
 rejection rolls back atomically like any other operation failure. The
-order is fixed: **decode → scope authorization → server columns (§6.12) →
-validation → write.**
+order for an upsert is fixed:
+
+`decode → discard pushed server-owned values → scope authorization §3.4 →
+conflict check §6.2 → CRDT merge §5.10.3 → validation → blob check §6.6 →
+write`
+
+A validator runs for every operation of a pushed commit and of a registered
+command (REMOTE.md) on its table, for a rescope (§2.2, a delete under the old
+scopes and an upsert under the new ones) and for a §6.11 cascade.
 
 **What it sees.** The validator receives, per operation:
 
@@ -5116,19 +5124,20 @@ validation → write.**
 - `table`, `rowId`.
 - `row` — the row **that will persist**, keyed by column name: for an
   `upsert`, the merged full row (present columns over stored values),
-  **post-CRDT-merge** (see below) with the server-owned values of §6.12;
-  `undefined` for a `delete`.
+  **post-CRDT-merge** (see below), with each server-owned column as stored
+  (NULL on an insert); `undefined` for a `delete`.
 - `stored` — the currently-stored row keyed by column name, or `undefined`
   when there is none (an insert). Present for an update or a delete, so a
   validator can enforce transition rules ("a `closed` invoice cannot
   reopen") and distinguish create from update.
-- ambient `actorId` (§1.1) and `partition`.
-- `queryAuthoritative(request)`: the transaction-bound registered query
-  (below).
+- ambient `actorId` (§1.1), `partition` and request context.
+- `read`: the §6.8 candidate-state reader of the push transaction, which
+  sees every operation staged before this one, with the transaction-bound
+  registered query `read.queryAuthoritative(request)` (below).
 
 **Authority reads inside the transaction.** A validator that decides from
 other rows (a membership, a role, a grant) runs a generated registered query
-through the context's `queryAuthoritative`. The request has the shape the
+through `read.queryAuthoritative`. The request has the shape the
 storage-level registered query takes: the generated relation plan, its bound
 parameters, and its table set. The storage rewrites every relation to the
 commit's partition, as it does for a registered query (REMOTE.md), and runs
@@ -5218,9 +5227,8 @@ the rejection already flows through the one seam.
 
 **Non-goals.** A validator MUST NOT mutate the row (the server writes the
 row it validated; a mutation would desync the persisted bytes from the
-validated ones and from the client's optimistic copy). The server sets
-server-decided values through the §6.12 server column hook, which runs before
-the validator. Cross-row or
+validated ones and from the client's optimistic copy). It returns
+server-decided values of server-owned columns instead (below). Cross-row or
 cross-table invariants use the distinct whole-commit seam in §6.8 — §6.7
 remains one operation's row, not a transaction-wide assertion engine. This is
 the deliberate small surface:
@@ -5228,6 +5236,75 @@ the reserved IR `extensions` slot (the typegen document/table passthrough)
 is where a future rung MAY carry declarative validation metadata to
 generate a validator skeleton, but §6.7 ships the runtime hook only — no
 codegen wiring this rung.
+
+**Server-owned columns.** A column the server decides, such as an author's
+display label or a scope value derived from other rows, is declared
+**server-owned**. The validator sets it inside the push transaction, so the
+row is stored, indexed under its scopes and fanned out with the server's
+values in the same commit. A client never authors the column.
+
+The schema IR marks the column `serverOwned: true`. Like `crdtType` and
+`encrypted` (§2.4), the flag is IR metadata and never on the wire; the row
+codec, the SSG2 column table and the golden vectors are unchanged. `typegen`
+reads it from the table's `serverColumns` list in `syncular.json`. Typegen,
+the server and the §12 local authority refuse, where they compile the schema,
+a server-owned column that is not nullable, is the primary key, is a `crdt`
+column or is encrypted (§5.11); the client cores do not repeat the check. The
+servers additionally refuse a server-owned column that is the column of a
+variable in the owner write set (§3.4), so a validator can never change who
+may insert or own the row. A scope variable outside the owner set MAY be
+server-owned; since NULL leaves such a variable without a value (§3.4 step
+2), an insert is authorized before the server sets it.
+
+After sparse-row decode (§6.1) and before §3.4 authorization, the server
+discards every pushed value of a server-owned column: on an insert the column
+becomes NULL, on an upsert against a stored row it becomes absent. A
+discarded value therefore never fails the §3.4 rule 5 immutability check,
+never marks a conflict (§6.2) and never moves a column version. An older
+client whose schema version predates the column, or whose schema version
+still treated the column as client-written, stays valid; its optimistic value
+is replaced by the server row on the next pull. A current client refuses a
+mutation value that names a server-owned column, in either key casing, with
+`sync.invalid_request` (static message, `details.table` and
+`details.column`); a full-row insert presents the column as NULL. Its
+optimistic row holds NULL on insert, and the stored value on update, until
+the server row arrives. A persisted outbox commit that names the column,
+queued before the column became server-owned, still encodes at send time
+(§7.4.4), and the server discards the value.
+
+On an insert or an update of a pushed commit or a registered command, the
+validator MAY return values for server-owned columns. A returned column is
+written and its `column_version` moves to the new `server_version`; a column
+it omits keeps its value in the merged row, so a sparse patch leaves it as
+stored. The blob check, the §6.8 whole-commit validator and the §6.9 reaction
+planner see the completed row. On a delete, a rescope and a §6.11 cascade the
+server ignores returned values: a rescope changes only scope columns (§2.2),
+and a cascade only clears or deletes.
+
+On an insert, the stored scopes and the change's scopes (§3.1) are extracted
+from the completed row, so the row belongs to the units of a server-set scope
+value in the same commit. On an update, a server-owned scope column keeps its
+stored value: a validator that returns a different value fails as below.
+Moving a row to another value of that variable is a server-emitted `rescope`
+(§3.4 rule 5). §4.6.1 erasure runs no validator.
+
+A returned value is a server fault, rejecting the commit (§6.4) with
+`sync.constraint_violation` and `write validator failed`, when it names a
+column that is not server-owned, holds a value the column's type refuses
+(§2.4), changes a scope column on an update, or leaves a scope value empty on
+an insert. Without a validator, a server-owned column keeps its stored value,
+NULL on insert.
+
+The §12 local authority has no validators (§12.2); it applies the
+pushed-value rule above, so its server-owned columns stay NULL until a remote
+server's validator sets them on attach (§12.3).
+
+DECISION (2026-11-19): server-owned values come from the §6.7 validator.
+0.94.0 added a separate per-table server column hook that ran before the
+validator with the same inputs and the same failure codes; two per-row hooks
+on one table split one decision across two registries. The validator now
+returns the values, and the server applies them only where the hook applied
+them (inserts and updates of pushes and commands).
 
 ### 6.8 Whole-commit validation hooks
 
@@ -5695,84 +5772,6 @@ stays static.
 `fixRequest`.
 
 ---
-
-### 6.12 Server-owned columns
-
-A column the server decides, such as an author's display label or a scope
-value derived from other rows, is declared **server-owned**. The server sets
-it inside the push transaction, so the row is stored, indexed under its scopes
-and fanned out with the server's values in the same commit. A client never
-authors the column.
-
-**Declaration.** The schema IR marks the column `serverOwned: true`. Like
-`crdtType` and `encrypted` (§2.4), the flag is IR metadata and never on the
-wire; the row codec, the SSG2 column table and the golden vectors are
-unchanged. `typegen` reads it from the table's `serverColumns` list in
-`syncular.json`. Typegen, the server and the §12 local authority refuse,
-where they compile the schema, a server-owned column that is not nullable, is
-the primary key, is a `crdt` column or is encrypted (§5.11); the client cores
-do not repeat the check. The servers additionally refuse a server-owned
-column that is the column of a variable in the owner write set (§3.4), so a
-server column hook can never change who may insert or own the row. A scope variable outside the owner set MAY be server-owned; since
-NULL leaves such a variable without a value (§3.4 step 2), an insert is
-authorized before the server sets it.
-
-**Pushed values.** After sparse-row decode (§6.1) and before §3.4
-authorization, the server discards every pushed value of a server-owned
-column: on an insert the column becomes NULL, on an upsert against a stored
-row it becomes absent. A discarded value therefore never fails the §3.4 rule 5
-immutability check, never marks a conflict (§6.2) and never moves a column
-version. An older client whose schema version predates the column, or whose
-schema version still treated the column as client-written, stays valid; its
-optimistic value is replaced by the server row on the next pull. A current
-client refuses a mutation value that names a server-owned column, in either
-key casing, with `sync.invalid_request` (static message, `details.table` and
-`details.column`); a full-row insert presents the column as NULL. Its
-optimistic row holds NULL on insert, and the stored value on update, until
-the server row arrives. A persisted outbox commit that names the column, queued
-before the column became server-owned, still encodes at send time (§7.4.4),
-and the server discards the value.
-
-**Server column hook.** A host MAY configure, per table, a server column hook
-(`serverColumns` in the reference server). Like a §6.7 validator it is a host
-callback, never wire protocol. It runs for every accepted upsert of a pushed
-commit or a registered command (REMOTE.md) on its table, insert and update
-alike, inside the commit transaction, in this order:
-
-`decode → discard pushed server-owned values → scope authorization §3.4 →
-conflict check §6.2 → CRDT merge §5.10.3 → server column hook → blob check
-§6.6 → row validation §6.7 → write`
-
-It receives the table, the `rowId`, the merged row (present columns over
-stored values, `crdt` columns merged, server-owned columns as stored or NULL
-on an insert), the stored row (undefined on an insert), the ambient
-`actorId`, `partition` and request context, and the §6.8 candidate-state
-reader of the push transaction, which sees every operation staged before this
-one. It returns values for server-owned columns. A returned column is written
-and its `column_version` moves to the new `server_version`; a column it omits
-keeps its value in the merged row, so a sparse patch leaves it as stored. The
-§6.7 validator, the §6.8 whole-commit validator and the §6.9 reaction planner
-see the completed row.
-
-On an insert, the stored scopes and the change's scopes (§3.1) are extracted
-from the completed row, so the row belongs to the units of a server-set scope
-value in the same commit. On an update, a server-owned scope column keeps its
-stored value: a hook that returns a different value fails as below. Moving a
-row to another value of that variable is a server-emitted `rescope` (§3.4 rule
-5). The hook does not run for a `rescope`, a §6.11 cascade, a delete or a
-§4.6.1 erasure.
-
-A hook accepts by returning; it rejects deliberately by throwing a
-`ValidationRejection`, which rejects the commit with its host code exactly as
-in §6.7. Every other failure is a server fault and rejects the commit
-(§6.4) with `sync.constraint_violation` and the static message `server column
-hook failed`: a throw, a returned column that is not server-owned, a value the
-column's type refuses (§2.4), a changed scope column on an update, and an
-empty scope value on an insert. Without a hook, a server-owned column keeps its stored value, NULL on insert.
-
-The §12 local authority has no server column hook (§12.2); it applies the
-pushed-value rule above, so its server-owned columns stay NULL until a remote
-server's hook sets them on attach (§12.3).
 
 ---
 
@@ -8948,7 +8947,7 @@ object's single thread orders a registration before or after each relay.
   current compiled schema. Versions MUST decrease strictly. Existing tables,
   columns, codecs, primary keys, references and scope patterns MUST remain
   identical in the current schema, with two exceptions for server-owned columns
-  (§6.12): the current schema MAY mark an existing column server-owned, and it
+  (§6.7): the current schema MAY mark an existing column server-owned, and it
   MAY append a scope pattern over an appended server-owned column. Appended
   columns MUST be nullable. A column relaxed to nullable is a changed column, so
   the window cannot hold a version that declares it required (Relaxing a
@@ -9089,7 +9088,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row, or a partial payload targeting an absent row without a tombstone (§6.2) |
 | `sync.row_deleted` | not-found | no | fixRequest | An unversioned upsert targeting a row deleted inside the tombstone horizon (§6.2) — the delete wins; the client drops the operation on rebuild — *new in wire version 3*; a push operation-result `error` record only |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
-| `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write; also a §6.7 write-validator that threw a non-host-code error (an unexpected throw, not a deliberate host rejection), and a failed §6.12 server column hook |
+| `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write; also a §6.7 write-validator that threw a non-host-code error (an unexpected throw, not a deliberate host rejection) or returned an invalid server-owned value |
 | `sync.validator_error` | internal | no | inspectServer | A §6.8 whole-commit validator threw an unexpected exception. A push operation-result `error` record with the static message `whole-commit validator failed`, `reason = validator_threw`, and the bounded thrown message in `references.message` (§6.3.1); the original exception reaches the host's `onError` |
 | `sync.reference_violation` | invalid-request | no | fixRequest | A declared reference (§6.11) failed: an absent parent, a `RESTRICT` delete with live children, or the cascade cap — *new in SSP2*; a push operation-result `error` record with `reason`/`references` in its §6.3.1 details |
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
@@ -9348,7 +9347,8 @@ use the same replica, authorization, observation, and transport contracts.
 ### 12.2 Profile
 
 A local authority follows every server rule of §2.1 to §2.3, §4.1 to §4.7,
-§5.1, §5.2, §5.6 to §5.8, §5.10, §6.1 to §6.4, §6.11 and §6.12 for its
+§5.1, §5.2, §5.6 to §5.8, §5.10, §6.1 to §6.4, §6.11 and the server-owned
+column rules of §6.7 for its
 partition:
 it answers units with one live section, stores its client's registration
 list, digest and record cursor (§4.5), and keeps the per-outbox watermark
@@ -9356,7 +9356,7 @@ list, digest and record cursor (§4.5), and keeps the per-outbox watermark
 replica. It MAY produce SQLite segments (§5.3). It authenticates every request to
 partition `local` and actor `local`, resolves every declared scope variable to
 all values, and issues no lease. It applies no live byte budget (§4.6). It has no realtime channel (§8), blob routes
-(§5.9), write or commit validators (§6.7, §6.8), server column hooks (§6.12),
+(§5.9), write or commit validators (§6.7, §6.8),
 reactions (§6.9) or remote operations.
 
 Before it serves, the authority migrates its own tables to the running schema

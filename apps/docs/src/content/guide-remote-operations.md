@@ -464,9 +464,10 @@ Row validators, the whole-commit validator, the reaction planner, and command ca
 
 Row validators, the whole-commit validator, the reaction planner, and command
 `run` callbacks execute inside the push transaction. Each receives a
-transaction-bound `queryAuthoritative`: `context.queryAuthoritative` in a row
-validator or a command, `read.queryAuthoritative` in the whole-commit
-validator or the reaction planner. It takes the request that
+transaction-bound `queryAuthoritative`: `context.queryAuthoritative` in a
+command, `context.read.queryAuthoritative` in a row validator, and
+`read.queryAuthoritative` in the whole-commit validator or the reaction
+planner. It takes the request that
 `storage.queryAuthoritative` takes, built from the same generated descriptor:
 
 ```ts
@@ -478,7 +479,7 @@ if (rolePlan === undefined) throw new Error('regenerate queries');
 
 export const requireScheduler: Validator = async (operation, context) => {
   const clinicId = String(operation.row?.clinic_id ?? operation.stored?.clinic_id);
-  const { rows } = await context.queryAuthoritative({
+  const { rows } = await context.read.queryAuthoritative({
     plan: rolePlan,
     params: clinicRoleQuery.bind({ clinicId, actorId: context.actorId }),
     tables: clinicRoleQuery.tables,

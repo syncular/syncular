@@ -1,26 +1,34 @@
 /**
- * §6.12 server-owned columns: a per-table hook completes an accepted upsert
- * inside the push transaction, the server discards pushed values of those
- * columns, and the stored scopes take the hook's values in the same commit.
+ * §6.7 server-owned columns: the per-table row validator completes an
+ * accepted upsert inside the push transaction, the server discards pushed
+ * values of those columns, and the stored scopes take the validator's values
+ * in the same commit.
  */
 import { describe, expect, test } from 'bun:test';
 import {
   decodeMessage,
+  decodeRemoteOperationResponse,
   decodeRow,
+  encodeRemoteOperationRequest,
   encodeSparseRow,
   type RequestFrame,
   type RowColumn,
+  type RowValue,
   type SparseRowValue,
 } from '@syncular/core';
 import {
   compileSchema,
+  handleRemoteOperation,
   handleSyncRequest,
+  registerRemoteCommand,
+  RemoteOperationRegistry,
+  remoteCommand,
   schemaWindowOf,
-  type ServerColumnsHook,
   type ServerSchema,
   type TableSchema,
   type ValidateRow,
   ValidationRejection,
+  type Validator,
 } from '@syncular/server';
 import {
   liveChanges,
@@ -83,10 +91,8 @@ const OLDER: ServerSchema = {
 
 /** Labels from the actor and the candidate facility row; the activity window
  * from the body, on insert only (§3.4 rule 5 keeps it on update). */
-const labels: ServerColumnsHook = async (
-  { row, stored },
-  { actorId, read },
-) => {
+const labels: Validator = async ({ row, stored }, { actorId, read }) => {
+  if (row === undefined) return;
   const facility = await read.getRow('facilities', String(row.facility_id));
   return {
     actor_label: `Actor ${actorId}`,
@@ -95,16 +101,15 @@ const labels: ServerColumnsHook = async (
   };
 };
 
-function fixture(hook: ServerColumnsHook = labels) {
+function fixture(hook: Validator = labels) {
   const validated: ValidateRow[] = [];
   const t = makeContext({
     schema: SCHEMA,
     schemaWindow: [compileSchema(SCHEMA), compileSchema(OLDER)],
-    serverColumns: { domain_events: hook },
-    validators: {
-      domain_events: (op) => {
+    validators: { domain_events: hook },
+    commitValidator: ({ operations }) => {
+      for (const op of operations)
         if (op.row !== undefined) validated.push(op.row);
-      },
     },
   });
   t.scopes.value = { facility_id: ['f1'], activity_window_id: ['*'] };
@@ -157,7 +162,7 @@ function fixture(hook: ServerColumnsHook = labels) {
   return { t, send, push, stored, validated };
 }
 
-describe('server-owned columns (§6.12)', () => {
+describe('server-owned columns (§6.7)', () => {
   test('an insert without the columns stores the hook values and reaches the server-set unit in the same commit', async () => {
     const { send, stored, validated } = fixture();
     const activity = new TestReplica().register({
@@ -192,7 +197,7 @@ describe('server-owned columns (§6.12)', () => {
       scopes: { facility_id: 'f1', activity_window_id: 'w-day1' },
       serverVersion: 1,
     });
-    // The §6.7 validator sees the completed row.
+    // The §6.8 whole-commit validator sees the completed row.
     expect(validated.at(-1)).toMatchObject({ actor_label: 'Actor actor-1' });
     const pulled = await send(activity.frames());
     activity.apply(pulled);
@@ -238,8 +243,8 @@ describe('server-owned columns (§6.12)', () => {
     });
   });
 
-  test('a hook fault rejects the commit; a ValidationRejection keeps its host code', async () => {
-    const faults: [ServerColumnsHook, string][] = [
+  test('a validator fault rejects the commit; a ValidationRejection keeps its host code', async () => {
+    const faults: [Validator, string][] = [
       [() => ({ body: 'rewritten' }), 'sync.constraint_violation'],
       [() => ({ actor_label: 7 }), 'sync.constraint_violation'],
       [() => ({ activity_window_id: '' }), 'sync.constraint_violation'],
@@ -264,7 +269,7 @@ describe('server-owned columns (§6.12)', () => {
     }
     // An update that moves the server-owned scope column is a server fault.
     const { push, stored } = fixture(({ row }) => ({
-      activity_window_id: `w-${row.body}`,
+      activity_window_id: `w-${row?.body}`,
     }));
     await push('e1', ['e1', 'f1', 'day1', null, null, null]);
     expect(
@@ -280,12 +285,72 @@ describe('server-owned columns (§6.12)', () => {
     ).toMatchObject({
       status: 'error',
       code: 'sync.constraint_violation',
-      message: 'server column hook failed',
+      message: 'write validator failed',
     });
     expect((await stored('e1'))?.values[5]).toBe('w-day1');
   });
 
-  test('schema compile refuses a server-owned column the hook could not own', () => {
+  test('a registered command write takes the validator values; a rescope keeps the stored ones', async () => {
+    type Input = {
+      readonly op: 'upsert' | 'rescope';
+      readonly values: Readonly<Record<string, RowValue>>;
+    };
+    const write = registerRemoteCommand<Input>(remoteCommand<Input>('write'), {
+      authorize: () => true,
+      run: (_context, input) => [
+        { table: 'domain_events', op: input.op, values: input.values },
+      ],
+    });
+    const { t, stored } = fixture();
+    const run = async (requestId: string, input: Input) => {
+      const response = decodeRemoteOperationResponse(
+        await handleRemoteOperation(
+          encodeRemoteOperationRequest({
+            revision: 1,
+            kind: 'command',
+            clientId: 'command-test',
+            operationId: 'write',
+            requestId,
+            params: input,
+          }),
+          t.ctx,
+          new RemoteOperationRegistry([write]),
+        ),
+      );
+      if (response.kind !== 'command') throw new Error('expected a command');
+      return response.status;
+    };
+    const event = {
+      id: 'e1',
+      facility_id: 'f1',
+      body: 'day1',
+      actor_label: null,
+      facility_label: null,
+      activity_window_id: null,
+    };
+    expect(await run('r1', { op: 'upsert', values: event })).toBe('applied');
+    expect(await stored('e1')).toMatchObject({
+      values: ['e1', 'f1', 'day1', 'Actor actor-1', null, 'w-day1'],
+      scopes: { facility_id: 'f1', activity_window_id: 'w-day1' },
+    });
+    // §2.2: a rescope moves the scope column and ignores returned values.
+    expect(
+      await run('r2', {
+        op: 'rescope',
+        values: {
+          ...event,
+          actor_label: 'Actor actor-1',
+          activity_window_id: 'w-moved',
+        },
+      }),
+    ).toBe('applied');
+    expect(await stored('e1')).toMatchObject({
+      values: ['e1', 'f1', 'day1', 'Actor actor-1', null, 'w-moved'],
+      scopes: { facility_id: 'f1', activity_window_id: 'w-moved' },
+    });
+  });
+
+  test('schema compile refuses a server-owned column the validator could not own', () => {
     const owned =
       (column: Partial<RowColumn>, table: Partial<TableSchema> = {}) =>
       () =>

@@ -1,5 +1,5 @@
 /**
- * §6.12 server-owned columns: the server's hook sets them inside the push
+ * §6.7 server-owned columns: the server's validator sets them inside the push
  * transaction, so a pushed row is stored and delivered with the server's
  * values, under a server-set scope, in the same commit. Both client cores
  * refuse to author such a column; a push that carries one (an older app's
@@ -45,8 +45,8 @@ const SCHEMA: DriverSchema = {
 
 export const serverColumnScenarios: readonly Scenario[] = [
   {
-    name: 'server-columns/hook-sets-owned-columns-in-the-push-commit',
-    specRefs: ['§6.12', '§3.4', '§6.2'],
+    name: 'server-columns/validator-sets-owned-columns-in-the-push-commit',
+    specRefs: ['§6.7', '§3.4', '§6.2'],
     requires: ['server-columns', 'scope-authorization'],
     server: { schema: SCHEMA },
     async run(ctx) {

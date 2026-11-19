@@ -44,7 +44,7 @@ await client.syncUntilIdle();
 
 On Node, pass `new NodeSqliteDatabase(path)` from `@syncular/server/sqlite` instead of `BunSqliteDatabase`. A `crdt` column needs the same `crdtMergers` a remote server takes ([CRDT columns](/concepts-crdt/)).
 
-The authority grants every scope value to its one local actor and has no realtime channel, blob routes, validators, server column hooks, reactions, or remote operations. It discards pushed values of [server-owned columns](/guide-server/#server-owned-columns) and stores NULL on insert. Drive rounds with `syncUntilIdle()` or the shared scheduler ([Server-side clients](/guide-server-clients/)).
+The authority grants every scope value to its one local actor and has no realtime channel, blob routes, validators, reactions, or remote operations. It discards pushed values of [server-owned columns](/guide-server/#server-owned-columns) and stores NULL on insert. Drive rounds with `syncUntilIdle()` or the shared scheduler ([Server-side clients](/guide-server-clients/)).
 
 ::checkpoint[After `client.mutate(...)` and `syncUntilIdle()`, `client.pendingCommits()` is empty.]
 

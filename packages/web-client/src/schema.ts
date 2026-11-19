@@ -868,7 +868,7 @@ export function normalizeRecordKeys(
     const { name: sqlName, serverOwned } = table.columns[index] as RowColumn;
     if (serverOwned) {
       throw invalidRequest(
-        'a server-owned column is not a mutation value (§6.12)',
+        'a server-owned column is not a mutation value (§6.7)',
         false,
         { table: table.name, column: sqlName },
       );

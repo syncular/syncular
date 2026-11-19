@@ -321,7 +321,7 @@ fn apply_operation(
             "row payload failed row-codec decode (§1.7)",
         ));
     };
-    // §6.12: the authority discards a pushed value of a server-owned column,
+    // §6.7: the authority discards a pushed value of a server-owned column,
     // so an older client that still writes one stays valid.
     for index in &table.server_owned {
         sparse[*index] = if stored.is_none() {

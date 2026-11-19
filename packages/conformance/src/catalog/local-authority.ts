@@ -216,7 +216,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
 
   {
     name: 'local-authority/discards-pushed-server-owned-values',
-    specRefs: ['§12.2', '§6.12', '§7.4.4'],
+    specRefs: ['§12.2', '§6.7', '§7.4.4'],
     requires: ['local-authority'],
     async run(ctx) {
       const notes = (serverOwned: boolean, version: number): DriverSchema => ({

@@ -123,7 +123,7 @@ describe('recordToRowValues — two-casing normalization', () => {
   });
 });
 
-describe('server-owned columns (§6.12)', () => {
+describe('server-owned columns (§6.7)', () => {
   const events = compileClientSchema({
     version: 1,
     tables: [
@@ -159,7 +159,7 @@ describe('server-owned columns (§6.12)', () => {
       }
       expect(error).toMatchObject({
         code: 'sync.invalid_request',
-        message: 'a server-owned column is not a mutation value (§6.12)',
+        message: 'a server-owned column is not a mutation value (§6.7)',
         details: { table: 'events', column: 'actor_label' },
       });
     }

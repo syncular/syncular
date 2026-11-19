@@ -1,5 +1,5 @@
 /**
- * §6.12 typegen: `serverColumns` marks columns `serverOwned` in the IR and in
+ * §6.7 typegen: `serverColumns` marks columns `serverOwned` in the IR and in
  * every emitter's embedded schema; the generate-time refusals fire; the TS
  * insert and update shapes omit the column while the row shape keeps it.
  */
@@ -61,7 +61,7 @@ function failure(fn: () => unknown): TypegenError {
   throw new Error('expected a TypegenError');
 }
 
-describe('§6.12 serverColumns', () => {
+describe('§6.7 serverColumns', () => {
   test('marks the column serverOwned in the IR and nothing else', () => {
     const ir = buildIr(manifest(['stamped_at']), MIGRATIONS);
     const columns = ir.tables[0]?.columns ?? [];

@@ -47,7 +47,7 @@ pub struct ColumnIr {
     /// §5.11: the app-side type of an encrypted column (`declaredType` in JSON).
     #[serde(default, rename = "declaredType")]
     pub declared_type: Option<String>,
-    /// §6.12: the server sets this column inside the push; a client never
+    /// §6.7: the server sets this column inside the push; a client never
     /// authors it (`serverOwned` in JSON).
     #[serde(default, rename = "serverOwned")]
     pub server_owned: bool,
@@ -130,7 +130,7 @@ pub struct TableSchema {
     pub fts_indexes: Vec<FtsIndexSchema>,
     /// §5.11: encrypted columns (index + declared type). Empty ⇒ no E2EE.
     pub encrypted_columns: Vec<EncryptedColumn>,
-    /// §6.12: indices of server-owned columns. Empty ⇒ every column is authored.
+    /// §6.7: indices of server-owned columns. Empty ⇒ every column is authored.
     pub server_owned_columns: Vec<usize>,
     /// §7.4.3: a schema bump keeps the table while this equals the persisted one.
     pub generation: Option<String>,
@@ -234,7 +234,7 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
         let mut encrypted_columns = Vec::new();
         let mut server_owned_columns = Vec::new();
         for (index, column) in table.columns.iter().enumerate() {
-            // §6.12: typegen and the servers refuse an ineligible column.
+            // §6.7: typegen and the servers refuse an ineligible column.
             if column.server_owned {
                 server_owned_columns.push(index);
             }

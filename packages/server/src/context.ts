@@ -25,11 +25,7 @@ import type {
   ServerStorage,
   StoredCommit,
 } from './storage';
-import type {
-  CommitValidator,
-  ServerColumnsRegistry,
-  ValidatorRegistry,
-} from './validate';
+import type { CommitValidator, ValidatorRegistry } from './validate';
 
 /** SSP2 body content type (§1.1). */
 export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
@@ -191,19 +187,13 @@ export interface SyncServerConfig {
    * builds no validator context — zero cost. Present ⇒ each push operation
    * on a listed table runs its validator after decode + §3.4 scope
    * authorization, inside the commit transaction; a throw rejects the
-   * whole commit atomically (§6.4) with the host code (§6.3). Kept a host
+   * whole commit atomically (§6.4) with the host code (§6.3). On an insert
+   * or update the validator may return values of the table's server-owned
+   * columns, which are stored and fanned out in the same commit. Kept a host
    * callback (like `resolveScopes`) — business rules live in the host
    * process, never on the wire.
    */
   readonly validators?: ValidatorRegistry;
-  /**
-   * §6.12 per-table server column hooks (`table` → hook). Each accepted
-   * upsert on a listed table runs its hook inside the push transaction,
-   * after §3.4 authorization and before §6.7 validation; the returned values
-   * of the table's server-owned columns are stored and fanned out in the
-   * same commit.
-   */
-  readonly serverColumns?: ServerColumnsRegistry;
   /**
    * §6.8 whole-commit validator. When present, the storage serializes this
    * partition before operation reads/writes, then invokes the callback once

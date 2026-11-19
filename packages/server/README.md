@@ -195,20 +195,21 @@ fail at construction. Diagnostic prose stays in `message`; apps should map
 the stable code/details to localized copy instead of displaying that message.
 
 Validators are per-operation. A validator must not mutate the row it receives;
-a value only the server decides belongs in a server-owned column, which a
-`serverColumns` hook sets before the validator runs
+a value only the server decides belongs in a server-owned column, whose value
+the validator returns
 ([Server-owned columns](https://syncular.dev/guide-server/#server-owned-columns)).
 
 A validator that decides from other rows (a membership, a role, a grant) calls
-`context.queryAuthoritative` with the request `storage.queryAuthoritative`
+`context.read.queryAuthoritative` with the request `storage.queryAuthoritative`
 takes, built from a generated query descriptor. The storage binds every
 relation to the commit's partition and runs the statement on the push
 transaction's connection, so the read sees the operations staged before this
 one and needs no second pool connection. Never call
 `storage.queryAuthoritative` from a validator: on SQLite and PGlite it waits
 for the push transaction and the push never completes, and on a pool it reads
-committed state. The whole-commit reader, the reaction planner reader, and the
-remote command context expose the same method. See
+committed state. `context.read` is the whole-commit candidate-state reader;
+the reaction planner reader and the remote command context expose the same
+method. See
 [Read a generated query inside a push transaction](https://syncular.dev/guide-remote-operations/#read-a-generated-query-inside-a-push-transaction).
 
 For a multi-row or multi-table invariant, install `commitValidator`. It runs

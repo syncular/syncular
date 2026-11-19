@@ -229,7 +229,7 @@ function applyEncryption(
 }
 
 /**
- * §6.12: mark each `serverColumns` entry `serverOwned`. Hard errors: unknown
+ * §6.7: mark each `serverColumns` entry `serverOwned`. Hard errors: unknown
  * column, primary key, non-nullable column (a client's optimistic row holds
  * NULL until the server row arrives), crdt column, encrypted column.
  */
@@ -270,7 +270,7 @@ function applyServerColumns(
       );
     } else if (!column.nullable) {
       fail(
-        'a server column must be nullable (§6.12)',
+        'a server column must be nullable (§6.7)',
         'typegen.server_column_not_null',
       );
     }

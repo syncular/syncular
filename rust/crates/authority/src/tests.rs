@@ -3675,7 +3675,7 @@ fn server_owned_columns_stay_out_of_the_key_the_owner_set_crdt_and_encryption() 
     ] {
         let error = open(columns, extra).err().expect("refused");
         assert!(
-            error.details.unwrap().to_string().contains("(§6.12)"),
+            error.details.unwrap().to_string().contains("(§6.7)"),
             "{}",
             error.message
         );

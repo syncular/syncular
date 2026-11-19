@@ -5,9 +5,10 @@
  * row-codec decode (§6.1) and the §3.4 scope authorization, INSIDE the
  * commit transaction, once per operation. It is the seam for business
  * rules that scopes cannot express ("title ≤ 200 chars", "amount ≥ 0",
- * "status ∈ {…}"). A throw (or rejected promise) rejects the whole commit
- * atomically (§6.4) with a host-defined code the client surfaces unchanged
- * in its rejection record (§6.3).
+ * "status ∈ {…}") and for the values of server-owned columns. A throw (or
+ * rejected promise) rejects the whole commit atomically (§6.4) with a
+ * host-defined code the client surfaces unchanged in its rejection record
+ * (§6.3).
  *
  * The feature is OFF by default (no `validators` on the config): the push
  * path pays only an `undefined` check per operation and builds no context
@@ -55,8 +56,9 @@ export type ValidateOpKind = 'upsert' | 'delete';
 
 /**
  * One push operation as the validator sees it (§6.7). For an `upsert`,
- * `row` is the post-merge, post-scope-strip row that will be written and
- * `stored` is the prior stored row (or `undefined` on insert). For a
+ * `row` is the post-merge, post-scope-strip row that will be written, with
+ * each server-owned column as stored (NULL on an insert), and `stored` is
+ * the prior stored row (or `undefined` on insert). For a
  * `delete`, `row` is `undefined` and `stored` is the row about to be
  * removed (a delete only reaches a validator when a stored row exists —
  * an absent-row delete is an idempotent no-op that never validates, §6.2).
@@ -188,7 +190,7 @@ export type CommitValidator = (
  * inside and the push never completes, and on a pool-backed executor (`pg`,
  * `Bun.sql`) it reads committed state without the staged writes, or waits
  * forever once push transactions hold every pool connection. An authority
- * read calls `queryAuthoritative` on this context instead.
+ * read goes through `read` instead.
  */
 export interface ValidateContext {
   /** Host-authenticated actor (§1.1) performing the write. */
@@ -198,17 +200,13 @@ export interface ValidateContext {
   /** The context `authenticate` returned for this request (§1.1); absent without one. */
   readonly context?: string;
   /**
-   * Run a generated registered query on the push transaction (§6.7). The
-   * request has the shape `ServerStorage.queryAuthoritative` takes; the
-   * storage binds every relation to the commit's partition. SQLite and
-   * PostgreSQL return the transaction's snapshot, including the operations
-   * staged before this one; D1 fails with
+   * The §6.8 candidate-state reader of the push transaction: it sees every
+   * operation staged before this one. `read.queryAuthoritative` runs a
+   * generated registered query on that transaction; D1 fails with
    * `sync.storage.query_over_staged_writes` when the query reads a table the
    * commit has written.
    */
-  readonly queryAuthoritative: (
-    query: AuthoritativeQueryRequest,
-  ) => Promise<AuthoritativeQueryResult>;
+  readonly read: CommitValidationReader;
 }
 
 /**
@@ -220,8 +218,15 @@ export interface ValidateContext {
  * `sync.constraint_violation` code (a validator SHOULD throw
  * `ValidationRejection` to control the code). MUST NOT mutate the row.
  *
+ * On an insert or update of a pushed commit or a registered command, the
+ * validator may return values for the table's server-owned columns; a column
+ * it omits keeps its value in `row`. A key that names no server-owned column,
+ * a value the column's type refuses, or a changed scope column on an update
+ * rejects the commit with `sync.constraint_violation`. The server ignores
+ * returned values on a delete, a rescope (§2.2) and a §6.11 cascade.
+ *
  * The hook runs inside the push transaction. An authority read uses
- * `ctx.queryAuthoritative`, which executes on that transaction; calling
+ * `ctx.read.queryAuthoritative`, which executes on that transaction; calling
  * `ServerStorage.queryAuthoritative` from here deadlocks on a
  * single-connection executor and reads committed state on a pool-backed one.
  * A rule over sibling operations belongs in the whole-commit
@@ -230,7 +235,7 @@ export interface ValidateContext {
 export type Validator = (
   op: ValidateOperation,
   ctx: ValidateContext,
-) => void | Promise<void>;
+) => ValidateRow | void | Promise<ValidateRow | void>;
 
 /** Table name → validator (§6.7). Absent tables are unvalidated. */
 export type ValidatorRegistry = Readonly<Record<string, Validator>>;
@@ -315,35 +320,3 @@ export function toValidateRow(
   });
   return row;
 }
-
-/** §6.12: the accepted upsert a server column hook completes. `row` is the
- * merged row (present columns over stored values, crdt columns merged) with
- * every server-owned column as stored, or NULL on an insert. */
-export interface ServerColumnsInput {
-  readonly table: string;
-  readonly rowId: string;
-  readonly row: ValidateRow;
-  readonly stored: ValidateRow | undefined;
-}
-
-export interface ServerColumnsContext {
-  readonly actorId: string;
-  readonly partition: string;
-  readonly context?: string;
-  /** The §6.8 candidate-state reader of the push transaction. */
-  readonly read: CommitValidationReader;
-}
-
-/**
- * §6.12: returns values for the table's server-owned columns; a column it
- * omits keeps its value in `row`. A key that names no server-owned column, a
- * value the column's type refuses, or a changed scope column on an update
- * rejects the commit with `sync.constraint_violation`, like any other throw
- * that is not a {@link ValidationRejection}.
- */
-export type ServerColumnsHook = (
-  input: ServerColumnsInput,
-  ctx: ServerColumnsContext,
-) => ValidateRow | Promise<ValidateRow>;
-
-export type ServerColumnsRegistry = Readonly<Record<string, ServerColumnsHook>>;

@@ -67,7 +67,7 @@ export interface ManifestTable {
    */
   readonly encryptedColumns: readonly string[];
   /**
-   * §6.12: columns the server sets inside the push transaction. The IR marks
+   * §6.7: columns the server sets inside the push transaction. The IR marks
    * each `serverOwned`. Hard errors (unknown, pk, non-nullable, crdt or
    * encrypted column) are enforced at generate time.
    */

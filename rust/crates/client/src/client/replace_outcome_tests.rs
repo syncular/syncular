@@ -463,7 +463,7 @@ fn a_registration_change_during_the_drive_keeps_the_decision_pending() {
     );
 }
 
-/// §6.12 `notes` with a nullable `label`, server-owned when `owned`.
+/// §6.7 `notes` with a nullable `label`, server-owned when `owned`.
 fn labeled(owned: bool, version: i32) -> Value {
     json!({
         "version": version,
@@ -503,7 +503,7 @@ fn write_label(client: &mut SyncClient, label: &str) {
         .unwrap();
 }
 
-/// §6.12: the server stores a value the client did not push (here an older
+/// §6.7: the server stores a value the client did not push (here an older
 /// client writes a column the server owns) and the delivered change
 /// replaces the acknowledged intent.
 #[test]

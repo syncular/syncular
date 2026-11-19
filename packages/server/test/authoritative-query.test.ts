@@ -677,7 +677,7 @@ describe('transaction-bound registered queries in push hooks (§6.7, §6.8)', ()
       tasks: async (_op, ctx) => {
         let bodies: string[];
         try {
-          const { rows } = await ctx.queryAuthoritative(grants('p1'));
+          const { rows } = await ctx.read.queryAuthoritative(grants('p1'));
           bodies = rows.map((row) => String(row.body));
         } catch (error) {
           failures.push(error);

@@ -214,7 +214,7 @@ pub fn normalize_values_casing(
         };
         if table.server_owned_columns.contains(&index) {
             return Err(format!(
-                "sync.invalid_request: table {:?}: a server-owned column is not a mutation value (§6.12): {:?}",
+                "sync.invalid_request: table {:?}: a server-owned column is not a mutation value (§6.7): {:?}",
                 table.name, key
             ));
         }
@@ -1131,7 +1131,7 @@ mod naming_tests {
                 .expect_err("server-owned key refused");
             assert!(
                 err.starts_with("sync.invalid_request:")
-                    && err.contains("a server-owned column is not a mutation value (§6.12)"),
+                    && err.contains("a server-owned column is not a mutation value (§6.7)"),
                 "{err}"
             );
         }
