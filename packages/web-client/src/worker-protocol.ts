@@ -193,10 +193,8 @@ export interface WorkerApi extends Omit<
   setWindow(base: WindowBase, units: readonly string[]): Promise<void>;
   /** §4.8 completeness oracle: the windowed-in values of a base. */
   windowState(base: WindowBase): WindowState;
-  mutate(
-    mutations: readonly MutationInput[],
-    options?: { readonly clientCommitId?: string },
-  ): string;
+  /** `clientCommitId` is minted by the page before the call (§7.1). */
+  mutate(mutations: readonly MutationInput[], clientCommitId: string): string;
   /** Partial-update convenience: read-merge-write one full-row upsert. */
   patch(
     table: string,

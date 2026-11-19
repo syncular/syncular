@@ -304,41 +304,31 @@ if (!available) {
         ],
       } as const;
       const write = async (client: {
-        mutate(
-          mutations: readonly MutationInput[],
-          options: { clientCommitId: string },
-        ): string | Promise<string>;
+        mutate(mutations: readonly MutationInput[]): string | Promise<string>;
       }) => {
-        await client.mutate(
-          [
-            {
-              op: 'upsert',
-              table: 'todos',
-              values: {
-                id: 't1',
-                list_id: 'one',
-                title: 'first',
-                blob: new Uint8Array([0, 255]),
-              },
+        await client.mutate([
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: {
+              id: 't1',
+              list_id: 'one',
+              title: 'first',
+              blob: new Uint8Array([0, 255]),
             },
-          ],
-          { clientCommitId: 'insert' },
-        );
-        await client.mutate(
-          [
-            {
-              op: 'patch',
-              table: 'todos',
-              values: { id: 't1', title: 'second' },
-              baseVersion: 3,
-            },
-          ],
-          { clientCommitId: 'patch' },
-        );
-        await client.mutate(
-          [{ op: 'delete', table: 'todos', rowId: 't1', baseVersion: 3 }],
-          { clientCommitId: 'delete' },
-        );
+          },
+        ]);
+        await client.mutate([
+          {
+            op: 'patch',
+            table: 'todos',
+            values: { id: 't1', title: 'second' },
+            baseVersion: 3,
+          },
+        ]);
+        await client.mutate([
+          { op: 'delete', table: 'todos', rowId: 't1', baseVersion: 3 },
+        ]);
       };
       const source = makeServer(bytesSchema);
       const reference = await makeClient(source, {
@@ -361,7 +351,9 @@ if (!available) {
           expect(commit.createdAtMs).toBeGreaterThanOrEqual(before);
           expect(commit.createdAtMs).toBeLessThanOrEqual(Date.now());
         }
-        const expected = reference.client.pendingCommits();
+        const expected = reference.client
+          .pendingCommits()
+          .map((commit) => ({ ...commit, clientCommitId: '' }));
         expect(expected[0]?.operations[0]).toMatchObject({
           insert: true,
           values: { blob: { $bytes: '00ff' } },
@@ -369,6 +361,7 @@ if (!available) {
         expect(
           native.map((commit) => ({
             ...commit,
+            clientCommitId: '',
             createdAtMs: 1_700_000_000_000,
           })),
         ).toEqual(expected);

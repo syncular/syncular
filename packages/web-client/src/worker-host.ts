@@ -652,11 +652,25 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('windowState', [base]);
   }
 
-  mutate(
-    mutations: readonly MutationInput[],
-    options?: { readonly clientCommitId?: string },
-  ): Promise<string> {
-    return this.#call('mutate', [mutations, options]);
+  /**
+   * §7.1: the handle mints the `clientCommitId` before the call, and a
+   * rejection carries it in `details.clientCommitId`, so the page reads a
+   * commit whose reply was lost through `pendingCommits` and `commitOutcome`.
+   */
+  async mutate(mutations: readonly MutationInput[]): Promise<string> {
+    const clientCommitId = crypto.randomUUID();
+    try {
+      return await this.#call('mutate', [mutations, clientCommitId]);
+    } catch (error) {
+      if (!(error instanceof ClientSyncError)) throw error;
+      throw new ClientSyncError(
+        error.code,
+        error.message,
+        error.retryable,
+        { ...error.details, clientCommitId },
+        error.recommendedAction,
+      );
+    }
   }
 
   /** Partial-update convenience: read-merge-write one full-row upsert. */

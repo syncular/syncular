@@ -816,15 +816,9 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     });
   }
 
-  async mutate(
-    mutations: readonly MutationInput[],
-    options?: { readonly clientCommitId?: string },
-  ): Promise<string> {
+  async mutate(mutations: readonly MutationInput[]): Promise<string> {
     const result = (await this.command('mutate', {
       mutations: encodeValue(mutations),
-      ...(options?.clientCommitId === undefined
-        ? {}
-        : { clientCommitId: options.clientCommitId }),
     })) as { clientCommitId: string };
     return result.clientCommitId;
   }

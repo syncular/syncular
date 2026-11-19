@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'mutate takes no commit ID from the app',
+    body: 'The `clientCommitId` option of `mutate` is gone from both clients, the worker handle, `useMutation`, the Tauri and React Native bridges, the native `mutate` command and the Kotlin, Swift and Flutter wrappers, along with the `client.commit_id_reused` error. The worker handle mints the ID before it calls the worker, and a rejected `mutate` carries it in `details.clientCommitId`, so a page whose reply was lost reads the commit through `pendingCommits` and `commitOutcome`. The Rust `mutate_with_commit_id` is removed; `mutate` mints the ID.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#lost-mutate-replies',
+        label: 'Lost mutate replies',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'The browser handle reports events only through listener methods',
     body: '`createSyncClientHandle` no longer takes `onSynced`, `onConflict`, `onSyncNeeded`, `onUpgrading`, `onPresence`, `onDiagnostics`, `onRoleChange`, `onLeadershipChange` or `onLeaderUnreachable` in its config. The handle has a listener method for each, and each returns an unsubscribe function. `onSyncNeeded`, `onConflict` and `onUpgrading` are new on the handle and fire in every tab, followers included, where the config callbacks fired only in the leader tab. Register listeners after the handle resolves; `statusSnapshot()` carries a startup wake or a schema reset that began before then.',
     links: [

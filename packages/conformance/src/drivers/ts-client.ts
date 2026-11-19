@@ -598,10 +598,7 @@ class TsClientInstance implements ClientInstance {
     };
   }
 
-  async mutate(
-    mutations: readonly ClientMutation[],
-    options?: { readonly clientCommitId?: string },
-  ): Promise<string> {
+  async mutate(mutations: readonly ClientMutation[]): Promise<string> {
     const inputs: MutationInput[] = mutations.map((mutation) => {
       if (mutation.op === 'delete') {
         return {
@@ -626,7 +623,7 @@ class TsClientInstance implements ClientInstance {
           : {}),
       };
     });
-    const result = this.#client.mutateCommand(inputs, options);
+    const result = this.#client.mutateCommand(inputs);
     this.#intents.push(result.effects.sync);
     return result.value;
   }

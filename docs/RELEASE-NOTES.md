@@ -257,6 +257,27 @@ resolved reaches no listener: read `statusSnapshot().syncNeeded` and
 schema reset already under way. `SyncClientConfig` of a direct `SyncClient`
 is unchanged.
 
+### mutate takes no commit ID from the app
+
+The `clientCommitId` option of `mutate` is removed from the browser client,
+the worker handle, `useMutation`, the Tauri and React Native bridges, the
+`clientCommitId` parameter of the native `mutate` command, and the
+`clientCommitId` argument in Kotlin, Swift and Flutter. The Rust client drops
+`mutate_with_commit_id`; `mutate` mints the ID. The `client.commit_id_reused`
+error is gone from both cores (SPEC §7.1, §10).
+
+The worker handle now mints the ID before it calls the worker. When its
+`mutate` rejects, the error carries the ID in `details.clientCommitId`, so a
+page whose reply was lost reads the commit through `pendingCommits` and
+`commitOutcome`. A native bridge loses a reply only with the JS context that
+made the call, so the native core mints the ID there.
+
+To upgrade, drop the second argument of `mutate` and read the ID it returns.
+Code that recovered a lost reply by its own ID reads
+`error.details.clientCommitId` from the rejection instead. The command bridge
+ignores a `clientCommitId` parameter on `mutate`. SSP2 and the wire version
+are unchanged; `PUSH_COMMIT.clientCommitId` still carries the ID.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

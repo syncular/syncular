@@ -33,25 +33,34 @@ client.mutate([
 | Omitted columns | Retain their values. |
 | Encrypted columns | A patch that writes only plaintext columns needs no encryption key for omitted encrypted columns. Their stored ciphertext stays unchanged. |
 
-## Caller-supplied commit IDs
+## Lost mutate replies
 
-`mutate` returns the commit's `clientCommitId` once the commit is queued. A worker or native bridge that fails mid-call can lose that reply after the commit was queued. To know your commit regardless, pass your own ID:
+`mutate` returns the commit's `clientCommitId` once the commit is queued. The client mints the ID; `mutate` takes none from the app. The browser worker handle mints it before it calls the worker, because a worker failure or a leader handover can lose the reply after the commit was queued. When the handle's `mutate` rejects, the error carries that ID in `details.clientCommitId`:
 
 ```ts title="src/sync.ts"
-const eventId = crypto.randomUUID();
-await client.mutate([{ table: 'todos', op: 'upsert', values: todo }], {
-  clientCommitId: eventId,
-});
+import { ClientSyncError } from '@syncular/client';
+
+try {
+  await client.mutate([{ table: 'todos', op: 'upsert', values: todo }]);
+} catch (error) {
+  const id =
+    error instanceof ClientSyncError ? error.details?.clientCommitId : undefined;
+  if (typeof id !== 'string') throw error;
+  const queued =
+    (await client.pendingCommits()).some((c) => c.clientCommitId === id) ||
+    (await client.commitOutcome(id)) !== undefined;
+  if (!queued) throw error;
+}
 ```
 
-After a lost reply, read the commit by that ID instead of calling `mutate` again. `pendingCommits()` lists it while it is queued, and `commitOutcome(eventId)` returns its final outcome once the server answered. When neither knows the ID, the lost call queued nothing, and calling `mutate` again with the same ID is safe. A call with an ID the outbox or the outcome journal still holds throws `client.commit_id_reused` with `details.clientCommitId` and writes nothing. An empty ID throws `sync.invalid_request`. The client does not detect an ID it no longer holds, such as one whose outcome left the journal through retention; never reuse an ID for a different commit. Kotlin, Swift and Flutter take the ID as a `clientCommitId` argument of `mutate`, and the command bridge as the `clientCommitId` parameter of the `mutate` command.
+Read the commit by that ID instead of calling `mutate` again. `pendingCommits()` lists it while it is queued, and `commitOutcome(id)` returns its final outcome once the server answered. When neither knows the ID, the call queued nothing. The Tauri and React Native bridges and the Kotlin, Swift and Flutter wrappers lose a reply only together with the JS context or process that made the call, so the native core mints their IDs.
 
 ## Pending commits
 
 `pendingCommits()` returns the outbox in send order. The in-process `SyncClient` returns the array; the worker handle and the Tauri and React Native bridges return a promise of the same JSON. The Rust core exposes it as `pending_commits()` and the command bridge as the `pendingCommits` command, whose reply is `{ commits }`. Each commit has these fields:
 
 - `seq`: the outbox sequence number, increasing in creation order.
-- `clientCommitId`: the ID `mutate` returned or the caller supplied.
+- `clientCommitId`: the ID `mutate` returned.
 - `createdAtMs`: the client clock when `mutate` queued the commit. A Rust replica reports `0` for a commit it queued before 0.90.
 - `operations`: one entry per operation, with `table`, `rowId`, `op` (`upsert` or `delete`; a patch is a sparse `upsert`), `baseVersion` when the write carried one, `values` on an upsert (the columns the operation writes, bytes as `{ "$bytes": "<hex>" }`), and `insert: true` on a full-row write of a row the replica did not hold.
 

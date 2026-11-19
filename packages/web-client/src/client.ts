@@ -3555,37 +3555,10 @@ export class SyncClient {
   /**
    * Record one atomic local commit (§7.1): appended to the outbox in
    * schema-agnostic form and applied optimistically to the local mirror.
-   * Returns the generated `clientCommitId`, or the caller's unused one
-   * (`client.commit_id_reused` when this replica holds it).
+   * Returns the generated `clientCommitId`.
    */
-  mutate(
-    mutations: readonly MutationInput[],
-    options?: { readonly clientCommitId?: string },
-  ): string {
-    return this.#recordMutations(mutations, options?.clientCommitId);
-  }
-
-  #recordMutations(
-    mutations: readonly MutationInput[],
-    supplied?: string,
-  ): string {
-    this.#requireActive();
-    // §7.1: a supplied ID is non-empty (§6.1) and unknown to this replica.
-    if (supplied === '') throw invalidRequest('clientCommitId is empty');
-    if (
-      supplied !== undefined &&
-      (this.#outboxCommitExists(supplied) ||
-        readCommitOutcome(this.#db, supplied))
-    )
-      throw new ClientSyncError(
-        'client.commit_id_reused',
-        'clientCommitId is held',
-        false,
-        { clientCommitId: supplied },
-      );
-    const clientCommitId = supplied ?? crypto.randomUUID();
-    this.#appendCommit(clientCommitId, this.#outboxOperations(mutations));
-    return clientCommitId;
+  mutate(mutations: readonly MutationInput[]): string {
+    return this.mutateCommand(mutations).value;
   }
 
   /** §7.1: validate local mutations into their stored outbox operations. */
@@ -3799,12 +3772,18 @@ export class SyncClient {
     this.#emitSyncIntent({ kind: 'interactive' });
   }
 
-  /** Host-facing mutation result with explicit network work intent (§7.5). */
+  /**
+   * Host-facing mutation result with explicit network work intent (§7.5).
+   * The worker handle passes the `clientCommitId` it minted before the call
+   * (§7.1), so a lost reply leaves the ID known to the page.
+   */
   mutateCommand(
     mutations: readonly MutationInput[],
-    options?: { readonly clientCommitId?: string },
+    clientCommitId: string = crypto.randomUUID(),
   ): CommandResult<string> {
-    return this.#commandResult(this.mutate(mutations, options));
+    this.#requireActive();
+    this.#appendCommit(clientCommitId, this.#outboxOperations(mutations));
+    return this.#commandResult(clientCommitId);
   }
 
   /**
@@ -3840,7 +3819,7 @@ export class SyncClient {
         : pkType === 'boolean' && (rowId === 'true' || rowId === 'false')
           ? rowId === 'true'
           : rowId;
-    return this.#recordMutations([
+    return this.mutate([
       definedObject({
         table,
         op: 'patch',

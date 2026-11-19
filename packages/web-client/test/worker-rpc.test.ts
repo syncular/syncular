@@ -74,7 +74,10 @@ interface ScriptedReply {
  * A promised reply holds the call until it settles.
  */
 function scriptedWorker(
-  answer: (method: string) => ScriptedReply | Promise<ScriptedReply>,
+  answer: (
+    method: string,
+    args: readonly unknown[],
+  ) => ScriptedReply | Promise<ScriptedReply>,
 ): Worker {
   const listeners = new Set<(event: MessageEvent) => void>();
   const emit = (data: unknown): void => {
@@ -94,6 +97,7 @@ function scriptedWorker(
       readonly t: string;
       readonly id?: number;
       readonly method?: string;
+      readonly args?: readonly unknown[];
     }) => {
       if (message.t === 'init') {
         queueMicrotask(() =>
@@ -102,7 +106,9 @@ function scriptedWorker(
         return;
       }
       if (message.t !== 'call') return;
-      void Promise.resolve(answer(message.method ?? '')).then((reply) =>
+      void Promise.resolve(
+        answer(message.method ?? '', message.args ?? []),
+      ).then((reply) =>
         emit(
           reply.error !== undefined
             ? { t: 'error', id: message.id, error: reply.error }
@@ -192,6 +198,52 @@ test('the worker handle serializes a BlobRef locally in canonical key order', as
   expect(handle.blobRefString(ref)).toBe(
     `{"blobId":"sha256:${'ab'.repeat(32)}","byteLength":3,"mediaType":"text/plain","name":"a.txt"}`,
   );
+});
+
+test('a lost mutate reply names the commit ID the handle minted (§7.1)', async () => {
+  const sent: unknown[] = [];
+  const handle = await createSyncClientHandle({
+    leaderLock: singleOwnerLock(),
+    worker: () =>
+      scriptedWorker((method, args) => {
+        if (method === 'mutate') sent.push(args[1]);
+        return {
+          replied: false,
+          ...(method === 'mutate'
+            ? {
+                error: {
+                  code: WORKER_FAILED_CODE,
+                  message: 'the sync worker failed',
+                  retryable: false,
+                  details: { cause: 'crash' },
+                },
+              }
+            : {}),
+        };
+      }),
+    schema: { version: 1, tables: [] },
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: false,
+    multiTab: false,
+  });
+  try {
+    let caught: unknown;
+    try {
+      await handle.mutate([{ table: 'tasks', op: 'delete', rowId: 't1' }]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(caught).toBeInstanceOf(ClientSyncError);
+    expect(caught).toMatchObject({
+      code: WORKER_FAILED_CODE,
+      details: { cause: 'crash', clientCommitId: sent[0] },
+    });
+  } finally {
+    await handle.close();
+  }
 });
 
 test('worker RPC retains structured segment transport evidence', async () => {

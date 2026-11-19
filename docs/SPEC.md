@@ -5848,21 +5848,21 @@ documents: a JSON boolean for a `boolean` column.
   client-generated `clientCommitId`s (unique forever per client; UUIDs
   recommended). The outbox is schema-agnostic (§0): it survives a schema
   bump and replays on top of the fresh re-bootstrap (§7.4).
-- `mutate` accepts an optional caller-supplied `clientCommitId`, so an app
-  that loses the call's reply (a worker or bridge failing mid-call) knows
-  which commit was its own. A supplied ID is non-empty (§6.1); an empty one
-  is `sync.invalid_request`. When the outbox or the outcome journal
-  (§7.2.1) still holds the ID, the call fails with `client.commit_id_reused` (not retryable, details
-  `{ clientCommitId }`) and records nothing: no outbox commit, local row
-  write, revision or sync intent. The app then reads the commit by ID:
-  `pendingCommits` lists it while it is pending and `commitOutcome` returns
-  its final outcome. Every core returns `pendingCommits` as the same JSON:
+- `mutate` takes no `clientCommitId` from the app; the client mints it. A
+  browser worker handle crosses a boundary that can lose the reply while the
+  page lives on (a worker failure, a leader handover), so the handle mints
+  the ID before the call and the core records the commit under it. When the handle's `mutate` rejects, the error carries the ID in
+  `details.clientCommitId`; the app reads that commit by ID: `pendingCommits`
+  lists it while it is pending, `commitOutcome` returns its final outcome,
+  and neither knows it when the call recorded nothing. A native bridge
+  (Tauri, React Native) and the in-process FFI wrappers lose a reply only
+  together with the JS context or the process that made the call, so the
+  native core mints the ID.
+- Every core returns `pendingCommits` as the same JSON:
   per commit `{seq, clientCommitId, createdAtMs, operations}`, each operation
   its schema-agnostic local form `{table, rowId, op, baseVersion?, values?,
-  insert?}` with bytes as `{"$bytes": hex}`. The client cannot detect reuse of an ID it no longer
-  holds, such as one whose journal entry retention pruned; keeping such IDs
-  unique is the caller's obligation under §2.3. The ID travels in
-  `PUSH_COMMIT.clientCommitId` as before, so SSP2 is unchanged.
+  insert?}` with bytes as `{"$bytes": hex}`. The ID travels in
+  `PUSH_COMMIT.clientCommitId`.
 - The outbox numbers its commits with a sequence `seq` that strictly
   increases in creation order and never repeats under one `outboxId`. A
   client generates a random `outboxId` when it creates its outbox and
@@ -9196,9 +9196,6 @@ written on a proven base; a client-local terminal drop with `details.reason`
 `outcome_unavailable`; non-retryable], `client.replacement_pending`
 [§7.2.2: an outcome with a pending decision accepts no other resolution;
 non-retryable],
-`client.commit_id_reused` [§7.1: a caller-supplied `clientCommitId` names a
-commit the replica still holds; non-retryable, client-local, with
-`clientCommitId` in details],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],
