@@ -3322,6 +3322,7 @@ impl SyncClient {
                     | "sync.idempotency_cache_miss"
                     | "sync.schema_not_ready"
                     | "sync.segment_build_timeout"
+                    | "sync.segment_store_unavailable"
                     | "sync.segment_expired"
                     | "sync.rate_limited"
                     | "sync.websocket_connection_limit"

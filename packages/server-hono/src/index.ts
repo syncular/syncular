@@ -11,6 +11,7 @@ import {
   encodeBody,
   encodeStream,
   errorBody,
+  errorHeaders,
   handleBlobDownload,
   handleBlobUpload,
   handleBlobUploadGrant,
@@ -112,6 +113,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     );
     const response = Response.json(errorBody(sync), {
       status: sync.httpStatus,
+      headers: errorHeaders(sync),
     });
     return c.newResponse(response.body, response);
   };

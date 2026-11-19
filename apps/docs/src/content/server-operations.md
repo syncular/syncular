@@ -53,6 +53,7 @@ The sink is part of `SyncServerConfig`, so adapters pass it through without extr
 | `push.rejected` rate by `code` | A rising `sync.forbidden` share usually marks an authorization regression in your host; check it before you suspect clients. `push.conflicted` is normal offline-first traffic. |
 | `scopes.resolve_failed` | Any nonzero rate. This is the fail-loud path, and it is almost always a host bug or a dead resolver dependency. |
 | `request.handled` with `outcome: "error"` and `errorCode: "internal"` | Storage failures that surface mid-stream. |
+| `request.handled` with `errorCode: "sync.segment_store_unavailable"` | Sustained occurrences: the segment store refuses calls. Clients retry on their own, so a burst of seconds needs no action; `onError` holds the store's errors ([Reporting server errors](/guide-server/#reporting-server-errors)). |
 | `pull.served` with `live.status: "reset"` or a unit with `status: "reset"` | Spikes relative to fleet size ([Commit-log pruning](#commit-log-pruning)). |
 | `prune.completed` with `advanced: false` | Many consecutive passes while the log grows. One lagging cursor inside the active window pins retention; the floors bound the damage to `ageForceMs`. |
 | `reaction.prune_completed` with `mayHaveMore: true` | After every scheduled batch: terminal rows accumulate faster than cleanup removes them. Raise the batch count or run passes more often. |

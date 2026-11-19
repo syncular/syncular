@@ -3357,6 +3357,28 @@ enforce presign expiry with zero skew (the ≤ 60 s skew allowance above
 is native-token-only); this changes nothing for clients, which MUST
 NOT retry a URL past `urlExpiresAtMs` regardless of issuer.
 
+**Segment store failures.** When a segment store call of a pull rejects (a
+rows or sqlite image put, or the §5.3 reuse lookup), the server fails the
+request with the retryable `sync.segment_store_unavailable` (§10.2), whose
+`details.operation` names the call (`put` or `find`). Before the header frames
+went out it answers HTTP 503 with `Retry-After: 5`; after them (§1.6) it writes
+`ERROR` and `END`. It records the code as the client's round failure (§4.5)
+and hands the store's own error to the host's observation hook (§10.2); the
+message and `details` never carry it. With several puts in flight, the first
+failed page's error ends the pull. A failure outside a store call (encoding a
+segment, signing its URL, a storage read) keeps its own code or answers
+`sync.internal_error`. The reference clients retry the code on their own
+backoff and read no `Retry-After`.
+
+DECISION (2026-11-19): only a rejected segment store call maps to
+`sync.segment_store_unavailable`. Diego's R2 bucket refused 38 object writes of
+segment puts with error 10043 within 90.6 s (34 record objects, 4 reuse
+pointers), and each pull answered `sync.internal_error`, which reads as a server
+bug in client reports. The store calls are the boundary because the server
+cannot tell a transient outage from a broken store, and a client retry is
+the right response to both; a fault in the server's own encoding stays
+`sync.internal_error`.
+
 ### 5.5 Direct download endpoint and re-authorization
 
 `GET <mount>/segments/{segmentId}` — the fallback path, and the only path
@@ -3400,6 +3422,9 @@ for clients without signed-URL support.
   indistinguishable from never-existing and `sync.not_found` applies —
   the expired→forgotten transition is legal and clients MUST treat both
   codes' recovery path identically (re-pull mints fresh descriptors).
+- A rejected segment store read (`get` or `open`) ⇒ HTTP 503
+  `sync.segment_store_unavailable` with `Retry-After: 5`, and the store's
+  error reaches the host's observation hook (§5.4).
 - Unknown segment ⇒ HTTP 404 `sync.not_found`; known-but-expired
   segment ⇒ HTTP 404 `sync.segment_expired` (§10.2 — the retryable one:
   re-pulling mints fresh descriptors).
@@ -9115,6 +9140,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes or `UNIT` frames per request (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_build_timeout` | internal | yes | retryLater | A pull response was still building at the 300 s build deadline (§1.6); written in-band as `ERROR` after the header frames and `KEEPALIVE` frames, or as HTTP 503 before them — *new in SSP2* |
+| `sync.segment_store_unavailable` | internal | yes | retryLater | A segment store call rejected during a pull or a segment download (§5.4, §5.5); HTTP 503 with `Retry-After: 5`, or an in-band `ERROR` after a pull's header frames (§1.6). `details.operation` names the call: `put`, `find`, `get` or `open` — *new in SSP2* |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
 | `sync.cursor_expired` | reset-required | no | rebootstrap | Replica cursor or unit cursor behind the pruning horizon, or a unit cursor behind the table horizon of a re-keyed table (§4.6) — *new in SSP2*; delivered as `LIVE_START` or `SUB_START` reason code |
 | `sync.scope_revoked` | scope-revoked | no | checkPermissions | Unit revoked (§3.3) — delivered as `SUB_START` reason code; a revoked (unit, table) pair travels as a revoked fenced record (§4.4) |

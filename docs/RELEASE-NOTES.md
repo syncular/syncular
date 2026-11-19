@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## 0.97.0 release notes
+
+0.97.0 answers a segment store outage as retryable unavailability
+(SYNCULAR-SEGMENT-STORE-OUTAGE-001). SSP2 and the wire version are unchanged;
+the error catalog gains one code.
+
+### A segment store outage is retryable
+
+R2 refused 38 object writes of segment puts with error 10043 within 90.6 s,
+and each pull answered HTTP 500 `sync.internal_error`, which three clients
+reported as a server error. A rejected segment store call now fails the
+request with the new retryable code `sync.segment_store_unavailable`: a pull's
+rows or image put and its image reuse lookup, and the segment download's
+reads. Before the header frames went out the server answers HTTP 503 with
+`Retry-After: 5`; after them it writes an in-band `ERROR` and `END`, as it
+does for `sync.segment_build_timeout`. The client's record stores the code as
+its round failure. `details.operation` names the call, the store's own error
+reaches `onError` and never the message, and `mapError` no longer sees it.
+A fault in the server's own segment encoding still answers
+`sync.internal_error`. Both clients retry the code in the background on
+their own backoff; neither reads `Retry-After`.
+
 ## 0.96.0 release notes
 
 0.96.0 stops a table re-key from resetting every device

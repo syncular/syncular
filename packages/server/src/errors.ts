@@ -242,6 +242,14 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'retryLater',
     httpStatus: 503,
   },
+  // §5.4/§5.5: a SegmentStore call rejected (an object store outage). The
+  // HTTP answer carries `Retry-After: 5` (`errorHeaders`).
+  'sync.segment_store_unavailable': {
+    category: 'internal',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    httpStatus: 503,
+  },
   'sync.segment_expired': {
     category: 'not-found',
     retryable: true,
@@ -361,6 +369,36 @@ export function errorBody(error: SyncError): {
     ...(error.details !== undefined
       ? { details: JSON.parse(error.details) as unknown }
       : {}),
+  };
+}
+
+/**
+ * HTTP headers of a §10.1 error answer: `sync.segment_store_unavailable`
+ * carries a fixed `Retry-After: 5` (§10.2).
+ */
+export function errorHeaders(error: SyncError): Record<string, string> {
+  return error.code === 'sync.segment_store_unavailable'
+    ? { 'retry-after': '5' }
+    : {};
+}
+
+/**
+ * The rejection handler of a `SegmentStore` call (§5.4, §5.5): the store's
+ * error goes to `onError`, and the request fails with the retryable
+ * `sync.segment_store_unavailable`, its `details.operation` naming the call.
+ */
+export function segmentStoreFailure(
+  onError: SyncularErrorHandler | undefined,
+  route: 'sync' | 'segments',
+  operation: 'put' | 'find' | 'get' | 'open',
+): (error: unknown) => never {
+  return (error) => {
+    reportError(error, onError, route);
+    throw new SyncError(
+      'sync.segment_store_unavailable',
+      'the segment store failed',
+      JSON.stringify({ operation }),
+    );
   };
 }
 

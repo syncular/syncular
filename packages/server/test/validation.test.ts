@@ -214,6 +214,12 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'retryLater',
       httpStatus: 503,
     });
+    expect(ERROR_CATALOG['sync.segment_store_unavailable']).toMatchObject({
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      httpStatus: 503,
+    });
     expect(ERROR_CATALOG['sync.scope_revoked']).toMatchObject({
       category: 'scope-revoked',
       recommendedAction: 'checkPermissions',
@@ -315,7 +321,7 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'fixRequest',
       httpStatus: 413,
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(45);
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(46);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {

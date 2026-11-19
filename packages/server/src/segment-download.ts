@@ -15,7 +15,7 @@ import {
   RESOLVER_OUTAGE,
   touchAuthenticatedPartition,
 } from './context';
-import { SyncError, syncError } from './errors';
+import { SyncError, segmentStoreFailure, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
 import { schemaWindowOf } from './schema-window';
@@ -158,7 +158,9 @@ async function downloadSegment(
   request: SegmentDownloadRequest,
 ): Promise<SegmentDownloadResult> {
   const registry = await touchAuthenticatedPartition(ctx);
-  const entry = await ctx.segments.get(request.segmentId);
+  const entry = await ctx.segments
+    .get(request.segmentId)
+    .catch(segmentStoreFailure(ctx.onError, 'segments', 'get'));
   if (entry === undefined) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
   }
@@ -178,16 +180,21 @@ async function openSegment(
   const registry = await touchAuthenticatedPartition(ctx);
   const opened =
     ctx.segments.open !== undefined
-      ? await ctx.segments.open(request.segmentId)
-      : await ctx.segments.get(request.segmentId).then((entry) =>
-          entry === undefined
-            ? undefined
-            : {
-                record: entry.record,
-                body: bytesStream(entry.bytes),
-                byteLength: entry.bytes.length,
-              },
-        );
+      ? await ctx.segments
+          .open(request.segmentId)
+          .catch(segmentStoreFailure(ctx.onError, 'segments', 'open'))
+      : await ctx.segments
+          .get(request.segmentId)
+          .catch(segmentStoreFailure(ctx.onError, 'segments', 'get'))
+          .then((entry) =>
+            entry === undefined
+              ? undefined
+              : {
+                  record: entry.record,
+                  body: bytesStream(entry.bytes),
+                  byteLength: entry.bytes.length,
+                },
+          );
   if (opened === undefined) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
   }

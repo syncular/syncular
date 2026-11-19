@@ -833,7 +833,43 @@ describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
     expect((reported[0]?.error as Error).message).toBe(SECRET);
   });
 
-  test('a segment-store exception in a download answers 500 and reaches onError', async () => {
+  async function expectStoreUnavailable(
+    response: Response,
+    operation: string,
+  ): Promise<void> {
+    expect(response.status).toBe(503);
+    expect(response.headers.get('retry-after')).toBe('5');
+    const text = await response.text();
+    expect(text).not.toContain('secret-7f3a');
+    expect(JSON.parse(text)).toEqual({
+      code: 'sync.segment_store_unavailable',
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      message: 'the segment store failed',
+      details: { operation },
+    });
+  }
+
+  test('a segment-store exception in a pull answers 503 with Retry-After and reaches onError', async () => {
+    const segments = new MemorySegmentStore();
+    segments.put = async () => {
+      throw new Error(SECRET);
+    };
+    const { app, reported } = await faultyApp({ segments });
+    await expectStoreUnavailable(
+      await app.request('/sync', {
+        method: 'POST',
+        headers: { 'content-type': SSP2_CONTENT_TYPE },
+        body: requestBytes().slice().buffer as ArrayBuffer,
+      }),
+      'put',
+    );
+    expect(reported.map((entry) => entry.route)).toEqual(['sync']);
+    expect((reported[0]?.error as Error).message).toBe(SECRET);
+  });
+
+  test('a segment-store exception in a download answers 503 and reaches onError', async () => {
     const segments = new MemorySegmentStore();
     const { app, reported } = await faultyApp({ segments });
     const sync = await app.request('/sync', {
@@ -851,12 +887,13 @@ describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
     segments.open = async () => {
       throw new Error(SECRET);
     };
-    await expectInternalError(
+    await expectStoreUnavailable(
       await app.request(`/segments/${ref.segmentId}`, {
         headers: {
           'x-syncular-scopes': canonicalScopeJson({ project_id: ['p1'] }),
         },
       }),
+      'open',
     );
     expect(reported.map((entry) => entry.route)).toEqual(['segments']);
     expect((reported[0]?.error as Error).message).toBe(SECRET);

@@ -120,6 +120,7 @@ import {
   decodeRequestBody,
   encodeHeartbeat,
   errorBody,
+  errorHeaders,
   eraseScopeValue,
   type EraseScopeValueOptions,
   type EraseScopeValueResult,
@@ -1008,7 +1009,10 @@ export class SyncularRealtimeHost<
       );
     } catch (error) {
       const sync = this.#syncError(error, 'sync');
-      return Response.json(errorBody(sync), { status: sync.httpStatus });
+      return Response.json(errorBody(sync), {
+        status: sync.httpStatus,
+        headers: errorHeaders(sync),
+      });
     }
   }
 

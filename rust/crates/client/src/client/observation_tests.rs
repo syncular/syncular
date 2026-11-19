@@ -1707,8 +1707,13 @@ impl Transport for ServerErrorTransport {
 
 #[test]
 fn a_retryable_in_band_failure_keeps_the_socket_connected_and_still_asks_for_a_retry() {
-    // §10.2: `sync.segment_build_timeout` arrives in-band after keepalives (§1.6).
-    for code in ["sync.schema_not_ready", "sync.segment_build_timeout"] {
+    // §10.2: `sync.segment_build_timeout` and `sync.segment_store_unavailable`
+    // arrive in-band after keepalives (§1.6, §5.4).
+    for code in [
+        "sync.schema_not_ready",
+        "sync.segment_build_timeout",
+        "sync.segment_store_unavailable",
+    ] {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
         let mut transport = ServerErrorTransport {

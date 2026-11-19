@@ -1357,7 +1357,12 @@ async function* streamResponse(
       }
     }
   } catch (error) {
-    if (error instanceof SyncError) {
+    // §5.4: a segment store failure leaves the build, so `createStreamCore`
+    // answers it as HTTP 503 before the header frames and in-band after them.
+    if (
+      error instanceof SyncError &&
+      error.code !== 'sync.segment_store_unavailable'
+    ) {
       report.outcome = 'error';
       report.errorCode = error.code;
       await recordRoundFailure(ctx, clientId, error);

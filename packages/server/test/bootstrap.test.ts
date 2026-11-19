@@ -22,6 +22,7 @@ import {
   verifySegmentToken,
   MemorySegmentStore,
   type SqliteValue,
+  SyncError,
 } from '@syncular/server';
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import { Database } from 'bun:sqlite';
@@ -1580,15 +1581,30 @@ describe('segment puts in flight (§5.4)', () => {
     expect((await response).frames).toEqual(issued.frames);
   });
 
-  test('a failed put fails the pull with its error', async () => {
+  test('a failed put fails the pull with sync.segment_store_unavailable', async () => {
     const store = new GatedSegmentStore(5);
-    const response = sync(await seeded(store), frames()).then(
+    const t = await seeded(store);
+    const response = sync(t, frames()).then(
       () => undefined,
       (error: unknown) => error,
     );
     await store.untilWaiting(6);
     store.releaseAll();
-    expect(await response).toEqual(new Error('segment store unavailable'));
+    // §5.4: the store's rejection becomes the retryable catalog error. The
+    // first failed page's error ends the pull, and nothing went out yet, so
+    // the adapter answers HTTP 503.
+    expect(await response).toMatchObject({
+      code: 'sync.segment_store_unavailable',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      httpStatus: 503,
+      message: 'the segment store failed',
+      details: '{"operation":"put"}',
+    });
+    expect(
+      (await t.storage.getClientRecord(t.ctx.partition, 'client-1'))
+        ?.lastErrorCode,
+    ).toBe('sync.segment_store_unavailable');
     // The pull stops after the six puts in flight when the fifth failed.
     expect(store.order).toHaveLength(6);
   });
@@ -1673,9 +1689,9 @@ describe('KEEPALIVE while a pull builds (§1.6)', () => {
     ).toBe(false);
   });
 
-  test('a failure after the header went out is an in-band ERROR', async () => {
+  test('a store failure after the header went out is an in-band retryable ERROR', async () => {
     const store = new GatedSegmentStore(1);
-    const { errors, chunks } = await building(store);
+    const { t, errors, chunks } = await building(store);
     const first = chunks.next();
     await store.untilWaiting(1);
     jest.advanceTimersByTime(10_000);
@@ -1691,9 +1707,42 @@ describe('KEEPALIVE while a pull builds (§1.6)', () => {
       'ERROR',
     ]);
     expect(message.frames.at(-1)).toMatchObject({
-      code: 'sync.internal_error',
+      code: 'sync.segment_store_unavailable',
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
     });
+    // The store's own error reaches the host log, never the wire.
     expect(errors).toEqual([new Error('segment store unavailable')]);
+    expect(
+      (await t.storage.getClientRecord(t.ctx.partition, 'client-1'))
+        ?.lastErrorCode,
+    ).toBe('sync.segment_store_unavailable');
+  });
+
+  test('a failure outside the segment store stays sync.internal_error', async () => {
+    const { t } = await building(new MemorySegmentStore());
+    // A stored row the server cannot decode: the server's own encoding
+    // fails, not the store.
+    const scanRows = t.storage.scanRows.bind(t.storage);
+    t.storage.scanRows = async (...args) =>
+      (await scanRows(...args)).map((row) => ({
+        ...row,
+        payload: new Uint8Array([0xff]),
+      }));
+    const out: Uint8Array[] = [];
+    const stream = await createSyncResponseStream(
+      requestBytes(pullFrames(units, { accept: 0b0010 })),
+      t.ctx,
+    );
+    const failure = await (async () => {
+      for await (const chunk of stream) out.push(chunk);
+    })().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(SyncError);
   });
 
   test('a build still running at 300 s ends in-band with sync.segment_build_timeout', async () => {

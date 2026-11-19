@@ -16,7 +16,7 @@ import {
 } from '@syncular/core';
 import type { SyncRequestContext, SyncServerConfig } from './context';
 import { clockOf, limitsOf } from './context';
-import { syncError } from './errors';
+import { segmentStoreFailure, syncError } from './errors';
 import type { PullSegmentSummary } from './events';
 import {
   type CompiledSchema,
@@ -382,19 +382,21 @@ async function findImage(
   logEpoch: string,
 ): Promise<SegmentRecord | undefined> {
   if (probe.length <= limits.limitSnapshotRows) return undefined;
-  const stored = await ctx.segments.find(
-    {
-      partition: ctx.partition,
-      logEpoch,
-      table: pair.table.name,
-      schemaVersion: schema.version,
-      mediaType: 'sqlite',
-      scopeDigest: await scopeDigest(pair.effective),
-      asOfCommitSeq: scopePin,
-      rowCursor,
-    },
-    clockOf(ctx)(),
-  );
+  const stored = await ctx.segments
+    .find(
+      {
+        partition: ctx.partition,
+        logEpoch,
+        table: pair.table.name,
+        schemaVersion: schema.version,
+        mediaType: 'sqlite',
+        scopeDigest: await scopeDigest(pair.effective),
+        asOfCommitSeq: scopePin,
+        rowCursor,
+      },
+      clockOf(ctx)(),
+    )
+    .catch(segmentStoreFailure(ctx.onError, 'sync', 'find'));
   return stored !== undefined &&
     (stored.byteLength <= limitsOf(ctx).maxImageSegmentBytes ||
       stored.rowCount === 1)
@@ -583,15 +585,17 @@ async function* sqliteImageSegment(
         throw new Error('sqliteImageBuilder consumed rows out of order');
       }
       const last = index < 0 ? beforeBatch : batch[index]!.rowId;
-      return segments.put(
-        {
-          ...identity,
-          rowCount: image.rowCount,
-          nextRowCursor: image.rowCount < yielded || !exhausted ? last : null,
-        },
-        image.bytes,
-        clockOf(ctx)(),
-      );
+      return segments
+        .put(
+          {
+            ...identity,
+            rowCount: image.rowCount,
+            nextRowCursor: image.rowCount < yielded || !exhausted ? last : null,
+          },
+          image.bytes,
+          clockOf(ctx)(),
+        )
+        .catch(segmentStoreFailure(ctx.onError, 'sync', 'put'));
     })();
     builds.set(key, building);
   }
@@ -764,6 +768,7 @@ async function* tableSegments(
           bytes,
           now,
         )
+        .catch(segmentStoreFailure(ctx.onError, 'sync', 'put'))
         .then(async (record) =>
           segmentRefFrame(
             record,

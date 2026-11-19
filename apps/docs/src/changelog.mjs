@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A segment store outage is retryable',
+    body: "A rejected segment store call answers the retryable `sync.segment_store_unavailable`: a pull's segment puts and image reuse lookups, and the segment download's reads. Before a pull's header frames went out the server answers HTTP 503 with `Retry-After: 5`; after them, an in-band `ERROR`. Both clients retry it in the background. Before, an R2 outage that refused 38 writes within 90.6 s answered each pull with HTTP 500 `sync.internal_error`, which clients reported as a server error. `details.operation` names the call, and the store's own error reaches `onError`. A fault in the server's own segment encoding still answers `sync.internal_error`.",
+    links: [
+      {
+        href: '/guide-server/#reporting-server-errors',
+        label: 'Reporting server errors',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Workers: one topology per storage',
     body: "On Workers, D1 runs every round in the partition's Durable Object and PostgreSQL runs every round in the Worker, with sockets in shard objects. The form that ran PostgreSQL rounds in the partition's object is removed. `SyncularRealtimeHost` over PostgreSQL requires `namespace` and takes no `operations`; a wiring of the other topology throws `WorkersTopologyError` (`workers.topology_mismatch`). Move such a deployment to `shard`, `durableObjectRealtimeNotifier` and the Worker config's `operations`.",
     links: [
