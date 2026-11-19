@@ -98,7 +98,7 @@ A native build without the `local-authority` feature refuses a `localAuthorityPa
 
 ## Upgrade the schema
 
-Ship the new generated schema and open both components with it. `openLocalAuthority` migrates the authority's tables in place (added tables and appended nullable columns), and the client runs its ordinary reset and bootstraps from the authority. Every acknowledged row survives.
+Ship the new generated schema and open both components with it. `openLocalAuthority` migrates the authority's tables in place (added tables, appended nullable columns, and required columns made nullable), and the client runs its ordinary reset and bootstraps from the authority. Every acknowledged row survives.
 
 A write still queued at the upgrade replays after it. A queued insert stores NULL in the appended columns, and a queued update leaves them unchanged ([Appended columns](/concepts-schema-upgrades/#appended-columns)).
 

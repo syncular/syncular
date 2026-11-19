@@ -16,6 +16,7 @@ import { makeClient, makeServer, PARTITION } from './helpers';
 import {
   OPFS_SCHEMA,
   OPFS_ALTERNATIVE_SCOPE_SCHEMA,
+  OPFS_RELAX_SCHEMAS,
   OPFS_SCOPE_SCHEMAS,
   type CrashPoint,
 } from './opfs-bootstrap-fixture';
@@ -47,6 +48,10 @@ const alternativeSource = makeServer({
   })),
 });
 alternativeSource.allowed['actor-1'] = { project_id: ['p1'] };
+// The relax test upgrades this server's store from version 200 to 201.
+let relaxSchema = OPFS_RELAX_SCHEMAS[0]!;
+const relaxSource = makeServer(relaxSchema);
+relaxSource.allowed['actor-1'] = { project_id: ['p1'] };
 const expected = Array.from({ length: 4000 }, (_, i) => ({
   id: `code-${String(i).padStart(5, '0')}`,
   project_id: 'p1',
@@ -395,6 +400,25 @@ beforeAll(async () => {
           {
             segmentId: decodeURIComponent(
               pathname.slice('/alternative-segments/'.length),
+            ),
+            scopesHeader: request.headers.get('X-Syncular-Scopes') ?? '',
+          },
+        );
+        return new Response(result.bytes.slice().buffer);
+      }
+      if (pathname === '/sync-relax') {
+        const response = await handleSyncRequest(
+          new Uint8Array(await request.arrayBuffer()),
+          { ...relaxSource.ctxFor('actor-1'), schema: relaxSchema },
+        );
+        return new Response(response.slice().buffer);
+      }
+      if (pathname.startsWith('/relax-segments/')) {
+        const result = await handleSegmentDownload(
+          { ...relaxSource.ctxFor('actor-1'), schema: relaxSchema },
+          {
+            segmentId: decodeURIComponent(
+              pathname.slice('/relax-segments/'.length),
             ),
             scopesHeader: request.headers.get('X-Syncular-Scopes') ?? '',
           },
@@ -1735,6 +1759,103 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
       pending: 0,
       probe: { ftsIntegrity: 'ok', integrity: [{ integrity_check: 'ok' }] },
     });
+    expect(errors).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS replica keeps its pending writes across a relaxed required column', async () => {
+  // SPEC §2.4: the server upgrades its populated store in place; the
+  // persistent browser replica resets the relaxed table and replays.
+  const seed = await makeClient(relaxSource, {
+    clientId: 'relax-seed',
+    schema: OPFS_RELAX_SCHEMAS[0]!,
+  });
+  await seed.client.mutate(
+    ['kept', 'second'].map((title, i) => ({
+      table: 'catalogue',
+      op: 'upsert',
+      values: { id: `r${i + 1}`, project_id: 'p1', title },
+    })),
+  );
+  await seed.client.syncUntilIdle();
+  await seed.client.close();
+  seed.db.close();
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(server.url.href);
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_RELAX_SCHEMAS[0]!,
+    );
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({ project_id: 'p1' });
+      await client.syncUntilIdle();
+      await client.mutate([
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: { id: 'r3', project_id: 'p1', title: 'offline' },
+        },
+        {
+          table: 'catalogue',
+          op: 'patch',
+          values: { id: 'r2', title: 'patched' },
+        },
+      ]);
+    });
+    relaxSchema = OPFS_RELAX_SCHEMAS[1]!;
+    await relaxSource.storage.ensureSchema(compileSchema(relaxSchema));
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_RELAX_SCHEMAS[1]!,
+    );
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        const pending = (await client.pendingCommits()).length;
+        await client.syncUntilIdle();
+        await client.mutate([
+          {
+            table: 'catalogue',
+            op: 'upsert',
+            values: { id: 'r4', project_id: 'p1', title: null },
+          },
+        ]);
+        await client.syncUntilIdle();
+        return {
+          pending,
+          rows: await client.query(
+            'SELECT id, title FROM catalogue ORDER BY id',
+          ),
+          left: (await client.pendingCommits()).length,
+          probe: await window.opfsTest.probe(),
+        };
+      }),
+    ).toMatchObject({
+      pending: 1,
+      rows: [
+        { id: 'r1', title: 'kept' },
+        { id: 'r2', title: 'patched' },
+        { id: 'r3', title: 'offline' },
+        { id: 'r4', title: null },
+      ],
+      left: 0,
+      probe: { integrity: [{ integrity_check: 'ok' }] },
+    });
+    const stored = await relaxSource.storage.getRow(
+      PARTITION,
+      'catalogue',
+      'r4',
+    );
+    expect(stored).toBeDefined();
     expect(errors).toEqual([]);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {

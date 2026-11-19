@@ -152,7 +152,9 @@ After that, a deployed migration is immutable. Restore an accidentally edited
 migration and express the repair in a new `NNNN_name/up.sql`; do not delete and
 re-baseline the lock. Existing table layouts are append-only and added columns
 must be nullable so stored payloads and every server backend can upgrade
-safely. A SQL `DEFAULT` does not make a required append safe: existing
+safely. The one in-place change is `ALTER TABLE t ALTER [COLUMN] c DROP NOT
+NULL`, which makes a required column nullable (SPEC §2.4); typegen refuses it
+for the primary key, an unknown column and an already nullable column. A SQL `DEFAULT` does not make a required append safe: existing
 Syncular row payloads remain the source of truth, and no storage backend may
 silently invent a value for them. `baseline`, `migrations check`, and
 `generate` therefore reject `ALTER TABLE … ADD COLUMN … NOT NULL`, including
@@ -260,6 +262,7 @@ duplicate ordinals are errors). The parser accepts exactly:
 
 - `CREATE TABLE [IF NOT EXISTS] name ( column-defs…, [PRIMARY KEY (col)] ) [WITHOUT ROWID]`
 - `ALTER TABLE name ADD [COLUMN] column-def`
+- `ALTER TABLE name ALTER [COLUMN] col DROP NOT NULL` (a required column becomes nullable, SPEC §2.4)
 - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table ( col [, col…] )`
 - `DROP INDEX [IF EXISTS] name`
 - `DROP TABLE [IF EXISTS] name`
@@ -382,6 +385,8 @@ parsing; accepted declarations are enforced at the listed layers.
 | Column `DEFAULT literal` | accepted, ignored | Nothing. Typegen records no default and fills none; the host runs the migration SQL where a default matters. |
 | Nullable `ALTER TABLE … ADD COLUMN` | yes | A physical column in every mirror. A SQL `DEFAULT` on the same statement is ignored and never backfills Syncular payloads. |
 | `ALTER TABLE … ADD COLUMN … NOT NULL` | rejected | not applicable |
+| `ALTER TABLE … ALTER [COLUMN] … DROP NOT NULL` | yes | The column becomes nullable in the IR. The server drops the projection's `NOT NULL` at the bump (PostgreSQL in place, SQLite and D1 by a table rebuild) and keeps every payload; the bump raises the schema floor to its version (SPEC §2.4). |
+| Any other `ALTER COLUMN` action | rejected | not applicable |
 | Column `REFERENCES parent(pk) [ON DELETE RESTRICT\|CASCADE\|SET NULL]` | yes | The server commit boundary only (§6.11); the local SQLite DDL deliberately omits the clause. |
 | `CREATE [UNIQUE] INDEX` over existing columns | yes | A physical index in both client mirrors, the server relational projection, and typegen's named-query type-check DB. The `UNIQUE` variant additionally enforces uniqueness atomically on a local write (§7.2: `sync.constraint_violation`, no outbox entry, no revision advance) and on the server commit. |
 | Inline column `CHECK (expr)` | rejected | not applicable (see the gap below) |

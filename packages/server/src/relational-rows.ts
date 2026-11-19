@@ -1106,8 +1106,9 @@ export function dropTableDdl(tableName: string): string {
 
 /**
  * Enforce the migration subset on a table's column list: the old layout
- * must be an exact prefix (same name, type, nullability) of the new one,
- * and appended columns must be nullable (there is no default to backfill).
+ * must be a prefix (same name and type) of the new one, a column may change
+ * only from required to nullable (SPEC §2.4, relaxing a required column), and
+ * appended columns must be nullable (there is no default to backfill).
  * Returns `true` iff columns were appended.
  */
 export function assertAppendOnlyMigration(
@@ -1128,10 +1129,10 @@ export function assertAppendOnlyMigration(
       after === undefined ||
       before.name !== after.name ||
       before.type !== after.type ||
-      before.nullable !== after.nullable
+      (before.nullable && !after.nullable)
     ) {
       throw new Error(
-        `table ${JSON.stringify(tableName)}: column ${i} changed (${JSON.stringify(before)} → ${JSON.stringify({ name: after?.name, type: after?.type, nullable: after?.nullable })}) — only appending nullable columns is supported`,
+        `table ${JSON.stringify(tableName)}: column ${i} changed (${JSON.stringify(before)} → ${JSON.stringify({ name: after?.name, type: after?.type, nullable: after?.nullable })}) — only appending nullable columns and relaxing a required column are supported`,
       );
     }
   }
@@ -1251,16 +1252,19 @@ export function rewriteValues(
  * - `backfill`: the table just gained physical projection columns whose
  *   values exist in stored payloads (materialization flipped on) — the
  *   projection refreshes from the payload, no re-encode.
+ * - `relaxed`: existing projection columns the bump turns from required to
+ *   nullable (SPEC §2.4). Their payload bytes are unchanged; only the
+ *   physical `NOT NULL` goes.
  */
 export function rewritePlan(
   table: CompiledTable,
   oldLayout: readonly StoredColumnLayout[] | undefined,
   physicalColumnsBefore: ReadonlySet<string> | undefined,
-): { migrate: boolean; backfill: boolean } {
+): { migrate: boolean; backfill: boolean; relaxed: string[] } {
   if (oldLayout === undefined || physicalColumnsBefore === undefined) {
     // Fresh table (or a pre-layout database, which cannot be reasoned
     // about): nothing stored to rewrite.
-    return { migrate: false, backfill: false };
+    return { migrate: false, backfill: false, relaxed: [] };
   }
   const migrate = assertAppendOnlyMigration(table.name, oldLayout, table);
   const backfill =
@@ -1270,7 +1274,79 @@ export function rewritePlan(
         index < oldLayout.length && // value exists in old payloads
         !physicalColumnsBefore.has(column.name), // column was just added
     );
-  return { migrate, backfill };
+  const relaxed = table.materialize
+    ? table.columns
+        .filter(
+          (column, index) =>
+            oldLayout[index]?.nullable === false &&
+            column.nullable &&
+            physicalColumnsBefore.has(column.name),
+        )
+        .map((column) => column.name)
+    : [];
+  return { migrate, backfill, relaxed };
+}
+
+/**
+ * One physical column of a SQLite table plus the SQL of every index and
+ * trigger on it, read by {@link SQLITE_TABLE_REBUILD_SQL}.
+ */
+export interface SqliteRebuildColumnRow {
+  readonly name: string;
+  readonly type: string;
+  readonly not_null: number;
+  readonly dflt_value: string | null;
+  readonly pk: number;
+  /** JSON array of the table's index and trigger SQL (same on every row). */
+  readonly dependents: string;
+}
+
+/** Binds the table name once (`?1`); one statement, so D1 spends one query. */
+export const SQLITE_TABLE_REBUILD_SQL = `SELECT name, type, "notnull" AS not_null, dflt_value, pk,
+  (SELECT json_group_array(sql) FROM sqlite_master
+    WHERE tbl_name=?1 AND type IN ('index', 'trigger') AND sql IS NOT NULL) AS dependents
+  FROM pragma_table_info(?1) ORDER BY cid`;
+
+/**
+ * SQLite has no `ALTER COLUMN … DROP NOT NULL` (SPEC §2.4, relaxing a
+ * required column): rebuild the table as a copy that keeps every physical
+ * column declaration except `NOT NULL` on `relaxed`, copy every row, swap
+ * it in, and recreate the indexes and triggers the original carried
+ * (operator-added ones included). Rows, payloads and stored scopes are copied
+ * verbatim. Empty when no relaxed column is physically `NOT NULL`.
+ */
+export function sqliteRelaxRebuildDdl(
+  tableName: string,
+  columns: readonly SqliteRebuildColumnRow[],
+  relaxed: readonly string[],
+): string[] {
+  const relax = (column: SqliteRebuildColumnRow): boolean =>
+    column.not_null === 1 && relaxed.includes(column.name);
+  if (!columns.some(relax)) return [];
+  const target = quoteIdent(tableName);
+  // The `sync_` prefix is reserved for server storage, so no app table
+  // collides with the copy.
+  const copy = quoteIdent(`sync_rebuild_${tableName}`);
+  const names = columns.map((column) => quoteIdent(column.name)).join(', ');
+  const definitions = columns.map((column) =>
+    [
+      quoteIdent(column.name),
+      ...(column.type === '' ? [] : [column.type]),
+      ...(column.not_null === 1 && !relax(column) ? ['NOT NULL'] : []),
+      ...(column.dflt_value === null ? [] : [`DEFAULT ${column.dflt_value}`]),
+    ].join(' '),
+  );
+  const primaryKey = columns
+    .filter((column) => column.pk > 0)
+    .sort((a, b) => a.pk - b.pk)
+    .map((column) => quoteIdent(column.name));
+  return [
+    `CREATE TABLE ${copy} (${[...definitions, `PRIMARY KEY (${primaryKey.join(', ')})`].join(', ')})`,
+    `INSERT INTO ${copy} (${names}) SELECT ${names} FROM ${target}`,
+    `DROP TABLE ${target}`,
+    `ALTER TABLE ${copy} RENAME TO ${target}`,
+    ...(JSON.parse(columns[0]?.dependents ?? '[]') as string[]),
+  ];
 }
 
 /**

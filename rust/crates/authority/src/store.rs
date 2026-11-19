@@ -11,9 +11,11 @@
 //!
 //! The commit log, tombstones, idempotency records, client cursors and the
 //! log identity live in `sync_*` tables. A schema bump (§12.2) adds tables,
-//! appends nullable columns and re-keys tables whose scope patterns changed:
-//! `ADD COLUMN` extends the projection, and the stored payloads (rows and
-//! logged changes) are re-encoded with NULL in the appended slots.
+//! appends nullable columns, relaxes required columns and re-keys tables whose
+//! scope patterns changed: `ADD COLUMN` extends the projection, and the stored
+//! payloads (rows and logged changes) are re-encoded with NULL in the appended
+//! slots. A relaxed column keeps its payload bytes; the table is rebuilt
+//! without its `NOT NULL` (§2.4).
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1019,7 +1021,7 @@ pub(crate) fn transaction<T>(
 fn mismatch(table: &str, reason: &str) -> AuthorityError {
     AuthorityError::with_details(
         "sync.schema_mismatch",
-        "the schema changes the authority tables beyond appended tables and nullable columns",
+        "the schema changes the authority tables beyond appended tables, nullable columns and relaxed columns",
         json!({ "table": table, "reason": reason }),
     )
 }
@@ -1035,8 +1037,9 @@ fn column_ddl_type(column: &Column) -> &'static str {
 
 /// §12.2: bring the authority tables to `schema` before serving. A version
 /// already stored must carry the same layouts; a newer schema may add tables,
-/// append nullable columns and change scope patterns, which re-keys the
-/// table's rows (§3.1), and every other change is refused.
+/// append nullable columns, relax required columns (§2.4) and change scope
+/// patterns, which re-keys the table's rows (§3.1), and every other change is
+/// refused.
 pub(crate) fn migrate(conn: &Connection, schema: &Schema) -> Result<(), AuthorityError> {
     transaction(conn, || {
         conn.execute_batch(INTERNAL_DDL).db()?;
@@ -1170,27 +1173,30 @@ fn upgrade(
             return Err(mismatch(name, "table_removed"));
         }
     }
+    let create = |name: &str, table: &Table| -> Result<(), AuthorityError> {
+        let columns: Vec<String> = table
+            .columns
+            .iter()
+            .map(|column| {
+                format!(
+                    "{} {}{}",
+                    quote(&column.name),
+                    column_ddl_type(column),
+                    if column.nullable { "" } else { " NOT NULL" }
+                )
+            })
+            .collect();
+        conn.execute_batch(&format!(
+            "CREATE TABLE {} (_sync_partition TEXT NOT NULL, _sync_row_id TEXT NOT NULL, {}{}_sync_server_version INTEGER NOT NULL, _sync_scopes TEXT NOT NULL, _sync_payload BLOB NOT NULL, _sync_column_versions BLOB, PRIMARY KEY (_sync_partition, _sync_row_id))",
+            quote(name),
+            columns.join(", "),
+            if columns.is_empty() { "" } else { ", " },
+        ))
+        .db()
+    };
     for table in &schema.tables {
         let Some(old) = stored.get(&table.name) else {
-            let columns: Vec<String> = table
-                .columns
-                .iter()
-                .map(|column| {
-                    format!(
-                        "{} {}{}",
-                        quote(&column.name),
-                        column_ddl_type(column),
-                        if column.nullable { "" } else { " NOT NULL" }
-                    )
-                })
-                .collect();
-            conn.execute_batch(&format!(
-                "CREATE TABLE {} (_sync_partition TEXT NOT NULL, _sync_row_id TEXT NOT NULL, {}{}_sync_server_version INTEGER NOT NULL, _sync_scopes TEXT NOT NULL, _sync_payload BLOB NOT NULL, _sync_column_versions BLOB, PRIMARY KEY (_sync_partition, _sync_row_id))",
-                quote(&table.name),
-                columns.join(", "),
-                if columns.is_empty() { "" } else { ", " },
-            ))
-            .db()?;
+            create(&table.name, table)?;
             create_indexes(conn, table)?;
             continue;
         };
@@ -1214,11 +1220,19 @@ fn upgrade(
                     .collect()
             })
             .ok_or_else(|| corrupt("schema layouts"))?;
+        // §2.4: a column may only change from required to nullable.
         if old_columns.len() > table.columns.len()
-            || old_columns.iter().zip(&table.columns).any(|(a, b)| a != b)
+            || old_columns
+                .iter()
+                .zip(&table.columns)
+                .any(|(a, b)| a.name != b.name || a.ty != b.ty || (a.nullable && !b.nullable))
         {
             return Err(mismatch(&table.name, "column_changed"));
         }
+        let relaxed = old_columns
+            .iter()
+            .zip(&table.columns)
+            .any(|(a, b)| !a.nullable && b.nullable);
         let appended = &table.columns[old_columns.len()..];
         if appended.iter().any(|column| !column.nullable) {
             return Err(mismatch(&table.name, "appended_column_not_nullable"));
@@ -1231,6 +1245,33 @@ fn upgrade(
                 column_ddl_type(column)
             ))
             .db()?;
+        }
+        if relaxed {
+            // SQLite has no `ALTER COLUMN … DROP NOT NULL`: copy the rows into
+            // a table declared from the new schema, swap it in and recreate the
+            // indexes and triggers the original carried.
+            let dependents: Vec<String> = conn
+                .prepare("SELECT sql FROM sqlite_master WHERE tbl_name=?1 AND type IN ('index', 'trigger') AND sql IS NOT NULL")
+                .and_then(|mut statement| statement.query_map([&table.name], |row| row.get(0))?.collect())
+                .db()?;
+            let copy = format!("sync_rebuild_{}", table.name);
+            create(&copy, table)?;
+            let names = ["_sync_partition", "_sync_row_id"]
+                .into_iter()
+                .chain(table.columns.iter().map(|column| column.name.as_str()))
+                .chain(["_sync_server_version", "_sync_scopes", "_sync_payload", "_sync_column_versions"])
+                .map(quote)
+                .collect::<Vec<_>>()
+                .join(", ");
+            conn.execute_batch(&format!(
+                "INSERT INTO {copy} ({names}) SELECT {names} FROM {table}; DROP TABLE {table}; ALTER TABLE {copy} RENAME TO {table};",
+                copy = quote(&copy),
+                table = quote(&table.name),
+            ))
+            .db()?;
+            for sql in dependents {
+                conn.execute_batch(&sql).db()?;
+            }
         }
         if !appended.is_empty() {
             reencode(conn, table, &old_columns)?;

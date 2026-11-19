@@ -2516,6 +2516,12 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         for (const table of schema.tables.values()) {
           const oldLayout = layouts[table.name];
           const plan = rewritePlan(table, oldLayout, existing.get(table.name));
+          // SPEC §2.4: payload bytes are unchanged; only the constraint goes.
+          for (const column of plan.relaxed) {
+            await client.query(
+              `ALTER TABLE ${quoteIdent(table.name)} ALTER COLUMN ${quoteIdent(column)} DROP NOT NULL`,
+            );
+          }
           const rekey = rekeyed.includes(table.name);
           if (!plan.migrate && !plan.backfill && !rekey) continue;
           await rewriteRowsOn(

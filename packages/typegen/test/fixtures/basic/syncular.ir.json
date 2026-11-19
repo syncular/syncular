@@ -1,6 +1,6 @@
 {
   "irVersion": 1,
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "schemaVersions": [
     {
       "version": 1,
@@ -30,6 +30,12 @@
       "version": 5,
       "migrations": [
         "0005_add_doc_revision_fk"
+      ]
+    },
+    {
+      "version": 6,
+      "migrations": [
+        "0006_relax_doc_body"
       ]
     }
   ],
@@ -113,7 +119,7 @@
     },
     {
       "name": "docs",
-      "generation": "2f4330e829e02c3ed1df7586c5cda117",
+      "generation": "71fd58d27b5d1b5388ce8888473f8e1d",
       "primaryKey": "id",
       "columns": [
         {
@@ -134,7 +140,7 @@
         {
           "name": "body",
           "type": "string",
-          "nullable": false
+          "nullable": true
         },
         {
           "name": "score",

@@ -6,6 +6,8 @@
  * - `CREATE TABLE [IF NOT EXISTS] name (columns…, [PRIMARY KEY (col)])
  *   [WITHOUT ROWID]`
  * - `ALTER TABLE name ADD [COLUMN] coldef`
+ * - `ALTER TABLE name ALTER [COLUMN] col DROP NOT NULL` (SPEC §2.4, relaxing a
+ *   required column)
  * - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`
  * - `DROP INDEX [IF EXISTS] name`
  * - `DROP TABLE [IF EXISTS] name`
@@ -969,10 +971,44 @@ function parseAlterTable(
   if (table === undefined) {
     cursor.fail(`ALTER TABLE ${name}: table does not exist at this point`);
   }
-  const action = cursor.identifier('an ALTER TABLE action');
-  if (action.toUpperCase() !== 'ADD') {
+  const action = cursor.identifier('an ALTER TABLE action').toUpperCase();
+  if (action === 'ALTER') {
+    // §2.4 "Relaxing a required column": the one in-place column change.
+    cursor.eatWord('COLUMN');
+    const columnName = cursor.identifier('a column name');
+    cursor.expectWord('DROP', `after ALTER COLUMN ${columnName}`);
+    cursor.expectWord('NOT', `after ALTER COLUMN ${columnName} DROP`);
+    cursor.expectWord('NULL', `after ALTER COLUMN ${columnName} DROP NOT`);
+    cursor.expectEnd();
+    const index = table.columns.findIndex((c) => c.name === columnName);
+    const column = table.columns[index];
+    if (column === undefined) {
+      cursor.fail(
+        `ALTER TABLE ${name}: column ${JSON.stringify(columnName)} does not exist at this point`,
+      );
+    }
+    if (columnName === table.primaryKey) {
+      cursor.fail(
+        `ALTER TABLE ${name}: primary-key column ${JSON.stringify(columnName)} cannot become nullable`,
+      );
+    }
+    if (column.nullable) {
+      cursor.fail(
+        `ALTER TABLE ${name}: column ${JSON.stringify(columnName)} is already nullable`,
+      );
+    }
+    const relaxed = { ...column, nullable: true };
+    table.columns[index] = relaxed;
+    const columnSource = columnIdentifierSources.get(column);
+    if (columnSource !== undefined) {
+      columnIdentifierSources.set(relaxed, columnSource);
+    }
+    if (lockedHistoryObjects.has(column)) lockedHistoryObjects.add(relaxed);
+    return;
+  }
+  if (action !== 'ADD') {
     cursor.fail(
-      `ALTER TABLE ${name}: unsupported action ${JSON.stringify(action)} (only ADD COLUMN)`,
+      `ALTER TABLE ${name}: unsupported action ${JSON.stringify(action)} (only ADD COLUMN and ALTER COLUMN … DROP NOT NULL)`,
     );
   }
   cursor.eatWord('COLUMN');
@@ -1102,7 +1138,7 @@ export function applyMigrationSql(
     } else {
       throw new TypegenError(
         source,
-        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, DROP INDEX, and DROP TABLE)`,
+        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, ALTER TABLE … ALTER COLUMN … DROP NOT NULL, DROP INDEX, and DROP TABLE)`,
       );
     }
     const names = new Set(

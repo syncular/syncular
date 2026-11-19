@@ -52,6 +52,46 @@ Upgrade notes:
   `NOT NULL`, a CRDT column or encrypted (`typegen.server_column_*`). The
   server additionally refuses one in the owner write set at schema compile.
 
+### A required column can become nullable
+
+A migration can turn a required column nullable
+(SYNCULAR-SCHEMA-COLUMN-RETIRE-001, the required-to-nullable part):
+
+```sql
+ALTER TABLE surgeries ALTER COLUMN starts_at_ms DROP NOT NULL;
+```
+
+`typegen` accepts the statement in a new migration and refuses it for the
+primary key, an unknown column and an already nullable column. The generated
+row type becomes `number | null` in TypeScript, `Option<i64>` in Rust, and
+the nullable form in the Swift, Kotlin and Dart emitters. The table takes a new
+generation.
+
+At the schema bump the server keeps every stored row, payload, stored scope
+and column version. The row codec carries a null bit for every column, so no
+payload is rewritten. PostgreSQL runs `ALTER COLUMN … DROP NOT NULL`. SQLite,
+D1 and the local authority (TS and Rust) rebuild the table without the
+constraint and recreate its indexes and triggers, operator-added ones
+included; D1 runs the rebuild in the DDL phase of its resumable migration.
+A nullable column still never becomes required: the server refuses that bump.
+
+Upgrade notes:
+
+- The relaxation raises the schema floor to its version. A client of an
+  earlier version would refuse a NULL in the column at decode, so a
+  `schemaWindow` that lists an earlier version fails at startup with
+  `sync.schema_window.incompatible_schema`, and such a client receives the
+  floor (`requiredSchemaVersion`) until the app updates.
+- An updated client downloads the relaxed table again; kept tables and units
+  stay (SPEC §7.4.3). Writes queued under the earlier version carry a value for
+  the column or leave it out, and replay unchanged.
+- Deploy the server before the clients, as for any bump.
+
+SSP2, the wire version and the multi-tab protocol are unchanged. SPEC §2.4
+"Relaxing a required column" states the rule; the conformance scenario
+`schema-bump/required-column-relaxed-to-nullable` runs it for the TS and Rust
+clients.
+
 ## 0.93.0 release notes
 
 0.93.0 stops incomplete live queries from re-reading after every import commit

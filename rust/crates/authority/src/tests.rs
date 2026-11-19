@@ -1752,6 +1752,78 @@ fn a_schema_bump_appends_a_nullable_column_and_keeps_rows() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn a_schema_bump_relaxes_a_required_column_and_keeps_rows() {
+    // §2.4: `tasks.title` turns nullable at version 2.
+    let mut relaxed = schema_json(1);
+    relaxed["version"] = json!(2);
+    for table in relaxed["tables"].as_array_mut().unwrap() {
+        if table["name"] == "tasks" {
+            table["columns"][3]["nullable"] = json!(true);
+        }
+    }
+    let path = temp_path();
+    let payload = |authority: &LocalAuthority, id: &str| -> Vec<u8> {
+        authority
+            .conn
+            .query_row("SELECT _sync_payload FROM tasks WHERE _sync_row_id=?1", [id], |row| row.get(0))
+            .unwrap()
+    };
+    let before = {
+        let mut authority = LocalAuthority::open(&path, &schema_json(1)).unwrap();
+        let s = authority.schema.clone();
+        let client = Session::new(&mut authority, "c1");
+        client.push(&mut authority, "a", vec![task(&s, "t1", None, Some("c1"))]);
+        authority
+            .conn
+            .execute_batch("CREATE INDEX operator_title ON tasks (title)")
+            .unwrap();
+        payload(&authority, "t1")
+    };
+    let mut authority = LocalAuthority::open(&path, &relaxed).unwrap();
+    assert_eq!(payload(&authority, "t1"), before);
+    let not_null: i64 = authority
+        .conn
+        .query_row("SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name='title'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(not_null, 0);
+    let indexes: Vec<String> = authority
+        .conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='tasks' AND sql IS NOT NULL ORDER BY name")
+        .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+        .unwrap();
+    for name in ["operator_title", "sync_ix_tasks_code", "sync_ix_tasks_project"] {
+        assert!(indexes.iter().any(|index| index == name), "{name} in {indexes:?}");
+    }
+    let s = authority.schema.clone();
+    let mut client = Session::new(&mut authority, "c1");
+    let untitled = upsert(&s, "tasks", &[Some("t2"), Some("o1"), None, None, None], None);
+    assert_eq!(client.push(&mut authority, "b", vec![untitled]).0, PushStatus::Applied);
+    let titles: Vec<(String, Option<String>)> = authority
+        .conn
+        .prepare("SELECT id, title FROM tasks ORDER BY id")
+        .and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+        .unwrap();
+    assert_eq!(
+        titles,
+        vec![("t1".to_owned(), Some("title".to_owned())), ("t2".to_owned(), None)]
+    );
+    // A version-1 client would refuse the NULL, so it meets the floor.
+    client.version = 1;
+    let frames = client.round(&mut authority, vec![empty_pull()]);
+    assert!(matches!(
+        &frames[..],
+        [Frame::RespHeader { required_schema_version: Some(2), .. }]
+    ));
+    drop(authority);
+    // The relaxation is one-way.
+    let mut tightened = schema_json(1);
+    tightened["version"] = json!(3);
+    let error = LocalAuthority::open(&path, &tightened).err().unwrap();
+    assert_eq!(error.code, "sync.schema_mismatch");
+    let _ = std::fs::remove_file(&path);
+}
+
 /// `schema_json(1)` at `version` with `nodes` scoped `team:{team}` over
 /// `column` (`nodes` references only itself, so its pattern may change alone).
 fn rescoped(version: i32, column: &str) -> Value {

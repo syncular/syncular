@@ -1322,6 +1322,48 @@ observed the old version before the lock would otherwise rewrite twice, and
 the second rewrite would decode current-layout payloads with the previous
 layout.
 
+#### Relaxing a required column
+
+A schema version MAY turn a required column of an existing table nullable.
+The migration declares it with `ALTER TABLE <table> ALTER [COLUMN] <column>
+DROP NOT NULL`. `typegen` refuses the statement for a primary-key column, an
+unknown column and a column that is already nullable. No other change to an
+existing column is an upgrade, and a nullable column never becomes required.
+
+The row codec (§2.4) carries a null bit for every column whatever its
+nullability, so a stored payload, a logged change and a segment row encode
+the same bytes under both layouts, and the upgrade rewrites no payload. The
+stored layout records the column's `nullable` as `true`. A materialized
+table's projection column loses its `NOT NULL` constraint in the upgrade
+transaction. PostgreSQL runs `ALTER TABLE … ALTER COLUMN … DROP NOT NULL`.
+SQLite, D1 and the local authority (§12.2) have no such statement and rebuild
+the table: they create a copy that keeps every column declaration except that
+constraint, copy every row, drop the original, rename the copy, and recreate
+the indexes and triggers the original carried, operator-added ones included.
+Each row keeps its partition, row id, version, stored scopes, payload and
+column versions, and the scope index (`sync_row_scopes`) is untouched. D1 runs
+the rebuild in the DDL phase, before the other DDL of the bump.
+
+A client at an earlier version decodes a NULL in that column as a row-codec
+violation (§2.4), so the relaxation raises the schema floor (§1.6) to the
+version that relaxes the column. The schema window (§9) refuses an earlier
+version that declares the column required, with
+`sync.schema_window.incompatible_schema`, and a client at that version
+receives the floor.
+
+On a client the relaxed table takes a new generation (§7.4.3): its
+declaration changed and a migration names it. The reset recreates the table
+and the client bootstraps it again, while kept tables and kept units stay.
+Every pending commit written before the bump carries a value for the column
+or leaves it absent, so it encodes under the new codec at send time (§7.4.4).
+A NULL in the column is distinct from every value of its type.
+
+DECISION (2026-11-19): a relaxed table re-downloads on every client. Its
+values are unchanged, so a local rebuild could keep its rows, but that would
+be a second schema-transition path in both cores for one kind of change,
+against the §7.4 rule that every upgrade drills the bootstrap path. The
+restricted bootstrap (§7.4.3) limits the download to the relaxed table.
+
 #### D1 schema readiness
 
 A D1 schema upgrade MUST save row-rewrite progress in the same atomic batch as
@@ -8696,7 +8738,9 @@ object's single thread orders a registration before or after each relay.
   identical in the current schema, with two exceptions for server-owned columns
   (§6.12): the current schema MAY mark an existing column server-owned, and it
   MAY append a scope pattern over an appended server-owned column. Appended
-  columns MUST be nullable. The host
+  columns MUST be nullable. A column relaxed to nullable is a changed column, so
+  the window cannot hold a version that declares it required (Relaxing a
+  required column, §2.4). The host
   MUST shorten the window when a semantic or authorization change invalidates
   older clients, even when the row codec is unchanged. Invalid windows fail
   before storage or serving starts.
@@ -9101,7 +9145,8 @@ all values, and issues no lease. It applies no live byte budget (§4.6). It has 
 reactions (§6.9) or remote operations.
 
 Before it serves, the authority migrates its own tables to the running schema
-version: added tables, appended nullable columns (§9), and changed scope
+version: added tables, appended nullable columns (§9), required columns
+relaxed to nullable (Relaxing a required column, §2.4), and changed scope
 patterns, which it re-keys as §3.1 describes. It refuses a same-version scope
 pattern change, and a re-key of a row without a value for a new pattern, with
 `sync.schema_mismatch` (`reason` `layout_changed_without_version_bump` and

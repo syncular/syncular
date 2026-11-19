@@ -284,6 +284,23 @@ test('floors name the oldest served version, and privacy/removed-column windows 
   expect(() =>
     schemaWindowOf(removed, [compileSchema(removed), window[1]!]),
   ).toThrow('incompatible_schema');
+  // SPEC §2.4: an earlier version decodes a NULL in a relaxed column as a
+  // codec violation, so the relaxation raises the floor to its version.
+  const relaxed: ServerSchema = {
+    ...current,
+    tables: [
+      {
+        ...current.tables[0]!,
+        columns: columns.map((column) =>
+          column.name === 'title' ? { ...column, nullable: true } : column,
+        ),
+      },
+      ...current.tables.slice(1),
+    ],
+  };
+  expect(() =>
+    schemaWindowOf(relaxed, [compileSchema(relaxed), window[1]!]),
+  ).toThrow('incompatible_schema');
 });
 
 test('N-1 SQLite images use only their columns and conflict rows retain their codec', async () => {

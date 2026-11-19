@@ -676,6 +676,98 @@ describe('same-version schema readiness', () => {
       expect(await db.count()).toBe(2);
       await db.close();
     });
+
+    test(`${backend}: a bump relaxes a required column, keeps every row and accepts a null`, async () => {
+      // SPEC §2.4 "Relaxing a required column": `title` turns nullable.
+      const relaxedColumns = TASK_COLUMNS.map((column) =>
+        column.name === 'title' ? { ...column, nullable: true } : column,
+      );
+      const relaxed: ServerSchema = {
+        ...SCHEMA,
+        version: 2,
+        tables: [
+          { ...SCHEMA.tables[0]!, columns: relaxedColumns },
+          ...SCHEMA.tables.slice(1),
+        ],
+      };
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      const rows = [
+        taskRow('t1', 'p1', 'kept'),
+        taskRow('t2', 'p2', 'also kept'),
+      ];
+      for (const row of rows) await upsert(storage, PARTITION, 'tasks', row);
+      await db.exec(['CREATE INDEX operator_title_index ON tasks (title)']);
+      const scopes = await db.all(
+        "SELECT var, value, row_id FROM sync_row_scopes WHERE tbl='tasks' ORDER BY row_id",
+      );
+
+      await ensure(db.open(), relaxed);
+      const upgraded = db.open();
+      await upgraded.ensureSchema(compileSchema(relaxed));
+      for (const row of rows) {
+        expect(
+          (await upgraded.getRow(PARTITION, 'tasks', row.rowId))?.payload,
+        ).toEqual(row.payload);
+      }
+      expect(
+        await db.all(
+          "SELECT var, value, row_id FROM sync_row_scopes WHERE tbl='tasks' ORDER BY row_id",
+        ),
+      ).toEqual(scopes);
+      const nullable = await db.all(
+        backend === 'postgres'
+          ? "SELECT is_nullable AS n FROM information_schema.columns WHERE table_name='tasks' AND column_name='title'"
+          : `SELECT "notnull" AS n FROM pragma_table_info('tasks') WHERE name='title'`,
+      );
+      expect(nullable).toEqual([{ n: backend === 'postgres' ? 'YES' : 0 }]);
+      const indexes = await db.all(
+        backend === 'postgres'
+          ? "SELECT indexname AS name FROM pg_indexes WHERE tablename='tasks' ORDER BY indexname"
+          : "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='tasks' AND sql IS NOT NULL ORDER BY name",
+      );
+      expect(indexes.map((index) => index.name)).toEqual(
+        expect.arrayContaining([
+          'operator_title_index',
+          'sync_ix_tasks_by_project_title',
+          'sync_ix_tasks_by_title',
+        ]),
+      );
+
+      const untitled = encodeRow(relaxedColumns, [
+        't3',
+        'p1',
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+      ]);
+      await upsert(upgraded, PARTITION, 'tasks', {
+        rowId: 't3',
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+        payload: untitled,
+      });
+      const stored = await upgraded.getRow(PARTITION, 'tasks', 't3');
+      expect(decodeRow(relaxedColumns, stored!.payload)[2]).toBeNull();
+      expect(
+        await db.all(
+          "SELECT id, title FROM tasks WHERE id IN ('t1', 't3') ORDER BY id",
+        ),
+      ).toEqual([
+        { id: 't1', title: 'kept' },
+        { id: 't3', title: null },
+      ]);
+
+      // The relaxation is one-way: the column never becomes required again.
+      await expect(
+        ensure(db.open(), { ...SCHEMA, version: 3 }),
+      ).rejects.toThrow(/relaxing a required column/);
+      await db.close();
+    });
   }
 });
 
