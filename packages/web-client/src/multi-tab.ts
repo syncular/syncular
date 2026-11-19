@@ -97,9 +97,10 @@ export const TAKEOVER_REFUSED_CODE = 'client.takeover_refused';
 /**
  * Version of the leader/follower wire and the forwarded handle API. Bump it
  * with every change to a message shape or to a forwarded method's arguments
- * or result, so tabs of different builds never serve each other.
+ * or result, so tabs of different builds never serve each other;
+ * test/multi-tab-protocol.test.ts pins the surface's fingerprint to it.
  */
-export const MULTI_TAB_PROTOCOL_VERSION = 3;
+export const MULTI_TAB_PROTOCOL_VERSION = 4;
 
 /** What a tab must share with its leader to be served by it. */
 export interface TabIdentity {

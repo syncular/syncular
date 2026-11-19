@@ -206,10 +206,25 @@ reloads. The newer tab asks each older leader it hears once: with several older
 tabs open, every older tab that wins the lock before the newer one steps down
 in turn.
 
-Protocol 3 addresses every reply to the follower that sent the request. Tabs
-of a build before it run protocol 2: during a deploy, the first tab of the new
-build takes the lock from them, and they stay `blocked` with
-`leader: 'newer'` until they reload.
+Syncular 0.59.0 to 0.91.0 announce protocol 3, although the forwarded API
+changed between them (`replaceCommitOutcome`, `commitDelivery`, the
+`coalesceMs` option). From 0.92.0 tabs announce protocol 4: during a deploy,
+the first tab of the new build takes the lock from a tab of 0.59.0 to 0.91.0
+with the same schema version, and that tab stays `blocked` with
+`leader: 'newer'` until it reloads. A newer tab never binds to an older
+leader, so it never receives that leader's events and never reports that
+leader's failed rounds as its own. An older leader that does not step down
+(its tab is frozen) leaves the newer tab `blocked` with `leader: 'older'`
+and its calls rejecting with `client.leader_incompatible` until the older tab
+runs again or closes.
+
+The protocol changes with the forwarded surface: a test in
+`@syncular/client` hashes the declarations of `WorkerApi`,
+`WorkerInitConfig`, the worker events, the tab messages and every type they
+name, together with the worker core's forwarded method list, and fails until
+`MULTI_TAB_PROTOCOL_VERSION` is bumped with the new fingerprint. The package
+version is not part of the identity: two builds with the same forwarded
+surface serve each other correctly.
 
 ### Single-tab and isolated replicas
 

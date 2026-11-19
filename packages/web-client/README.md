@@ -264,7 +264,9 @@ until it reloads. A leader answers a request with another identity with a
 identity and count as older: they never step down, so a newer tab next to
 one shows `leader: 'older'` until that tab reloads or closes. Bump
 `MULTI_TAB_PROTOCOL_VERSION` with every change to a message shape or to a
-forwarded method's arguments or result.
+forwarded method's arguments or result: `test/multi-tab-protocol.test.ts`
+pins a fingerprint of that surface to the constant and fails until both
+change together.
 
 **A hidden leader keeps leadership.** A visible tab does not take leadership
 from a hidden leader. Web Locks `steal` revokes the lease while the leader's

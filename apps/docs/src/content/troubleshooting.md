@@ -198,7 +198,7 @@ Another tab called `takeOver()` while this tab's main thread processed no messag
 
 ## `client.leader_incompatible` in a follower tab
 
-The tab that holds the database runs another `MULTI_TAB_PROTOCOL_VERSION` or schema version, so `handle.leadership` is `blocked` with reason `leader-incompatible`. With `leader: 'newer'`, reload this tab. With `leader: 'older'`, reload or close the other tab: a leader of this build steps down for a newer tab by itself, and an older leader does not. Once a leader of this build holds the lock, the same handle binds or promotes.
+The tab that holds the database runs another `MULTI_TAB_PROTOCOL_VERSION` or schema version, so `handle.leadership` is `blocked` with reason `leader-incompatible`. With `leader: 'newer'`, reload this tab. With `leader: 'older'`, reload or close the other tab: a leader of 0.29.2 or later steps down for a newer tab by itself, so an older leader that keeps the lock runs 0.29.1 or earlier, or its tab is frozen. Once a leader of this build holds the lock, the same handle binds or promotes.
 
 ## Debugging from the console
 

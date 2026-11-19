@@ -2331,6 +2331,117 @@ test('a leader of an older build stops its core for a newer tab', async () => {
   }
 });
 
+test('a tab of this build takes the lead from a protocol 3 leader of the same schema', async () => {
+  // 0.59.0 to 0.91.0 announce protocol 3 and step down for a newer hello;
+  // 0.83.0 to 0.91.0 run this module's election code unchanged.
+  expect(MULTI_TAB_PROTOCOL_VERSION).toBeGreaterThan(3);
+  const { LeaderBridge, multiTabChannelName } =
+    await import('../src/multi-tab');
+  const name = `legacy-${lockSeq++}`;
+  const lock = makeSharedLock();
+  const channels = new ChannelPartition<string>();
+  const lease = await lock.acquire(name);
+  const legacyCalls: string[] = [];
+  let steppedDown = false;
+  const legacy = new LeaderBridge<string>({
+    channel: channels.factory(multiTabChannelName(name)),
+    epoch: 0,
+    clientId: 'legacy-core',
+    identity: { protocol: 3, schemaVersion: 1 },
+    invoke: async (_tabId, method) => {
+      legacyCalls.push(method);
+      return 'legacy';
+    },
+    onNewerTab: () => {
+      steppedDown = true;
+      void lease.release();
+    },
+  });
+  const events: string[] = [];
+  const tab = await createTabCoordinator<string>({
+    name,
+    version: 1,
+    lock,
+    channelFactory: channels.factory,
+    lead: async (context) => ({
+      clientId: `core-${context.tabId}`,
+      call: async (_tabId, method) => `${method}@${context.tabId}`,
+      close: async () => {},
+    }),
+    onEvent: (event) => events.push(event),
+  });
+  try {
+    await drain();
+    expect(steppedDown).toBe(true);
+    expect(tab.state).toEqual({
+      state: 'leader',
+      clientId: `core-${tab.tabId}`,
+    });
+    // A failed round the old core reports after stepping down reaches no tab.
+    legacy.broadcastEvent('legacy round failed');
+    expect(await tab.call('query', [])).toBe(`query@${tab.tabId}`);
+    expect(events).toEqual([]);
+    expect(legacyCalls).toEqual([]);
+  } finally {
+    await tab.close();
+  }
+});
+
+test('a tab of this build that a protocol 3 leader never yields to is blocked and hears none of its events', async () => {
+  const { multiTabChannelName } = await import('../src/multi-tab');
+  const name = `legacy-${lockSeq++}`;
+  const lock = makeSharedLock();
+  const channels = new ChannelPartition<string>();
+  // A frozen or pre-step-down leader: it holds the lock, answers every hello
+  // with its announce and fans out its failed round.
+  await lock.acquire(name);
+  const legacy = channels.factory(multiTabChannelName(name));
+  const announce = {
+    t: 'announce',
+    epoch: 0,
+    clientId: 'legacy-core',
+  } as const;
+  legacy.addEventListener('message', ({ data }) => {
+    if (data.t === 'hello')
+      legacy.postMessage({ ...announce, protocol: 3, schemaVersion: 1 });
+  });
+  const events: string[] = [];
+  const states: LeadershipState[] = [];
+  const tab = await createTabCoordinator<string>({
+    name,
+    version: 1,
+    lock,
+    channelFactory: channels.factory,
+    lead: async () => {
+      throw new Error('the legacy leader holds the lock');
+    },
+    onEvent: (event) => events.push(event),
+    onStateChange: (state) => states.push(state),
+  });
+  try {
+    await drain();
+    expect(tab.state).toEqual({
+      state: 'blocked',
+      reason: 'leader-incompatible',
+      code: LEADER_INCOMPATIBLE_CODE,
+      leader: 'older',
+      retryable: true,
+    });
+    legacy.postMessage({ t: 'event', epoch: 0, event: 'legacy round failed' });
+    await expectRejectsWithCode(
+      tab.call('query', []),
+      LEADER_INCOMPATIBLE_CODE,
+    );
+    expect(events).toEqual([]);
+    expect(states.some((state) => state.state === 'follower')).toBe(false);
+    expect(channels.sent.filter(({ message }) => message.t === 'req')).toEqual(
+      [],
+    );
+  } finally {
+    await tab.close();
+  }
+});
+
 test('a tab coordinator that fails to start its core releases the lock', async () => {
   const group = coordinatorGroup();
   let attempts = 0;

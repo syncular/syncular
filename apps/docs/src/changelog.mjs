@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A tab of a new build no longer follows a leader of an older one',
+    body: "Syncular 0.59.0 to 0.91.0 all announced multi-tab protocol 3 although the API a follower forwards changed between them, so with an unchanged schema version a new tab was served by an older tab's core and showed that core's failed rounds. Tabs now announce protocol 4: the first tab of the new build makes an older leader step down and takes the lead. A test fingerprints the forwarded surface (`WorkerApi`, the worker init configuration, worker events, tab messages and every type they name) and fails until the protocol is bumped with it.",
+    links: [
+      {
+        href: '/platform-web-specifics/#build-compatibility',
+        label: 'Build compatibility',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Claims made in reaction to a round ride its confirming round',
     body: "A drive to idle sends one more round after a round that applied rows, to confirm idle, and it went out at once, so the units an app claims in reaction to those rows waited for the drive after it. With `coalesceMs` that confirming round now starts `coalesceMs` later and carries the claims made in between. `installSyncScheduler` and the worker `autoSync` loop pass their `coalesceMs`, the worker applies the handle's value to the realtime supervisor's catch-up drive, and `syncUntilIdle({ coalesceMs })` sets it on an app drive. Rounds that continue a bootstrap start at once.",
     links: [

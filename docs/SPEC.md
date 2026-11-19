@@ -5729,6 +5729,23 @@ grant an uncoordinated lease, because two tabs would then both run a core
 against the same replica. A host that guarantees a single owner by other means
 injects its own lock.
 
+**Browser tab identity.** Every tab message that asks for or offers a core
+(the follower's `hello` and `req`, the leader's `announce`) carries the tab's
+identity: `MULTI_TAB_PROTOCOL_VERSION` and the application schema version,
+ordered by protocol first. A leader MUST serve only requests with its own
+identity and answer others with `client.leader_incompatible`. A follower MUST
+NOT bind to, send requests to, or deliver events from a leader of another
+identity; it reports `blocked` with reason `leader-incompatible` and
+`leader: 'older' | 'newer'`. A leader that hears a `hello` from a newer
+identity MUST close its core and release the leader lock, so the newer tab
+promotes. The protocol version identifies the forwarded surface: the
+`WorkerApi` methods with their argument and result types, the worker init
+configuration, the worker events and the tab messages. Every change to that
+surface MUST bump it. The TypeScript client enforces this with a test that pins
+a fingerprint of the surface's declarations, and every type they name, to the
+constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
+changed between them; protocol 4 starts with 0.92.0.
+
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
 SAHs. This lock belongs to the worker, so a replacement document waits until
