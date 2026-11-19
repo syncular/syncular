@@ -1766,7 +1766,11 @@ fn a_schema_bump_relaxes_a_required_column_and_keeps_rows() {
     let payload = |authority: &LocalAuthority, id: &str| -> Vec<u8> {
         authority
             .conn
-            .query_row("SELECT _sync_payload FROM tasks WHERE _sync_row_id=?1", [id], |row| row.get(0))
+            .query_row(
+                "SELECT _sync_payload FROM tasks WHERE _sync_row_id=?1",
+                [id],
+                |row| row.get(0),
+            )
             .unwrap()
     };
     let before = {
@@ -1784,7 +1788,11 @@ fn a_schema_bump_relaxes_a_required_column_and_keeps_rows() {
     assert_eq!(payload(&authority, "t1"), before);
     let not_null: i64 = authority
         .conn
-        .query_row("SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name='title'", [], |row| row.get(0))
+        .query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name='title'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(not_null, 0);
     let indexes: Vec<String> = authority
@@ -1792,28 +1800,53 @@ fn a_schema_bump_relaxes_a_required_column_and_keeps_rows() {
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='tasks' AND sql IS NOT NULL ORDER BY name")
         .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
         .unwrap();
-    for name in ["operator_title", "sync_ix_tasks_code", "sync_ix_tasks_project"] {
-        assert!(indexes.iter().any(|index| index == name), "{name} in {indexes:?}");
+    for name in [
+        "operator_title",
+        "sync_ix_tasks_code",
+        "sync_ix_tasks_project",
+    ] {
+        assert!(
+            indexes.iter().any(|index| index == name),
+            "{name} in {indexes:?}"
+        );
     }
     let s = authority.schema.clone();
     let mut client = Session::new(&mut authority, "c1");
-    let untitled = upsert(&s, "tasks", &[Some("t2"), Some("o1"), None, None, None], None);
-    assert_eq!(client.push(&mut authority, "b", vec![untitled]).0, PushStatus::Applied);
+    let untitled = upsert(
+        &s,
+        "tasks",
+        &[Some("t2"), Some("o1"), None, None, None],
+        None,
+    );
+    assert_eq!(
+        client.push(&mut authority, "b", vec![untitled]).0,
+        PushStatus::Applied
+    );
     let titles: Vec<(String, Option<String>)> = authority
         .conn
         .prepare("SELECT id, title FROM tasks ORDER BY id")
-        .and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
         .unwrap();
     assert_eq!(
         titles,
-        vec![("t1".to_owned(), Some("title".to_owned())), ("t2".to_owned(), None)]
+        vec![
+            ("t1".to_owned(), Some("title".to_owned())),
+            ("t2".to_owned(), None)
+        ]
     );
     // A version-1 client would refuse the NULL, so it meets the floor.
     client.version = 1;
     let frames = client.round(&mut authority, vec![empty_pull()]);
     assert!(matches!(
         &frames[..],
-        [Frame::RespHeader { required_schema_version: Some(2), .. }]
+        [Frame::RespHeader {
+            required_schema_version: Some(2),
+            ..
+        }]
     ));
     drop(authority);
     // The relaxation is one-way.

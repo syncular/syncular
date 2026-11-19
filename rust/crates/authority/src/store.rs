@@ -1259,7 +1259,12 @@ fn upgrade(
             let names = ["_sync_partition", "_sync_row_id"]
                 .into_iter()
                 .chain(table.columns.iter().map(|column| column.name.as_str()))
-                .chain(["_sync_server_version", "_sync_scopes", "_sync_payload", "_sync_column_versions"])
+                .chain([
+                    "_sync_server_version",
+                    "_sync_scopes",
+                    "_sync_payload",
+                    "_sync_column_versions",
+                ])
                 .map(quote)
                 .collect::<Vec<_>>()
                 .join(", ");
