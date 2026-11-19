@@ -132,6 +132,7 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             ft::ROUND_FAILURE
         }
         Frame::AdoptEpoch => ft::ADOPT_EPOCH,
+        Frame::Keepalive => ft::KEEPALIVE,
         Frame::Unit { scopes } => {
             w.str_map(scopes);
             ft::UNIT

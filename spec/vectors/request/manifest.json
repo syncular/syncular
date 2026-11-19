@@ -107,6 +107,12 @@
       "covers": "Push operation op byte 3 (unknown enum byte)"
     },
     {
+      "name": "keepalive-in-request",
+      "bin": "invalid/keepalive-in-request.bin",
+      "error": "sync.invalid_request",
+      "covers": "The response frame KEEPALIVE in a request (§1.2 rule 2)"
+    },
+    {
       "name": "upsert-without-payload",
       "bin": "invalid/upsert-without-payload.bin",
       "error": "sync.invalid_request",

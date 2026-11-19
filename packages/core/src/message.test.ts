@@ -1153,3 +1153,62 @@ describe('response grammar (SPEC.md §1.6)', () => {
     );
   });
 });
+
+describe('KEEPALIVE (SPEC.md §1.6)', () => {
+  const keepalive: ResponseMessage = {
+    wireVersion: 4,
+    msgKind: 'response',
+    frames: [
+      { type: 'RESP_HEADER', logEpoch: 'e1', resetRequired: false },
+      { type: 'LEASE', leaseId: 'l1', expiresAtMs: 10 },
+      { type: 'KEEPALIVE' },
+      { type: 'KEEPALIVE' },
+      { type: 'LIVE_START', status: 'active', reasonCode: '' },
+      { type: 'LIVE_END', throughSeq: 3, echoDigest: new Uint8Array(0) },
+    ],
+  };
+
+  it('round-trips after the header frames', () => {
+    const bytes = encodeMessage(keepalive);
+    expect(decodeResponse(bytes)).toEqual(keepalive);
+  });
+
+  it('decodes as a skipped unknown frame for a decoder that predates it', () => {
+    // A decoder without the 0x30 layout reads it like any unregistered type.
+    const bytes = encodeMessage(keepalive);
+    let renamed = 0;
+    for (let i = 0; i + 4 < bytes.length; i++) {
+      if (bytes[i] === FrameType.KEEPALIVE && bytes[i + 1] === 0) {
+        if (bytes.subarray(i + 1, i + 5).every((byte) => byte === 0)) {
+          bytes[i] = 0x2f;
+          renamed += 1;
+          i += 4;
+        }
+      }
+    }
+    expect(renamed).toBe(2);
+    expect(decodeResponse(bytes).frames.map((frame) => frame.type)).toEqual([
+      'RESP_HEADER',
+      'LEASE',
+      'UNKNOWN',
+      'UNKNOWN',
+      'LIVE_START',
+      'LIVE_END',
+    ]);
+  });
+
+  it('is a decode error once the body began', () => {
+    const late: ResponseMessage = {
+      ...keepalive,
+      frames: [
+        keepalive.frames[0]!,
+        { type: 'LIVE_START', status: 'active', reasonCode: '' },
+        { type: 'KEEPALIVE' },
+        { type: 'LIVE_END', throughSeq: 3, echoDigest: new Uint8Array(0) },
+      ],
+    };
+    expect(() => encodeMessage(late)).toThrow(
+      'KEEPALIVE frame after the response body began',
+    );
+  });
+});

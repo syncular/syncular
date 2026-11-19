@@ -294,6 +294,8 @@ export type ServerCapability =
   | 'multi-actor'
   /** §5.4/§5.5 external segments (`SEGMENT_REF`, direct download). */
   | 'segment-refs'
+  /** §1.6 `KEEPALIVE` frames while a response builds: `holdSegmentPuts`. */
+  | 'build-keepalive'
   /** §5.3 SQLite image segments. */
   | 'sqlite-image'
   /** §9 serving more than one schema version at once. */
@@ -409,7 +411,23 @@ export type CommitValidatorInstallSpec =
   | { readonly kind: 'denyAbsentDeletes' }
   | { readonly kind: 'throwUnexpected'; readonly message: string };
 
+/** A server whose segment puts wait for the scenario (§1.6). */
+export interface BuildHold {
+  /** Resolves once a segment put waits on the hold. */
+  readonly waiting: Promise<void>;
+  /** Elapses one 10 s keepalive interval (§1.6) on the hold's fake timers. */
+  elapseKeepalive(): void;
+  /** Lets every held put complete and ends the hold and its fake timers. */
+  release(): void;
+}
+
 export interface ServerInstance {
+  /**
+   * `build-keepalive`: segment puts wait until `release`, and timers are
+   * fake until then, so the keepalive interval (§1.6) elapses only on
+   * `elapseKeepalive`.
+   */
+  holdSegmentPuts?(): BuildHold;
   /**
    * §1.1 `<mount>/sync` — request bytes in, response bytes out, on behalf
    * of a host-authenticated actor. Request-level validation failures

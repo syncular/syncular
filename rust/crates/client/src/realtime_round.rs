@@ -226,6 +226,35 @@ mod tests {
     }
 
     #[test]
+    fn keepalive_chunks_keep_the_round_in_flight_until_the_response_ends() {
+        // §1.6, §8.7: the header frames, each KEEPALIVE in its own chunk, then
+        // the rest of the response once the server built it.
+        let header_len = response_bytes().len() - 5;
+        let mut message = ssp2::decode_message(&response_bytes()).unwrap();
+        message.frames.extend([Frame::Keepalive, Frame::Keepalive]);
+        let response = encode_message(&message);
+        let mut round = RealtimeRound::new();
+        round.begin(&[0x00]).unwrap();
+        let mut chunks = vec![&response[..header_len]];
+        chunks.extend(response[header_len..response.len() - 5].chunks(5));
+        for chunk in chunks {
+            assert!(matches!(
+                round
+                    .route_binary(&tagged(REALTIME_TAG_ROUND, chunk))
+                    .unwrap(),
+                RoundInbound::RoundProgress
+            ));
+        }
+        match round
+            .route_binary(&tagged(REALTIME_TAG_ROUND, &response[response.len() - 5..]))
+            .unwrap()
+        {
+            RoundInbound::RoundComplete(bytes) => assert_eq!(bytes, response),
+            _ => panic!("expected RoundComplete"),
+        }
+    }
+
+    #[test]
     fn delta_during_round_is_queued_not_applied_to_round() {
         let response = response_bytes();
         let mut round = RealtimeRound::new();

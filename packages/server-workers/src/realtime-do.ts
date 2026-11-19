@@ -122,7 +122,7 @@ import {
   type EraseScopeValueOptions,
   type EraseScopeValueResult,
   handleRemoteOperation,
-  handleSyncRequest,
+  createSyncResponseBody,
   pruneCommitLog,
   type PruneOptions,
   type RealtimeConnectOptions,
@@ -961,14 +961,17 @@ export class SyncularRealtimeHost<
       return Response.json(errorBody(error), { status: error.httpStatus });
     }
     try {
-      const out = await handleSyncRequest(
+      const out = await createSyncResponseBody(
         bytes,
         this.#getHub().requestContextFor(identity),
       );
-      return new Response(out.slice().buffer as ArrayBuffer, {
-        status: 200,
-        headers: { 'content-type': SSP2_CONTENT_TYPE },
-      });
+      return new Response(
+        out instanceof Uint8Array ? (out.slice().buffer as ArrayBuffer) : out,
+        {
+          status: 200,
+          headers: { 'content-type': SSP2_CONTENT_TYPE },
+        },
+      );
     } catch (error) {
       const sync = this.#syncError(error, 'sync');
       return Response.json(errorBody(sync), { status: sync.httpStatus });

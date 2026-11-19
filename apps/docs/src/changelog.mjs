@@ -51,6 +51,21 @@ export const changelog = [
   },
   {
     date: '2026-11-19',
+    title: 'A building pull writes KEEPALIVE frames',
+    body: "A response that is not built after 10 s goes out with its header frames and a `KEEPALIVE` frame, then one `KEEPALIVE` every further 10 s until the rest is built. A cold pull that stores segments for 90 s now completes in one round: the native client's 30 s socket silence bound and the 60 s round bound of `syncUntilIdle` restart on every received chunk, and the native client's round bound also restarts on every byte over HTTP. Older clients skip the frame. A native round cut by the round bound reports `sync.idle_timeout` over HTTP too, and both clients add the round's `elapsedMs` to its details.",
+    links: [
+      {
+        href: '/guide-server/#request-limits',
+        label: 'Request limits',
+      },
+      {
+        href: '/concepts-bootstrap/#running-rounds-until-idle',
+        label: 'Running rounds until idle',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A cold pull stores its segments concurrently',
     body: 'A pull stores up to `maxConcurrentSegmentPuts` rows segments in the segment store at once (default 6) while it scans the next bootstrap page, across every unit it bootstraps. Before, it waited for each put before scanning the next page, so a cold pull took the sum of its puts. Sixteen segments to a store with 1,000 ms per put take 3.0 s instead of 16.1 s. The response carries the same frames in the same order, and a failed put fails the pull with the error of the first failed page. A custom segment store must accept concurrent puts.',
     links: [

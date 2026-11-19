@@ -164,3 +164,88 @@ fn a_follow_redirect_policy_fails_realtime_connect_with_a_typed_error() {
         "realtime establishment does not follow redirects"
     );
 }
+
+/// Diego's Tauri app on 0.90 and 0.94: a round that outlasts the drive bound
+/// while the server builds. Over HTTP and over the socket, the drive,
+/// `lastRound` and progress report `sync.idle_timeout`.
+#[test]
+fn a_round_cut_by_the_drive_bound_reports_the_idle_timeout_on_both_paths() {
+    use syncular_client::{ClientLimits, ProgressState, SyncClient, SyncOutcome, UnitScopes};
+    for socket in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // The request arrives; the server builds and never answers.
+            if socket {
+                let mut ws = tungstenite::accept(stream).unwrap();
+                while let Ok(message) = ws.read() {
+                    if matches!(message, tungstenite::Message::Close(_)) {
+                        break;
+                    }
+                }
+            } else {
+                let mut rest = Vec::new();
+                let _ = stream.read_to_end(&mut rest);
+            }
+        });
+        let schema = serde_json::json!({
+            "version": 1,
+            "tables": [{
+                "name": "todo",
+                "primaryKey": "id",
+                "columns": [{ "name": "id", "type": "string", "nullable": false }],
+                "scopes": [{ "pattern": "todo:{id}" }]
+            }]
+        });
+        let mut client =
+            SyncClient::new_with_identity(Some("c1".to_owned()), &schema, ClientLimits::default())
+                .unwrap();
+        client
+            .subscribe(UnitScopes::from([("id".to_owned(), "one".to_owned())]))
+            .unwrap();
+        let (mut transport, _wake) = transport_with_wake(&url);
+        if socket {
+            client.connect_realtime(&mut transport).unwrap();
+        }
+
+        let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(300));
+        // The host drains the socket loss after the round, as the plugin does.
+        for inbound in transport.take_inbound() {
+            if let Inbound::Disconnected(error) = inbound {
+                client.realtime_lost(&mut transport, &error);
+            }
+        }
+
+        let SyncOutcome::Failed {
+            error_code,
+            details,
+            ..
+        } = outcome
+        else {
+            panic!("socket={socket}: expected the drive bound, got {outcome:?}");
+        };
+        assert_eq!(error_code, "sync.idle_timeout", "socket={socket}");
+        let details = details.unwrap();
+        assert_eq!(details["timeoutMs"], 300);
+        assert_eq!(details["rounds"], 0);
+        assert!(details["elapsedMs"].as_u64().unwrap() >= 300, "{details}");
+        let diagnostics = client.diagnostics_snapshot().unwrap();
+        let last_round = diagnostics.last_round.unwrap();
+        assert_eq!(last_round.error_code.as_deref(), Some("sync.idle_timeout"));
+        assert_eq!(last_round.cause_kind, None);
+        let progress = client.progress().snapshot().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert_eq!(progress.error_code.as_deref(), Some("sync.idle_timeout"));
+        assert_eq!(progress.cause_kind, None);
+        if socket {
+            assert_eq!(
+                diagnostics.host.realtime_reason_code.as_deref(),
+                Some("sync.idle_timeout")
+            );
+        }
+        transport.shutdown();
+        drop(transport);
+        server.join().unwrap();
+    }
+}

@@ -1,0 +1,33 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-a",
+      "resetRequired": false
+    },
+    {
+      "type": "LEASE",
+      "leaseId": "lease_9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+      "expiresAtMs": 1782994500000
+    },
+    {
+      "type": "KEEPALIVE"
+    },
+    {
+      "type": "KEEPALIVE"
+    },
+    {
+      "type": "LIVE_START",
+      "status": "active",
+      "reasonCode": ""
+    },
+    {
+      "type": "LIVE_END",
+      "throughSeq": 57,
+      "echoDigest": "135aefe003f1c716b55d6013a8c32b1d3e4e23c7e9b331263f5383e852a21ef7"
+    }
+  ]
+}

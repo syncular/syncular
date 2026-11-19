@@ -433,6 +433,25 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 frames.push(decode_unit_extent(payload)?);
                 seen_body = true;
             }
+            ft::KEEPALIVE => {
+                // §1.6: after the header frames and before every other known
+                // frame; unknown frames do not affect its legality.
+                if !matches!(
+                    frames
+                        .iter()
+                        .rev()
+                        .find(|frame| !matches!(frame, Frame::Unknown { .. })),
+                    Some(Frame::RespHeader { .. } | Frame::Lease { .. } | Frame::Keepalive)
+                ) {
+                    return Err(DecodeError::invalid(
+                        "KEEPALIVE frame after a push result or section frame",
+                    ));
+                }
+                frames.push(frame_payload(payload, "KEEPALIVE", |_| {
+                    Ok(Frame::Keepalive)
+                })?);
+                seen_body = true;
+            }
             ft::SEGMENT_REF | ft::SEGMENT_INLINE => {
                 if section != Section::Unit {
                     return Err(DecodeError::invalid("segment frame outside a unit section"));

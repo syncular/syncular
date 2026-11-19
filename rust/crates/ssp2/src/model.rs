@@ -46,6 +46,7 @@ pub mod frame_type {
     pub const LIVE_END: u8 = 0x1D;
     pub const UNIT_EXTENT: u8 = 0x1E;
     pub const ERROR: u8 = 0x1F;
+    pub const KEEPALIVE: u8 = 0x30;
 
     pub const REQUEST_TYPES: &[u8] = &[
         REQ_HEADER,
@@ -71,6 +72,7 @@ pub mod frame_type {
         LIVE_END,
         UNIT_EXTENT,
         ERROR,
+        KEEPALIVE,
     ];
 }
 
@@ -374,6 +376,9 @@ pub enum Frame {
     /// §4.4: the rows of a unit's bootstrap, stated immediately after an
     /// active bootstrap `SUB_START`. Both counts are `>= 0`.
     UnitExtent { rows_total: i64, rows_done: i64 },
+    /// §1.6: a building server's keepalive. Empty payload, after the header
+    /// frames and before every other frame; a client applies nothing for it.
+    Keepalive,
     LiveStart {
         status: LiveStatus,
         reason_code: String,

@@ -10,6 +10,7 @@ import { task } from '../fixture';
 import { rawPull, responseSection } from '../raw';
 import type { Scenario } from '../scenario';
 import {
+  captureResponses,
   expectConverged,
   seedTasks,
   syncIdle,
@@ -21,6 +22,59 @@ const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
 
 export const bootstrapScenarios: readonly Scenario[] = [
+  ...(['http', 'socket'] as const).map(
+    (binding): Scenario => ({
+      name: `bootstrap/keepalive-while-segments-build-${binding}`,
+      specRefs: ['§1.6', '§1.8', '§8.7'],
+      requires: [
+        'segment-refs',
+        'server-limits',
+        'build-keepalive',
+        ...(binding === 'socket' ? (['realtime'] as const) : []),
+      ],
+      server: { limits: { inlineSegmentMaxBytes: 0 } },
+      async run(ctx) {
+        await seedTasks(ctx, [
+          task('t1', 'p1', 'one'),
+          task('t2', 'p1', 'two'),
+        ]);
+        const a = await ctx.newClient({
+          actorId: 'actor-a',
+          clientId: 'client-a',
+          allowed: P1,
+        });
+        if (binding === 'socket') await a.api.connectRealtime();
+        await syncOk(a);
+        await a.api.subscribe(U1);
+        const responses = captureResponses(ctx, a);
+        const hold = ctx.server.holdSegmentPuts?.();
+        if (hold === undefined) throw new Error('holdSegmentPuts missing');
+        // The bootstrap's segment put waits while a keepalive interval
+        // elapses; the round then completes with the rows.
+        const round = a.api.sync();
+        await hold.waiting;
+        hold.elapseKeepalive();
+        hold.release();
+        const result = await round;
+        check(result.ok, 'the round completes after its KEEPALIVE frames');
+        checkEqual(
+          responses()
+            .at(-1)
+            ?.frames.slice(0, 3)
+            .map((frame) => frame.type),
+          ['RESP_HEADER', 'KEEPALIVE', 'SUB_START'],
+          'the header frame and a KEEPALIVE precede the body (§1.6)',
+        );
+        if (binding === 'socket') {
+          check(
+            a.realtime.roundsCompleted >= 2,
+            'the round rode the socket (§8.7)',
+          );
+        }
+        await expectConverged(ctx, 'tasks', [a]);
+      },
+    }),
+  ),
   ...[0b0011, 0b0111].map(
     (accept): Scenario => ({
       name: `bootstrap/live-progress-intermediate-import-${accept === 3 ? 'rows' : 'sqlite'}`,

@@ -8620,6 +8620,7 @@ impl SyncClient {
                     .map(|clock| clock.load(std::sync::atomic::Ordering::Relaxed)),
                 round_deadline_at: None,
                 idle_bound: None,
+                network_started_at: None,
             })
         })();
         prepared
@@ -9436,6 +9437,8 @@ impl SyncClient {
                     break;
                 }
                 Frame::Unknown { .. } => {}
+                // §1.6: a building server's keepalive carries nothing to apply.
+                Frame::Keepalive => {}
                 _ => {
                     failure = Some((
                         "sync.invalid_request".to_owned(),

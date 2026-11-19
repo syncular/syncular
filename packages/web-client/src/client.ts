@@ -876,13 +876,6 @@ const LOG_EPOCH_META_KEY = 'logEpoch';
 /** §7.8: one `syncUntilIdle` drive's default total deadline. */
 const SYNC_IDLE_TIMEOUT_MS = 60_000;
 
-/** RFC 0005 defaults (D2/A4/D7). */
-const PREVIOUS_VERSION_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
-const PREVIOUS_VERSION_DEFAULT_MAX_ROWS = 20_000;
-const PREVIOUS_VERSION_DEFAULT_MAX_TABLES = 32;
-const PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES = 1024 * 1024;
-const PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
 /** §7.8: an explicit round budget is a strict positive u32 count. */
 function requireRoundBudget(maxRounds: number | undefined): void {
   if (
@@ -892,11 +885,13 @@ function requireRoundBudget(maxRounds: number | undefined): void {
     throw invalidRequest('maxRounds must be a positive integer');
 }
 
+/** RFC 0005 defaults (D2/A4/D7). */
 function boundedBudget(
-  value: number | undefined,
+  config: SyncClientConfig['previousVersionContext'],
+  name: 'maxBytes' | 'maxRows' | 'maxTables' | 'maxRowBytes' | 'maxAgeMs',
   fallback: number,
-  name: string,
 ): number {
+  const value = config?.[name];
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 1) {
     throw invalidRequest(
@@ -904,44 +899,6 @@ function boundedBudget(
     );
   }
   return value;
-}
-
-function resolvePreviousVersionCaptureConfig(
-  config: SyncClientConfig['previousVersionContext'],
-): PreviousVersionCaptureConfig | undefined {
-  if (config === undefined || config.enabled !== true) return undefined;
-  return {
-    maxBytes: boundedBudget(
-      config.maxBytes,
-      PREVIOUS_VERSION_DEFAULT_MAX_BYTES,
-      'maxBytes',
-    ),
-    maxRows: boundedBudget(
-      config.maxRows,
-      PREVIOUS_VERSION_DEFAULT_MAX_ROWS,
-      'maxRows',
-    ),
-    maxTables: boundedBudget(
-      config.maxTables,
-      PREVIOUS_VERSION_DEFAULT_MAX_TABLES,
-      'maxTables',
-    ),
-    maxRowBytes: boundedBudget(
-      config.maxRowBytes,
-      PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES,
-      'maxRowBytes',
-    ),
-  };
-}
-
-function previousVersionMaxAgeMs(
-  config: SyncClientConfig['previousVersionContext'],
-): number {
-  return boundedBudget(
-    config?.maxAgeMs,
-    PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS,
-    'maxAgeMs',
-  );
 }
 
 /** RFC 0005 D7: `limit` defaults to 50 and is capped at 200. */
@@ -1235,12 +1192,7 @@ export class SyncClient {
       });
     this.#config = config;
     this.#realtimePolicy = realtimePolicy;
-    this.#realtimeState =
-      realtimePolicy === 'off'
-        ? 'disabled'
-        : config.realtime === undefined
-          ? 'unsupported'
-          : 'disconnected';
+    this.#realtimeState = this.#idleRealtimeState;
     this.#encryption = config.encryption;
     this.#securityLifecycle = config.securityPreflight ? 'preflight' : 'active';
     this.#now = config.now ?? Date.now;
@@ -1258,10 +1210,16 @@ export class SyncClient {
     // RFC 0005: the container needs a sibling database file. A host without
     // that capability (native bridges today) has no storage for it, so the
     // feature resolves as not configured rather than pretending to capture.
+    const context = config.previousVersionContext;
     this.#previousVersion =
-      this.#db.openSibling === undefined
+      this.#db.openSibling === undefined || context?.enabled !== true
         ? undefined
-        : resolvePreviousVersionCaptureConfig(config.previousVersionContext);
+        : {
+            maxBytes: boundedBudget(context, 'maxBytes', 8 * 1024 * 1024),
+            maxRows: boundedBudget(context, 'maxRows', 20_000),
+            maxTables: boundedBudget(context, 'maxTables', 32),
+            maxRowBytes: boundedBudget(context, 'maxRowBytes', 1024 * 1024),
+          };
     this.#hasBlobs = schemaHasBlobs(this.#schema);
   }
 
@@ -2199,7 +2157,11 @@ export class SyncClient {
   ): boolean {
     return (
       nowMs - record.createdAtMs >
-      previousVersionMaxAgeMs(this.#config.previousVersionContext)
+      boundedBudget(
+        this.#config.previousVersionContext,
+        'maxAgeMs',
+        24 * 60 * 60 * 1000,
+      )
     );
   }
 
@@ -2376,31 +2338,30 @@ export class SyncClient {
 
   #diagnosticStorage(): ClientDiagnosticsStorage {
     try {
+      const size = (value: unknown) => Math.max(0, Number(value ?? 0));
       const pragma = (name: string) =>
-        Number(this.#db.query(`PRAGMA ${name}`)[0]?.[name] ?? 0);
-      const databaseBytes = pragma('page_count') * pragma('page_size');
+        size(this.#db.query(`PRAGMA ${name}`)[0]?.[name]);
       // One statement for the outbox and outcome-journal sums keeps the
       // snapshot at its pre-version-4 statement count.
       const sums = this.#db.query(
         `SELECT (SELECT COALESCE(SUM(LENGTH(operations)),0) FROM ${OUTBOX_TABLE})AS outbox,COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM ${OUTCOMES_TABLE}`,
       )[0];
       const blobBytes = this.#hasBlobs
-        ? Number(
+        ? size(
             this.#db.query(
               'SELECT COALESCE(SUM(byte_length),0)AS bytes FROM _syncular_blobs',
-            )[0]?.bytes ?? 0,
+            )[0]?.bytes,
           )
         : 0;
       const pressure =
         blobBytes > (this.#config.limits?.blobCacheMaxBytes ?? Infinity);
-      const size = (value: unknown) => Math.max(0, Number(value ?? 0));
       return {
         status: pressure ? 'pressure' : 'healthy',
-        databaseBytesApprox: Math.max(0, databaseBytes),
+        databaseBytesApprox: pragma('page_count') * pragma('page_size'),
         pendingOutboxBytesApprox: size(sums?.outbox),
         retainedOutcomeBytesApprox: size(sums?.bytes),
         retainedOutcomeEntries: size(sums?.entries),
-        blobCacheBytesApprox: size(blobBytes),
+        blobCacheBytesApprox: blobBytes,
         ...(pressure
           ? { pressureReasonCode: 'client.blob_cache_over_limit' as const }
           : {}),
@@ -5056,6 +5017,7 @@ export class SyncClient {
       // applied rows. One signal reaches every transport call of the round.
       const controller = new AbortController();
       let cancel: (() => void) | undefined;
+      const roundStartedAtMs = this.#now();
       const sync = this.#sync(controller.signal);
       const last = await (
         timeoutMs === Number.POSITIVE_INFINITY
@@ -5070,7 +5032,11 @@ export class SyncClient {
                       'sync.idle_timeout',
                       'syncUntilIdle exceeded its deadline',
                       true,
-                      { timeoutMs, rounds: round },
+                      {
+                        timeoutMs,
+                        rounds: round,
+                        elapsedMs: this.#now() - roundStartedAtMs,
+                      },
                     );
                     // The transport may never answer; release the round so the
                     // client can run another one after the caller sees the error.
@@ -5339,13 +5305,15 @@ export class SyncClient {
     this.#disarm();
     this.#presence.clear(); // §8.6.1: presence is per-connection
     this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
-    this.#setRealtimeState(
-      this.#realtimePolicy === 'off'
-        ? 'disabled'
-        : this.#config.realtime === undefined
-          ? 'unsupported'
-          : 'disconnected',
-    );
+    this.#setRealtimeState(this.#idleRealtimeState);
+  }
+
+  get #idleRealtimeState(): RealtimeState {
+    return this.#realtimePolicy === 'off'
+      ? 'disabled'
+      : this.#config.realtime === undefined
+        ? 'unsupported'
+        : 'disconnected';
   }
 
   /**
@@ -5409,6 +5377,8 @@ export class SyncClient {
     if (tag === REALTIME_TAG_ROUND) {
       const round = this.#pendingRound;
       if (round === undefined) return; // stale chunk after an abort
+      // §7.8: a received chunk, a KEEPALIVE (§1.6) included, is progress.
+      this.#roundProgressed?.();
       let done: ReturnType<MessageStreamScanner['push']>;
       try {
         done = round.scanner.push(body);
@@ -7084,12 +7054,10 @@ export class SyncClient {
       batch.conflicts();
       batch.rejections();
       batch.outcomes();
-      this.#conflicts = this.#conflicts.filter(
-        (record) => record.clientCommitId !== commit.clientCommitId,
-      );
-      this.#rejections = this.#rejections.filter(
-        (record) => record.clientCommitId !== commit.clientCommitId,
-      );
+      const kept = (record: { readonly clientCommitId: string }) =>
+        record.clientCommitId !== commit.clientCommitId;
+      this.#conflicts = this.#conflicts.filter(kept);
+      this.#rejections = this.#rejections.filter(kept);
       for (const op of commit.operations) {
         batch.table(op.table);
         scope.push(rowKey(op));

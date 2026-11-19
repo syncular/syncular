@@ -18,7 +18,7 @@ import {
   handleRemoteOperation,
   type RemoteOperationRegistry,
   type RemoteOperationResolver,
-  handleSyncRequest,
+  createSyncResponseBody,
   limitsOf,
   RealtimeHub,
   RingBufferEvents,
@@ -186,13 +186,20 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     try {
       const bytes = await decodeRequestBody(c.req.raw, maxRequestBytes);
       if (bytes === undefined) return unsupportedEncoding(c, 'sync');
-      const out = await handleSyncRequest(bytes, {
+      const out = await createSyncResponseBody(bytes, {
         ...config,
         ...auth,
       });
-      return await encodedResponse(c, out, {
-        'Content-Type': SSP2_CONTENT_TYPE,
-      });
+      // §1.3: a response that streams its KEEPALIVE frames is not encoded.
+      return out instanceof Uint8Array
+        ? await encodedResponse(c, out, { 'Content-Type': SSP2_CONTENT_TYPE })
+        : new Response(out, {
+            status: 200,
+            headers: c.newResponse(null, 200, {
+              'Content-Type': SSP2_CONTENT_TYPE,
+            }).headers,
+            ...ALREADY_ENCODED,
+          });
     } catch (error) {
       return errorResponse(c, error);
     }

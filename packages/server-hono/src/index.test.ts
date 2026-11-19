@@ -3,7 +3,7 @@
  * allowed to cross HTTP semantics (via Hono's in-process fetch dispatch;
  * still no socket).
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, jest, test } from 'bun:test';
 import {
   canonicalScopeJson,
   decodeMessage,
@@ -62,6 +62,7 @@ async function makeApp(
   events?: SyncularServerEvents,
   operations?: RemoteOperationRegistry,
   storage = new SqliteServerStorage(),
+  overrides?: Partial<SyncServerConfig>,
 ) {
   const config: SyncServerConfig = {
     schema: SCHEMA,
@@ -70,6 +71,7 @@ async function makeApp(
     resolveScopes: () => ({ project_id: ['p1'] }),
     limits: { inlineSegmentMaxBytes: 1 },
     ...(events !== undefined ? { events } : {}),
+    ...overrides,
   };
   // Pin the partition log epoch so the fixture can push in one round (§2.1).
   await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
@@ -265,6 +267,51 @@ describe('hono adapter', () => {
     const types = message.frames.map((f) => f.type);
     expect(types).toContain('PUSH_RESULT');
     expect(types).toContain('SUB_START');
+    expect(types).toContain('SEGMENT_REF');
+  });
+
+  test('a response still building streams its KEEPALIVE frames unencoded (§1.3, §1.6)', async () => {
+    // The segment put waits for the test; the keepalive interval elapses
+    // when the test runs the scheduled callback.
+    let releasePut!: () => void;
+    const putReleased = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+    let putWaiting!: () => void;
+    const putStarted = new Promise<void>((resolve) => {
+      putWaiting = resolve;
+    });
+    const segments = new (class extends MemorySegmentStore {
+      override async put(
+        ...args: Parameters<MemorySegmentStore['put']>
+      ): ReturnType<MemorySegmentStore['put']> {
+        putWaiting();
+        await putReleased;
+        return await super.put(...args);
+      }
+    })();
+    const app = await makeApp(undefined, undefined, undefined, { segments });
+    jest.useFakeTimers();
+    const pending = app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        'accept-encoding': 'gzip',
+        authorization: 'Bearer good',
+      },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    await putStarted;
+    jest.advanceTimersByTime(10_000);
+    jest.useRealTimers();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-encoding')).toBeNull();
+    expect(response.headers.get('x-host-policy')).toBe('retained');
+    releasePut();
+    const message = decodeMessage(new Uint8Array(await response.arrayBuffer()));
+    const types = message.frames.map((frame) => frame.type);
+    expect(types.slice(0, 2)).toEqual(['RESP_HEADER', 'KEEPALIVE']);
     expect(types).toContain('SEGMENT_REF');
   });
 

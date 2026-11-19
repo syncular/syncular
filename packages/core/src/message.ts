@@ -157,6 +157,11 @@ export interface LeaseFrame {
   expiresAtMs: number;
 }
 
+/** §1.6: a building server's sign of life after the header frames. */
+export interface KeepaliveFrame {
+  type: 'KEEPALIVE';
+}
+
 export type PushOperationResult =
   | { opIndex: number; status: 'applied' }
   | {
@@ -312,6 +317,7 @@ export interface ErrorFrame {
 export type ResponseFrame =
   | RespHeaderFrame
   | LeaseFrame
+  | KeepaliveFrame
   | PushResultFrame
   | PushResultDetailsFrame
   | SubStartFrame
@@ -898,6 +904,7 @@ const RESPONSE_DECODERS: Partial<
   [FrameType.LIVE_START]: decodeLiveStart,
   [FrameType.LIVE_END]: decodeLiveEnd,
   [FrameType.ERROR]: decodeErrorFrame,
+  [FrameType.KEEPALIVE]: () => ({ type: 'KEEPALIVE' }),
 };
 
 function decodeResponseFrame(
@@ -992,6 +999,7 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
   let sawLive = false;
   let sawLease = false;
   let sawBody = false;
+  let sawPush = false;
   let errorSeen = false;
   let lastPushResult: PushResultFrame | undefined;
   let lastPushResultHasDetails = false;
@@ -1008,12 +1016,18 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         if (sawBody) invalid('LEASE frame must immediately follow RESP_HEADER');
         sawLease = true;
         break;
+      case 'KEEPALIVE':
+        // §1.6: after the header frames, before every other frame.
+        if (sawPush || sawUnitSection || sawLive)
+          invalid('KEEPALIVE frame after the response body began');
+        break;
       case 'PUSH_RESULT':
         if (sawUnitSection || sawLive) {
           invalid('PUSH_RESULT frame after a unit or live section');
         }
         lastPushResult = frame;
         lastPushResultHasDetails = false;
+        sawPush = true;
         sawBody = true;
         break;
       case 'PUSH_RESULT_DETAILS': {
@@ -1253,6 +1267,8 @@ function encodeResponseFrame(frame: ResponseFrame, w: ByteWriter): number {
       w.bool(frame.resetRequired);
       break;
     }
+    case 'KEEPALIVE':
+      break;
     case 'LEASE': {
       if (frame.leaseId.length === 0) {
         encodeInvalid('LEASE.leaseId must be non-empty');

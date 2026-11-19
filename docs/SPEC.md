@@ -439,6 +439,7 @@ Frame type registry (wire version 4):
 | `0x1E` | `UNIT_EXTENT` | response | 4.4 |
 | `0x1F` | `ERROR` | response | 1.6 |
 | `0x20`–`0x2F` | *reserved* (realtime extensions, presence) | — | §8.6 |
+| `0x30` | `KEEPALIVE` | response | 1.6 |
 
 ### 1.3 Transport compression
 
@@ -451,6 +452,10 @@ Frame type registry (wire version 4):
 - Clients MAY compress request bodies with `Content-Encoding: gzip`;
   servers MUST accept it (push batches after long offline periods are the
   one large client body).
+- A `POST /sync` response that carries `KEEPALIVE` frames (§1.6) is sent
+  without `Content-Encoding`: its status and first bytes go out before the
+  server knows the rest, and a streaming compressor holds small writes back
+  until it fills a block.
 - Segment content addresses (`segmentId`, §5.1) are computed over
   **uncompressed** bytes. How a server stores segments at rest
   (compressed or not) is a private concern and MUST NOT be observable on
@@ -575,6 +580,8 @@ as unknown (§1.2, §9).
 ```
 RESP_HEADER                     exactly once, first
 LEASE                           0 or 1 (§7.3.2), immediately after RESP_HEADER
+KEEPALIVE × j                   j ≥ 0, after RESP_HEADER and its LEASE, before
+                                every other frame (below)
 (PUSH_RESULT [PUSH_RESULT_DETAILS]) × N
                                 one result per PUSH_COMMIT, in request order;
                                 optional details immediately follow their result
@@ -642,6 +649,45 @@ emit further frames after `ERROR` except the terminating `END`. The
 `ERROR` and `END` — unknown frame types included; a decoder MUST reject
 a message that carries one (the skip rule of §1.2 rule 2 does not apply
 past `ERROR`).
+
+**`KEEPALIVE` frame** (empty payload). A server that has written the header
+frames of a response (`RESP_HEADER` and its `LEASE`) and is still building
+the rest MAY write `KEEPALIVE` frames, so that a client's silence bounds
+(§1.8, §8.5) measure the link and leave out server work. Every `KEEPALIVE`
+follows the header frames and precedes every other frame of the response. A
+`KEEPALIVE` after a `PUSH_RESULT`, `PUSH_RESULT_DETAILS`, section frame or
+`ERROR`, or one with a non-empty payload, is a decode error.
+A client applies nothing for it. Its bytes restart the silence bounds of §1.8
+and §8.5 and the round bound of §7.8, so a round whose server keeps building
+is never cut for silence. A client that predates
+the frame skips it as unknown (§1.2 rule 2). The position after the header
+frames is the one where every wire version 4 decoder accepts an unknown frame;
+the reference decoders reject an unknown frame between
+`RESP_HEADER` and `LEASE`, or between `SUB_START` and `UNIT_EXTENT`, as an
+adjacency violation.
+
+The reference server builds a whole response before it writes a push result
+or section, because the serve-gate verification (RFC 0007) and the storage freshness check
+(§7) run after the response's last data read. When the response is not built
+after 10 s, the server writes the header frames and one `KEEPALIVE`, then one
+`KEEPALIVE` every further 10 s,
+then the rest of the response once it is built. A response built within the
+interval carries no `KEEPALIVE` and keeps its bytes. A failure after the header
+frames went out (a serve-gate refusal, `sync.storage_stale_read`, a failed
+segment put) is written as `ERROR` and `END` instead of the HTTP JSON error of
+§1.1. On `POST /sync` such a response streams without `Content-Encoding`
+(§1.3). The socket binding sends each `KEEPALIVE` in its own `0x01` message
+(§8.7).
+
+DECISION (2026-11-19): a building server writes `KEEPALIVE` frames, and it
+keeps building the whole response before its first section. Writing each
+section as its segment puts resolve would let a section escape before the
+serve-gate verification, and a failed put would end a partly written response.
+The frame serves both bindings with one mechanism; a socket channel tag or a
+text event has no HTTP form. Diego's production Worker finished cold private
+pulls in 119.7 s, 67.9 s and 65.5 s (67 segment puts, 71.6 s in R2), and its
+native client gave up after 30,009 ms of socket silence and at its 60,006 ms
+drive bound while the server completed the work.
 
 ### 1.7 Decode errors vs request validation
 
@@ -737,7 +783,8 @@ observable behavior is contractual:
   the wait for the response head each have the bound from the start of
   their phase. Once bytes flow, no socket read or write may wait longer
   than the bound, and every byte moved restarts it, so a response that
-  keeps arriving on a slow link completes however long it takes. A bound
+  keeps arriving on a slow link completes however long it takes. The
+  `KEEPALIVE` frames of a building server (§1.6) are such bytes. A bound
   that elapses surfaces `transport.timeout`. The default is unbounded.
   This bound is HTTP-only; it does not become the WebSocket policy.
 - **Whole-round deadline.** One sync round may be bounded: the uploads,
@@ -749,14 +796,17 @@ observable behavior is contractual:
   time. Local work before that first call does not consume the budget;
   after the anchor the deadline is absolute, so local work between
   continuations runs against the remaining budget. A bound that elapses
-  on the socket path surfaces `transport.timeout`. This is the only bound
+  surfaces `transport.timeout` with `causeKind` `round_deadline`, on the
+  HTTP path and the socket path alike. This is the only bound
   on total transfer time: a host that sets it fails a transfer that a slow
   link would have finished, so a host serving slow links leaves it unset or
   sets it to the longest transfer it will wait for.
 - **Socket round silence.** A realtime round fails when its request makes
   no progress for 30 seconds (a `0x01` chunk of at most 64 KiB flushed to
   the socket) or its response makes none (a `0x01` chunk received). Each
-  chunk restarts the bound. The bound is fixed and not configurable. The
+  chunk restarts the bound, a `KEEPALIVE` frame (§1.6) included, so a
+  reference server that writes one every 10 s while it builds never trips
+  it. The bound is fixed and not configurable. The
   failure surfaces `sync.transport_failed`, or `transport.timeout` with
   `causeKind` `round_deadline` when the whole-round deadline expired first.
 - **Redirect refusal.** The `deny` default refuses every 3xx. Under the
@@ -5725,7 +5775,8 @@ Sync storage MUST provide read-after-write consistency for commit sequences,
 commit windows, current rows and authorization. A query cache that survives
 writes is incompatible with this contract. A combined push/pull whose storage
 maximum precedes a successful push's sequence MUST fail with
-`sync.storage_stale_read` before the buffered response escapes. Its push remains
+`sync.storage_stale_read` before any frame after the header frames and their
+`KEEPALIVE` frames (§1.6) escapes. Its push remains
 durable under the original idempotency key; the host must repair storage freshness.
 
 ### 7.1 The outbox
@@ -7811,11 +7862,14 @@ like an exhausted round budget: it resolves with `budgetExhausted: true` and
 the aggregate report, records no failed round, leaves progress at the state of
 its last completed round, and schedules no further rounds. Each round is also
 bounded by `timeoutMs` on its own. The bound runs from the round's start and
-restarts whenever the round applies segment rows, so it measures time without
-progress: a round that keeps importing is never cut, and a round that waits
-`timeoutMs` on its transport with no rows applied reaches it. A round that
+restarts whenever the round applies segment rows or receives response bytes
+(the transports that report them are named below), so it measures time without
+progress: a round that keeps importing, or whose server keeps writing
+`KEEPALIVE` frames (§1.6), is never cut, and a round that waits `timeoutMs` on
+its transport with nothing received and no rows applied reaches it. A round that
 reaches the bound fails with the client-local, retryable `sync.idle_timeout`
-(details `timeoutMs`, and `rounds`: the rounds the drive ran before it). The drive
+(details `timeoutMs`; `rounds`, the rounds the drive ran before it; and
+`elapsedMs`, the round's duration when the bound ended it). The drive
 rejects with it, `lastRound` records the failed round, progress turns `failed`
 with it, and the client emits its retryable-failure background intent (§7.7).
 A transport that never answers therefore ends in `sync.idle_timeout`. The code
@@ -7826,16 +7880,33 @@ The TypeScript client hands every transport call of a round one abort signal
 `BlobTransport` upload calls); the round bound aborts it and a socket round,
 and the aborted round fails with `sync.idle_timeout`. It restarts the bound
 after each image statement (at most 1,024 rows) and every 1,024 rows of a rows
-segment. A transport that ignores
+segment, and on every `0x01` chunk of a socket round's response. Its
+`SyncTransport` delivers a response body whole, so an HTTP round restarts the
+bound only on applied rows. A transport that ignores
 the signal keeps its round outstanding until it answers. The Rust client
 exposes the same bound as `sync_until_idle_with_deadline` (`sync_until_idle`
-defaults to 60 s) and scopes it onto the transport as the round deadline
-(§1.8). It applies a round's segments after the round's network calls end, so
-the bound covers those calls and never the import. The tighter of `timeoutMs`
-and the transport's own whole-round deadline applies; a round deadline that the drive bound set fails the round with
-`sync.idle_timeout`, and one the transport's tighter deadline set keeps the
-transport's error. A host that drives rounds itself sets the bound with
-`PreparedSyncRound::set_idle_deadline`.
+defaults to 60 s) and scopes it onto the transport with
+`Transport::set_idle_bound` as a bound on time without progress of the
+round's network calls: over HTTP every socket read and write restarts it, over
+the socket every `0x01` chunk received or request chunk flushed does. It
+applies a round's segments after the round's network calls end, so the bound
+covers those calls and never the import. A call that reaches it fails the round
+with `sync.idle_timeout`, and the Rust client's `elapsedMs` runs from the
+round's first network call. The transport's own whole-round deadline (§1.8)
+stays absolute and keeps its `transport.timeout`. Over the socket the fixed
+30 s silence bound of §1.8 is shorter than the default bound, so a socket round
+that receives nothing ends with `sync.transport_failed` first. A host that
+drives rounds itself sets the bound with `PreparedSyncRound::set_idle_deadline`;
+a custom `Transport` that does not implement `set_idle_bound` ignores it, as
+with `set_round_deadline`. Every host loop, the Tauri plugin's owner thread
+included, drives with the 60 s default.
+
+DECISION (2026-11-19): a received `KEEPALIVE` restarts the round bound, and the
+default stays 60 s with no host setting. A server whose build hangs keeps the
+round open while it writes keepalives; the server bounds its own work, and a
+dead link or a dead server still ends the round on the silence bounds of §1.8 or
+on `timeoutMs`. Diego's native client cut working pulls of 65 s to 120 s at
+60,006 ms.
 
 DECISION (2026-11-17): the round bound measures time without progress. Until
 0.78.0 the TypeScript client measured it from the round's start, and an app's
@@ -8892,7 +8963,9 @@ object's single thread orders a registration before or after each relay.
   segment media types, new JSON control events. `PUSH_RESULT_DETAILS`
   (§6.3.1) and `UNIT_EXTENT` (§4.4) are frames of this kind inside wire
   version 4: a peer that predates one skips it, and a server that predates
-  one never emits it. `RESTRICT` (§4.3) is the request-side frame of this
+  one never emits it. `KEEPALIVE` (§1.6) is another; a server writes it only
+  after the header frames, where every wire version 4 decoder skips an
+  unknown frame. `RESTRICT` (§4.3) is the request-side frame of this
   kind: a server that predates it skips it and answers the restricted unit
   with a whole bootstrap, which the client applies (§5.6). `ADOPT_EPOCH`
   (§2.1) is another: a server that predates it answers epoch acquisition.
@@ -9433,6 +9506,7 @@ byte-identical output):
 | 36 | `response/bootstrap-unit-extent` | Two unit sections: a fresh bootstrap whose `UNIT_EXTENT` states `rowsDone = 0` and a resumed one with `rowsDone` above 0, each immediately after its `SUB_START` (§4.4) |
 | 37 | `request/pull-restrict` | Two restricted units (§4.3 `RESTRICT`, §4.7): a first round with `PROGRESS` cursor `-1` and the kept cursor in `RESTRICT`, and a resumed round at the join cursor with a token over the bootstrap tables |
 | 38 | `request/epoch-adopt` | A fresh replica's first request: no `logEpoch`, `ADOPT_EPOCH`, a pull with one `UNIT` and its `PROGRESS` at cursor `-1` (§2.1) |
+| 39 | `response/keepalive` | `RESP_HEADER`, `LEASE`, two `KEEPALIVE` frames (§1.6) and an empty live section. `response/invalid/keepalive-*` rejects a `KEEPALIVE` after `LIVE_START`, after `SUB_START`, with a one-byte payload, and in a request |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1`; `RESTRICT` not immediately after `PROGRESS`, `RESTRICT.cursor = -1`, an empty `RESTRICT.tables`, `RESTRICT.tables` out of order; `ADOPT_EPOCH` with a payload byte, twice, or after `PULL_HEADER` or before `ROUND_FAILURE` |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest`, `UNIT_EXTENT` after a non-bootstrap `SUB_START`, after a segment frame, or with `rowsTotal = -1` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |

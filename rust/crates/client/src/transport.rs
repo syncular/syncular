@@ -249,6 +249,12 @@ pub trait Transport {
     /// Scope the transport to one absolute round deadline for the duration of
     /// a single exchange; `None` clears it. The default ignores it.
     fn set_round_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
+    /// Scope the transport to the §7.8 drive bound for the duration of a single
+    /// exchange; `None` clears it. No network call of the exchange may wait
+    /// longer than the bound for a byte to move, and every byte restarts it;
+    /// a call that reaches it fails with `sync.idle_timeout`. The default
+    /// ignores it.
+    fn set_idle_bound(&mut self, _bound: Option<std::time::Duration>) {}
     /// Client → server JSON control message (acks, §8.2).
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError>;
     fn realtime_close(&mut self) -> Result<(), TransportError>;

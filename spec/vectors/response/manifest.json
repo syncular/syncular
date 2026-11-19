@@ -93,6 +93,12 @@
       "covers": "RESP_HEADER + LEASE (§7.3.2) + an empty live section: pins the 0x19 frame (leaseId, expiresAtMs) in its grammar position"
     },
     {
+      "name": "keepalive",
+      "bin": "keepalive.bin",
+      "json": "keepalive.json",
+      "covers": "RESP_HEADER + LEASE + two KEEPALIVE frames (§1.6) + an empty live section: pins the 0x30 frame after the header frames"
+    },
+    {
       "name": "unregistered",
       "bin": "unregistered.bin",
       "json": "unregistered.json",
@@ -183,6 +189,24 @@
       "bin": "invalid/unit-extent-negative-total.bin",
       "error": "sync.invalid_request",
       "covers": "UNIT_EXTENT.rowsTotal of -1 (§4.4: non-negative)"
+    },
+    {
+      "name": "keepalive-after-live-start",
+      "bin": "invalid/keepalive-after-live-start.bin",
+      "error": "sync.invalid_request",
+      "covers": "KEEPALIVE inside the live section (§1.6: before every other frame)"
+    },
+    {
+      "name": "keepalive-after-sub-start",
+      "bin": "invalid/keepalive-after-sub-start.bin",
+      "error": "sync.invalid_request",
+      "covers": "KEEPALIVE inside a unit section (§1.6: before every other frame)"
+    },
+    {
+      "name": "keepalive-with-payload",
+      "bin": "invalid/keepalive-with-payload.bin",
+      "error": "sync.invalid_request",
+      "covers": "KEEPALIVE with a one-byte payload (§1.6: empty payload)"
     }
   ]
 }

@@ -3,7 +3,11 @@
  * §1.8: a refused or unreachable endpoint stops without another backoff.
  */
 import { expect, test } from 'bun:test';
-import { httpSyncTransport, installSyncScheduler } from '@syncular/client';
+import {
+  httpSyncTransport,
+  installSyncScheduler,
+  type RealtimeHandlers,
+} from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { handleSyncRequest, type SqliteValue } from '@syncular/server';
 import {
@@ -32,7 +36,7 @@ test('a transport that never answers rejects with sync.idle_timeout', async () =
   await expect(drive).rejects.toMatchObject({
     code: 'sync.idle_timeout',
     retryable: true,
-    details: { timeoutMs: 20, rounds: 0 },
+    details: { timeoutMs: 20, rounds: 0, elapsedMs: expect.any(Number) },
   });
 
   // The round was parked, not lost: releasing it lets the drive settle.
@@ -256,6 +260,85 @@ test('the deadline must be positive, and the numeric overload still works', asyn
   expect(numeric.budgetExhausted).toBe(false);
   const options = await local.client.syncUntilIdle({ maxRounds: 1 });
   expect(options.budgetExhausted).toBe(false);
+  await local.client.close();
+  local.db.close();
+});
+
+/**
+ * §7.8, §1.6: every received chunk of a socket round restarts its bound, a
+ * KEEPALIVE frame included. The client's timers and clock are the test's.
+ */
+async function keepaliveRound() {
+  const server = makeServer();
+  const clock = { ms: 0 };
+  const timers: { run: () => void; atMs: number; cancelled: boolean }[] = [];
+  const advance = (ms: number) => {
+    clock.ms += ms;
+    for (const timer of timers) {
+      if (timer.cancelled || timer.atMs > clock.ms) continue;
+      timer.cancelled = true;
+      timer.run();
+    }
+  };
+  let handlers!: RealtimeHandlers;
+  let sent!: (bytes: Uint8Array) => void;
+  const request = new Promise<Uint8Array>((resolve) => {
+    sent = resolve;
+  });
+  const local = await makeClient(server, {
+    clientId: 'keepalive-round',
+    realtimePolicy: 'required',
+    now: () => clock.ms,
+    schedule: (run, delayMs) => {
+      const timer = { run, atMs: clock.ms + delayMs, cancelled: false };
+      timers.push(timer);
+      return () => {
+        timer.cancelled = true;
+      };
+    },
+    realtime: async (connected) => {
+      handlers = connected;
+      return {
+        send: () => undefined,
+        sendBytes: (bytes) => sent(bytes),
+        close: () => connected.onClose?.(),
+      };
+    },
+  });
+  local.client.subscribe({ project_id: 'p1' });
+  await local.client.connectRealtime();
+  const drive = local.client.syncUntilIdle({ timeoutMs: 1_000, maxRounds: 1 });
+  const response = await handleSyncRequest(
+    (await request).subarray(1),
+    server.ctxFor('actor-1'),
+  );
+  // The envelope header and RESP_HEADER, as a building server writes them.
+  const headerEnd =
+    13 + new DataView(response.buffer, response.byteOffset).getUint32(9, true);
+  const chunk = (bytes: Uint8Array) =>
+    handlers.onBinary(new Uint8Array([1, ...bytes]));
+  chunk(response.subarray(0, headerEnd));
+  return { local, drive, advance, chunk, rest: response.subarray(headerEnd) };
+}
+
+test('a KEEPALIVE chunk restarts the round bound of a socket round', async () => {
+  const { local, drive, advance, chunk, rest } = await keepaliveRound();
+  advance(900);
+  chunk(new Uint8Array([0x30, 0, 0, 0, 0]));
+  advance(900);
+  chunk(rest);
+  await expect(drive).resolves.toMatchObject({ budgetExhausted: false });
+  await local.client.close();
+  local.db.close();
+});
+
+test('a socket round that receives nothing for the bound fails with its duration', async () => {
+  const { local, drive, advance } = await keepaliveRound();
+  advance(1_000);
+  await expect(drive).rejects.toMatchObject({
+    code: 'sync.idle_timeout',
+    details: { timeoutMs: 1_000, rounds: 0, elapsedMs: 1_000 },
+  });
   await local.client.close();
   local.db.close();
 });

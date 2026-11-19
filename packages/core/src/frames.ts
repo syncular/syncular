@@ -22,6 +22,7 @@ export const FrameType = {
   LIVE_END: 0x1d,
   UNIT_EXTENT: 0x1e,
   ERROR: 0x1f,
+  KEEPALIVE: 0x30,
 } as const;
 
 export type FrameTypeName = keyof typeof FrameType;
@@ -33,7 +34,7 @@ export const REQUEST_FRAME_TYPES: ReadonlySet<number> = new Set(
   registered.filter((type) => type > 0 && type < 0x10),
 );
 
-/** Known response frame types: the registry assigns them 0x10 to 0x1f. */
+/** Known response frame types: the registry assigns them 0x10 and up. */
 export const RESPONSE_FRAME_TYPES: ReadonlySet<number> = new Set(
   registered.filter((type) => type >= 0x10),
 );

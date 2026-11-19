@@ -37,7 +37,7 @@ import {
   RESOLVER_OUTAGE,
   touchAuthenticatedPartition,
 } from './context';
-import { reportError, SyncError, syncError } from './errors';
+import { adapterSyncError, reportError, SyncError, syncError } from './errors';
 import {
   emitEvent,
   type PullUnitSummary,
@@ -1361,18 +1361,7 @@ async function* streamResponse(
       report.errorCode = error.code;
       await recordRoundFailure(ctx, clientId, error);
       // §1.6: in-band ERROR, then END, nothing else.
-      yield encodeResponseFrame(
-        {
-          type: 'ERROR',
-          code: error.code,
-          message: error.message,
-          category: error.category,
-          retryable: error.retryable,
-          recommendedAction: error.recommendedAction,
-          ...(error.details !== undefined ? { details: error.details } : {}),
-        },
-        plan.wireVersion,
-      );
+      yield errorFrameBytes(error, plan.wireVersion);
       yield END_FRAME_BYTES;
       return;
     }
@@ -1381,15 +1370,43 @@ async function* streamResponse(
   yield END_FRAME_BYTES;
 }
 
+/** The in-band `ERROR` frame of a failure (§1.6). */
+function errorFrameBytes(error: SyncError, wireVersion: number): Uint8Array {
+  return encodeResponseFrame(
+    {
+      type: 'ERROR',
+      code: error.code,
+      message: error.message,
+      category: error.category,
+      retryable: error.retryable,
+      recommendedAction: error.recommendedAction,
+      ...(error.details !== undefined ? { details: error.details } : {}),
+    },
+    wireVersion,
+  );
+}
+
+/**
+ * A response's chunks, one per encoded frame (§1.4). `live` turns true when
+ * the response goes out before it is built: its header frames and
+ * `KEEPALIVE` frames (§1.6) precede the rest, and a later failure is an
+ * in-band `ERROR`.
+ */
+export interface SyncResponseStream extends AsyncIterable<Uint8Array> {
+  readonly live: boolean;
+}
+
 /**
  * Decode and validate the request, then return the streaming response.
  * Request-validation failures (§1.7) throw `SyncError` here, before any
- * bytes are produced; adapters map them to HTTP JSON errors (§1.1).
+ * bytes are produced; adapters map them to HTTP JSON errors (§1.1). The
+ * first chunk arrives once the response is built or its first `KEEPALIVE`
+ * is due (§1.6); a failure before then throws from it, before any byte.
  */
 export async function createSyncResponseStream(
   bytes: Uint8Array,
   ctx: SyncRequestContext,
-): Promise<AsyncIterable<Uint8Array>> {
+): Promise<SyncResponseStream> {
   const sink = ctx.events;
   if (sink === undefined) {
     try {
@@ -1501,7 +1518,7 @@ async function createStreamCore(
   ctx: SyncRequestContext,
   events: SyncularServerEvents | undefined,
   startedAtMs = 0,
-): Promise<AsyncIterable<Uint8Array>> {
+): Promise<SyncResponseStream> {
   let request: RequestMessage;
   try {
     request = decodeRequest(bytes);
@@ -1560,16 +1577,16 @@ async function createStreamCore(
     );
   }
   const report: RequestReport = { outcome: 'ok' };
-  // RFC 0007 read-verify-refuse for the streamed read path: the generator
-  // builds the whole response (its data reads) before yielding the first
-  // frame, then compares the gate token across those reads. Nothing escapes
-  // before the verification, and the buffered size is bounded by the request's
-  // pull limits and the server's inline segment cap. Every request verifies,
+  // RFC 0007 read-verify-refuse for the streamed read path: the build
+  // buffers the whole response (its data reads), then compares the gate token
+  // across those reads. No push result or section escapes before the
+  // verification, and the buffered size is bounded by the request's pull
+  // limits and the server's inline segment cap. Every request verifies,
   // including a mixed push+pull: a write that already applied when the token
   // changed is durable and replayable under the same commit id / idempotency
   // key, so refusing the request is safe (proved in the serve-gate lane).
-  const verified = async function* (): AsyncGenerator<Uint8Array> {
-    const buffered: Uint8Array[] = [];
+  const buffered: Uint8Array[] = [];
+  const built = (async () => {
     for await (const chunk of streamResponse(plan, ctx, served, report)) {
       buffered.push(chunk);
     }
@@ -1586,24 +1603,126 @@ async function createStreamCore(
     if (afterRefusal !== undefined) throw serveNotReadyError(afterRefusal);
     if (changed !== undefined) throw serveNotReadyError(changed);
     await report.persist?.();
-    for (const chunk of buffered) yield chunk;
+    return true;
+  })();
+  // The races below observe the failure; this keeps an abandoned stream's
+  // failure from surfacing as unhandled.
+  built.catch(() => {});
+  // §1.6 header frames: the envelope header, RESP_HEADER and its LEASE.
+  const headerChunks = plan.leaseToEmit !== undefined ? 3 : 2;
+  let live = false;
+  const verified = async function* (): AsyncGenerator<Uint8Array> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      for (;;) {
+        let done: boolean;
+        try {
+          done = await Promise.race([
+            built,
+            // §1.6: every 10 s, a third of the native client's 30 s socket
+            // round silence bound (§1.8).
+            new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), 10_000);
+            }),
+          ]);
+        } catch (thrown) {
+          if (!live) throw thrown;
+          // The header frames went out: the failure is in-band (§1.6), and
+          // one outside the catalog answers `sync.internal_error`.
+          const error = adapterSyncError(
+            thrown,
+            ctx.onError,
+            'sync',
+            ctx.mapError,
+          );
+          report.outcome = 'error';
+          report.errorCode = error.code;
+          await recordRoundFailure(ctx, plan.header.clientId, error);
+          yield errorFrameBytes(error, plan.wireVersion);
+          yield END_FRAME_BYTES;
+          return;
+        }
+        clearTimeout(timer);
+        if (done) break;
+        if (!live && buffered.length < headerChunks) continue;
+        if (!live) {
+          live = true;
+          yield* buffered.slice(0, headerChunks);
+        }
+        yield encodeResponseFrame({ type: 'KEEPALIVE' }, plan.wireVersion);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    yield* buffered.slice(live ? headerChunks : 0);
   };
-  if (events === undefined) {
-    return recordedStream(verified(), ctx, plan.header.clientId);
-  }
-  return recordedStream(
-    instrumentedStream(
-      verified(),
-      ctx,
-      events,
-      plan,
-      report,
-      bytes.length,
-      startedAtMs,
-    ),
+  const stream = recordedStream(
+    events === undefined
+      ? verified()
+      : instrumentedStream(
+          verified(),
+          ctx,
+          events,
+          plan,
+          report,
+          bytes.length,
+          startedAtMs,
+        ),
     ctx,
     plan.header.clientId,
   );
+  return {
+    get live() {
+      return live;
+    },
+    [Symbol.asyncIterator]: () => stream,
+  };
+}
+
+/**
+ * The `POST /sync` body (§1.1): the whole response when it was built before
+ * its first `KEEPALIVE` was due, otherwise a stream that carries the header
+ * frames and `KEEPALIVE` frames first (§1.6). Adapters compress only the
+ * whole response (§1.3).
+ */
+export async function createSyncResponseBody(
+  bytes: Uint8Array,
+  ctx: SyncRequestContext,
+): Promise<Uint8Array | ReadableStream<Uint8Array>> {
+  const stream = await createSyncResponseStream(bytes, ctx);
+  const iterator = stream[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  if (stream.live) {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (!first.done) controller.enqueue(first.value);
+      },
+      async pull(controller) {
+        const step = await iterator.next();
+        if (step.done) controller.close();
+        else controller.enqueue(step.value);
+      },
+      async cancel() {
+        await iterator.return?.();
+      },
+    });
+  }
+  const chunks: Uint8Array[] = first.done ? [] : [first.value];
+  for (
+    let step = await iterator.next();
+    !step.done;
+    step = await iterator.next()
+  )
+    chunks.push(step.value);
+  const out = new Uint8Array(
+    chunks.reduce((sum, chunk) => sum + chunk.length, 0),
+  );
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }
 
 /** Counts response bytes and emits `request.handled` when the stream
@@ -1658,18 +1777,8 @@ export async function handleSyncRequest(
   bytes: Uint8Array,
   ctx: SyncRequestContext,
 ): Promise<Uint8Array> {
-  const stream = await createSyncResponseStream(bytes, ctx);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-    total += chunk.length;
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
+  const body = await createSyncResponseBody(bytes, ctx);
+  return body instanceof Uint8Array
+    ? body
+    : new Uint8Array(await new Response(body).arrayBuffer());
 }

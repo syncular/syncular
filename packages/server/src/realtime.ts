@@ -734,8 +734,8 @@ export class RealtimeSession {
       try {
         step = await iterator.next();
       } catch (error) {
-        // The generator builds the whole response (and runs the read-verify
-        // refusal) on its first `next()`, before any chunk is yielded.
+        // The first `next()` waits until the response is built (and the
+        // read-verify refusal ran) or its first KEEPALIVE is due (§1.6).
         // Nothing has escaped, so a failure there is delivered as the same
         // §8.4 ERROR frame HTTP returns rather than a silent close; a
         // non-catalog exception is reported and answers

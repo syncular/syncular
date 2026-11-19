@@ -906,6 +906,23 @@ const leaseIssued: ResponseMessage = {
   ],
 };
 
+// §1.6: a building server's KEEPALIVE frames after the header frames.
+const keepalive: ResponseMessage = {
+  wireVersion: 4,
+  msgKind: 'response',
+  frames: [
+    RESP_HEADER,
+    {
+      type: 'LEASE',
+      leaseId: 'lease_9f8e7d6c-5b4a-3210-fedc-ba9876543210',
+      expiresAtMs: FIXED_TIME_MS + 900_000,
+    },
+    { type: 'KEEPALIVE' },
+    { type: 'KEEPALIVE' },
+    ...live(57),
+  ],
+};
+
 // §4.1: the server stores no list or a different digest.
 const unregistered: ResponseMessage = {
   wireVersion: 4,
@@ -1864,6 +1881,16 @@ total += emitKind(
       covers: 'Push operation op byte 3 (unknown enum byte)',
     },
     {
+      name: 'keepalive-in-request',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        [FrameType.KEEPALIVE, () => {}],
+        rawPullHeader(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'The response frame KEEPALIVE in a request (§1.2 rule 2)',
+    },
+    {
       name: 'upsert-without-payload',
       bytes: rawMessage(1, [rawReqHeader(), rawPushCommit(0, 1)]),
       error: 'sync.invalid_request',
@@ -2184,6 +2211,13 @@ total += emitKind(
         'RESP_HEADER + LEASE (§7.3.2) + an empty live section: pins the 0x19 frame (leaseId, expiresAtMs) in its grammar position',
     },
     {
+      name: 'keepalive',
+      bytes: encodeMessage(keepalive),
+      render: renderMessage,
+      covers:
+        'RESP_HEADER + LEASE + two KEEPALIVE frames (§1.6) + an empty live section: pins the 0x30 frame after the header frames',
+    },
+    {
       name: 'unregistered',
       bytes: encodeMessage(unregistered),
       render: renderMessage,
@@ -2340,6 +2374,43 @@ total += emitKind(
       ]),
       error: 'sync.invalid_request',
       covers: 'UNIT_EXTENT.rowsTotal of -1 (§4.4: non-negative)',
+    },
+    {
+      name: 'keepalive-after-live-start',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawLiveStart,
+        [FrameType.KEEPALIVE, () => {}],
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'KEEPALIVE inside the live section (§1.6: before every other frame)',
+    },
+    {
+      name: 'keepalive-after-sub-start',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        rawSubStart(),
+        [FrameType.KEEPALIVE, () => {}],
+        rawSubEnd(),
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'KEEPALIVE inside a unit section (§1.6: before every other frame)',
+    },
+    {
+      name: 'keepalive-with-payload',
+      bytes: rawMessage(2, [
+        rawRespHeader,
+        [FrameType.KEEPALIVE, (p) => p.u8(0)],
+        rawLiveStart,
+        rawLiveEnd(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'KEEPALIVE with a one-byte payload (§1.6: empty payload)',
     },
   ],
 );

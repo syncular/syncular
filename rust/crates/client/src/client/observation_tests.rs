@@ -2056,11 +2056,12 @@ fn a_deadline_across_completed_rounds_ends_as_budget_exhaustion() {
     assert_eq!(transport.calls, 6);
 }
 
-/// A transport that never answers: it honors the scoped round deadline by
-/// failing with `round_deadline` once it would elapse.
+/// A transport that never answers: it fails with whichever scoped bound
+/// would elapse first, the drive bound or the absolute round deadline.
 struct SilentTransport {
     budget: Option<std::time::Duration>,
     scoped: Option<std::time::Instant>,
+    idle: Option<std::time::Duration>,
 }
 
 impl Transport for SilentTransport {
@@ -2070,7 +2071,20 @@ impl Transport for SilentTransport {
     fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
         self.scoped = self.scoped.or(deadline);
     }
+    fn set_idle_bound(&mut self, bound: Option<std::time::Duration>) {
+        self.idle = self.idle.or(bound);
+    }
     fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+        let idle_first = match (self.idle, self.scoped) {
+            (Some(idle), Some(deadline)) => std::time::Instant::now() + idle < deadline,
+            (idle, _) => idle.is_some(),
+        };
+        if idle_first {
+            return Err(TransportError::new(
+                "sync.idle_timeout",
+                "sync request failed",
+            ));
+        }
         let mut error = TransportError::new("transport.timeout", "sync round deadline exceeded");
         error.details = Some(json!({ "causeKind": "round_deadline" }));
         Err(error)
@@ -2103,8 +2117,8 @@ fn a_round_that_reaches_the_drive_bound_fails_with_the_idle_timeout() {
     let mut transport = SilentTransport {
         budget: None,
         scoped: None,
+        idle: None,
     };
-    let before = std::time::Instant::now();
 
     let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
 
@@ -2117,9 +2131,16 @@ fn a_round_that_reaches_the_drive_bound_fails_with_the_idle_timeout() {
         panic!("expected the idle deadline, got {outcome:?}");
     };
     assert_eq!(error_code, "sync.idle_timeout");
-    assert_eq!(details, Some(json!({ "timeoutMs": 60_000, "rounds": 0 })));
-    let scoped = transport.scoped.expect("the drive bound scopes the round");
-    assert!(scoped >= before + std::time::Duration::from_secs(60));
+    let details = details.unwrap();
+    assert_eq!(details["timeoutMs"], 60_000);
+    assert_eq!(details["rounds"], 0);
+    // The silent transport fails at once: the round ran for almost no time.
+    assert!(details["elapsedMs"].as_u64().unwrap() < 60_000, "{details}");
+    assert_eq!(
+        transport.scoped, None,
+        "the drive bound sets no absolute deadline"
+    );
+    assert_eq!(transport.idle, Some(std::time::Duration::from_secs(60)));
     let last_round = client.diagnostics_snapshot().unwrap().last_round.unwrap();
     assert_eq!(last_round.status, "failed");
     assert_eq!(last_round.error_code.as_deref(), Some("sync.idle_timeout"));
@@ -2132,16 +2153,20 @@ fn a_round_that_reaches_the_drive_bound_fails_with_the_idle_timeout() {
         [SyncIntent::Background { delay_ms: 250 }]
     ));
 
-    // A tighter transport deadline keeps the transport's own error.
-    let mut transport = SilentTransport {
-        budget: Some(std::time::Duration::from_secs(30)),
-        scoped: None,
-    };
-    let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
-    assert!(
-        matches!(outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.timeout"),
-        "{outcome:?}"
-    );
+    // The transport's absolute deadline applies beside the drive bound: the
+    // first to elapse ends the round with its own error.
+    for (budget, code) in [(30, "transport.timeout"), (90, "sync.idle_timeout")] {
+        let mut transport = SilentTransport {
+            budget: Some(std::time::Duration::from_secs(budget)),
+            scoped: None,
+            idle: None,
+        };
+        let outcome = client.sync_until_idle_with_deadline(&mut transport, None, Some(60_000));
+        assert!(
+            matches!(outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == code),
+            "{budget}: {outcome:?}"
+        );
+    }
 }
 
 /// Returns one pre-built response per round so a test can pin a successful

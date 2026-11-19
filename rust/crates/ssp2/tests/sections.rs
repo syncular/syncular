@@ -392,3 +392,49 @@ fn the_encoder_refuses_unordered_restrict_tables() {
         ],
     );
 }
+
+#[test]
+fn keepalive_placement() {
+    let lease = Frame::Lease {
+        lease_id: "lease-1".to_owned(),
+        expires_at_ms: 1,
+    };
+    let unknown = Frame::Unknown {
+        frame_type: 0x31,
+        payload: vec![7],
+    };
+    let frames = vec![
+        resp_header(),
+        lease.clone(),
+        Frame::Keepalive,
+        unknown,
+        Frame::Keepalive,
+        push_result(),
+        sub_start(),
+        sub_end(),
+    ];
+    let decoded = decode_message(&message(MsgKind::Response, frames.clone())).unwrap();
+    assert_eq!(decoded.frames, frames);
+
+    assert_eq!(
+        decode_error(
+            MsgKind::Response,
+            vec![resp_header(), Frame::Keepalive, lease]
+        ),
+        "LEASE frame must immediately follow RESP_HEADER"
+    );
+    assert_eq!(
+        decode_error(
+            MsgKind::Response,
+            vec![resp_header(), sub_start(), Frame::Keepalive, sub_end()]
+        ),
+        "KEEPALIVE frame after a push result or section frame"
+    );
+    assert_eq!(
+        decode_error(
+            MsgKind::Response,
+            vec![resp_header(), live_start(), live_end(), Frame::Keepalive]
+        ),
+        "KEEPALIVE frame after a push result or section frame"
+    );
+}

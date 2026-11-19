@@ -199,6 +199,8 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
           ? { resetRequired: frame.resetRequired }
           : {}),
       };
+    case 'KEEPALIVE':
+      return { type: 'KEEPALIVE' };
     case 'LEASE':
       return {
         type: 'LEASE',

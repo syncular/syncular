@@ -2,16 +2,19 @@
  * Bootstrap: inline rows segments, paging, resumable bootstrapState,
  * pinning (SPEC.md §4.7, §5) — driven through bytes.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test';
 import {
+  decodeResponse,
   decodeRowsSegment,
   encodeRow,
   encodeSparseRow,
+  type ResponseFrame,
   type SegmentInlineFrame,
   type SegmentRefFrame,
 } from '@syncular/core';
 import {
   compileSchema,
+  createSyncResponseStream,
   type SyncularServerEvent,
   issueSegmentUrl,
   scopeDigest,
@@ -34,6 +37,7 @@ import {
   live,
   progressFrame,
   pullFrames,
+  requestBytes,
   section,
   sections,
   seedTask,
@@ -1605,5 +1609,108 @@ describe('segment puts in flight (§5.4)', () => {
     // Both pulls stop at the failed put: the sequential one after it, the
     // concurrent one after the six puts in flight when it failed.
     expect(outcomes.map((outcome) => outcome.puts)).toEqual([5, 6]);
+  });
+});
+
+describe('KEEPALIVE while a pull builds (§1.6)', () => {
+  // The END frame, so a prefix of the stream decodes as a message.
+  const END_BYTES = new Uint8Array(5);
+  const units = [{ project_id: 'p1' }];
+  // The server paces KEEPALIVE frames with `setTimeout`; fake timers let a
+  // test elapse the 10 s interval.
+  beforeEach(() => void jest.useFakeTimers());
+  afterEach(() => void jest.useRealTimers());
+
+  async function building(segments: MemorySegmentStore) {
+    const errors: unknown[] = [];
+    const t = makeContext({
+      segments,
+      limits: { inlineSegmentMaxBytes: 0 },
+      onError: (error) => void errors.push(error),
+    });
+    t.scopes.value = { project_id: ['p1'] };
+    await seedTask(t, 'c-t1', 't1', 'p1');
+    const stream = await createSyncResponseStream(
+      requestBytes(pullFrames(units, { accept: 0b0010 })),
+      t.ctx,
+    );
+    return { errors, stream, chunks: stream[Symbol.asyncIterator]() };
+  }
+
+  const decoded = async (chunks: Uint8Array[]) =>
+    decodeResponse(new Uint8Array(Buffer.concat(chunks)));
+
+  test('a pull still building writes its header, then a KEEPALIVE per interval, then the rest', async () => {
+    const store = new GatedSegmentStore();
+    const { stream, chunks } = await building(store);
+    const first = chunks.next();
+    await store.untilWaiting(1);
+    jest.advanceTimersByTime(9_999);
+    expect(stream.live).toBe(false);
+    jest.advanceTimersByTime(1);
+    const out = [(await first).value!];
+    expect(stream.live).toBe(true);
+    out.push((await chunks.next()).value!, (await chunks.next()).value!);
+    expect(
+      (await decoded([...out, END_BYTES])).frames.map((f) => f.type),
+    ).toEqual(['RESP_HEADER', 'KEEPALIVE']);
+    // The second interval elapses while the put still waits.
+    const second = chunks.next();
+    jest.advanceTimersByTime(10_000);
+    out.push((await second).value!);
+    const rest = chunks.next();
+    store.releaseAll();
+    for (let step = await rest; !step.done; step = await chunks.next())
+      out.push(step.value);
+    expect(jest.getTimerCount()).toBe(0);
+    const message = await decoded(out);
+    // The same frames as a response built within the interval.
+    const quick = await building(new MemorySegmentStore());
+    const quickChunks: Uint8Array[] = [];
+    for await (const chunk of quick.stream) quickChunks.push(chunk);
+    expect(quick.stream.live).toBe(false);
+    expect(message.frames.map((frame) => frame.type).slice(0, 3)).toEqual([
+      'RESP_HEADER',
+      'KEEPALIVE',
+      'KEEPALIVE',
+    ]);
+    const kept: ResponseFrame[] = message.frames.filter(
+      (frame) => frame.type !== 'KEEPALIVE',
+    );
+    expect(kept).toEqual((await decoded(quickChunks)).frames);
+  });
+
+  test('a response built within the interval carries no KEEPALIVE', async () => {
+    const { stream } = await building(new MemorySegmentStore());
+    const out: Uint8Array[] = [];
+    for await (const chunk of stream) out.push(chunk);
+    expect(stream.live).toBe(false);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(
+      (await decoded(out)).frames.some((frame) => frame.type === 'KEEPALIVE'),
+    ).toBe(false);
+  });
+
+  test('a failure after the header went out is an in-band ERROR', async () => {
+    const store = new GatedSegmentStore(1);
+    const { errors, chunks } = await building(store);
+    const first = chunks.next();
+    await store.untilWaiting(1);
+    jest.advanceTimersByTime(10_000);
+    const out = [(await first).value!];
+    const rest = chunks.next();
+    store.releaseAll();
+    for (let step = await rest; !step.done; step = await chunks.next())
+      out.push(step.value);
+    const message = await decoded(out);
+    expect(message.frames.map((frame) => frame.type)).toEqual([
+      'RESP_HEADER',
+      'KEEPALIVE',
+      'ERROR',
+    ]);
+    expect(message.frames.at(-1)).toMatchObject({
+      code: 'sync.internal_error',
+    });
+    expect(errors).toEqual([new Error('segment store unavailable')]);
   });
 });

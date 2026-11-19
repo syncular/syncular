@@ -125,6 +125,69 @@ Upgrade notes:
 - Partitions re-keyed before 0.96.0 had their horizon raised then; nothing to
   repair.
 
+### KEEPALIVE frames while a pull builds
+
+SYNCULAR-PULL-SILENT-SEGMENT-BUILD-001. SSP2 gains one additive response
+frame, `KEEPALIVE` (`0x30`, empty payload); the wire version is unchanged.
+
+A pull builds and stores every external segment before it writes a push result
+or section, because the serve-gate check runs after the response's last read.
+Diego's Worker finished cold private pulls in 119.7 s, 67.9 s and 65.5 s, and
+its native client gave up first: after 30,009 ms of socket silence
+(`sync.transport_failed`) and at its 60,006 ms round bound
+(`transport.timeout`).
+
+When a response is not built after 10 s, the server now writes `RESP_HEADER`
+and its `LEASE` with one `KEEPALIVE` frame, then one `KEEPALIVE` every further
+10 s, then the rest of the response once it is built (SPEC §1.6). A response
+built within 10 s keeps its bytes. Over the socket each `KEEPALIVE` is its own
+`0x01` message. On `POST /sync` the response streams without
+`Content-Encoding`. After the header went out, a failed build (a serve-gate
+refusal, a failed segment put) arrives as an in-band `ERROR` frame instead of
+an HTTP error status; a failure outside the error catalog reaches `onError`
+and answers `sync.internal_error`. The interval is fixed.
+
+`createSyncResponseStream` now resolves to a `SyncResponseStream` (an
+`AsyncIterable` with a `live` flag), and its first chunk arrives once the
+response is built or its first `KEEPALIVE` is due. The new
+`createSyncResponseBody` returns the whole body or, for a live response, a
+`ReadableStream`; `createSyncularHono` and the Workers Durable Object use it.
+A custom adapter that calls `handleSyncRequest` keeps working but buffers the
+whole response, so its clients receive no keepalive until the end: switch it to
+`createSyncResponseBody`.
+
+### The round bound restarts on received bytes
+
+The round bound of `syncUntilIdle` (`timeoutMs`, default 60 s, unchanged and
+still the only setting) measures time without progress in both clients, and
+received response bytes now count as progress:
+
+- The TypeScript client restarts it on every `0x01` chunk of a socket round,
+  besides applied rows. Its `SyncTransport` delivers an HTTP body whole, so an
+  HTTP round restarts it only on applied rows.
+- The Rust client scopes it onto the transport with the new
+  `Transport::set_idle_bound`: over HTTP every socket read and write restarts
+  it, over the socket every round chunk does. Its expiry reports
+  `sync.idle_timeout` over HTTP and over the socket. Before, an HTTP round cut
+  by it reported `transport.timeout` with `causeKind` `timeout`, which
+  Diego's 60,006 ms rounds show. The host's `roundDeadlineMs` stays an
+  absolute deadline and reports `transport.timeout` with `causeKind`
+  `round_deadline` on both paths.
+- `sync.idle_timeout` details gain `elapsedMs`, the round's duration.
+
+A custom Rust `Transport` implements `set_idle_bound` to honor the bound; the
+default ignores it. A server whose build hangs keeps a round open while it
+writes keepalives; a dead link still ends on the silence bounds.
+
+Upgrade servers first. A client before 0.96.0 skips `KEEPALIVE` as an unknown
+frame, which the server writes only after the header frames, where every wire
+version 4 decoder accepts one. Older native clients over the socket gain at
+once: they restart their 30 s silence bound on every received chunk. A 0.96.0
+client against an older server sees no keepalives and behaves as before.
+
+The multi-tab protocol moves to 6 (SPEC §7.1): the forwarded response frame
+union gained `KEEPALIVE`.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

@@ -34,7 +34,7 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 | `sync.unknown_table` | A push operation names a table the schema retired | [Schema upgrades](/concepts-schema-upgrades/) |
 | `sync.schema_not_ready` | The server booted without a readiness check | [Server setup](/guide-server/) |
 | `sync.internal_error` | A storage, network, or host-code exception reached the server adapter; the client retries | [Reporting server errors](/guide-server/#reporting-server-errors) |
-| `sync.idle_timeout` | One round of a `syncUntilIdle` drive waited `timeoutMs` with no answer from its transport and no rows applied | [Running rounds until idle](/concepts-bootstrap/#running-rounds-until-idle) |
+| `sync.idle_timeout` | One round of a `syncUntilIdle` drive waited `timeoutMs` with no answer from its transport and no rows applied. `details.elapsedMs` holds the round's duration. A server from 0.96.0 writes a `KEEPALIVE` frame every 10 s while it builds, which keeps a socket round and a native HTTP round alive; an older server's long segment build ends here | [Running rounds until idle](/concepts-bootstrap/#running-rounds-until-idle) |
 | `sync.invalid_client_id` | A client id was reused under a different actor | [below](#syncinvalid_client_id-after-an-account-switch) |
 | `sync.forbidden` | A write failed the scope check | [Scopes & authorization](/concepts-scopes/) |
 | `sync.crdt_merge_failed` | A `crdt` column has no registered merger, or the merger threw | [CRDT columns](/concepts-crdt/#register-the-merger-on-the-server) |

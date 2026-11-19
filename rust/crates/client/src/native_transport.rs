@@ -712,6 +712,16 @@ impl Transport for HostTransport {
         }
     }
 
+    fn set_idle_bound(&mut self, bound: Option<std::time::Duration>) {
+        match self {
+            HostTransport::Null { .. } => {}
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.set_idle_bound(bound),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.set_idle_bound(bound),
+        }
+    }
+
     #[cfg(feature = "local-authority")]
     fn open_local_authority(
         &mut self,
@@ -975,6 +985,10 @@ mod local {
             self.remote.set_round_deadline(deadline);
         }
 
+        fn set_idle_bound(&mut self, bound: Option<std::time::Duration>) {
+            self.remote.set_idle_bound(bound);
+        }
+
         fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
             self.remote.realtime_send(text)
         }
@@ -1120,17 +1134,35 @@ mod native {
     /// outbound progress; chunk boundaries carry no meaning (§8.7).
     const REQUEST_CHUNK_BYTES: usize = 64 * 1024;
 
-    /// When a round with `last_progress` and a silence bound `idle` expires,
-    /// and whether the host's whole-round `ceiling` is the bound that binds.
+    /// The bound that ends a socket round first.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Expiry {
+        /// The fixed socket silence bound (§1.8).
+        Silence,
+        /// The §7.8 drive bound, which also restarts on progress.
+        Drive,
+        /// The host's absolute whole-round deadline.
+        Ceiling,
+    }
+
+    /// When a round with `last_progress`, a silence bound `idle` and an
+    /// optional drive bound expires, and which bound binds. The host's
+    /// whole-round `ceiling` is absolute.
     fn round_expiry(
         last_progress: Instant,
         idle: Duration,
+        drive: Option<Duration>,
         ceiling: Option<Instant>,
-    ) -> (Instant, bool) {
-        let silent_at = last_progress + idle;
+    ) -> (Instant, Expiry) {
+        let mut expiry = (last_progress + idle, Expiry::Silence);
+        if let Some(at) = drive.and_then(|drive| last_progress.checked_add(drive)) {
+            if at < expiry.0 {
+                expiry = (at, Expiry::Drive);
+            }
+        }
         match ceiling {
-            Some(ceiling) if ceiling < silent_at => (ceiling, true),
-            _ => (silent_at, false),
+            Some(ceiling) if ceiling < expiry.0 => (ceiling, Expiry::Ceiling),
+            _ => expiry,
         }
     }
     /// The §8.7 round rendezvous shared between the reader thread (which
@@ -1216,30 +1248,36 @@ mod native {
             }
         }
 
-        /// Block until the round completes, fails, goes `idle` without
-        /// progress, or reaches the host's whole-round `ceiling`.
+        /// Block until the round completes, fails, goes `idle` or the `drive`
+        /// bound without progress, or reaches the host's whole-round `ceiling`.
         fn wait(
             &self,
             ceiling: Option<Instant>,
             idle: Duration,
+            drive: Option<Duration>,
         ) -> Result<Vec<u8>, TransportError> {
             let mut state = self.state.lock().expect("round lock");
             while state.outcome.is_none() {
-                let (deadline, ceiling_binds) = round_expiry(
+                let (deadline, expiry) = round_expiry(
                     state.last_progress.unwrap_or_else(Instant::now),
                     idle,
+                    drive,
                     ceiling,
                 );
                 let now = Instant::now();
                 if now >= deadline {
                     state.round.abort();
-                    return Err(if ceiling_binds {
-                        timeout_error("sync round deadline exceeded", "round_deadline")
-                    } else {
-                        TransportError::new(
+                    return Err(match expiry {
+                        Expiry::Ceiling => {
+                            timeout_error("sync round deadline exceeded", "round_deadline")
+                        }
+                        Expiry::Drive => {
+                            timeout_error("realtime sync round made no progress", "drive")
+                        }
+                        Expiry::Silence => TransportError::new(
                             "sync.transport_failed",
                             "realtime sync round made no progress (§8.7)",
-                        )
+                        ),
                     });
                 }
                 let (guard, _timeout) = self
@@ -1267,8 +1305,13 @@ mod native {
     }
 
     /// A configured deadline elapsed. `cause_kind` distinguishes the
-    /// per-request timeout from the whole-round deadline.
+    /// per-request timeout from the whole-round deadline; `drive` is the §7.8
+    /// drive bound, which fails the call with `sync.idle_timeout` (the round
+    /// adds its details).
     fn timeout_error(message: &'static str, cause_kind: &'static str) -> TransportError {
+        if cause_kind == "drive" {
+            return TransportError::new("sync.idle_timeout", message);
+        }
         let mut error = TransportError::new("transport.timeout", message);
         error.details = Some(serde_json::json!({ "causeKind": cause_kind }));
         error
@@ -1297,26 +1340,28 @@ mod native {
         Ok(())
     }
 
-    /// Classify a body-read timeout through ureq's wrapping chain without
-    /// formatting it: `Error::into_io` boxes a non-io ureq error as
-    /// `io::Error::other`, and the gzip decoder re-wraps a plain io error as
-    /// `Error::Decompress("gzip", e)`. Direct, nested, and plain shapes all
-    /// count.
-    fn is_timeout_io(error: &std::io::Error) -> bool {
-        if error.kind() == std::io::ErrorKind::TimedOut {
-            return true;
-        }
-        let Some(inner) = error.get_ref() else {
-            return false;
-        };
-        let Some(ureq_error) = inner.downcast_ref::<ureq::Error>() else {
-            return false;
-        };
+    /// The `causeKind` of a body-read timeout, or `None` for another error,
+    /// classified through ureq's wrapping chain without formatting it:
+    /// `Error::into_io` boxes a non-io ureq error as `io::Error::other`, and
+    /// the gzip decoder re-wraps a plain io error as `Error::Decompress("gzip",
+    /// e)`. Direct, nested, and plain shapes all count. Only the round
+    /// deadline sets ureq's global timeout (`finish_request`), so a global
+    /// timeout is the round deadline's (§1.8).
+    /// Only the drive bound sets the per-read and per-write timeouts.
+    fn timeout_cause(error: &std::io::Error) -> Option<&'static str> {
+        let ureq_error = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<ureq::Error>());
         match ureq_error {
-            ureq::Error::Timeout(_) => true,
-            ureq::Error::Io(nested) => is_timeout_io(nested),
-            ureq::Error::Decompress(_, nested) => is_timeout_io(nested),
-            _ => false,
+            Some(ureq::Error::Timeout(ureq::Timeout::Global)) => Some("round_deadline"),
+            Some(ureq::Error::Timeout(ureq::Timeout::PerRead | ureq::Timeout::PerWrite)) => {
+                Some("drive")
+            }
+            Some(ureq::Error::Timeout(_)) => Some("timeout"),
+            Some(ureq::Error::Io(nested) | ureq::Error::Decompress(_, nested)) => {
+                timeout_cause(nested)
+            }
+            _ => (error.kind() == std::io::ErrorKind::TimedOut).then_some("timeout"),
         }
     }
 
@@ -1326,6 +1371,12 @@ mod native {
                 return redirect_error(message, Some(status))
             }
             ureq::Error::StatusCode(status) => ("status", Some(status)),
+            ureq::Error::Timeout(ureq::Timeout::Global) => {
+                return timeout_error(message, "round_deadline")
+            }
+            ureq::Error::Timeout(ureq::Timeout::PerRead | ureq::Timeout::PerWrite) => {
+                return timeout_error(message, "drive")
+            }
             ureq::Error::Timeout(_) => return timeout_error(message, "timeout"),
             ureq::Error::Io(error) => return io_err(message, error),
             ureq::Error::HostNotFound
@@ -1352,8 +1403,8 @@ mod native {
     }
 
     fn io_err(message: &'static str, error: std::io::Error) -> TransportError {
-        if is_timeout_io(&error) {
-            return timeout_error(message, "timeout");
+        if let Some(cause) = timeout_cause(&error) {
+            return timeout_error(message, cause);
         }
         let kind = match error.kind() {
             std::io::ErrorKind::ConnectionRefused
@@ -1728,6 +1779,9 @@ mod native {
         /// one exchange; `None` outside a round or when the policy sets no
         /// round budget.
         round_deadline_at: Option<std::time::Instant>,
+        /// §7.8 drive bound scoped by `set_idle_bound` for one exchange: no
+        /// call may wait longer for a byte to move. `None` outside a drive.
+        drive_bound: Option<Duration>,
         pub signed_urls: bool,
         pub inbound: Arc<InboundBuffer>,
         /// One I/O thread owns the socket; callers wait for their write to flush.
@@ -1853,6 +1907,7 @@ mod native {
                 agent: self.agent.clone(),
                 policy: self.policy.clone(),
                 round_deadline_at: None,
+                drive_bound: None,
                 signed_urls: self.signed_urls,
                 inbound: self.inbound.clone(),
                 outgoing: self.outgoing.clone(),
@@ -1904,6 +1959,7 @@ mod native {
                 agent: build_agent(&policy),
                 policy,
                 round_deadline_at: None,
+                drive_bound: None,
                 signed_urls: false,
                 inbound: Arc::new(match notify {
                     Some(notify) => InboundBuffer::with_notify(notify),
@@ -1954,7 +2010,8 @@ mod native {
             !self.headers.is_empty() || self.base_url_has_userinfo
         }
 
-        /// Apply the per-call bounds to a request: the round's remaining time, and
+        /// Apply the per-call bounds to a request: the round's remaining time,
+        /// the drive bound on every socket read and write (each restarts it), and
         /// a redirect ceiling of zero whenever the request is credential
         /// bearing or the policy denies redirects. A credential-bearing
         /// request is refused a redirect under every policy, because ureq
@@ -1969,6 +2026,8 @@ mod native {
             Ok(req
                 .config()
                 .timeout_global(timeout)
+                .timeout_per_read(self.drive_bound)
+                .timeout_per_write(self.drive_bound)
                 .max_redirects(if follow { 10 } else { 0 })
                 .max_redirects_will_error(true)
                 .build())
@@ -2049,24 +2108,23 @@ mod native {
         }
 
         fn send_message(&mut self, message: Message) -> Result<(), TransportError> {
-            // A whole-round deadline bounds the write wait too: intersect it
-            // with the socket's own ceiling and report the round budget as a
-            // typed timeout. The per-request HTTP deadline does not apply to a
+            // The whole-round deadline and the drive bound bound the write wait
+            // too: intersect them with the socket's own ceiling and report the
+            // bound that elapsed. The per-request HTTP deadline does not apply to a
             // socket send.
-            let (wait, round_bound) = match self.round_deadline_at {
-                Some(deadline) => {
-                    match deadline.checked_duration_since(std::time::Instant::now()) {
-                        Some(remaining) if remaining < ROUND_IDLE_TIMEOUT => (remaining, true),
-                        Some(_) => (ROUND_IDLE_TIMEOUT, false),
-                        // The round is already spent: refuse before queuing the
-                        // frame so a later send cannot deliver it.
-                        None => {
-                            return Err(timeout_error("realtime send timed out", "round_deadline"));
-                        }
-                    }
-                }
-                None => (ROUND_IDLE_TIMEOUT, false),
-            };
+            let now = Instant::now();
+            let (deadline, expiry) = round_expiry(
+                now,
+                ROUND_IDLE_TIMEOUT,
+                self.drive_bound,
+                self.round_deadline_at,
+            );
+            // The round is already spent: refuse before queuing the frame so a
+            // later send cannot deliver it.
+            if deadline <= now {
+                return Err(timeout_error("realtime send timed out", "round_deadline"));
+            }
+            let wait = deadline - now;
             let result = (|| {
                 let Some(outgoing) = &self.outgoing else {
                     return Err(TransportError::new(
@@ -2085,10 +2143,10 @@ mod native {
                     .poller
                     .notify()
                     .map_err(|e| io_err("realtime wake failed", e))?;
-                result.recv_timeout(wait).map_err(|_| {
-                    if round_bound {
-                        timeout_error("realtime send timed out", "round_deadline")
-                    } else {
+                result.recv_timeout(wait).map_err(|_| match expiry {
+                    Expiry::Ceiling => timeout_error("realtime send timed out", "round_deadline"),
+                    Expiry::Drive => timeout_error("realtime send timed out", "drive"),
+                    Expiry::Silence => {
                         TransportError::new("transport.failed", "realtime send did not complete")
                     }
                 })?
@@ -2164,13 +2222,12 @@ mod native {
         let mut chunk = [0u8; 64 * 1024];
         let mut reported = 0;
         loop {
-            let n = reader.read(&mut chunk).map_err(|error| {
-                if is_timeout_io(&error) {
-                    timeout_error("response body read times out", "timeout")
-                } else {
-                    transfer_error("response body read failed", "body", Some(status))
-                }
-            })?;
+            let n = reader
+                .read(&mut chunk)
+                .map_err(|error| match timeout_cause(&error) {
+                    Some(cause) => timeout_error("response body read times out", cause),
+                    None => transfer_error("response body read failed", "body", Some(status)),
+                })?;
             if n == 0 {
                 break;
             }
@@ -2247,7 +2304,9 @@ mod native {
                 }
                 self.round.progressed();
             }
-            let outcome = self.round.wait(self.round_deadline_at, ROUND_IDLE_TIMEOUT);
+            let outcome =
+                self.round
+                    .wait(self.round_deadline_at, ROUND_IDLE_TIMEOUT, self.drive_bound);
             // A round that ends without its response END leaves the rest of
             // that response in flight on the socket, and the next round would
             // read it as its own (§8.7). Close the connection and report the
@@ -2315,6 +2374,7 @@ mod native {
                 .map(|_| {
                     let mut worker = self.fork_round();
                     worker.round_deadline_at = self.round_deadline_at;
+                    worker.drive_bound = self.drive_bound;
                     worker
                 })
                 .collect::<Vec<_>>();
@@ -2855,6 +2915,10 @@ mod native {
         fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
             NativeTransport::set_round_deadline(self, deadline);
         }
+
+        fn set_idle_bound(&mut self, bound: Option<Duration>) {
+            self.drive_bound = bound;
+        }
     }
     #[cfg(test)]
     mod transfer_tests {
@@ -2889,7 +2953,8 @@ mod native {
                     )),
                     "tls" => ureq::Error::Tls(SECRET),
                     "request" => ureq::Error::BadUri(SECRET.into()),
-                    "timeout" => ureq::Error::Timeout(ureq::Timeout::Global),
+                    "timeout" => ureq::Error::Timeout(ureq::Timeout::RecvResponse),
+                    "round_deadline" => ureq::Error::Timeout(ureq::Timeout::Global),
                     "404" => ureq::Error::StatusCode(404),
                     "401" => ureq::Error::StatusCode(401),
                     "403" => ureq::Error::StatusCode(403),
@@ -2902,7 +2967,16 @@ mod native {
         #[test]
         fn injected_http_failures_never_expose_capabilities_or_format_the_cause() {
             for kind in [
-                "io", "tls", "request", "timeout", "unknown", "404", "401", "403", "503",
+                "io",
+                "tls",
+                "request",
+                "timeout",
+                "round_deadline",
+                "unknown",
+                "404",
+                "401",
+                "403",
+                "503",
             ] {
                 for operation in [
                     "sync",
@@ -2937,7 +3011,7 @@ mod native {
                     };
                     let error = result.unwrap_err();
                     let expected_code = match (operation, kind) {
-                        (_, "timeout") => "transport.timeout",
+                        (_, "timeout" | "round_deadline") => "transport.timeout",
                         ("segment" | "signed_segment", _) => "sync.transport_failed",
                         ("blob", "404") => "blob.not_found",
                         ("blob", "401") => "sync.auth_required",
@@ -3016,22 +3090,32 @@ mod native {
         #[test]
         fn body_read_timeouts_are_classified_through_ureq_wrapping() {
             // Direct: Error::into_io boxes a non-io ureq error as io::Error::other.
-            let direct = ureq::Error::Timeout(ureq::Timeout::Global).into_io();
-            assert!(is_timeout_io(&direct));
+            let direct = ureq::Error::Timeout(ureq::Timeout::RecvBody).into_io();
+            assert_eq!(timeout_cause(&direct), Some("timeout"));
             // Compressed: gzip wraps the io error again as Error::Decompress.
             let wrapped = ureq::Error::Decompress(
                 "gzip",
                 ureq::Error::Timeout(ureq::Timeout::Global).into_io(),
             )
             .into_io();
-            assert!(is_timeout_io(&wrapped));
+            assert_eq!(timeout_cause(&wrapped), Some("round_deadline"));
+            // Only the drive bound sets per-read and per-write timeouts.
+            for reason in [ureq::Timeout::PerRead, ureq::Timeout::PerWrite] {
+                assert_eq!(
+                    timeout_cause(&ureq::Error::Timeout(reason).into_io()),
+                    Some("drive")
+                );
+                let error = http_err("sync request failed", ureq::Error::Timeout(reason));
+                assert_eq!(error.code, "sync.idle_timeout");
+                assert_eq!(error.details, None, "the round adds the drive's details");
+            }
             // A plain socket timeout and a non-timeout are handled too.
-            assert!(is_timeout_io(&std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "plain"
-            )));
-            assert!(!is_timeout_io(&std::io::Error::other("other")));
-            assert!(!is_timeout_io(&ureq::Error::StatusCode(500).into_io()));
+            assert_eq!(
+                timeout_cause(&std::io::Error::new(std::io::ErrorKind::TimedOut, "plain")),
+                Some("timeout")
+            );
+            assert_eq!(timeout_cause(&std::io::Error::other("other")), None);
+            assert_eq!(timeout_cause(&ureq::Error::StatusCode(500).into_io()), None);
         }
 
         #[test]
@@ -3040,11 +3124,11 @@ mod native {
             impl std::io::Read for TimeoutRead {
                 fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
                     Err(if self.0 {
-                        ureq::Error::Timeout(ureq::Timeout::Global).into_io()
+                        ureq::Error::Timeout(ureq::Timeout::RecvBody).into_io()
                     } else {
                         ureq::Error::Decompress(
                             "gzip",
-                            ureq::Error::Timeout(ureq::Timeout::Global).into_io(),
+                            ureq::Error::Timeout(ureq::Timeout::RecvBody).into_io(),
                         )
                         .into_io()
                     })
@@ -3175,7 +3259,7 @@ mod native {
         #[test]
         fn the_request_timeout_bounds_phases_and_the_round_deadline_bounds_the_call() {
             #[derive(Debug)]
-            struct TimeoutRecording(Arc<Mutex<Vec<Option<Duration>>>>);
+            struct TimeoutRecording(Arc<Mutex<Vec<[Option<Duration>; 3]>>>);
             impl Connector for TimeoutRecording {
                 type Out = ();
                 fn connect(
@@ -3183,10 +3267,11 @@ mod native {
                     details: &ConnectionDetails,
                     _: Option<()>,
                 ) -> Result<Option<()>, ureq::Error> {
-                    self.0
-                        .lock()
-                        .unwrap()
-                        .push(details.config.timeouts().global);
+                    self.0.lock().unwrap().push([
+                        details.config.timeouts().global,
+                        details.config.timeout_per_read(),
+                        details.config.timeout_per_write(),
+                    ]);
                     Err(ureq::Error::ConnectionFailed)
                 }
             }
@@ -3218,9 +3303,21 @@ mod native {
             let _ = transport.blob_upload("sha256:test", &[0u8; 4], None);
             transport.set_round_deadline(Some(std::time::Instant::now() + Duration::from_secs(60)));
             let _ = transport.blob_upload("sha256:test", &[0u8; 4], None);
+            // §7.8: the drive bound caps every read and write, which restarts it,
+            // and leaves the host's absolute ceiling as it is.
+            transport.set_idle_bound(Some(Duration::from_secs(60)));
+            let _ = transport.sync(&[]);
             let seen = seen.lock().unwrap();
-            assert_eq!(seen[0], None, "no round deadline, no call ceiling");
-            assert!(seen[1].is_some_and(|ceiling| ceiling <= Duration::from_secs(60)));
+            assert_eq!(
+                seen[0],
+                [None, None, None],
+                "no round deadline, no call ceiling"
+            );
+            assert!(seen[1][0].is_some_and(|ceiling| ceiling <= Duration::from_secs(60)));
+            assert_eq!(seen[1][1..], [None, None]);
+            assert!(seen[2][0].is_some_and(|ceiling| ceiling <= Duration::from_secs(60)));
+            let drive = Some(Duration::from_secs(60));
+            assert_eq!(seen[2][1..], [drive, drive]);
         }
 
         #[test]
@@ -3276,20 +3373,20 @@ mod native {
         }
 
         /// Run `round_expiry` over a link: `Ok(finished_at)` when every chunk
-        /// arrives before the bound, `Err((expired_at, ceiling_bound))`
-        /// otherwise.
+        /// arrives before a bound, `Err((expired_at, expiry))` otherwise.
         fn round_over(
             arrivals: &[Duration],
             idle: Duration,
+            drive: Option<Duration>,
             ceiling: Option<Duration>,
-        ) -> Result<Duration, (Duration, bool)> {
+        ) -> Result<Duration, (Duration, Expiry)> {
             let base = Instant::now();
             let mut last = base;
             for arrival in arrivals {
-                let (deadline, ceiling_binds) =
-                    round_expiry(last, idle, ceiling.map(|ceiling| base + ceiling));
+                let (deadline, expiry) =
+                    round_expiry(last, idle, drive, ceiling.map(|ceiling| base + ceiling));
                 if base + *arrival > deadline {
-                    return Err((deadline - base, ceiling_binds));
+                    return Err((deadline - base, expiry));
                 }
                 last = base + *arrival;
             }
@@ -3306,7 +3403,7 @@ mod native {
                 100_000,
                 &[],
             );
-            let finished = round_over(&link, ROUND_IDLE_TIMEOUT, None).unwrap();
+            let finished = round_over(&link, ROUND_IDLE_TIMEOUT, None, None).unwrap();
             assert!(
                 finished > ROUND_IDLE_TIMEOUT * 2,
                 "the transfer outlasts the old whole-transfer bound ({finished:?})"
@@ -3324,10 +3421,21 @@ mod native {
                     &[(Duration::from_secs(10), length)],
                 )
             };
-            round_over(&link(Duration::from_secs(29)), ROUND_IDLE_TIMEOUT, None).unwrap();
-            let (expired, ceiling_bound) =
-                round_over(&link(Duration::from_secs(31)), ROUND_IDLE_TIMEOUT, None).unwrap_err();
-            assert!(!ceiling_bound);
+            round_over(
+                &link(Duration::from_secs(29)),
+                ROUND_IDLE_TIMEOUT,
+                None,
+                None,
+            )
+            .unwrap();
+            let (expired, expiry) = round_over(
+                &link(Duration::from_secs(31)),
+                ROUND_IDLE_TIMEOUT,
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(expiry, Expiry::Silence);
             assert!(
                 expired >= Duration::from_secs(30) && expired < Duration::from_secs(41),
                 "the bound counts from the last chunk before the stall ({expired:?})"
@@ -3343,10 +3451,105 @@ mod native {
                 100_000,
                 &[],
             );
-            let (expired, ceiling_bound) =
-                round_over(&link, ROUND_IDLE_TIMEOUT, Some(Duration::from_secs(60))).unwrap_err();
-            assert!(ceiling_bound);
+            // The drive bound restarts with every chunk; the host ceiling does not.
+            let (expired, expiry) = round_over(
+                &link,
+                ROUND_IDLE_TIMEOUT,
+                Some(Duration::from_secs(60)),
+                Some(Duration::from_secs(60)),
+            )
+            .unwrap_err();
+            assert_eq!(expiry, Expiry::Ceiling);
             assert_eq!(expired, Duration::from_secs(60));
+        }
+
+        #[test]
+        fn keepalives_carry_a_round_through_a_server_build_under_the_drive_bound() {
+            // §1.6: the server writes its header frames, then builds for 90 s
+            // with a KEEPALIVE every 10 s, then writes the rest.
+            let drive = Some(Duration::from_millis(
+                crate::SyncClient::SYNC_IDLE_TIMEOUT_MS,
+            ));
+            let build = |keepalives: bool| {
+                let mut arrivals = vec![Duration::from_millis(80)];
+                if keepalives {
+                    arrivals.extend((1..=8).map(|n| Duration::from_secs(10 * n)));
+                }
+                arrivals.push(Duration::from_secs(90));
+                arrivals
+            };
+            assert_eq!(
+                round_over(&build(true), ROUND_IDLE_TIMEOUT, drive, None).unwrap(),
+                Duration::from_secs(90)
+            );
+            // Without keepalives the fixed 30 s socket silence bound ends it.
+            let (expired, expiry) =
+                round_over(&build(false), ROUND_IDLE_TIMEOUT, drive, None).unwrap_err();
+            assert_eq!(expiry, Expiry::Silence);
+            assert_eq!(expired, Duration::from_millis(30_080));
+            // A drive bound under the silence bound ends a silent round first.
+            let (expired, expiry) = round_over(
+                &build(false),
+                ROUND_IDLE_TIMEOUT,
+                Some(Duration::from_secs(20)),
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(expiry, Expiry::Drive);
+            assert_eq!(expired, Duration::from_millis(20_080));
+            // The host's absolute deadline ends a progressing round.
+            let (expired, expiry) = round_over(
+                &build(true),
+                ROUND_IDLE_TIMEOUT,
+                drive,
+                Some(Duration::from_secs(45)),
+            )
+            .unwrap_err();
+            assert_eq!(expiry, Expiry::Ceiling);
+            assert_eq!(expired, Duration::from_secs(45));
+        }
+
+        #[test]
+        fn a_keepalive_chunk_restarts_the_socket_silence_bound() {
+            let header = ssp2::Message {
+                wire_version: ssp2::decode::WIRE_VERSION,
+                msg_kind: ssp2::MsgKind::Response,
+                frames: vec![ssp2::Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: "epoch-1".to_owned(),
+                    reset_required: false,
+                }],
+            };
+            let mut message = header.clone();
+            message.frames.push(ssp2::Frame::Keepalive);
+            let response = ssp2::encode_message(&message);
+            let header_len = ssp2::encode_message(&header).len() - 5;
+            let channel = RoundChannel::default();
+            channel.begin(&[0x00]).unwrap();
+            let tagged = |bytes: &[u8]| [&[crate::REALTIME_TAG_ROUND][..], bytes].concat();
+            let silent_since = Instant::now() - ROUND_IDLE_TIMEOUT;
+            for chunk in [
+                &response[..header_len],
+                &response[header_len..header_len + 5],
+            ] {
+                // The previous chunk is a whole silence bound old.
+                channel.state.lock().unwrap().last_progress = Some(silent_since);
+                assert!(channel.route_binary(&tagged(chunk)).is_none());
+                let last_progress = channel.state.lock().unwrap().last_progress.unwrap();
+                assert!(
+                    round_expiry(last_progress, ROUND_IDLE_TIMEOUT, None, None).0 > Instant::now(),
+                    "the chunk restarted the silence bound"
+                );
+            }
+            assert!(channel
+                .route_binary(&tagged(&response[header_len + 5..]))
+                .is_none());
+            assert_eq!(
+                channel.wait(None, ROUND_IDLE_TIMEOUT, None).unwrap(),
+                response,
+                "the round completes with the KEEPALIVE in its bytes"
+            );
         }
 
         #[test]
@@ -3356,6 +3559,7 @@ mod native {
                 .wait(
                     Some(std::time::Instant::now() - Duration::from_secs(1)),
                     ROUND_IDLE_TIMEOUT,
+                    None,
                 )
                 .unwrap_err();
             assert_eq!(error.code, "transport.timeout");

@@ -133,6 +133,7 @@ fn render_frame(frame: &Frame) -> Value {
             entries.push(("code", Value::from(code.clone())));
         }
         Frame::AdoptEpoch => entries.push(("type", Value::from("ADOPT_EPOCH"))),
+        Frame::Keepalive => entries.push(("type", Value::from("KEEPALIVE"))),
         Frame::Unit { scopes } => {
             entries.push(("type", Value::from("UNIT")));
             entries.push(("scopes", str_map_value(scopes)));

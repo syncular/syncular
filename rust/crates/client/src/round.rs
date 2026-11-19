@@ -112,9 +112,13 @@ pub struct PreparedSyncRound {
     /// duration of each network call.
     pub(crate) round_deadline_at: Option<std::time::Instant>,
     /// §7.8: the idle drive bound (`timeoutMs`, rounds the drive ran before
-    /// this one) while it is the tighter whole-round deadline. A round deadline
-    /// it set ends the round with `sync.idle_timeout`.
+    /// this one). `exchange` scopes it onto the transport as a bound on time
+    /// without progress: a network call that moves no byte for `timeoutMs`
+    /// fails with `sync.idle_timeout`.
     pub(crate) idle_bound: Option<(u64, u32)>,
+    /// When the round's first network call started; the `elapsedMs` of a
+    /// `sync.idle_timeout` counts from it.
+    pub(crate) network_started_at: Option<std::time::Instant>,
     /// The encoded round message, filled on the first request that needs it.
     pub(crate) encoded: Option<Vec<u8>>,
     pub(crate) phase: RoundPhase,
@@ -163,8 +167,9 @@ pub enum AppliedSyncRound {
 
 impl PreparedSyncRound {
     /// §7.8: bound this round by an idle drive's `timeout_ms`; `rounds` is
-    /// the count the drive ran before it. The tighter of this bound and the
-    /// transport's own `round_deadline` applies.
+    /// the count the drive ran before it. The bound restarts on every byte the
+    /// round's network calls move; the transport's own `round_deadline` stays
+    /// an absolute deadline beside it.
     pub fn set_idle_deadline(&mut self, timeout_ms: u64, rounds: u32) {
         self.idle_bound = Some((timeout_ms, rounds));
     }
@@ -177,21 +182,17 @@ impl PreparedSyncRound {
         &mut self,
         transport: &mut dyn Transport,
     ) -> Result<(), TransportError> {
-        if self.round_deadline_at.is_none() {
-            // No `Instant` to anchor the drive bound to (see below).
+        if self.network_started_at.is_none() && self.round_deadline_at.is_none() {
+            // No `Instant` to measure the drive bound with (see below).
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
                 self.idle_bound = None;
             }
-            let budget = match (transport.round_deadline(), self.idle_bound) {
-                (Some(own), Some((ms, _))) if own < std::time::Duration::from_millis(ms) => {
-                    self.idle_bound = None;
-                    Some(own)
-                }
-                (_, Some((ms, _))) => Some(std::time::Duration::from_millis(ms)),
-                (own, None) => own,
-            };
-            if let Some(budget) = budget {
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                self.network_started_at = Some(std::time::Instant::now());
+            }
+            if let Some(budget) = transport.round_deadline() {
                 // A wasm32-unknown-unknown host has no `Instant`, so there is
                 // nothing to anchor the budget to. Report that instead of
                 // panicking inside `Instant::now()`.
@@ -217,6 +218,10 @@ impl PreparedSyncRound {
             }
         }
         transport.set_round_deadline(self.round_deadline_at);
+        transport.set_idle_bound(
+            self.idle_bound
+                .map(|(ms, _)| std::time::Duration::from_millis(ms)),
+        );
         Ok(())
     }
 
@@ -270,6 +275,7 @@ impl PreparedSyncRound {
                 .expect("the exchange answers its own operation");
         }
         transport.set_round_deadline(None);
+        transport.set_idle_bound(None);
         self.finish().expect("the exchange completed the round")
     }
 
@@ -608,9 +614,12 @@ impl PreparedSyncRound {
     /// `SyncClient::apply_sync_round`.
     pub fn finish(mut self) -> Option<CompletedSyncRound> {
         let mut exchange = self.completed.take()?;
-        // §7.8: a network deadline the idle drive bound set is the drive's
-        // timeout, whichever call reached it.
+        // §7.8: the drive bound ended a network call; the round reports the
+        // drive's timeout, whichever call reached it.
         if let Some((timeout_ms, rounds)) = self.idle_bound {
+            let elapsed_ms = self
+                .network_started_at
+                .map_or(0, |started| started.elapsed().as_millis() as u64);
             let errors: Vec<&mut TransportError> = match &mut exchange {
                 ExchangeResult::Upload { result, .. } => {
                     result.as_mut().err().into_iter().collect()
@@ -632,19 +641,12 @@ impl PreparedSyncRound {
                     .collect(),
             };
             for error in errors {
-                if error
-                    .details
-                    .as_ref()
-                    .and_then(|details| details.get("causeKind"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some("round_deadline")
-                {
-                    *error = TransportError::new(
-                        "sync.idle_timeout",
-                        "syncUntilIdle exceeded its deadline",
-                    );
-                    error.details =
-                        Some(serde_json::json!({ "timeoutMs": timeout_ms, "rounds": rounds }));
+                if error.code == "sync.idle_timeout" {
+                    error.details = Some(serde_json::json!({
+                        "timeoutMs": timeout_ms,
+                        "rounds": rounds,
+                        "elapsedMs": elapsed_ms,
+                    }));
                 }
             }
         }

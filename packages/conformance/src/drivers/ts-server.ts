@@ -4,6 +4,7 @@
  * through bytes (`handleSyncRequest`), the §5.5 download handler, and the
  * realtime hub — the same entry points a framework adapter uses.
  */
+import { jest } from 'bun:test';
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import {
   decodeMessage,
@@ -83,6 +84,7 @@ import type {
   ServerCreateOptions,
   ServerDriver,
   ServerInstance,
+  BuildHold,
   ServerLimitsOptions,
   ServerColumnsInstallSpec,
   ServerRowState,
@@ -420,6 +422,7 @@ class TsServerInstance implements ServerInstance {
   #storage: SqliteServerStorage;
   readonly #wrapped: ServerStorage;
   readonly #segments: MemorySegmentStore;
+  #hold: { waiting: () => void; released: Promise<void> } | undefined;
   readonly #blobs: BlobStore = new MemoryBlobStore();
   #hub: RealtimeHub;
   readonly #hubLimits: ServerLimitsOptions | undefined;
@@ -486,7 +489,19 @@ class TsServerInstance implements ServerInstance {
         options.limits?.maxImageSegmentBytes ?? 32 * 1024 * 1024,
     };
     this.#maxBlobBytes = options.limits?.maxBlobBytes;
-    this.#segments = new MemorySegmentStore(
+    const currentHold = () => this.#hold;
+    this.#segments = new (class extends MemorySegmentStore {
+      override async put(
+        ...args: Parameters<MemorySegmentStore['put']>
+      ): ReturnType<MemorySegmentStore['put']> {
+        const hold = currentHold();
+        if (hold !== undefined) {
+          hold.waiting();
+          await hold.released;
+        }
+        return await super.put(...args);
+      }
+    })(
       options.limits?.segmentTtlMs !== undefined
         ? { ttlMs: options.limits.segmentTtlMs }
         : {},
@@ -776,6 +791,35 @@ class TsServerInstance implements ServerInstance {
             );
           }
         },
+      },
+    };
+  }
+
+  holdSegmentPuts(): BuildHold {
+    let waiting!: () => void;
+    let release!: () => void;
+    const hold = {
+      waiting: () => {},
+      released: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    };
+    const held = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    hold.waiting = waiting;
+    this.#hold = hold;
+    // The server paces KEEPALIVE frames with a timer (§1.6); fake
+    // timers let the scenario elapse the 10 s interval.
+    jest.useFakeTimers();
+    return {
+      waiting: held,
+      elapseKeepalive: () => jest.advanceTimersByTime(10_000),
+      release: () => {
+        // Fake timers still pending (the next interval) end with the hold.
+        jest.useRealTimers();
+        this.#hold = undefined;
+        release();
       },
     };
   }
@@ -1534,6 +1578,7 @@ export const tsServerDriver: ServerDriver = {
     'scope-authorization',
     'multi-actor',
     'segment-refs',
+    'build-keepalive',
     'sqlite-image',
     'schema-window',
     'server-limits',
