@@ -3,8 +3,25 @@
 ## 0.94.0 release notes
 
 0.94.0 lets the server set columns of a pushed row inside the push
-(SYNCULAR-PUSH-SERVER-COLUMNS-001). SSP2 and the wire version are unchanged;
-the multi-tab protocol is 5.
+(SYNCULAR-PUSH-SERVER-COLUMNS-001), lets a migration relax a required column
+to nullable (SYNCULAR-SCHEMA-COLUMN-RETIRE-001, required-to-nullable part),
+and keeps complete live queries from re-reading on every import batch
+(SYNCULAR-READ-STARVES-IMPORT-001, part 2). SSP2 and the wire version are
+unchanged.
+
+Breaking changes:
+
+- The multi-tab protocol is 5: the first tab of this release makes a 0.92 or
+  0.93 leader with the same schema version step down. Reload the older tabs.
+- Current TypeScript and Rust clients refuse to write a server-owned column
+  with `sync.invalid_request`. Older clients may still push it; the server
+  discards the value.
+- Relaxing a column to nullable raises the schema floor: clients on the
+  earlier schema version must upgrade, because they reject a NULL in a column
+  they know as required.
+
+The Rust client also stops keeping an acknowledged patch over the row a
+same-round schema-bump reset bootstrapped.
 
 ### Server-owned columns
 
