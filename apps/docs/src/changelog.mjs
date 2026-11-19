@@ -52,7 +52,7 @@ export const changelog = [
   {
     date: '2026-11-19',
     title: 'A building pull writes KEEPALIVE frames',
-    body: "A response that is not built after 10 s goes out with its header frames and a `KEEPALIVE` frame, then one `KEEPALIVE` every further 10 s until the rest is built. A cold pull that stores segments for 90 s now completes in one round: the native client's 30 s socket silence bound and the 60 s round bound of `syncUntilIdle` restart on every received chunk, and the native client's round bound also restarts on every byte over HTTP. Older clients skip the frame. A native round cut by the round bound reports `sync.idle_timeout` over HTTP too, and both clients add the round's `elapsedMs` to its details.",
+    body: "A response that is not built after 10 s goes out with its header frames and a `KEEPALIVE` frame, then one `KEEPALIVE` every further 10 s until the rest is built. A cold pull that stores segments for 90 s now completes in one round: the native client's 30 s socket silence bound and the 60 s round bound of `syncUntilIdle` restart on every received chunk, and the native client's round bound also restarts on every byte over HTTP. Older clients skip the frame. A native round cut by the round bound reports `sync.idle_timeout` over HTTP too, and both clients add the round's `elapsedMs` to its details. A response still building after 300 s ends with the retryable `sync.segment_build_timeout` and stops its keepalives, so a segment store that never answers no longer holds a client indefinitely.",
     links: [
       {
         href: '/guide-server/#request-limits',

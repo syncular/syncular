@@ -1634,7 +1634,7 @@ describe('KEEPALIVE while a pull builds (§1.6)', () => {
       requestBytes(pullFrames(units, { accept: 0b0010 })),
       t.ctx,
     );
-    return { errors, stream, chunks: stream[Symbol.asyncIterator]() };
+    return { t, errors, stream, chunks: stream[Symbol.asyncIterator]() };
   }
 
   const decoded = async (chunks: Uint8Array[]) =>
@@ -1713,4 +1713,64 @@ describe('KEEPALIVE while a pull builds (§1.6)', () => {
     });
     expect(errors).toEqual([new Error('segment store unavailable')]);
   });
+
+  test('a build still running at 300 s ends in-band with sync.segment_build_timeout', async () => {
+    // The put never resolves until the test releases it after the deadline.
+    const store = new GatedSegmentStore();
+    const { t, chunks } = await building(store);
+    // The build reads the live window after its puts resolve.
+    const readLiveWindow = t.storage.readLiveWindow.bind(t.storage);
+    let liveRead!: () => void;
+    const reached = new Promise<void>((resolve) => (liveRead = resolve));
+    t.storage.readLiveWindow = async (...args) => {
+      try {
+        return await readLiveWindow(...args);
+      } finally {
+        liveRead();
+      }
+    };
+    const first = chunks.next();
+    await store.untilWaiting(1);
+    jest.advanceTimersByTime(10_000);
+    const out = [(await first).value!];
+    out.push((await chunks.next()).value!, (await chunks.next()).value!);
+    // A KEEPALIVE per interval until the deadline.
+    for (let elapsed = 20_000; elapsed < 300_000; elapsed += 10_000) {
+      const next = chunks.next();
+      jest.advanceTimersByTime(10_000);
+      out.push((await next).value!);
+    }
+    const last = chunks.next();
+    jest.advanceTimersByTime(10_000);
+    out.push((await last).value!);
+    for (let step = await chunks.next(); !step.done; step = await chunks.next())
+      out.push(step.value);
+    expect(jest.getTimerCount()).toBe(0);
+    const message = await decoded(out);
+    expect(message.frames.map((frame) => frame.type)).toEqual([
+      'RESP_HEADER',
+      ...Array<'KEEPALIVE'>(29).fill('KEEPALIVE'),
+      'ERROR',
+    ]);
+    expect(message.frames.at(-1)).toMatchObject({
+      code: 'sync.segment_build_timeout',
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+    const failed = await t.storage.getClientRecord(t.ctx.partition, 'client-1');
+    expect(failed?.lastErrorCode).toBe('sync.segment_build_timeout');
+    // The put resolves late: the abandoned build stops and persists nothing.
+    store.releaseAll();
+    await reached;
+    await drainMicrotasks();
+    expect(
+      await t.storage.getClientRecord(t.ctx.partition, 'client-1'),
+    ).toEqual(failed);
+  });
 });
+
+/** Run queued microtasks, chained, so a build past its storage reads ends. */
+async function drainMicrotasks(): Promise<void> {
+  for (let i = 0; i < 100; i++) await Promise.resolve();
+}

@@ -1586,10 +1586,14 @@ async function createStreamCore(
   // changed is durable and replayable under the same commit id / idempotency
   // key, so refusing the request is safe (proved in the serve-gate lane).
   const buffered: Uint8Array[] = [];
+  // Set at the build deadline: a build that finishes later stops before the
+  // serve-gate read and persists nothing.
+  let abandoned = false;
   const built = (async () => {
     for await (const chunk of streamResponse(plan, ctx, served, report)) {
       buffered.push(chunk);
     }
+    if (abandoned) return false;
     const after = await ctx.storage.readServeGate(
       ctx.partition,
       schema.version,
@@ -1613,6 +1617,7 @@ async function createStreamCore(
   let live = false;
   const verified = async function* (): AsyncGenerator<Uint8Array> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let elapsedMs = 0;
     try {
       for (;;) {
         let done: boolean;
@@ -1625,6 +1630,17 @@ async function createStreamCore(
               timer = setTimeout(() => resolve(false), 10_000);
             }),
           ]);
+          if (!done) elapsedMs += 10_000;
+          // §1.6 build deadline: 300 s, 2.5 times the slowest cold build
+          // measured in production (119.7 s for 67 segment puts). A build
+          // still running then is abandoned like a failed put.
+          if (elapsedMs === 300_000) {
+            abandoned = true;
+            throw syncError(
+              'sync.segment_build_timeout',
+              'the response was not built within the server build deadline',
+            );
+          }
         } catch (thrown) {
           if (!live) throw thrown;
           // The header frames went out: the failure is in-band (§1.6), and

@@ -1707,33 +1707,36 @@ impl Transport for ServerErrorTransport {
 
 #[test]
 fn a_retryable_in_band_failure_keeps_the_socket_connected_and_still_asks_for_a_retry() {
-    let mut client = client();
-    client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
-    let mut transport = ServerErrorTransport {
-        code: "sync.schema_not_ready",
-        retryable: true,
-    };
-    client.connect_realtime(&mut transport).expect("connect");
-    assert!(matches!(
-        client.sync(&mut transport),
-        SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.schema_not_ready"
-    ));
-    assert_eq!(
-        client.realtime_state(),
-        RealtimeState::Connected,
-        "the socket delivered the answer, so it is not lost"
-    );
-    assert!(
-        matches!(
-            client.drain_sync_intents().as_slice(),
-            [SyncIntent::Background { delay_ms: 250 }]
-        ),
-        "the retry deadline is a sync round and no reconnect satisfies it"
-    );
-    assert_eq!(
-        client.progress().snapshot().unwrap().retry_delay_ms,
-        Some(250)
-    );
+    // §10.2: `sync.segment_build_timeout` arrives in-band after keepalives (§1.6).
+    for code in ["sync.schema_not_ready", "sync.segment_build_timeout"] {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        let mut transport = ServerErrorTransport {
+            code,
+            retryable: true,
+        };
+        client.connect_realtime(&mut transport).expect("connect");
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == code
+        ));
+        assert_eq!(
+            client.realtime_state(),
+            RealtimeState::Connected,
+            "the socket delivered the answer, so it is not lost"
+        );
+        assert!(
+            matches!(
+                client.drain_sync_intents().as_slice(),
+                [SyncIntent::Background { delay_ms: 250 }]
+            ),
+            "the retry deadline is a sync round and no reconnect satisfies it"
+        );
+        assert_eq!(
+            client.progress().snapshot().unwrap().retry_delay_ms,
+            Some(250)
+        );
+    }
 }
 
 #[test]

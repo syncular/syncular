@@ -234,6 +234,14 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'forceResync',
     httpStatus: 404,
   },
+  // §1.6: a response still building at the 300 s build deadline. In-band
+  // after its header frames, HTTP 503 before them.
+  'sync.segment_build_timeout': {
+    category: 'internal',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    httpStatus: 503,
+  },
   'sync.segment_expired': {
     category: 'not-found',
     retryable: true,

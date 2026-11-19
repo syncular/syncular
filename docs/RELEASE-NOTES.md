@@ -147,6 +147,14 @@ refusal, a failed segment put) arrives as an in-band `ERROR` frame instead of
 an HTTP error status; a failure outside the error catalog reaches `onError`
 and answers `sync.internal_error`. The interval is fixed.
 
+The build has a fixed 300 s deadline, 2.5 times the slowest measured cold build.
+A response still building then, for example over a segment store whose puts
+never resolve, ends with an in-band `ERROR` carrying the new retryable code
+`sync.segment_build_timeout` (HTTP 503 before the header went out), and its
+keepalives stop. The server abandons the build as after a failed put: puts in
+flight finish unobserved, and a build that finishes later writes no client
+record. Both clients retry the code in the background.
+
 `createSyncResponseStream` now resolves to a `SyncResponseStream` (an
 `AsyncIterable` with a `live` flag), and its first chunk arrives once the
 response is built or its first `KEEPALIVE` is due. The new

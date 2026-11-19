@@ -679,6 +679,16 @@ segment put) is written as `ERROR` and `END` instead of the HTTP JSON error of
 (§1.3). The socket binding sends each `KEEPALIVE` in its own `0x01` message
 (§8.7).
 
+The build has a fixed deadline of 300 s, 2.5 times the slowest cold build
+measured in production (119.7 s, below). A response still building at the
+deadline gets no further `KEEPALIVE`: the server writes `ERROR` with the
+retryable `sync.segment_build_timeout` (§10.2) and `END` (as HTTP 503 before
+the header frames went out), records it as the client's round failure (§4.5),
+and abandons the build as it does after a failed put. Segment puts still in
+flight finish unobserved; a put that completes stores its content-addressed
+bytes before its record, and the client's retry reuses them. A build that
+finishes after the deadline reads nothing further and writes no client record.
+
 DECISION (2026-11-19): a building server writes `KEEPALIVE` frames, and it
 keeps building the whole response before its first section. Writing each
 section as its segment puts resolve would let a section escape before the
@@ -7903,8 +7913,9 @@ included, drives with the 60 s default.
 
 DECISION (2026-11-19): a received `KEEPALIVE` restarts the round bound, and the
 default stays 60 s with no host setting. A server whose build hangs keeps the
-round open while it writes keepalives; the server bounds its own work, and a
-dead link or a dead server still ends the round on the silence bounds of §1.8 or
+round open while it writes keepalives until the server's 300 s build deadline
+(§1.6) ends it with `sync.segment_build_timeout`, and a dead link or a dead
+server still ends the round on the silence bounds of §1.8 or
 on `timeoutMs`. Diego's native client cut working pulls of 65 s to 120 s at
 60,006 ms.
 
@@ -9092,6 +9103,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes or `UNIT` frames per request (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
+| `sync.segment_build_timeout` | internal | yes | retryLater | A pull response was still building at the 300 s build deadline (§1.6); written in-band as `ERROR` after the header frames and `KEEPALIVE` frames, or as HTTP 503 before them — *new in SSP2* |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
 | `sync.cursor_expired` | reset-required | no | rebootstrap | Replica cursor or unit cursor behind the pruning horizon, or a unit cursor behind the table horizon of a re-keyed table (§4.6) — *new in SSP2*; delivered as `LIVE_START` or `SUB_START` reason code |
 | `sync.scope_revoked` | scope-revoked | no | checkPermissions | Unit revoked (§3.3) — delivered as `SUB_START` reason code; a revoked (unit, table) pair travels as a revoked fenced record (§4.4) |
