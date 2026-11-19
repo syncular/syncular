@@ -18,7 +18,7 @@ import { MULTI_TAB_PROTOCOL_VERSION } from '../src/multi-tab';
 const PINNED = {
   protocol: 4,
   fingerprint:
-    '2886b2f8ae183704876f5fd0dcecf6cc6975cf7a0130f5abcee422b05c13c748',
+    '906b09566f8901309512896b9abea223b08afb864bf6e7573e2a214fb5ae4666',
 };
 
 const ROOTS = [

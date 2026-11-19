@@ -2,6 +2,24 @@
 
 ## Unreleased (draft)
 
+Tabs of a new build no longer follow an older leader
+(SYNCULAR-MULTI-TAB-BUILD-IDENTITY-001). Syncular 0.59.0 to 0.91.0 announced
+multi-tab protocol 3 although the API a follower forwards changed between
+them, so a tab of a newer build with the same schema version was served by an
+older tab's core and showed its failed rounds. `MULTI_TAB_PROTOCOL_VERSION` is
+4, and a test pins a fingerprint of the forwarded surface to it. Upgrade note:
+during a deploy, the first tab of this release makes a 0.59 to 0.91 leader with
+the same schema version step down; that older tab stays blocked
+(`leader-incompatible`) and its calls reject with `client.leader_incompatible`
+until it reloads. A frozen older leader leaves the new tab blocked until the
+old tab runs or closes.
+
+A 0.83 client's socket rounds complete on the current server
+(SYNCULAR-REALTIME-083-ON-090-SERVER-001): the client skips `UNIT_EXTENT` as
+SPEC §1.2 rule 2 requires, and a server test now pins a 0.83-shaped round with
+it. The production closes came from a 0.83 core that also served a newer tab
+(the protocol skew above); no server or wire change was needed.
+
 The TypeScript client commits a bootstrap round of many small unit sections
 in a few transactions (SYNCULAR-APPLY-ROWS-RATE-001). SSP2 and the wire
 version are unchanged.

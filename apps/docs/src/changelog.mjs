@@ -48,7 +48,8 @@ export const changelog = [
     links: [
       {
         href: '/server-operations/#client-behavior-after-traffic-resumes',
-        label: 'Client behavior after traffic resumes',      },
+        label: 'Client behavior after traffic resumes',
+      },
     ],
   },
   {
