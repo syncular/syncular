@@ -342,6 +342,55 @@ To upgrade, replace `commitOutcome(id)` with `commitDelivery(id)` and read
 `resolveCommitOutcome`, `replaceCommitOutcome`, `proveCurrentBase` and
 `pendingCommitIds` are unchanged.
 
+### The `serverColumns` hook folds into the row validator
+
+`SyncServerConfig.serverColumns` and the `ServerColumnsHook`,
+`ServerColumnsInput`, `ServerColumnsContext` and `ServerColumnsRegistry`
+types are removed, with the testkit option of the same name. The §6.7 row
+validator of a table now returns the values of its server-owned columns on
+an insert or update of a pushed commit or a registered command; a column it
+omits keeps its value in `row` (SPEC §6.7, which absorbs §6.12). The rules
+of 0.94.0 hold: the values are set inside the commit, before the whole-commit
+validator and the fan-out; on an insert a server-owned scope column decides
+the units the row reaches in that commit; the server discards pushed values
+of those columns; clients refuse to author them; an update that changes a
+server-owned scope column fails with `sync.constraint_violation`, like a
+hook failure, and a `ValidationRejection` keeps the host's code. The server
+ignores returned values on a delete, a rescope and a §6.11 cascade. The
+`syncular.json` `serverColumns` declaration is unchanged.
+
+The validator's context loses `queryAuthoritative`: it carries the §6.8
+candidate reader as `read`, so a registered query runs as
+`ctx.read.queryAuthoritative(query)`. The validator now sees each
+server-owned column as stored, NULL on an insert; the whole-commit validator
+and reactions see the completed row.
+
+A registered command's writes run the table's validator too, so a command no
+longer computes server-owned columns itself.
+
+```ts
+// 0.95.0
+export const domainEventServerColumns: ServerColumnsHook = async ({ row, stored }, { read }) => {
+  if (stored) return {};
+  return eventServerColumns(async (table, id) => (await read.getRow(table, id))?.row, row);
+};
+const validators: ValidatorRegistry = { domain_events: () => undefined /* , … */ };
+return { validators, commitValidator, serverColumns: { domain_events: domainEventServerColumns } };
+
+// 0.96.0
+export const domainEventServerColumns: Validator = async ({ op, row, stored }, { read }) => {
+  if (op !== 'upsert' || stored || !row) return;
+  return eventServerColumns(async (table, id) => (await read.getRow(table, id))?.row, row);
+};
+const validators: ValidatorRegistry = { domain_events: domainEventServerColumns /* , … */ };
+return { validators, commitValidator };
+```
+
+A host that calls its validators from its own commit validator passes
+`read: input.read` in place of
+`queryAuthoritative: (query) => input.read.queryAuthoritative(query)`. Diego's
+`activity-window-push` and `activity-window-grant` tests pass on this shape.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

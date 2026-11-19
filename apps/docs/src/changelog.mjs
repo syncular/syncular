@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'The row validator sets server-owned columns',
+    body: "The `serverColumns` hook on the sync config is removed. A table's row validator returns the values of its server-owned columns on an insert or update, of a push or a registered command, with the rules of the 0.94.0 hook. Its context carries the candidate reader as `read` in place of `queryAuthoritative`. The `syncular.json` `serverColumns` declaration is unchanged.",
+    links: [
+      {
+        href: '/guide-server/#server-owned-columns',
+        label: 'Server-owned columns',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'commitDelivery reads every commit state',
     body: '`commitOutcome(id)` is removed from the TypeScript client, the worker handle, the Tauri and React Native bridges, the native command dispatcher and the Kotlin, Swift and Flutter wrappers; the Rust `commit_outcome` is private. `commitDelivery(id)` replaces it on every surface: `pending` while the outbox holds the commit, `known` with the final outcome, `unknown` otherwise. The owning core attaches `retainedRows` to a `known` outcome. Kotlin, Swift and Flutter gain `commitDelivery`, and the native command `commitOutcome` is now `commitDelivery`. Replace `commitOutcome(id)` with `commitDelivery(id)` and read `outcome` when `status` is `known`.',
     links: [
@@ -51,7 +62,7 @@ export const changelog = [
   {
     date: '2026-11-19',
     title: 'A row under a missing key always lands sealed',
-    body: "The keyring option `missingKey` is removed on every client. A delivered row under a key id the keyring does not hold lands sealed: its encrypted columns are NULL, `_sync_sealed_key` names the key, the round goes on, and the client reveals the row once the key is installed. A round no longer fails with `client.encryption_key_missing`; that code now marks a write to a sealed row. Delete `missingKey` from every keyring.",
+    body: 'The keyring option `missingKey` is removed on every client. A delivered row under a key id the keyring does not hold lands sealed: its encrypted columns are NULL, `_sync_sealed_key` names the key, the round goes on, and the client reveals the row once the key is installed. A round no longer fails with `client.encryption_key_missing`; that code now marks a write to a sealed row. Delete `missingKey` from every keyring.',
     links: [
       {
         href: '/concepts-encryption/#rows-under-a-key-the-device-lacks',
