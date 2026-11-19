@@ -227,7 +227,7 @@ actor:
 await hub.refreshScopes(partition, actorId); // grant shrank
 hub.announceScopes(partition, [actorId]);    // grant grew
 
-// 0.97.0
+// 0.96.0
 await hub.refreshScopes(partition, actorId); // grant shrank or grew
 ```
 

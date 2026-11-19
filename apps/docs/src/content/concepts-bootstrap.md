@@ -45,7 +45,7 @@ The client holds at most two image bodies at once, the one it applies and the ne
 
 ### Parallel downloads
 
-The TypeScript client queues every segment download of a pull response and runs eight of them at once. A body that finishes early waits for the bodies before it, because the client applies segments in frame order, and each applied body frees one slot. At most two of the eight are images, per the bound above. On a production cold load, 8 rows segments of 15 to 44 KB took 3.3 s to download in two waves of four, the default before 0.97.0. The Rust core downloads a response's segments one at a time.
+The TypeScript client queues every segment download of a pull response and runs eight of them at once. A body that finishes early waits for the bodies before it, because the client applies segments in frame order, and each applied body frees one slot. At most two of the eight are images, per the bound above. On a production cold load, 8 rows segments of 15 to 44 KB took 3.3 s to download in two waves of four, the default before 0.96.0. The Rust core downloads a response's segments one at a time.
 
 ## Where segments are delivered
 
