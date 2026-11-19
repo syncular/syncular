@@ -1521,16 +1521,10 @@ describe('segment puts in flight (§5.4)', () => {
   // per unit: sixteen rows segments, every one delivered by reference.
   async function seeded(
     store: GatedSegmentStore | MemorySegmentStore,
-    maxConcurrentSegmentPuts?: number,
   ): Promise<TestContext> {
     const t = makeContext({
       segments: store,
-      limits: {
-        inlineSegmentMaxBytes: 0,
-        ...(maxConcurrentSegmentPuts !== undefined
-          ? { maxConcurrentSegmentPuts }
-          : {}),
-      },
+      limits: { inlineSegmentMaxBytes: 0 },
     });
     t.scopes.value = { project_id: projects };
     for (const project of projects) {
@@ -1575,40 +1569,28 @@ describe('segment puts in flight (§5.4)', () => {
     }
   });
 
-  test('a pull emits the same frames with one put in flight as with six', async () => {
-    const responses = [];
-    for (const limit of [1, 6]) {
-      const t = await seeded(new MemorySegmentStore(), limit);
-      responses.push(await sync(t, frames()));
+  test('a pull emits the same frames whatever order its puts complete in', async () => {
+    const issued = await sync(await seeded(new MemorySegmentStore()), frames());
+    const store = new GatedSegmentStore();
+    const response = sync(await seeded(store), frames());
+    for (const round of [6, 6, 4]) {
+      await store.untilWaiting(round);
+      store.releaseAll();
     }
-    expect(responses[1]!.frames).toEqual(responses[0]!.frames);
+    expect((await response).frames).toEqual(issued.frames);
   });
 
   test('a failed put fails the pull with its error', async () => {
-    const outcomes = [];
-    for (const limit of [1, 6]) {
-      const store = new GatedSegmentStore(5);
-      const t = await seeded(store, limit);
-      const response = sync(t, frames()).then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      // Release every put as it arrives until the pull settles.
-      for (;;) {
-        const settled = await Promise.race([
-          store.untilWaiting(1).then(() => false),
-          response.then(() => true),
-        ]);
-        store.releaseAll();
-        if (settled) break;
-      }
-      outcomes.push({ error: await response, puts: store.order.length });
-    }
-    expect(outcomes[0]!.error).toEqual(new Error('segment store unavailable'));
-    expect(outcomes[1]!.error).toEqual(outcomes[0]!.error);
-    // Both pulls stop at the failed put: the sequential one after it, the
-    // concurrent one after the six puts in flight when it failed.
-    expect(outcomes.map((outcome) => outcome.puts)).toEqual([5, 6]);
+    const store = new GatedSegmentStore(5);
+    const response = sync(await seeded(store), frames()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await store.untilWaiting(6);
+    store.releaseAll();
+    expect(await response).toEqual(new Error('segment store unavailable'));
+    // The pull stops after the six puts in flight when the fifth failed.
+    expect(store.order).toHaveLength(6);
   });
 });
 

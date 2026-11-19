@@ -966,7 +966,6 @@ async function* streamResponse(
         // pull holds the encoded bytes of the puts in flight.
         const puts: Promise<ResponseFrame>[] = [];
         const inFlight = new Set<Promise<void>>();
-        const maxPuts = limitsOf(ctx).maxConcurrentSegmentPuts;
         let failed = false;
         for (let next = 0; next < bootstrapping.length;) {
           const window: number[] = [];
@@ -1027,7 +1026,9 @@ async function* streamResponse(
               const frame = step.value;
               if (frame.type === 'PENDING_REF') {
                 // A rows segment's put runs while later pages are scanned;
-                // the next page waits while `maxPuts` puts are in flight.
+                // the next page waits while six puts are in flight: a
+                // Workers invocation holds six connections open at once and
+                // an R2 put uses one, so past six the runtime queues the put.
                 const settled: Promise<void> = frame.ref.then(
                   () => void inFlight.delete(settled),
                   () => {
@@ -1038,7 +1039,7 @@ async function* streamResponse(
                 inFlight.add(settled);
                 puts.push(frame.ref);
                 frames.push(frame.ref);
-                while (inFlight.size >= maxPuts) {
+                while (inFlight.size >= 6) {
                   await Promise.race(inFlight);
                   if (failed) break;
                 }

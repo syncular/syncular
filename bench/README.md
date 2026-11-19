@@ -157,8 +157,8 @@ bun run --cwd bench bench:segment-puts -- --latency-ms 1000 --runs 1
 `handleSyncRequest`: 4,000 rows of about 875 bytes per unit, 1,000-row pages
 and four pages per unit, so sixteen rows segments of about 875 KB go to a
 memory segment store that waits `--latency-ms` before every put. It times the
-pull with `maxConcurrentSegmentPuts` 1 (the sequential pull before 0.95.0) and
-6 (the default). Bun 1.4.4, macOS arm64, Apple M5 Pro:
+pull against a store that runs one put at a time (the sequential pull before
+0.95.0) and against one that takes every put the pull sends, six at a time. Bun 1.4.4, macOS arm64, Apple M5 Pro:
 
 | Put latency | 1 put in flight | 6 puts in flight |
 | --- | --- | --- |

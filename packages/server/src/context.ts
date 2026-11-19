@@ -124,12 +124,6 @@ export interface ServerLimits {
    * bound gets an image of its own.
    */
   readonly maxImageSegmentBytes: number;
-  /**
-   * Segment puts one pull keeps in flight. The pull scans and encodes its
-   * pages in order and stores up to this many at once, so it holds this
-   * many encoded segments in memory.
-   */
-  readonly maxConcurrentSegmentPuts: number;
 }
 
 export const DEFAULT_LIMITS: ServerLimits = {
@@ -146,9 +140,6 @@ export const DEFAULT_LIMITS: ServerLimits = {
   maxLiveSectionBytes: 16 * 1024 * 1024,
   // §5.3 DECISION (2026-11-17): a client holds about three images at once.
   maxImageSegmentBytes: 32 * 1024 * 1024,
-  // A Workers invocation holds six connections open at once, and an R2 put
-  // uses one; past six the runtime queues the put.
-  maxConcurrentSegmentPuts: 6,
 };
 
 /** Receives applied commits for realtime fanout (§8.2). */

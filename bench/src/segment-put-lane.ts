@@ -5,8 +5,9 @@
  * per page and four pages per unit, give sixteen segments of about 875 KB.
  *
  * Run: `bun run --cwd bench bench:segment-puts [--latency-ms 250]`. Each line
- * reports the pull's wall time with one put in flight (the sequential pull)
- * and with the default `maxConcurrentSegmentPuts`.
+ * reports the pull's wall time with a store that runs one put at a time (the
+ * sequential pull before 0.95.0) and with one that takes them as they come
+ * (the pull keeps six in flight).
  */
 import { parseArgs } from 'node:util';
 import {
@@ -20,7 +21,6 @@ import {
 } from '../../packages/core/src/index';
 import {
   compileSchema,
-  DEFAULT_LIMITS,
   handleSyncRequest,
   MemorySegmentStore,
   type ServerSchema,
@@ -70,13 +70,25 @@ for (const project of projects) {
 }
 await tx.commit();
 
-/** A memory store whose every put first waits `latencyMs`. */
+/**
+ * A memory store whose every put first waits `latencyMs`; a serial store
+ * starts a put once the one before it completed.
+ */
 class SlowSegmentStore extends MemorySegmentStore {
+  #last: Promise<unknown> = Promise.resolve();
+  constructor(readonly serial: boolean) {
+    super();
+  }
   override async put(
     ...args: Parameters<MemorySegmentStore['put']>
   ): ReturnType<MemorySegmentStore['put']> {
-    await Bun.sleep(latencyMs);
-    return super.put(...args);
+    const before = this.serial ? this.#last : Promise.resolve();
+    const put = before.then(async () => {
+      await Bun.sleep(latencyMs);
+      return super.put(...args);
+    });
+    this.#last = put;
+    return put;
   }
 }
 
@@ -106,15 +118,12 @@ const request = (clientId: string) =>
     ],
   });
 
-for (const maxConcurrentSegmentPuts of [
-  1,
-  DEFAULT_LIMITS.maxConcurrentSegmentPuts,
-]) {
+for (const serial of [true, false]) {
   const times: number[] = [];
   let refs = 0;
   for (let run = 0; run < runs; run++) {
     // A fresh store per run: every put is a cold build.
-    const segments = new SlowSegmentStore();
+    const segments = new SlowSegmentStore(serial);
     const started = performance.now();
     const response = decodeMessage(
       await handleSyncRequest(request(`client-${run}`), {
@@ -124,7 +133,6 @@ for (const maxConcurrentSegmentPuts of [
         storage,
         segments,
         resolveScopes: () => ({ project_id: projects }),
-        limits: { maxConcurrentSegmentPuts },
       }),
     );
     times.push(performance.now() - started);
@@ -134,6 +142,6 @@ for (const maxConcurrentSegmentPuts of [
   }
   const median = times.sort((a, b) => a - b)[Math.floor(times.length / 2)]!;
   console.log(
-    `maxConcurrentSegmentPuts=${maxConcurrentSegmentPuts} refs=${refs} put latency=${latencyMs} ms: median ${median.toFixed(0)} ms (${times.map((t) => t.toFixed(0)).join(', ')})`,
+    `${serial ? 1 : 6} puts in flight, refs=${refs} put latency=${latencyMs} ms: median ${median.toFixed(0)} ms (${times.map((t) => t.toFixed(0)).join(', ')})`,
   );
 }

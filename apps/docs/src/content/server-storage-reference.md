@@ -206,7 +206,7 @@ Bootstrap segments are **TTL cache entries** with a default 24 h lifetime and ho
 
 `S3SegmentStore` hand-rolls SigV4 over `fetch` (no AWS SDK) and uses a deterministic content-addressed key layout, so every lookup is a direct GET or HEAD by key, with no LIST call. For R2 it takes `endpoint: 'https://<account-id>.r2.cloudflarestorage.com'` with `region: 'auto'`.
 
-A pull stores up to `maxConcurrentSegmentPuts` rows segments at once ([request limits](/guide-server/#request-limits)), so a custom store must accept concurrent `put` calls, including two of the same bytes under different scope digests, and keep both digests. Each built-in store writes a segment's bytes before its record.
+A pull stores up to six rows segments at once ([request limits](/guide-server/#request-limits)), so a custom store must accept concurrent `put` calls, including two of the same bytes under different scope digests, and keep both digests. Each built-in store writes a segment's bytes before its record.
 
 For zero-egress bootstrap storms, add signed URLs. Native HMAC (`SignedUrlConfig`) has you serve the bytes and verify the token. Delegated presign (`s3PresignedUrls(store)`) has the object store enforce the grant, so the sync server never proxies segment bytes. Both emit identical descriptors, and clients cannot tell them apart. Keep the direct-download endpoint mounted as the mandatory fallback.
 

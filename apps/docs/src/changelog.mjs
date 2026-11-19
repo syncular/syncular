@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'A pull keeps six segment puts in flight',
+    body: 'The server limit `maxConcurrentSegmentPuts` is removed: a pull keeps up to six rows segment puts in flight, the connection limit of a Workers invocation. Delete the key from `limits`.',
+    links: [
+      {
+        href: '/guide-server/#request-limits',
+        label: 'Request limits',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'A schema bump that keeps tables reports ready',
     body: 'Availability reports `migrating` only while no synced table is readable: before the reset commits, and for a reset that kept no table. A bump that keeps tables reports `ready` as soon as the reset commits, online and offline, and the status snapshot carries `upgradeKeptTables` beside `upgrading`. Queries over kept tables answer `ready` with their rows; a query whose window coverage names a rebuilt unit stays `loading` until that unit completes. Before, a bump that changed 2 tables kept an app on its start screen for minutes with the rest of its replica on the device, and offline the screen never cleared. Apps that waited for `ready` now open during such a bump; render rebuilt tables from the query phase. The multi-tab protocol is 6.',
     links: [

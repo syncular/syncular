@@ -739,7 +739,7 @@ async function* tableSegments(
       yield { type: 'SEGMENT_INLINE', payload: bytes };
     } else {
       // The page's put runs while the next page is scanned; the caller keeps
-      // `maxConcurrentSegmentPuts` in flight and emits the frames in order.
+      // six puts in flight and emits the frames in order.
       trace?.segments.push({
         mediaType: 'rows',
         delivery: 'ref',

@@ -196,6 +196,14 @@ client against an older server sees no keepalives and behaves as before.
 The multi-tab protocol moves to 6 (SPEC §7.1): the forwarded response frame
 union gained `KEEPALIVE`.
 
+### `limits.maxConcurrentSegmentPuts` removed
+
+A pull keeps six segment puts in flight; the server limit is gone. Delete
+`maxConcurrentSegmentPuts` from the sync config's `limits`. Six is the
+connection limit of a Workers invocation, and a host above it gains nothing
+from R2. A custom `SegmentStore` that cannot take concurrent puts serializes
+them itself.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently
