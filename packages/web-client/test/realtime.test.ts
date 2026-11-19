@@ -417,7 +417,7 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
 });
 
 describe('scope announcements (§8.7)', () => {
-  test('an announcement reaches the named actor once and starts no pull', async () => {
+  test('a host refresh announces scopes to the named actor once and starts no pull', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
     const b = await makeClient(server, {
@@ -436,11 +436,11 @@ describe('scope announcements (§8.7)', () => {
       await local.client.syncUntilIdle();
       await local.client.connectRealtime();
     }
-    server.hub.announceScopes(PARTITION, ['actor-2']);
+    await server.hub.refreshScopes(PARTITION, 'actor-2');
     expect(heard).toEqual({ a: 0, b: 1 });
     expect(b.client.statusSnapshot().syncNeeded).toBe(false);
     off();
-    server.hub.announceScopes(PARTITION, ['actor-2']);
+    await server.hub.refreshScopes(PARTITION, 'actor-2');
     expect(heard).toEqual({ a: 0, b: 1 });
   });
 });

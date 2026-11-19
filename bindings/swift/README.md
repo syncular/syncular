@@ -51,7 +51,7 @@ client.onEvent = { event in
     case "sync-intent": Task { try? client.syncUntilIdle() }
     case "change":      refreshVisibleState()
     case "diagnostics": refreshSupportEvidence(event.payload)
-    case "scopes-changed": discoverUnits() // SPEC §8.7: the actor's grant widened
+    case "scopes-changed": discoverUnits() // SPEC §8.7: the actor's grants changed
     default:            break
     }
 }

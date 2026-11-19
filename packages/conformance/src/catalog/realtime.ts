@@ -27,13 +27,13 @@ async function connectedClient(
 
 export const realtimeScenarios: readonly Scenario[] = [
   {
-    name: 'realtime/scope-announcement-reaches-the-widened-actor-only',
+    name: 'realtime/scope-refresh-announces-to-the-widened-actor-only',
     specRefs: ['§8.1', '§8.7'],
     requires: ['realtime', 'scope-authorization', 'multi-actor'],
     async run(ctx) {
-      const announce = ctx.server.announceScopes?.bind(ctx.server);
-      if (announce === undefined) {
-        throw new ScenarioSkip('the server driver cannot announce scopes');
+      const refresh = ctx.server.refreshScopes?.bind(ctx.server);
+      if (refresh === undefined) {
+        throw new ScenarioSkip('the server driver cannot refresh scopes');
       }
       await seedTasks(ctx, [task('t1', 'p1', 'one'), task('t2', 'p2', 'two')]);
       const a = await connectedClient(ctx, 'actor-a', 'client-a');
@@ -49,16 +49,16 @@ export const realtimeScenarios: readonly Scenario[] = [
       await ctx.server.setAllowedScopes('actor-b', {
         project_id: ['p1', 'p2'],
       });
-      await announce(['actor-b']);
+      await refresh('actor-b');
       await b.realtime.waitForScopes(1);
       checkEqual(await b.api.scopesChanged?.(), 1, 'B surfaces one event');
       check(
         !(await b.api.syncNeeded()),
-        'the announcement raises no sync-needed signal (§8.7)',
+        'a widening refresh raises no sync-needed signal (§8.7)',
       );
-      // A's socket delivers in order: its first announcement is the second
-      // call, so the first one never reached it.
-      await announce(['actor-a']);
+      // A's socket delivers in order: its first `scopes` event is the second
+      // call's, so the first one never reached it.
+      await refresh('actor-a');
       await a.realtime.waitForScopes(1);
       checkEqual(a.realtime.scopesEvents, 1, 'A received only its own');
       checkEqual(await a.api.scopesChanged(), 1, 'A surfaces only its own');

@@ -65,7 +65,7 @@ client.listener = SyncularEventListener { event ->
         "sync-intent" -> scheduleSync()
         "change"      -> refreshVisibleState()
         "diagnostics" -> refreshSupportEvidence(event.payload)
-        "scopes-changed" -> discoverUnits() // SPEC §8.7: the actor's grant widened
+        "scopes-changed" -> discoverUnits() // SPEC §8.7: the actor's grants changed
         else          -> Unit
     }
 }

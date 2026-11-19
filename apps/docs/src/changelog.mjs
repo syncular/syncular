@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'One host call after any grant change',
+    body: "`RealtimeHub.refreshScopes(partition, actorId?)` re-resolves the matching sessions' registrations and then sends each of them one `scopes` event, so a host calls it after a grant shrinks or grows. `announceScopes` is removed from the hub and from the Workers notifier. A session that lost a registration still gets a `catchup-required` wake, and the client's `onScopesChanged` listeners run the app's unit discovery for units the actor may newly read.",
+    links: [
+      {
+        href: '/concepts-realtime/#grown-grants',
+        label: 'Grown grants',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'The client runs eight segment downloads at once',
     body: 'The client limit `segmentPrefetch` is removed: the TypeScript client runs eight segment downloads of a pull response at once, of which at most two are SQLite images. Delete the key from `limits`.',
     links: [

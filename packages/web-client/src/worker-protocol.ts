@@ -315,7 +315,7 @@ export type SyncWorkerEvent =
       readonly error?: PresenceErrorCode | undefined;
     }
   | {
-      /** §8.7: the server announced that the actor gained scopes. */
+      /** §8.7: the server announced that the actor's grants changed. */
       readonly kind: 'scopes-changed';
     }
   | {

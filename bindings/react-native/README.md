@@ -85,7 +85,7 @@ rolls a stopped attach back. Errors are `NativeSyncError` with `code` and
 `details`. See `/guide-local-authority/`.
 
 `client.onScopesChanged(listener)` fires when the server announces that the
-actor's grant widened (SPEC §8.7); run the app's unit discovery there. It
+actor's grants changed (SPEC §8.7); run the app's unit discovery there. It
 returns an unsubscribe function.
 
 Bytes cross as `{$bytes:hex}`; the JS layer parses/stringifies so the native

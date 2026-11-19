@@ -717,7 +717,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return () => this.#presenceListeners.delete(listener);
   }
 
-  /** §8.7: the server announced that the actor gained scopes. */
+  /** §8.7: the server announced that the actor's grants changed. */
   onScopesChanged(listener: () => void): () => void {
     this.requireOpen();
     this.#scopesChangedListeners.add(listener);

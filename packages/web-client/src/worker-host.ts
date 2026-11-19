@@ -546,8 +546,8 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   /**
-   * §8.7: subscribe to the server's announcement that the actor gained
-   * scopes — the identical surface as `SyncClient.onScopesChanged`. Every
+   * §8.7: subscribe to the server's announcement that the actor's grants
+   * changed — the identical surface as `SyncClient.onScopesChanged`. Every
    * tab's handle receives it. Returns an unsubscribe function.
    */
   onScopesChanged(listener: () => void): () => void {

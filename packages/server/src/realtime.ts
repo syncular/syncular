@@ -1563,9 +1563,11 @@ export class RealtimeHub {
 
   /**
    * Host-initiated, fail-closed registration refresh (§8.7). A host calls this
-   * after it changes an actor's membership or connection state, so the
-   * partition's connected sessions stop using grants the host already revoked
-   * without waiting for the client to happen to run a round.
+   * after it changes an actor's grants, whether they shrank or grew. Each
+   * matching session re-resolves its registrations, so it stops using grants
+   * the host already revoked without waiting for its client to run a round,
+   * and then receives one `scopes` event, so its client's app runs its
+   * discovery and registers units it did not know.
    *
    * This differs deliberately from the round-end refresh
    * (`RealtimeSession.refreshRegistrations`), which keeps the previous
@@ -1578,24 +1580,10 @@ export class RealtimeHub {
     for (const session of [...this.#sessions]) {
       if (session.partition !== partition) continue;
       if (actorId !== undefined && session.actorId !== actorId) continue;
-      // Fail closed (see the doc above): an unreadable client record drops
-      // every grant on the connection. The session's generation guard keeps
-      // this revocation from being overwritten by a slower round-end reload.
+      // The session's generation guard keeps this revocation from being
+      // overwritten by a slower round-end reload.
       await session.refreshRegistrations(true);
-    }
-  }
-
-  /**
-   * Host announcement (§8.7): tell the connected sessions of `actorIds` on
-   * the partition that their grant widened, so each client's app runs its
-   * discovery and registers the units it did not know. Sends one `scopes`
-   * event per session and changes no registration; a narrowed grant needs
-   * `refreshScopes`.
-   */
-  announceScopes(partition: string, actorIds: readonly string[]): void {
-    for (const session of this.#sessions) {
-      if (session.partition !== partition) continue;
-      if (actorIds.includes(session.actorId)) session.sendScopes();
+      session.sendScopes();
     }
   }
 

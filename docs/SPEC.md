@@ -8635,10 +8635,12 @@ zero registrations (§8.1) and acquires them from its first socket
 round; the "connected but silently unregistered until the next
 reconnect" failure mode of an HTTP-pull-only client cannot occur.
 
-**Host-initiated refresh.** A host that changes an actor's membership or
-connection state MAY call the hub's `refreshScopes(partition, actorId?)`
-to re-resolve the matching sessions' registrations immediately instead of
-waiting for each client to run a round. The call fails closed: a session
+**Host-initiated refresh.** A host that changes an actor's grants, whether
+they shrink or grow, or a connection's state MAY call the hub's
+`refreshScopes(partition, actorId?)`. The hub re-resolves the matching
+sessions' registrations immediately instead of waiting for each client to
+run a round, and then sends each matching session one `scopes` event. The
+re-resolution fails closed: a session
 whose resolver call fails or whose client record cannot be read loses
 every registration, so it receives no further deltas until it
 re-registers. This differs from the round-end rule above, which keeps the
@@ -8655,11 +8657,9 @@ record still lists as live: the round may have answered the unit active
 before the grant changed, and the client purges only in a later round. A
 unit the client dropped from its own list wakes nothing.
 
-**Host announcement.** A refresh re-resolves the units a client already
+**The `scopes` event.** Re-resolution covers the units a client already
 registered; it cannot tell the client that units it does not know became
-readable. A host that widens an actor's grant MAY call the hub's
-`announceScopes(partition, actorIds)`. The hub sends every connected session
-of the partition whose actor is in `actorIds` one `scopes` event:
+readable. The `scopes` event that ends every host refresh does:
 
 ```json
 {"event":"scopes","data":{"timestamp":<ms>}}
@@ -8671,8 +8671,9 @@ surfaces it to the app as a scopes-changed event (TypeScript
 on the native bindings) and changes no sync state: it raises no
 sync-needed signal and runs no round. The app asks its own discovery which
 units the actor may read and registers the new ones; their first round
-delivers their rows. An announcement does not re-resolve registrations; a
-host whose change also narrows a grant calls `refreshScopes` as well.
+delivers their rows. A session receives the event whether its grant shrank
+or grew, because the hub cannot tell which units the actor may newly read; an
+app whose discovery finds nothing new registers nothing.
 
 Delivery is best effort per connected session. A session on the hub when
 the call runs receives the event once per call; a client that is
@@ -8682,6 +8683,12 @@ discovers units runs its discovery when its realtime connection becomes
 `scopes` event whose `data` is missing or whose `timestamp` is not an
 integer is malformed (§8.1). A client that predates the event ignores it as
 an unknown event name (§8.1) and keeps its own discovery triggers.
+
+DECISION (2026-11-19): one host call covers shrinking and growing grants.
+0.95.0 had a separate `announceScopes(partition, actorIds)` that sent the
+`scopes` event without re-resolving; a host had to know which direction a
+change went and call one or both. `refreshScopes` now re-resolves and
+announces, so a host calls it after any grant change.
 
 DECISION (2026-11-18): the announcement is a new event name instead of a
 fourth wake-up reason. The reason set of §8.3 is closed, so a client that
@@ -8843,10 +8850,9 @@ the host's events.
 **Host refresh.** A host-initiated registration refresh (`refreshScopes`,
 §8.7) after a grant changes MUST reach every host that holds sockets of the
 partition, through the same bridge and with the same retry, so a session on
-another host stops receiving deltas for scopes its actor lost. A host
-announcement (`announceScopes`, §8.7) takes the same bridge and retry, so a
-session on another host receives its `scopes` event. A retried announcement
-reaches the sessions connected when the retry lands.
+another host stops receiving deltas for scopes its actor lost and receives its
+`scopes` event. A retried refresh reaches the sessions connected when the
+retry lands.
 
 **Presence.** Presence (§8.6) is per host: a peer's `join`, `update` and
 `leave` reach only sessions on the same host. A host that spreads one
@@ -8874,17 +8880,14 @@ object and that object one request per registered shard.
 
 `refreshScopes(partition, actorId?)` on the Worker's notifier sends a refresh
 message the same way; every object runs `RealtimeHub.refreshScopes` on its
-sessions. `announceScopes(partition, actorIds)` sends an announcement message,
-and every object runs `RealtimeHub.announceScopes`. Either call fails when the
-partition's object did not take it.
+sessions. The call fails when the partition's object did not take it.
 
 A relay to a shard that fails (a thrown request, any status but 2xx and 404)
 leaves a record in the partition object's storage of what the shard owes: the
-highest commit sequence it missed, a refresh, changed registrations, or the
-actors of missed announcements. Later failures merge into the record. The object's alarm retries each record every
+highest commit sequence it missed, a refresh, or changed registrations.
+Later failures merge into the record. The object's alarm retries each record every
 second and sends the shard one message carrying it. The shard then runs a
-fail-closed refresh of every session for an owed refresh, sends the `scopes`
-event to the sessions of the owed actors, wakes every session
+host refresh (§8.7) of every session for an owed refresh, wakes every session
 with `catchup-required` for owed registrations (the client's round reloads
 them), and wakes every session whose last observed sequence lies below the
 owed one. A delivered record that no failure changed meanwhile is deleted; a

@@ -157,7 +157,7 @@ session.close();
 A session caches its registrations and refreshes them on connect and at the end of a socket round ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-websocket-native-sync-loop)). A commit fanout that lands after a host revokes an actor's access therefore still uses the cached grants until the client runs a round. `RealtimeHub.refreshScopes(partition, actorId?)` is the host-initiated point that closes that window.
 
 ```ts title="src/host.ts"
-await hub.refreshScopes(partition, actorId); // after a membership change
+await hub.refreshScopes(partition, actorId); // after a grant shrank or grew
 await hub.refreshScopes(partition);          // after a connection change
 ```
 
@@ -167,13 +167,7 @@ A session whose registrations `refreshScopes` removed or narrowed also receives 
 
 ### Grown grants
 
-`refreshScopes` re-resolves the units a client already registered. A client registers only units it knows, so a grant that makes new units readable (a new project, a new membership) stays invisible until the app's own discovery runs again. After such a change, call `announceScopes` on the hub with the actors whose grants grew:
-
-```ts title="src/host.ts"
-hub.announceScopes(partition, [actorId]); // after a grant grew
-```
-
-Each connected session of those actors receives one `{"event":"scopes","data":{"timestamp":…}}` message. It carries no scope values and changes no registration. The client surfaces it and starts no round; the app runs its discovery and subscribes the new units, whose first round delivers their rows:
+Re-resolution covers the units a client already registered. A client registers only units it knows, so a grant that makes new units readable (a new project, a new membership) stays invisible until the app's own discovery runs again. `refreshScopes` therefore ends with an announcement: each refreshed session receives one `{"event":"scopes","data":{"timestamp":…}}` message. It carries no scope values and changes no registration. The client surfaces it and starts no round; the app runs its discovery and subscribes the new units, whose first round delivers their rows:
 
 ```ts title="src/app.ts"
 client.onScopesChanged(() => {
@@ -181,4 +175,4 @@ client.onScopesChanged(() => {
 });
 ```
 
-The worker handle and the React `SyncClientLike` expose the same `onScopesChanged`, and the handle fires it in every tab. The Rust core counts the events for `drain_scopes_changed()`, and the native bindings deliver them as a `scopes-changed` event. Delivery is per connected session: a client that is disconnected during the call receives nothing and gets no replay on connect, so run discovery when the realtime state becomes `connected` as well. A client older than this event ignores it as an unknown event name ([SPEC §8.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#81-channel-and-handshake)) and keeps its own discovery triggers. A change that narrows one grant and widens another needs both calls.
+The worker handle and the React `SyncClientLike` expose the same `onScopesChanged`, and the handle fires it in every tab. The Rust core counts the events for `drain_scopes_changed()`, and the native bindings deliver them as a `scopes-changed` event. Delivery is per connected session: a client that is disconnected during the call receives nothing and gets no replay on connect, so run discovery when the realtime state becomes `connected` as well. A client older than this event ignores it as an unknown event name ([SPEC §8.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#81-channel-and-handshake)) and keeps its own discovery triggers. The hub sends the event after every refresh, because it cannot tell which units an actor may newly read; a discovery that finds nothing new registers nothing.

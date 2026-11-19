@@ -10,8 +10,7 @@
  * resolver reads each actor's lists from the `GRANTS` service binding, so the
  * test can revoke them. `POST /setup` creates the schema and pins the
  * partition log epoch; `POST /refresh?actor=` refreshes that actor's scopes
- * in every object; `POST /announce?actor=` announces that actor's grown
- * scopes in every object; `POST /fail-next?shard=` makes that shard object answer
+ * in every object; `POST /fail-next?shard=` makes that shard object answer
  * its next relay with 503.
  */
 import {
@@ -189,12 +188,6 @@ export default {
       await durableObjectRealtimeNotifier(env.REALTIME, {
         waitUntil: (promise) => ctx.waitUntil(promise),
       }).refreshScopes(PARTITION, url.searchParams.get('actor') ?? '');
-      return new Response(null, { status: 204 });
-    }
-    if (url.pathname === '/announce') {
-      await durableObjectRealtimeNotifier(env.REALTIME, {
-        waitUntil: (promise) => ctx.waitUntil(promise),
-      }).announceScopes(PARTITION, [url.searchParams.get('actor') ?? '']);
       return new Response(null, { status: 204 });
     }
     if (url.pathname === '/fail-next') {

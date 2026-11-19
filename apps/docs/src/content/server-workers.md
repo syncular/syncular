@@ -380,7 +380,7 @@ When a relay to a shard fails (a thrown request, or any status but 2xx and 404),
 
 ### Refresh scopes after a grant changes
 
-A session caches its registrations between rounds. After you revoke or narrow an actor's grants, call `refreshScopes` on the notifier, which reaches the sessions in every shard:
+A session caches its registrations between rounds. After an actor's grants shrink or grow, call `refreshScopes` on the notifier, which reaches the sessions in every shard:
 
 ```ts
 await durableObjectRealtimeNotifier(env.REALTIME, {
@@ -388,17 +388,7 @@ await durableObjectRealtimeNotifier(env.REALTIME, {
 }).refreshScopes(partition, actorId);
 ```
 
-Every object runs `RealtimeHub.refreshScopes`: each of the actor's sessions resolves its scopes again, fails closed when the resolver throws, and stops receiving deltas for the scopes it lost; a session that lost a registration gets a `catchup-required` wake, so its client runs the round that purges the rows. Omit `actorId` to refresh every session of the partition. The call throws `sync.internal_error` when the partition's object did not take the refresh; a shard that fails it is retried like a commit.
-
-After a grant grows, call `announceScopes` on the notifier with the actors whose grants grew:
-
-```ts
-await durableObjectRealtimeNotifier(env.REALTIME, {
-  waitUntil: (promise) => ctx.waitUntil(promise),
-}).announceScopes(partition, [actorId]);
-```
-
-Every object runs `RealtimeHub.announceScopes`, which sends each connected session of those actors one `scopes` event, and the client's `onScopesChanged` listeners run its unit discovery ([Grown grants](/concepts-realtime/#grown-grants)). The call throws `sync.internal_error` when the partition's object did not take it. A shard that fails the relay owes the announcement, and the alarm's retry sends it to the actors' sessions connected when the retry lands.
+Every object runs `RealtimeHub.refreshScopes`: each of the actor's sessions resolves its scopes again, fails closed when the resolver throws, and stops receiving deltas for the scopes it lost; a session that lost a registration gets a `catchup-required` wake, so its client runs the round that purges the rows. Each session then receives one `scopes` event, and the client's `onScopesChanged` listeners run its unit discovery ([Grown grants](/concepts-realtime/#grown-grants)). Omit `actorId` to refresh every session of the partition. The call throws `sync.internal_error` when the partition's object did not take the refresh. A shard that fails the relay owes a refresh of all its sessions, and the alarm's retry runs it on the sessions connected when the retry lands.
 
 Presence stays inside one object: a peer's `join`, `update` and `leave` reach only sockets in the same shard. Choose a shard key that keeps peers who share a presence key together. The admin console has no Durable Object to forward to in this shape; the Worker serves it without an event ring.
 

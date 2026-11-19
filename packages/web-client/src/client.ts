@@ -3200,8 +3200,8 @@ export class SyncClient {
   }
 
   /**
-   * §8.7: subscribe to the server's announcement that this client's actor
-   * gained scopes. The event carries no scope values and starts no round: the
+   * §8.7: subscribe to the server's announcement that the grants of this
+   * client's actor changed. The event carries no scope values and starts no round: the
    * app runs its own discovery and subscribes the units it did not know.
    * Returns an unsubscribe function.
    */

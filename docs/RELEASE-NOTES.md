@@ -214,6 +214,28 @@ brings dozens of rows segments and took 3.3 s for eight small ones in two
 waves of four. A client that kept the default holds up to eight rows bodies
 instead of four.
 
+### `announceScopes` folds into `refreshScopes`
+
+`RealtimeHub.refreshScopes(partition, actorId?)` now re-resolves the matching
+sessions and then sends each of them one `scopes` event (SPEC §8.7). The hub's
+`announceScopes(partition, actorIds)` and the Workers notifier's
+`announceScopes` are removed. Replace each call with `refreshScopes`, once per
+actor:
+
+```ts
+// 0.95.0
+await hub.refreshScopes(partition, actorId); // grant shrank
+hub.announceScopes(partition, [actorId]);    // grant grew
+
+// 0.97.0
+await hub.refreshScopes(partition, actorId); // grant shrank or grew
+```
+
+A host that called only `announceScopes` now also re-resolves the sessions,
+which fails closed when the resolver throws. A partition object's stored
+retry record from 0.95.0 that owes only an announcement is delivered as
+nothing; one that also owes a refresh delivers the refresh and its event.
+
 ## 0.95.0 release notes
 
 0.95.0 stores a cold pull's segments concurrently

@@ -1057,7 +1057,7 @@ test('a refused presence publish crosses the worker to both presence surfaces (�
   await handle.disconnectRealtime();
 });
 
-test('a scope announcement crosses the worker to the handle (§8.7)', async () => {
+test('a host scope refresh crosses the worker to the handle (§8.7)', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-scopes',
     autoSync: false,
@@ -1067,7 +1067,7 @@ test('a scope announcement crosses the worker to the handle (§8.7)', async () =
     heard += 1;
   });
   await handle.connectRealtime();
-  server.hub.announceScopes(PARTITION, ['actor-1']);
+  await server.hub.refreshScopes(PARTITION, 'actor-1');
   await waitFor(
     () => heard === 1,
     (notify) => handle.onScopesChanged(notify),

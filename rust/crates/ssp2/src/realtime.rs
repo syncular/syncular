@@ -57,7 +57,7 @@ pub enum ControlMessage {
     },
     /// §8.5 heartbeat.
     Heartbeat { timestamp: i64 },
-    /// §8.7 host announcement: the actor's grant widened.
+    /// §8.7 host announcement: the actor's grants changed.
     Scopes { timestamp: i64 },
     /// §8.2 client ack — the sole client→server control message.
     Ack { cursor: i64 },

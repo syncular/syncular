@@ -51,7 +51,7 @@ export interface RealtimeHeartbeatEvent {
   data: { timestamp: number };
 }
 
-/** §8.7 host announcement: the actor's grant widened. It carries no scope
+/** §8.7 host announcement: the actor's grants changed. It carries no scope
  * values and asks for no pull. */
 export interface RealtimeScopesEvent {
   event: 'scopes';

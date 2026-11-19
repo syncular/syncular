@@ -512,8 +512,8 @@ export interface ServerInstance {
   /** Set the actor's allowed scopes (§3.2 step 3). `'*'` = any value. */
   setAllowedScopes(actorId: string, allowed: DriverScopeMap): Promise<void>;
 
-  /** `realtime`: the host announcement (§8.7) to these actors' sessions. */
-  announceScopes?(actorIds: readonly string[]): Promise<void>;
+  /** `realtime`: the host scope refresh (§8.7) of this actor's sessions. */
+  refreshScopes?(actorId: string): Promise<void>;
 
   /**
    * `§2.2`: move one stored row to new scope values through a registered

@@ -54,7 +54,7 @@ client.syncUntilIdle();
 // Client-observable events → a broadcast Stream.
 client.events.listen((e) {
   if (e.type == 'sync-intent') client.sync();
-  // SPEC §8.7: the actor's grant widened; register the new units.
+  // SPEC §8.7: the actor's grants changed; register the new units.
   if (e.type == 'scopes-changed') discoverUnits();
 });
 

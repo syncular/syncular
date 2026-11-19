@@ -154,7 +154,7 @@ See [SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-
 
 ### Do refresh open sockets when membership changes
 
-A session resolves its scopes when it registers. A host that changes an actor's membership calls the hub's `refreshScopes(partition, actorId?)`, or waits for each client's next round. The call fails closed: a session whose resolver throws loses every registration.
+A session resolves its scopes when it registers. A host that changes an actor's membership calls the hub's `refreshScopes(partition, actorId?)`, or waits for each client's next round. The call fails closed: a session whose resolver throws loses every registration. It also sends each refreshed session a `scopes` event, so the app's unit discovery picks up a grant that grew.
 
 See [SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-sync-rounds-over-the-socket).
 

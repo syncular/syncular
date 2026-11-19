@@ -1102,8 +1102,8 @@ class TsServerInstance implements ServerInstance {
     this.#allowed.set(actorId, allowed as ScopeMap);
   }
 
-  async announceScopes(actorIds: readonly string[]): Promise<void> {
-    this.#hub.announceScopes(this.#partition, actorIds);
+  async refreshScopes(actorId: string): Promise<void> {
+    await this.#hub.refreshScopes(this.#partition, actorId);
   }
 
   async installValidators(

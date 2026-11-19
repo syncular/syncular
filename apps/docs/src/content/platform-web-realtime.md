@@ -213,7 +213,7 @@ The handle's `onSyncNeeded`, `onConflict`, `onSynced`, `onUpgrading`,
 `onPresence`, and `onDiagnostics` configuration callbacks give the main thread the
 events it needs for rendering. They fire in the tab whose worker raised the
 event, which is the leader tab. `handle.onScopesChanged(listener)` fires in
-every tab when the server announces that the actor's grants grew
+every tab when the server announces that the actor's grants changed
 ([Grown grants](/concepts-realtime/#grown-grants)).
 
 `handle.onSynced(listener)` fires in every tab, leader and follower, at the
