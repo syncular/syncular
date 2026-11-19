@@ -7375,6 +7375,17 @@ SQLite primary result code `SQLITE_CORRUPT` (11) or `SQLITE_NOTADB` (26)
 raises non-retryable `client.storage_corrupt`; primary code `SQLITE_IOERR`
 (10) raises non-retryable `client.storage_io`. Both carry fixed message text.
 Primary code `SQLITE_FULL` (13) raises non-retryable `client.storage_full`.
+The browser binding on the `opfs-sahpool` VFS adds one rule. That VFS
+returns plain `SQLITE_IOERR` for every exception a
+`FileSystemSyncAccessHandle` `write`, `flush`, or `truncate` throws, so
+the binding records the name of a `DOMException` thrown during the failing
+statement and the failure details carry it as `vfsErrorName`. The exception
+message is not recorded. `QuotaExceededError` raises `client.storage_full`
+and `sqliteCode` keeps the VFS's `SQLITE_IOERR` code; any other name keeps
+`client.storage_io`. The binding clears the recorded name before each
+statement, so an exception from an earlier statement never names a later
+failure. Bun, Node, Rust, and native clients do not use OPFS; their disk
+exhaustion arrives as `SQLITE_FULL`.
 Reads and writes, including segment/image imports and transaction commits,
 retain the first storage failure. Its error details carry `sqliteCode` and
 `sqliteMessage`; a failed rollback adds secondary `rollbackFailure` details
@@ -9270,7 +9281,7 @@ non-retryable],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],
-`client.storage_full` [§7.5 — local SQLite storage hit `SQLITE_FULL`; non-retryable],
+`client.storage_full` [§7.5 — local SQLite storage hit `SQLITE_FULL`, or an OPFS sync access handle threw `QuotaExceededError`; non-retryable],
 `client.storage_busy` [§7.5 — a local write hit SQLite `SQLITE_BUSY` or
 `SQLITE_LOCKED`, including extended codes; retryable],
 `client.web_locks_unavailable` [§7.1 — a browser Worker handle without an injected leader lock found no Web Locks; non-retryable],

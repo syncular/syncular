@@ -930,6 +930,74 @@ for (const atCommit of [false, true])
     }
   }, 60000);
 
+// sqlite-wasm's sahpool xWrite returns plain SQLITE_IOERR for any exception
+// the sync access handle throws. A sqlite-wasm upgrade that stops writing
+// through the handle prototype fails this test instead of losing the name.
+for (const [vfsErrorName, code] of [
+  ['QuotaExceededError', 'client.storage_full'],
+  ['InvalidStateError', 'client.storage_io'],
+] as const)
+  test(`OPFS ${vfsErrorName} during an image import fails the round with ${code}, and a later failure carries no stale name`, async () => {
+    const browser = await chromium.launch();
+    const page = await browser.newPage();
+    try {
+      await page.goto(server.url.href);
+      await page.evaluate(() => window.opfsTest.open());
+      const failures = await page.evaluate(async (vfsErrorName) => {
+        const client = await window.opfsTest.ready;
+        const failedRound = async () => {
+          try {
+            await client.syncUntilIdle();
+          } catch (error) {
+            if (!(error instanceof Error) || !('code' in error)) throw error;
+            return {
+              code: error.code,
+              details:
+                'details' in error
+                  ? (error.details as Record<string, unknown>)
+                  : undefined,
+              progress: window.opfsTest.progress.at(-1)?.errorCode,
+            };
+          }
+          throw new Error('test.round_unexpectedly_succeeded');
+        };
+        await client.sync();
+        await client.subscribe({ project_id: 'p1' });
+        await window.opfsTest.limitStorage(1073741823, false, vfsErrorName);
+        const injected = await failedRound();
+        await window.opfsTest.limitStorage(1);
+        return [injected, await failedRound()];
+      }, vfsErrorName);
+      expect(failures[0]).toMatchObject({
+        code,
+        details: { vfsErrorName },
+        progress: code,
+      });
+      expect(Number(failures[0]?.details?.sqliteCode) & 0xff).toBe(10);
+      expect(failures[1]).toMatchObject({
+        code: 'client.storage_full',
+        details: { sqliteCode: 13 },
+      });
+      expect(failures[1]?.details).not.toHaveProperty('vfsErrorName');
+      await page.evaluate(async () => {
+        await window.opfsTest.limitStorage(1073741823);
+        await (await window.opfsTest.ready).syncUntilIdle();
+      });
+      expect(
+        await page.evaluate(
+          async () =>
+            (
+              await (
+                await window.opfsTest.ready
+              ).query('SELECT count(*) AS n FROM catalogue')
+            )[0]?.n,
+        ),
+      ).toBe(expected.length);
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
 test('OPFS offline atomic patch survives reload and retains second-actor conflict', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'syncular-opfs-conflict-'));
   const context = await chromium.launchPersistentContext(profile);

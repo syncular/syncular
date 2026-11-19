@@ -126,6 +126,16 @@ appear only in `details.rollbackFailure`. The core reconciles the transaction
 before the next import. Restore capacity, then request sync again. The client
 keeps its replica and its pending writes.
 
+A browser replica on OPFS reaches its origin quota before SQLite reports a full
+database: `FileSystemSyncAccessHandle.write` throws `QuotaExceededError`, and
+the `opfs-sahpool` VFS returns `SQLITE_IOERR` (10). The client reports that
+failure as `client.storage_full` with `details.vfsErrorName:
+'QuotaExceededError'`; `details.sqliteCode` stays 10. Any other exception from
+the access handle stays `client.storage_io`, with its `DOMException` name in
+`details.vfsErrorName`. Dropping and rebuilding the replica does not free
+quota: the rebuild refills to the same size. Free origin storage or reduce the
+subscribed scope.
+
 ## Related
 
 - [Platform specifics](/platform-web-specifics/): the startup retry schedule and the multi-tab protocol behind these codes.

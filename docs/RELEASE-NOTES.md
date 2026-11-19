@@ -1,5 +1,25 @@
 # Syncular release notes
 
+## 0.98.0 release notes
+
+### OPFS quota exhaustion reports client.storage_full
+
+Two Windows browser replicas at 433 MB and 521 MB failed an image import with
+`client.storage_io`. `FileSystemSyncAccessHandle.write` threw
+`QuotaExceededError`, and sqlite-wasm's `opfs-sahpool` VFS returned plain
+`SQLITE_IOERR` (10) for it, as it does for every exception from `write`,
+`flush`, and `truncate`. The application dropped and rebuilt the replica,
+which refilled to the same size and failed again
+(SYNCULAR-OPFS-QUOTA-AS-IOERR-001).
+
+The browser binding now records the name of a `DOMException` the access
+handle throws during a statement. `QuotaExceededError` raises
+`client.storage_full`; any other name stays `client.storage_io`. Both carry
+the name as `details.vfsErrorName` beside `details.sqliteCode`, which stays
+10. The binding clears the name before each statement, so it never names a
+later, unrelated failure. Bun, Node, Rust, and native clients are unchanged:
+their disk exhaustion arrives as `SQLITE_FULL` (13).
+
 ## 0.97.0 release notes
 
 0.97.0 answers a segment store outage as retryable unavailability

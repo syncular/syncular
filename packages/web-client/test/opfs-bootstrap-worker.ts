@@ -18,6 +18,7 @@ let armed: CrashPoint | undefined;
 let database: ClientDatabase;
 let openedCacheSize: unknown;
 let failCommit = false;
+let vfsError: string | undefined;
 let importing = false;
 let imageInserts = 0;
 let attachedImage = false;
@@ -56,6 +57,11 @@ scope.FileSystemSyncAccessHandle.prototype.write = function (buffer, options) {
   ) {
     databaseHandles.add(this);
   }
+  if (vfsError !== undefined && importing && databaseHandles.has(this)) {
+    const name = vfsError;
+    vfsError = undefined;
+    throw new DOMException('test.synthetic_vfs_error', name);
+  }
   const written = originalWrite.call(this, buffer, options);
   if (importing && databaseHandles.has(this)) {
     stopAt('mid-import', written, true);
@@ -70,6 +76,7 @@ scope.addEventListener('message', (event: MessageEvent) => {
   if (event.data.t === 'page-limit') {
     database.exec(`PRAGMA max_page_count = ${event.data.limit}`);
     failCommit = event.data.failCommit === true;
+    vfsError = event.data.vfsError;
     scope.postMessage({ t: 'page-limit-set' });
   }
   if (event.data.t === 'arm') {

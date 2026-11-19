@@ -30,6 +30,33 @@ test('SQLITE_BUSY and SQLITE_LOCKED primary and extended codes classify as retry
   expect(result.error).toBe(unrelated);
 });
 
+test('an OPFS sync access handle exception names the SQLITE_IOERR it caused', () => {
+  const failed = (vfsErrorName?: string) =>
+    classifySqliteFailure(
+      Object.assign(new Error('disk I/O error'), {
+        name: 'SQLite3Error',
+        resultCode: 10,
+        ...(vfsErrorName === undefined ? {} : { vfsErrorName }),
+      }),
+    );
+  const quota = failed('QuotaExceededError');
+  expect(quota.code).toBe('client.storage_full');
+  expect(quota.error).toMatchObject({
+    message: 'local SQLite storage is full',
+    details: { sqliteCode: 10, vfsErrorName: 'QuotaExceededError' },
+  });
+  const state = failed('InvalidStateError');
+  expect(state.code).toBe('client.storage_io');
+  expect(state.error).toMatchObject({
+    details: { sqliteCode: 10, vfsErrorName: 'InvalidStateError' },
+  });
+  const plain = failed();
+  expect(plain.code).toBe('client.storage_io');
+  if (!(plain.error instanceof ClientSyncError))
+    throw new Error('expected a classified ClientSyncError');
+  expect(plain.error.details).not.toHaveProperty('vfsErrorName');
+});
+
 for (const atCommit of [false, true]) {
   test(`SQLITE_FULL at ${atCommit ? 'commit' : 'step'} survives failed cleanup and a later transaction`, () => {
     const db = new BunClientDatabase();

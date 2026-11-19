@@ -143,7 +143,9 @@ export class RealtimeUnavailableError extends ClientSyncError {
  * the driver exposes (bun:sqlite `errno`, node:sqlite `errcode`, sqlite-wasm
  * `resultCode`), never by message text. `error` is what the read throws: a
  * stable `ClientSyncError` for corruption or I/O failure, otherwise the
- * original value.
+ * original value. The OPFS binding sets `vfsErrorName` on a failure whose
+ * sync access handle threw a DOMException: `QuotaExceededError` is a full
+ * store whatever SQLite code the VFS returned.
  */
 export function classifySqliteFailure(error: unknown): {
   readonly sqliteCode: number | undefined;
@@ -205,7 +207,18 @@ export function classifySqliteFailure(error: unknown): {
             ? error.resultCode
             : undefined
       : undefined;
-  const primary = sqliteCode === undefined ? undefined : sqliteCode & 0xff;
+  const vfsErrorName =
+    error instanceof Error &&
+    'vfsErrorName' in error &&
+    typeof error.vfsErrorName === 'string'
+      ? error.vfsErrorName
+      : undefined;
+  const primary =
+    sqliteCode === undefined
+      ? undefined
+      : vfsErrorName === 'QuotaExceededError'
+        ? 13
+        : sqliteCode & 0xff;
   const code =
     primary === 13
       ? STORAGE_FULL_CODE
@@ -234,6 +247,7 @@ export function classifySqliteFailure(error: unknown): {
     {
       sqliteCode,
       sqliteMessage: error instanceof Error ? error.message : String(error),
+      ...(vfsErrorName !== undefined ? { vfsErrorName } : {}),
       ...(rollback !== undefined
         ? {
             rollbackFailure: {

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'OPFS quota exhaustion reports client.storage_full',
+    body: 'On the `opfs-sahpool` VFS a `QuotaExceededError` from a sync access handle write, flush or truncate reaches SQLite as plain `SQLITE_IOERR` (10), so a browser replica at its origin quota reported `client.storage_io`. The browser binding now records the name of the `DOMException` the handle threw during the failing statement: `QuotaExceededError` raises `client.storage_full`, any other name stays `client.storage_io`, and both carry the name as `details.vfsErrorName`.',
+    links: [
+      {
+        href: '/platform-web-troubleshooting/#local-storage-failures',
+        label: 'Local storage failures',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Image transactions are sized by their write time',
     body: 'Both clients size the next SQLite image transaction by the rows the one before wrote per 250 ms before its COMMIT. Before, the COMMIT counted too, and a commit on the OPFS replica flushes the file four times whatever its row count: once a flush took 100 ms or more, every transaction stayed at 1,024 rows. With 200 ms per flush, 154,569 rows in 12 range images took 102 s in 156 commits and now take 22 s in 24; with 500 ms, 252 s and now 53 s. Progress carries `downloadMs` on a `SEGMENT_REF` payload, from its segment request to its last body byte, beside `importWriteMs` and `importCommitMs`. The multi-tab protocol moves to 7.',
     links: [

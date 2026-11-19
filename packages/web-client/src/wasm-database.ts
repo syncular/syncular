@@ -198,31 +198,44 @@ class WasmClientDatabase implements ClientDatabase {
    * Parameterized SQL (one statement per call, the `ClientDatabase` contract)
    * runs through a compiled statement cached by its SQL text. SQL without
    * parameters may hold several statements and compiles through `exec`.
+   *
+   * SPEC §7.5: the sahpool VFS turns every sync access handle exception into
+   * plain SQLITE_IOERR. A failed statement carries the name of the
+   * DOMException the handle threw during this call as `vfsErrorName`; the
+   * slot is cleared first, so an earlier call's exception never names a later
+   * failure.
    */
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     this.#assertOwned();
-    if (params.length === 0) {
-      const resultRows: unknown[] = [];
-      this.#db.exec({ sql, rowMode: 'object', resultRows });
-      return resultRows as SqlRow[];
-    }
-    let statement = this.#statements.get(sql);
-    if (statement === undefined) {
-      statement = this.#db.prepare(sql);
-      if (this.#statements.size === STATEMENT_CACHE_LIMIT) {
-        this.#statements.forEach((evicted) => evicted.finalize());
-        this.#statements.clear();
-      }
-      this.#statements.set(sql, statement);
-    }
-    const rows: SqlRow[] = [];
+    sahErrorName = undefined;
     try {
-      statement.bind(coerceParams(params));
-      while (statement.step()) rows.push(statement.get({}) as SqlRow);
-    } finally {
-      statement.reset(true);
+      if (params.length === 0) {
+        const resultRows: unknown[] = [];
+        this.#db.exec({ sql, rowMode: 'object', resultRows });
+        return resultRows as SqlRow[];
+      }
+      let statement = this.#statements.get(sql);
+      if (statement === undefined) {
+        statement = this.#db.prepare(sql);
+        if (this.#statements.size === STATEMENT_CACHE_LIMIT) {
+          this.#statements.forEach((evicted) => evicted.finalize());
+          this.#statements.clear();
+        }
+        this.#statements.set(sql, statement);
+      }
+      const rows: SqlRow[] = [];
+      try {
+        statement.bind(coerceParams(params));
+        while (statement.step()) rows.push(statement.get({}) as SqlRow);
+      } finally {
+        statement.reset(true);
+      }
+      return rows;
+    } catch (error) {
+      if (sahErrorName !== undefined && error instanceof Error)
+        Object.assign(error, { vfsErrorName: sahErrorName });
+      throw error;
     }
-    return rows;
   }
 
   queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
@@ -401,6 +414,15 @@ function inWorkerContext(): boolean {
 /** One registered VFS per pool directory, reused across opens. */
 const sahPools = new Map<string, Promise<SahPoolUtil>>();
 
+/**
+ * Name of the DOMException a sync access handle `write`, `flush` or
+ * `truncate` threw during the current statement. The sahpool VFS keeps the
+ * exception in private pool state, and SQLite's own `xGetLastError` call
+ * consumes it, so the binding observes the handle methods themselves.
+ */
+let sahErrorName: string | undefined;
+let sahErrorsObserved = false;
+
 // SAH pools share an I/O method table within the WASM runtime. Keep the
 // installed callback alive for that runtime, including across database closes.
 const sahIoMethods = new Map<number, SqliteIoMethods>();
@@ -539,6 +561,30 @@ export async function openPersistentWasmDatabase(
   let db: Oo1Database | undefined;
   try {
     const sqlite3 = await initSqlite3();
+    const handle = (
+      globalThis as {
+        FileSystemSyncAccessHandle?: {
+          prototype: Record<
+            'write' | 'flush' | 'truncate',
+            (...args: never[]) => unknown
+          >;
+        };
+      }
+    ).FileSystemSyncAccessHandle?.prototype;
+    if (!sahErrorsObserved && handle !== undefined) {
+      sahErrorsObserved = true;
+      for (const method of ['write', 'flush', 'truncate'] as const) {
+        const original = handle[method];
+        handle[method] = function (this: object, ...args: never[]) {
+          try {
+            return Reflect.apply(original, this, args);
+          } catch (error) {
+            if (error instanceof DOMException) sahErrorName = error.name;
+            throw error;
+          }
+        };
+      }
+    }
     let pool = sahPools.get(directory);
     if (pool === undefined) {
       pool = sqlite3

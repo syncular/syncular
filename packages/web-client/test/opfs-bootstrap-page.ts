@@ -34,7 +34,11 @@ declare global {
       crash: Promise<CrashReceipt>;
       arm(point: CrashPoint): Promise<void>;
       probe(): Promise<OpfsProbe>;
-      limitStorage(limit: number, failCommit?: boolean): Promise<void>;
+      limitStorage(
+        limit: number,
+        failCommit?: boolean,
+        vfsError?: string,
+      ): Promise<void>;
       gatePhases(): Promise<string[]>;
     };
   }
@@ -156,7 +160,7 @@ window.opfsTest = {
     store.dispose();
     return phases;
   },
-  limitStorage: (limit, failCommit = false) =>
+  limitStorage: (limit, failCommit, vfsError) =>
     new Promise((resolve) => {
       const listener = (event: MessageEvent) => {
         if (event.data.t !== 'page-limit-set') return;
@@ -164,7 +168,7 @@ window.opfsTest = {
         resolve();
       };
       worker.addEventListener('message', listener);
-      worker.postMessage({ t: 'page-limit', limit, failCommit });
+      worker.postMessage({ t: 'page-limit', limit, failCommit, vfsError });
     }),
   arm: (point) =>
     new Promise((resolve) => {
