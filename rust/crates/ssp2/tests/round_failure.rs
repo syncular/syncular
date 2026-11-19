@@ -254,3 +254,52 @@ fn the_encoder_refuses_a_code_outside_the_grammar() {
         ],
     });
 }
+
+/// §1.5 `ADOPT_EPOCH` (§2.1) may follow the request's `ROUND_FAILURE`; the
+/// other positions are pinned by the golden vectors.
+#[test]
+fn adopt_epoch_follows_a_round_failure() {
+    let decoded = decode_message(&raw_request(&[
+        (ft::REQ_HEADER, req_header_payload()),
+        (ft::ROUND_FAILURE, s("sync.transport_failed")),
+        (ft::ADOPT_EPOCH, Vec::new()),
+        (ft::PULL_HEADER, pull_header_payload()),
+    ]))
+    .expect("ADOPT_EPOCH after ROUND_FAILURE is in grammar order");
+    assert_eq!(decoded.frames[2], Frame::AdoptEpoch);
+    assert_eq!(
+        decode_error(&[
+            (ft::REQ_HEADER, req_header_payload()),
+            (ft::PULL_HEADER, pull_header_payload()),
+            (ft::ADOPT_EPOCH, Vec::new()),
+        ]),
+        "misplaced ADOPT_EPOCH frame"
+    );
+}
+
+#[test]
+#[should_panic(expected = "misplaced ADOPT_EPOCH frame")]
+fn the_encoder_refuses_a_misplaced_adopt_epoch() {
+    encode_message(&Message {
+        wire_version: ssp2::decode::WIRE_VERSION,
+        msg_kind: MsgKind::Request,
+        frames: vec![
+            Frame::ReqHeader {
+                client_id: "client-1".to_owned(),
+                schema_version: 1,
+                log_epoch: None,
+                outbox_id: None,
+            },
+            Frame::PullHeader {
+                limit_commits: 10,
+                limit_snapshot_rows: 100,
+                max_snapshot_pages: 2,
+                accept: 0x03,
+                cursor: -1,
+                registration_digest: ssp2::registration_digest([]),
+                echo_digest: None,
+            },
+            Frame::AdoptEpoch,
+        ],
+    });
+}

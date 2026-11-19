@@ -2136,6 +2136,47 @@ fn request_validation_fails_before_any_byte() {
     ));
 }
 
+/// §2.1: a fresh replica's first request adopts the epoch and receives its
+/// unit's bootstrap in the same response; adoption next to a `logEpoch` is
+/// refused.
+#[test]
+fn epoch_adoption_serves_the_first_pull() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let writer = Session::new(&mut authority, "writer");
+    let (status, _, _) = writer.push(&mut authority, "c1", vec![task(&s, "t1", None, None)]);
+    assert_eq!(status, PushStatus::Applied);
+    let o1 = org("o1");
+    let units = std::slice::from_ref(&o1);
+    let mut frames = vec![Frame::AdoptEpoch, pull_header(-1, units, None, 0, 50)];
+    frames.extend(unit_frames(units));
+    frames.push(progress(&o1, -1, None));
+    let request = encode_request("fresh", s.version, None, None, frames.clone());
+    let response = decode(&authority.sync(&request).expect("adoption"));
+    let Some(Frame::RespHeader {
+        log_epoch,
+        reset_required: false,
+        ..
+    }) = response.first()
+    else {
+        panic!("adoption is served: {response:?}");
+    };
+    assert_eq!(log_epoch, &writer.epoch);
+    assert_eq!(
+        sections(&response),
+        vec![(ssp2::unit_id(&o1), SubStatus::Active, true, 1, None)]
+    );
+    assert_eq!(segment_rows(&response), vec![("t1".to_owned(), 1)]);
+
+    let bound = encode_request("fresh", s.version, Some(writer.epoch.clone()), None, frames);
+    let error = authority.sync(&bound).unwrap_err();
+    assert_eq!(error.code, "sync.invalid_request");
+    assert_eq!(
+        error.message,
+        "epoch adoption requests must not carry logEpoch (§2.1)"
+    );
+}
+
 #[test]
 fn a_bootstrap_scan_seeks_one_scope_value_of_any_column_type() {
     let schema = json!({ "version": 1, "tables": [{

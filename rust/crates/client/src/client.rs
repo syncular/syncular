@@ -7939,6 +7939,10 @@ impl SyncClient {
                 .iter()
                 .map(|code| Frame::RoundFailure { code: code.clone() }),
         );
+        // §2.1: a replica without an epoch holds nothing bound to one.
+        if log_epoch.is_none() {
+            lead.push(Frame::AdoptEpoch);
+        }
         let registered: Vec<UnitRecord> = self
             .stored(load_units(&self.conn))
             .map_err(storage_failed)?
@@ -8055,7 +8059,9 @@ impl SyncClient {
         let mut pushed_ids = Vec::new();
         let mut ops_in_request = 0usize;
         let mut bytes_in_request = 0usize;
-        let mut deferred_commits = 0usize;
+        // §2.1: an epoch-less request withholds the whole outbox until the
+        // next, epoch-bound request.
+        let mut deferred_commits = self.outbox.len() - total_outbox;
         // §7.2.2: a pending replacement is held; the push stops before it
         // without deferring work.
         let held: HashSet<String> = self
@@ -9139,7 +9145,17 @@ impl SyncClient {
                         };
                     }
                 };
-                if stored_epoch.as_deref() != Some(log_epoch.as_str()) {
+                // §2.1 adoption: the epoch is stored before any section applies.
+                if stored_epoch.is_none() {
+                    if let Err(message) = self.set_meta(LOG_EPOCH_KEY, &log_epoch) {
+                        return SyncOutcome::Failed {
+                            details: None,
+                            error_code: "storage.failed".to_owned(),
+                            message,
+                            recommended_action: None,
+                        };
+                    }
+                } else if stored_epoch.as_deref() != Some(log_epoch.as_str()) {
                     return SyncOutcome::Failed {
                         details: None,
                         error_code: "client.invalid_host_response".to_owned(),

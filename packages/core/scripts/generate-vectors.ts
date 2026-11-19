@@ -444,6 +444,24 @@ const roundFailureReport: RequestMessage = {
   ],
 };
 
+// §2.1: a fresh replica's first request adopts the current epoch.
+const epochAdopt: RequestMessage = {
+  wireVersion: 4,
+  msgKind: 'request',
+  frames: [
+    {
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 1,
+      outboxId: 'outbox-7d1c',
+    },
+    { type: 'ADOPT_EPOCH' },
+    pullHeader(),
+    { type: 'UNIT', scopes: UNIT_NOTES },
+    { type: 'PROGRESS', id: NOTES_ID, cursor: -1 },
+  ],
+};
+
 // §4.1: the empty list's digest carries the empty list.
 const emptyRegistration: RequestMessage = {
   wireVersion: 4,
@@ -1783,6 +1801,13 @@ total += emitKind(
         'ROUND_FAILURE (§1.5) immediately after REQ_HEADER: the client reports the code of its last round that failed where the server could not see it',
     },
     {
+      name: 'epoch-adopt',
+      bytes: encodeMessage(epochAdopt),
+      render: renderMessage,
+      covers:
+        "A fresh replica's first request (§2.1): no logEpoch, ADOPT_EPOCH, a pull with one UNIT and its PROGRESS at cursor -1",
+    },
+    {
       name: 'empty-registration',
       bytes: encodeMessage(emptyRegistration),
       render: renderMessage,
@@ -1843,6 +1868,50 @@ total += emitKind(
       bytes: rawMessage(1, [rawReqHeader(), rawPushCommit(0, 1)]),
       error: 'sync.invalid_request',
       covers: 'Upsert operation with absent payload (presence invariant)',
+    },
+    {
+      name: 'adopt-epoch-payload',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        [FrameType.ADOPT_EPOCH, (p) => p.u8(0)],
+        rawPullHeader(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'ADOPT_EPOCH with a payload byte (§2.1: the payload is empty)',
+    },
+    {
+      name: 'adopt-epoch-duplicate',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        [FrameType.ADOPT_EPOCH, () => {}],
+        [FrameType.ADOPT_EPOCH, () => {}],
+        rawPullHeader(),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'ADOPT_EPOCH twice (§1.5: 0 or 1)',
+    },
+    {
+      name: 'adopt-epoch-after-pull',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        rawPullHeader(),
+        [FrameType.ADOPT_EPOCH, () => {}],
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'ADOPT_EPOCH after PULL_HEADER (§1.5: immediately after REQ_HEADER or ROUND_FAILURE)',
+    },
+    {
+      name: 'adopt-epoch-before-round-failure',
+      bytes: rawMessage(1, [
+        rawReqHeader(),
+        [FrameType.ADOPT_EPOCH, () => {}],
+        rawRoundFailure('sync.transport_failed'),
+        rawPullHeader(),
+      ]),
+      error: 'sync.invalid_request',
+      covers:
+        'ADOPT_EPOCH before ROUND_FAILURE (§1.5: ROUND_FAILURE immediately follows REQ_HEADER)',
     },
     {
       name: 'round-failure-duplicate',

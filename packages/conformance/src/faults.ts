@@ -26,9 +26,9 @@ export class TransportFaults extends TestkitTransportFaults {
   truncateNthSegmentDownload = 0;
   /** Drop every `UNIT_EXTENT` frame: a server that predates §4.4's frame. */
   omitUnitExtent = false;
-  /** Drop every `RESTRICT` request frame: a server that predates §4.3's
-   * frame skips it. */
-  skipRestrict = false;
+  /** Drop these request frames: a server that predates them skips them
+   * (`RESTRICT` §4.3, `ADOPT_EPOCH` §2.1). */
+  skipRequestFrames: readonly ('RESTRICT' | 'ADOPT_EPOCH')[] = [];
   /** Run once before the next direct segment download reaches the server. */
   beforeNextSegmentDownload: (() => Promise<void>) | undefined;
 }

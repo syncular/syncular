@@ -1581,7 +1581,7 @@ export class SyncClient {
   /** §2.1 reset after the server reports a different log continuity. */
   #runLogEpochReset(logEpoch: string): string[] {
     if (getMeta(this.#db, LOG_EPOCH_META_KEY) === undefined) {
-      this.#applyBatch(() => setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch));
+      setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
       this.#emitSyncNeeded('startup');
       return [];
     }
@@ -4711,7 +4711,13 @@ export class SyncClient {
         frameBytes,
         deferred: encodedDeferred,
       } = logEpoch === undefined
-        ? { pushFrames: [], outbox: [], frameBytes: [], deferred: 0 }
+        ? {
+            pushFrames: [],
+            outbox: [],
+            frameBytes: [],
+            // §2.1: the outbox waits for the next, epoch-bound request.
+            deferred: countOutbox(this.#db),
+          }
         : await this.#encodeOutboxForPush(header, pull, byteCap);
       // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
       // them, so the server-side existence check (§6.6) passes.
@@ -4754,6 +4760,8 @@ export class SyncClient {
         ...(report !== undefined
           ? [{ type: 'ROUND_FAILURE' as const, code: report }]
           : []),
+        // §2.1: a replica without an epoch holds nothing bound to one.
+        ...(logEpoch === undefined ? [{ type: 'ADOPT_EPOCH' as const }] : []),
         pull,
         ...(travels
           ? registered.map(
@@ -5586,7 +5594,7 @@ export class SyncClient {
     if (header.resetRequired) {
       if (mode !== 'pull' || message.frames.length !== 1) {
         throw invalidHostResponse(
-          'a log-epoch reset response must contain only RESP_HEADER',
+          'a log-epoch reset response carries frames after RESP_HEADER',
         );
       }
       return {
@@ -5595,7 +5603,10 @@ export class SyncClient {
         bootstrapping: [],
       };
     }
-    if (currentLogEpoch === undefined || currentLogEpoch !== header.logEpoch) {
+    // §2.1 adoption: the epoch is stored before any section applies.
+    if (currentLogEpoch === undefined) {
+      setMeta(this.#db, LOG_EPOCH_META_KEY, header.logEpoch);
+    } else if (currentLogEpoch !== header.logEpoch) {
       throw invalidHostResponse(
         'the server changed logEpoch without requiring a reset',
       );

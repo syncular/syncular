@@ -148,6 +148,8 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
       };
     case 'ROUND_FAILURE':
       return { type: 'ROUND_FAILURE', code: frame.code };
+    case 'ADOPT_EPOCH':
+      return { type: 'ADOPT_EPOCH' };
     case 'PUSH_COMMIT':
       return {
         type: 'PUSH_COMMIT',

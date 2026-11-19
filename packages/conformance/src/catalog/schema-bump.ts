@@ -219,7 +219,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
     server: { schema: RESTRICT_V2, schemaWindow: [RESTRICT_V2, RESTRICT_V1] },
     async run(ctx) {
       const { a } = await restrictedBump(ctx);
-      a.faults.skipRestrict = true;
+      a.faults.skipRequestFrames = ['RESTRICT'];
       const report = await syncIdle(a);
       checkEqual(
         report.segmentRowsApplied,
@@ -227,7 +227,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         'the whole unit was transferred: four tasks and three docs',
       );
       const sent = a.sentRequests.length;
-      a.faults.skipRestrict = false;
+      a.faults.skipRequestFrames = [];
       await syncIdle(a);
       checkEqual(
         restrictsSent(a, sent),

@@ -43,6 +43,16 @@ export const changelog = [
   },
   {
     date: '2026-11-19',
+    title: "A fresh replica's first sync is one round trip",
+    body: "A replica without a stored log epoch sent its first pull without one, received a header-only response carrying the epoch, and sent the same pull again; in a production trace that first round was a 5.6 s HTTP request before the socket was up. The client now adds the `ADOPT_EPOCH` request frame to that pull, the server serves it under the current epoch, and the client stores the epoch before it applies the units' sections. The outbox still waits for the next round, which carries the epoch. A replica with a stored epoch is unchanged, and a mismatch still resets it. A server from 0.91.0 or earlier skips the frame and answers as before, so the client takes the extra round trip against it; upgrade servers first.",
+    links: [
+      {
+        href: '/server-operations/#client-behavior-after-traffic-resumes',
+        label: 'Client behavior after traffic resumes',      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: 'Claims made in reaction to a round ride its confirming round',
     body: "A drive to idle sends one more round after a round that applied rows, to confirm idle, and it went out at once, so the units an app claims in reaction to those rows waited for the drive after it. With `coalesceMs` that confirming round now starts `coalesceMs` later and carries the claims made in between. `installSyncScheduler` and the worker `autoSync` loop pass their `coalesceMs`, the worker applies the handle's value to the realtime supervisor's catch-up drive, and `syncUntilIdle({ coalesceMs })` sets it on an app drive. Rounds that continue a bootstrap start at once.",
     links: [

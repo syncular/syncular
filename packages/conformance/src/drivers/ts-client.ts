@@ -828,13 +828,12 @@ class TsClientInstance implements ClientInstance {
   async sync(): Promise<ClientSyncResult> {
     try {
       const first = toReport(await this.#client.sync());
-      if (
-        first.ok &&
-        !this.#epochEstablished &&
-        first.report.schemaFloor === undefined
-      ) {
+      if (first.ok && first.report.schemaFloor === undefined) {
+        const adopting = !this.#epochEstablished;
         this.#epochEstablished = true;
-        return toReport(await this.#client.sync());
+        // §2.1: the adoption round withholds the outbox; one sync() pushes.
+        if (adopting && (first.report.deferredCommits ?? 0) > 0)
+          return toReport(await this.#client.sync());
       }
       return first;
     } catch (error) {
