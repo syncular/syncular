@@ -186,8 +186,10 @@ function defaultResponder(
       return OK({ conflicts: [] });
     case 'rejections':
       return OK({ rejections: [] });
-    case 'commitOutcome':
+    case 'commitDelivery':
       return OK({
+        status: 'known',
+        clientCommitId: 'commit-1',
         outcome: {
           sequence: 1,
           clientCommitId: 'commit-1',
@@ -666,8 +668,9 @@ describe('createNativeSyncClient', () => {
             deliveries: [{ status: 'known', clientCommitId: 'c1', outcome }],
           });
         }
-        if (method === 'commitOutcome' || method === 'resolveCommitOutcome')
-          return OK({ outcome });
+        if (method === 'commitDelivery')
+          return OK({ status: 'known', clientCommitId: 'c1', outcome });
+        if (method === 'resolveCommitOutcome') return OK({ outcome });
         if (method === 'commitOutcomes') return OK({ outcomes: [outcome] });
         return defaultResponder(method, params);
       },
@@ -714,7 +717,11 @@ describe('createNativeSyncClient', () => {
       status: 'conflict',
       conflict: { serverRow: { blob: new Uint8Array([170, 187]) } },
     });
-    expect(outcomeOf(await client.commitDelivery('c1'))).toEqual(decoded);
+    expect(await client.commitDelivery('c1')).toEqual({
+      status: 'known',
+      clientCommitId: 'c1',
+      outcome: decoded,
+    });
     expect(await client.commitOutcomes()).toEqual([decoded]);
     expect(
       await client.resolveCommitOutcome({
@@ -1570,8 +1577,9 @@ describe('SyncClientLike parity', () => {
     });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
-    expect(outcomeOf(await normalized.commitDelivery('commit-1'))).toMatchObject({
-      status: 'applied',
+    expect(await normalized.commitDelivery('commit-1')).toMatchObject({
+      status: 'known',
+      outcome: { status: 'applied' },
     });
     expect(await normalized.commitOutcomes()).toEqual([]);
     expect(

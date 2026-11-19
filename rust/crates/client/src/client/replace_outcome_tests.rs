@@ -173,8 +173,13 @@ fn setup() -> Setup {
     idle(&mut peer, &mut server);
     let id = patch(&mut reader, "body", "mine", Some(base));
     idle(&mut reader, &mut server);
-    let outcome = reader.commit_outcome(&id).unwrap().unwrap();
+    // §7.5: the owner's delivery read carries the retained rows that the
+    // keep-mine scenarios below rely on.
+    let CommitDelivery::Known { outcome, .. } = reader.commit_delivery(&id).unwrap() else {
+        panic!("expected a known delivery");
+    };
     assert_eq!(outcome.status, CommitOutcomeStatus::Conflict);
+    assert!(outcome.retained_rows.is_some());
     Setup {
         server,
         peer,

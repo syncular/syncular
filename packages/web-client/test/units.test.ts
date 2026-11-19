@@ -28,6 +28,7 @@ import type { SqlRow, SqlValue } from '../src/database';
 import { deleteUnit } from '../src/state';
 import type { RealtimeHandlers } from '../src/transport';
 import { savePendingEviction, WINDOWS_TABLE } from '../src/window';
+import { outcomeOf } from './helpers';
 
 const TASKS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },

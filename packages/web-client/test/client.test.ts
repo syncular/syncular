@@ -35,6 +35,7 @@ import {
   TASK_COLUMNS,
   tableRows,
   taskValues,
+  outcomeOf,
 } from './helpers';
 
 class OutboxReadCountingDatabase extends BunClientDatabase {
@@ -862,7 +863,9 @@ describe('durable commit outcomes', () => {
       ]);
       await first.client.syncUntilIdle();
       expect(first.client.pendingCommits()).toHaveLength(0);
-      expect(outcomeOf(first.client.commitDelivery(clientCommitId))).toMatchObject({
+      expect(
+        outcomeOf(first.client.commitDelivery(clientCommitId)),
+      ).toMatchObject({
         clientCommitId,
         status: 'applied',
         resolution: 'active',
@@ -876,7 +879,9 @@ describe('durable commit outcomes', () => {
         databasePath,
       });
       expect(reopened.client.pendingCommits()).toHaveLength(0);
-      expect(outcomeOf(reopened.client.commitDelivery(clientCommitId))).toMatchObject({
+      expect(
+        outcomeOf(reopened.client.commitDelivery(clientCommitId)),
+      ).toMatchObject({
         status: 'applied',
         results: [{ status: 'applied', opIndex: 0 }],
       });
@@ -991,9 +996,9 @@ describe('durable commit outcomes', () => {
         databasePath,
       });
       expect(twice.client.conflicts()).toHaveLength(0);
-      expect(outcomeOf(twice.client.commitDelivery(losingCommitId))?.resolution).toBe(
-        'resolved_keep_server',
-      );
+      expect(
+        outcomeOf(twice.client.commitDelivery(losingCommitId))?.resolution,
+      ).toBe('resolved_keep_server');
       await twice.client.close();
       twice.db.close();
       await winner.client.close();
@@ -1046,7 +1051,9 @@ describe('durable commit outcomes', () => {
       },
     ]);
     await loser.client.syncUntilIdle();
-    expect(outcomeOf(loser.client.commitDelivery(conflictId))?.status).toBe('conflict');
+    expect(outcomeOf(loser.client.commitDelivery(conflictId))?.status).toBe(
+      'conflict',
+    );
     expect(outcomeOf(loser.client.commitDelivery(appliedId))).toBeUndefined();
 
     const replacementId = loser.client.patch(
@@ -1116,7 +1123,9 @@ describe('durable commit outcomes', () => {
         },
       ]);
       await loser.client.syncUntilIdle();
-      expect(outcomeOf(loser.client.commitDelivery(losingCommitId))).toMatchObject({
+      expect(
+        outcomeOf(loser.client.commitDelivery(losingCommitId)),
+      ).toMatchObject({
         status: 'conflict',
         results: [{ status: 'conflict' }],
         operations: [
@@ -1270,10 +1279,12 @@ describe('durable commit outcomes', () => {
     );
     expect(tableRows(client.db, 'tasks')[0]?.title).toBe('invalid-second');
     await client.client.syncUntilIdle();
-    expect(outcomeOf(client.client.commitDelivery(firstRejected))?.status).toBe('rejected');
-    expect(outcomeOf(client.client.commitDelivery(secondRejected))?.status).toBe(
+    expect(outcomeOf(client.client.commitDelivery(firstRejected))?.status).toBe(
       'rejected',
     );
+    expect(
+      outcomeOf(client.client.commitDelivery(secondRejected))?.status,
+    ).toBe('rejected');
     expect(tableRows(client.db, 'tasks')[0]).toMatchObject({
       title: 'accepted',
       _sync_version: 1,
@@ -1294,7 +1305,9 @@ describe('durable commit outcomes', () => {
       },
     ]);
     await client.client.syncUntilIdle();
-    expect(outcomeOf(client.client.commitDelivery(aggregateRejected))).toMatchObject({
+    expect(
+      outcomeOf(client.client.commitDelivery(aggregateRejected)),
+    ).toMatchObject({
       status: 'rejected',
       operations: [{ rowId: 'rollback-sibling' }, { rowId: 'rollback-root' }],
     });
@@ -1313,9 +1326,9 @@ describe('durable commit outcomes', () => {
     ]);
     expect(tableRows(client.db, 'tasks')).toHaveLength(0);
     await client.client.syncUntilIdle();
-    expect(outcomeOf(client.client.commitDelivery(deleteRejected))?.status).toBe(
-      'rejected',
-    );
+    expect(
+      outcomeOf(client.client.commitDelivery(deleteRejected))?.status,
+    ).toBe('rejected');
     expect(tableRows(client.db, 'tasks')[0]).toMatchObject({
       id: 'rollback-root',
       title: 'accepted',
@@ -1376,7 +1389,9 @@ describe('durable commit outcomes', () => {
         title: 'accepted',
         _sync_version: 1,
       });
-      expect(outcomeOf(reopened.client.commitDelivery(rejectedId))).toMatchObject({
+      expect(
+        outcomeOf(reopened.client.commitDelivery(rejectedId)),
+      ).toMatchObject({
         status: 'rejected',
         operations: [
           {
@@ -1671,7 +1686,9 @@ describe('sync loop discipline', () => {
       expect((await budgeted).pushed).toBe(0);
       expect(httpRounds.count).toBe(afterOwner + 2);
       expect(client.statusSnapshot().outbox).toBe(0);
-      expect(outcomeOf(client.commitDelivery(secondId))?.status).toBe('applied');
+      expect(outcomeOf(client.commitDelivery(secondId))?.status).toBe(
+        'applied',
+      );
       expect(tableRows(db, 'tasks').map((row) => row.id)).toEqual([
         'first',
         'second',
@@ -2199,7 +2216,8 @@ test('retained validator rejection survives a real reopen and can take server', 
     );
     await first.client.syncUntilIdle();
     expect(
-      outcomeOf(first.client.commitDelivery(id))?.retainedRows?.[0]?.localRow?.title,
+      outcomeOf(first.client.commitDelivery(id))?.retainedRows?.[0]?.localRow
+        ?.title,
     ).toBe('invalid');
     await first.client.close();
     first.db.close();
@@ -2210,7 +2228,9 @@ test('retained validator rejection survives a real reopen and can take server', 
     });
     try {
       expect(tableRows(reopened.db, 'tasks')[0]?.title).toBe('invalid');
-      expect(outcomeOf(reopened.client.commitDelivery(id))?.status).toBe('rejected');
+      expect(outcomeOf(reopened.client.commitDelivery(id))?.status).toBe(
+        'rejected',
+      );
       reopened.client.resolveCommitOutcome({
         clientCommitId: id,
         resolution: 'resolved_keep_server',

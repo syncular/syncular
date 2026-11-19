@@ -360,7 +360,7 @@ export async function runProcessReplay(options: {
     if (rejectedIds.length) {
       rejectedOutcome = processObject(
         processObject(
-          await writer.invoke('commitOutcome', {
+          await writer.invoke('commitDelivery', {
             clientCommitId: rejectedIds[0],
           }),
         ).outcome,

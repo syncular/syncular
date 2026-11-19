@@ -337,7 +337,7 @@ class SyncularClientTest {
             assertEquals(1.0, client.statusSnapshot()["outbox"]?.number)
             assertEquals(1, client.querySnapshot("SELECT title FROM todo")["rows"]?.array?.size)
             assertEquals(1.0, client.diagnosticsSnapshot()["replica"]?.get("pendingOutbox")?.number)
-            assertEquals(null, client.commitOutcome(id))
+            assertEquals("pending", client.commitDelivery(id)["status"]?.string)
             assertTrue(client.commitOutcomes().isEmpty())
             assertTrue(client.rejections().isEmpty())
             assertFailsWith<SyncularException> {

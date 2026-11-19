@@ -333,7 +333,7 @@ for (const core of ['ts', 'rust'] as const)
         expect(
           processObject(
             processObject(
-              await reopened.invoke('commitOutcome', {
+              await reopened.invoke('commitDelivery', {
                 clientCommitId: mutation.ids[0],
               }),
             ).outcome,

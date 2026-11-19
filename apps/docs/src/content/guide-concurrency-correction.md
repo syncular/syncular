@@ -274,7 +274,7 @@ function AppointmentEditor(props: {
     // With autoSync this is normally host-driven. Awaiting a round here makes
     // a save-and-confirm interaction deterministic.
     await props.handle.syncUntilIdle();
-    return await props.handle.commitOutcome(clientCommitId);
+    return await props.handle.commitDelivery(clientCommitId);
   }
 
   // A focused migration test can reproduce an old two-row client that omitted
@@ -314,11 +314,11 @@ function AppointmentEditor(props: {
       },
     ]);
     await props.handle.syncUntilIdle();
-    const outcome = await props.handle.commitOutcome(clientCommitId);
-    if (outcome?.status !== 'rejected') {
+    const delivery = await props.handle.commitDelivery(clientCommitId);
+    if (delivery.status !== 'known' || delivery.outcome.status !== 'rejected') {
       throw new Error('expected the aggregate validator to reject');
     }
-    return outcome;
+    return delivery.outcome;
   }
 
   // Render the form using `current`; call `reschedule` on submit. The focused
@@ -331,7 +331,7 @@ The local mirror updates immediately. If the server rejects the commit, the
 client restores the confirmed before-images for every sibling, records one
 durable final outcome, and reapplies any later pending commits.
 
-::checkpoint[The form shows the new time at once, and `await handle.commitOutcome(clientCommitId)` returns the server's answer after `syncUntilIdle()`.]
+::checkpoint[The form shows the new time at once, and `await handle.commitDelivery(clientCommitId)` returns `known` with the server's answer after `syncUntilIdle()`.]
 ::::
 
 ::::step{title="Classify what failed" time="2 min"}
@@ -470,7 +470,7 @@ export async function replaceReschedule(
   await client.syncUntilIdle();
   return {
     kind: 'submitted' as const,
-    outcome: await client.commitOutcome(replacementClientCommitId),
+    delivery: await client.commitDelivery(replacementClientCommitId),
   };
 }
 ```

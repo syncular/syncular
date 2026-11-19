@@ -25,7 +25,7 @@ import { BunClientDatabase } from '@syncular/client/bun';
 import type { ServerSchema } from '@syncular/server';
 import { buildPreviousVersionAudit } from '../src/previous-version';
 import { compileClientSchema } from '../src/schema';
-import { makeClient, makeServer, type TestServer } from './helpers';
+import { makeClient, makeServer, type TestServer, outcomeOf } from './helpers';
 
 const CONTAINER = 'syncular_prev_context';
 const CONTAINER_META = '_syncular_prev_context_meta';

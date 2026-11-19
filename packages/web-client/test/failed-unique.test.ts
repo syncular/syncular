@@ -15,6 +15,7 @@ import {
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { decodeMessage, encodeMessage, unitId } from '@syncular/core';
+import { outcomeOf } from './helpers';
 
 const schema: ClientSchema = {
   version: 1,
@@ -180,7 +181,8 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       defer = 2;
       await reader!.sync();
       expect(
-        outcomeOf(reader!.commitDelivery(id))?.retainedRows?.[0]?.serverRow?.body,
+        outcomeOf(reader!.commitDelivery(id))?.retainedRows?.[0]?.serverRow
+          ?.body,
       ).toBe('old');
       expect(reader!.statusSnapshot().syncNeeded).toBe(true);
       const outcome = outcomeOf(reader!.commitDelivery(id))!;
@@ -246,7 +248,9 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         proven: false,
         reason: 'revoked',
       });
-      expect(outcomeOf(reader!.commitDelivery(id))?.retainedRows).toBeUndefined();
+      expect(
+        outcomeOf(reader!.commitDelivery(id))?.retainedRows,
+      ).toBeUndefined();
     } finally {
       for (const client of clients) await client.close();
       for (const database of databases) database.close();
@@ -378,13 +382,15 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         b.onChange((batch) => batches.push(batch.outcomesChanged));
         await b.syncUntilIdle();
         expect(batches).toContain(true);
-        expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toMatchObject([
-          {
-            uniqueConflicts: [
-              { serverVersion: 2, serverRow: { body: 'latest' } },
-            ],
-          },
-        ]);
+        expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toMatchObject(
+          [
+            {
+              uniqueConflicts: [
+                { serverVersion: 2, serverRow: { body: 'latest' } },
+              ],
+            },
+          ],
+        );
         if (resolution === 'revoke' || resolution === 'purge') {
           if (resolution === 'revoke') {
             allowed = [];
@@ -397,8 +403,12 @@ for (const backend of ['sqlite', 'pglite'] as const) {
               ],
             });
           expect(b.query('SELECT id FROM versions')).toEqual([]);
-          expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toBeUndefined();
-          expect(outcomeOf(b.commitDelivery(losing))?.operations).toBeUndefined();
+          expect(
+            outcomeOf(b.commitDelivery(losing))?.retainedRows,
+          ).toBeUndefined();
+          expect(
+            outcomeOf(b.commitDelivery(losing))?.operations,
+          ).toBeUndefined();
         } else {
           const replacement =
             resolution === 'mine'
@@ -424,7 +434,9 @@ for (const backend of ['sqlite', 'pglite'] as const) {
             ...(replacement ? { replacementClientCommitId: replacement } : {}),
           });
           await b.syncUntilIdle();
-          expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toBeUndefined();
+          expect(
+            outcomeOf(b.commitDelivery(losing))?.retainedRows,
+          ).toBeUndefined();
           expect(b.query('SELECT id, body FROM versions ORDER BY id')).toEqual(
             resolution === 'edit'
               ? [

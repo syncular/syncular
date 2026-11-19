@@ -1041,7 +1041,9 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
     );
     expect(
       await page.evaluate(async (id) => {
-        const outcome = await (await window.opfsTest.ready).commitOutcome(id);
+        const delivery = await (await window.opfsTest.ready).commitDelivery(id);
+        const outcome =
+          delivery.status === 'known' ? delivery.outcome : undefined;
         return {
           status: outcome?.status,
           row: outcome?.retainedRows?.find((row) => row.rowId === 'code-00000'),
@@ -1087,14 +1089,16 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
     expect(
       await page.evaluate(async (id) => {
         const client = await window.opfsTest.ready;
+        const delivery = await client.commitDelivery(id);
+        const outcome =
+          delivery.status === 'known' ? delivery.outcome : undefined;
         return {
           rows: await client.query(
             "SELECT id FROM catalogue WHERE id = 'code-00000'",
           ),
-          base: (await client.commitOutcome(id))?.retainedRows?.find(
-            (row) => row.rowId === 'code-00000',
-          )?.serverRow,
-          operation: (await client.commitOutcome(id))?.operations?.find(
+          base: outcome?.retainedRows?.find((row) => row.rowId === 'code-00000')
+            ?.serverRow,
+          operation: outcome?.operations?.find(
             (operation) => operation.rowId === 'code-00000',
           )?.values,
         };
@@ -1201,10 +1205,10 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
     };
     expect(
       await page.evaluate(
-        async (id) => (await window.opfsTest.ready).commitOutcome(id),
+        async (id) => (await window.opfsTest.ready).commitDelivery(id),
         losing,
       ),
-    ).toMatchObject({ retainedRows: [expected] });
+    ).toMatchObject({ outcome: { retainedRows: [expected] } });
     await page.evaluate(async () => {
       await (await window.opfsTest.ready).close();
     });
@@ -1215,10 +1219,10 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
     });
     expect(
       await page.evaluate(
-        async (id) => (await window.opfsTest.ready).commitOutcome(id),
+        async (id) => (await window.opfsTest.ready).commitDelivery(id),
         losing,
       ),
-    ).toMatchObject({ retainedRows: [expected] });
+    ).toMatchObject({ outcome: { retainedRows: [expected] } });
     await page.evaluate(
       async ({ id, baseVersion }) => {
         const client = await window.opfsTest.ready;
@@ -1293,9 +1297,12 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
     const prior = await page.evaluate(async (commitId) => {
       const client = await window.opfsTest.ready;
       await client.sync();
+      const delivery = await client.commitDelivery(commitId);
       return {
-        base: (await client.commitOutcome(commitId))?.retainedRows?.[0]
-          ?.serverRow?.title,
+        base:
+          delivery.status === 'known'
+            ? delivery.outcome.retainedRows?.[0]?.serverRow?.title
+            : undefined,
         needed: (await client.statusSnapshot()).syncNeeded,
       };
     }, id);
@@ -1303,8 +1310,9 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
     expect(
       await page.evaluate(async (commitId) => {
         const client = await window.opfsTest.ready;
-        const outcome = await client.commitOutcome(commitId);
-        if (outcome === undefined) throw new Error('missing outcome');
+        const delivery = await client.commitDelivery(commitId);
+        if (delivery.status !== 'known') throw new Error('missing outcome');
+        const outcome = delivery.outcome;
         return client.proveCurrentBase(outcome, 1);
       }, id),
     ).toEqual({ proven: false, reason: 'budget_exhausted' });
@@ -1312,8 +1320,9 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
     await page.evaluate(() => window.opfsTest.open());
     const after = await page.evaluate(async (commitId) => {
       const client = await window.opfsTest.ready;
-      const outcome = await client.commitOutcome(commitId);
-      if (outcome === undefined) throw new Error('missing outcome');
+      const delivery = await client.commitDelivery(commitId);
+      if (delivery.status !== 'known') throw new Error('missing outcome');
+      const outcome = delivery.outcome;
       const proof = await client.proveCurrentBase(outcome);
       return {
         base: proof.proven ? proof.rows[0]?.serverRow?.title : undefined,
@@ -1325,19 +1334,19 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
     expect(
       await page.evaluate(async (commitId) => {
         const client = await window.opfsTest.ready;
-        const outcome = await client.commitOutcome(commitId);
-        if (outcome === undefined) throw new Error('missing outcome');
+        const delivery = await client.commitDelivery(commitId);
+        if (delivery.status !== 'known') throw new Error('missing outcome');
+        const outcome = delivery.outcome;
         return client.proveCurrentBase(outcome);
       }, id),
     ).toEqual({ proven: false, reason: 'revoked' });
     expect(
       await page.evaluate(
         async (commitId) =>
-          (await (await window.opfsTest.ready).commitOutcome(commitId))
-            ?.retainedRows,
+          (await window.opfsTest.ready).commitDelivery(commitId),
         id,
       ),
-    ).toBeUndefined();
+    ).not.toHaveProperty('outcome.retainedRows');
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
     await seed.client.close();
@@ -1378,8 +1387,9 @@ test('OPFS worker keeps a decision recorded before a reload and writes it', asyn
         },
       ]);
       await client.syncUntilIdle();
-      const outcome = await client.commitOutcome(id);
-      if (outcome === undefined) throw new Error('missing outcome');
+      const delivery = await client.commitDelivery(id);
+      if (delivery.status !== 'known') throw new Error('missing outcome');
+      const outcome = delivery.outcome;
       const replacement = await client.replaceCommitOutcome({
         ...outcome,
         replacement: [
@@ -1399,9 +1409,15 @@ test('OPFS worker keeps a decision recorded before a reload and writes it', asyn
         async ({ id, replacement }) => {
           const client = await window.opfsTest.ready;
           await client.syncUntilIdle();
+          const original = await client.commitDelivery(id);
+          const next = await client.commitDelivery(replacement);
           return {
-            original: (await client.commitOutcome(id))?.resolution,
-            replacement: (await client.commitOutcome(replacement))?.status,
+            original:
+              original.status === 'known'
+                ? original.outcome.resolution
+                : undefined,
+            replacement:
+              next.status === 'known' ? next.outcome.status : undefined,
             rows: await client.query(
               "SELECT title FROM catalogue WHERE id='decided'",
             ),

@@ -41,7 +41,7 @@ let hits = client.query("SELECT id, title FROM todos ORDER BY id", &[])?;
 
 ## Outcomes and conflicts
 
-A rejected commit rolls back whole: the round that receives the rejection removes every optimistic row of that commit, and `sync()` and `sync_until_idle()` still return `SyncOutcome::Ok` with the commit id in `report.rejected`. `conflicts()`, `rejections()`, `pending_commits()`, and `pending_commit_ids()` report divergence. Final results are also journaled durably: `commit_outcome(id)`, `commit_outcomes(query)`, and `resolve_commit_outcome(input)` restore correction UI after a restart and keep active conflicts and rejections until the application resolves them. An outcome's status is `applied`, `cached`, `conflict`, or `rejected`. See [Handling conflicts](/guide-concurrency-correction/).
+A rejected commit rolls back whole: the round that receives the rejection removes every optimistic row of that commit, and `sync()` and `sync_until_idle()` still return `SyncOutcome::Ok` with the commit id in `report.rejected`. `conflicts()`, `rejections()`, `pending_commits()`, and `pending_commit_ids()` report divergence. Final results are also journaled durably: `commit_delivery(id)`, `commit_outcomes(query)`, and `resolve_commit_outcome(input)` restore correction UI after a restart and keep active conflicts and rejections until the application resolves them. An outcome's status is `applied`, `cached`, `conflict`, or `rejected`. See [Handling conflicts](/guide-concurrency-correction/).
 
 ## Purge
 

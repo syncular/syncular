@@ -9,6 +9,7 @@ import {
   MemorySegmentStore,
   SqliteServerStorage,
 } from '@syncular/server';
+import { outcomeOf } from './helpers';
 
 const schema: ClientSchema = {
   version: 1,
@@ -119,7 +120,9 @@ test('keep mine offline stays pending, then the next drive writes it', async () 
   const s = await setup();
   s.reader.setTransportEnabled(false);
   const replacement = s.reader.replaceCommitOutcome(s.outcome);
-  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
+  expect(
+    outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
+  ).toMatchObject({
     resolution: 'active',
     replacementClientCommitId: replacement,
   });
@@ -147,11 +150,15 @@ test('keep mine offline stays pending, then the next drive writes it', async () 
   s.reader.patch('notes', 'n1', { body: 'later' });
   s.reader.setTransportEnabled(true);
   await s.reader.syncUntilIdle();
-  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
+  expect(
+    outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
+  ).toMatchObject({
     resolution: 'superseded',
     replacementClientCommitId: replacement,
   });
-  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe(
+    'applied',
+  );
   expect(s.reader.pendingCommits()).toEqual([]);
   expect(s.reader.query('SELECT title,body FROM notes')).toEqual([
     { title: 'first', body: 'later' },
@@ -179,7 +186,9 @@ test('a pending replacement payload survives a restart', async () => {
     { body: 'edited' },
   ]);
   await s.reopen();
-  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
+  expect(
+    outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
+  ).toMatchObject({
     resolution: 'active',
     replacementClientCommitId: replacement,
   });
@@ -187,7 +196,9 @@ test('a pending replacement payload survives a restart', async () => {
     { body: 'edited' },
   ]);
   await s.reader.syncUntilIdle();
-  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe(
+    'applied',
+  );
   expect(s.reader.query('SELECT title,body FROM notes')).toEqual([
     { title: 'first', body: 'edited' },
   ]);
@@ -201,7 +212,9 @@ test('a base that moves before the proof refuses the decision', async () => {
   await s.peer.syncUntilIdle();
   s.reader.setTransportEnabled(true);
   await s.reader.syncUntilIdle();
-  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
+  expect(
+    outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
+  ).toMatchObject({
     resolution: 'superseded',
     replacementClientCommitId: replacement,
   });
@@ -271,10 +284,14 @@ test('a registration change during the drive keeps the decision pending', async 
   s.reader.setTransportEnabled(true);
   s.during(() => s.reader.subscribe({ list_id: 'two' }));
   await s.reader.syncUntilIdle();
-  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
+  expect(
+    outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
+  ).toMatchObject({
     resolution: 'active',
     replacementClientCommitId: replacement,
   });
   await s.reader.syncUntilIdle();
-  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe(
+    'applied',
+  );
 });

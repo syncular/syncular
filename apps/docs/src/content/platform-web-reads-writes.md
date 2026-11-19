@@ -111,19 +111,19 @@ and drain.
 The handle exposes the read methods as promises: `statusSnapshot()` returns the
 outbox count, the upgrade state, the lease state, and the schema floor in one
 call. `querySnapshot` returns rows, window coverage, and the local revision from
-one read. `conflicts()` and `commitOutcome(commitId)` report conflicts and
-final commit results:
+one read. `conflicts()` reports conflicts, and `commitDelivery(commitId)` reports
+one commit's state:
 
 ```ts
 const status = await handle.statusSnapshot();
 if (status.schemaFloor) showUpgradeRequired(status.schemaFloor);
 const conflicts = await handle.conflicts();
-const outcome = await handle.commitOutcome(commitId);
+const delivery = await handle.commitDelivery(commitId);
 ```
 
-An absent outcome means the commit has not reached a recorded final server
-result. `commitDelivery(commitId)` separates a commit the outbox still holds
-(`pending`) from one whose outcome the client no longer holds (`unknown`); see
+`known` carries the recorded final server result. `pending` means the outbox
+still holds the commit, and `unknown` means the client no longer holds its
+outcome or never queued it; see
 [Delivery status](/reference-outbox-outcomes/#delivery-status). For a rejection or conflict, apply the resolution actions in
 [Conflicts & optimistic writes](/concepts-conflicts/).
 

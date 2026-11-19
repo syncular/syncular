@@ -30,9 +30,9 @@ use syncular_client::SyncOutcome;
 match client.sync_until_idle(&mut transport, None) {
     SyncOutcome::Ok(report) => {
         for id in &report.rejected {
-            // Refused and rolled back: outcome.results carry the codes,
+            // Refused and rolled back: the known outcome's results carry the codes,
             // outcome.operations the refused rows.
-            let outcome = client.commit_outcome(id)?;
+            let delivery = client.commit_delivery(id)?;
         }
     }
     SyncOutcome::Failed { error_code, message, .. } => eprintln!("{error_code}: {message}"),

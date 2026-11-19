@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-19',
+    title: 'commitDelivery reads every commit state',
+    body: '`commitOutcome(id)` is removed from the TypeScript client, the worker handle, the Tauri and React Native bridges, the native command dispatcher and the Kotlin, Swift and Flutter wrappers; the Rust `commit_outcome` is private. `commitDelivery(id)` replaces it on every surface: `pending` while the outbox holds the commit, `known` with the final outcome, `unknown` otherwise. The owning core attaches `retainedRows` to a `known` outcome. Kotlin, Swift and Flutter gain `commitDelivery`, and the native command `commitOutcome` is now `commitDelivery`. Replace `commitOutcome(id)` with `commitDelivery(id)` and read `outcome` when `status` is `known`.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#delivery-status',
+        label: 'Delivery status',
+      },
+    ],
+  },
+  {
+    date: '2026-11-19',
     title: '`syncUntilIdle` loses `skipEmpty`',
     body: "`SyncIdleOptions.skipEmpty` is removed. The scheduler, the worker's `autoSync` loop and the realtime supervisor still skip the round on a replica with nothing to exchange; an app's `syncUntilIdle()` and `sync()` always send a request.",
     links: [

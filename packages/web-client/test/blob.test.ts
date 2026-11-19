@@ -10,6 +10,7 @@ import {
   PARTITION,
   SERVER_SCHEMA,
   taskValues,
+  outcomeOf,
 } from './helpers';
 
 describe('blob retention', () => {
@@ -156,7 +157,9 @@ describe('refused blob uploads (§5.9.7)', () => {
         retryable: false,
       },
     ]);
-    expect(outcomeOf(local.client.commitDelivery(refusedCommit))?.status).toBe('rejected');
+    expect(outcomeOf(local.client.commitDelivery(refusedCommit))?.status).toBe(
+      'rejected',
+    );
     expect(
       local.client.query('SELECT id FROM attachments ORDER BY id'),
     ).toEqual([]);

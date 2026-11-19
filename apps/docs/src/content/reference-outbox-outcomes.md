@@ -48,12 +48,12 @@ try {
   if (typeof id !== 'string') throw error;
   const queued =
     (await client.pendingCommits()).some((c) => c.clientCommitId === id) ||
-    (await client.commitOutcome(id)) !== undefined;
+    (await client.commitDelivery(id)).status !== 'unknown';
   if (!queued) throw error;
 }
 ```
 
-Read the commit by that ID instead of calling `mutate` again. `pendingCommits()` lists it while it is queued, and `commitOutcome(id)` returns its final outcome once the server answered. When neither knows the ID, the call queued nothing. The Tauri and React Native bridges and the Kotlin, Swift and Flutter wrappers lose a reply only together with the JS context or process that made the call, so the native core mints their IDs.
+Read the commit by that ID instead of calling `mutate` again. `commitDelivery(id)` reports `pending` while it is queued and `known` with its final outcome once the server answered. `unknown` means the call queued nothing. The Tauri and React Native bridges and the Kotlin, Swift and Flutter wrappers lose a reply only together with the JS context or process that made the call, so the native core mints their IDs.
 
 ## Pending commits
 
@@ -82,10 +82,10 @@ Kotlin, Swift and Flutter list only the IDs, through `pendingCommitIds()`.
 `commitDelivery(id)` reads one commit's delivery status in one local read transaction:
 
 - `{ status: 'pending', clientCommitId }`: the outbox holds the ID. The outbox entry wins when the journal holds the ID as well.
-- `{ status: 'known', clientCommitId, outcome }`: the outcome journal holds the commit's final outcome. The outcome omits `retainedRows`; read them with `commitOutcome(id)`.
+- `{ status: 'known', clientCommitId, outcome }`: the outcome journal holds the commit's final outcome, with `retainedRows` when the client retains failed intent.
 - `{ status: 'unknown', clientCommitId }`: neither holds the ID. This client never queued it, or retention removed its outcome.
 
-The in-process `SyncClient` returns the value; the worker handle and the Tauri and React Native bridges return a promise with the same states. The bridges read it through the native core's `snapshotRead`, and the Rust core exposes it as `commit_delivery`. `snapshotRead({ statements: [], commitIds })` reads several deliveries in one transaction. React follows a list of commits with [`useCommitDelivery(ids)`](/platform-react-realtime/#follow-a-write-to-its-outcome). Kotlin, Swift and Flutter do not expose `commitDelivery`.
+The in-process `SyncClient` returns the value; the worker handle and the Tauri and React Native bridges return a promise with the same states. The bridges send the `commitDelivery` command to the native core that owns the database. Kotlin, Swift and Flutter return the same JSON from `commitDelivery(id)`, and the Rust core exposes it as `commit_delivery`. `snapshotRead({ statements: [], commitIds })` reads several deliveries in one transaction. The Tauri bridge serves `snapshotRead` from a read-only sidecar, whose outcomes omit `retainedRows`. React follows a list of commits with [`useCommitDelivery(ids)`](/platform-react-realtime/#follow-a-write-to-its-outcome).
 
 ## Acknowledgement and replay
 
@@ -119,7 +119,7 @@ Set `retainFailedCommits: true` when constructing the browser, worker, or Tauri 
 
 A failed commit leaves the outbox and is never retried implicitly. Incoming server rows keep advancing a separate base while local reads retain the intended changes. A restart preserves that state.
 
-`commitOutcome(id)` and `commitOutcomes()` expose `retainedRows`. Each row carries its table, primary key, the complete intended `localRow`, and the latest delivered authorized `serverRow` and `serverVersion`. A deletion or absent server row is `null`. The outcome's results carry the conflict or rejection reason. Display that reason on the affected item and offer an explicit resolution.
+A `known` `commitDelivery(id)` outcome and `commitOutcomes()` expose `retainedRows`. Each row carries its table, primary key, the complete intended `localRow`, and the latest delivered authorized `serverRow` and `serverVersion`. A deletion or absent server row is `null`. The outcome's results carry the conflict or rejection reason. Display that reason on the affected item and offer an explicit resolution.
 
 ### Refresh a retained base before recovery
 

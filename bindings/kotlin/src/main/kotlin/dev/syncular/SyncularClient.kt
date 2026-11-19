@@ -439,11 +439,9 @@ class SyncularClient private constructor(
     /** The version 2 privacy-safe diagnostics snapshot (SPEC §7.6). */
     fun diagnosticsSnapshot(): JsonValue = command("diagnosticsSnapshot", JsonValue.Obj(emptyMap()))
 
-    fun commitOutcome(clientCommitId: String): JsonValue? {
-        val outcome = command("commitOutcome", JsonValue.obj("clientCommitId" to JsonValue.of(clientCommitId)))["outcome"]
-            ?: throw SyncularException("client.invalid_host_response", "commit outcome missing")
-        return if (outcome is JsonValue.Null) null else outcome
-    }
+    /** One commit's delivery status (SPEC §7.5): `pending`, `known` with its outcome, or `unknown`. */
+    fun commitDelivery(clientCommitId: String): JsonValue =
+        command("commitDelivery", JsonValue.obj("clientCommitId" to JsonValue.of(clientCommitId)))
 
     fun commitOutcomes(query: JsonValue = JsonValue.Obj(emptyMap())): List<JsonValue> =
         command("commitOutcomes", JsonValue.obj("query" to query))["outcomes"]?.array

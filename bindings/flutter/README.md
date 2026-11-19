@@ -202,10 +202,10 @@ The tests need **no server**: syncular is offline-first, so `mutate` →
 Use `querySnapshot` for rows, coverage, and revision from one local read.
 `statusSnapshot` returns scheduling, schema, lease, and outbox state;
 `diagnosticsSnapshot` adds bounded version 2 support evidence: units counted
-per state, `activeUnits` and the `replicaCursor`. `commitOutcome` looks up
-one terminal result by commit ID. `commitOutcomes` lists the durable journal,
-and `resolveCommitOutcome` records an explicit resolution. A pending commit
-has no terminal outcome. `rejections` lists rejected commits.
+per state, `activeUnits` and the `replicaCursor`. `commitDelivery` reports
+one commit's state by ID: `pending`, `known` with its outcome, or `unknown`.
+`commitOutcomes` lists the durable journal, and `resolveCommitOutcome` records
+an explicit resolution. `rejections` lists rejected commits.
 `replaceCommitOutcome(outcome, replacement:)` records a decision against an active conflict or
 rejection as a held replacement commit and returns its client commit id. Without
 a replacement payload it keeps the outcome's own operations. An idle drive writes

@@ -846,16 +846,19 @@ if (!available) {
         ]);
         deferPulls = 2;
         await client.sync();
-        expect(
-          (outcomeOf(await client.commitDelivery(id)))?.retainedRows?.[0]?.serverRow?.title,
-        ).toBe('old');
-        expect((await client.statusSnapshot()).syncNeeded).toBe(true);
-        const stale = outcomeOf(await client.commitDelivery(id));
-        if (stale === undefined) throw new Error('missing outcome');
-        expect(await client.proveCurrentBase(stale, 1)).toEqual({
-          proven: false,
-          reason: 'budget_exhausted',
+        expect(await client.commitDelivery(id)).toMatchObject({
+          outcome: { retainedRows: [{ serverRow: { title: 'old' } }] },
         });
+        expect((await client.statusSnapshot()).syncNeeded).toBe(true);
+        const staleDelivery = await client.commitDelivery(id);
+        if (staleDelivery.status !== 'known')
+          throw new Error('missing outcome');
+        expect(await client.proveCurrentBase(staleDelivery.outcome, 1)).toEqual(
+          {
+            proven: false,
+            reason: 'budget_exhausted',
+          },
+        );
         await client.close();
         client = await createTauriSyncClient({
           schema,
@@ -863,18 +866,21 @@ if (!available) {
           tauri: host.api,
           retainFailedCommits: true,
         });
-        const reopened = outcomeOf(await client.commitDelivery(id));
-        if (reopened === undefined) throw new Error('missing outcome');
-        const proof = await client.proveCurrentBase(reopened);
+        const reopenedDelivery = await client.commitDelivery(id);
+        if (reopenedDelivery.status !== 'known')
+          throw new Error('missing outcome');
+        const proof = await client.proveCurrentBase(reopenedDelivery.outcome);
         expect(proof.proven).toBe(true);
         if (proof.proven)
           expect(proof.rows[0]?.serverRow?.title).toBe('winner');
         source.allowed['native-fresh'] = { list_id: [] };
-        expect(await client.proveCurrentBase(reopened)).toEqual({
+        expect(await client.proveCurrentBase(reopenedDelivery.outcome)).toEqual({
           proven: false,
           reason: 'revoked',
         });
-        expect((outcomeOf(await client.commitDelivery(id)))?.retainedRows).toBeUndefined();
+        expect(await client.commitDelivery(id)).not.toHaveProperty(
+          'outcome.retainedRows',
+        );
         await client.close();
       } finally {
         await seed.client.close();
@@ -1155,7 +1161,9 @@ if (!available) {
               },
             ],
           };
-          expect(outcomeOf(await client.commitDelivery(losing))).toMatchObject(expected);
+          expect(await client.commitDelivery(losing)).toMatchObject({
+            outcome: expected,
+          });
           expect(
             await client.query('SELECT id FROM todos WHERE id = ?', [loserId]),
           ).toEqual([]);
@@ -1166,17 +1174,19 @@ if (!available) {
             retainFailedCommits: true,
             tauri: host.api,
           });
-          expect(outcomeOf(await client.commitDelivery(losing))).toMatchObject(expected);
+          expect(await client.commitDelivery(losing)).toMatchObject({
+            outcome: expected,
+          });
           if (resolution === 'revoke') {
             allowed = [];
             await client.syncUntilIdle();
             expect(await client.query('SELECT id FROM todos')).toEqual([]);
-            expect(
-              (outcomeOf(await client.commitDelivery(losing)))?.retainedRows,
-            ).toBeUndefined();
-            expect(
-              (outcomeOf(await client.commitDelivery(losing)))?.operations,
-            ).toBeUndefined();
+            expect(await client.commitDelivery(losing)).not.toHaveProperty(
+              'outcome.retainedRows',
+            );
+            expect(await client.commitDelivery(losing)).not.toHaveProperty(
+              'outcome.operations',
+            );
           } else {
             const replacement =
               resolution === 'mine'
@@ -1207,9 +1217,9 @@ if (!available) {
                 : {}),
             });
             await client.syncUntilIdle();
-            expect(
-              (outcomeOf(await client.commitDelivery(losing)))?.retainedRows,
-            ).toBeUndefined();
+            expect(await client.commitDelivery(losing)).not.toHaveProperty(
+              'outcome.retainedRows',
+            );
             expect(
               await client.query('SELECT id FROM todos WHERE id = ?', [
                 loserId,
@@ -1398,18 +1408,21 @@ if (!available) {
             (commit) => commit.clientCommitId,
           ),
         ).toEqual([kept]);
-        expect(outcomeOf(await client.commitDelivery(doomed))).toMatchObject({
-          status: 'rejected',
-          results: [
-            {
-              status: 'error',
-              rejection: { code: 'client.local_data_purged' },
-            },
-            {
-              status: 'error',
-              rejection: { code: 'client.local_data_purged' },
-            },
-          ],
+        expect(await client.commitDelivery(doomed)).toMatchObject({
+          status: 'known',
+          outcome: {
+            status: 'rejected',
+            results: [
+              {
+                status: 'error',
+                rejection: { code: 'client.local_data_purged' },
+              },
+              {
+                status: 'error',
+                rejection: { code: 'client.local_data_purged' },
+              },
+            ],
+          },
         });
         await client.close();
       } finally {

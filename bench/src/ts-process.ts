@@ -277,10 +277,10 @@ if (import.meta.main) {
       };
     }
     if (method === 'statusSnapshot') return client.statusSnapshot();
-    if (method === 'commitOutcome') {
+    if (method === 'commitDelivery') {
       if (typeof params.clientCommitId !== 'string')
         throw new Error('Missing commit identity');
-      return { outcome: client.commitOutcome(params.clientCommitId) ?? null };
+      return client.commitDelivery(params.clientCommitId);
     }
     if (method === 'commitOutcomes')
       return { outcomes: client.commitOutcomes() };

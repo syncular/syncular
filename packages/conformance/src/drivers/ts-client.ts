@@ -875,10 +875,13 @@ class TsClientInstance implements ClientInstance {
     clientCommitId: string,
     maxRounds?: number,
   ): ReturnType<ClientInstance['proveCurrentBase']> {
-    const outcome = this.#client.commitOutcome(clientCommitId);
-    if (outcome === undefined)
+    const delivery = this.#client.commitDelivery(clientCommitId);
+    if (delivery.status !== 'known')
       return { proven: false, reason: 'outcome_unavailable' };
-    const proof = await this.#client.proveCurrentBase(outcome, maxRounds);
+    const proof = await this.#client.proveCurrentBase(
+      delivery.outcome,
+      maxRounds,
+    );
     if (!proof.proven) return proof;
     return {
       proven: true,
@@ -1008,9 +1011,9 @@ class TsClientInstance implements ClientInstance {
   }
 
   async replaceCommitOutcome(clientCommitId: string): Promise<string> {
-    const outcome = this.#client.commitOutcome(clientCommitId);
-    if (outcome === undefined) throw new Error('sync.outcome_not_found');
-    return this.#client.replaceCommitOutcome(outcome);
+    const delivery = this.#client.commitDelivery(clientCommitId);
+    if (delivery.status !== 'known') throw new Error('sync.outcome_not_found');
+    return this.#client.replaceCommitOutcome(delivery.outcome);
   }
 
   async conflicts(): Promise<ClientConflict[]> {

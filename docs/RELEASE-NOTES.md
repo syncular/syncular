@@ -268,8 +268,8 @@ error is gone from both cores (SPEC §7.1, §10).
 
 The worker handle now mints the ID before it calls the worker. When its
 `mutate` rejects, the error carries the ID in `details.clientCommitId`, so a
-page whose reply was lost reads the commit through `pendingCommits` and
-`commitOutcome`. A native bridge loses a reply only with the JS context that
+page whose reply was lost reads the commit through `commitDelivery`. A
+native bridge loses a reply only with the JS context that
 made the call, so the native core mints the ID there.
 
 To upgrade, drop the second argument of `mutate` and read the ID it returns.
@@ -320,6 +320,27 @@ a replica with no unit, no outbox commit and no unit list to clear (SPEC
 `skipEmpty` from `syncUntilIdle` calls. An app that passed it to avoid an
 empty round leaves the drive to the scheduler or the `autoSync` loop, or
 checks `units()` and `pendingCommits()` before it calls.
+
+### `commitOutcome` removed: `commitDelivery` reads every commit state
+
+`commitOutcome(id)` is removed from `SyncClient`, the worker handle, the
+Tauri and React Native bridges, the native command dispatcher and the
+Kotlin, Swift and Flutter wrappers. The Rust `SyncClient::commit_outcome` is
+private. `commitDelivery(id)` replaces it on every surface and answers
+`pending` while the outbox holds the commit, `known` with the final outcome,
+or `unknown` when neither the outbox nor the journal holds the ID (SPEC
+§7.5). The core that owns the database attaches `retainedRows` to a `known`
+outcome; the Tauri `snapshotRead` sidecar still omits them. Kotlin, Swift and
+Flutter gain `commitDelivery`, which returns the delivery JSON, and the
+native command `commitOutcome` is renamed `commitDelivery`; its reply is the
+delivery object instead of `{ outcome }`. Rust callers use
+`SyncClient::commit_delivery`.
+
+To upgrade, replace `commitOutcome(id)` with `commitDelivery(id)` and read
+`delivery.outcome` when `delivery.status` is `known`; an `undefined` or
+`null` outcome check becomes a `status` check. `commitOutcomes`,
+`resolveCommitOutcome`, `replaceCommitOutcome`, `proveCurrentBase` and
+`pendingCommitIds` are unchanged.
 
 ## 0.95.0 release notes
 

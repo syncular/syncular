@@ -34,6 +34,7 @@ import {
   TASK_COLUMNS,
   tableRows,
   taskValues,
+  outcomeOf,
 } from './helpers';
 
 describe('effective-scope echo persistence (§3.2, §3.3)', () => {

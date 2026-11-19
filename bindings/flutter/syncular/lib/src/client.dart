@@ -501,20 +501,10 @@ class SyncularClient {
   Map<String, Object?> diagnosticsSnapshot() =>
       command('diagnosticsSnapshot', const {});
 
-  Map<String, Object?>? commitOutcome(String clientCommitId) {
-    final result = command('commitOutcome', {'clientCommitId': clientCommitId});
-    if (!result.containsKey('outcome')) {
-      throw const SyncularError(
-          'client.invalid_host_response', 'commit outcome missing');
-    }
-    final outcome = result['outcome'];
-    if (outcome == null) return null;
-    if (outcome is! Map<String, Object?>) {
-      throw const SyncularError(
-          'client.invalid_host_response', 'invalid commit outcome');
-    }
-    return outcome;
-  }
+  /// One commit's delivery status (SPEC §7.5): `pending`, `known` with its
+  /// outcome, or `unknown`.
+  Map<String, Object?> commitDelivery(String clientCommitId) =>
+      command('commitDelivery', {'clientCommitId': clientCommitId});
 
   List<Map<String, Object?>> commitOutcomes(
       [Map<String, Object?> query = const {}]) {

@@ -302,7 +302,7 @@ void main() {
         client.querySnapshot('SELECT title FROM todo')['rows'], hasLength(1));
     expect(
         (client.diagnosticsSnapshot()['replica'] as Map)['pendingOutbox'], 1);
-    expect(client.commitOutcome(id), isNull);
+    expect(client.commitDelivery(id)['status'], 'pending');
     expect(client.commitOutcomes(), isEmpty);
     expect(client.rejections(), isEmpty);
     expect(

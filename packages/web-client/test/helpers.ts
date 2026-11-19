@@ -10,6 +10,8 @@ import { buildSqliteImage } from '@syncular/server/sqlite';
 import {
   type BlobTransport,
   type ClientSchema,
+  type CommitDelivery,
+  type CommitOutcome,
   type EncryptionConfig,
   type RealtimeConnector,
   type SegmentFetchRequest,
@@ -60,6 +62,12 @@ export async function drive<T>(
         ? steps.next(await step.value())
         : steps.next();
   }
+}
+
+/** The settled outcome of a §7.5 delivery, `undefined` while it is pending
+ * or unknown. */
+export function outcomeOf(delivery: CommitDelivery): CommitOutcome | undefined {
+  return delivery.status === 'known' ? delivery.outcome : undefined;
 }
 
 export const PARTITION = 'part-1';

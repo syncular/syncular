@@ -7289,7 +7289,7 @@ both an id the client never held and one whose outcome retention pruned.
 The read never reduces a multi-error outcome to one code, and the existing
 outcome-retention policy bounds what a later read can still resolve. `commitDelivery(clientCommitId)` is the
 application's single-commit read: it is this delivery read, and the owning
-core attaches its retained-row images (§7.2.2) to a `known` outcome. A
+core attaches its retained-row images (§7.2.1) to a `known` outcome. A
 native host routes `commitDelivery` to the owning core; a read-only sidecar
 `snapshotRead` reports the persisted outcome fields without retained rows. Persisted outcome readers validate SQL field types, integral
 indexes and safe-integer versions and timestamps, conflict-column arrays,

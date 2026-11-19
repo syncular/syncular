@@ -10,7 +10,7 @@ import {
   type SyncRequestContext,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
-import { CLIENT_SCHEMA, SERVER_SCHEMA, taskValues } from './helpers';
+import { CLIENT_SCHEMA, SERVER_SCHEMA, taskValues, outcomeOf } from './helpers';
 
 test('PGlite sync preserves a sparse conflict after the server deletes its base', async () => {
   const pg = await PGlite.create();
@@ -86,7 +86,9 @@ test('PGlite sync preserves a sparse conflict after the server deletes its base'
       resolution: 'resolved_keep_server',
     });
     expect(b!.query('SELECT * FROM tasks')).toEqual([]);
-    expect(outcomeOf(b!.commitDelivery(intended))?.retainedRows).toBeUndefined();
+    expect(
+      outcomeOf(b!.commitDelivery(intended))?.retainedRows,
+    ).toBeUndefined();
   } finally {
     for (const client of clients) await client.close();
     for (const database of databases) database.close();

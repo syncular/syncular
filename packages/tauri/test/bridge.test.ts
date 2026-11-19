@@ -180,8 +180,10 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       return OK({ conflicts: [] });
     case 'rejections':
       return OK({ rejections: [] });
-    case 'commitOutcome':
+    case 'commitDelivery':
       return OK({
+        status: 'known',
+        clientCommitId: 'commit-1',
         outcome: {
           sequence: 1,
           clientCommitId: 'commit-1',
@@ -1387,8 +1389,9 @@ describe('createTauriSyncClient', () => {
     expect((await client.statusSnapshot()).syncNeeded).toBe(false);
     expect((await client.statusSnapshot()).upgrading).toBe(false);
     expect(await client.conflicts()).toEqual([]);
-    expect(outcomeOf(await client.commitDelivery('commit-1'))).toMatchObject({
-      status: 'applied',
+    expect(await client.commitDelivery('commit-1')).toMatchObject({
+      status: 'known',
+      outcome: { status: 'applied' },
     });
     expect(await client.commitOutcomes({ activeOnly: true })).toEqual([]);
     expect(
@@ -2009,8 +2012,9 @@ describe('SyncClientLike parity', () => {
     });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
-    expect(outcomeOf(await normalized.commitDelivery('commit-1'))).toMatchObject({
-      status: 'applied',
+    expect(await normalized.commitDelivery('commit-1')).toMatchObject({
+      status: 'known',
+      outcome: { status: 'applied' },
     });
     expect(await normalized.commitOutcomes()).toEqual([]);
     expect(

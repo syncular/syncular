@@ -651,7 +651,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   /**
    * §7.1: the handle mints the `clientCommitId` before the call, and a
    * rejection carries it in `details.clientCommitId`, so the page reads a
-   * commit whose reply was lost through `pendingCommits` and `commitOutcome`.
+   * commit whose reply was lost through `pendingCommits` and `commitDelivery`.
    */
   async mutate(mutations: readonly MutationInput[]): Promise<string> {
     const clientCommitId = crypto.randomUUID();

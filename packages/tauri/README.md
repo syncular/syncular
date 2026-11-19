@@ -63,7 +63,7 @@ window lifecycle should pass that evidence through the same structural
 keys and `active` only after reactivation. Render local SQLite immediately.
 
 The bridge includes the native core's durable commit-outcome journal:
-`commitOutcome`, `commitOutcomes`, `commitDelivery`, and `resolveCommitOutcome`. Final results
+`commitDelivery`, `commitOutcomes`, and `resolveCommitOutcome`. Final results
 and explicit conflict resolutions survive process restarts; active failures
 are never silently removed by retention. Failed outcomes retain their complete
 ordered local operation envelope for authorized aggregate recovery with the
@@ -323,7 +323,7 @@ The native client accepts mixed `patch`, `upsert` and `delete` operations in one
 Omitted encrypted columns require no key and retain their ciphertext.
 
 Set `retainFailedCommits: true` to preserve rejected aggregate intent across
-pulls and restart. `commitOutcome(id).retainedRows` exposes intended rows and the
+pulls and restart. A `known` `commitDelivery(id)` outcome's `retainedRows` exposes intended rows and the
 latest authorized server base. Resolve with `resolved_keep_server`, or create a
 reviewed replacement and link it with `superseded`. Scope revocation and local
 security purge remove whole retained aggregates.

@@ -21,6 +21,7 @@ import {
   makeClient,
   makeServer,
   taskValues,
+  outcomeOf,
 } from './helpers';
 
 const BASE: WindowBase = { variable: 'project_id' };
@@ -582,7 +583,8 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               outbox: client.statusSnapshot().outbox,
               durable:
                 !db.db.inTransaction &&
-                outcomeOf(client.commitDelivery(conflict.clientCommitId)) !== undefined,
+                outcomeOf(client.commitDelivery(conflict.clientCommitId)) !==
+                  undefined,
             });
             throw new Error('injected callback failure');
           },

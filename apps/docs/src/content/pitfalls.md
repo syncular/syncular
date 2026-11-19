@@ -200,7 +200,7 @@ See [Delete precedence](/concepts-conflicts/#delete-precedence).
 
 ### Do read `rejected` in every sync report
 
-A rejected commit is an outcome of a successful round. `sync()` and `syncUntilIdle()` (Rust: `sync_until_idle`) resolve with a report, and `report.rejected` lists the client commit ids the server refused. The round has already rolled the commit back. A host that reads only the outcome kind keeps showing the rows from memory until a restart reads the replica. Look up each id with `commitOutcome(id)` (Rust: `commit_outcome(&id)`) for the code and the operations, and surface it.
+A rejected commit is an outcome of a successful round. `sync()` and `syncUntilIdle()` (Rust: `sync_until_idle`) resolve with a report, and `report.rejected` lists the client commit ids the server refused. The round has already rolled the commit back. A host that reads only the outcome kind keeps showing the rows from memory until a restart reads the replica. Look up each id with `commitDelivery(id)` (Rust: `commit_delivery(&id)`) for the code and the operations, and surface it.
 
 See [Outbox & commit outcomes](/reference-outbox-outcomes/).
 

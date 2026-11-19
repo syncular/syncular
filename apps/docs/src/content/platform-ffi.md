@@ -87,7 +87,7 @@ The methods the router executes. `subscribe` takes `{"scopes": {"list_id": "groc
 | Sync | `sync`, `syncUntilIdle` |
 | Transport | `setHeaders`, `setTransportEnabled` |
 | Observation | `localRevision`, `statusSnapshot`, `diagnosticsSnapshot`, `progressSnapshot`, `drainChangeBatches`, `drainSyncIntents` |
-| Divergence & outcomes | `conflicts`, `rejections`, `commitOutcome`, `commitOutcomes`, `resolveCommitOutcome` |
+| Divergence & outcomes | `conflicts`, `rejections`, `commitDelivery`, `commitOutcomes`, `resolveCommitOutcome` |
 | Previous-version context | `previousVersionAudit`, `previousVersionSnapshot`, `previousVersionDiscard` |
 | Realtime & presence | `connectRealtime`, `disconnectRealtime`, `setPresence`, `presence` |
 | Local authority | `localAuthorityState`, `attachLocalAuthority`, `abandonLocalAuthorityAttach` |

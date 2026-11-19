@@ -348,7 +348,7 @@ private final class StubbedReplyClient: SyncularClient {
     #expect(try client.statusSnapshot()["outbox"]?.numberValue == 1)
     #expect(try client.querySnapshot("SELECT title FROM todo")["rows"]?.arrayValue?.count == 1)
     #expect(try client.diagnosticsSnapshot()["replica"]?["pendingOutbox"]?.numberValue == 1)
-    #expect(try client.commitOutcome(clientCommitId: id) == nil)
+    #expect(try client.commitDelivery(clientCommitId: id)["status"]?.stringValue == "pending")
     #expect(try client.commitOutcomes().isEmpty)
     #expect(try client.rejections().isEmpty)
     #expect(throws: SyncularError.self) {

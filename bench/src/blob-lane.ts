@@ -256,7 +256,7 @@ export async function runBlobFile(options: {
       throw new Error('Blob upload pin did not drain');
     const outcome = processObject(
       processObject(
-        await writer.invoke('commitOutcome', {
+        await writer.invoke('commitDelivery', {
           clientCommitId: mutation.ids[0],
         }),
       ).outcome,
@@ -631,8 +631,10 @@ export async function runBlobLane(options: {
             'blob upload and reference push',
           ),
       );
+      const delivery = writer.handle.client.commitDelivery(commitId);
       if (
-        outcomeOf(writer.handle.client.commitDelivery(commitId))?.status !== 'applied' ||
+        delivery.status !== 'known' ||
+        delivery.outcome.status !== 'applied' ||
         writer.database.query('SELECT blob_id FROM _syncular_blob_uploads')
           .length !== 0
       )
@@ -1056,7 +1058,7 @@ export async function runProcessBlobs(options: {
       )
         throw new Error('Native upload sync has invalid timing');
       const outcome = processObject(
-        await writer.invoke('commitOutcome', {
+        await writer.invoke('commitDelivery', {
           clientCommitId: mutation.clientCommitId,
         }),
       );

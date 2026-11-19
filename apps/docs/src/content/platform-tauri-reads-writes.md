@@ -86,8 +86,8 @@ needs them only when you build your own reactive layer.
 
 ## Durable outcomes
 
-The bridge exposes the native outcome journal through `commitOutcome`,
-`commitOutcomes`, `commitDelivery`, and `resolveCommitOutcome`. They survive
+The bridge exposes the native outcome journal through `commitDelivery`,
+`commitOutcomes`, and `resolveCommitOutcome`. They survive
 restarts.
 `conflicts()` decodes each record's `serverRow` like an outcome row: binary and
 `crdt` cells arrive as `Uint8Array`, and reserved `_sync_*` columns are dropped.

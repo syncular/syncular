@@ -25,6 +25,7 @@ import {
   makeServer,
   TASK_COLUMNS,
   taskValues,
+  outcomeOf,
 } from './helpers';
 
 const compiled = compileClientSchema(CLIENT_SCHEMA);
@@ -409,7 +410,9 @@ describe('push-result frame handling', () => {
     const summary = await local.client.sync();
 
     expect(summary.applied).toEqual([commit]);
-    expect(outcomeOf(local.client.commitDelivery(commit))?.status).toBe('applied');
+    expect(outcomeOf(local.client.commitDelivery(commit))?.status).toBe(
+      'applied',
+    );
     expect(local.client.pendingCommits()).toEqual([]);
     expect(local.client.statusSnapshot().outbox).toBe(0);
     expect(outboxCounts.every((count) => count >= 0)).toBe(true);

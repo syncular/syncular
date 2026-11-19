@@ -462,18 +462,12 @@ export class FakeClient implements SyncClientLike {
     return this.#rejections;
   }
 
-  commitOutcome(clientCommitId: string): CommitOutcome | undefined {
-    return this.#outcomes.find(
-      (outcome) => outcome.clientCommitId === clientCommitId,
-    );
-  }
-
   /** Outbox precedence (§7.5): a pending entry whose `clientCommitId`
    * matches wins over a journal outcome. */
   commitDelivery(id: string): CommitDelivery {
     if (this.#pending.some((commit) => commit.clientCommitId === id))
       return { status: 'pending', clientCommitId: id };
-    const outcome = this.commitOutcome(id);
+    const outcome = this.#outcomes.find((entry) => entry.clientCommitId === id);
     return outcome === undefined
       ? { status: 'unknown', clientCommitId: id }
       : { status: 'known', clientCommitId: id, outcome };

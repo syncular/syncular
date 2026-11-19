@@ -13,6 +13,7 @@ import {
   responseGate,
   tableRows,
   taskValues,
+  outcomeOf,
 } from './helpers';
 import { recordCommitOutcome } from '../src/outcomes';
 
@@ -174,7 +175,9 @@ describe('application-authorized local data purge', () => {
       },
     ]);
     await local.client.sync();
-    expect(outcomeOf(local.client.commitDelivery(rejected))?.operations).toHaveLength(1);
+    expect(
+      outcomeOf(local.client.commitDelivery(rejected))?.operations,
+    ).toHaveLength(1);
     // A pending edit of a purged row is dropped; its outcome keeps no value.
     local.client.mutate([
       {
@@ -321,7 +324,9 @@ describe('application-authorized local data purge', () => {
       droppedCommits: 1,
     });
     expect(tableRows(local.db, 'patient_notes')).toEqual([]);
-    expect(outcomeOf(local.client.commitDelivery(doomedCommit))?.status).toBe('rejected');
+    expect(outcomeOf(local.client.commitDelivery(doomedCommit))?.status).toBe(
+      'rejected',
+    );
     await local.client.close();
     local.db.close();
   });
@@ -404,14 +409,18 @@ describe('application-authorized local data purge', () => {
       }),
     ).toEqual({ alreadyApplied: false, purgedRows: 0, droppedCommits: 1 });
     expect(local.client.pendingCommits()).toEqual([]);
-    expect(outcomeOf(local.client.commitDelivery(inFlight))?.status).toBe('rejected');
+    expect(outcomeOf(local.client.commitDelivery(inFlight))?.status).toBe(
+      'rejected',
+    );
     gate.release();
     const summary = await round;
 
     // The response's PUSH_RESULT for the purged commit is skipped: the
     // purge outcome stands and the outbox count stays at zero.
     expect(summary.applied).toEqual([]);
-    expect(outcomeOf(local.client.commitDelivery(inFlight))?.status).toBe('rejected');
+    expect(outcomeOf(local.client.commitDelivery(inFlight))?.status).toBe(
+      'rejected',
+    );
     expect(local.client.statusSnapshot().outbox).toBe(0);
     expect(outboxCounts.every((count) => count >= 0)).toBe(true);
     await local.client.close();
@@ -451,7 +460,9 @@ describe('application-authorized local data purge', () => {
     gate.release();
     expect((await round).applied).toEqual([commit]);
     expect(local.client.pendingCommits()).toEqual([]);
-    expect(outcomeOf(local.client.commitDelivery(commit))?.status).toBe('applied');
+    expect(outcomeOf(local.client.commitDelivery(commit))?.status).toBe(
+      'applied',
+    );
     await local.client.close();
     local.db.close();
   });

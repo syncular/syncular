@@ -3150,7 +3150,7 @@ mod tests {
         let id = mutated["result"]["clientCommitId"].as_str().unwrap();
         call(json!({ "method": "sync", "params": {} }));
         let outcome =
-            call(json!({ "method": "commitOutcome", "params": { "clientCommitId": id } }));
+            call(json!({ "method": "commitDelivery", "params": { "clientCommitId": id } }));
         let before_proof = requests.load(Ordering::SeqCst);
         let proof = call(
             json!({ "method": "proveCurrentBase", "params": { "outcome": outcome["result"]["outcome"], "maxRounds": 1 } }),

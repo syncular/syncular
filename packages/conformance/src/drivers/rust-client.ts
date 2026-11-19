@@ -1618,13 +1618,13 @@ class RustClientInstance implements ClientInstance {
     clientCommitId: string,
     maxRounds?: number,
   ): ReturnType<ClientInstance['proveCurrentBase']> {
-    const result = asObject(
-      await this.#shim.call('commitOutcome', { clientCommitId }),
-      'commitOutcome',
+    const delivery = asObject(
+      await this.#shim.call('commitDelivery', { clientCommitId }),
+      'commitDelivery',
     );
-    if (result.outcome === undefined || result.outcome === null)
+    if (delivery.status !== 'known')
       return { proven: false, reason: 'outcome_unavailable' };
-    const outcome = asObject(result.outcome, 'commit outcome');
+    const outcome = asObject(delivery.outcome ?? null, 'commit outcome');
     const proof = asObject(
       await this.#shim.call('proveCurrentBase', {
         outcome: { clientCommitId, sequence: outcome.sequence ?? null },
@@ -1667,11 +1667,12 @@ class RustClientInstance implements ClientInstance {
   }
 
   async replaceCommitOutcome(clientCommitId: string): Promise<string> {
-    const found = asObject(
-      await this.#shim.call('commitOutcome', { clientCommitId }),
-      'commitOutcome',
+    const delivery = asObject(
+      await this.#shim.call('commitDelivery', { clientCommitId }),
+      'commitDelivery',
     );
-    const outcome = asObject(found.outcome ?? null, 'commit outcome');
+    if (delivery.status !== 'known') throw new Error('sync.outcome_not_found');
+    const outcome = asObject(delivery.outcome ?? null, 'commit outcome');
     const result = asObject(
       await this.#shim.call('replaceCommitOutcome', {
         clientCommitId,

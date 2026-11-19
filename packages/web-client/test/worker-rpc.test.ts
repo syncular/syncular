@@ -37,6 +37,7 @@ import {
   type TestServer,
   taskValues,
   waitFor,
+  outcomeOf,
 } from './helpers';
 import { computeBlobId } from '../src/blob';
 import { createSyncProfiler } from '../src/dev-profiler';
@@ -364,8 +365,12 @@ test('worker serves local mutations and reads while a sync reply is pending', as
     await handle.syncUntilIdle();
     expect(await handle.pendingCommits()).toEqual([]);
     expect(pushed).toEqual([[first], [second]]);
-    expect((outcomeOf(await handle.commitDelivery(first)))?.status).toBe('applied');
-    expect((outcomeOf(await handle.commitDelivery(second)))?.status).toBe('applied');
+    expect(outcomeOf(await handle.commitDelivery(first))?.status).toBe(
+      'applied',
+    );
+    expect(outcomeOf(await handle.commitDelivery(second))?.status).toBe(
+      'applied',
+    );
   } finally {
     release.resolve();
     await handle.close();

@@ -576,12 +576,9 @@ public class SyncularClient {
         try command(method: "diagnosticsSnapshot", params: .object([:]))
     }
 
-    public func commitOutcome(clientCommitId: String) throws -> JSONValue? {
-        let result = try command(method: "commitOutcome", params: .object(["clientCommitId": .string(clientCommitId)]))
-        guard let outcome = result["outcome"] else {
-            throw SyncularError(code: "client.invalid_host_response", message: "commit outcome missing")
-        }
-        return outcome == .null ? nil : outcome
+    /// One commit's delivery status (SPEC §7.5): `pending`, `known` with its outcome, or `unknown`.
+    public func commitDelivery(clientCommitId: String) throws -> JSONValue {
+        try command(method: "commitDelivery", params: .object(["clientCommitId": .string(clientCommitId)]))
     }
 
     public func commitOutcomes(_ query: JSONValue = .object([:])) throws -> [JSONValue] {
