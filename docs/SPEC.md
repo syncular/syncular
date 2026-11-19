@@ -2478,11 +2478,12 @@ mutation of a registered unit:
 - **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
   re-bootstrapped nor evicted.
 
-The client applies a window change value by value: first each entering value
-in the order the caller lists it, then each leaving value, each in its own
-transaction. A failure at one value returns the error and keeps every value
-applied before it; the same call repeated converges on the requested set
-with one registration per unit.
+The client registers all entering values of a window change in one
+transaction, then releases the leaving values one transaction per value. A
+failure while registering returns the error and registers none of the
+entering values; a failure at a leaving value returns the error and keeps the
+values released before it. The same call repeated converges on the requested
+set with one registration per unit.
 
 The registry persists across restarts, and `setWindow` names the whole
 window. A reactive store that composes the window from several owners' claims

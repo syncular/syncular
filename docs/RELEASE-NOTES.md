@@ -1,6 +1,27 @@
 # Syncular release notes
 
-## Unreleased (draft)
+## 0.92.0 release notes
+
+0.92.0 changes the multi-tab protocol, cuts write transactions during
+bootstrap, takes a fresh replica's first sync in one round trip, and names a
+segment download's requested scopes to `resolveScopes`. It closes
+SYNCULAR-MULTI-TAB-BUILD-IDENTITY-001, SYNCULAR-APPLY-ROWS-RATE-001,
+SYNCULAR-ROUND-CLAIM-COALESCE-001 and SYNCULAR-SEGMENT-DOWNLOAD-AUTH-001, and
+explains SYNCULAR-REALTIME-083-ON-090-SERVER-001. The wire version stays 4;
+SSP2 gains the optional `ADOPT_EPOCH` request frame (0x08).
+
+Upgrade order: upgrade servers first, then clients. A 0.91.0 or older server
+skips `ADOPT_EPOCH` and answers with the extra acquisition round, so clients
+on this release work against it, one round trip slower on a fresh replica.
+
+Breaking changes:
+
+- Multi-tab protocol 4: the first tab of this release makes a 0.59.0 to 0.91.0
+  leader with the same schema version step down. Reload the older tabs.
+- A custom `ServerStorage` returns `checkpointSchemaVersion` from
+  `touchPartition`; the type checker flags a missing field.
+- A failed `setWindow` widen now registers none of its values; before, the
+  values applied before the failure stayed registered.
 
 Tabs of a new build no longer follow an older leader
 (SYNCULAR-MULTI-TAB-BUILD-IDENTITY-001). Syncular 0.59.0 to 0.91.0 announced
