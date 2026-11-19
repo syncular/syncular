@@ -311,8 +311,8 @@ test('worker serves local mutations and reads while a sync reply is pending', as
     await handle.syncUntilIdle();
     expect(await handle.pendingCommits()).toEqual([]);
     expect(pushed).toEqual([[first], [second]]);
-    expect((await handle.commitOutcome(first))?.status).toBe('applied');
-    expect((await handle.commitOutcome(second))?.status).toBe('applied');
+    expect((outcomeOf(await handle.commitDelivery(first)))?.status).toBe('applied');
+    expect((outcomeOf(await handle.commitDelivery(second)))?.status).toBe('applied');
   } finally {
     release.resolve();
     await handle.close();
@@ -357,7 +357,7 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(summary.applied).toEqual([commitId]);
   await handle.syncUntilIdle();
   expect((await handle.pendingCommits()).length).toBe(0);
-  expect(await handle.commitOutcome(commitId)).toMatchObject({
+  expect(outcomeOf(await handle.commitDelivery(commitId))).toMatchObject({
     status: 'applied',
     results: [{ status: 'applied', opIndex: 0 }],
   });
@@ -591,7 +591,7 @@ test('application-authorized local purge crosses the worker RPC atomically', asy
   expect(
     (await handle.pendingCommits()).map((commit) => commit.clientCommitId),
   ).toEqual([kept]);
-  expect(await handle.commitOutcome(doomed)).toMatchObject({
+  expect(outcomeOf(await handle.commitDelivery(doomed))).toMatchObject({
     status: 'rejected',
     results: [
       {
@@ -951,7 +951,7 @@ test('conflicts surface as RPC events and via conflicts()', async () => {
   expect(conflicts.length).toBe(1);
   expect(conflicts[0]?.rowId).toBe('t3');
   expect(conflicts[0]?.serverRow.title).toBe('b wins');
-  expect(await a.commitOutcome(losingCommitId)).toMatchObject({
+  expect(outcomeOf(await a.commitDelivery(losingCommitId))).toMatchObject({
     status: 'conflict',
     resolution: 'active',
   });
@@ -1348,7 +1348,7 @@ test('worker atomic sparse conflict keeps its local aggregate and explicit resol
   expect(await b.query("SELECT title FROM tasks WHERE id = 'w1'")).toEqual([
     { title: 'mine' },
   ]);
-  expect(await b.commitOutcome(id)).toMatchObject({
+  expect(outcomeOf(await b.commitDelivery(id))).toMatchObject({
     status: 'conflict',
     retainedRows: [
       { localRow: { title: 'mine' }, serverRow: { title: 'winner' } },

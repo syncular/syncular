@@ -411,7 +411,7 @@ test('onEnqueued succeeds offline and the later rejection remains addressable af
     expect(enqueued).toEqual([id]);
     expect(view.result.current.mutation.isPending).toBe(false);
     expect(current.client.pendingCommits()).toHaveLength(1);
-    expect(current.client.commitOutcome(id)).toBeUndefined();
+    expect(outcomeOf(current.client.commitDelivery(id))).toBeUndefined();
     expect(view.result.current.outcomes.outcomes).toEqual([]);
     await act(async () => {
       await expect(current.client.sync()).rejects.toThrow(
@@ -425,12 +425,12 @@ test('onEnqueued succeeds offline and the later rejection remains addressable af
     expect(current.client.pendingCommits()[0]?.clientCommitId).toBe(id);
     offline = false;
     await current.client.syncUntilIdle();
-    expect(current.client.commitOutcome(id)?.status).toBe('rejected');
+    expect(outcomeOf(current.client.commitDelivery(id))?.status).toBe('rejected');
     expect(enqueued).toEqual([id]);
     await current.client.close();
     current.db.close();
     current = await open();
-    expect(current.client.commitOutcome(id)?.status).toBe('rejected');
+    expect(outcomeOf(current.client.commitDelivery(id))?.status).toBe('rejected');
     const outcomes = renderHook(() => useCommitOutcomes(), {
       wrapper: ({ children }: { children: ReactNode }) => (
         <SyncProvider client={current.client}>{children}</SyncProvider>

@@ -180,10 +180,10 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       defer = 2;
       await reader!.sync();
       expect(
-        reader!.commitOutcome(id)?.retainedRows?.[0]?.serverRow?.body,
+        outcomeOf(reader!.commitDelivery(id))?.retainedRows?.[0]?.serverRow?.body,
       ).toBe('old');
       expect(reader!.statusSnapshot().syncNeeded).toBe(true);
-      const outcome = reader!.commitOutcome(id)!;
+      const outcome = outcomeOf(reader!.commitDelivery(id))!;
       expect(await reader!.proveCurrentBase(outcome, 1)).toEqual({
         proven: false,
         reason: 'budget_exhausted',
@@ -235,7 +235,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       await reader!.syncUntilIdle();
       const floorId = floorReader!.patch('versions', 't1', { body: 'reject' });
       await floorReader!.syncUntilIdle();
-      const floorOutcome = floorReader!.commitOutcome(floorId)!;
+      const floorOutcome = outcomeOf(floorReader!.commitDelivery(floorId))!;
       floor = true;
       expect(await floorReader!.proveCurrentBase(floorOutcome)).toEqual({
         proven: false,
@@ -246,7 +246,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         proven: false,
         reason: 'revoked',
       });
-      expect(reader!.commitOutcome(id)?.retainedRows).toBeUndefined();
+      expect(outcomeOf(reader!.commitDelivery(id))?.retainedRows).toBeUndefined();
     } finally {
       for (const client of clients) await client.close();
       for (const database of databases) database.close();
@@ -341,7 +341,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         expect(b.query('SELECT id, body FROM versions')).toEqual([
           { id: 'a', body: 'server' },
         ]);
-        expect(b.commitOutcome(losing)).toMatchObject({
+        expect(outcomeOf(b.commitDelivery(losing))).toMatchObject({
           status: 'rejected',
           resolution: 'active',
           retainedRows: [
@@ -378,7 +378,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         b.onChange((batch) => batches.push(batch.outcomesChanged));
         await b.syncUntilIdle();
         expect(batches).toContain(true);
-        expect(b.commitOutcome(losing)?.retainedRows).toMatchObject([
+        expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toMatchObject([
           {
             uniqueConflicts: [
               { serverVersion: 2, serverRow: { body: 'latest' } },
@@ -397,8 +397,8 @@ for (const backend of ['sqlite', 'pglite'] as const) {
               ],
             });
           expect(b.query('SELECT id FROM versions')).toEqual([]);
-          expect(b.commitOutcome(losing)?.retainedRows).toBeUndefined();
-          expect(b.commitOutcome(losing)?.operations).toBeUndefined();
+          expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toBeUndefined();
+          expect(outcomeOf(b.commitDelivery(losing))?.operations).toBeUndefined();
         } else {
           const replacement =
             resolution === 'mine'
@@ -424,7 +424,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
             ...(replacement ? { replacementClientCommitId: replacement } : {}),
           });
           await b.syncUntilIdle();
-          expect(b.commitOutcome(losing)?.retainedRows).toBeUndefined();
+          expect(outcomeOf(b.commitDelivery(losing))?.retainedRows).toBeUndefined();
           expect(b.query('SELECT id, body FROM versions ORDER BY id')).toEqual(
             resolution === 'edit'
               ? [
@@ -515,19 +515,19 @@ test('a later winner imports over visible failed intent; freeing the key restore
     await a!.syncUntilIdle();
     await b!.syncUntilIdle();
     expect(b!.query('SELECT id FROM versions')).toEqual([{ id: 'winner' }]);
-    expect(b!.commitOutcome(losing)?.retainedRows).toMatchObject([
+    expect(outcomeOf(b!.commitDelivery(losing))?.retainedRows).toMatchObject([
       { uniqueConflicts: [{ rowId: 'winner' }] },
     ]);
     // An optimistic patch on the winner cannot change its authorized evidence.
     const pending = b!.patch('versions', 'winner', { body: 'pending' });
-    expect(b!.commitOutcome(losing)?.retainedRows).toMatchObject([
+    expect(outcomeOf(b!.commitDelivery(losing))?.retainedRows).toMatchObject([
       {
         uniqueConflicts: [{ serverRow: { body: 'server' }, serverVersion: 1 }],
       },
     ]);
     await b!.syncUntilIdle();
-    expect(b!.commitOutcome(pending)?.status).toBe('applied');
-    expect(b!.commitOutcome(losing)?.retainedRows).toMatchObject([
+    expect(outcomeOf(b!.commitDelivery(pending))?.status).toBe('applied');
+    expect(outcomeOf(b!.commitDelivery(losing))?.retainedRows).toMatchObject([
       {
         uniqueConflicts: [{ serverRow: { body: 'pending' }, serverVersion: 2 }],
       },
@@ -540,7 +540,7 @@ test('a later winner imports over visible failed intent; freeing the key restore
       { id: 'loser', body: 'mine' },
     ]);
     expect(
-      b!.commitOutcome(losing)?.retainedRows?.[0]?.uniqueConflicts,
+      outcomeOf(b!.commitDelivery(losing))?.retainedRows?.[0]?.uniqueConflicts,
     ).toBeUndefined();
   } finally {
     for (const client of clients) await client.close();

@@ -582,7 +582,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               outbox: client.statusSnapshot().outbox,
               durable:
                 !db.db.inTransaction &&
-                client.commitOutcome(conflict.clientCommitId) !== undefined,
+                outcomeOf(client.commitDelivery(conflict.clientCommitId)) !== undefined,
             });
             throw new Error('injected callback failure');
           },
@@ -615,7 +615,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
             client.pendingCommits().map((commit) => commit.clientCommitId),
           ).toEqual([id, later]);
           expect(client.localRevision).toBe(revision);
-          expect(client.commitOutcome(id)).toBeUndefined();
+          expect(outcomeOf(client.commitDelivery(id))).toBeUndefined();
           expect(client.conflicts()).toEqual([]);
           expect(client.rejections()).toEqual([]);
           expect(callbacks).toEqual([]);
@@ -632,7 +632,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
           expect(
             client.pendingCommits().map((commit) => commit.clientCommitId),
           ).toEqual([later]);
-          expect(client.commitOutcome(id)?.status).toBe(status);
+          expect(outcomeOf(client.commitDelivery(id))?.status).toBe(status);
           expect(
             changes.filter((change) => change.outcomesChanged),
           ).toHaveLength(1);

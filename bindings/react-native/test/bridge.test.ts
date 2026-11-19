@@ -714,7 +714,7 @@ describe('createNativeSyncClient', () => {
       status: 'conflict',
       conflict: { serverRow: { blob: new Uint8Array([170, 187]) } },
     });
-    expect(await client.commitOutcome('c1')).toEqual(decoded);
+    expect(outcomeOf(await client.commitDelivery('c1'))).toEqual(decoded);
     expect(await client.commitOutcomes()).toEqual([decoded]);
     expect(
       await client.resolveCommitOutcome({
@@ -1570,7 +1570,7 @@ describe('SyncClientLike parity', () => {
     });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
-    expect(await normalized.commitOutcome('commit-1')).toMatchObject({
+    expect(outcomeOf(await normalized.commitDelivery('commit-1'))).toMatchObject({
       status: 'applied',
     });
     expect(await normalized.commitOutcomes()).toEqual([]);

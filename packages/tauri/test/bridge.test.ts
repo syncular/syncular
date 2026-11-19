@@ -1387,7 +1387,7 @@ describe('createTauriSyncClient', () => {
     expect((await client.statusSnapshot()).syncNeeded).toBe(false);
     expect((await client.statusSnapshot()).upgrading).toBe(false);
     expect(await client.conflicts()).toEqual([]);
-    expect(await client.commitOutcome('commit-1')).toMatchObject({
+    expect(outcomeOf(await client.commitDelivery('commit-1'))).toMatchObject({
       status: 'applied',
     });
     expect(await client.commitOutcomes({ activeOnly: true })).toEqual([]);
@@ -2009,7 +2009,7 @@ describe('SyncClientLike parity', () => {
     });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
-    expect(await normalized.commitOutcome('commit-1')).toMatchObject({
+    expect(outcomeOf(await normalized.commitDelivery('commit-1'))).toMatchObject({
       status: 'applied',
     });
     expect(await normalized.commitOutcomes()).toEqual([]);

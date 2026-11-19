@@ -74,7 +74,7 @@ test('PGlite sync preserves a sparse conflict after the server deletes its base'
     await a!.syncUntilIdle();
     await b!.syncUntilIdle();
     expect(b!.query('SELECT * FROM tasks')).toEqual([]);
-    const outcome = b!.commitOutcome(intended)!;
+    const outcome = outcomeOf(b!.commitDelivery(intended))!;
     expect(outcome.operations?.[0]?.values).toEqual({
       id: 't1',
       title: 'mine',
@@ -86,7 +86,7 @@ test('PGlite sync preserves a sparse conflict after the server deletes its base'
       resolution: 'resolved_keep_server',
     });
     expect(b!.query('SELECT * FROM tasks')).toEqual([]);
-    expect(b!.commitOutcome(intended)?.retainedRows).toBeUndefined();
+    expect(outcomeOf(b!.commitDelivery(intended))?.retainedRows).toBeUndefined();
   } finally {
     for (const client of clients) await client.close();
     for (const database of databases) database.close();

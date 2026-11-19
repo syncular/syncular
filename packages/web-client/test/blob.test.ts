@@ -156,7 +156,7 @@ describe('refused blob uploads (§5.9.7)', () => {
         retryable: false,
       },
     ]);
-    expect(local.client.commitOutcome(refusedCommit)?.status).toBe('rejected');
+    expect(outcomeOf(local.client.commitDelivery(refusedCommit))?.status).toBe('rejected');
     expect(
       local.client.query('SELECT id FROM attachments ORDER BY id'),
     ).toEqual([]);

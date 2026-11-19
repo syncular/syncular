@@ -355,7 +355,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       ]);
       const rejected = host!.patch('docs', 'old', { body: 'reject' });
       await host!.syncUntilIdle();
-      const outcome = host!.commitOutcome(rejected)!;
+      const outcome = outcomeOf(host!.commitDelivery(rejected))!;
       expect(await host!.proveCurrentBase(outcome)).toMatchObject({
         proven: true,
         rows: [{ rowId: 'old', serverRow: { body: 'old' }, serverVersion: 1 }],

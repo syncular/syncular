@@ -589,7 +589,7 @@ describe('RFC 0005 compatibility audit', () => {
       // §7.4.4: the incompatible commit leaves at send time, its full envelope
       // preserved in the §7.2.1 journal.
       expect(bumped.client.pendingCommits()).toHaveLength(0);
-      const outcome = bumped.client.commitOutcome(commitId);
+      const outcome = outcomeOf(bumped.client.commitDelivery(commitId));
       expect(outcome?.operations).toEqual([
         {
           table: 'things',

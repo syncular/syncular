@@ -205,7 +205,7 @@ describe('§5.11 encrypted round-trip', () => {
       },
     ]);
     await plain.client.sync();
-    expect(plain.client.commitOutcome(id)).toMatchObject({
+    expect(outcomeOf(plain.client.commitDelivery(id))).toMatchObject({
       status: 'rejected',
       results: [
         { status: 'error', rejection: { code: 'client.encrypt_failed' } },
@@ -517,7 +517,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
     const badId = handle.client.patch('secrets', 'ghost', { note: 'x' });
     const goodId = handle.client.patch('secrets', 'r3', { memo: 'y' });
     await handle.client.sync();
-    expect(handle.client.commitOutcome(badId)).toMatchObject({
+    expect(outcomeOf(handle.client.commitDelivery(badId))).toMatchObject({
       status: 'rejected',
       results: [
         {
@@ -527,7 +527,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       ],
     });
     // The unrelated commit in the same round still applied.
-    expect(handle.client.commitOutcome(goodId)?.status).toBe('applied');
+    expect(outcomeOf(handle.client.commitDelivery(goodId))?.status).toBe('applied');
   });
 
   test('an unencodable commit over the operation cap is dropped, not capacity-errored', async () => {
@@ -564,7 +564,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
         { op: 'patch', table: 'secrets', values: { id: 'ghost', memo: 'y' } },
       ]);
       await handle.client.sync();
-      expect(handle.client.commitOutcome(badId)).toMatchObject({
+      expect(outcomeOf(handle.client.commitDelivery(badId))).toMatchObject({
         status: 'rejected',
         results: [
           { status: 'error', rejection: { code: 'client.encrypt_failed' } },
@@ -632,7 +632,7 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
     ]);
     expect(a.client.pendingCommits()).toHaveLength(1);
     await a.client.syncUntilIdle();
-    expect(a.client.commitOutcome(id)?.status).toBe('applied');
+    expect(outcomeOf(a.client.commitDelivery(id))?.status).toBe('applied');
     expect(a.client.rejections()).toHaveLength(0);
   } finally {
     await a.client.close();

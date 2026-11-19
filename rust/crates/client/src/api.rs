@@ -1348,10 +1348,9 @@ pub enum UnitCatchup {
 /// outbox is `pending`; a drained commit carries its persisted retained
 /// outcome; an id the client never held, or whose outcome was pruned by
 /// retention, is `unknown`. The outcome preserves every operation result,
-/// rejection code, and conflict. This is the persisted-journal view in both
-/// cores: it omits the owner-derived `retained_rows` images that
-/// `SyncClient::commit_outcome` attaches from its in-memory failed-commit
-/// cache.
+/// rejection code, and conflict. The owning core attaches the retained-row
+/// images of its in-memory failed-commit cache; the read-only sidecar reports
+/// the persisted fields.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CommitDelivery {

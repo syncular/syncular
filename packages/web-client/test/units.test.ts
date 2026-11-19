@@ -1235,7 +1235,7 @@ describe('§6.3.2 push sequence', () => {
     expect(pushes.map((frame) => frame.clientSeq)).toEqual([1, 2]);
     expect(summary.rejected).toEqual([first]);
     expect(client.pendingCommits()).toEqual([]);
-    expect(client.commitOutcome(first)?.status).toBe('rejected');
+    expect(outcomeOf(client.commitDelivery(first))?.status).toBe('rejected');
     expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual([
       { id: 't2' },
     ]);

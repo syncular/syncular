@@ -1517,19 +1517,19 @@ pub fn dispatch<T: Transport>(
             let rejections = need_client(client)?.rejections().to_vec();
             Ok(json!({ "rejections": rejections }))
         }
-        "commitOutcome" => {
+        "commitDelivery" => {
             let client_commit_id = params
                 .get("clientCommitId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     client_err(
-                        "sync.invalid_request: commitOutcome missing clientCommitId".to_owned(),
+                        "sync.invalid_request: commitDelivery missing clientCommitId".to_owned(),
                     )
                 })?;
-            let outcome = need_client(client)?
-                .commit_outcome(client_commit_id)
-                .map_err(client_err)?;
-            Ok(json!({ "outcome": outcome }))
+            let delivery = need_client(client)?
+                .commit_delivery(client_commit_id)
+                .map_err(read_command_error)?;
+            Ok(json!(delivery))
         }
         "commitOutcomes" => {
             let query = serde_json::from_value::<CommitOutcomeQuery>(

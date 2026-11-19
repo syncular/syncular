@@ -685,9 +685,9 @@ export type UnitCatchup =
 
 /**
  * §7.5: delivery status for one client commit id. `pending` while the id still
- * has an outbox entry (outbox precedence), otherwise the persisted-journal
- * outcome, otherwise an explicit `unknown` (never held, or pruned by
- * retention). The outcome omits the owner-derived `retainedRows` images.
+ * has an outbox entry (outbox precedence), otherwise the journal outcome with
+ * its `retainedRows`, otherwise an explicit `unknown` (never held, or pruned
+ * by retention).
  */
 export type CommitDelivery =
   | { readonly status: 'pending'; readonly clientCommitId: string }
@@ -940,7 +940,6 @@ export type ClientSnapshotMethods = Pick<
   | 'diagnosticsSnapshot'
   | 'conflicts'
   | 'rejections'
-  | 'commitOutcome'
   | 'commitOutcomes'
   | 'resolveCommitOutcome'
   | 'commitDelivery'
@@ -2770,12 +2769,6 @@ export class SyncClient {
   rejections(): readonly RejectionRecord[] {
     this.#requireActive();
     return this.#rejections;
-  }
-
-  /** One durable final outcome by the originating client commit id. */
-  commitOutcome(clientCommitId: string): CommitOutcome | undefined {
-    this.#requireActive();
-    return readCommitOutcome(this.#db, clientCommitId);
   }
 
   /** Prove all retained bases against a completed post-rejection pull (§7.2.1). */

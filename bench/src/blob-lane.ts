@@ -632,7 +632,7 @@ export async function runBlobLane(options: {
           ),
       );
       if (
-        writer.handle.client.commitOutcome(commitId)?.status !== 'applied' ||
+        outcomeOf(writer.handle.client.commitDelivery(commitId))?.status !== 'applied' ||
         writer.database.query('SELECT blob_id FROM _syncular_blob_uploads')
           .length !== 0
       )

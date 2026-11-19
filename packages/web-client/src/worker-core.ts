@@ -529,7 +529,6 @@ export function startSyncWorkerCore(
     'statusSnapshot',
     'conflicts',
     'rejections',
-    'commitOutcome',
     'commitOutcomes',
     'resolveCommitOutcome',
     'commitDelivery',

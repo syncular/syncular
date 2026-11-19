@@ -854,10 +854,10 @@ if (!available) {
         deferPulls = 2;
         await client.sync();
         expect(
-          (await client.commitOutcome(id))?.retainedRows?.[0]?.serverRow?.title,
+          (outcomeOf(await client.commitDelivery(id)))?.retainedRows?.[0]?.serverRow?.title,
         ).toBe('old');
         expect((await client.statusSnapshot()).syncNeeded).toBe(true);
-        const stale = await client.commitOutcome(id);
+        const stale = outcomeOf(await client.commitDelivery(id));
         if (stale === undefined) throw new Error('missing outcome');
         expect(await client.proveCurrentBase(stale, 1)).toEqual({
           proven: false,
@@ -870,7 +870,7 @@ if (!available) {
           tauri: host.api,
           retainFailedCommits: true,
         });
-        const reopened = await client.commitOutcome(id);
+        const reopened = outcomeOf(await client.commitDelivery(id));
         if (reopened === undefined) throw new Error('missing outcome');
         const proof = await client.proveCurrentBase(reopened);
         expect(proof.proven).toBe(true);
@@ -881,7 +881,7 @@ if (!available) {
           proven: false,
           reason: 'revoked',
         });
-        expect((await client.commitOutcome(id))?.retainedRows).toBeUndefined();
+        expect((outcomeOf(await client.commitDelivery(id)))?.retainedRows).toBeUndefined();
         await client.close();
       } finally {
         await seed.client.close();
@@ -1162,7 +1162,7 @@ if (!available) {
               },
             ],
           };
-          expect(await client.commitOutcome(losing)).toMatchObject(expected);
+          expect(outcomeOf(await client.commitDelivery(losing))).toMatchObject(expected);
           expect(
             await client.query('SELECT id FROM todos WHERE id = ?', [loserId]),
           ).toEqual([]);
@@ -1173,16 +1173,16 @@ if (!available) {
             retainFailedCommits: true,
             tauri: host.api,
           });
-          expect(await client.commitOutcome(losing)).toMatchObject(expected);
+          expect(outcomeOf(await client.commitDelivery(losing))).toMatchObject(expected);
           if (resolution === 'revoke') {
             allowed = [];
             await client.syncUntilIdle();
             expect(await client.query('SELECT id FROM todos')).toEqual([]);
             expect(
-              (await client.commitOutcome(losing))?.retainedRows,
+              (outcomeOf(await client.commitDelivery(losing)))?.retainedRows,
             ).toBeUndefined();
             expect(
-              (await client.commitOutcome(losing))?.operations,
+              (outcomeOf(await client.commitDelivery(losing)))?.operations,
             ).toBeUndefined();
           } else {
             const replacement =
@@ -1215,7 +1215,7 @@ if (!available) {
             });
             await client.syncUntilIdle();
             expect(
-              (await client.commitOutcome(losing))?.retainedRows,
+              (outcomeOf(await client.commitDelivery(losing)))?.retainedRows,
             ).toBeUndefined();
             expect(
               await client.query('SELECT id FROM todos WHERE id = ?', [
@@ -1405,7 +1405,7 @@ if (!available) {
             (commit) => commit.clientCommitId,
           ),
         ).toEqual([kept]);
-        expect(await client.commitOutcome(doomed)).toMatchObject({
+        expect(outcomeOf(await client.commitDelivery(doomed))).toMatchObject({
           status: 'rejected',
           results: [
             {

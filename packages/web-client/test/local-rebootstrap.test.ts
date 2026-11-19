@@ -200,7 +200,7 @@ describe('application-authorized local projection rebootstrap', () => {
     expect(
       local.client.pendingCommits().map((commit) => commit.clientCommitId),
     ).toEqual([pending]);
-    expect(local.client.commitOutcome(accepted)?.status).toBe('applied');
+    expect(outcomeOf(local.client.commitDelivery(accepted))?.status).toBe('applied');
     expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
       'offline-row',
     ]);

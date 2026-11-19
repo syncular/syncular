@@ -93,7 +93,7 @@ async function setup() {
     { baseVersion: base },
   );
   await reader.syncUntilIdle();
-  const outcome = reader.commitOutcome(id)!;
+  const outcome = outcomeOf(reader.commitDelivery(id))!;
   expect(outcome.status).toBe('conflict');
   return {
     peer,
@@ -119,7 +119,7 @@ test('keep mine offline stays pending, then the next drive writes it', async () 
   const s = await setup();
   s.reader.setTransportEnabled(false);
   const replacement = s.reader.replaceCommitOutcome(s.outcome);
-  expect(s.reader.commitOutcome(s.outcome.clientCommitId)).toMatchObject({
+  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
     resolution: 'active',
     replacementClientCommitId: replacement,
   });
@@ -147,11 +147,11 @@ test('keep mine offline stays pending, then the next drive writes it', async () 
   s.reader.patch('notes', 'n1', { body: 'later' });
   s.reader.setTransportEnabled(true);
   await s.reader.syncUntilIdle();
-  expect(s.reader.commitOutcome(s.outcome.clientCommitId)).toMatchObject({
+  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
     resolution: 'superseded',
     replacementClientCommitId: replacement,
   });
-  expect(s.reader.commitOutcome(replacement)?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe('applied');
   expect(s.reader.pendingCommits()).toEqual([]);
   expect(s.reader.query('SELECT title,body FROM notes')).toEqual([
     { title: 'first', body: 'later' },
@@ -179,7 +179,7 @@ test('a pending replacement payload survives a restart', async () => {
     { body: 'edited' },
   ]);
   await s.reopen();
-  expect(s.reader.commitOutcome(s.outcome.clientCommitId)).toMatchObject({
+  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
     resolution: 'active',
     replacementClientCommitId: replacement,
   });
@@ -187,7 +187,7 @@ test('a pending replacement payload survives a restart', async () => {
     { body: 'edited' },
   ]);
   await s.reader.syncUntilIdle();
-  expect(s.reader.commitOutcome(replacement)?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe('applied');
   expect(s.reader.query('SELECT title,body FROM notes')).toEqual([
     { title: 'first', body: 'edited' },
   ]);
@@ -201,11 +201,11 @@ test('a base that moves before the proof refuses the decision', async () => {
   await s.peer.syncUntilIdle();
   s.reader.setTransportEnabled(true);
   await s.reader.syncUntilIdle();
-  expect(s.reader.commitOutcome(s.outcome.clientCommitId)).toMatchObject({
+  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
     resolution: 'superseded',
     replacementClientCommitId: replacement,
   });
-  const refused = s.reader.commitOutcome(replacement)!;
+  const refused = outcomeOf(s.reader.commitDelivery(replacement))!;
   expect(refused).toMatchObject({
     status: 'rejected',
     resolution: 'active',
@@ -234,7 +234,7 @@ test('a base that moves before the proof refuses the decision', async () => {
   // Deciding again against the fresh base writes it.
   const second = s.reader.replaceCommitOutcome(refused);
   await s.reader.syncUntilIdle();
-  expect(s.reader.commitOutcome(second)?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(second))?.status).toBe('applied');
   await s.peer.syncUntilIdle();
   expect(s.peer.query('SELECT title,body FROM notes')).toEqual([
     { title: 'newer', body: 'mine' },
@@ -271,10 +271,10 @@ test('a registration change during the drive keeps the decision pending', async 
   s.reader.setTransportEnabled(true);
   s.during(() => s.reader.subscribe({ list_id: 'two' }));
   await s.reader.syncUntilIdle();
-  expect(s.reader.commitOutcome(s.outcome.clientCommitId)).toMatchObject({
+  expect(outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId))).toMatchObject({
     resolution: 'active',
     replacementClientCommitId: replacement,
   });
   await s.reader.syncUntilIdle();
-  expect(s.reader.commitOutcome(replacement)?.status).toBe('applied');
+  expect(outcomeOf(s.reader.commitDelivery(replacement))?.status).toBe('applied');
 });

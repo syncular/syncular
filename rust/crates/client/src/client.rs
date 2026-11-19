@@ -2867,11 +2867,37 @@ impl SyncClient {
         request: &SnapshotReadRequest<'_>,
         owner: Option<QueryOwner<'_>>,
     ) -> Result<SnapshotRead, QueryReadFailure> {
-        let result = snapshot_read_connection(&self.conn, request);
+        let result = snapshot_read_connection(&self.conn, request).and_then(|mut read| {
+            for delivery in &mut read.deliveries {
+                if let CommitDelivery::Known { outcome, .. } = delivery {
+                    *outcome = self
+                        .attach_retained_rows(outcome.clone())
+                        .map_err(QueryReadFailure::from)?;
+                }
+            }
+            Ok(read)
+        });
         if let Some(owner) = owner {
             self.record_query_read(owner, result.as_ref().err());
         }
         result
+    }
+
+    /// §7.5: one client commit's delivery status with the owner's retained
+    /// rows: pending, its journal outcome, or an explicit unknown.
+    pub fn commit_delivery(&mut self, id: &str) -> Result<CommitDelivery, QueryReadFailure> {
+        let read = self.snapshot_read(
+            &SnapshotReadRequest {
+                commit_ids: vec![id.to_owned()],
+                ..Default::default()
+            },
+            None,
+        )?;
+        Ok(read
+            .deliveries
+            .into_iter()
+            .next()
+            .expect("one requested delivery"))
     }
 
     #[must_use]
@@ -5136,7 +5162,7 @@ impl SyncClient {
         Ok(outcome)
     }
 
-    pub fn commit_outcome(&self, client_commit_id: &str) -> Result<Option<CommitOutcome>, String> {
+    fn commit_outcome(&self, client_commit_id: &str) -> Result<Option<CommitOutcome>, String> {
         let row = self
             .conn
             .query_row(

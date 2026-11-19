@@ -1073,10 +1073,15 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return (await this.snapshotRead({ statements: [], units: [id] })).units[0]!;
   }
 
-  /** §7.5: one client commit's delivery status, from the same snapshot read. */
+  /** §7.5: one client commit's delivery status from the owning core, with
+   * the retained rows the read-only sidecar cannot see. */
   async commitDelivery(id: string): Promise<CommitDelivery> {
-    return (await this.snapshotRead({ statements: [], commitIds: [id] }))
-      .deliveries[0]!;
+    const delivery = (await this.command('commitDelivery', {
+      clientCommitId: id,
+    })) as CommitDelivery;
+    return delivery.status === 'known'
+      ? { ...delivery, outcome: this.#commitOutcome(delivery.outcome) }
+      : delivery;
   }
 
   async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
@@ -1144,17 +1149,6 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       rejections: RejectionRecord[];
     };
     return result.rejections;
-  }
-
-  async commitOutcome(
-    clientCommitId: string,
-  ): Promise<CommitOutcome | undefined> {
-    const result = (await this.command('commitOutcome', {
-      clientCommitId,
-    })) as { outcome?: CommitOutcome };
-    return result.outcome === undefined
-      ? undefined
-      : this.#commitOutcome(result.outcome);
   }
 
   async commitOutcomes(

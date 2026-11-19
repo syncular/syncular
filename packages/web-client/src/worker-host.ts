@@ -783,10 +783,6 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('rejections', []);
   }
 
-  commitOutcome(clientCommitId: string): Promise<CommitOutcome | undefined> {
-    return this.#call('commitOutcome', [clientCommitId]);
-  }
-
   commitOutcomes(
     query: CommitOutcomeQuery = {},
   ): Promise<readonly CommitOutcome[]> {

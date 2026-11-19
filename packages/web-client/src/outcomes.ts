@@ -302,45 +302,42 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
 function parseOutcome(
   db: ClientDatabase,
   row: Readonly<Record<string, unknown>>,
-  attachRetainedRows = true,
 ): CommitOutcome {
-  const retainedRows: RetainedCommitRow[] = attachRetainedRows
-    ? db
-        .query(
-          `SELECT tbl,id,intent,base,version,unique_conflicts FROM ${RETAINED_ROWS} WHERE commit_seq IS NULL AND commit_id=? ORDER BY idx`,
-          [row.client_commit_id as string],
-        )
-        .map((retained) => {
-          const decode = (value: unknown): Record<string, RowValue> | null =>
-            value === null
-              ? null
-              : Object.fromEntries(
-                  Object.entries(
-                    JSON.parse(String(value)) as Record<string, JsonRowValue>,
-                  ).map(([key, value]) => [key, jsonToRowValue(value)]),
-                );
-          return {
-            table: retained.tbl as string,
-            rowId: retained.id as string,
-            localRow: decode(retained.intent),
-            ...(retained.unique_conflicts === null
-              ? {}
-              : {
-                  uniqueConflicts: (
-                    JSON.parse(
-                      retained.unique_conflicts as string,
-                    ) as NonNullable<RetainedCommitRow['uniqueConflicts']>
-                  ).map((conflict) => ({
-                    ...conflict,
-                    serverRow: decode(JSON.stringify(conflict.serverRow))!,
-                  })),
-                }),
-            serverRow: decode(retained.base),
-            serverVersion:
-              retained.version === null ? null : (retained.version as number),
-          };
-        })
-    : [];
+  const retainedRows: RetainedCommitRow[] = db
+    .query(
+      `SELECT tbl,id,intent,base,version,unique_conflicts FROM ${RETAINED_ROWS} WHERE commit_seq IS NULL AND commit_id=? ORDER BY idx`,
+      [row.client_commit_id as string],
+    )
+    .map((retained) => {
+      const decode = (value: unknown): Record<string, RowValue> | null =>
+        value === null
+          ? null
+          : Object.fromEntries(
+              Object.entries(
+                JSON.parse(String(value)) as Record<string, JsonRowValue>,
+              ).map(([key, value]) => [key, jsonToRowValue(value)]),
+            );
+      return {
+        table: retained.tbl as string,
+        rowId: retained.id as string,
+        localRow: decode(retained.intent),
+        ...(retained.unique_conflicts === null
+          ? {}
+          : {
+              uniqueConflicts: (
+                JSON.parse(retained.unique_conflicts as string) as NonNullable<
+                  RetainedCommitRow['uniqueConflicts']
+                >
+              ).map((conflict) => ({
+                ...conflict,
+                serverRow: decode(JSON.stringify(conflict.serverRow))!,
+              })),
+            }),
+        serverRow: decode(retained.base),
+        serverVersion:
+          retained.version === null ? null : (retained.version as number),
+      };
+    });
   return {
     sequence: row.seq as number,
     clientCommitId: row.client_commit_id as string,
@@ -395,8 +392,8 @@ export function commitOutcome(
 }
 
 /**
- * §7.5 persisted-journal view: the stored outcome WITHOUT the owner-derived
- * `retainedRows` images. A malformed journal row (invalid status, resolution,
+ * §7.5 validated journal view with the owner's `retainedRows` images, read in
+ * the caller's transaction. A malformed journal row (invalid status, resolution,
  * results, or operations JSON) raises the same static `sync.local_corrupt` the
  * native sidecar reports, never a raw `SyntaxError`.
  */
@@ -430,7 +427,7 @@ export function persistedCommitOutcome(
     corrupt();
   }
   try {
-    const outcome = parseOutcome(db, row, false);
+    const outcome = parseOutcome(db, row);
     const hasConflict = outcome.results.some(
       (result) => result.status === 'conflict',
     );
