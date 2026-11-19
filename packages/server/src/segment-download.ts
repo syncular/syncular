@@ -25,6 +25,7 @@ import {
   publicationRecord,
   type SegmentRecord,
 } from './segment-store';
+import type { PartitionTouch } from './storage';
 
 export interface SegmentDownloadRequest {
   readonly segmentId: string;
@@ -164,7 +165,7 @@ async function downloadSegment(
   const record = await authorizePublication(
     ctx,
     request,
-    registry.logEpoch,
+    registry,
     entry.record,
   );
   return { record, bytes: entry.bytes, headers: segmentHeaders(record) };
@@ -192,12 +193,7 @@ async function openSegment(
   }
   let record: SegmentRecord;
   try {
-    record = await authorizePublication(
-      ctx,
-      request,
-      registry.logEpoch,
-      opened.record,
-    );
+    record = await authorizePublication(ctx, request, registry, opened.record);
   } catch (error) {
     await opened.body.cancel();
     throw error;
@@ -227,7 +223,7 @@ function segmentHeaders(record: SegmentRecord): Record<string, string> {
 async function authorizePublication(
   ctx: SyncRequestContext,
   request: SegmentDownloadRequest,
-  logEpoch: string,
+  { logEpoch, checkpointSchemaVersion }: PartitionTouch,
   stored: SegmentRecord,
 ): Promise<SegmentRecord> {
   // Select the caller's own publication context. A publication under a
@@ -250,6 +246,8 @@ async function authorizePublication(
       partition: ctx.partition,
       actorId: ctx.actorId,
       ...(ctx.context !== undefined ? { context: ctx.context } : {}),
+      phase: 'segment-download',
+      requested,
     });
     // §7.3.3: leases authorize sync rounds, never downloads — an outage
     // signal here denies (re-authorization needs live scopes, §5.5).
@@ -348,12 +346,11 @@ async function authorizePublication(
   // RFC 0007: a descriptor minted before this partition declared a backfill
   // checkpoint is not a complete window once the projection becomes
   // checkpointed. SPEC §9 mints segments per schema version, so refuse and
-  // let the client re-pull for a fresh descriptor.
-  const checkpoints = await ctx.storage.readCheckpoints(ctx.partition);
+  // let the client re-pull for a fresh descriptor. `touchPartition` read the
+  // highest checkpoint version in its registry statement.
   if (
-    checkpoints.some(
-      (checkpoint) => checkpoint.schemaVersion > publication.schemaVersion,
-    )
+    checkpointSchemaVersion !== undefined &&
+    checkpointSchemaVersion > publication.schemaVersion
   ) {
     throw syncError(
       'sync.segment_expired',

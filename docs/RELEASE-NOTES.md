@@ -81,6 +81,38 @@ clients handle as before, at the cost of the extra round trip. Old clients
 never send the frame and receive acquisition from new servers. The conformance
 harness fault `skipRestrict` is now `skipRequestFrames`, a list of request
 frame types to drop.
+
+### A segment download names its requested scopes to `resolveScopes`
+
+SYNCULAR-SEGMENT-DOWNLOAD-AUTH-001. Every `GET /segments/:id` re-authorizes
+(SPEC §5.5) and called `resolveScopes` for the actor's whole scope set; a
+bootstrap of 59 segments ran it 59 times. `ResolveScopesArgs` gains
+`phase: 'segment-download'` and `requested`, the download's
+`X-Syncular-Scopes` map, on that call only. A resolver may answer for the
+requested values only (SPEC §3.2 step 3): `'*'` for a requested variable
+exactly when the full answer holds it, otherwise the requested values the
+actor holds, and every other variable in full when it grants `'*'`. The
+effective scopes, the digest and the 200/403/404 outcome are those of the
+full answer. Signed URLs (`signedUrls`, `s3PresignedUrls`, SPEC §5.4)
+remove the per-download call; a revocation reaches them when their TTL
+elapses.
+
+A segment download read the partition registry and then, in a second
+statement, every backfill checkpoint of the partition. `touchPartition` now
+returns `checkpointSchemaVersion`, the highest declared checkpoint version,
+read in the registry statement: a PostgreSQL download issues 1 storage
+statement instead of 2. SQLite reads it in the same atomic unit; D1, which
+declares no checkpoints, returns `undefined`.
+
+Upgrade notes:
+
+- `resolveScopes` receives two optional fields; existing resolvers keep
+  working.
+- A custom `ServerStorage` returns `checkpointSchemaVersion` from
+  `touchPartition` (type `PartitionTouch`): the highest `schemaVersion`
+  among the partition's backfill checkpoints, `undefined` when it has none.
+  A storage that wraps an in-tree storage passes it through.
+
 ## 0.91.0 release notes
 
 0.91.0 applies encrypted rows segments faster and lets `coalesceMs` hold the

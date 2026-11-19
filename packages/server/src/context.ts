@@ -21,7 +21,7 @@ import type {
 import type { SqliteImageBuilder } from './sqlite-image';
 import type {
   CheckpointDeclaration,
-  PartitionRegistryEntry,
+  PartitionTouch,
   ServerStorage,
   StoredCommit,
 } from './storage';
@@ -48,6 +48,16 @@ export interface ResolveScopesArgs {
    * Absent when the host returned none.
    */
   readonly context?: string;
+  /** Present on a direct segment download (§5.5) only. */
+  readonly phase?: 'segment-download';
+  /**
+   * The download's `X-Syncular-Scopes` map, present with `phase`. The
+   * resolver MAY answer for these values only (§3.2 step 3): `'*'` for a
+   * requested variable exactly when the full answer holds it, otherwise the
+   * requested values the actor holds; an answer that grants `'*'` carries
+   * every other variable in full.
+   */
+  readonly requested?: ScopeMap;
 }
 
 /**
@@ -310,7 +320,7 @@ export function limitsOf(ctx: SyncServerConfig): ServerLimits {
  */
 export async function touchAuthenticatedPartition(
   ctx: SyncRequestContext,
-): Promise<PartitionRegistryEntry> {
+): Promise<PartitionTouch> {
   if (ctx.context !== undefined) {
     const byteLength = new TextEncoder().encode(ctx.context).length;
     if (byteLength > 256) throw new AuthContextTooLargeError(byteLength);

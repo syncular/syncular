@@ -3281,6 +3281,7 @@ export function runStorageContract(
         logEpoch: 'epoch-a',
         epochRequired: false,
         lastAuthenticatedAtMs: NOW + 1,
+        checkpointSchemaVersion: undefined,
       });
       const refreshed = await storage.touchPartition(
         'part-a',
@@ -3292,6 +3293,7 @@ export function runStorageContract(
         logEpoch: 'epoch-a',
         epochRequired: false,
         lastAuthenticatedAtMs: NOW + 1 + PARTITION_TOUCH_INTERVAL_MS,
+        checkpointSchemaVersion: undefined,
       });
       expect(await storage.listPartitions()).toEqual(['part-a', 'part-b']);
       expect(await storage.listPartitionRegistry()).toEqual([

@@ -210,6 +210,12 @@ For zero-egress bootstrap storms, add signed URLs. Native HMAC (`SignedUrlConfig
 
 A CDN can cache segment objects by path alone, because the key is the content address and clients verify the hash after download. It must never cache the authorization decision: cache on the path, keep forwarding the query for origin auth, and align the CDN TTL with the store `ttlMs`.
 
+### Cost of a direct download
+
+`GET /segments/:id` re-authorizes every download ([SPEC §5.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#55-direct-download-endpoint-and-re-authorization)): the server calls `authenticate`, then `resolveScopes`, and reads the partition registry and the highest backfill checkpoint version in one statement. A bootstrap that references 59 segments therefore runs `resolveScopes` 59 times. The server passes the download's requested scopes as `requested` with `phase: 'segment-download'`, so a resolver that walks an authority graph can answer for those values only ([Authentication](/guide-auth/#segment-downloads)).
+
+Signed URLs remove that cost. The pull mints them right after its one `resolveScopes` call, and a download through a signed URL runs neither `authenticate` nor `resolveScopes`. A revoked actor keeps the URLs it already holds until their TTL elapses, so set the signed-URL TTL to the revocation delay you accept.
+
 ## Blob stores
 
 File-attachment bytes use the same backend spread: `MemoryBlobStore`, `SqliteBlobStore`, and `S3BlobStore` (S3, R2, MinIO, with the same SigV4, the same content-addressed layout, and partition-scoped keys).

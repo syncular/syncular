@@ -137,6 +137,7 @@ import type {
   OutboxSequence,
   OutboxSettlement,
   PartitionRegistryEntry,
+  PartitionTouch,
   PreparedPushApply,
   PushApplyOptions,
   PrunedReactionCounts,
@@ -2567,7 +2568,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     authenticatedAtMs: number,
     initialLogEpoch: string,
-  ): Promise<PartitionRegistryEntry> {
+  ): Promise<PartitionTouch> {
     if (initialLogEpoch.length === 0) {
       throw new Error('initial log epoch must be non-empty');
     }
@@ -2575,10 +2576,15 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       log_epoch: string;
       epoch_required: boolean;
       last_authenticated_at_ms: unknown;
+      checkpoint_schema_version: number | null;
     };
+    const checkpointVersion = `(SELECT max(schema_version)
+             FROM sync_backfill_checkpoints WHERE partition=$1)
+           AS checkpoint_schema_version`;
     let row = (
       await this.#exec.query<Registry>(
-        `SELECT log_epoch, epoch_required, last_authenticated_at_ms
+        `SELECT log_epoch, epoch_required, last_authenticated_at_ms,
+                ${checkpointVersion}
            FROM sync_partition_registry WHERE partition=$1`,
         [partition],
       )
@@ -2595,7 +2601,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
            ) VALUES ($1,$2,$3)
            ON CONFLICT(partition) DO UPDATE SET
              last_authenticated_at_ms=EXCLUDED.last_authenticated_at_ms
-           RETURNING log_epoch, epoch_required, last_authenticated_at_ms`,
+           RETURNING log_epoch, epoch_required, last_authenticated_at_ms,
+             ${checkpointVersion}`,
           [partition, initialLogEpoch, authenticatedAtMs],
         )
       ).rows[0];
@@ -2607,6 +2614,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       logEpoch: row.log_epoch,
       epochRequired: row.epoch_required,
       lastAuthenticatedAtMs: asNumber(row.last_authenticated_at_ms),
+      checkpointSchemaVersion: row.checkpoint_schema_version ?? undefined,
     };
   }
 

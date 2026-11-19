@@ -79,6 +79,7 @@ import type {
   OutboxSettlement,
   NewReaction,
   PartitionRegistryEntry,
+  PartitionTouch,
   PrunedReactionCounts,
   PushWatermark,
   ReactionClaimQuery,
@@ -433,6 +434,12 @@ export abstract class SqliteFamilyStorage {
   protected schemaVersion: number | undefined;
   /** Bound parameters one statement accepts. */
   protected abstract readonly maxBindParams: number;
+  /**
+   * `touchPartition`'s SQL for the partition's highest declared backfill
+   * checkpoint version, reading the partition as `?1`, or `NULL` on a storage
+   * that declares no checkpoints.
+   */
+  protected abstract readonly checkpointSchemaVersionSql: string;
   /** `chooseScanVariable` picks, shared with this storage's transactions. */
   protected readonly scanVariables = new Map<string, string>();
 
@@ -492,7 +499,7 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     authenticatedAtMs: number,
     initialLogEpoch: string,
-  ): Promise<PartitionRegistryEntry> {
+  ): Promise<PartitionTouch> {
     if (initialLogEpoch.length === 0) {
       throw new Error('initial log epoch must be non-empty');
     }
@@ -515,15 +522,23 @@ export abstract class SqliteFamilyStorage {
         ],
       },
       {
-        sql: `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms
-                FROM sync_partition_registry WHERE partition=?`,
+        sql: `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms,
+                     ${this.checkpointSchemaVersionSql} AS checkpoint_schema_version
+                FROM sync_partition_registry WHERE partition=?1`,
         params: [partition],
       },
     ]);
-    const row = rows?.[0] as SqlitePartitionRegistryRecord | undefined;
+    const row = rows?.[0] as
+      | (SqlitePartitionRegistryRecord & {
+          checkpoint_schema_version: number | null;
+        })
+      | undefined;
     if (row === undefined)
       throw new Error('partition registry write did not persist');
-    return toPartitionRegistryEntry(row);
+    return {
+      ...toPartitionRegistryEntry(row),
+      checkpointSchemaVersion: row.checkpoint_schema_version ?? undefined,
+    };
   }
 
   async rotatePartitionLogEpoch(

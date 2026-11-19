@@ -906,6 +906,8 @@ export class D1ServerStorage
    * binds one per app column plus the five `_sync_*` meta columns.
    */
   protected readonly maxBindParams = 100;
+  // D1 declares no backfill checkpoints (see `readCheckpoints`).
+  protected readonly checkpointSchemaVersionSql = 'NULL';
   /**
    * Page reads waiting for the end of the current microtask turn. A pull
    * starts the first snapshot page and scope pin of every bootstrapping unit
