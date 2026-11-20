@@ -2,6 +2,15 @@
 
 ## 0.98.0 release notes
 
+0.98.0 reports a full browser quota as `client.storage_full`
+(SYNCULAR-OPFS-QUOTA-AS-IOERR-001), re-reads every store entry the security
+preflight refused once the client activates
+(SYNCULAR-STORE-JOURNAL-PREFLIGHT-001), re-arms a held window value whose unit
+was revoked (SYNCULAR-WINDOW-REVOKED-RECLAIM-001), and fails a request whose
+`resolveScopes` throws instead of revoking every unit. SSP2 and the wire
+version are unchanged; the multi-tab protocol moves to 8, so reload older tabs
+after deploying.
+
 A host whose `resolveScopes` throws now gets failed rounds instead of revoked
 units, so its error monitoring should watch `scopes.resolve_failed`.
 
