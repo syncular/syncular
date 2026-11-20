@@ -1,5 +1,42 @@
 # Syncular release notes
 
+## 0.99.0 release notes
+
+### A far-behind live page sizes the commits it delivers
+
+A production pull on PostgreSQL (Neon) from a replica cursor 1,816 commits
+behind, with 293 unit keys, spent 8,236 ms in the live-section candidate
+read and then delivered 2 commits; each later pull of that replica advanced
+2 to 7 commits in 9 to 10 s. The candidate read sized up to max(64,
+`limitChanges`) candidates, 1,000 by default, though the change budget cut
+the page after a few of them. Each size matched every change of a commit
+against every unit key through jsonb expressions: 779 candidates times 129
+keys took 100,491 loops and 10.8 s, where the candidate index scan took
+8.3 ms.
+
+The candidate read now sizes candidates one at a time in commit order and
+stops after the one that reaches the change budget or passes the byte
+budget. A page sizes the commits it delivers and, under the byte budget, the
+one commit that would pass it. A page the change budget stopped reads on
+from its last loaded commit, as before. Each change's scopes expand once and
+find their unit key in one lookup: PostgreSQL reads a jsonb object keyed by
+variable and value, SQLite and D1 an automatic index on the key list. The
+change read matches keys the same way. The delivered commits, the cut, the
+`oversized` reset and the advance past vanished commits are unchanged.
+
+On a fixture of 400 commits of 200 changes each across 120 unit keys, the
+first page of a pull with `limitChanges` 1,000 sized 400 candidates to
+deliver 5. It now sizes 5:
+
+- PostgreSQL 17: the candidate read took 1,612 ms and takes 16 ms; the page
+  took 1,633 ms and takes 23 ms.
+- PGlite: 2,781 ms, now 25 to 31 ms.
+- SQLite: 8,875 ms, now 5 to 6 ms.
+
+A page that sizes all 400 candidates, as when most changes fall outside the
+units' tables, takes 183 ms on PostgreSQL 17, where it took 1,615 ms, and
+106 ms on SQLite. No schema or index changes.
+
 ## 0.98.0 release notes
 
 0.98.0 reports a full browser quota as `client.storage_full`

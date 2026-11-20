@@ -177,12 +177,16 @@ export interface LiveCandidateRow {
 }
 
 /**
- * The §4.5 live scan over a backend's two reads. `readCandidates` returns
- * up to `limit` candidate commits above every key range's bound with their
- * per-key byte sizes, and no payload. `readChanges` loads the changes the
- * keys read in the given candidate commits, in (commitSeq, change index)
- * order; it never visits a commit outside that list, so the cost of a page
- * follows its candidates and not the length of the change log below them. Each distinct unit key (the first variable, keys sorted)
+ * The §4.5 live scan over a backend's two reads. `readCandidates` takes up
+ * to `limit` candidate commits above every key range's bound and sizes them
+ * in commit order, without payload, until their change count reaches
+ * `budget.changes` or their byte size passes `budget.bytes`. It returns the
+ * sized candidates with their per-key sizes, the one that reached the budget
+ * last, so a page sizes the commits it delivers and one more. `readChanges`
+ * loads the changes the keys read in the given candidate commits, in
+ * (commitSeq, change index) order; it never visits a commit outside that
+ * list, so the cost of a page follows its candidates and not the length of
+ * the change log below them. Each distinct unit key (the first variable, keys sorted)
  * becomes one index range starting at the lowest bound of the units that
  * share it. A change is kept when a unit covers its table, the pair's
  * effective scopes match it, and its commit lies above that unit's own
@@ -205,6 +209,7 @@ export async function readLiveWindowPages(
   readCandidates: (
     keys: readonly LiveKey[],
     limit: number,
+    budget: { readonly changes: number; readonly bytes: number },
   ) => Promise<readonly LiveCandidateRow[]>,
   readChanges: (
     keys: readonly LiveKey[],
@@ -294,8 +299,13 @@ export async function readLiveWindowPages(
     return undefined;
   };
   while (keys.length > 0) {
-    const rows = await readCandidates(scanKeys(), limit);
+    const rows = await readCandidates(scanKeys(), limit, {
+      changes: query.limitChanges - delivered,
+      bytes: query.limitBytes - loaded,
+    });
     let candidates = 0;
+    // The change budget ended the read, possibly before `limit` candidates.
+    let reached = false;
     for (let i = 0; i < rows.length;) {
       const head = rows[i]!;
       candidates += 1;
@@ -342,13 +352,14 @@ export async function readLiveWindowPages(
       bound += changes;
       pending.push({ commitSeq: head.commitSeq, meta: head.meta });
       if (delivered + bound >= query.limitChanges) {
+        reached = true;
         const cut = await load();
         if (cut !== undefined) return { commits, throughSeq: cut };
       }
     }
     const cut = await load();
     if (cut !== undefined) return { commits, throughSeq: cut };
-    if (candidates < limit) break;
+    if (candidates < limit && !reached) break;
   }
   return { commits, throughSeq: query.throughSeq };
 }

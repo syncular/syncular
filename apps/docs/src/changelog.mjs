@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-20',
+    title: 'A far-behind live page sizes the commits it delivers',
+    body: 'The live-section candidate read sized up to 1,000 candidate commits per page and matched every change of each against every unit key, so a pull 1,816 commits behind spent 8.2 s on PostgreSQL to deliver 2 commits. It now sizes candidates in commit order until the change or byte budget is reached, and each change finds its unit key in one lookup. On 400 commits of 200 changes across 120 keys the read takes 16 ms on PostgreSQL 17, where it took 1,612 ms, and 6 ms on SQLite, where it took 8,875 ms. Delivered commits and the cut are unchanged.',
+    links: [
+      {
+        href: '/server-storage-reference/#pull-path',
+        label: 'Storage reference',
+      },
+    ],
+  },
+  {
+    date: '2026-11-20',
     title: 'A throwing resolver fails the request',
     body: 'A `resolveScopes` that throws now fails the sync request with the retryable `sync.internal_error` and emits `scopes.resolve_failed`. It used to revoke every unit of the request and reject its writes with `sync.forbidden`, so a host bug purged replicas whose permissions had not changed. Clients keep their units, rows and outbox and retry on their backoff.',
     links: [

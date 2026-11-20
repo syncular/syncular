@@ -135,7 +135,10 @@ interface Backend {
   /** Statements run since the last call. */
   readonly drain: () => string[];
   /** All rows of a raw query against the backing database. */
-  readonly raw: (sql: string) => Promise<Record<string, unknown>[]>;
+  readonly raw: (
+    sql: string,
+    params?: unknown[],
+  ) => Promise<Record<string, unknown>[]>;
   /** The plan of a statement run against the backing database. */
   readonly plan: (
     sql: string,
@@ -154,7 +157,8 @@ async function backend(kind: 'sqlite' | 'd1' | 'postgres'): Promise<Backend> {
     return {
       storage,
       drain: () => counting.texts.splice(0),
-      raw: async (sql) => (await db.query<Record<string, unknown>>(sql)).rows,
+      raw: async (sql, params) =>
+        (await db.query<Record<string, unknown>>(sql, params)).rows,
       plan: async (sql, params, settings = '') => {
         await db.exec('BEGIN');
         await db.exec(`SET LOCAL enable_seqscan = off;${settings}`);
@@ -173,8 +177,10 @@ async function backend(kind: 'sqlite' | 'd1' | 'postgres'): Promise<Backend> {
       .query<{ detail: string }, never[]>(`EXPLAIN QUERY PLAN ${sql}`)
       .all(...(params as never[]))
       .map((row) => row.detail);
-  const raw = async (sql: string) =>
-    native.query<Record<string, unknown>, []>(sql).all();
+  const raw = async (sql: string, params: unknown[] = []) =>
+    native
+      .query<Record<string, unknown>, never[]>(sql)
+      .all(...(params as never[]));
   if (kind === 'sqlite') {
     const db = new RecordingSqlite(native);
     const storage = new SqliteServerStorage(db);
@@ -511,7 +517,14 @@ for (const kind of KINDS) {
     expect(changeLines.some((line) => /^SCAN ch\b|Seq Scan/.test(line))).toBe(
       false,
     );
-    const lines = await plan(statements[0]!, [PARTITION, keys, 40, 1000]);
+    const lines = await plan(statements[0]!, [
+      PARTITION,
+      keys,
+      40,
+      1000,
+      1000,
+      16 * 1024 * 1024,
+    ]);
     if (kind === 'sqlite') {
       // The 13 keys drive the loop; each seeks one range of the key index.
       expect(lines).toContain(
@@ -527,6 +540,176 @@ for (const kind of KINDS) {
         ),
       ).toBe(true);
       expect(lines.some((line) => line.includes('Seq Scan'))).toBe(false);
+    }
+  });
+}
+
+for (const kind of KINDS) {
+  test(`${kind} sizes a far-behind live page up to its cut and one look-ahead, whatever the candidate limit (§4.5, §4.6)`, async () => {
+    const { storage, drain, raw, plan } = await backend(kind);
+    // 300 commits of 200 changes each; change j of commit i is in project
+    // (200i + j) mod 120, so every commit carries changes of all 120 keys.
+    for (let i = 0; i < 300; i++) {
+      const tx = await storage.begin(PARTITION);
+      await tx.appendCommit({
+        clientId: 'c',
+        clientCommitId: `k${i}`,
+        actorId: 'a',
+        createdAtMs: NOW + i,
+        changes: Array.from({ length: 200 }, (_, j) => ({
+          table: 'tasks',
+          rowId: `r${i}-${j}`,
+          op: 'upsert' as const,
+          rowVersion: 1,
+          scopes: { project_id: `p${(i * 200 + j) % 120}` },
+          payload: new Uint8Array(40),
+        })),
+      });
+      await tx.commit();
+    }
+    const units = Array.from({ length: 120 }, (_, i) => ({
+      scopes: { project_id: `p${i}` },
+      afterSeq: 0,
+      tables: new Map([['tasks', { project_id: [`p${i}`] }]]),
+    }));
+    const keys = JSON.stringify(
+      units.map((unit, i) => ({
+        i,
+        var: 'project_id',
+        value: unit.scopes.project_id,
+        after: 0,
+        tables: ['tasks'],
+      })),
+    );
+    const read = async (limitChanges: number, limitBytes: number) => {
+      drain();
+      const window = await storage.readLiveWindow(PARTITION, {
+        units,
+        throughSeq: 300,
+        limitChanges,
+        limitBytes,
+      });
+      const statements = drain();
+      return { window, statements };
+    };
+    // The candidates the page's sizing statement sizes, from the same text
+    // and parameters (the candidate limit is max(64, limitChanges)).
+    const sized = async (
+      sql: string,
+      limitChanges: number,
+      limitBytes: number,
+    ) =>
+      new Set(
+        (
+          await raw(sql, [
+            PARTITION,
+            keys,
+            300,
+            Math.max(64, limitChanges),
+            limitChanges,
+            limitBytes,
+          ])
+        ).map((row) => Number(row.commit_seq)),
+      ).size;
+    // D1 runs each SQLite statement behind its published-schema guard.
+    const perPage = kind === 'd1' ? 4 : 2;
+
+    // The change budget: 1,100 changes reach it at commit 6 (1,200).
+    const byChanges = await read(1100, 16 * 1024 * 1024);
+    expect(byChanges.window.throughSeq).toBe(6);
+    expect(byChanges.window.commits.map((c) => c.commitSeq)).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+    expect(byChanges.statements).toHaveLength(perPage);
+
+    // The byte budget: one commit stores 200 changes of 40 payload bytes,
+    // their row ids and scopes; three and a half commits fit.
+    const commitBytes = Array.from({ length: 200 }, (_, j) => {
+      const scopes = JSON.stringify({ project_id: `p${j % 120}` });
+      return 40 + `r0-${j}`.length + scopes.length;
+    }).reduce((sum, bytes) => sum + bytes, 0);
+    const limitBytes = Math.floor(commitBytes * 3.5);
+    const byBytes = await read(1_000_000, limitBytes);
+    expect(byBytes.window.throughSeq).toBe(3);
+    expect(byBytes.window.commits.map((c) => c.commitSeq)).toEqual([1, 2, 3]);
+    expect(byBytes.statements).toHaveLength(perPage);
+    if (kind === 'd1') return;
+
+    // The sizing statement sizes the delivered commits; under the byte
+    // budget, one more, the commit that would pass it. Before 0.99.0 both
+    // pages sized all 300 candidates.
+    expect(await sized(byChanges.statements[0]!, 1100, 16 * 1024 * 1024)).toBe(
+      6,
+    );
+    expect(await sized(byBytes.statements[0]!, 1_000_000, limitBytes)).toBe(4);
+
+    if (kind === 'sqlite') {
+      // Each scope pair seeks its key through an automatic index on (var,
+      // value); `k` is scanned only as the candidate seek's outer loop.
+      const sizing = await plan(byChanges.statements[0]!, [
+        PARTITION,
+        keys,
+        300,
+        1100,
+        1100,
+        16 * 1024 * 1024,
+      ]);
+      const changes = await plan(byChanges.statements[1]!, [
+        PARTITION,
+        keys,
+        JSON.stringify([1, 2, 3, 4, 5, 6]),
+      ]);
+      for (const [lines, scans] of [
+        [sizing, 1],
+        [changes, 0],
+      ] as const) {
+        expect(lines).toContain(
+          'SEARCH k USING AUTOMATIC COVERING INDEX (var=? AND value=?)',
+        );
+        expect(lines.filter((line) => line === 'SCAN k')).toHaveLength(scans);
+      }
+    }
+
+    if (kind === 'postgres') {
+      // Neither statement joins a change to the key list: each scope pair
+      // looks its key up in one jsonb object. `k` is scanned only by the
+      // candidate seek (one index range per key) and the object build,
+      // never inside the per-commit walk or per change.
+      const keyScans = async (sql: string, params: unknown[]) => {
+        const [line] = await plan(`(FORMAT JSON) ${sql}`, params);
+        const names: string[] = [];
+        const visit = (node: Record<string, unknown>, under: string) => {
+          const name = String(node['Subplan Name'] ?? under);
+          if (node['Node Type'] === 'CTE Scan' && node['CTE Name'] === 'k') {
+            names.push(name);
+          }
+          for (const child of (node.Plans ?? []) as Record<string, unknown>[]) {
+            visit(child, name);
+          }
+        };
+        const parsed = (typeof line === 'string' ? JSON.parse(line) : line) as {
+          Plan: Record<string, unknown>;
+        }[];
+        visit(parsed[0]!.Plan, 'main');
+        return names.sort();
+      };
+      expect(
+        await keyScans(byChanges.statements[0]!, [
+          PARTITION,
+          keys,
+          300,
+          1100,
+          1100,
+          16 * 1024 * 1024,
+        ]),
+      ).toEqual(['CTE c', 'CTE km']);
+      expect(
+        await keyScans(byChanges.statements[1]!, [
+          PARTITION,
+          keys,
+          JSON.stringify([1, 2, 3, 4, 5, 6]),
+        ]),
+      ).toEqual([]);
     }
   });
 }
@@ -908,9 +1091,12 @@ for (const kind of KINDS) {
 
 test('a live page loads candidates only up to its cut, so a far-behind client reads what it receives (§4.5)', async () => {
   // 40 candidate commits whose key reads 2 changes each; `kept` of them
-  // match the unit (the per-key count bounds delivery from above).
-  const run = async (kept: number) => {
+  // match the unit (the per-key count bounds delivery from above). A
+  // `budgeted` read sizes candidates until their counts reach the change
+  // budget, as the SQL backends do; the other returns every candidate.
+  const run = async (kept: number, budgeted = false) => {
     const calls: (readonly number[])[] = [];
+    const sized: number[] = [];
     const window = await readLiveWindowPages(
       {
         units: [
@@ -924,14 +1110,17 @@ test('a live page loads candidates only up to its cut, so a far-behind client re
         limitChanges: 5,
         limitBytes: 16 * 1024 * 1024,
       },
-      async (keys) =>
-        Array.from({ length: 40 - keys[0]!.after }, (_, i) => ({
+      async (keys, _limit, budget) => {
+        const rows = Array.from({ length: 40 - keys[0]!.after }, (_, i) => ({
           commitSeq: keys[0]!.after + i + 1,
           meta: { actorId: 'a', createdAtMs: NOW },
           key: 0,
           bytes: 2,
           changes: 2,
-        })),
+        })).slice(0, budgeted ? Math.ceil(budget.changes / 2) : undefined);
+        sized.push(rows.length);
+        return rows;
+      },
       async (_keys, commitSeqs) => {
         calls.push(commitSeqs);
         return commitSeqs.flatMap((commitSeq) =>
@@ -948,7 +1137,7 @@ test('a live page loads candidates only up to its cut, so a far-behind client re
         );
       },
     );
-    return { calls, window };
+    return { calls, sized, window };
   };
   const exact = await run(2);
   // 2 + 2 + 2 reaches 5 at commit 3: one load, and no candidate past the cut.
@@ -962,6 +1151,13 @@ test('a live page loads candidates only up to its cut, so a far-behind client re
   expect(over.calls).toEqual([[1, 2, 3], [4], [5]]);
   expect(over.window.throughSeq).toBe(5);
   expect(over.window.commits).toHaveLength(5);
+  // A read the budget stopped below the candidate limit is not the end of
+  // the log: the page reads on from the last loaded commit.
+  const budgeted = await run(1, true);
+  expect(budgeted.sized).toEqual([3, 1, 1]);
+  expect(budgeted.calls).toEqual([[1, 2, 3], [4], [5]]);
+  expect(budgeted.window.throughSeq).toBe(5);
+  expect(budgeted.window.commits).toHaveLength(5);
 });
 
 test('a PostgreSQL segment download reads the registry and the checkpoint versions in one statement (§5.5)', async () => {

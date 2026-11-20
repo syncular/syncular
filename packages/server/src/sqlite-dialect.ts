@@ -1023,15 +1023,19 @@ export abstract class SqliteFamilyStorage {
     // Two statements per page. The candidate read binds the unit keys as one
     // JSON array; the CROSS JOIN keeps them the outer loop, so each key seeks
     // one range of `sync_change_scopes_by_key` (INDEXED BY fails loudly when
-    // the index is missing). Each candidate LEFT JOINs its commit meta (NULL
-    // when the commit vanished, which still advances the scan) and, per key,
-    // the byte size of the changes the key reads; `length()` of a blob reads
-    // the record header, never the payload. The change read then seeks only
-    // the commits the byte budget admits, through the primary key, with the
-    // key list materialized once per statement.
+    // the index is missing). `walk` then sizes the candidates one at a time,
+    // in commit order, and stops after the one that reaches the budget: per
+    // key, the count and byte size of the commit's changes the key reads.
+    // Each change's scopes expand once and join the keys on (var, value)
+    // through an automatic index; `length()` of a blob reads the record
+    // header, never the payload. Every walked commit LEFT JOINs its meta
+    // (NULL when the commit vanished, which still advances the scan). The
+    // change read then seeks only the commits the byte budget admits,
+    // through the primary key, matching each change to the keys by the same
+    // join.
     return readLiveWindowPages(
       query,
-      async (keys, limit) =>
+      async (keys, limit, budget) =>
         (
           await this.guardedAll<{
             commit_seq: number;
@@ -1041,23 +1045,43 @@ export abstract class SqliteFamilyStorage {
             bytes: number | null;
             changes: number | null;
           }>(
-            `WITH k AS (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2)),
-             c AS MATERIALIZED (SELECT DISTINCT s.commit_seq AS commit_seq
+            `WITH RECURSIVE k AS MATERIALIZED (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2)),
+             c AS MATERIALIZED (SELECT row_number() OVER (ORDER BY commit_seq) AS n, commit_seq FROM (SELECT DISTINCT s.commit_seq AS commit_seq
                FROM k CROSS JOIN sync_change_scopes AS s INDEXED BY sync_change_scopes_by_key
                  ON s.partition=?1 AND s.var=k.var AND s.value=k.value
                 AND s.commit_seq>k.after AND s.commit_seq<=?3
-               ORDER BY s.commit_seq LIMIT ?4)
-             SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
-               z.i AS key, z.bytes AS bytes, z.changes AS changes
-             FROM c
-             LEFT JOIN sync_commits AS m ON m.partition=?1 AND m.commit_seq=c.commit_seq
-             LEFT JOIN (SELECT ch.commit_seq AS commit_seq, k.i AS i, count(*) AS changes,
-                   sum(coalesce(length(ch.payload), 0) + length(CAST(ch.row_id AS BLOB)) + length(CAST(ch.scopes AS BLOB))) AS bytes
-                 FROM c CROSS JOIN sync_changes AS ch ON ch.partition=?1 AND ch.commit_seq=c.commit_seq
-                 CROSS JOIN k ON ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)) AND (ch.scopes ->> k.var)=k.value
-                 GROUP BY ch.commit_seq, k.i) AS z ON z.commit_seq=c.commit_seq
-             ORDER BY c.commit_seq, z.i`,
-            [partition, JSON.stringify(keys), query.throughSeq, limit],
+               ORDER BY s.commit_seq LIMIT ?4)),
+             walk(n, commit_seq, sizes, changes, bytes) AS (
+               SELECT 0, NULL, '[]', 0, 0
+               UNION ALL
+               SELECT c.n, c.commit_seq,
+                 (SELECT json_group_array(json_array(g.i, g.bytes, g.changes)) FROM (SELECT k.i AS i, count(*) AS changes,
+                     sum(coalesce(length(ch.payload), 0) + length(CAST(ch.row_id AS BLOB)) + length(CAST(ch.scopes AS BLOB))) AS bytes
+                   FROM sync_changes AS ch CROSS JOIN json_each(ch.scopes) AS e
+                   CROSS JOIN k ON k.var=e.key AND k.value=e.value
+                   WHERE ch.partition=?1 AND ch.commit_seq=c.commit_seq
+                     AND ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables))
+                   GROUP BY k.i) AS g),
+                 w.changes + (SELECT total(value ->> 2) FROM json_each(w.sizes)),
+                 w.bytes + (SELECT total(value ->> 1) FROM json_each(w.sizes))
+               FROM walk AS w JOIN c ON c.n=w.n+1
+               WHERE w.changes + (SELECT total(value ->> 2) FROM json_each(w.sizes)) < ?5
+                 AND w.bytes + (SELECT total(value ->> 1) FROM json_each(w.sizes)) <= ?6)
+             SELECT w.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
+               z.value ->> 0 AS key, z.value ->> 1 AS bytes, z.value ->> 2 AS changes
+             FROM walk AS w
+             LEFT JOIN sync_commits AS m ON m.partition=?1 AND m.commit_seq=w.commit_seq
+             LEFT JOIN json_each(w.sizes) AS z
+             WHERE w.n>0
+             ORDER BY w.commit_seq, key`,
+            [
+              partition,
+              JSON.stringify(keys),
+              query.throughSeq,
+              limit,
+              budget.changes,
+              budget.bytes,
+            ],
           )
         ).map((record) => ({
           commitSeq: record.commit_seq,
@@ -1084,7 +1108,8 @@ export abstract class SqliteFamilyStorage {
              SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
                ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
              FROM json_each(?3) AS c CROSS JOIN sync_changes AS ch ON ch.partition=?1 AND ch.commit_seq=c.value
-             WHERE EXISTS (SELECT 1 FROM k WHERE ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)) AND (ch.scopes ->> k.var)=k.value)
+             WHERE EXISTS (SELECT 1 FROM json_each(ch.scopes) AS e CROSS JOIN k ON k.var=e.key AND k.value=e.value
+               WHERE ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)))
              ORDER BY ch.commit_seq, ch.idx`,
             [partition, JSON.stringify(keys), JSON.stringify(commitSeqs)],
           )

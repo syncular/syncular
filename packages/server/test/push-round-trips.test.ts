@@ -522,7 +522,7 @@ describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
           ) && /"_sync_row_id"=\$\d+$/.test(text),
       );
       const windowReads = sql.filter((text) =>
-        text.includes('EXISTS (SELECT 1 FROM k'),
+        text.includes('FROM sync_changes ch CROSS JOIN km'),
       );
       expect(singleRowReads).toEqual([]);
       expect(windowReads).toHaveLength(1);
@@ -545,7 +545,9 @@ describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
         ),
       ).toEqual([]);
       expect(
-        sql.filter((text) => text.includes('EXISTS (SELECT 1 FROM k')),
+        sql.filter((text) =>
+          text.includes('FROM sync_changes ch CROSS JOIN km'),
+        ),
       ).toHaveLength(1);
     } finally {
       await db.close();

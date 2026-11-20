@@ -154,7 +154,14 @@ test('readLiveWindow ranges the key index once per unit (no Seq Scan)', async ()
   ]);
   expect(changePlan).toContain('Index Scan using sync_changes_pkey');
   expect(changePlan).not.toContain('Seq Scan on sync_changes');
-  const plan = await explain(db, texts[0]!, [PARTITION, keys, ROWS, 64]);
+  const plan = await explain(db, texts[0]!, [
+    PARTITION,
+    keys,
+    ROWS,
+    64,
+    64,
+    16 * 1024 * 1024,
+  ]);
   expect(plan).toContain('Index Only Scan using sync_change_scopes_by_key');
   expect(plan).not.toContain('Seq Scan on sync_change_scopes');
   expect(plan).not.toContain('Seq Scan on sync_commits');
